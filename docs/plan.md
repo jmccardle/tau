@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config (accepted, `decisions/D13-config.md`; not built), the 4 exit review. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). Missing: the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -66,7 +66,7 @@ directly, so:
 | 1 | `tau-py` bindings | done: a turn driven by hand from Python (`tests/core/`) |
 | 2 | minimal driver | performs every job, cancels on abort; provider, tool, hook protocols |
 | 3 | `Harness`, `FakeProvider`, `FakeTool` | the first Rust scenarios pass as Python tests (`tests/behavior/`); review starts here |
-| 4 | minimal config | done: a `Config` holds model, base URL, and the *name* of the API-key variable; full D13 later |
+| 4 | minimal config | done, then replaced by D13: a `Config` names its model; the driver resolves it from the layered config |
 | 5 | OpenAI-compatible provider | done: walk to messages, streamed parts, stop normalized and kept raw (`finish_reason`), tools array, HTTP errors as failures |
 | 6 | first call | done (`examples/first_call.py`): a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
 | 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
@@ -79,7 +79,7 @@ directly, so:
 - A macOS implementation of the base tools (`bash` finds leftover processes
   through `/proc`, so it is Linux-only), and a `powershell` tool for Windows.
 
-4. **Config overhaul** (approved 2026-10-27), in Python: the config file
+4. **Config overhaul** (approved 2026-10-27; built 2026-10-29), in Python: the config file
    parser, project trust, and `tau config check`. Written up as
    `decisions/D13-config.md` (accepted 2026-10-29), which supersedes the
    points agreed here earlier: model names are qualified by group
