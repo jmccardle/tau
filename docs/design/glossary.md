@@ -969,7 +969,7 @@ API keys are read from the provider's environ.
 ### builtin_providers
 `tau_next.builtin_providers(environ)` (module `tau_next.providers`) · D15 · new
 
-The built-in providers by name, `{"openai": OpenAIProvider, "mock": MockProvider}`:
+The built-in providers by name, `{"openai": OpenAIProvider, "gemini": GeminiProvider, "mock": MockProvider}`:
 what the CLI and the examples give `Driver` and `check_config`. `environ` is where
 OpenAI looks up keys. The caller closes them.
 
@@ -1034,6 +1034,51 @@ loop the provider drops it unawaited and makes a new one. The response body is r
 end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
+
+### GeminiProvider
+`tau_next.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
+
+The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
+`OpenAIProvider` (one client per loop, `ProviderClosed`, `status` and `retry_after`, the
+ordering rule, `usage_raw`). `base_url` defaults to `https://generativelanguage.googleapis.com/v1beta`
+(a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so, and sampling fails if the variable is unset) and travels in the `x-goog-api-key`
+header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`.
+Request: `systemInstruction` (the `System` nodes before any other node), `contents`
+(`user` and `model`), `tools` (one `functionDeclarations` list, each tool's schema as
+`parametersJsonSchema`), `generationConfig` (`maxOutputTokens` from `max_tokens`, then the
+options), `safetySettings`, then `extra_body`. A `System` node later in the walk is a user
+turn `[system note: <text>]`. A `Results` that follows its batch is one `user` content of
+`functionResponse` parts, in call order, `{"result": text}` or `{"error": text}`, with the call's
+`id` where the API gave one. A batch goes as text (the call markup, and its results as
+`[tool result <id>: <text>]` user text) when a call's `args_raw` is not a JSON object, so a
+cut-off call from another provider never fails the branch. A reply with nothing to send is
+dropped and neighbouring same-role contents merge; text parts are never merged with each
+other. `Thinking` is sent back only when Gemini signed it.
+
+Response: a part with `thought: true` is `ThinkingDelta`s and one `Thinking`; other text is
+`TextDelta`s and one `Text`; a `functionCall` arrives whole (`CallNamed`, one `CallArgs`, the
+part). A `thoughtSignature` is the part's replay data `{"thoughtSignature": ...}`; it rides the
+last chunk of the text it signs, often one with no text, and ends the part, so text after it
+is a new part. On a call it sits on the `functionCall` part and the replay also holds the
+`id` the API gave (`{"id": ...}`). A call with no id gets `gemini-` and a random UUID, and its
+replay is `{"synthesized_id": true}`: a made-up id is never sent. A signature is sent back
+only on the part it came from and only when `replay_for(part, "gemini")` returns data.
+Replay that core cannot hold fails the sample. `finishReason`: `STOP` is `End` (`Tools` when
+calls were made), `MAX_TOKENS` `Length`; `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`,
+`PROHIBITED_CONTENT`, `SPII` and the image refusals `Refused`; any other fails the sample. A
+`promptFeedback.blockReason` ends as `Refused` with the reason as `finish_reason` and the
+block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`responseId`),
+`finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
+`output` is `candidatesTokenCount` plus `thoughtsTokenCount` (thinking is billed as output),
+`cached` is `cachedContentTokenCount`; an absent count is 0. An error event in the stream
+(`{"error": {...}}`) fails the sample with its `code` as `status`. A non-200 response is a
+`SampleError` with `status` and `retry_after` (the `Retry-After` header, else the body's
+`RetryInfo.retryDelay`). Options (`check` refuses any other): `temperature`, `top_p`, `top_k`
+(numbers); `thinking`, an object of `include_thoughts` (bool; thought summaries are requested
+only when true), `budget` (integer >= -1; Gemini 2.5) or `level` (a string; Gemini 3), not
+both; `safety_settings` (a list of `{category, threshold}`, one per category); `extra_body`
+(merged last; `contents`, `systemInstruction`, `tools`, and any key the model's settings set
+are refused; its `generationConfig` merges into ours).
 
 ### MockProvider
 `tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new
