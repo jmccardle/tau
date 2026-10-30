@@ -7,7 +7,7 @@ Every value type is frozen and hashable. An enum with data is a base class
 with one nested class per variant, so `match job:` works.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from os import PathLike
 from typing import ClassVar, final
 
@@ -712,5 +712,5 @@ class Bash:
 
 @final
 class BashRun:
-    def wait(self) -> Outcome: ...
+    def wait(self, progress: Callable[[str], None] | None = None) -> Outcome: ...
     def kill(self) -> None: ...

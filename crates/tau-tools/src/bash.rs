@@ -16,6 +16,12 @@
 //! reach; if it keeps the output pipe open, the pipe is drained for a short
 //! grace period after the shell exits and then closed, and the answer says so.
 //!
+//! Progress. [`BashRun::wait_with`] also hands the output on as it arrives, through a
+//! [`progress::Stream`]: the reader only copies bytes into a bounded buffer, and a thread of
+//! its own calls the consumer, so the command and the reader never wait on the consumer. The
+//! answer does: `wait_with` joins that thread, so it waits for a callback already running and
+//! for the final flush (one more call). The saved answer is the same with or without it.
+//!
 //! The kept end of the output is the tail. A nonzero exit is an `Err` whose
 //! text is the output followed by the exit code.
 
@@ -36,6 +42,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Keep, Sink};
+use crate::progress;
 use crate::session;
 use crate::{Limits, Result, ToolError, lock, parse_args};
 
@@ -266,9 +273,21 @@ impl BashRun {
     /// The command failed, was killed, or timed out; or this run was already
     /// waited on.
     pub fn wait(&self) -> Result<String> {
+        self.wait_with(None)
+    }
+
+    /// As [`BashRun::wait`], calling `progress` with the output as it arrives (see
+    /// [`progress`] for how it is coalesced), from a thread of its own, until the output
+    /// ends; the last call returns before this does, so a slow `progress` delays the answer
+    /// (by the call running and the final flush) but never the command. `progress` answers
+    /// whether to go on; `false` stops the calls.
+    ///
+    /// # Errors
+    /// As [`BashRun::wait`].
+    pub fn wait_with(&self, progress: Option<&(dyn Fn(String) -> bool + Sync)>) -> Result<String> {
         match &self.0 {
             Inner::Failed(e) => Err(e.clone()),
-            Inner::Running(running) => running.wait(),
+            Inner::Running(running) => running.wait(progress),
         }
     }
 
@@ -287,6 +306,15 @@ impl BashRun {
 /// Makes the thread that reaps the shell always end the wait, even by a panic:
 /// without it `supervise` would wait for a reap that never comes.
 struct ReapGuard<'a>(&'a Running);
+
+/// Ends the progress stream however the reader ends, a panic included.
+struct CloseOnDrop<'a>(&'a progress::Stream);
+
+impl Drop for CloseOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
 
 impl Drop for ReapGuard<'_> {
     fn drop(&mut self) {
@@ -331,19 +359,27 @@ impl Running {
         }
     }
 
-    fn wait(&self) -> Result<String> {
+    fn wait(&self, on_progress: Option<&(dyn Fn(String) -> bool + Sync)>) -> Result<String> {
         let child = lock(&self.child).take();
         let reader = lock(&self.reader).take();
         let (Some(child), Some(reader)) = (child, reader) else {
             return Err("this command was already waited on".into());
         };
         let helpers_died = || ToolError("a helper thread of the bash tool panicked".into());
+        let stream = progress::Stream::new();
         let output = std::thread::scope(|scope| {
-            let output_thread = scope.spawn(|| self.read_output(reader));
+            let shown = on_progress.map(|emit| scope.spawn(|| stream.emit_until_closed(emit)));
+            let output_thread = scope.spawn(|| {
+                let _close = CloseOnDrop(&stream);
+                self.read_output(reader, on_progress.is_some().then_some(&stream))
+            });
             let reap_thread = scope.spawn(|| self.reap(child));
             self.supervise();
             let reaped = reap_thread.join();
             let output = output_thread.join();
+            if let Some(shown) = shown {
+                shown.join().map_err(|_| helpers_died())?;
+            }
             reaped.map_err(|_| helpers_died())?;
             output.map_err(|_| helpers_died())?
         });
@@ -425,7 +461,11 @@ impl Running {
     /// exited, only for [`DRAIN_GRACE`] more: a process that left the group
     /// can hold the pipe open forever. A failure of the sink terminates the
     /// command and is the call's error.
-    fn read_output(&self, mut reader: PipeReader) -> Result<String> {
+    fn read_output(
+        &self,
+        mut reader: PipeReader,
+        shown: Option<&progress::Stream>,
+    ) -> Result<String> {
         let mut sink = Sink::new(&self.limits, Keep::Tail);
         let mut failure = None;
         let mut buf = vec![0_u8; 64 * 1024];
@@ -444,7 +484,12 @@ impl Running {
             }
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => self.absorb(&mut sink, &mut failure, &buf[..n]),
+                Ok(n) => {
+                    if let Some(shown) = shown {
+                        shown.push(&buf[..n]);
+                    }
+                    self.absorb(&mut sink, &mut failure, &buf[..n]);
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     self.fail(&mut failure, format!("could not read the output: {e}"));

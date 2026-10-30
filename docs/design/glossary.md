@@ -1421,23 +1421,57 @@ shows every frontend (`cursor.show`), driver memory.
 What a provider's `sample` yields while a part is still arriving, with no cursor
 (the provider does not know it): `TextDelta(text)`, `ThinkingDelta(text)`,
 `CallNamed(index, id, tool)` (a call begins forming), `CallArgs(index, text)` (more
-of its `args_raw`). `Delta` is their union. Never saved.
+of its `args_raw`). `Delta` is their union: what a provider may yield. Never saved.
+
+### tool progress, ToolProgress
+`tau_next.ToolProgress(node, call_id, text)` (`events.py`) · D15 · new
+
+What a running tool shows through its progress callback: `text` is the output that arrived
+since the previous `ToolProgress` of the same call, not the whole so far. The call is `node`
+(the batch's node, the `Assistant` node holding the call) and `call_id`: servers may reuse ids
+across batches, so the id alone is ambiguous. Not a `Delta`: a provider cannot yield one. The
+driver wraps it as `Live(cursor, ToolProgress(...))` while the call runs. Never saved: `Results`
+holds only the `Outcome` the tool returns. Obeys the buffer rules of any `Live` (a full
+buffer drops it), except that a `Saved` clears it only for the calls the `Saved` names.
+
+### LiveDelta
+`tau_next.LiveDelta` (`events.py`) · D15 · new
+
+`Delta | ToolProgress`: what a `Live` carries. A provider's `sample` yields only `Delta`.
+
+### progress callback, Progress
+`tau_next.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
+
+What a tool is given to show partial output: `progress(text)`. A tool opts in by giving
+`call` a parameter named `progress`, detected once when the driver is built
+(`takes_progress`); a `progress` that cannot be passed by keyword is a `ToolContractError`.
+Callable from any thread. After the call is over (returned, aborted, cancelled) it does
+nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A `@tool`
+function takes it as a parameter named `progress`, which is not one of the tool's
+`parameters`; a `progress` annotated as anything but `Progress` is a `ToolDefinitionError`.
+`bash` calls it with its output, at most once per 100 ms; the command never waits on it, the
+answer waits for a call already running and the final flush.
 
 ### live event, Live
 `tau_next.Live(cursor, delta)` · D15 · new (the ADR's first draft said "draft event")
 
-A `Delta` on the cursor whose sample produced it, as `driver.events()` yields it.
+A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it, as `driver.events()` yields it.
 A frontend draws it as a layer over the cursor and drops the layer at the next
 `Saved`. Never saved. A slow subscriber's buffer drops it.
 
 ### saved event, Saved
-`tau_next.Saved(cursor)` · D15 · new
+`tau_next.Saved(cursor, calls=())` · D15 · new
 
-The tree changed for this cursor: look at it. Emitted after the driver applies each
+The tree changed for this cursor: look at it. `calls` are the calls, as `(node, call_id)`,
+whose results the save put in the tree (the batch's `Results` node answers them), else empty;
+a frontend drops those calls' `ToolProgress` layers now. A call answered before its batch
+is whole adds no node, so it emits no `Saved`. Emitted after the driver applies each
 answer (hooks, sample, call) to core, and by the frontend calls that change the tree or a
 cursor with no answer (`input`, `send`, `step`, `go_to`, `set_auto`, `open`, `add_item`,
-`abort`), so a second frontend hears of them. Never dropped from a subscriber's buffer;
-it replaces that cursor's buffered `Live` events and earlier `Saved`. Finer kinds are a later slice.
+`abort`), so a second frontend hears of them, and by each write a hook makes through its
+handle (`append`, `set_label`, `add_item`, a cursor hook's `write`, ...), when it is made. Never dropped from a subscriber's buffer;
+it removes that cursor's buffered provider deltas and earlier `Saved` (their `calls` move to
+it) but not buffered `ToolProgress`, except for the calls in its `calls`. Finer kinds are a later slice.
 
 ### EventStream
 `tau_next.EventStream` · D15 · new
@@ -1445,10 +1479,12 @@ it replaces that cursor's buffered `Live` events and earlier `Saved`. Finer kind
 One subscriber's async iterator of `Event` (`Live | Saved`) from `driver.events()`:
 an optional cursor filter and a bounded buffer of its own, for one consumer (a second
 concurrent `anext` raises `RuntimeError`). `offer` never waits, so a subscriber cannot
-slow the pump. A buffer holding `capacity` events drops further `Live` events. A `Saved(c)`
-is never dropped: it first removes the buffered `Live`s for `c` and any earlier `Saved(c)`
-(the frontend drops that cursor's live layer at `Saved(c)` anyway), then joins the end. So
-the buffer never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
+slow the pump. A buffer holding `capacity` events drops further `Live` events, tool progress
+included. A `Saved(c)` is never dropped: it first removes the buffered provider deltas for
+`c` and any earlier `Saved(c)` (the frontend drops that cursor's live layer at `Saved(c)`
+anyway), and the buffered `ToolProgress` of the calls in its `calls`; buffered progress of
+other calls survives it. Then it joins the end. So the bound holds with progress: the buffer
+never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
 (and may be called twice); `async with` closes it; the driver holds streams weakly, so one
 abandoned without `aclose()` is collected. The driver's `stop()` ends it after what it
 holds; if the driver fails (the pump or an effect died), `anext` raises that failure after

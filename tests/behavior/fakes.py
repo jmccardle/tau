@@ -17,6 +17,7 @@ from tau_next import (
     NodeHandle,
     Outcome,
     Part,
+    Progress,
     SampleError,
     Stop,
     Subject,
@@ -169,8 +170,9 @@ class FakeProvider:
 
 
 class FakeTool:
-    """Records each call's parsed arguments, waits at its gate, then answers `Ok(result)`
-    or raises `result`. Checks only that the arguments are JSON."""
+    """Records each call's parsed arguments, shows `shows` as progress, waits at its gate, then
+    answers `Ok(result)` or raises `result`. Checks only that the arguments are JSON.
+    `progress` is the callback the last call was given."""
 
     def __init__(
         self,
@@ -178,12 +180,15 @@ class FakeTool:
         result: str | Exception | Callable[[Mapping[str, object]], str],
         gate: Gate | None = None,
         description: str = "A fake tool.",
+        shows: Sequence[str] = (),
     ) -> None:
         self._name = name
         self._result = result
         self.gate = gate
         self._description = description
         self.calls: list[Mapping[str, object]] = []
+        self.shows = shows
+        self.progress: Progress | None = None
 
     @property
     def name(self) -> str:
@@ -197,12 +202,16 @@ class FakeTool:
     def parameters(self) -> Mapping[str, object]:
         return {"type": "object", "properties": {}}
 
-    async def call(self, args_raw: str) -> Outcome:
+    async def call(self, args_raw: str, *, progress: Progress | None = None) -> Outcome:
         try:
             args: Mapping[str, object] = json.loads(args_raw)
         except ValueError:
             return Outcome.Err("arguments are not valid JSON")
         self.calls.append(args)
+        self.progress = progress
+        for text in self.shows:
+            assert progress is not None, "a FakeTool shows progress only under a driver"
+            progress(text)
         if self.gate is not None:
             await self.gate.wait()
         if isinstance(self._result, Exception):

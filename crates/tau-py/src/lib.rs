@@ -35,6 +35,11 @@ mod _core {
             use pyo3::types::PyModuleMethods;
             m.add_function(pyo3::wrap_pyfunction!(super::transitions_scenario, m)?)?;
         }
+        {
+            use pyo3::types::PyAnyMethods;
+            let stop = pyo3::wrap_pyfunction!(super::tools::stop_progress, m)?;
+            m.py().import("atexit")?.call_method1("register", (stop,))?;
+        }
         super::error::add_all(m)
     }
 }

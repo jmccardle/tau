@@ -1,7 +1,8 @@
 """What the driver asks of providers, tools, extensions, and the clock."""
 
+import inspect
 import json
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -108,8 +109,27 @@ def check_tools(tools: Sequence[object]) -> dict[str, "Tool"]:
             raise ToolContractError(f"tool {name!r}: `call` must be callable")
         if name in out:
             raise ToolContractError(f"two tools are named {name!r}")
+        takes_progress(candidate)  # a malformed `progress` fails here, not at the first call
         out[name] = cast("Tool", candidate)
     return out
+
+
+def takes_progress(tool: object) -> bool:
+    """Whether `tool.call` opts in to progress: it has a parameter named `progress`, which the
+    driver then passes by keyword. A `progress` that cannot be passed by keyword (positional-only)
+    raises `ToolContractError`. A `call` with no inspectable signature has not opted in."""
+    try:
+        parameters = inspect.signature(getattr(tool, "call")).parameters  # noqa: B009
+    except (ValueError, TypeError):
+        return False
+    param = parameters.get("progress")
+    if param is None:
+        return False
+    if param.kind is param.POSITIONAL_ONLY:
+        raise ToolContractError(
+            f"tool {getattr(tool, 'name', tool)!r}: `progress` must be passable by keyword"
+        )
+    return True
 
 
 class Provider(Protocol):
@@ -156,11 +176,23 @@ class Provider(Protocol):
         ...
 
 
+Progress = Callable[[str], None]
+"""A running tool's way to show partial output: `progress(text)` with the new output since the
+last call. Safe to call from any thread. Once the tool's call is over (it returned, was
+aborted, or was cancelled) calling it does nothing."""
+
+
 class Tool(Protocol):
     """What the driver and providers depend on; `@tool` is one way to build one.
 
     Any object with these attributes works, whatever it is written in. The tool
     owns argument validation: it gets the call's raw JSON text.
+
+    A tool that shows partial output as it runs opts in by giving `call` a parameter named
+    `progress` (`call(self, args_raw, *, progress=None)`; the `None` default keeps the tool a
+    `Tool` and callable without a driver), detected once when the driver is built.
+    The driver then passes a `Progress` by keyword. A tool whose `call` has no such parameter
+    is called with `args_raw` alone, as before.
     """
 
     @property
@@ -178,6 +210,12 @@ class Tool(Protocol):
         """Run with the call's `args_raw`. Answer `Ok` or `Err`; an exception raised is
         the call's `Err(str(e))`."""
         ...
+
+
+class ProgressTool(Protocol):
+    """The `call` of a `Tool` that opted in to progress (see `Tool`)."""
+
+    async def call(self, args_raw: str, *, progress: Progress) -> Outcome: ...
 
 
 class CursorHook(Protocol):

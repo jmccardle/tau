@@ -12,6 +12,7 @@
 pub mod bash;
 pub mod grep;
 pub mod limit;
+pub mod progress;
 pub mod read;
 pub(crate) mod session;
 pub mod write;

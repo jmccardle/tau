@@ -68,9 +68,11 @@ from tau_next.events import (
     Event,
     EventStream,
     Live,
+    LiveDelta,
     Saved,
     TextDelta,
     ThinkingDelta,
+    ToolProgress,
 )
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
@@ -78,6 +80,7 @@ from tau_next.protocols import (
     CursorHook,
     Extension,
     Finish,
+    Progress,
     Provider,
     ProviderClosed,
     SampleError,
@@ -128,6 +131,7 @@ __all__ = [
     "ItemData",
     "Leased",
     "Live",
+    "LiveDelta",
     "LoadedConfig",
     "ModelCatalog",
     "ModelConfig",
@@ -146,6 +150,7 @@ __all__ = [
     "Outstanding",
     "Part",
     "Poisoned",
+    "Progress",
     "Prompts",
     "Provider",
     "ProviderClosed",
@@ -167,6 +172,7 @@ __all__ = [
     "ToolDefinitionError",
     "ToolError",
     "ToolHook",
+    "ToolProgress",
     "TraceError",
     "Tree",
     "TreeHandle",

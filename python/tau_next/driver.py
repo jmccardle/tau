@@ -22,12 +22,12 @@ from functools import partial
 
 from tau_next import trace
 from tau_next._config_layers import ModelCatalog
-from tau_next._core import Answer, Author, ItemData, Job, Session
+from tau_next._core import Answer, Author, Body, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
-from tau_next.events import Delta, Event, EventStream, Live, Saved
-from tau_next.handles import Cursor, NodeHandle, Subject
-from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
+from tau_next.events import CallKey, Event, EventStream, Live, LiveDelta, Saved
+from tau_next.handles import Changed, Cursor, NodeHandle, Subject
+from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools, takes_progress
 
 
 @dataclass
@@ -80,6 +80,7 @@ class Driver:
         self._streams: weakref.WeakSet[EventStream] = weakref.WeakSet()
         self._catalog = catalog
         self._tools: Mapping[str, Tool] = check_tools(tools)
+        self._progress_tools = frozenset(n for n, t in self._tools.items() if takes_progress(t))
         self._extensions = tuple(extensions)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, Outstanding] = {}
@@ -295,9 +296,12 @@ class Driver:
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
+        before = len(self.session.tree)
         with trace.span("driver", "answer"):
             self.session.answer(cursor, answer, self.clock.now())
-        self._emit(Saved(cursor))
+        # A call answered before its batch is whole only fills a slot in core: no node.
+        if len(self.session.tree) > before or not isinstance(answer, Answer.CallDone):
+            self._emit(Saved(cursor, self._answered(before)))
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             return
@@ -306,6 +310,17 @@ class Driver:
         if not isinstance(job, Job.Pending):
             del self._out[cursor]
             self._dispatch(cursor, job)
+
+    def _answered(self, since: int) -> tuple[CallKey, ...]:
+        """The calls answered by the `Results` nodes added since node count `since`, each as
+        `(node of its batch, call id)`."""
+        nodes = (self.session.tree.node(i) for i in range(since, len(self.session.tree)))
+        return tuple(
+            (node.parent, call)
+            for node in nodes
+            if isinstance(body := node.body, Body.Results) and node.parent is not None
+            for call, _, _ in body.outcomes
+        )
 
     def _unit(self, cursor: int, effect: Callable[[], Awaitable[Answer]]) -> asyncio.Task[None]:
         """Run an effect as a task that reports `(cursor, Answer)` to the pump."""
@@ -350,12 +365,18 @@ class Driver:
             case Job.RunCalls(node=node, calls=calls):
                 if not calls:
                     raise RuntimeError(f"cursor {cursor}: a batch with no calls at node {node}")
+                announce = self._announcer(cursor)
                 runs = [
                     CallRun(
                         c,
-                        lambda ext: NodeHandle(session, node, ext.name, self.clock.now, self._poke),
+                        lambda ext: NodeHandle(
+                            session, node, ext.name, self.clock.now, self._poke, announce
+                        ),
                         self._tools,
                         self._extensions,
+                        batch=node,
+                        progress_tools=self._progress_tools,
+                        on_progress=partial(self._live, cursor),
                     )
                     for c in calls
                 ]
@@ -364,12 +385,22 @@ class Driver:
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
-    def _live(self, cursor: int, delta: Delta) -> None:
+    def _live(self, cursor: int, delta: LiveDelta) -> None:
         self._emit(Live(cursor, delta))
+
+    def _announcer(self, own: int) -> Changed:
+        """The `changed` of a handle working for `own`: a `Saved` for the cursor it changed."""
+        return lambda changed: self._emit(Saved(own if changed is None else changed))
 
     def _cursor_for(self, cursor: int) -> Callable[[Extension], Cursor]:
         return lambda ext: Cursor(
-            self.session, cursor, ext.name, self.ask, self.clock.now, self._poke
+            self.session,
+            cursor,
+            ext.name,
+            self.ask,
+            self.clock.now,
+            self._poke,
+            self._announcer(cursor),
         )
 
     def _cancel(self, cursor: int) -> None:

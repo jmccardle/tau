@@ -4,6 +4,11 @@ The name is the function's, the description its docstring, and the parameters a
 JSON Schema built from its type hints. Everything that cannot be turned into a
 schema fails at decoration (`ToolDefinitionError`); a call whose arguments do
 not fit the signature answers `Err(message)`, which the model reads.
+
+A function that wants to show partial output as it runs takes a parameter named `progress`
+(a `Progress`: `progress(text)`). It is not an argument of the tool: the model is not told
+of it, cannot pass it, and the driver supplies it. Called from a sync function it runs on
+the function's worker thread, which is fine: it may be called from any thread.
 """
 
 import asyncio
@@ -15,9 +20,11 @@ from dataclasses import dataclass
 from typing import Literal, Union, cast, get_args, get_origin, get_type_hints, overload
 
 from tau_next._core import Outcome
+from tau_next.protocols import Progress
 
 Json = dict[str, object]
 Check = Callable[[object], str | None]
+PROGRESS = "progress"  # a function parameter the driver fills, not an argument of the tool
 
 
 class ToolDefinitionError(ValueError):
@@ -136,6 +143,19 @@ class _Param:
     description: str | None
 
 
+def _check_progress(param: inspect.Parameter, hints: Mapping[str, object], where: str) -> None:
+    """A parameter named `progress` is the callback the driver passes, never an argument: it
+    must be passable by keyword and unannotated or annotated `Progress`."""
+    if param.kind is param.POSITIONAL_ONLY:
+        raise ToolDefinitionError(f"{where}: `progress` must be passable by keyword")
+    if hints.get(PROGRESS, Progress) != Progress:
+        raise ToolDefinitionError(
+            f"{where}: `progress` is the callback the driver passes (annotate it as `Progress`, "
+            f"or leave it unannotated), not an argument of type {hints[PROGRESS]!r}; "
+            "rename the argument"
+        )
+
+
 def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Param, ...]:
     name = fn.__name__
     signature = inspect.signature(fn)
@@ -145,6 +165,10 @@ def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Pa
         raise ToolDefinitionError(
             f"tool {name!r}: an annotation cannot be resolved: {type(e).__name__}: {e}"
         ) from e
+    if PROGRESS in describe:
+        raise ToolDefinitionError(
+            f"tool {name!r}: describe names `progress`, which is not an argument of the tool"
+        )
     unknown = [p for p in describe if p not in signature.parameters]
     if unknown:
         raise ToolDefinitionError(
@@ -154,6 +178,9 @@ def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Pa
     out: list[_Param] = []
     for param in signature.parameters.values():
         where = f"tool {name!r}, parameter {param.name!r}"
+        if param.name == PROGRESS:
+            _check_progress(param, hints, where)
+            continue
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             raise ToolDefinitionError(f"{where}: *args and **kwargs cannot be described")
         if param.kind is param.POSITIONAL_ONLY:
@@ -179,6 +206,10 @@ def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Pa
     return tuple(out)
 
 
+def _no_progress(text: str) -> None:
+    """The `progress` of a function called with nowhere to show it."""
+
+
 class FunctionTool:
     """A `Tool` made from a function by `tool`. `function` is the function itself, unchanged."""
 
@@ -195,6 +226,7 @@ class FunctionTool:
         self._description = doc
         self._params = _params(function, describe or {})
         self._is_async = inspect.iscoroutinefunction(inspect.unwrap(function))
+        self._takes_progress = PROGRESS in inspect.signature(function).parameters
 
     @property
     def name(self) -> str:
@@ -241,9 +273,11 @@ class FunctionTool:
             raise ToolError(f"arguments must be a JSON object, not {_json_type(value)}")
         return cast("dict[str, object]", value)
 
-    async def _run(self, args_raw: str) -> str:
+    async def _run(self, args_raw: str, progress: Progress | None) -> str:
         args = self._parse(args_raw)
         self._validate(args)
+        if self._takes_progress:
+            args[PROGRESS] = progress or _no_progress
         try:
             if self._is_async:
                 result = await cast("Awaitable[object]", self.function(**args))
@@ -257,8 +291,12 @@ class FunctionTool:
             raise ToolError(f"{self._name} returned {type(result).__name__}, not str")
         return result
 
-    async def call(self, args_raw: str) -> Outcome:
+    async def call(self, args_raw: str, *, progress: Progress | None = None) -> Outcome:
         """Parse and check `args_raw`, run the function, and answer `Ok(its str)`.
+
+        `progress` is what the function's own `progress` parameter receives (nothing is
+        shown if there is none: a call made outside a driver); a function without that
+        parameter ignores it.
 
         `Err(message)` for malformed JSON, arguments that do not fit the signature, any
         exception the function raised (named by type), and a return value that is not a
@@ -267,7 +305,7 @@ class FunctionTool:
         `functools.wraps`) around an async one counts as async.
         """
         try:
-            return Outcome.Ok(await self._run(args_raw))
+            return Outcome.Ok(await self._run(args_raw, progress))
         except ToolError as e:
             return Outcome.Err(str(e))
 
