@@ -7,14 +7,13 @@ provider. The text markup (`call_markup`, `outcome_markup`, `stop_note`) is shar
 shows the model the same thing.
 """
 
-import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
 from tau_next._core import Body, Node, Outcome, Part, Stop
 from tau_next.protocols import SampleError
-from tau_next.providers._wire import Json
+from tau_next.providers._wire import Json, has_lone_surrogate, strict_loads
 
 # The stops a reply is noted for when its calls cannot run (model.md 10.6).
 _STOP_NOTES: dict[Stop, str] = {
@@ -84,13 +83,20 @@ def outcome_text(outcome: Outcome) -> str:
             return value
         case Outcome.Err(error=error):
             return f"Error: {error}"
-        case _:
+        case Outcome.Interrupted():
             return "Interrupted"
+        case _:
+            raise SampleError(f"an outcome this provider cannot send: {outcome}")
+
+
+def result_line(call_id: str, text: str) -> str:
+    """One result as the text the model reads; `text` is an `outcome_text`."""
+    return f"[tool result {call_id}: {text}]"
 
 
 def outcome_markup(call_id: str, outcome: Outcome) -> str:
     """A result with no batch to answer, as the text the model reads."""
-    return f"[tool result {call_id}: {outcome_text(outcome)}]"
+    return result_line(call_id, outcome_text(outcome))
 
 
 def stop_note(note: str) -> str:
@@ -106,13 +112,15 @@ def system_note(text: str) -> str:
 
 def call_object(call: Part.Call) -> Json | None:
     """The arguments of a call as the object a wire `input` or `args` must be: `args_raw`
-    parsed (no arguments is `{}`); `None` if it is not a JSON object (a call cut off, or one
-    another provider let through)."""
+    parsed (no arguments is `{}`); `None` if it is not a JSON object (a call cut off, one with
+    a NaN or a lone surrogate, or one another provider let through)."""
     if not call.args_raw.strip():
         return {}
     try:
-        parsed: object = json.loads(call.args_raw)
-    except ValueError:
+        parsed: object = strict_loads(call.args_raw)
+    except ValueError:  # a NaN or infinity is not JSON
+        return None
+    if has_lone_surrogate(call.args_raw, parsed):
         return None
     return cast("Json", parsed) if isinstance(parsed, dict) else None
 
@@ -171,15 +179,14 @@ def _base_turns(walk: Sequence[Node]) -> list[Turn]:
 
 
 def _results_text(results: ToolResults) -> str:
-    """A batch's results as `outcome_markup` lines (`CallResult.text` is their `outcome_text`)."""
-    return "\n".join(f"[tool result {r.id}: {r.text}]" for r in results.results)
+    """A batch's results as `outcome_markup` lines."""
+    return "\n".join(result_line(r.id, r.text) for r in results.results)
 
 
 def turns(
     walk: Sequence[Node],
     *,
     structured: bool = True,
-    object_args: bool = False,
     text_from: Callable[[list[Turn]], int | None] | None = None,
 ) -> list[Turn]:
     """The turns of a walk. `Config` and `Custom` nodes never reach the model. Raises
@@ -188,8 +195,8 @@ def turns(
     A runnable batch can still be one the provider's API would refuse, and a walk that makes
     the API refuse fails every later sample on the branch (`model.md` 10.7). So a batch goes as
     text, its `Results` becoming a `UserTurn` of result lines, when: `structured` is false (the
-    request offers no tools, so the API takes no calls); `object_args` and a call's `args_raw`
-    is not a JSON object (see `call_object`); or its index is at or past the one `text_from`
+    request offers no tools, so the API takes no calls); a call's `args_raw` is not a JSON
+    object (see `call_object`); or its index is at or past the one `text_from`
     names. `text_from` gets the turns as first read and returns an index or `None`: a rule
     only the provider can judge (Anthropic's manual thinking)."""
     read = _base_turns(walk)
@@ -199,9 +206,7 @@ def turns(
     for i, turn in enumerate(read):
         if isinstance(turn, AssistantTurn) and turn.runnable:
             as_text = (
-                not structured
-                or (start is not None and i >= start)
-                or (object_args and not _object_calls(turn))
+                not structured or (start is not None and i >= start) or not _object_calls(turn)
             )
             out.append(replace(turn, runnable=False) if as_text else turn)
         elif isinstance(turn, ToolResults) and as_text:

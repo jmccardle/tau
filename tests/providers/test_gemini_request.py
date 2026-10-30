@@ -279,7 +279,7 @@ async def test_data_that_cannot_be_kept_as_replay_fails_the_sample_not_core() ->
     chunk = gemini_chunk([{"text": "x", "thoughtSignature": "\ud800"}], "STOP")
     _, error = await collect(provider_for(chunk), gemini_walk())
     assert error is not None
-    assert "replay" in str(error)
+    assert "surrogate" in str(error)
 
 
 # Options

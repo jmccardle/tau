@@ -168,7 +168,7 @@ def contents(walk: Sequence[Node]) -> tuple[str | None, list[Json]]:
     `Custom` nodes never reach the model."""
     messages = Messages("parts")
     calls: list[Part.Call] = []  # the previous reply's calls
-    for turn in turns(walk, object_args=True):
+    for turn in turns(walk):
         match turn:
             case SystemTurn(text=text):
                 messages.system(text, lambda note: {"text": note})

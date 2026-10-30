@@ -176,7 +176,7 @@ async def test_a_signature_that_cannot_be_kept_as_replay_data_fails_the_sample()
     body = message(thinking(0, ["hm"], signature="\ud800"))
     items, error = await collect(provider(stream(body)), fresh_walk(), RESOLVED)
     assert error is not None
-    assert "replay" in str(error)
+    assert "surrogate" in str(error)
     assert not any(isinstance(i, Part.Thinking) and i.replay for i in items)
 
 

@@ -69,12 +69,12 @@ note (`length`, `interrupted`, `error`) for calls that cannot run. It returns
 order; a provider maps them to its own wire shapes. `call_markup`, `outcome_markup` and
 `stop_note` are the one text markup, and `system_note` (`[system note: <text>]`) is the one
 spelling of a `System` node after the walk's start, for a provider whose single system
-instruction cannot hold it. Three options cover the rules only some APIs need, so each
+instruction cannot hold it. Two options cover the rules only some APIs need, so each
 provider says whether it asks: `structured=False` (the request offers no tools, so no batch can
-go as calls), `object_args=True` (a batch whose call has `args_raw` that is not a JSON object,
-no arguments counting as `{}`, `call_object`), and `text_from` (a provider's own rule, given
+go as calls), and `text_from` (a provider's own rule, given
 the turns, naming the index from which batches go as text; Anthropic's manual thinking). A
-batch any of them demotes goes as text (`runnable` false), and its `Results` becomes a
+batch either of them demotes, or one whose call has `args_raw` that is not a JSON object (no
+arguments counting as `{}`; `call_object`, which refuses NaN and lone surrogates too), goes as text (`runnable` false), and its `Results` becomes a
 `UserTurn` of `[tool result <id>: <text>]` lines, so a walk the API would refuse never fails
 every later sample. `Messages(items_key)` builds the wire messages from the turns: neighbouring
 turns of one role merge, a turn with nothing to send leaves none, and `System` turns before any

@@ -1,6 +1,7 @@
 """What every hosted provider shares over HTTP: private to the package.
 
-Three parts. JSON and number checks (`plain`, `non_finite`, `is_number`, `is_count`, `count`).
+Three parts. JSON and number checks (`strict_loads`, `plain`, `non_finite`, `is_number`,
+`is_count`, `count`).
 Reading a response (`retry_after`, `error_text`, `sse_data`, `events`). And `Connection`, which
 holds the one client a provider keeps and runs the sample loop every provider repeats: send the
 request, read the body to its end, turn an `httpx` error or a bad status into a `SampleError`.
@@ -25,11 +26,12 @@ from tau_next.protocols import Finish, ProviderClosed, SampleError
 Json = dict[str, object]
 HTTP_OK = 200
 DEFAULT_TIMEOUT = httpx.Timeout(10.0, read=300.0)
+_BAD_HEADER = "the request could not be sent: a request header holds a character HTTP can't carry"
 
 
 def retry_after(value: str | None) -> float | None:
     """Seconds to wait from a `Retry-After` header: whole seconds as sent, an HTTP-date as
-    seconds from now (0 if past); `None` for no header or anything else."""
+    seconds from now (0 if past); `None` for no header, a non-finite number, or anything else."""
     if value is None:
         return None
     text = value.strip()
@@ -38,11 +40,33 @@ def retry_after(value: str | None) -> float | None:
         return seconds if math.isfinite(seconds) else None
     try:
         when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if when.tzinfo is None:
         return None
     return max(0.0, (when - datetime.now(UTC)).total_seconds())
+
+
+def _no_constant(name: str) -> object:
+    raise ValueError(f"{name} is not JSON")
+
+
+def strict_loads(text: str) -> object:
+    """`json.loads` that refuses `NaN`, `Infinity` and `-Infinity` (Python accepts them, JSON
+    does not, and the log and the other providers' bodies cannot carry them): a `ValueError`."""
+    return json.loads(text, parse_constant=_no_constant)
+
+
+def has_lone_surrogate(text: str, value: object) -> bool:
+    """Whether `value`, parsed from `text`, holds a lone surrogate (the escape `\\ud800`): JSON
+    allows it, UTF-8 cannot carry it. Only text with an escape can, so other text is not walked."""
+    if "\\u" not in text:
+        return False
+    try:
+        json.dumps(value, ensure_ascii=False).encode()
+    except UnicodeEncodeError:
+        return True
+    return False
 
 
 def plain(value: object) -> object:
@@ -66,7 +90,13 @@ def non_finite(value: object) -> list[float]:
 
 
 def is_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    """A finite int or float (not a boolean). Never raises: an int too big for a float is not."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def is_count(value: object) -> bool:
@@ -96,8 +126,10 @@ def count(value: object) -> int | None:
 
 
 def meta_text(meta: Json) -> str | None:
-    """The `meta` of a reply as `Finish.meta` and `SampleError.meta` take it."""
-    return json.dumps(meta) if meta else None
+    """The `meta` of a reply as `Finish.meta` and `SampleError.meta` take it. A key whose value
+    holds a NaN or infinity is dropped (JSON cannot carry it; the rest of the meta is kept)."""
+    kept = {k: v for k, v in meta.items() if not non_finite(v)}
+    return json.dumps(kept, allow_nan=False) if kept else None
 
 
 def error_text(status: int, body: bytes, *, typed: bool = False) -> str:
@@ -105,7 +137,7 @@ def error_text(status: int, body: bytes, *, typed: bool = False) -> str:
     most APIs send. With `typed` the object's `type` leads the message (`<type>: <message>`)."""
     text = body.decode("utf-8", errors="replace").strip()
     try:
-        parsed: object = json.loads(text)
+        parsed: object = strict_loads(text)
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):
@@ -125,7 +157,8 @@ def json_object(value: object, what: str) -> Json:
 
 
 async def events(response: httpx.Response, end: str | None = None) -> AsyncIterator[Json]:
-    """The decoded SSE events of a response, each a JSON object. The body is read to its end,
+    """The decoded SSE events of a response, each a JSON object. A NaN or infinity, or a lone
+    surrogate anywhere in an event, is a `SampleError`. The body is read to its end,
     so the connection goes back to the pool; with `end` (OpenAI's `[DONE]`), whatever follows
     that data is read but not looked at."""
     done = False
@@ -134,16 +167,31 @@ async def events(response: httpx.Response, end: str | None = None) -> AsyncItera
         if done:
             continue
         try:
-            yield json_object(json.loads(data), "a stream event")
+            parsed = strict_loads(data)
         except ValueError as e:
             raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
+        if has_lone_surrogate(data, parsed):
+            raise SampleError(
+                f"SSE data holds a lone surrogate, which UTF-8 cannot carry: {data[:200]!r}"
+            )
+        yield json_object(parsed, "a stream event")
 
 
 class ReplyReader(Protocol):
-    """One response being read, as `Connection.sample` needs it. `feed` takes a decoded event
-    and returns its parts and deltas; `done` is true once the reply's stop reason has arrived
-    (after it only the meta is still read); `stop` is the `Finish` or raises `SampleError`;
-    `close` is the part the open run had become, if any."""
+    """One response being read, as `Connection.sample` needs it.
+
+    `feed` takes a decoded event and returns its parts and deltas. `done` is true once the
+    reply's stop reason has arrived: after it only the meta is still read, so `Connection`
+    discards what `feed` returns (the reader need only keep reading the meta). If `feed` raises
+    after building items for its event, it keeps them for the next `close()`: none is lost.
+
+    `close` ends a stream that broke. It returns the finished parts not yet returned, then the
+    open text or thinking run as far as it arrived (thinking unsigned). It never returns a
+    partial call and it never raises: a call cut off is dropped whole (D1), and its raw text
+    goes in `meta["cut_off_call"]`, which `Connection` moves into the error message. It is
+    called only on a failure; a success goes straight to `stop`.
+
+    `stop` is the `Finish`, or raises `SampleError` when no stop arrived."""
 
     meta: Json
 
@@ -161,7 +209,9 @@ class Connection:
     closed by `aclose()`, after which a sample fails with `ProviderClosed`. A client belongs to
     the event loop that made it: a sample on another loop drops it unawaited (that loop is gone
     and cannot be awaited here) and makes a new one, so a program may call `asyncio.run` once per
-    command. `transport` replaces the network (a test's `httpx.MockTransport`).
+    command. The dropped client is not closed: its keep-alive sockets are freed when it is
+    garbage collected (D10), so a program with one loop per command holds one idle socket per
+    finished loop until then. `transport` replaces the network (a test's `httpx.MockTransport`).
 
     `typed_errors` is whether the provider's error bodies lead with their `type`; `body_wait`
     reads a wait out of an error body when the `Retry-After` header is missing (Google sends
@@ -219,9 +269,29 @@ class Connection:
             ) from e
         if wait is None and self._body_wait is not None:
             wait = self._body_wait(body)
+            if wait is not None and not math.isfinite(wait):
+                wait = None
         raise SampleError(
             error_text(status, body, typed=self._typed), status=status, retry_after=wait
         )
+
+    def _read_meta_headers(self, response: httpx.Response, reply: ReplyReader) -> None:
+        for header, key in self._meta_headers.items():
+            value = response.headers.get(header)
+            if value:
+                reply.meta[key] = value
+
+    def _http_failure(self, e: httpx.HTTPError) -> SampleError:
+        """The `SampleError` for an `httpx` error, with `e` as its cause. A `LocalProtocolError`
+        is h11 refusing the request, and its text quotes the offending header value, which may be
+        the API key: it gets a message of its own and no cause."""
+        if isinstance(e, httpx.LocalProtocolError):
+            if "header" in str(e).lower():
+                return SampleError(_BAD_HEADER)
+            return SampleError("the request could not be sent: it is not valid HTTP")
+        error = (ProviderClosed if self._closed else SampleError)(f"{type(e).__name__}: {e}")
+        error.__cause__ = e
+        return error
 
     async def sample(
         self,
@@ -234,25 +304,29 @@ class Connection:
     ) -> AsyncGenerator[Part | Finish | Delta, None]:
         """POST `body` and yield what `reply` makes of the events, then its `Finish`. A failure
         raises `SampleError` (with `status` and `retry_after` for an HTTP error) after yielding
-        every part the stream had finished or begun, carrying the meta that had arrived. Once
-        `reply.done` the reply is complete: a failure after it costs only the meta not yet read.
+        what `reply.close()` returns, carrying the meta that had arrived; an `httpx` error is its
+        `__cause__`, so a retrying wrapper can test for `httpx.TransportError`. A request that
+        cannot be written (a header HTTP cannot carry, a NaN in the body) is a `SampleError`
+        whose message never holds the header's value. Once `reply.done` the reply is complete: a
+        failure after it costs only the meta not yet read, and what `feed` returns is dropped.
         `end` is a data string that closes the stream (see `events`)."""
         client = self._client()
+        content = _encode_request(headers, body)
+        headers = {"content-type": "application/json", **headers}
         error: SampleError | None = None
         try:
-            async with client.stream("POST", url, headers=headers, json=body) as response:
-                for header, key in self._meta_headers.items():
-                    value = response.headers.get(header)
-                    if value:
-                        reply.meta[key] = value
+            async with client.stream("POST", url, headers=headers, content=content) as response:
+                self._read_meta_headers(response, reply)
                 if response.status_code != HTTP_OK:
                     await self._refuse(response)
                 async for event in events(response, end):
-                    for item in reply.feed(event):
-                        yield item
+                    was_done = reply.done
+                    items = reply.feed(event)
+                    if not was_done:
+                        for item in items:
+                            yield item
         except httpx.HTTPError as e:
-            kind = ProviderClosed if self._closed else SampleError
-            error = kind(f"{type(e).__name__}: {e}")
+            error = self._http_failure(e)
         except SampleError as e:
             error = e
         if error is None or reply.done:
@@ -265,16 +339,32 @@ class Connection:
                 return
         assert error is not None
         error.meta = meta_text(reply.meta)
-        try:
-            leftover = reply.close()
-        except SampleError as cut_off:
-            # A cut-off call with no id or name is not a part; the failure records what arrived.
-            raise type(error)(
-                f"{error}; {cut_off}",
-                meta_text(reply.meta),
-                status=error.status,
-                retry_after=error.retry_after,
-            ) from error
-        for part in leftover:
+        for part in _close(reply, error):
             yield part
         raise error
+
+
+def _close(reply: ReplyReader, error: SampleError) -> list[Part | Delta]:
+    """What `reply.close()` returns for a failed stream, with the raw text of a call it dropped
+    (`meta["cut_off_call"]`, see `ReplyReader`) moved into `error`'s message."""
+    leftover = reply.close()
+    cut_off = reply.meta.pop("cut_off_call", None)
+    if cut_off is not None:
+        error.args = (f"{error}; a call was cut off and dropped: {cut_off}",)
+    return leftover
+
+
+def _encode_request(headers: Mapping[str, str], body: Json) -> bytes:
+    """The request body as JSON bytes, or a `SampleError` that never quotes a header: a
+    header must be ASCII (it may be the API key), and the body must hold no NaN, infinity or
+    lone surrogate."""
+    for name, value in headers.items():
+        if not (name.isascii() and value.isascii()):
+            raise SampleError(_BAD_HEADER)
+    try:
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    except ValueError as e:  # a UnicodeEncodeError is one
+        raise SampleError(
+            "the request body holds a value JSON can't carry (a NaN, an infinity, "
+            "or a lone surrogate)"
+        ) from e

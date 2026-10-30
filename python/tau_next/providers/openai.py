@@ -83,7 +83,7 @@ def messages(walk: Sequence[Node]) -> list[Json]:
     whose call arguments are not a JSON object goes as text with its results (llama.cpp refuses
     the history otherwise, HTTP 500); no arguments are sent as `{}`."""
     out: list[Json] = []
-    for turn in turns(walk, object_args=True):
+    for turn in turns(walk):
         match turn:
             case SystemTurn(text=text):
                 out.append({"role": "system", "content": text})

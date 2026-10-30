@@ -146,7 +146,6 @@ def conversation(
     for turn in turns(
         walk,
         structured=has_tools,
-        object_args=True,
         text_from=_thinkless_loop if manual_thinking else None,
     ):
         match turn:

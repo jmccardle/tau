@@ -10,23 +10,30 @@ from dataclasses import dataclass, replace
 import httpx
 import pytest
 from anthropic_streams import ENVIRON as ANTHROPIC_ENVIRON
+from anthropic_streams import KEY_ENV as ANTHROPIC_KEY_ENV
 from anthropic_streams import RESOLVED as ANTHROPIC_MODEL
 from anthropic_streams import delta as anthropic_delta
 from anthropic_streams import event, message, opened, start, text
+from anthropic_streams import finish as anthropic_finish
+from fakes import FakeTool
 from gemini_support import ENVIRON as GEMINI_ENVIRON
-from gemini_support import gemini_chunk, gemini_walk, model
+from gemini_support import gemini_chunk, gemini_walk, model, walk_of
 from harness import scenario
 from transcripts import MODEL as OPENAI_MODEL
 from transcripts import chunk
 
 from tau_next import (
+    Author,
+    Body,
     Delta,
     Finish,
     ModelConfig,
+    Outcome,
     Part,
     Provider,
     ProviderClosed,
     SampleError,
+    Stop,
     TextDelta,
 )
 from tau_next.providers.anthropic import AnthropicProvider
@@ -250,3 +257,132 @@ async def collect_rest(stream: AsyncIterator[object]) -> tuple[list[object], Sam
     except SampleError as e:
         return parts, e
     return parts, None
+
+
+def sse_of(text: str) -> CountingTransport:
+    return CountingTransport(text)
+
+
+@EACH
+@scenario
+async def test_a_nan_or_infinity_in_a_stream_event_is_a_sample_error(dialect: Dialect) -> None:
+    for constant in ("NaN", "Infinity", "-Infinity"):
+        provider = dialect.make(sse_of(f'data: {{"usage": {{"x": {constant}}}}}\n\n'))
+        items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+        assert items == []
+        assert error is not None
+        assert "malformed SSE data" in str(error)
+
+
+@EACH
+@scenario
+async def test_a_lone_surrogate_in_a_stream_event_is_a_sample_error(dialect: Dialect) -> None:
+    provider = dialect.make(sse_of('data: {"x": "\\ud800"}\n\n'))
+    items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    assert items == []
+    assert error is not None
+    assert "surrogate" in str(error)
+
+
+@EACH
+@scenario
+async def test_a_paired_surrogate_escape_is_text_not_an_error(dialect: Dialect) -> None:
+    provider = dialect.make(sse_of(dialect.reply.replace("hi", "\\ud83d\\ude00")))
+    items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    assert error is None
+    assert Part.Text("\U0001f600") in items
+
+
+@scenario
+async def test_an_option_too_big_for_a_float_is_a_problem_not_a_crash() -> None:
+    config = ModelConfig(OPENAI_MODEL, "http://unused.test/v1", options={"temperature": 10**400})
+    assert any("temperature" in p for p in OpenAIProvider(None, {}).check(config))
+
+
+@EACH
+@scenario
+async def test_a_retry_after_that_is_not_finite_is_no_wait(dialect: Dialect) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"retry-after": "9" * 400}, text="slow down")
+
+    provider = dialect.make(httpx.MockTransport(handler))
+    _, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    assert error is not None
+    assert (error.status, error.retry_after) == (429, None)
+
+
+@EACH
+@scenario
+async def test_a_transport_error_is_the_cause_of_its_sample_error(dialect: Dialect) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    provider = dialect.make(httpx.MockTransport(handler))
+    _, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    assert error is not None
+    assert isinstance(error.__cause__, httpx.TransportError)
+
+
+SECRET_KEYS = {
+    "newline": "sk-secret-0123\nrest",
+    "smart quote": "sk-secret-0123\u201cquoted\u201d",
+}
+
+
+@pytest.mark.parametrize("key", list(SECRET_KEYS.values()), ids=list(SECRET_KEYS))
+@scenario
+async def test_a_key_http_cannot_carry_fails_the_sample_without_quoting_it(key: str) -> None:
+    dialect = DIALECTS["anthropic"]
+    server = KeepAliveServer(dialect.reply)
+    with server.running() as url:
+        provider = AnthropicProvider(None, {ANTHROPIC_KEY_ENV: key})
+        items, error = await sample_all(provider, dialect.model(url))
+        await provider.aclose()
+    assert items == []
+    assert error is not None
+    assert "request header" in str(error)
+    assert "sk-secret" not in str(error)
+    assert "sk-secret" not in repr(error.__cause__)
+
+
+@scenario
+async def test_a_non_finite_number_in_the_request_is_a_sample_error() -> None:
+    provider = OpenAIProvider(sse_of(DIALECTS["openai"].reply), {})
+    config = ModelConfig(
+        OPENAI_MODEL, "http://unused.test/v1", options={"extra_body": {"x": float("nan")}}
+    )
+    items, error = await sample_all(provider, config)
+    assert items == []
+    assert error is not None
+    assert "can't carry" in str(error)
+
+
+@scenario
+async def test_content_after_the_stop_is_dropped_and_the_reply_still_finishes() -> None:
+    body = start() + text(0, ["hi"]) + anthropic_finish("end_turn") + text(1, ["late"])
+    provider = AnthropicProvider(sse_of(body), ANTHROPIC_ENVIRON)
+    items, error = await sample_all(provider, ANTHROPIC_MODEL)
+    assert error is None
+    assert [i for i in items if isinstance(i, Part)] == [Part.Text("hi")]
+    assert isinstance(items[-1], Finish)
+    assert items[-1].stop == Stop.End
+
+
+def sent_kinds(args_raw: str) -> list[str]:
+    """The block types Anthropic sends for a walk whose one call has `args_raw`."""
+    walk = walk_of(
+        Body.User("go"),
+        Body.Assistant([Part.Call("a", "ta", args_raw)], Stop.Tools),
+        Body.Results([("a", Outcome.Ok("done"), Author.Core())]),
+    )
+    request = AnthropicProvider(None, ANTHROPIC_ENVIRON).request(
+        walk, ANTHROPIC_MODEL, [FakeTool("ta", "A")]
+    )
+    messages: list[dict[str, list[dict[str, str]]]] = request[2]["messages"]  # type: ignore[assignment]
+    return [block["type"] for message in messages for block in message["content"]]
+
+
+def test_arguments_with_a_nan_or_a_lone_surrogate_send_the_batch_as_text() -> None:
+    assert "tool_use" in sent_kinds('{"x": 1}')
+    for bad in ('{"x": NaN}', '{"x": Infinity}', '{"x": "\\ud800"}'):
+        assert "tool_use" not in sent_kinds(bad), bad
