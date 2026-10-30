@@ -1136,7 +1136,8 @@ links it into place; `Store::open(dir)` takes the lease and loads;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
 `Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
-scratchpad file), `Core` (the log does not replay). `save` consumes the
+scratchpad file), `Undecodable` (an intact log record that does not decode),
+`Core` (the log does not replay). `save` consumes the
 store and returns it on success: after an `Io` error it is gone with its
 lease, as after a crash, and the session is opened again. **JMFTS** (Phase 7) is a replica of the log,
 never the store of record.
@@ -1147,7 +1148,12 @@ never the store of record.
 Whatever follows the log's last good `Sync` on open: a record cut short,
 one failing its checksum, records never synced, damage. Open cuts it (so a
 session goes on from its last sync) and keeps the bytes as
-`dropped-<offset>` in the session directory; `dropped` is how many. Rust only:
+`dropped-<offset>` in the session directory; `dropped` is how many. Only a
+record that is short or fails its checksum is torn. A record whose length and
+checksum agree but whose JSON does not decode is intact, not torn: open fails
+with `Undecodable` (Python `tau_next.Undecodable`, a `ValueError`; names the
+log file, the record's position from 0, and its byte offset) and cuts nothing,
+wherever in the log it is. Rust only:
 the Python `Session.dropped` was removed, because nothing but a test asserting
 `0` ever read it.
 

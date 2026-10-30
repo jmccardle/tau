@@ -1,5 +1,6 @@
 """The session through the public Python API: create, drive by hand, reload."""
 
+import zlib
 from pathlib import Path
 
 import pytest
@@ -429,6 +430,18 @@ def test_a_damaged_scratchpad_file_is_corrupt(tmp_path: Path) -> None:
 
 
 # Persistence
+
+
+def test_an_intact_log_record_that_does_not_decode_is_an_error_not_a_cut(tmp_path: Path) -> None:
+    session, _ = new(tmp_path)
+    session.close()
+    payload = b"not json"
+    length = len(payload).to_bytes(4, "little")
+    crc = zlib.crc32(length + payload).to_bytes(4, "little")
+    with (tmp_path / "log").open("ab") as log:
+        log.write(length + crc + payload)
+    with pytest.raises(tau_next.Undecodable, match=r"record \d+ .*log"):
+        Session.load(tmp_path)
 
 
 def test_reopening_a_session_gives_the_state_before(tmp_path: Path) -> None:

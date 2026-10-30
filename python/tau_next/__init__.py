@@ -39,6 +39,7 @@ from tau_next._core import (
     Stop,
     TraceError,
     Tree,
+    Undecodable,
     Version,
     WrongAnswer,
 )
@@ -139,6 +140,7 @@ __all__ = [
     "TraceError",
     "Tree",
     "TreeHandle",
+    "Undecodable",
     "Version",
     "WriteTool",
     "WrongAnswer",
