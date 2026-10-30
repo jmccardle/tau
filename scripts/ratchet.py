@@ -1,4 +1,4 @@
-"""Rule 7 ratchet over crates/*/src (CLAUDE.md). Python is out of scope until Phase 4.
+"""Rule 7 ratchet over crates/*/src and python/tau_next (CLAUDE.md; src only, not tests).
 
 Checks:
   * function CC <= 15
@@ -21,7 +21,7 @@ and the ratchet prints it): it is compared with its version at a base
 revision and the ratchet fails if any value rose or any line was added (see
 `base_revision`). There is no flag to skip that.
 
-Measurement definitions: scripts/rustmetrics.py.
+Measurement definitions: scripts/rustmetrics.py (Rust), scripts/pymetrics.py (Python, radon).
 """
 
 import argparse
@@ -34,18 +34,19 @@ import tomllib
 from pathlib import Path
 
 import check_rules
+import pymetrics
 import rustmetrics
 
 ROOT = rustmetrics.ROOT
 ALLOW = Path(__file__).with_name("ratchet-allow.toml")
 LIMITS = {"function_cc": 15, "type_methods": 25, "file_lines": 800}
 SECTIONS = {
-    "function_cc": "Function cyclomatic complexity (crate-relative file::Type::fn)",
-    "type_methods": "Inherent methods per type (crate::Type)",
+    "function_cc": "Function cyclomatic complexity (file::Type::fn; Python path::Class.fn)",
+    "type_methods": "Inherent methods per type (crate::Type; Python path::Class)",
     "file_lines": "Lines per file",
 }
 JUSTIFIED_TITLE = (
-    '# Types over the method limit that are one concept: crate::Type = "the one concept it is".\n'
+    '# Types over the method limit that are one concept: key = "the one concept it is".\n'
     "# Exempt from the count and printed on every run. Adding one needs a reviewer's yes."
 )
 I7_TESTS = [
@@ -67,7 +68,12 @@ def measure() -> dict[str, dict[str, int]]:
         if t["impl"] == "inherent"
     }
     lines = {f["file"]: f["lines"] for f in m["files"] if f["kind"] == "src"}
-    return {"function_cc": cc, "type_methods": methods, "file_lines": lines}
+    py = pymetrics.analyze()
+    return {
+        "function_cc": cc | py["function_cc"],
+        "type_methods": methods | py["type_methods"],
+        "file_lines": lines | py["file_lines"],
+    }
 
 
 def load_allow() -> dict[str, dict[str, int]]:

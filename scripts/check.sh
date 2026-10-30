@@ -28,7 +28,7 @@ step "clippy";       cargo clippy --workspace --all-targets --locked -- -D warni
 step "cargo test";   cargo test --workspace --locked
 step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop --release --locked
 step "rules";        "$PY" scripts/check_rules.py
-step "ratchet";      "$PY" scripts/ratchet.py          # rule 7; needs rust-code-analysis-cli
+step "ratchet";      "$PY" scripts/ratchet.py          # rule 7, Rust and Python; needs rust-code-analysis-cli, radon
 step "core is IO-free"; "$PY" scripts/check_core_io.py
 step "stubtest";     "$PY" -m mypy.stubtest tau_next._core
 step "ruff";         "$BIN/ruff" check .

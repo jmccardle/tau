@@ -113,18 +113,22 @@ Largest classes by methods: `Driver` 42, `TreeHandle` 22, `Cursor` 13,
 
 ## Rule 7 on `python/`
 
-`scripts/ratchet.py` reads only `crates/*/src`. Its run on this tree
-(`data/ratchet.txt`):
+At the time of measurement `scripts/ratchet.py` read only `crates/*/src`. Its
+run on this tree (`data/ratchet.txt`):
 
 ```
 ratchet ok: 0 allowed violation(s) remain (0 function_cc, 0 type_methods, 0 file_lines)
 ```
 
-`scripts/ratchet-allow.toml` has no entries and no `[justified]` entries. The
-Rust violations that 3d listed (9) are gone. Python is not in the ratchet
-("Python is not in the ratchet until Phase 4", allowlist header), so the
-following are rule 7's limits applied by hand to `python/tau_next`; none is
-enforced:
+Since ruling R8 the ratchet also measures `python/tau_next` (src, not tests)
+through `scripts/pymetrics.py`, which uses radon 6.0.1 (now in the `dev`
+dependency group, so CI and `check.sh` have it). Same limits, same allowlist
+and `[justified]` mechanism, Python keys are `python/tau_next/x.py::Class.fn`,
+`...::Class`, `...x.py`. Differences from `py_baseline.py`: a nested function's
+extra complexity is added to its enclosing function (as for Rust closures), and
+files are counted from the source on disk. The table below is the hand
+application of the limits at `58260e0`, before the fix wave; it is kept as
+measured.
 
 | rule | item | now | limit |
 |---|---|---:|---:|

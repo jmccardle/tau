@@ -25,6 +25,7 @@ dev = [
     "ruff>=0.14",
     "pyright>=1.1.400",
     "mypy>=2.4",  # stubtest only; pyright is the type checker
+    "radon==6.0.1",  # scripts/pymetrics.py: rule 7 on python/tau_next
 ]
 # parity/ only: τ 0.15 as the oracle for the API diff. Never needed by tests/.
 parity = ["ffwf-tau==0.15.0"]
