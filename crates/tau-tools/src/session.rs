@@ -73,21 +73,27 @@ fn failed(e: Errno) -> ToolError {
 /// Send `signal` to the process group and to every other process of the session.
 ///
 /// # Errors
-/// A signal that failed for a reason other than the process being gone, or
-/// `/proc` unreadable.
+/// A signal that failed for a reason other than the process being gone (the
+/// first such failure; every process is still signalled), or `/proc` unreadable.
 pub(crate) fn signal_all(leader: Pid, signal: Signal) -> Result<()> {
-    match killpg(leader, signal) {
-        // ESRCH: already gone, which is what we wanted.
-        Ok(()) | Err(Errno::ESRCH) => {}
-        Err(e) => return Err(failed(e)),
-    }
-    for pid in members(leader)? {
-        match kill(pid, signal) {
-            Ok(()) | Err(Errno::ESRCH) => {}
-            Err(e) => return Err(failed(e)),
-        }
-    }
-    Ok(())
+    let group = killpg(leader, signal);
+    let others = members(leader)?;
+    signal_each(group, others.into_iter().map(|pid| kill(pid, signal)))
+}
+
+/// The first error among `results` other than ESRCH (already gone, which is what
+/// we wanted); all of them have been produced by then.
+fn signal_each(
+    first: std::result::Result<(), Errno>,
+    rest: impl Iterator<Item = std::result::Result<(), Errno>>,
+) -> Result<()> {
+    std::iter::once(first)
+        .chain(rest)
+        .fold(None, |kept, result| match result {
+            Err(e) if e != Errno::ESRCH => kept.or(Some(e)),
+            _ => kept,
+        })
+        .map_or(Ok(()), |e| Err(failed(e)))
 }
 
 /// SIGKILL the process group and the session, again and again until no live
@@ -176,6 +182,22 @@ mod tests {
         ]);
         let pids = members_in(proc.path(), Pid::from_raw(4242)).unwrap();
         assert_eq!(pids, vec![Pid::from_raw(4242)]);
+    }
+
+    #[test]
+    fn every_member_is_signalled_and_the_first_failure_is_kept() {
+        let mut sent = 0;
+        let results = [
+            Err(Errno::ESRCH),
+            Err(Errno::EPERM),
+            Ok(()),
+            Err(Errno::EINVAL),
+        ];
+        let outcome = signal_each(Ok(()), results.into_iter().inspect(|_| sent += 1));
+        assert_eq!(sent, 4, "no member was skipped after the first failure");
+        let err = outcome.unwrap_err();
+        assert!(err.0.contains(&Errno::EPERM.to_string()), "{err}");
+        assert!(signal_each(Err(Errno::ESRCH), [Ok(())].into_iter()).is_ok());
     }
 
     #[test]

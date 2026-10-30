@@ -1293,13 +1293,12 @@ calls run in parallel (also on a free-threaded build) and never block the
 loop. `base_tools(cwd)` returns all four. `cwd` (default: the current
 directory, which must exist: `NotADirectoryError`) is what relative paths and
 the shell's working directory are relative to. An expected failure (bad
-arguments, a missing file, a nonzero exit, an overflow file that cannot be
-written) is `Err(message)`; nothing is raised out of `call`. The arguments
+arguments, a missing file, a nonzero exit) is `Err(message)`; nothing is raised out of `call`. The arguments
 are strict: an unknown or missing field is an `Err`.
 
 | tool | parameters | does |
 |---|---|---|
-| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default 4096) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. If not even the first line fits, it is shown in part and the last line says the rest of it is only in the overflow file and `offset=N+1` continues after it. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, it is shown in part and the last line says `offset=N+1` continues after it. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
 | `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
 | `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes (before decoding) with ` [+N bytes]`; a file with a line over 16 MiB (the searcher's heap limit) is not searched and is named in the could-not-search note. The search stops once the matches held reach the overflow cap, and a note says that some files were not searched. No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
 | `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; `setsid` runs in the child before `exec`, so the session exists when the call starts), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. The one `unsafe` block of the workspace is here (`pre_exec`); the workspace lint is `deny`, not `forbid`, for that. |
@@ -1310,7 +1309,7 @@ share the *output limit*.
 ### output limit, max_output
 `max_output=` on `ReadTool`, `GrepTool`, `BashTool`, `base_tools` · new
 
-The most bytes of text the model gets from `read`, `grep` or `bash`: 10_000 by
+The most bytes of text the model gets from `read`, `grep` or `bash` (`read` only stops; it saves nothing): 10_000 by
 default, at least 1. It bounds the *kept text*; the truncation note is extra.
 Output at or under the limit is returned whole and writes no file.
 
@@ -1318,7 +1317,7 @@ Output at or under the limit is returned whole and writes no file.
 `Keep::Head`, `Keep::Tail` (`tau-tools/src/limit.rs`) · new
 
 Which end of an over-limit output the model keeps. **`read` and `grep` keep the
-head** (the start of a file, the first matches); **`bash` keeps the tail**
+head** (`read` through `Sink::unspilled`, a sink that saves no file and adds no note) (the start of a file, the first matches); **`bash` keeps the tail**
 (errors and the result of a command land at the end). A judgment call of the
 implementation, for John to overrule: it is one argument to `Sink::new` per
 tool. Cuts fall on line boundaries and never inside a UTF-8 character. If not
@@ -1326,26 +1325,26 @@ one whole line fits (a single line longer than the limit), the cut is on a
 character boundary instead and the note says so.
 
 ### overflow file, overflow_dir, max_overflow
-`overflow_dir=` (default `<temp dir>/tau-<euid>`, from `std::env::temp_dir` and the effective uid, e.g. `/tmp/tau-1000`), `max_overflow=` (default 64 MiB) · new
+`overflow_dir=` (default `$XDG_RUNTIME_DIR/tau` when that is set, else `<temp dir>/tau-<euid>`, e.g. `/tmp/tau-1000`; chosen by `Limits::default_dir`), `max_overflow=` (default 64 MiB) · new
 
-When output passes the limit, the output (everything the tool would have
-answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
-being 8 random characters from `a-z0-9`. The directory is created `0700` if
-missing. It must be a directory (not a symlink), owned by the effective uid,
-with `mode & 0o077 == 0`; otherwise the call is an `Err` naming the problem.
-This is checked at construction (`lstat`; a directory that does not exist yet
-is fine, `ValueError` otherwise) and again at use: the directory is opened
-with `O_DIRECTORY|O_NOFOLLOW`, checked with `fstat` on that fd, and the file
-is created relative to the fd with `openat`, so a path swapped in between
-cannot redirect it. There is no fallback directory. Files are created
-`0600` with `create_new`, so an existing file is never touched. For `read` the
-output is the lines selected by `offset` and `limit`; for `grep`, all matches
-(without a trailing newline); for `bash`, stdout and stderr interleaved,
-without the exit-code trailer. The file holds at most `max_overflow` bytes
-(at least `max_output`); bytes and lines past it are still counted, and the
-note says the file holds only the first part. If the directory or file cannot
-be created or written, the call is an `Err` saying so, and `bash` terminates its
-command. Files are never deleted by the tool.
+When `grep` or `bash` output passes the limit, the output (everything the tool would
+have answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
+being 8 random characters from `a-z0-9`. `read` writes none (see `read`). The
+directory is created `0700` if missing. It must be a directory (not a symlink), owned
+by the effective uid, with `mode & 0o077 == 0`. Nothing is checked at construction: a
+directory that fails is found when the first file is needed, by opening it with
+`O_DIRECTORY|O_NOFOLLOW`, checking it with `fstat` on that fd, and creating the file
+relative to the fd with `openat`, so a path swapped in between cannot redirect it, and
+another user's squatted `/tmp/tau-<uid>` costs the overflow file and never startup. A
+directory (or file) that cannot be used does not fail the call: the answer keeps its
+text and the note says `the full output (N bytes) was not saved: <reason>`; the command
+of a `bash` call runs on. Files are created `0600` with `O_EXCL`, so an existing file is
+never touched. Whenever the directory is opened, `.out` files in it older than a day are
+removed (best effort). For `grep`, the file holds all matches (without a trailing newline);
+for `bash`, stdout and stderr interleaved, without the exit-code trailer. The file holds
+at most `max_overflow` bytes (at least `max_output`); bytes and lines past it are still
+counted, and the note says the file holds only the first part. A write error on a file
+that was made is an `Err`, and `bash` terminates its command.
 
 ### truncation note
 `limit.rs` · new
@@ -1377,15 +1376,23 @@ the process group and every other process of the session, then SIGKILL after the
 2000), so the shell, its pipeline and anything it backgrounded die together.
 The shell is waited for without being reaped (`waitid` with `WNOWAIT`, so its
 pid cannot be reused), the rest of its group is killed, and only then is it
-reaped; the SIGKILL is repeated, scanning `/proc/*/stat` for the session id (Linux only), until no live process of the session is left. A process that has called `setsid` itself leaves the session and is out of reach. A `killpg`
-failure other than "no such process" is an `Err`, never a panic. `timeout_ms=`
+reaped; the SIGKILL is repeated, scanning `/proc/*/stat` for the session id (Linux only), until no live process of the session is left. A process that has called `setsid` itself leaves the session and is out of reach. Every member of the session is signalled even when one signal fails (EPERM, say); the
+first failure other than "no such process" is appended to the answer as a trailer, which
+keeps the output and the exit code, and is never a panic. `timeout_ms=`
 is the timeout of a call that gives none (30_000); `max_timeout_ms=` (600_000)
 the most a call may ask for. `BashTool.call` kills when it is cancelled and waits
 for the command to be gone before the `CancelledError` goes on, and gives each
-call a thread of its own. A process of a session of its own that holds
+call a thread of its own. Kill and timeout run on threads of the Python process, so a
+program that runs base tools must turn SIGTERM and SIGHUP into the same cancellation as
+SIGINT (`loop.add_signal_handler` cancelling the main task; `run_until_signalled` in
+`examples/common.py`): a process that simply dies leaves the command running in its own
+session with no timeout. Building `BashTool` off Linux raises `OSError` (it needs `/proc`).
+The description tells the model that background jobs (`&`, `nohup`) are killed when the
+command ends and no process outlives a call; those of `read`, `write` and `grep` that
+the working directory is a default, not a sandbox. A process of a session of its own that holds
 the output pipe open is not killed: the pipe is read for 250 ms after the shell
 exits and then closed, and the answer says "a process outside the command's
-group still holds the output open" (an `Ok` with a note after a normal exit).
+session still holds the output open" (an `Ok` with a note after a normal exit).
 A `BashRun` dropped without `wait` kills its session.
 
 ### BashConfig
@@ -1400,11 +1407,11 @@ ask for; 600_000) and `kill_grace_ms` (SIGTERM to SIGKILL; 2_000). All at least
 ### Limits
 `tau_tools::Limits` · new
 
-What `read`, `grep` and `bash` share: `max_bytes` (the output limit),
-`dir` (the overflow directory) and `max_overflow` (the cap of the overflow
-file). Built by `Limits::new` (default directory) or `Limits::in_dir`; refuses
-a zero limit, a cap below the limit, and an existing directory that is a
-symlink, not ours, or open to others.
+What `grep` and `bash` share: `max_bytes` (the output limit), `dir` (the overflow
+directory) and `max_overflow` (the cap of the overflow file). Built by
+`Limits::new(max_bytes, max_overflow, dir)`; refuses a zero limit and a cap below the
+limit, and checks nothing about `dir` (see the overflow file). `Limits::default_dir()` is
+the directory when the caller names none. `read` has no `Limits`, only a byte limit.
 
 ### Finished
 `tau_tools::limit::Finished` · new
@@ -1412,7 +1419,8 @@ symlink, not ours, or open to others.
 What a `Sink` answers: `text` (the kept text with its notes), `kept_lines`
 (lines shown; a cut-short line counts as one), `truncated` (the output passed
 the limit) and `cut_line` (the one line shown is only the start of a line). Used
-by `read` to word its continuation hint.
+by `read` to word its continuation hint. A `Sink` also answers `is_over` (more than
+the limit pushed; `read` stops reading then) and `total` (bytes pushed).
 
 ### Cancel
 `tau_next._core.Cancel` · new
@@ -1425,7 +1433,8 @@ searches, per match) check it and stop with an `Err`.
 `tau_next._core.Read` and the rest · new
 
 The native engines under the base tools: `__new__(cwd, max_output, overflow_dir, max_overflow)`
-(`Write`: `cwd` only; `Bash`: also `timeout_ms`, `max_timeout_ms`, `kill_grace_ms`), `name`, `description`,
+(`Read`: `cwd, max_output`; `Write`: `cwd` only; `Bash`: also `timeout_ms`, `max_timeout_ms`, `kill_grace_ms`); every argument is
+required, the defaults being the Python classes', `name`, `description`,
 `parameters_json`, and `run(args_raw, cancel) -> Outcome` (`Write`: no `cancel`; `Bash`: `start`). A bad
 constructor argument raises `ValueError`. Python code uses the `Tool` classes
 above instead.
@@ -1493,7 +1502,7 @@ What a tool is given to show partial output: `progress(text)`. A tool opts in by
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
 nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A `@tool`
 function takes it as a parameter named `progress`, which is not one of the tool's
-`parameters`; a `progress` annotated as anything but `Progress` is a `ToolDefinitionError`.
+`parameters`; a `progress` annotated as anything but `Progress` or `Progress | None` is a `ToolDefinitionError`.
 `bash` calls it with its output, at most once per 100 ms; the command never waits on it, the
 answer waits for a call already running and the final flush.
 

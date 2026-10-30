@@ -145,13 +145,15 @@ class _Param:
 
 def _check_progress(param: inspect.Parameter, hints: Mapping[str, object], where: str) -> None:
     """A parameter named `progress` is the callback the driver passes, never an argument: it
-    must be passable by keyword and unannotated or annotated `Progress`."""
+    must be passable by keyword and unannotated or annotated `Progress` or `Progress | None`
+    (the spelling of the `Tool` protocol)."""
     if param.kind is param.POSITIONAL_ONLY:
         raise ToolDefinitionError(f"{where}: `progress` must be passable by keyword")
-    if hints.get(PROGRESS, Progress) != Progress:
+    if hints.get(PROGRESS, Progress) not in (Progress, Union[Progress, None]):  # noqa: UP007 - a value, not an annotation
         raise ToolDefinitionError(
-            f"{where}: `progress` is the callback the driver passes (annotate it as `Progress`, "
-            f"or leave it unannotated), not an argument of type {hints[PROGRESS]!r}; "
+            f"{where}: `progress` is the callback the driver passes (annotate it as `Progress` "
+            f"or `Progress | None`, or leave it unannotated), not an argument of type "
+            f"{hints[PROGRESS]!r}; "
             "rename the argument"
         )
 

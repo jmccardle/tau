@@ -642,18 +642,10 @@ class Session:
 class Cancel:
     def __new__(cls) -> Cancel: ...
     def cancel(self) -> None: ...
-    @property
-    def cancelled(self) -> bool: ...
 
 @final
 class Read:
-    def __new__(
-        cls,
-        cwd: str | PathLike[str],
-        max_output: int = ...,
-        overflow_dir: str | PathLike[str] | None = None,
-        max_overflow: int = ...,
-    ) -> Read: ...
+    def __new__(cls, cwd: str | PathLike[str], max_output: int) -> Read: ...
     @property
     def name(self) -> str: ...
     @property
@@ -678,9 +670,9 @@ class Grep:
     def __new__(
         cls,
         cwd: str | PathLike[str],
-        max_output: int = ...,
-        overflow_dir: str | PathLike[str] | None = None,
-        max_overflow: int = ...,
+        max_output: int,
+        overflow_dir: str | PathLike[str] | None,
+        max_overflow: int,
     ) -> Grep: ...
     @property
     def name(self) -> str: ...
@@ -695,12 +687,12 @@ class Bash:
     def __new__(
         cls,
         cwd: str | PathLike[str],
-        max_output: int = ...,
-        overflow_dir: str | PathLike[str] | None = None,
-        max_overflow: int = ...,
-        timeout_ms: int = ...,
-        max_timeout_ms: int = ...,
-        kill_grace_ms: int = ...,
+        max_output: int,
+        overflow_dir: str | PathLike[str] | None,
+        max_overflow: int,
+        timeout_ms: int,
+        max_timeout_ms: int,
+        kill_grace_ms: int,
     ) -> Bash: ...
     @property
     def name(self) -> str: ...

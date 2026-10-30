@@ -1,12 +1,14 @@
 """The base tools (Rust) through the Harness: the model calls `read`, then `bash`."""
 
 import json
+import os
 from pathlib import Path
 
 from fakes import FakeProvider, Reply
 from harness import Harness, scenario
+from world import World, models, trust
 
-from tau_next import Author, Body, Outcome, Part, Stop, base_tools
+from tau_next import Author, Body, Outcome, Part, Stop, base_tools, load_config
 
 
 @scenario
@@ -46,3 +48,27 @@ async def test_a_failing_command_is_an_error_outcome_the_model_sees(tmp_path: Pa
         [("c1", Outcome.Err("nope\n\ncommand exited with code 2"), Author.Tools())]
     )
     await h.close()
+
+
+@scenario
+async def test_a_project_dotenv_never_reaches_the_environment_of_a_command(
+    tmp_path: Path, world: World
+) -> None:
+    """Loading config returns the `.env` keys in a mapping of their own; nothing writes
+    `os.environ`, which is what a `bash` command inherits."""
+    root = world.project(config=models(p={}))
+    trust(world, root)
+    (root / ".env").write_text("TAU_DOTENV_MARKER=from-dotenv\n", encoding="utf-8")
+    before = dict(os.environ)
+    loaded = load_config(root, world.environ, ask=None)
+    assert loaded.environ["TAU_DOTENV_MARKER"] == "from-dotenv"
+    args = json.dumps({"command": 'echo "marker=[$TAU_DOTENV_MARKER]"'})
+    provider = FakeProvider(
+        [Reply([Part.Call("c1", "bash", args)], Stop.Tools), Reply([Part.Text("seen")])]
+    )
+    h = await Harness.create(tmp_path, provider=provider, tools=base_tools(tmp_path))
+    await h.send("print it")
+    await h.settle()
+    assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("marker=[]\n"), Author.Tools())])
+    await h.close()
+    assert dict(os.environ) == before

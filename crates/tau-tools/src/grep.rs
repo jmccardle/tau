@@ -79,7 +79,7 @@ impl Grep {
              Searches a directory recursively, skipping hidden files, files ignored by \
              .gitignore, and binary files (counted in a note). Lines are cut at {MAX_LINE} bytes. \
              Output past {} bytes is cut after the last whole line that fits; the full result is \
-             then saved to a file named in a note.",
+             then saved to a file named in a note. Relative paths are relative to the working directory, which is a default, not a sandbox: absolute paths and `..` work.",
             self.limits.max_bytes
         )
     }
@@ -678,10 +678,7 @@ mod tests {
     #[test]
     fn the_search_stops_when_the_matches_reach_the_cap() {
         let dir = tempfile::tempdir().unwrap();
-        let limits = Limits::in_dir(50, dir.path().join(".out"))
-            .unwrap()
-            .with_max_overflow(1000)
-            .unwrap();
+        let limits = Limits::new(50, 1000, dir.path().join(".out")).unwrap();
         let tool = Grep::new(dir.path().to_owned(), limits);
         fs::write(dir.path().join("a.txt"), numbered("hit", 10_000)).unwrap();
         let out = call(&tool, &json!({"pattern": "hit"})).unwrap();

@@ -46,7 +46,7 @@ impl Write {
         "Write a file with the given content, replacing it if it exists. Creates missing parent \
          directories. The write is atomic: the file is never seen half written. A symlink is \
          followed. Permission bits of a replaced file are kept; hard links, owner and ACLs are \
-         not."
+         not. Relative paths are relative to the working directory, which is a default, not a sandbox: absolute paths and `..` work."
             .to_owned()
     }
 
@@ -57,7 +57,7 @@ impl Write {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the file to write (relative paths are relative to the working directory)"
+                    "description": "Path of the file to write (relative to the working directory, or absolute)"
                 },
                 "content": {
                     "type": "string",

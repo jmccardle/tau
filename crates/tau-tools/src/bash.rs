@@ -46,18 +46,12 @@ use crate::progress;
 use crate::session;
 use crate::{Limits, Result, ToolError, lock, parse_args};
 
-/// The timeout when the call gives none, in milliseconds.
-pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-/// The longest timeout a call may ask for, in milliseconds.
-pub const DEFAULT_MAX_TIMEOUT_MS: u64 = 600_000;
-/// Time between SIGTERM and SIGKILL, in milliseconds.
-pub const DEFAULT_KILL_GRACE_MS: u64 = 2_000;
 /// How long the output is still read after the shell exited.
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
 /// How often the reader looks at the clock while the pipe is quiet.
 const POLL_MS: u16 = 50;
 
-const ESCAPED: &str = "a process outside the command's group still holds the output open";
+const ESCAPED: &str = "a process outside the command's session still holds the output open";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,16 +69,6 @@ pub struct BashConfig {
     pub max_timeout_ms: u64,
     /// Time between SIGTERM and SIGKILL.
     pub kill_grace_ms: u64,
-}
-
-impl Default for BashConfig {
-    fn default() -> Self {
-        Self {
-            default_timeout_ms: DEFAULT_TIMEOUT_MS,
-            max_timeout_ms: DEFAULT_MAX_TIMEOUT_MS,
-            kill_grace_ms: DEFAULT_KILL_GRACE_MS,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -126,7 +110,8 @@ impl Bash {
             "Run a command with `bash -c` in the working directory. Standard output and error \
              arrive interleaved. A nonzero exit is an error and its code ends the text. After \
              `timeout` milliseconds (default {}, at most {}) the command and everything it \
-             started are terminated. Output past {} bytes keeps its last whole lines; the full \
+             started are terminated. Background jobs (`&`, `nohup`) are killed when the \
+             command ends: no process outlives a call. Output past {} bytes keeps its last whole lines; the full \
              output is then saved to a file named in a note.",
             self.config.default_timeout_ms, self.config.max_timeout_ms, self.limits.max_bytes
         )
@@ -384,9 +369,6 @@ impl Running {
             output.map_err(|_| helpers_died())?
         });
         let ctl = lock(&self.ctl);
-        if let Some(e) = &ctl.signal_error {
-            return Err(e.clone());
-        }
         let text = output?;
         let status = match &ctl.status {
             Some(Ok(status)) => *status,
@@ -530,40 +512,52 @@ impl Running {
 
     fn answer(&self, ctl: &Ctl, text: &str, status: ExitStatus) -> Result<String> {
         let escaped = ctl.escaped.then_some(ESCAPED);
-        let trailer = if ctl.timed_out {
-            format!(
+        let signal_error = ctl.signal_error.as_ref();
+        let status_trailer = if ctl.timed_out {
+            Some(format!(
                 "command timed out after {} ms and was terminated",
                 self.timeout.as_millis()
-            )
+            ))
         } else if ctl.kill_requested {
-            "command was aborted".to_owned()
+            Some("command was aborted".to_owned())
         } else if let Some(signal) = status.signal() {
-            format!("command killed by signal {signal}")
+            Some(format!("command killed by signal {signal}"))
         } else {
             match status.code() {
-                Some(0) => {
-                    return Ok(match escaped {
-                        Some(cause) if text.is_empty() => {
-                            format!("[output may be cut off: {cause}]")
-                        }
-                        Some(cause) => format!("{text}\n[output may be cut off: {cause}]"),
-                        None => text.to_owned(),
-                    });
-                }
-                Some(code) => format!("command exited with code {code}"),
-                None => "command ended without an exit status".to_owned(),
+                Some(0) => None,
+                Some(code) => Some(format!("command exited with code {code}")),
+                None => Some("command ended without an exit status".to_owned()),
             }
         };
-        let trailer = match escaped {
-            Some(cause) => format!("{trailer}; output may be cut off: {cause}"),
-            None => trailer,
+        let Some(mut trailer) = status_trailer else {
+            return match (signal_error, escaped) {
+                (None, None) => Ok(text.to_owned()),
+                (None, Some(cause)) => Ok(append(
+                    text,
+                    &format!("[output may be cut off: {cause}]"),
+                    "\n",
+                )),
+                (Some(e), _) => Err(ToolError(append(text, &e.0, "\n\n"))),
+            };
         };
-        let text = text.trim_end_matches('\n');
-        Err(ToolError(if text.is_empty() {
-            trailer
-        } else {
-            format!("{text}\n\n{trailer}")
-        }))
+        if let Some(cause) = escaped {
+            trailer = format!("{trailer}; output may be cut off: {cause}");
+        }
+        if let Some(e) = signal_error {
+            trailer = format!("{trailer}; {e}");
+        }
+        Err(ToolError(append(text, &trailer, "\n\n")))
+    }
+}
+
+/// `note` after `text` (its trailing newlines dropped), `sep` between them; just
+/// `note` when there is no text.
+fn append(text: &str, note: &str, sep: &str) -> String {
+    let text = text.trim_end_matches('\n');
+    if text.is_empty() {
+        note.to_owned()
+    } else {
+        format!("{text}{sep}{note}")
     }
 }
 

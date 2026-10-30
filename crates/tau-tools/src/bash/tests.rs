@@ -201,7 +201,7 @@ fn an_escaped_process_after_a_normal_exit_is_an_ok_with_a_note() {
     let started = Instant::now();
     let out = run(&tool, &json!({"command": format!("{LEAVE} echo done")})).unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
-    assert_eq!(out, format!("done\n\n[output may be cut off: {ESCAPED}]"));
+    assert_eq!(out, format!("done\n[output may be cut off: {ESCAPED}]"));
     end_process(read_pid(&dir));
 }
 

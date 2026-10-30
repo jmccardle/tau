@@ -15,9 +15,7 @@ use tau_tools::bash::{Bash as BashTool, BashConfig, BashRun as Run};
 use tau_tools::grep::Grep as GrepTool;
 use tau_tools::read::Read as ReadTool;
 use tau_tools::write::Write as WriteTool;
-use tau_tools::{
-    Cancel as Flag, DEFAULT_MAX_OUTPUT, DEFAULT_MAX_OVERFLOW, Limits, ToolError, bash,
-};
+use tau_tools::{Cancel as Flag, Limits, ToolError};
 
 use crate::values::Outcome;
 
@@ -50,12 +48,8 @@ fn limits(
     overflow_dir: Option<PathBuf>,
     max_overflow: usize,
 ) -> PyResult<Limits> {
-    let made = match overflow_dir {
-        Some(dir) => Limits::in_dir(max_output, dir),
-        None => Limits::new(max_output),
-    };
-    made.and_then(|l| l.with_max_overflow(max_overflow))
-        .map_err(value_error)
+    let dir = overflow_dir.unwrap_or_else(Limits::default_dir);
+    Limits::new(max_output, max_overflow, dir).map_err(value_error)
 }
 
 fn parameters_json(schema: &serde_json::Value) -> String {
@@ -80,11 +74,6 @@ impl Cancel {
     fn cancel(&self) {
         self.flag.cancel();
     }
-
-    #[getter]
-    fn cancelled(&self) -> bool {
-        self.flag.is_cancelled()
-    }
 }
 
 /// The `read` tool.
@@ -97,16 +86,9 @@ pub struct Read {
 #[pymethods]
 impl Read {
     #[new]
-    #[pyo3(signature = (cwd, max_output=DEFAULT_MAX_OUTPUT, overflow_dir=None, max_overflow=DEFAULT_MAX_OVERFLOW))]
-    fn new(
-        cwd: PathBuf,
-        max_output: usize,
-        overflow_dir: Option<PathBuf>,
-        max_overflow: usize,
-    ) -> PyResult<Self> {
-        let limits = limits(max_output, overflow_dir, max_overflow)?;
+    fn new(cwd: PathBuf, max_output: usize) -> PyResult<Self> {
         Ok(Self {
-            inner: ReadTool::new(cwd, limits),
+            inner: ReadTool::new(cwd, max_output).map_err(value_error)?,
         })
     }
 
@@ -178,7 +160,6 @@ pub struct Grep {
 #[pymethods]
 impl Grep {
     #[new]
-    #[pyo3(signature = (cwd, max_output=DEFAULT_MAX_OUTPUT, overflow_dir=None, max_overflow=DEFAULT_MAX_OVERFLOW))]
     fn new(
         cwd: PathBuf,
         max_output: usize,
@@ -222,15 +203,6 @@ pub struct Bash {
 #[pymethods]
 impl Bash {
     #[new]
-    #[pyo3(signature = (
-        cwd,
-        max_output=DEFAULT_MAX_OUTPUT,
-        overflow_dir=None,
-        max_overflow=DEFAULT_MAX_OVERFLOW,
-        timeout_ms=bash::DEFAULT_TIMEOUT_MS,
-        max_timeout_ms=bash::DEFAULT_MAX_TIMEOUT_MS,
-        kill_grace_ms=bash::DEFAULT_KILL_GRACE_MS,
-    ))]
     fn new(
         cwd: PathBuf,
         max_output: usize,
