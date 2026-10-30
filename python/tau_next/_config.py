@@ -50,6 +50,18 @@ def _freeze(value: object) -> object:
     return value
 
 
+def key_problem(key: str) -> str | None:
+    """What keeps `key` from travelling in an HTTP header, or `None`. Never quotes the key."""
+    for c in key:
+        if c == " ":
+            return "contains a space; an API key has none"
+        if c.isascii() and not c.isprintable():
+            return "contains a control character (a newline, carriage return or NUL?)"
+        if not c.isascii():
+            return "contains a non-ASCII character (a smart quote?)"
+    return None
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """A resolved model: which model to ask, where (`base_url`, optional: a provider that
@@ -100,15 +112,20 @@ class ModelConfig:
         """The key in `environ` named by `api_key_env`; `None` if no variable is named.
 
         A literal `api_key` from a config file wins. Raises `ConfigError` if a
-        variable is named and is unset or empty.
+        variable is named and is unset or empty, or if the key has a character outside
+        visible ASCII (it could not travel in an HTTP header). The error never holds the key.
         """
         if self.literal_api_key is not None:
+            if (kind := key_problem(self.literal_api_key)) is not None:
+                raise ConfigError(f"the literal api_key {kind}")
             return self.literal_api_key
         if self.api_key_env is None:
             return None
         key = environ.get(self.api_key_env)
         if not key:
             raise ConfigError(f"environment variable {self.api_key_env} is not set")
+        if (kind := key_problem(key)) is not None:
+            raise ConfigError(f"environment variable {self.api_key_env} {kind}")
         return key
 
 

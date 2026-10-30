@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from tau_next._config import ConfigError, ModelConfig, url_problem
+from tau_next._config import ConfigError, ModelConfig, key_problem, url_problem
 from tau_next.protocols import Provider
 
 Severity = Literal["error", "warning"]
@@ -201,6 +201,13 @@ def _finite_float(text: str) -> float:
     return value
 
 
+def _bounded_int(text: str) -> int:
+    value = int(text)
+    if not -(2**63) <= value < 2**63:
+        raise ValueError("an integer is out of range (beyond 64 bits)")
+    return value
+
+
 def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
     def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
         obj = _Obj()
@@ -212,7 +219,11 @@ def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
 
     try:
         data: object = json.loads(
-            text, object_pairs_hook=pairs, parse_constant=_no_constant, parse_float=_finite_float
+            text,
+            object_pairs_hook=pairs,
+            parse_constant=_no_constant,
+            parse_float=_finite_float,
+            parse_int=_bounded_int,
         )
     except json.JSONDecodeError as e:
         problem = ConfigProblem("error", f"invalid JSON: {e.msg}", source, "", e.lineno, e.colno)
@@ -552,9 +563,29 @@ class _Resolver:
             if provider is None:
                 continue  # `checked` reported the unknown name where it was written
             here, source = self.where[qualified]
-            for problem in provider.check(resolved.config):
+            try:
+                found = provider.check(resolved.config)
+            except Exception as e:
+                found = [f"check raised {type(e).__name__}: {e}"]
+            for problem in found:
                 msg = f"model {qualified!r} ({provider.name}): {problem}"
                 self.problems.add("error", msg, source, here)
+
+    def key_problems(self) -> None:
+        """A key that cannot travel in an HTTP header: an error for a literal, a warning for
+        the variable (read when a sample is made). Never quotes the key."""
+        for qualified, resolved in self.models.items():
+            config = resolved.config
+            here, source = self.where[qualified]
+            if config.literal_api_key is not None:
+                if (kind := key_problem(config.literal_api_key)) is not None:
+                    msg = f"model {qualified!r}: the literal api_key {kind}"
+                    self.problems.add("error", msg, source, f"{here}.api_key")
+            elif config.api_key_env is not None and self.environ is not None:
+                value = self.environ.get(config.api_key_env)
+                if value and (kind := key_problem(value)) is not None:
+                    msg = f"model {qualified!r}: environment variable {config.api_key_env} {kind}"
+                    self.problems.add("warning", msg, source, f"{here}.api_key_env")
 
     def warn(self, qualified: str, merged: _Settings, values: dict[str, str], here: str) -> None:
         if "api_key" in values:
@@ -640,6 +671,7 @@ def _build(
     else:
         problems.add("error", "'models' must be an object", _source_of(models), "models")
     resolver.provider_problems()
+    resolver.key_problems()
     default = _default_model(merged, resolver.declared, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
