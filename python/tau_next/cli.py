@@ -7,6 +7,8 @@ Everything printed from config data goes through `safe_text`.
 """
 
 import argparse
+import asyncio
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -35,6 +37,8 @@ from tau_next._trust import (
     trust_report,
     user_config_path,
 )
+from tau_next.protocols import Provider
+from tau_next.providers import builtin_providers
 
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
@@ -123,7 +127,11 @@ def _check(run: _Run, show: str | None) -> int:
     trusted = True
     if root is not None:
         layer, environ, trusted = _project_findings(root, home, run.environ, found)
-    problems = check_config(user_config_path(home), layer, environ=environ)
+    providers = builtin_providers(environ)
+    try:
+        problems = check_config(user_config_path(home), layer, environ=environ, providers=providers)
+    finally:  # a check opens no connection; closing is the builder's duty all the same
+        asyncio.run(_close(providers))
     for p in problems:
         untrusted = not trusted and layer is not None and p.source == layer.source
         found.lines.append(_problem_line(p, _UNTRUSTED if untrusted else ""))
@@ -138,11 +146,18 @@ def _check(run: _Run, show: str | None) -> int:
     return 0
 
 
+async def _close(providers: Mapping[str, Provider]) -> None:
+    for provider in providers.values():
+        await provider.aclose()
+
+
 def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
     config = catalog.resolve(name)
     values = {
         "model": config.model,
         "base_url": config.base_url,
+        "max_tokens": config.max_tokens,
+        "options": json.dumps(config.options),
         "provider": config.provider,
         "api_key_env": config.api_key_env,
         "api_key": "(set)" if config.literal_api_key is not None else None,

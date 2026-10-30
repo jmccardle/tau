@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from world import URL, Result, World, loaded, models, tau, trust
+from world import PROVIDERS, URL, Result, World, loaded, models, tau, trust
 
 from tau_next import TrustError, check_config, load_config
 from tau_next.cli import main
@@ -126,7 +126,7 @@ def test_check_reports_a_symlinked_project_config(world: World) -> None:
 def test_the_example_config_is_sound() -> None:
     environ = {"HOME": "/nonexistent-home", "EXAMPLE_API_KEY": "x"}
     sample_file = REPO / "examples" / "config.json"
-    assert check_config(sample_file, environ=environ) == ()
+    assert check_config(sample_file, environ=environ, providers=PROVIDERS) == ()
     assert json.loads(sample_file.read_text(encoding="utf-8"))["default_model"] == "local:qwen"
 
 
@@ -374,3 +374,52 @@ def test_ctrl_c_at_a_prompt_exits_130_without_a_traceback(world: World) -> None:
     assert code == 130
     assert "Traceback" not in err.getvalue()
     assert "interrupted" in err.getvalue()
+
+
+# -- providers check their own settings
+
+
+def mock_model(**settings: object) -> dict[str, object]:
+    return {"models": {"m": {"model": "m", "provider": "mock", **settings}}}
+
+
+@pytest.mark.parametrize(
+    ("settings", "complaint"),
+    [
+        ({"options": {"reply": "hi", "delay_ms": 0}, "max_tokens": 3}, None),
+        ({"options": {"delay_ms": 1.5}}, "'delay_ms' must be a non-negative integer"),
+        ({"options": {"delay_ms": -1}}, "'delay_ms' must be a non-negative integer"),
+        ({"options": {"reply": 7}}, "'reply' must be a string"),
+        ({"options": {"replly": "x"}}, "unknown option 'replly'; known options are"),
+        ({"base_url": URL}, "has no use for base_url"),
+    ],
+)
+def test_check_asks_the_mock_provider_about_its_settings(
+    world: World, settings: dict[str, object], complaint: str | None
+) -> None:
+    world.user_config(mock_model(**settings))
+    result = tau(world, "config", "check")
+    if complaint is None:
+        assert result == Result(0, "", "")
+    else:
+        assert result.code == 1
+        assert complaint in result.out
+        assert "model 'm' (mock)" in result.out
+
+
+def test_check_asks_the_openai_provider_for_its_base_url_and_refuses_options(
+    world: World,
+) -> None:
+    world.user_config({"models": {"m": {"model": "m", "options": {"top_k": 3}}}})
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert "needs a base_url" in result.out
+    assert "unknown option 'top_k'" in result.out
+
+
+def test_check_show_prints_max_tokens_and_options(world: World) -> None:
+    world.user_config(mock_model(max_tokens=3, options={"reply": "a b"}))
+    result = tau(world, "config", "check", "--show", "m")
+    assert result.code == 0
+    assert "max_tokens   3  [" in result.out
+    assert 'options      {"reply": "a b"}  [' in result.out

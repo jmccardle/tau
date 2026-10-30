@@ -218,7 +218,9 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
     server = sse_sequence("tool_call", "plain")
     weather = get_weather_tool()
     session = Session.create(CONFIG, "sys", SystemClock().now(), tmp_path / "s")
-    driver = Driver(session, OpenAIProvider(server.transport, {}), catalog(), tools=[weather])
+    driver = Driver(
+        session, {"openai": OpenAIProvider(server.transport, {})}, catalog(), tools=[weather]
+    )
     driver.start()
     c = session.cursors()[0]
     try:
@@ -330,7 +332,9 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
     live = catalog(model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
     session = Session.create(CONFIG, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
     # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
-    driver = Driver(session, OpenAIProvider(), live, tools=[read_file], extensions=[StepLimit(6)])
+    driver = Driver(
+        session, {"openai": OpenAIProvider()}, live, tools=[read_file], extensions=[StepLimit(6)]
+    )
     driver.start()
     c = session.cursors()[0]
     try:

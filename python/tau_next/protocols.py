@@ -7,6 +7,7 @@ from typing import Protocol, cast
 
 from tau_next._config import ModelConfig
 from tau_next._core import Node, Outcome, Part, Stop
+from tau_next.events import Delta
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 
 
@@ -81,17 +82,39 @@ def check_tools(tools: Sequence[object]) -> dict[str, "Tool"]:
 
 
 class Provider(Protocol):
-    """One API family. Owes the driver `model.md` section 10 (the parts of it built so far)."""
+    """One API family, long-lived: the program that builds it closes it (D15). Owes the
+    driver `model.md` section 10 (the parts of it built so far)."""
+
+    @property
+    def name(self) -> str:
+        """What a model's `provider` setting calls it."""
+        ...
+
+    def check(self, model: ModelConfig) -> list[str]:
+        """Problems with the model's settings as this provider reads them: a missing
+        `base_url` it needs, one it has no use for, an unknown or ill-typed option, a model
+        whose `provider` is not its own. Empty if the model is fine. `tau config check`
+        calls it for every model that names the provider."""
+        ...
 
     def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence["Tool"]
-    ) -> AsyncIterator[Part | Finish]:
-        """`model` is the session's named model, resolved by the driver at this sample. Yield
-        the reply's parts in order, then its `Finish`, then end. `tools` are the
-        driver's, offered to the model for this sample only; they are never recorded.
+    ) -> AsyncIterator[Part | Finish | Delta]:
+        """`model` is the session's named model, resolved by the driver at this sample. Yield,
+        interleaved: deltas as text arrives (`TextDelta`, `ThinkingDelta`, `CallNamed` then
+        `CallArgs`), each whole part as it finishes, then the `Finish`, then end. The driver
+        saves only the parts and forwards the deltas. A part is yielded before the first delta
+        of the next part; a delta that breaks this fails the sample. `tools` are the driver's,
+        offered to the model for this sample only; they are never recorded.
 
-        Raise `SampleError` to fail; parts yielded before it are kept.
+        Raise `SampleError` to fail; parts yielded before it are kept. If the sample is
+        cancelled or fails, the driver saves the text or thinking whose deltas arrived but
+        whose part never did.
         """
+        ...
+
+    async def aclose(self) -> None:
+        """Close what the provider holds open (connections)."""
         ...
 
 

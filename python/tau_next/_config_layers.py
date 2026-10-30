@@ -16,16 +16,16 @@ from pathlib import Path
 from typing import Literal, cast
 
 from tau_next._config import ConfigError, ModelConfig, url_problem
+from tau_next.protocols import Provider
 
 Severity = Literal["error", "warning"]
 
 CLI = "cli"
-_MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider")
+_MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
 # Frontend settings will widen the top level in a later part (D13: "and frontend settings").
 _TOP_KEYS = ("models", "default_model")
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_PROVIDERS = ("openai",)
 _RENAMED_KEY = "backend"  # rules: allow(backend): 0.15's key name, which D13 rejects by name
 _RENAMED_MESSAGE = "`backend` is now `provider`"  # rules: allow(backend): 0.15's key name
 
@@ -310,14 +310,49 @@ def _merge_models(  # noqa: PLR0913, PLR0917 - the layer's whole merge state
     return out
 
 
+def _plain(node: _Tree | _Leaf) -> object:
+    """A merged subtree as the JSON it came from (a `null` stays a `None`)."""
+    if isinstance(node, _Leaf):
+        return node.value
+    return {k: _plain(v) for k, v in node.items()}
+
+
+def _merge_plain(base: dict[str, object], over: dict[str, object]) -> dict[str, object]:
+    """Objects by key, anything else replaces: `_merge` on plain JSON."""
+    out = dict(base)
+    for key, value in over.items():
+        inherited = out.get(key)
+        if isinstance(value, dict) and isinstance(inherited, dict):
+            out[key] = _merge_plain(
+                cast("dict[str, object]", inherited), cast("dict[str, object]", value)
+            )
+        else:
+            out[key] = value
+    return out
+
+
+def _without_nulls(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    obj = cast("dict[str, object]", value)
+    return {k: _without_nulls(v) for k, v in obj.items() if v is not None}
+
+
 def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     """`own` over `inherited`: a null removes the key, and setting one of
-    `api_key`/`api_key_env` removes the other."""
+    `api_key`/`api_key_env` removes the other. `options` merge as objects."""
     out = dict(inherited)
-    for key, value in own.items():
+    for key, setting in own.items():
+        value = setting
         if value[0].value is None:
             out.pop(key, None)
             continue
+        before: object = out[key][0].value if key in out else None
+        if key == "options" and isinstance(before, dict):
+            merged = _merge_plain(
+                cast("dict[str, object]", before), cast("dict[str, object]", setting[0].value)
+            )
+            value = (_Leaf(merged, setting[0].source), setting[1])
         out[key] = value
         other = _EXCLUSIVE.get(key)
         if other is not None and other not in own:
@@ -333,10 +368,18 @@ def _match(names: Iterable[str], name: str) -> tuple[str, ...]:
 
 
 class _Resolver:
-    def __init__(self, problems: _Problems, environ: Mapping[str, str] | None, kinds: _Kinds):
+    def __init__(
+        self,
+        problems: _Problems,
+        environ: Mapping[str, str] | None,
+        kinds: _Kinds,
+        providers: Mapping[str, Provider] | None,
+    ):
         self.problems = problems
         self.environ = environ
         self.kinds = kinds
+        self.providers = providers
+        self.where: dict[str, tuple[str, str]] = {}  # qualified name -> (dotted path, source)
         self.models: dict[str, ResolvedModel] = {}
         self.declared: list[str] = []
 
@@ -358,12 +401,29 @@ class _Resolver:
             self.problems.add("error", msg, source, here)
         elif key == "base_url" and (bad_url := url_problem(text)) is not None:
             self.problems.add("error", bad_url, source, here)
-        elif key == "provider" and text not in _PROVIDERS:
-            msg = f"unknown provider {text!r}; known providers are {list(_PROVIDERS)}"
+        elif key == "provider" and self.providers is not None and text not in self.providers:
+            msg = f"unknown provider {text!r}; known providers are {sorted(self.providers)}"
             self.problems.add("error", msg, source, here)
         else:
             return value
         return bad
+
+    def max_tokens(self, value: _Tree | _Leaf, here: str) -> _Leaf:
+        n = value.value if isinstance(value, _Leaf) else None
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
+            return value if isinstance(value, _Leaf) else _Leaf(n, CLI)
+        source = _source_of(value) or CLI
+        self.problems.add("error", "'max_tokens' must be a positive integer", source, here)
+        return _Leaf(_INVALID, source)
+
+    def options(self, value: _Tree | _Leaf, here: str) -> _Leaf:
+        """The provider's own settings as a plain object (the loader never looks inside; a
+        `null` inside stays until the layers are combined)."""
+        source = _source_of(value) or CLI
+        if isinstance(value, _Leaf):
+            self.problems.add("error", "'options' must be an object", source, here)
+            return _Leaf(_INVALID, source)
+        return _Leaf(_plain(value), source)
 
     def settings(self, node: _Tree, path: str, label: str, group: str | None) -> _Settings:
         """The model keys set directly on `node`, each checked. A null passes through."""
@@ -379,6 +439,10 @@ class _Resolver:
                 self.problems.add("error", msg, _source_of(value), here)
             elif isinstance(value, _Leaf) and value.value is None:
                 out[key] = (value, group)
+            elif key == "max_tokens":
+                out[key] = (self.max_tokens(value, here), group)
+            elif key == "options":
+                out[key] = (self.options(value, here), group)
             else:
                 out[key] = (self.checked(key, value, label, here), group)
         if all(k in out and out[k][0].value is not None for k in _EXCLUSIVE):
@@ -427,22 +491,33 @@ class _Resolver:
         mark = len(self.problems.found)
         merged = _combine(inherited, self.settings(node, here, qualified, None))
         source = self.kinds.get((*prefix, name), ("model", _source_of(node) or CLI))[1]
-        for required in ("model", "base_url"):
-            if required not in merged:
-                msg = f"model {qualified!r} (from {source}) is missing {required!r}"
-                self.problems.add("error", msg, source, here)
+        if "model" not in merged:
+            msg = f"model {qualified!r} (from {source}) is missing 'model'"
+            self.problems.add("error", msg, source, here)
         poisoned = any(isinstance(leaf.value, _Invalid) for leaf, _ in merged.values())
         if poisoned or self.problems.errors_since(mark):
             return
-        values = {k: cast("str", leaf.value) for k, (leaf, _) in merged.items()}
-        self.warn(qualified, merged, values, here)
+        texts = {
+            k: cast("str", leaf.value)
+            for k, (leaf, _) in merged.items()
+            if k not in ("max_tokens", "options")
+        }
+        self.warn(qualified, merged, texts, here)
+        options = cast(
+            "dict[str, object]",
+            _without_nulls(merged["options"][0].value) if "options" in merged else {},
+        )
         try:
             config = ModelConfig(
-                values["model"],
-                values["base_url"],
-                values.get("api_key_env"),
-                values.get("provider", "openai"),
-                values.get("api_key"),
+                texts["model"],
+                texts.get("base_url"),
+                texts.get("api_key_env"),
+                texts.get("provider", "openai"),
+                texts.get("api_key"),
+                cast("int | None", merged["max_tokens"][0].value)
+                if "max_tokens" in merged
+                else None,
+                options,
             )
         except ConfigError as e:
             self.problems.add("error", str(e), source, here)
@@ -451,6 +526,20 @@ class _Resolver:
         if "provider" not in merged:
             origins.append(Origin("provider", "default", None))
         self.models[qualified] = ResolvedModel(qualified, config, tuple(origins))
+        self.where[qualified] = (here, source)
+
+    def provider_problems(self) -> None:
+        """Each resolved model checked by the provider it names (`Provider.check`)."""
+        if self.providers is None:
+            return
+        for qualified, resolved in self.models.items():
+            provider = self.providers.get(resolved.config.provider)
+            if provider is None:
+                continue  # `checked` reported the unknown name where it was written
+            here, source = self.where[qualified]
+            for problem in provider.check(resolved.config):
+                msg = f"model {qualified!r} ({provider.name}): {problem}"
+                self.problems.add("error", msg, source, here)
 
     def warn(self, qualified: str, merged: _Settings, values: dict[str, str], here: str) -> None:
         if "api_key" in values:
@@ -519,6 +608,7 @@ def _build(
     project: Layer | None,
     cli: Mapping[str, object] | None,
     environ: Mapping[str, str] | None,
+    providers: Mapping[str, Provider] | None,
 ) -> tuple[ModelCatalog, tuple[ConfigProblem, ...]]:
     problems = _Problems()
     merged, kinds = _read_layers(user, project, cli, problems)
@@ -526,7 +616,7 @@ def _build(
         if key not in _TOP_KEYS:
             msg = f"unknown key {key!r}{_suggest(key, _TOP_KEYS)}"
             problems.add("error", msg, _source_of(value), key)
-    resolver = _Resolver(problems, environ, kinds)
+    resolver = _Resolver(problems, environ, kinds, providers)
     models = merged.get("models", {})
     if isinstance(models, _Leaf) and models.value is None:
         models = {}
@@ -534,6 +624,7 @@ def _build(
         resolver.walk(models, "models", (), {})
     else:
         problems.add("error", "'models' must be an object", _source_of(models), "models")
+    resolver.provider_problems()
     default = _default_model(merged, resolver.declared, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
@@ -545,13 +636,18 @@ def check_config(
     project: Layer | None = None,
     cli: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
+    *,
+    providers: Mapping[str, Provider],
 ) -> tuple[ConfigProblem, ...]:
     """Every problem in the layers, not just the first. Layers: `user` < `project` < `cli`.
+
+    `providers` is the driver's map of name to provider: a model may name exactly those, and
+    each provider's `check(model)` problems for the models naming it are added (D15).
 
     With `environ`, a model whose `api_key_env` names an unset variable is a
     warning. An empty result means the layers are sound.
     """
-    return _build(user, project, cli, environ)[1]
+    return _build(user, project, cli, environ, providers)[1]
 
 
 def read_models(
@@ -563,7 +659,7 @@ def read_models(
 
     Raises `ConfigError` listing every error; warnings ride on the catalog.
     """
-    catalog, problems = _build(user, project, cli, None)
+    catalog, problems = _build(user, project, cli, None, None)
     errors = [p for p in problems if p.severity == "error"]
     if errors:
         raise ConfigError("\n".join(str(p) for p in errors))

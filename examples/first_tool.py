@@ -10,7 +10,7 @@ without it the config's default_model is used.
 import tempfile
 from pathlib import Path
 
-from common import rest, run
+from common import close_all, rest, run
 
 from tau_next import (
     Body,
@@ -19,10 +19,10 @@ from tau_next import (
     Session,
     StepLimit,
     SystemClock,
+    builtin_providers,
     model_config,
     tool,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 PHRASE = "violet anchor 42"
 
@@ -48,6 +48,7 @@ def text(body: Body) -> str:
 
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
+    providers = builtin_providers(loaded.environ)
     with tempfile.TemporaryDirectory() as tmp:
         secret = Path(tmp) / "secret.txt"
         secret.write_text(f"The secret phrase is: {PHRASE}\n")
@@ -56,7 +57,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
         driver = Driver(
             session,
-            OpenAIProvider(environ=loaded.environ),
+            providers,
             loaded.catalog,
             tools=[read_file],
             extensions=[StepLimit(6)],
@@ -69,6 +70,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         for node in session.tree.walk(session.cursor(cursor).at):
             print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
         await driver.stop()
+        await close_all(providers)
         session.close()
 
 

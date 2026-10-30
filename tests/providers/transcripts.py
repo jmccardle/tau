@@ -167,7 +167,7 @@ async def running(
     """A session on disk in `directory` naming `NAME`, and a started driver over `provider`
     and `models` (`catalog()` by default)."""
     session = Session.create(CONFIG, "sys", SystemClock().now(), directory)
-    driver = Driver(session, provider, models or catalog())
+    driver = Driver(session, {"openai": provider}, models or catalog())
     driver.start()
     try:
         yield session, driver, session.cursors()[0]

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from tau_next import (
     CallDraft,
     Cursor,
+    Delta,
     Ending,
     Finish,
     ModelCatalog,
@@ -25,12 +26,13 @@ from tau_next import (
 )
 
 FAKE_MODEL = "fake"
+FAKE_PROVIDER = "fake"
 FAKE_CONFIG = model_config(FAKE_MODEL)
 
 
 def fake_catalog() -> ModelCatalog:
-    """A catalog of one model, `fake`, at a URL nothing listens on."""
-    model = {"model": FAKE_MODEL, "base_url": "http://fake.invalid/v1"}
+    """A catalog of one model, `fake`, on the provider `fake`."""
+    model = {"model": FAKE_MODEL, "provider": FAKE_PROVIDER}
     return read_models(cli={"models": {FAKE_MODEL: model}})
 
 
@@ -80,9 +82,10 @@ class FakeClock:
 
 @dataclass(frozen=True)
 class Reply:
-    """A scripted sample that ends normally. Held at `gate` after `gate_after` parts."""
+    """A scripted sample that ends normally. Held at `gate` after `gate_after` items (parts, or
+    live deltas to stream)."""
 
-    parts: Sequence[Part]
+    parts: Sequence[Part | Delta]
     stop: Stop = Stop.End
     gate: Gate | None = None
     gate_after: int = 0
@@ -95,7 +98,7 @@ class Fail:
     """A scripted sample that raises `SampleError(error)` after `parts`."""
 
     error: str
-    parts: Sequence[Part] = ()
+    parts: Sequence[Part | Delta] = ()
 
 
 @dataclass(frozen=True)
@@ -120,12 +123,22 @@ class FakeProvider:
         self.requests: list[Request] = []
 
     @property
+    def name(self) -> str:
+        return FAKE_PROVIDER
+
+    def check(self, model: ModelConfig) -> list[str]:
+        return []
+
+    async def aclose(self) -> None:
+        """Nothing is held open."""
+
+    @property
     def gates(self) -> list[Gate]:
         return [e.gate for e in self._script if isinstance(e, Reply) and e.gate is not None]
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncIterator[Part | Finish]:
+    ) -> AsyncIterator[Part | Finish | Delta]:
         self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools)))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")

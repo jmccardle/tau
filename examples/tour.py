@@ -16,7 +16,7 @@ without it the config's default_model is used.
 import tempfile
 from pathlib import Path
 
-from common import rest, run
+from common import close_all, rest, run
 
 from tau_next import (
     Body,
@@ -26,9 +26,9 @@ from tau_next import (
     StepLimit,
     SystemClock,
     base_tools,
+    builtin_providers,
     model_config,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 
 def show(body: Body) -> str:
@@ -53,6 +53,7 @@ async def ask(driver: Driver, session: Session, cursor: int, text: str) -> None:
 
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
+    providers = builtin_providers(loaded.environ)
     with tempfile.TemporaryDirectory() as tmp:
         where = Path(tmp) / "session"
         session = Session.create(
@@ -64,7 +65,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         tools = base_tools(tmp)
         driver = Driver(
             session,
-            OpenAIProvider(environ=loaded.environ),
+            providers,
             loaded.catalog,
             tools=tools,
             extensions=[StepLimit(6)],
@@ -95,6 +96,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         print(f"  the branches meet at node {meet}")
 
         await driver.stop()
+        await close_all(providers)
         size = len(session.tree)
         session.close()
 

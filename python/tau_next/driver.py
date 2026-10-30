@@ -24,6 +24,7 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import Answer, Author, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
+from tau_next.events import Delta, Event, EventStream, Live, Saved
 from tau_next.handles import Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
 
@@ -47,9 +48,11 @@ class Outstanding:
 
 
 class Driver:
-    """Runs one session's cursors over a provider, tools, and extensions.
+    """Runs one session's cursors over providers, tools, and extensions.
 
-    `catalog` is where a `Config` node's model name is resolved, at each sample.
+    `providers` maps each provider name to the provider a model with that `provider` is
+    sampled by; each must be named by its own `name`. The program that built them closes
+    them. `catalog` is where a `Config` node's model name is resolved, at each sample.
 
     Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`,
     `open`, `respond`) run on the loop thread and then poke the pump.
@@ -60,7 +63,7 @@ class Driver:
     def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
         self,
         session: Session,
-        provider: Provider,
+        providers: Mapping[str, Provider],
         catalog: ModelCatalog,
         *,
         tools: Sequence[Tool] = (),
@@ -69,7 +72,11 @@ class Driver:
     ) -> None:
         self.session = session
         self.clock: Clock = clock if clock is not None else SystemClock()
-        self._provider = provider
+        for name, provider in providers.items():
+            if provider.name != name:
+                raise ValueError(f"provider {provider.name!r} is given as {name!r}")
+        self._providers = dict(providers)
+        self._streams: set[EventStream] = set()
         self._catalog = catalog
         self._tools: Mapping[str, Tool] = check_tools(tools)
         self._extensions = tuple(extensions)
@@ -80,6 +87,24 @@ class Driver:
         self._units = 0
         self._failure: Exception | None = None
         self._watchers: list[asyncio.Future[None]] = []
+
+    def events(self, cursor: int | None = None, *, buffer: int = 256) -> EventStream:
+        """Subscribe, now, to the events of `cursor` (default: every cursor): each `Live`
+        delta the providers stream and one `Saved` after each answer applied to core. The
+        stream has its own `buffer` of events; a full buffer drops `Live` events, never
+        `Saved`. Subscribers never slow the pump. `aclose()` unsubscribes."""
+        stream = EventStream(cursor, buffer, self._streams.discard)
+        self._streams.add(stream)
+        return stream
+
+    @property
+    def subscribers(self) -> int:
+        """Event streams open now."""
+        return len(self._streams)
+
+    def _emit(self, event: Event) -> None:
+        for stream in tuple(self._streams):
+            stream.offer(event)
 
     def use_catalog(self, catalog: ModelCatalog) -> None:
         """Resolve model names in `catalog` from the next sample dispatched on."""
@@ -97,6 +122,9 @@ class Driver:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for stream in tuple(self._streams):
+            stream.end()
+        self._streams.clear()
         self._out.clear()
         self._questions.clear()
         self._queue = asyncio.Queue()
@@ -257,6 +285,7 @@ class Driver:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
         with trace.span("driver", "answer"):
             self.session.answer(cursor, answer, self.clock.now())
+        self._emit(Saved(cursor))
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             return
@@ -298,7 +327,12 @@ class Driver:
                 self._out[cursor] = Outstanding([self._unit(cursor, effect)])
             case Job.Sample():
                 sample = SampleRun(
-                    self._provider, self._catalog, session, cursor, tuple(self._tools.values())
+                    self._providers,
+                    self._catalog,
+                    session,
+                    cursor,
+                    tuple(self._tools.values()),
+                    partial(self._live, cursor),
                 )
                 self._out[cursor] = Outstanding([self._unit(cursor, sample.run)], sample=sample)
             case Job.RunCalls(node=node, calls=calls):
@@ -317,6 +351,9 @@ class Driver:
                 self._out[cursor] = Outstanding(units, calls=runs)
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
+
+    def _live(self, cursor: int, delta: Delta) -> None:
+        self._emit(Live(cursor, delta))
 
     def _cursor_for(self, cursor: int) -> Callable[[Extension], Cursor]:
         return lambda ext: Cursor(

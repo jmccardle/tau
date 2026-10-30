@@ -77,7 +77,7 @@ class Harness:
     def _driver(self) -> Driver:
         driver = Driver(
             self.session,
-            self.provider,
+            {self.provider.name: self.provider},
             self.catalog,
             tools=self.tools,
             extensions=self.extensions,

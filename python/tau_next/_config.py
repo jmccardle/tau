@@ -41,24 +41,42 @@ def url_problem(value: str) -> str | None:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """A resolved model: which model to ask, where, and the *name* of the variable holding
-    its API key. The driver builds it from the catalog at each sample; no node holds it.
+    """A resolved model: which model to ask, where (`base_url`, optional: a provider that
+    needs one says so in its `check`), the *name* of the variable holding its API key,
+    `max_tokens` (optional, positive), and `options`: a JSON object only the named provider
+    reads, which the config loader never looks inside (D15). The driver builds it from the
+    catalog at each sample; no node holds it.
 
     The key itself is never a field: it is read from the environment at sample
     time (`api_key`) and so never reaches a node or the log.
     """
 
     model: str
-    base_url: str
+    base_url: str | None = None
     api_key_env: str | None = None
     provider: str = "openai"
     literal_api_key: str | None = field(default=None, repr=False)
+    max_tokens: int | None = None
+    options: Mapping[str, object] = field(default_factory=lambda: {})
 
     def __post_init__(self) -> None:
         _text(self.model, "model")
-        problem = url_problem(_text(self.base_url, "base_url"))
-        if problem is not None:
-            raise ConfigError(problem)
+        if self.base_url is not None:
+            problem = url_problem(_text(self.base_url, "base_url"))
+            if problem is not None:
+                raise ConfigError(problem)
+        if self.max_tokens is not None and (
+            isinstance(self.max_tokens, bool)
+            or not isinstance(self.max_tokens, int)  # pyright: ignore[reportUnnecessaryIsInstance]
+            or self.max_tokens < 1
+        ):
+            raise ConfigError(
+                f"config 'max_tokens' must be a positive integer, not {self.max_tokens!r}"
+            )
+        if not isinstance(self.options, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise ConfigError(
+                f"config 'options' must be an object, not {type(self.options).__name__}"
+            )
         if self.api_key_env is not None:
             _text(self.api_key_env, "api_key_env")
         _text(self.provider, "provider")
