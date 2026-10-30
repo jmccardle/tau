@@ -54,7 +54,8 @@ The replay data a provider may send back for a part, parsed: the JSON object in
 `part.replay.data` when the part's replay is tagged with `provider`, else `None`. String
 values parse back exactly; numbers and escapes may not re-serialize to the same bytes, so a
 provider that needs the exact text reads `part.replay.data`. A non-`Part` raises `TypeError`. A part with another provider's replay is
-treated as unsigned (`model.md` §10.4), so no provider repeats the tag check.
+treated as unsigned (`model.md` §10.4), so no provider repeats the tag check. Data tagged with
+the provider's own name that this version cannot understand counts as unsigned too.
 
 ### turns (the walk module)
 `tau_next.providers._walk.turns(walk, ...)` · D15 · new
@@ -70,11 +71,12 @@ order; a provider maps them to its own wire shapes. `call_markup`, `outcome_mark
 `stop_note` are the one text markup, and `system_note` (`[system note: <text>]`) is the one
 spelling of a `System` node after the walk's start, for a provider whose single system
 instruction cannot hold it. Two options cover the rules only some APIs need, so each
-provider says whether it asks: `structured=False` (the request offers no tools, so no batch can
-go as calls), and `text_from` (a provider's own rule, given
+provider says whether it asks: `structured` (every provider passes `bool(tools)`: a request that
+offers no tools has no batch that can go as calls), and `text_from` (a provider's own rule, given
 the turns, naming the index from which batches go as text; Anthropic's manual thinking). A
-batch either of them demotes, or one whose call has `args_raw` that is not a JSON object (no
-arguments counting as `{}`; `call_object`, which refuses NaN and lone surrogates too), goes as text (`runnable` false), and its `Results` becomes a
+batch either of them demotes, or one whose call has `args_raw` that is not a JSON object (always
+checked; no arguments counting as `{}`; `call_object`, strict JSON, refuses NaN, infinity and lone
+surrogates), goes as text (`runnable` false), and its `Results` becomes a
 `UserTurn` of `[tool result <id>: <text>]` lines, so a walk the API would refuse never fails
 every later sample. `Messages(items_key)` builds the wire messages from the turns: neighbouring
 turns of one role merge, a turn with nothing to send leaves none, and `System` turns before any
@@ -100,10 +102,14 @@ provider sent none: an interrupted reply, a failed sample, a fake.
 
 What a response carried besides its parts, as the text of a JSON object: for
 the OpenAI provider the `model` the server says answered, the response `id`,
-`system_fingerprint`, and `usage` (token counts), whichever the stream sent.
-Opaque to core, like `Config.data`; persisted and replayed verbatim. On an
-`Error` reply it holds `error: {message, status?, retry_after?}`, the failed
-sample's `SampleError`, put there by the driver. `None`
+`system_fingerprint`, and `usage` (token counts), whichever the stream sent; every hosted
+provider and the mock report the normalized `usage` `{input, output, cached}` (D15), beside
+its raw fields (`usage_raw`). Opaque to core, like `Config.data`; persisted and replayed
+verbatim. On an `Error` reply it holds `error: {message, status?, retry_after?, internal?,
+provider?}`, the failed sample's `SampleError`, put there by the driver: `retry_after` only
+when finite; `internal: true` and a message of `"<Type>: <msg>"` when the provider raised
+something other than a `SampleError`; `provider` is an `error` value the provider's own `meta`
+held. A call cut off by the failure is not saved; its raw text is in the message (D15, D1). `None`
 when the provider had nothing to report, or the reply was interrupted. The
 driver refuses a `Finish` whose `meta` is not a JSON object.
 
@@ -984,15 +990,30 @@ and `Finish` may not come with deltas open; a violation fails the sample, and th
 text is saved. A part is yielded before
 the first delta of the next part. If a sample is cancelled or fails, the driver
 saves the text or thinking whose deltas arrived without a part.
+Any exception from `check` or `sample` that is not a `SampleError` fails that one sample
+(parts kept, `meta.error.internal` true, traceback to stderr); `sample` assumes `check` passed.
 The **model** is a name, as its API spells it.
-API keys are read from the provider's environ.
+API keys are read from the provider's environ. A key holds only visible ASCII (`0x21` to `0x7E`);
+the error names the variable or the literal, never the key.
+
+**One-off call (a recipe, no API).** To ask a model one thing with no driver and no saved
+session: `Session.create(config, system, now)` with no directory (in memory); append a `User`
+node under the root with `session.append`; run `provider.check(model)` as the driver does, then
+`async for item in provider.sample(session.tree.walk(node), model, []): ...` (`[]` offers no
+tools). `model` is `catalog.resolve(name)` and `provider` is `builtin_providers(environ)[model.provider]`.
+A runnable version is `examples/one_off.py`. The providers' request builders are private; this
+is the supported path.
+
+**Retries.** Neither the driver nor any provider retries (a cursor never spins). A wrapper
+provider that does is `examples/retry.py` (`RetryProvider`); it reads `SampleError.status`,
+`retry_after` and the `httpx` error in `__cause__`.
 
 ### builtin_providers
 `tau_next.builtin_providers(environ)` (module `tau_next.providers`) · D15 · new
 
-The built-in providers by name, `{"openai": OpenAIProvider, "gemini": GeminiProvider, "mock": MockProvider}`:
-what the CLI and the examples give `Driver` and `check_config`. `environ` is where
-OpenAI looks up keys. The caller closes them.
+The built-in providers by name, `{"openai": OpenAIProvider, "anthropic": AnthropicProvider,
+"gemini": GeminiProvider, "mock": MockProvider}`: what the CLI and the examples give `Driver` and
+`check_config`. `environ` is where the hosted providers look up keys. The caller closes them.
 
 ### OpenAIProvider
 `tau_next.providers.openai.OpenAIProvider` · new
@@ -1020,7 +1041,9 @@ become `ThinkingDelta`s and then a `Thinking`, `content` `TextDelta`s and a `Tex
 first are held until then; before that a repeated id or name replaces the earlier one,
 after it a repeat of the same is ignored and a different one is an error, which is what a
 server that omits `index` or splits a name causes), `CallArgs`, and a `Call`. A choice with
-`index` other than 0 is an error: one choice is read. Each delta is yielded as it
+`index` other than 0 is an error, and a chunk with more than one choice is refused: one choice is
+read. A `delta.refusal` is text, and the reply ends `Refused` (when `finish_reason` is also `length`,
+`Refused` wins; whether it should is open). Each delta is yielded as it
 arrives; each part is yielded before the first delta of the next kind of part, or
 when the stream finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
@@ -1036,9 +1059,9 @@ any later failure (reset, error chunk, malformed SSE, no `[DONE]`) costs only th
 meta not yet received. A `SampleError` carries the `meta` that had arrived. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
-Parts begun before a failure are yielded first; a call cut off with no id or
-no name is not a part, so its raw argument text and whatever id and name arrived
-are appended to the `SampleError` message. A non-200 response fails with `SampleError`
+Parts begun before a failure are yielded first; a call cut off (no id or name yet, or arguments
+unfinished) is not a part and is dropped, so its raw argument text is appended to the `SampleError`
+message (D1). A non-200 response fails with `SampleError`
 (`status` and `retry_after` are taken before the body is read, so a body that fails to
 read keeps them) with `status` set and `retry_after` from the `Retry-After` header (whole seconds, or an
 HTTP-date as seconds from now, 0 if past; anything else `None`); a connection error has
@@ -1049,10 +1072,16 @@ some servers reject `stream_options`), `extra_body` (an object merged into the r
 last, for server-specific parameters such as llama.cpp's `cache_prompt`; `check` refuses
 `model`, `messages`, `stream`, `tools`, `n`, any key the model's own settings already set
 (`max_tokens`, `temperature`, `top_p`, `reasoning_effort`, and `stream_options` while
-`include_usage` is true), and NaN or infinity anywhere inside it). One `httpx.AsyncClient` serves every sample,
+`include_usage` is true), and NaN or infinity anywhere inside it). `base_url` is the API root (such as
+`http://host:8100/v1`): one ending in `/chat/completions` is a `check` problem. For llama.cpp,
+`extra_body: {"return_progress": true}` makes the server report progress during a long prompt,
+which keeps the read alive past the 300 s between-bytes timeout. For OpenAI proper, whose newer
+models refuse `max_tokens`, leave `max_tokens` unset and set `extra_body: {"max_completion_tokens": N}`.
+The `[system note: ...]` form is used for every `System` node after the first non-`System` turn. One `httpx.AsyncClient` serves every sample,
 made on the first and closed by `aclose()`; a sample after `aclose()`, or one it cuts off,
 fails with `ProviderClosed`. A client belongs to the event loop that made it: on another
-loop the provider drops it unawaited and makes a new one. The response body is read to its
+loop the provider drops it unawaited (the old loop is gone, so it cannot be closed) and makes a new
+one; a REPL that starts a loop per command leaks a client each time (D15 Open). The response body is read to its
 end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. The request is built inside `sample` and is not public.
@@ -1064,14 +1093,15 @@ The provider for the Anthropic Messages API (`POST {base_url}/v1/messages`, SSE;
 is the API root, `https://api.anthropic.com` when unset; one ending in `/v1` is a `check`
 problem). Headers `x-api-key` and `anthropic-version: 2023-06-01`. `check` requires
 `max_tokens` (the API requires it; there is no default) and a key (`api_key_env`), and
-reads exactly these options: `thinking` (an object as the API takes it: `type` `adaptive`,
-`enabled` with `budget_tokens` of at least 1024 and below `max_tokens`, `disabled`, or
-`between_tools`; `display` `summarized` or `omitted` for the first two; which a model accepts
-is the API's to say), `effort` (`low` `medium` `high` `xhigh` `max`, sent as
-`output_config.effort`), `temperature`, `top_p`, `top_k` (newer models refuse these), `prompt_caching`
+reads exactly these options: `thinking` (an object as the API takes it: `type` a string,
+`budget_tokens` a count, `display` a string; `check` checks types and judges no values, which
+are the API's, but `type` `enabled` needs `budget_tokens` of at least 1024 and below
+`max_tokens`, and `display` `updates` and `block_binding` are refused: they need a beta header
+this provider cannot send), `effort` (a non-empty string, sent as `output_config.effort`), `temperature`, `top_p`, `top_k` (newer models refuse these), `prompt_caching`
 (boolean, default true: `cache_control: ephemeral` on the system text and on the last block of
 the last message), and `extra_body` (merged last; may not set `model`, `messages`, `system`,
-`stream`, `tools`, `max_tokens`, or a key the model's settings set). Request: the first
+`stream`, `tools`, `max_tokens`, `thinking`, or a key the model's settings set; `context_management`
+is refused too: it needs a beta header). Request: the first
 `System` nodes are top-level `system`, one later is user text `[system note: ...]`; turns of
 one role merge; `Thinking` parts are sent only with Anthropic replay data (`replay_for`), so
 unsigned, cut-off and foreign thinking never go; a reply with nothing left to send is dropped;
@@ -1080,7 +1110,9 @@ a runnable batch is `tool_use` blocks (`input` the parsed `args_raw`, `{}` for n
 <id>: <text>]` lines, when a call's `args_raw` is not a JSON object or, under `thinking.type`
 `enabled`, the last assistant turn has no thinking to open with. A call id the API would refuse
 is sent with bad characters replaced by `_` and a hash of the original added, alike in the
-call and its result. Replay data: `{"type": "thinking", "signature": s}` on a `Thinking`
+call and its result (ids are never shortened; whether the API limits their length is unverified).
+A `User` node right after a `Results` merges into the same user message; the docs say that can
+give an empty `end_turn`, which the provider drops, and the loop can repeat (D15 Open). Replay data: `{"type": "thinking", "signature": s}` on a `Thinking`
 part (text is the block's `thinking`), `{"type": "redacted_thinking", "data": d}` on a
 `Thinking("")`. Response: `thinking_delta`, `text_delta` as deltas; `tool_use` as `CallNamed`
 then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_sequence` to
@@ -1107,7 +1139,7 @@ Private: the shapes may change with the next provider.
 `tau_next.providers._wire` · D15 · new
 
 What every hosted provider shares over HTTP: `retry_after` (a `Retry-After` header as
-seconds), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
+seconds, `None` when not finite), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
 end), `error_text` (`HTTP <status>: <message>` from an `error` object, `typed` for
 `<type>: <message>`), and the JSON and number checks `plain`, `non_finite`, `is_number`,
 `is_count`, `count`. `Connection` holds the one `httpx.AsyncClient` a provider keeps (made on the
@@ -1117,7 +1149,11 @@ into a `ReplyReader`, maps an `httpx` error or a bad status to a `SampleError` w
 `retry_after`, and yields the parts left at a failure. A provider gives it only how its error
 bodies read (`typed_errors`, `body_wait` for a wait inside the body, `meta_headers`) and a
 `ReplyReader`: the one-response reader (`feed`, `done`, `stop`, `close`, `meta`) that each provider's
-`_Stream` is. Private to the package.
+`_Stream` is. `close` never raises and never returns a partial call: a call cut off is dropped and its
+raw text goes in `meta["cut_off_call"]`, which `Connection` moves into the error message. Once a reply
+is done, `Connection` ignores what `feed` returns and reads only `meta`. Events are strict JSON (NaN
+and infinity are invalid; a lone surrogate is a `SampleError`); `SampleError`s from a header or body
+never quote the header; the `httpx` error is the `__cause__`. Private to the package.
 
 ### GeminiProvider
 `tau_next.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
@@ -1126,18 +1162,23 @@ The provider for Google's `streamGenerateContent?alt=sse`. Built to the same con
 `OpenAIProvider` (`Connection`: one client per loop, `ProviderClosed`, `status` and `retry_after`, the
 ordering rule, `usage_raw`). `base_url` defaults to `https://generativelanguage.googleapis.com/v1beta`
 (a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so; for an unset variable `tau config check` warns and sampling fails) and travels in the `x-goog-api-key`
-header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`.
+header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`, the model
+quoted for a URL; a model name that starts with `models/` is a `check` problem (the provider adds it).
 Request: `systemInstruction` (the `System` nodes before any other node), `contents`
 (`user` and `model`), `tools` (one `functionDeclarations` list, each tool's schema as
 `parametersJsonSchema`), `generationConfig` (`maxOutputTokens` from `max_tokens`, then the
 options), `safetySettings`, then `extra_body`. A `System` node later in the walk is a user
-turn `[system note: <text>]` (`system_note`). A `Results` that follows its batch is one `user` content of
+turn `[system note: <text>]` (`system_note`); a user or system turn with no text is dropped. A `Results` that follows its batch is one `user` content of
 `functionResponse` parts, in call order, `{"result": text}` or `{"error": text}`, with the call's
 `id` where the API gave one. A batch goes as text (the call markup, and its results as
 `[tool result <id>: <text>]` user text) when a call's `args_raw` is not a JSON object, so a
 cut-off call from another provider never fails the branch. A reply with nothing to send is
 dropped and neighbouring same-role contents merge; text parts are never merged with each
-other. `Thinking` is sent back only when Gemini signed it.
+other. `Thinking` is sent back only when Gemini signed it. A response `parts` that is not a list, a
+part with more than one data key, or a `thought` that is not a bool fails the sample; metadata part
+keys are ignored, and so are candidates after a `blockReason`. Switching to a Gemini 3 model in the
+middle of a tool loop fails with a 400 (a call without a signature) until the next user text starts a
+new loop; there is no fallback signature.
 
 Response: a part with `thought: true` is `ThinkingDelta`s and one `Thinking`; other text is
 `TextDelta`s and one `Text`; a `functionCall` arrives whole (`CallNamed`, one `CallArgs`, the
@@ -1395,8 +1436,8 @@ the provider's own string (`None` if it has none), and the response `meta`
 `TypeError` for a non-`str`). The
 driver builds the reply draft with all three. A provider that reports usage puts the
 normalized `usage` in `meta` as `{"input", "output", "cached"}` token counts, beside its
-own fields (D15; `MockProvider` and `OpenAIProvider` do so; the latter's raw
-`usage` object is kept as `usage_raw`).
+own fields (D15; the mock and all three hosted providers do so; the hosted providers keep the raw
+`usage` object as `usage_raw`).
 
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket
@@ -1457,8 +1498,10 @@ answer waits for a call already running and the final flush.
 `tau_next.Live(cursor, delta)` · D15 · new (the ADR's first draft said "draft event")
 
 A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it, as `driver.events()` yields it.
-A frontend draws it as a layer over the cursor and drops the layer at the next
-`Saved`. Never saved. A slow subscriber's buffer drops it.
+Never saved. A slow subscriber's buffer drops it, with no mark: live events are advisory until the
+next `Saved`. Frontend rules: ignore a `CallArgs` whose `CallNamed` you never saw; draw the stream as
+a layer over the cursor and drop it at `Saved(reply=True)` (no other `Saved` clears it); drop a call's
+`ToolProgress` layer, keyed by `(node, call_id)`, when a `Saved.calls` names it.
 
 ### saved event, Saved
 `tau_next.Saved(cursor, calls=(), reply=False)` · D15 · new

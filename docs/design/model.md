@@ -422,10 +422,18 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   leaves it: every later call raises `Closed`. Continuing is reopening from
   disk, which is the crash recovery above; nothing in memory is trusted.
 
-## 9. Events and frontends (not yet spiked)
+## 9. Events and frontends (partly built: D15)
+
+Built: two kinds, each tagged with a cursor. `Saved` means "the tree changed for this cursor,
+look at it" (it carries `calls`, the calls whose results it saved, and `reply`, true when a
+sample's answer was saved); `Live` carries what is never saved: a provider's `TextDelta`,
+`ThinkingDelta`, `CallNamed`, `CallArgs`, or a tool's `ToolProgress`. Frontend rules (D15): live
+events are advisory until the next `Saved`; ignore a `CallArgs` whose `CallNamed` you never saw;
+drop a reply's streamed layer at `Saved(reply=True)`; drop a call's progress when `Saved.calls`
+names it. The finer kinds below are not spiked.
 
 One `Event` type, tagged with a cursor: `node_appended`, `cursor_moved`,
-`label_changed`, `stream_delta`, `item_changed`, `question`, `status`
+`label_changed`, `item_changed`, `question`, `status`
 (`cursor.show`), `notice` (`cursor.tell`, or a refused input). Observers
 cannot block or change anything. A `notice` goes only to its client; the rest
 go to every subscriber.
@@ -435,26 +443,33 @@ serve` comes first and shapes the `Harness`. No cursor waits on a particular
 client; a cursor waits on a person only through a question. On connect,
 serve sends every cursor's status, the open questions, and the scratchpads.
 
-## 10. Provider requirements (not yet spiked)
+## 10. Provider requirements (built: OpenAI-compatible, Anthropic, Gemini, mock; D15)
 
 Each provider is a Python adapter for one API family. It owes the driver:
 
-1. Parts streamed in order as `stream_delta`s; the driver builds the reply
-   draft and each call's `args_raw`.
+1. Parts streamed in order as live deltas (`TextDelta`, `ThinkingDelta`, `CallNamed`,
+   `CallArgs`) and whole parts as they finish; the driver forwards the deltas as `Live`
+   events and saves only the parts. A part is yielded before the first delta of the next.
+   A call cut off by a failure is dropped, never saved half-built.
 2. `stop` normalised, the provider's own string kept as `finish_reason`
    (`Finish`); the sample is handed the driver's tools, which are never recorded.
 3. Faithful replay: text verbatim, `args_raw` byte for byte where the wire
    takes a string; parsed only where the wire needs an object.
 4. Thinking sent back as the API requires; an unsigned cut-off thinking part
-   is stored but never sent.
+   is stored but never sent. Replay data from another provider, or this provider's
+   own that this version cannot understand, counts as unsigned.
 5. A `Results` node under its batch becomes one tool message per call;
    anywhere else, the conversion makes it legal (e.g. a `User` message).
 6. Calls that aren't runnable, or a batch with no `Results` below it on the
    walk, are rendered as text in τ's markup per `partial_calls` (Q27), with a
    stop note for `Length`, `Interrupted`, and `Error`.
-7. A walk the API would still reject is a conversion error: the sample fails
-   before any request (Q11).
-8. Cache use reported per sample (llama.cpp `cache_n`, hosted usage fields).
+7. A walk that cannot become a legal request at all (a `Results` whose ids differ from
+   its batch's) fails the sample before any request. One only the API can judge is sent,
+   and its refusal is the error (Q11); the provider does not guess. What can be made
+   legal is: a batch that cannot run as calls (arguments that are not a JSON object, or
+   a sample that offers no tools) goes as text.
+8. Cache use reported per sample as normalized `usage.cached` in `meta` (input, output,
+   cached), beside the provider's raw `usage_raw`.
 
 ## 11. Persistence
 
