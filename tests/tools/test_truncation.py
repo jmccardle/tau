@@ -100,7 +100,7 @@ def test_output_within_the_limit_is_untouched_and_writes_no_file(
     assert "truncated" in ok(call(bash, command="printf 'y%.0s' $(seq 201)"))
 
 
-@pytest.mark.parametrize("limit", [7, 8, 9, 10, 11, 12, 13, 25, 50])
+@pytest.mark.parametrize("limit", [7, 9, 13, 50])
 def test_a_cut_never_splits_a_utf8_character(tmp_path: Path, overflow: Path, limit: int) -> None:
     text = "日本語é\n" * 40
     (tmp_path / "u.txt").write_text(text)

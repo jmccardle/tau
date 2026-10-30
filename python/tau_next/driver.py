@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from tau_next import trace
+from tau_next._config_layers import ModelCatalog
 from tau_next._core import Answer, Author, ItemData, Job, Session
 from tau_next.clock import SystemClock
-from tau_next.config_layers import ModelCatalog
 from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for
 from tau_next.handles import Cursor, NodeHandle
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools

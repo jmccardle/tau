@@ -13,8 +13,8 @@ from typing import cast
 
 import httpx
 
+from tau_next._config import ConfigError, ModelConfig
 from tau_next._core import Body, Node, Outcome, Part, Stop
-from tau_next.config import ConfigError, ModelConfig
 from tau_next.protocols import Finish, SampleError, Tool
 
 Json = dict[str, object]

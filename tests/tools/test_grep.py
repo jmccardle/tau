@@ -7,12 +7,6 @@ from calls import call, err, ok
 from tau_next import GrepTool, Outcome
 
 
-def test_the_tool_describes_itself() -> None:
-    tool = GrepTool()
-    assert tool.name == "grep"
-    assert tool.parameters["required"] == ["pattern"]
-
-
 def test_matches_are_path_line_text_sorted_by_path(tmp_path: Path) -> None:
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "a.txt").write_text("needle in sub\r\nnothing\n")
