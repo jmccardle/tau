@@ -2,7 +2,7 @@
 
 Status: candidate (2026-10-29): the first slice is built (provider contract, settings,
 live and saved events, mock provider), and the OpenAI provider keeps to the contract
-(item 10); replay data and tool progress are not built. Amends `model.md` §9 and §10.
+(item 10); replay data and the shared walk are built (item 14); tool progress is not. Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -160,6 +160,19 @@ whose `provider` is not its own.
    or name after being announced (no `index`, a split name) fails the sample rather than
    merging. `Retry-After` and the status are taken before an error body is read.
    A malformed cached count leaves `usage` out.
+
+14. **Replay and the shared walk are built** (slice 3). `Replay(provider, data)` is a frozen
+   class, not loose JSON: `data` is the text of a JSON object, checked in Rust at
+   construction (`BadReplay`, a `ValueError`) and when a log loads. A part's `replay` is
+   `None` by default; a part without one is logged in the old spelling, and one with it as
+   `{"Text": {"text", "replay"}}`, so old logs load. `tau_next.replay_for(part, provider)`
+   returns the parsed data only for the part's own provider. The ordering rule already
+   compared only text, tool and arguments, so a final part may carry replay its deltas lacked.
+   The walk rules live in the private `providers/_walk.py` (`turns(walk)`), which the OpenAI
+   provider uses with byte-identical requests; it is private until a third-party provider
+   needs it. A `ToolResults` result also carries the call's `tool` (Gemini names it) and
+   `error` (Anthropic flags it). A signed part cut off at a cancel is saved without its
+   signature, so it counts as unsigned and is never sent.
 
 ## Open
 

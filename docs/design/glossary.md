@@ -29,7 +29,42 @@ output).
 *spike* `Part` · retires content block
 
 One piece of a reply in stream order: `Text`, `Thinking`, or
-`Call { id, tool, args_raw }`.
+`Call { id, tool, args_raw }`. Each takes an optional `replay` (see **replay**).
+A `Thinking` part may have no text when it has replay data (a redacted block).
+
+### replay
+`tau_next.Replay(provider, data)` · D15 · new
+
+Data only the provider that wrote a part can send back, byte for byte: Anthropic's
+`thinking.signature` and `redacted_thinking` data, Gemini's `thoughtSignature` (on text and
+on calls). `provider` is the name of the provider that wrote it; `data` is the text of a
+JSON object, kept exactly as given. Core checks both on construction (`BadReplay`, a
+`ValueError`: no provider name, or `data` not a strict JSON object; `NaN` and `Infinity`
+are not JSON). A part's `replay` is `None` unless the provider sets it; logs written before
+replay existed load with `None`, and a part without replay is logged exactly as before. The
+driver's ordering rule (see **provider, model**) ignores it: a provider learns a signature
+only at the end of a block, so it is on the part and on none of its deltas.
+
+### replay_for
+`tau_next.replay_for(part, provider)` (`protocols.py`) · D15 · new
+
+The replay data a provider may send back for a part: the parsed JSON object when the part's
+replay is tagged with `provider`, else `None`. A part with another provider's replay is
+treated as unsigned (`model.md` §10.4), so no provider repeats the tag check.
+
+### turns (the walk module)
+`tau_next.providers._walk.turns(walk)` · D15 · new
+
+The rules every provider shares (`model.md` §10.5 to §10.7), applied once to a walk:
+which nodes count (`Config` and `Custom` do not), which replies are runnable (a batch
+with a `Results` right below it), a `Results` that answers no batch becoming a user turn,
+a `Results` that does not answer its batch call for call failing the sample, and a stop
+note (`length`, `interrupted`, `error`) for calls that cannot run. It returns
+`SystemTurn`, `UserTurn`, `AssistantTurn(parts, runnable, note)` and
+`ToolResults(results)`, where each `CallResult` is `(id, tool, text, error)` in call
+order; a provider maps them to its own wire shapes. `call_markup`, `outcome_markup` and
+`stop_note` are the one text markup. The module is private to the package: its shapes may
+change with the next provider.
 
 ### stop
 *spike* `Stop` · retires `stopReason`, `AgentEndReason`

@@ -46,6 +46,16 @@ def check_meta(meta: object) -> None:
         raise ValueError(f"meta must be the text of a JSON object, got {meta!r}")
 
 
+def replay_for(part: Part, provider: str) -> dict[str, object] | None:
+    """The replay data `provider` may send back for `part`: the parsed JSON object when the
+    part carries replay tagged with `provider`; `None` for a part with none, or with another
+    provider's, which the caller treats as unsigned (`model.md` 10.4)."""
+    replay = part.replay if isinstance(part, Part.Text | Part.Thinking | Part.Call) else None
+    if replay is None or replay.provider != provider:
+        return None
+    return cast("dict[str, object]", json.loads(replay.data))
+
+
 class SampleError(Exception):
     """A sample that failed: an HTTP error, a reset connection, a conversion error. `meta` is
     what the response had already said about itself (as on `Finish`), kept on the failed reply.

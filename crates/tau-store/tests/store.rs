@@ -76,7 +76,7 @@ fn apply(s: &mut Session, op: &Op) {
         ),
         Op::Reply(i, with_meta) => {
             let body = Body::Assistant {
-                parts: vec![Part::Text("r".into())],
+                parts: vec![Part::text("r")],
                 stop: Stop::End,
                 finish_reason: Some("stop".into()),
                 meta: with_meta.then(|| r#"{"id":"r1","usage":{"total_tokens":3}}"#.into()),
@@ -345,7 +345,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
             Job::Rest => break,
             Job::Sample => sampled(Draft {
                 body: Body::Assistant {
-                    parts: vec![Part::Text("hello".into())],
+                    parts: vec![Part::text("hello")],
                     stop: Stop::End,
                     finish_reason: Some("stop".into()),
                     meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
@@ -570,7 +570,7 @@ fn a_record_from_before_meta_loads_with_none() {
     assert_eq!(
         loaded.tree.node(2).unwrap().body,
         Body::Assistant {
-            parts: vec![Part::Text("hi".into())],
+            parts: vec![Part::text("hi")],
             stop: Stop::End,
             finish_reason: Some("stop".into()),
             meta: None,

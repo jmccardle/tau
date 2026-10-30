@@ -13,6 +13,7 @@ from tau_next._config_layers import (
 from tau_next._core import (
     Author,
     BadRecord,
+    BadReplay,
     Body,
     Busy,
     Closed,
@@ -39,6 +40,7 @@ from tau_next._core import (
     Outcome,
     Part,
     Poisoned,
+    Replay,
     Session,
     Stop,
     TraceError,
@@ -82,6 +84,7 @@ from tau_next.protocols import (
     Tool,
     ToolContractError,
     ToolHook,
+    replay_for,
 )
 from tau_next.providers import builtin_providers
 from tau_next.step_limit import StepLimit
@@ -92,6 +95,7 @@ __version__ = version("ffwf-tau-next")
 __all__ = [
     "Author",
     "BadRecord",
+    "BadReplay",
     "BashTool",
     "Body",
     "Busy",
@@ -147,6 +151,7 @@ __all__ = [
     "ProviderClosed",
     "Question",
     "ReadTool",
+    "Replay",
     "ResolvedModel",
     "SampleError",
     "Saved",
@@ -180,6 +185,7 @@ __all__ = [
     "model_config",
     "prompts",
     "read_models",
+    "replay_for",
     "safe_block",
     "select_model",
     "tool",

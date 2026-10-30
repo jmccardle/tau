@@ -32,6 +32,7 @@ exceptions! {
     NotPending: PyLookupError = "A write that delivers an item not pending for that cursor.";
     DuplicateCall: PyValueError = "A Results or Assistant body naming a call id twice (V2).";
     BadRecord: PyValueError = "A logged record that replay cannot apply.";
+    BadReplay: PyValueError = "Replay data that is not the text of a JSON object, or a replay with no provider name.";
     Leased: PyOSError = "Another store holds the session's lease.";
     Exists: PyFileExistsError = "A session already exists in that directory.";
     NotASession: PyValueError = "Not a τ log or scratchpad file.";

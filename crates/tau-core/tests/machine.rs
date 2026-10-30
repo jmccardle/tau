@@ -33,7 +33,7 @@ fn ok() -> Answer {
 fn said(t: &str) -> Answer {
     sampled(Draft {
         body: Body::Assistant {
-            parts: vec![Part::Text(t.into())],
+            parts: vec![Part::text(t)],
             stop: Stop::End,
             finish_reason: None,
             meta: None,
@@ -775,5 +775,6 @@ fn call(id: &str) -> Part {
         id: id.into(),
         tool: "ls".into(),
         args_raw: "{}".into(),
+        replay: None,
     }
 }
