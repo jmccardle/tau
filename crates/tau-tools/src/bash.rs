@@ -18,8 +18,9 @@
 //!
 //! Progress. [`BashRun::wait_with`] also hands the output on as it arrives, through a
 //! [`progress::Stream`]: the reader only copies bytes into a bounded buffer, and a thread of
-//! its own calls the consumer, so a slow consumer never slows the command or the answer. The
-//! saved answer is the same with or without it.
+//! its own calls the consumer, so the command and the reader never wait on the consumer. The
+//! answer does: `wait_with` joins that thread, so it waits for a callback already running and
+//! for the final flush (one more call). The saved answer is the same with or without it.
 //!
 //! The kept end of the output is the tail. A nonzero exit is an `Err` whose
 //! text is the output followed by the exit code.
@@ -277,11 +278,13 @@ impl BashRun {
 
     /// As [`BashRun::wait`], calling `progress` with the output as it arrives (see
     /// [`progress`] for how it is coalesced), from a thread of its own, until the output
-    /// ends; the last call returns before this does.
+    /// ends; the last call returns before this does, so a slow `progress` delays the answer
+    /// (by the call running and the final flush) but never the command. `progress` answers
+    /// whether to go on; `false` stops the calls.
     ///
     /// # Errors
     /// As [`BashRun::wait`].
-    pub fn wait_with(&self, progress: Option<&(dyn Fn(String) + Sync)>) -> Result<String> {
+    pub fn wait_with(&self, progress: Option<&(dyn Fn(String) -> bool + Sync)>) -> Result<String> {
         match &self.0 {
             Inner::Failed(e) => Err(e.clone()),
             Inner::Running(running) => running.wait(progress),
@@ -356,7 +359,7 @@ impl Running {
         }
     }
 
-    fn wait(&self, on_progress: Option<&(dyn Fn(String) + Sync)>) -> Result<String> {
+    fn wait(&self, on_progress: Option<&(dyn Fn(String) -> bool + Sync)>) -> Result<String> {
         let child = lock(&self.child).take();
         let reader = lock(&self.reader).take();
         let (Some(child), Some(reader)) = (child, reader) else {

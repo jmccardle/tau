@@ -25,8 +25,8 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import Answer, Author, Body, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
-from tau_next.events import Delta, Event, EventStream, Live, Saved
-from tau_next.handles import Cursor, NodeHandle, Subject
+from tau_next.events import CallKey, Event, EventStream, Live, LiveDelta, Saved
+from tau_next.handles import Changed, Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools, takes_progress
 
 
@@ -311,12 +311,14 @@ class Driver:
             del self._out[cursor]
             self._dispatch(cursor, job)
 
-    def _answered(self, since: int) -> tuple[str, ...]:
-        """Ids of the calls answered by the `Results` nodes added since node count `since`."""
+    def _answered(self, since: int) -> tuple[CallKey, ...]:
+        """The calls answered by the `Results` nodes added since node count `since`, each as
+        `(node of its batch, call id)`."""
+        nodes = (self.session.tree.node(i) for i in range(since, len(self.session.tree)))
         return tuple(
-            call
-            for i in range(since, len(self.session.tree))
-            if isinstance(body := self.session.tree.node(i).body, Body.Results)
+            (node.parent, call)
+            for node in nodes
+            if isinstance(body := node.body, Body.Results) and node.parent is not None
             for call, _, _ in body.outcomes
         )
 
@@ -363,12 +365,16 @@ class Driver:
             case Job.RunCalls(node=node, calls=calls):
                 if not calls:
                     raise RuntimeError(f"cursor {cursor}: a batch with no calls at node {node}")
+                announce = self._announcer(cursor)
                 runs = [
                     CallRun(
                         c,
-                        lambda ext: NodeHandle(session, node, ext.name, self.clock.now, self._poke),
+                        lambda ext: NodeHandle(
+                            session, node, ext.name, self.clock.now, self._poke, announce
+                        ),
                         self._tools,
                         self._extensions,
+                        batch=node,
                         progress_tools=self._progress_tools,
                         on_progress=partial(self._live, cursor),
                     )
@@ -379,12 +385,22 @@ class Driver:
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
-    def _live(self, cursor: int, delta: Delta) -> None:
+    def _live(self, cursor: int, delta: LiveDelta) -> None:
         self._emit(Live(cursor, delta))
+
+    def _announcer(self, own: int) -> Changed:
+        """The `changed` of a handle working for `own`: a `Saved` for the cursor it changed."""
+        return lambda changed: self._emit(Saved(own if changed is None else changed))
 
     def _cursor_for(self, cursor: int) -> Callable[[Extension], Cursor]:
         return lambda ext: Cursor(
-            self.session, cursor, ext.name, self.ask, self.clock.now, self._poke
+            self.session,
+            cursor,
+            ext.name,
+            self.ask,
+            self.clock.now,
+            self._poke,
+            self._announcer(cursor),
         )
 
     def _cancel(self, cursor: int) -> None:

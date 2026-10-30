@@ -189,8 +189,8 @@ class SampleRun:
                     finish = item
                 elif isinstance(item, DELTAS):
                     self._delta(item)
-                elif isinstance(item, ToolProgress):
-                    raise SampleError("provider yielded tool progress, which only tools make")
+                elif not isinstance(item, Part):  # pyright: ignore[reportUnnecessaryIsInstance]
+                    raise SampleError(f"provider yielded {item!r}: not a part, delta or finish")
                 else:
                     if self._open is not None:
                         self._open.check(item)
@@ -260,7 +260,7 @@ class CallRun:
 
     `abort` cancels the tool; a hook that is running finishes (Q34). A tool that opted in
     (`progress_tools` names it) is given a `Progress` that turns each call into
-    `on_progress(ToolProgress(call id, text))` on the loop while the tool runs, and does
+    `on_progress(ToolProgress(node, call id, text))` on the loop while the tool runs, and does
     nothing before or after.
     """
 
@@ -271,6 +271,7 @@ class CallRun:
         tools: Mapping[str, Tool],
         extensions: Sequence[Extension],
         *,
+        batch: int,
         progress_tools: Collection[str],
         on_progress: Callable[[ToolProgress], None],
     ) -> None:
@@ -280,6 +281,7 @@ class CallRun:
         self._node = node
         self._tools = tools
         self._extensions = extensions
+        self._batch = batch
         self._progress_tools = progress_tools
         self._on_progress = on_progress
         self._task: asyncio.Future[Outcome] | None = None
@@ -354,7 +356,7 @@ class CallRun:
 
         def show(text: str) -> None:
             if self._showing:
-                self._on_progress(ToolProgress(self.id, text))
+                self._on_progress(ToolProgress(self._batch, self.id, text))
 
         def progress(text: str) -> None:
             if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]

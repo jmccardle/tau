@@ -7,6 +7,7 @@
 #![allow(clippy::unused_self)]
 
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -19,6 +20,19 @@ use tau_tools::{
 };
 
 use crate::values::Outcome;
+
+/// Whether a progress emitter may still attach to the interpreter. Under the stable ABI
+/// (`abi3-py312`) `PyO3` cannot ask Python whether it is finalizing, and attaching then is
+/// undefined behavior on 3.12 and 3.13; so `stop_progress` is registered with `atexit`, which
+/// runs before finalization begins, and no emitter attaches after it.
+static EMITTING: RwLock<bool> = RwLock::new(true);
+
+/// Stop every progress emitter from attaching again (registered with `atexit`). Releases the
+/// GIL while it waits for an emitter that holds the flag to finish its call.
+#[pyfunction]
+pub fn stop_progress(py: Python<'_>) {
+    py.detach(|| *EMITTING.write().unwrap_or_else(PoisonError::into_inner) = false);
+}
 
 fn outcome(result: Result<String, ToolError>) -> Outcome {
     match result {
@@ -273,19 +287,26 @@ impl BashRun {
     /// With `progress`, a callable of one `str`, the output is also passed to it as it
     /// arrives, coalesced to at most one call per 100 ms, from a thread of its own (so the
     /// callable must be safe to call from any thread). The GIL is taken only for each call,
-    /// never in the loop that reads the command's output, and a slow `progress` slows
-    /// neither the command nor its answer. The last call returns before `wait` does.
+    /// never in the loop that reads the command's output. A slow `progress` never slows the
+    /// command, but `wait` returns only after the call running and the final flush, so it
+    /// delays the answer. Calls stop for good once the interpreter begins to exit.
     #[pyo3(signature = (progress=None))]
     fn wait(&self, py: Python<'_>, progress: Option<Py<PyAny>>) -> Outcome {
         let Some(progress) = progress else {
             return outcome(py.detach(|| self.inner.wait()));
         };
-        let emit = |text: String| {
-            Python::attach(|py| {
+        let emit = |text: String| -> bool {
+            // Held across the attach: `stop_progress` waits for the writers to finish.
+            let emitting = EMITTING.read().unwrap_or_else(PoisonError::into_inner);
+            if !*emitting {
+                return false;
+            }
+            Python::try_attach(|py| {
                 if let Err(e) = progress.call1(py, (text,)) {
                     e.write_unraisable(py, None);
                 }
-            });
+            })
+            .is_some()
         };
         outcome(py.detach(|| self.inner.wait_with(Some(&emit))))
     }

@@ -203,9 +203,11 @@ class BashTool(_Described):
     async def call(self, args_raw: str, *, progress: Progress | None = None) -> Outcome:
         """Run the command. With `progress`, the output also goes to it as it arrives: at
         most one call per 100 ms, carrying all the text since the last, from a thread of the
-        engine's own. The answer is the same either way; `progress` is never waited for, and
+        engine's own. The answer is the same either way. The command never waits on `progress`:
         a slow one loses the oldest output it has not yet been given (the answer keeps its
-        10 kB and the overflow file all of it)."""
+        10 kB and the overflow file all of it). The answer does wait for a `progress` call
+        already running and for the final flush, one more call, so a slow `progress` delays
+        the answer by that much. Calls stop for good when the interpreter begins to exit."""
         run = self._engine.start(args_raw)
         waiting = asyncio.ensure_future(_in_own_thread(partial(run.wait, progress)))
         try:

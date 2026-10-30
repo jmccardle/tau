@@ -6,6 +6,18 @@ const LEAVE: &str = "setsid sleep 13 & p=$!; until [ \"$(cut -d' ' -f6 /proc/$p/
                      do sleep 0.02; done; echo $p > pid;";
 
 /// Whether a live process has `marker` in its command line.
+/// A sleep duration, about `30 + tag` seconds, that no other process has: it ends in this
+/// test process's pid, so suites running side by side (other worktrees, CI) cannot see each
+/// other's sleeps. A `tag` for each place in a test that starts one.
+fn unique_sleep(tag: u32) -> String {
+    format!("{}.{}", 30 + tag, std::process::id())
+}
+
+/// The part of a command line that is exactly the argument `arg` (NUL-separated on both sides).
+fn exactly(arg: &str) -> String {
+    format!("\0{arg}\0")
+}
+
 fn running(marker: &str) -> bool {
     let want = marker.as_bytes();
     std::fs::read_dir("/proc").unwrap().any(|item| {
@@ -282,24 +294,25 @@ fn gone(pid: i32) -> bool {
 fn processes_that_moved_to_their_own_group_are_killed_with_the_session() {
     // timeout(1) puts itself and its child in a group of their own.
     let (tool, _dir) = tool(10_000);
+    let (first, second) = (unique_sleep(1), unique_sleep(2));
     let out = run(
         &tool,
-        &json!({"command": "timeout 30 sleep 31.25 & echo ok"}),
+        &json!({"command": format!("timeout 30 sleep {first} & echo ok")}),
     )
     .unwrap();
     assert_eq!(out, "ok\n");
     assert!(
-        !running("sleep\x0031.25"),
+        !running(&exactly(&first)),
         "a process of the session survived"
     );
     let err = run(
         &tool,
-        &json!({"command": "timeout 30 sleep 31.5; echo after", "timeout": 300}),
+        &json!({"command": format!("timeout 30 sleep {second}; echo after"), "timeout": 300}),
     )
     .unwrap_err();
     assert!(err.0.contains("timed out after 300 ms"), "{err}");
     assert!(
-        !running("sleep\x0031.5"),
+        !running(&exactly(&second)),
         "a process of the session survived"
     );
 }
@@ -308,8 +321,9 @@ fn processes_that_moved_to_their_own_group_are_killed_with_the_session() {
 fn killing_right_after_start_works_every_time() {
     let (tool, _dir) = tool(10_000);
     let started = Instant::now();
+    let sleep = unique_sleep(3);
     for _ in 0..20 {
-        let handle = tool.start(&json!({"command": "sleep 30.75"}).to_string());
+        let handle = tool.start(&json!({"command": format!("sleep {sleep}")}).to_string());
         handle.kill();
         let err = handle.wait().unwrap_err();
         assert_eq!(err.0, "command was aborted");
@@ -319,14 +333,15 @@ fn killing_right_after_start_works_every_time() {
         "{:?}",
         started.elapsed()
     );
-    assert!(!running("30.75"), "a command survived its kill");
+    assert!(!running(&exactly(&sleep)), "a command survived its kill");
 }
 
 #[test]
 fn dropping_right_after_start_is_prompt_and_kills() {
     let (tool, _dir) = tool(10_000);
+    let sleep = unique_sleep(4);
     for _ in 0..20 {
-        let handle = tool.start(&json!({"command": "sleep 30.5"}).to_string());
+        let handle = tool.start(&json!({"command": format!("sleep {sleep}")}).to_string());
         let dropped = Instant::now();
         drop(handle);
         assert!(
@@ -335,7 +350,7 @@ fn dropping_right_after_start_is_prompt_and_kills() {
             dropped.elapsed()
         );
     }
-    assert!(!running("30.5"), "a command survived its drop");
+    assert!(!running(&exactly(&sleep)), "a command survived its drop");
 }
 
 #[test]

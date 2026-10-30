@@ -47,16 +47,24 @@ class CallArgs:
 @dataclass(frozen=True)
 class ToolProgress:
     """A running call showing partial output: `text` is new output since the last
-    `ToolProgress` of the call `call_id`, not the whole so far. Only the driver makes one (a
-    tool calls its `progress`); a provider that yields one fails its sample. What the call
-    saves is its `Outcome`, never this."""
+    `ToolProgress` of the same call, not the whole so far. The call is named by `node`, the
+    batch's node (the `Assistant` node holding the call), and `call_id`: a server may reuse
+    ids across batches, so the id alone does not say which call. Only the driver makes one (a
+    tool calls its `progress`); a provider cannot yield one. What the call saves is its
+    `Outcome`, never this."""
 
+    node: int
     call_id: str
     text: str
 
 
-Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | ToolProgress
-DELTAS = (TextDelta, ThinkingDelta, CallNamed, CallArgs)  # what a provider may yield
+Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
+"""What a provider yields while a part is still arriving."""
+DELTAS = (TextDelta, ThinkingDelta, CallNamed, CallArgs)
+LiveDelta = Delta | ToolProgress
+"""What a `Live` carries: a provider's delta, or a tool's progress."""
+CallKey = tuple[int, str]
+"""A call in a `Saved`: `(node, call_id)`, as `ToolProgress` names it."""
 
 
 @dataclass(frozen=True)
@@ -65,17 +73,17 @@ class Live:
     draws it as a layer over the cursor and drops the layer when a `Saved` arrives."""
 
     cursor: int
-    delta: Delta
+    delta: LiveDelta
 
 
 @dataclass(frozen=True)
 class Saved:
-    """The tree changed for this cursor: look at it. `calls` are the ids of the calls whose
-    results this save put in the tree (the `Results` node it added answers them): a frontend
-    drops their `ToolProgress` layers now, not before."""
+    """The tree changed for this cursor: look at it. `calls` are the calls, as `(node, call_id)`,
+    whose results this save put in the tree (the `Results` node it added answers them): a
+    frontend drops their `ToolProgress` layers now, not before."""
 
     cursor: int
-    calls: tuple[str, ...] = ()
+    calls: tuple[CallKey, ...] = ()
 
 
 Event = Live | Saved
@@ -131,7 +139,7 @@ class EventStream:
                 or (
                     isinstance(held, Live)  # ...but not progress of calls still unanswered
                     and isinstance(held.delta, ToolProgress)
-                    and held.delta.call_id not in event.calls
+                    and (held.delta.node, held.delta.call_id) not in event.calls
                 )
             ]
         elif len(self._buffer) >= self.capacity:

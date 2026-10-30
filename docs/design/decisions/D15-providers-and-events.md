@@ -83,7 +83,7 @@ whose `provider` is not its own.
 - The provider's stream yields live events as they arrive and whole parts as
   they finish; the driver forwards the first and saves only the second.
 - A tool may take a `progress` callback; the driver turns each call into a
-  live event, `ToolProgress(call_id, text)`, tagged with the call's id (item 19).
+  live event, `ToolProgress(node, call_id, text)`, tagged with the call (item 19).
 - Every event names its cursor. The driver offers one async stream
   (`driver.events()`) with an optional cursor filter.
 
@@ -270,20 +270,35 @@ whose `provider` is not its own.
    hidden state that a Rust thread or another language's tool cannot see, and "any object
    with these attributes works" stays true: the attribute is the parameter. `progress` is
    callable from any thread; each call is moved onto the loop and becomes
-   `Live(cursor, ToolProgress(call_id, text))` while the tool runs. After the call has
+   `Live(cursor, ToolProgress(node, call_id, text))` while the tool runs. `node` is the
+   batch's node (the `Assistant` node holding the calls): servers may reuse call ids across
+   batches (some local ones send `"0"` every time) and core rejects no duplicates, so the id
+   alone does not say which call; `(node, call_id)` does. After the call has
    finished, been aborted or cancelled, it does nothing and raises nothing. `text` is new
    output since the last event, not the whole so far. Empty text is dropped; a non-`str`
    raises `TypeError` to the tool. Progress is never saved: the `Outcome` the tool returns is
-   what `Results` holds. A provider that yields a `ToolProgress` fails its sample. `@tool`
-   functions take a parameter named `progress` the same way; it is not an argument, so it is
-   not in `parameters`.
+   what `Results` holds. A provider cannot yield a `ToolProgress`: `Delta` is the provider's
+   four kinds, `Live.delta` is the wider `LiveDelta`, pyright refuses it, and at run time a
+   sample that yields anything but a part, a delta or a `Finish` fails. `@tool` functions
+   take a parameter named `progress` the same way; it is not an argument, so it is not in
+   `parameters`. A `progress` parameter annotated as anything but `Progress` (an argument
+   that happens to share the name) is a `ToolDefinitionError`, not silently taken over.
    `bash` passes its output to `progress` as it arrives. The reader thread (Rust, no GIL)
    only copies bytes into a buffer of at most 64 KiB; a thread of its own takes the GIL for
    each call and passes the buffer on at most once per 100 ms (the first bytes after a quiet
-   spell at once), cutting only between UTF-8 characters. A slow consumer stalls that thread
-   alone: the buffer drops its oldest bytes, never blocking the command or the answer. The
-   answer (10 kB tail, overflow file) is the same with or without progress. `read`, `write`,
-   `grep` take none.
+   spell at once). Text is cut only between UTF-8 characters: only a half-arrived character
+   in the last one to three bytes is held back, an invalid byte is shown at once and does not
+   hold up what follows, and dropping the oldest bytes skips to a character boundary. What a
+   slow consumer holds up: the command and the reader never wait on it (the buffer drops its
+   oldest bytes), but the answer does, because `wait` joins the emitter thread: it waits for
+   a callback already running and for the final flush, one more call. (With 1 s callbacks,
+   `echo a; sleep 0.2; echo b` answers at 2 s.) Bounding that would need interrupting a
+   callback in flight; under the driver the callback is only `call_soon_threadsafe`, so it
+   does not arise. The answer (10 kB tail, overflow file) is the same with or without
+   progress. The emitter attaches with `try_attach` after checking a flag that an `atexit`
+   callback clears: under abi3-py312 PyO3 cannot ask whether the interpreter is finalizing,
+   and attaching then is undefined behavior on 3.12 and 3.13, so no call is made once exit
+   begins. `read`, `write`, `grep` take none.
 
    *Found while building:* `Saved(c)` was emitted after every answer, and a batch answers
    once per call, so it fired while other calls of the batch still ran, and wiped that
@@ -292,18 +307,26 @@ whose `provider` is not its own.
 20. **`Saved` names the calls it settled; progress outlives other saves.** A call answered
    before its batch is whole only fills a slot in core: no node is added, so the driver now
    emits no `Saved` for it (a `Saved` means the tree changed). The batch's `Results` node
-   is the save that answers its calls, and that `Saved` carries `calls`, the ids it
-   answered: `Saved(cursor, calls=())`. The buffer rule: `Saved(c)` still removes the
+   is the save that answers its calls, and that `Saved` carries `calls`, the calls it
+   answered as `(node, call_id)` pairs: `Saved(cursor, calls=())`. The buffer rule: `Saved(c)` still removes the
    provider deltas (text, thinking, call) buffered for `c` and earlier `Saved(c)`; buffered
    `ToolProgress` of `c` survives every `Saved` except for the calls in its `calls`. The
    `calls` of a `Saved(c)` it replaces move onto it, so a subscriber that fell behind still
    hears which calls settled. The frontend rule matches: draw a call's progress as a layer
-   keyed by call id and drop it when a `Saved` names the call (its result is in the tree),
+   keyed by `(node, call_id)` and drop it when a `Saved` names the call (its result is in the tree),
    not at every `Saved`. The bound is unchanged: a full buffer drops any `Live`, progress
    included, so the buffer holds at most `capacity` events plus one `Saved` per cursor;
    progress surviving a save does not enlarge it (a flood fills the buffer and the rest is
    dropped, oldest kept). Other `Saved`s (frontend calls such as `set_auto`, hook answers)
    can still arrive mid-batch with `calls=()`; progress survives them.
+
+   A hook's write is announced when it happens. A handle's writes (`append`, `append_root`,
+   `open`, `add_item`, `remove_item`, `set_label`, `remove_label`, and a cursor hook's
+   `move`, `write`, `set_auto`) each emit `Saved` for the cursor they changed (the hook's or
+   batch's own when they name none), through a `changed` callback beside `poke`. Before, only
+   the answer was announced, so a `pre_result` hook that wrote on a fast call went unseen
+   until the slow call of the batch ended. A call answer that changed nothing still emits
+   nothing.
 
 ## Open
 

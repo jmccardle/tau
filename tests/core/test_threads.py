@@ -5,6 +5,7 @@ Session must be safe to call from many threads at once.
 The same check with τ 0.15 imported alongside is in parity/.
 """
 
+import subprocess
 import sys
 import sysconfig
 from concurrent.futures import ThreadPoolExecutor
@@ -57,3 +58,36 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
         assert session.label(f"cursor {cursor}") == cursor
     assert len(session.tree.walk(root)) == 2, "no thread wrote a node"
     assert isinstance(session.tree.node(root).body, Body.System)
+
+
+EXIT_WHILE_STREAMING = """
+import asyncio, sys, threading, time
+from tau_next import BashTool
+
+seen = []
+tool = BashTool(".")
+
+def stream() -> None:
+    asyncio.run(tool.call(
+        '{"command": "for i in $(seq 100); do echo tick; sleep 0.02; done", "timeout": 60000}',
+        progress=seen.append,
+    ))
+
+threading.Thread(target=stream, daemon=True).start()
+while not seen:
+    time.sleep(0.01)
+sys.exit(0)  # the command still runs and its output still arrives
+"""
+
+
+def test_exiting_while_bash_streams_progress_ends_cleanly() -> None:
+    """The progress thread must not attach to an interpreter that is finalizing."""
+    for _ in range(5):
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", EXIT_WHILE_STREAMING],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert (done.returncode, done.stderr) == (0, "")

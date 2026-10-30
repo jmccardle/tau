@@ -143,6 +143,19 @@ class _Param:
     description: str | None
 
 
+def _check_progress(param: inspect.Parameter, hints: Mapping[str, object], where: str) -> None:
+    """A parameter named `progress` is the callback the driver passes, never an argument: it
+    must be passable by keyword and unannotated or annotated `Progress`."""
+    if param.kind is param.POSITIONAL_ONLY:
+        raise ToolDefinitionError(f"{where}: `progress` must be passable by keyword")
+    if hints.get(PROGRESS, Progress) != Progress:
+        raise ToolDefinitionError(
+            f"{where}: `progress` is the callback the driver passes (annotate it as `Progress`, "
+            f"or leave it unannotated), not an argument of type {hints[PROGRESS]!r}; "
+            "rename the argument"
+        )
+
+
 def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Param, ...]:
     name = fn.__name__
     signature = inspect.signature(fn)
@@ -152,6 +165,10 @@ def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Pa
         raise ToolDefinitionError(
             f"tool {name!r}: an annotation cannot be resolved: {type(e).__name__}: {e}"
         ) from e
+    if PROGRESS in describe:
+        raise ToolDefinitionError(
+            f"tool {name!r}: describe names `progress`, which is not an argument of the tool"
+        )
     unknown = [p for p in describe if p not in signature.parameters]
     if unknown:
         raise ToolDefinitionError(
@@ -162,8 +179,7 @@ def _params(fn: Callable[..., object], describe: Mapping[str, str]) -> tuple[_Pa
     for param in signature.parameters.values():
         where = f"tool {name!r}, parameter {param.name!r}"
         if param.name == PROGRESS:
-            if param.kind is param.POSITIONAL_ONLY:
-                raise ToolDefinitionError(f"{where}: `progress` must be passable by keyword")
+            _check_progress(param, hints, where)
             continue
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             raise ToolDefinitionError(f"{where}: *args and **kwargs cannot be described")

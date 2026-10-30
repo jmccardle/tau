@@ -21,6 +21,10 @@ from tau_next._core import (
 Poke = Callable[[], None]
 """Tells the driver's pump a handle call may have woken a cursor."""
 
+Changed = Callable[[int | None], None]
+"""Tells the driver a handle call changed the tree or a cursor: `Saved` for that cursor, or
+for the handle's own cursor (the hook's, or the batch's) when `None`."""
+
 Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
@@ -64,17 +68,19 @@ class TreeHandle:
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
         self,
         session: Session,
         extension: str,
         now: Now,
         poke: Poke,
+        changed: Changed,
         hook: int | None = None,
     ) -> None:
         self._session = session
         self._now = now
         self._poke = poke
+        self._changed = changed
         self._hook = hook
         self._live = True
         self.extension = extension
@@ -136,18 +142,23 @@ class TreeHandle:
     def append(self, parent: int, body: Body) -> int:
         """Append a node under `parent` without moving any cursor. Returns its id."""
         self._check()
-        return self._session.append(parent, body, self.by, self._now(), self._hook)
+        node = self._session.append(parent, body, self.by, self._now(), self._hook)
+        self._changed(None)
+        return node
 
     def append_root(self, config: Config) -> int:
         """Append a root (a detached tree) holding `config`, without moving any
         cursor. Returns its id."""
         self._check()
-        return self._session.append_root(config, self.by, self._now(), self._hook)
+        node = self._session.append_root(config, self.by, self._now(), self._hook)
+        self._changed(None)
+        return node
 
     def open(self, at: int) -> int:
         """Open a cursor at `at`; it wakes. Returns its id."""
         self._check()
         cursor = self._session.open(at, self.by, self._now(), self._hook)
+        self._changed(cursor)
         self._poke()
         return cursor
 
@@ -155,6 +166,7 @@ class TreeHandle:
         """Add this extension's item to a cursor's scratchpad; the cursor wakes."""
         self._check()
         item = self._session.add_item(to, ItemData.Extension(self.extension, data), self._hook)
+        self._changed(to)
         self._poke()
         return item
 
@@ -162,15 +174,18 @@ class TreeHandle:
         """Remove any item; raises `NoSuchItem`. Wakes nothing."""
         self._check()
         self._session.remove_item(id, self._hook)
+        self._changed(None)
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
         self._check()
         self._session.set_label(label, cursor, self._hook)
+        self._changed(cursor)
 
     def remove_label(self, label: str) -> None:
         self._check()
         self._session.remove_label(label, self._hook)
+        self._changed(None)
 
 
 class NodeHandle(TreeHandle):
@@ -179,8 +194,10 @@ class NodeHandle(TreeHandle):
     The tree handle, plus the batch's node. Has none of the cursor's own operations.
     """
 
-    def __init__(self, session: Session, id: int, extension: str, now: Now, poke: Poke) -> None:
-        super().__init__(session, extension, now, poke)
+    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
+        self, session: Session, id: int, extension: str, now: Now, poke: Poke, changed: Changed
+    ) -> None:
+        super().__init__(session, extension, now, poke, changed)
         self.id = id
 
     @property
@@ -212,8 +229,9 @@ class Cursor(TreeHandle):
         asker: Asker,
         now: Now,
         poke: Poke,
+        changed: Changed,
     ) -> None:
-        super().__init__(session, extension, now, poke, hook=id)
+        super().__init__(session, extension, now, poke, changed, hook=id)
         self._asker = asker
         self.id = id
 
@@ -251,18 +269,22 @@ class Cursor(TreeHandle):
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
         self._check()
         self._session.hook_move(self.id, to, self.by, self._now())
+        self._changed(None)
 
     def write(self, body: Body, delivers: Sequence[int] = ()) -> int:
         """Append `body` under `at` and move onto it, as one record; the
         `delivers` items are removed. Returns the new node's id."""
         self._check()
-        return self._session.hook_write(self.id, body, list(delivers), self.by, self._now())
+        node = self._session.hook_write(self.id, body, list(delivers), self.by, self._now())
+        self._changed(None)
+        return node
 
     def set_auto(self, on: bool) -> None:
         """Turn this cursor's auto-step on or off. Wakes nothing: the step is running.
         Turning it on inside a step that is aborted leaves the cursor at rest."""
         self._check()
         self._session.hook_set_auto(self.id, on)
+        self._changed(None)
 
     async def ask(self, target: str, question: str) -> str | None:
         """Wait for the response, or `None` if declined. The hook's job stays out
