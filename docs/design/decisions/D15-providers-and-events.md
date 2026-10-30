@@ -1,8 +1,12 @@
 # D15: Providers own their connections; frontends get saved and live events
 
-Status: candidate (2026-10-30): the first slice is built (provider contract, settings,
-live and saved events, mock provider), and the OpenAI provider keeps to the contract
-(item 10); replay data and the shared walk are built (item 14); a Gemini provider is built (item 15); tool progress is built (items 19 and 20). Amends `model.md` §9 and §10.
+Status: candidate (2026-10-30; John has not signed it off). Built: the provider contract,
+settings, live and saved events and the mock provider (items 1-8); the OpenAI provider
+(10-13); replay data and the shared walk (14); the Anthropic provider (15); the Gemini
+provider (16); failed replies that say why (17); one HTTP module and one walk for the
+three hosted providers (18); tool progress (19, 20). A layered review of the providers
+(2026-10-30) amended items 1, 4, 9, 14, 17, 18 and 20 and settled most of what was Open;
+see "Review 2026-10-30". Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -59,11 +63,13 @@ whose `provider` is not its own.
 - Parts: `Text`, `Thinking`, `Call`, each with an optional `replay` slot:
   opaque JSON tagged with the provider name that wrote it. A provider sends a
   part's replay data back only when the tag is its own; otherwise it treats the
-  part as it would an unsigned one (`model.md` §10.4).
+  part as it would an unsigned one (`model.md` §10.4). Replay data its own provider
+  wrote but this version cannot understand counts as unsigned too (Review).
 - `Finish(stop, reason, meta)`: `meta` gains a normalized `usage` (input,
   output, cached tokens) beside the provider's raw fields.
-- `SampleError(message, meta, status=None, retry_after=None)`. Retries are a
-  wrapper provider, never core (cursor never spins).
+- `SampleError(message, meta, status=None, retry_after=None)`. The core never retries
+  (cursor never spins); a retry is a wrapper provider, and only an example
+  (`examples/retry.py`) ships (Review, D3).
 - The walk-to-messages rules every provider shares (`model.md` §10.5–10.7:
   batches, results, partial calls, stop notes) live in one module.
 
@@ -77,7 +83,7 @@ whose `provider` is not its own.
   and thinking arriving, a call forming (its name, then its arguments as they
   stream), a running tool's progress (bash output as it arrives). A frontend
   draws them as a layer over its cursor and drops the layer when the node they
-  belong to is saved. A cancelled sample is saved as an `Interrupted` reply
+  belong to is saved (the exact rules are "Frontend rules for events", below). A cancelled sample is saved as an `Interrupted` reply
   with what arrived (see "Amended while building"), so dropping or merging
   live events loses nothing, and a slow frontend may skip them.
 - The provider's stream yields live events as they arrive and whole parts as
@@ -100,13 +106,15 @@ whose `provider` is not its own.
    part they were building (same kind and text; a call: same id, tool, arguments), and
    `Finish` may not come with deltas open (a provider that breaks any of these fails
    the sample, and the open text is saved).
-   A call still forming at the cancel is not saved (its arguments are not a part).
+   A call still forming at the cancel is not saved (its arguments are not a part). A call
+   cut off by any failure is dropped the same way, in every provider (Review, D1).
 2. **Live events have no cursor at the provider.** A provider does not know which
    cursor it serves, so it yields cursor-less deltas (`TextDelta`, `ThinkingDelta`,
    `CallNamed`, `CallArgs`) and the driver wraps each as `Live(cursor, delta)`. "Every
    event names its cursor" holds for what `driver.events()` yields.
 3. **Saved events start as one kind.** `Saved(cursor)` means "the tree changed for
-   this cursor, look at it", emitted after the driver applies each answer to core and
+   this cursor, look at it", emitted after the driver applies each answer to core that
+   changed something (Review, D2) and
    by the frontend calls that change a cursor with no answer (`input`, `go_to`, `open`,
    `add_item`, ...), so a second frontend hears of them. The
    fine-grained kinds (node added, cursor moved, label changed, item changed, busy or
@@ -118,7 +126,7 @@ whose `provider` is not its own.
    an abandoned one is collected. One consumer per stream. A buffer holding `capacity`
    events drops further `Live`; a `Saved(c)` removes the buffered `Live`s of `c` and
    any earlier `Saved(c)` (the frontend drops that layer at `Saved(c)` anyway) and joins
-   the end, so a buffer never exceeds capacity plus one `Saved` per cursor. Stopping the
+   the end (superseded by Review, D2: only a `Saved` with `reply` removes the `Live`s), so a buffer never exceeds capacity plus one `Saved` per cursor. Stopping the
    driver ends every stream after what it holds; a driver that fails (pump or effect)
    ends them by raising the failure from `anext`.
 5. **`Provider.close()` is `aclose()`**, and a provider has a `name`; the driver's map
@@ -126,14 +134,15 @@ whose `provider` is not its own.
 6. **`check_config` takes the map as a required keyword**; `read_models` (no
    provider checks, as it never had) does not, so an unknown provider name found
    outside `tau config check` fails that sample, with the known names in the error.
-7. **`builtin_providers(environ)`** builds the built-in providers (`openai`, `mock`);
-   the CLI and examples use it.
+7. **`builtin_providers(environ)`** builds the built-in providers (`openai`, `anthropic`,
+   `gemini`, `mock`); the CLI and examples use it.
 8. **Settings are checked at run time too.** `tau config check` is not the only caller
    of `Provider.check`: the driver calls it before every sample and fails that sample
    with the problems listed, so an ill-typed option never reaches `sample`.
    `ModelConfig.options` is a deep read-only copy.
 9. **`max_tokens`** is sent by the OpenAI provider as `max_tokens` (its one change, so
-   a setting is not silently ignored); `options` it refuses until it has some.
+   a setting is not silently ignored); `options` it refuses until it has some
+   (superseded by item 10, which gave it options).
 
 10. **The OpenAI provider is built to the contract.** One `httpx.AsyncClient` (httpx pools
    per host, so not one per `base_url`), made on the first sample; `aclose()` closes it and a
@@ -156,7 +165,8 @@ whose `provider` is not its own.
    `aclose()`, or cut by it, raises `ProviderClosed` (a `SampleError`). `extra_body` may
    not set `n` or a key the model's settings set; `check` also refuses non-finite numbers
    in it, and the config loader refuses `NaN`, `Infinity` and out-of-range numbers as
-   invalid JSON. A choice other than index 0 fails the sample. A call that changes its id
+   invalid JSON. A choice other than index 0 fails the sample (a chunk with more than one
+   choice is refused outright, Review). A call that changes its id
    or name after being announced (no `index`, a split name) fails the sample rather than
    merging. `Retry-After` and the status are taken before an error body is read.
    A malformed cached count leaves `usage` out.
@@ -165,7 +175,9 @@ whose `provider` is not its own.
    class, not loose JSON: `data` is the text of a JSON object with no repeated key and
    `provider` a visible name, checked in Rust at construction (`BadReplay`, a `ValueError`) and
    when a log loads (without building a parse tree; a refusal there says why). A `BadReplay`
-   escaping a provider's `sample` fails that sample like a `SampleError`. A part's `replay` is
+   escaping a provider's `sample` fails that sample like a `SampleError` (superseded by
+   Review: every exception from `check` or `sample` fails one sample, and the separate
+   `BadReplay` branch is gone). A part's `replay` is
    `None` by default; a part without one is logged in the old spelling, and one with it as
    `{"Text": {"text", "replay"}}`, so old logs load. `tau_next.replay_for(part, provider)`
    returns the parsed data only for the part's own provider; the exact text is
@@ -239,7 +251,8 @@ whose `provider` is not its own.
    `Error` reply, and the error text went only to `post_step` (`Ending::Failed`): a
    Gemini 503 inside the stream left a lone `Thinking` part and no reason in the tree.
    Chosen: the failed reply carries the error in its `meta`, as
-   `error: {message, status?, retry_after?}`, added by the driver (`effects.py`) from
+   `error: {message, status?, retry_after?}` (amended by Review: also `internal?` and
+   `provider?`), added by the driver (`effects.py`) from
    `SampleError`. Rejected: a core-written `sample_error` node after the reply. It would
    hang a side child under the cursor's node, so a frontend reading the reply would
    still not learn why, and a second place to look. Core keeps `meta` opaque, so no
@@ -252,15 +265,19 @@ whose `provider` is not its own.
    copied; each provider keeps its request, its `_Stream`, and how its error bodies read
    (Anthropic leads with the error `type`; Google's `RetryInfo` is read in `gemini.py`, since no
    other API sends it). `_walk.turns` takes the rules that were local: `object_args`
-   (Anthropic and Gemini; a blank `args_raw` is `{}` for both, which Gemini used to send as text),
+   (Anthropic and Gemini; a blank `args_raw` is `{}` for both, which Gemini used to send as text;
+   superseded by Review: the option is deleted and the rule is always on),
    `structured` (Anthropic sends no `tool_use` without `tools`; nothing says Gemini refuses
-   `functionCall` parts without `tools`, so it does not ask), and the provider hook `text_from`
+   `functionCall` parts without `tools`, so it did not ask; superseded by Review: all three
+   pass `structured=bool(tools)`), and the provider hook `text_from`
    (only Anthropic's manual thinking depends on what a provider would send). `Messages` does
    the merge and drops what a provider rendered empty; what counts as empty stays the
-   provider's. OpenAI asks for `object_args` only: llama.cpp answers HTTP 500 "Failed to parse tool call
+   provider's. OpenAI asked for `object_args` only (now always on): llama.cpp answers HTTP 500 "Failed to parse tool call
    arguments as JSON" to a history call whose `arguments` is `{"p"` (probed by hand), and an empty
-   `arguments` goes as `{}`. It offers tools whenever it has any, so it has no use for `structured`. The system note
-   is `[system note: ...]` everywhere. A negative token count is malformed for all three.
+   `arguments` goes as `{}`. It offered tools whenever it had any, so it had no use for `structured`
+   (superseded: Review). The system note was said to be `[system note: ...]` everywhere, but OpenAI
+   sent `role: system` until the Review (D11) made it true. A negative token count is malformed
+   for all three.
 
 19. **Tool progress (built).** A tool opts in by giving `call` a parameter named
    `progress`, detected once when the driver is built (`takes_progress`); the driver then
@@ -304,12 +321,15 @@ whose `provider` is not its own.
    once per call, so it fired while other calls of the batch still ran, and wiped that
    cursor's buffered `Live` events, tool progress included. Fixed in item 20.
 
-20. **`Saved` names the calls it settled; progress outlives other saves.** A call answered
+20. **`Saved` names the calls it settled; progress outlives other saves.** (Amended by
+   Review, D2: a `Saved` purges the deltas only when `reply` is true, and is emitted only
+   when something changed; the `calls` rule stands.) A call answered
    before its batch is whole only fills a slot in core: no node is added, so the driver now
    emits no `Saved` for it (a `Saved` means the tree changed). The batch's `Results` node
    is the save that answers its calls, and that `Saved` carries `calls`, the calls it
-   answered as `(node, call_id)` pairs: `Saved(cursor, calls=())`. The buffer rule: `Saved(c)` still removes the
-   provider deltas (text, thinking, call) buffered for `c` and earlier `Saved(c)`; buffered
+   answered as `(node, call_id)` pairs: `Saved(cursor, calls=())`. The buffer rule: `Saved(c)` still removes
+   earlier `Saved(c)` and, if it has `reply`, the provider deltas (text, thinking, call)
+   buffered for `c`; buffered
    `ToolProgress` of `c` survives every `Saved` except for the calls in its `calls`. The
    `calls` of a `Saved(c)` it replaces move onto it, so a subscriber that fell behind still
    hears which calls settled. The frontend rule matches: draw a call's progress as a layer
@@ -328,18 +348,125 @@ whose `provider` is not its own.
    until the slow call of the batch ended. A call answer that changed nothing still emits
    nothing.
 
+## Review 2026-10-30
+
+A layered review of the providers and the events (driver boundary, shared wire code, each
+provider, config, tests) found bugs, over-promising docs and code worth subtracting. All of
+it is merged except what is Open below. Decisions, with the reason in a line:
+
+- **D1. Cut-off calls are dropped everywhere.** A call that did not finish is never saved
+  half-built; its raw text goes in `meta.error` (`a call was cut off and dropped: ...`).
+  One rule instead of three providers' three ideas of "partial", and a half-built call is
+  not a call. `Connection.sample` lost its re-raise block.
+- **D2. `Saved.reply`.** It is true only for a sample's answer (`Answer.Sampled`); live
+  deltas are purged only by a `Saved` with `reply`. Before, any save (a `set_auto`, a hook
+  write) wiped the streaming layer. `Saved` is also emitted only when the tree, the labels,
+  the cursor's place, state or items changed, so "the tree changed" is true. Coalescing
+  ORs `reply`.
+- **D3. Retries live in an example only** (`examples/retry.py`, `RetryProvider`): neither
+  core nor any provider retries (cursor never spins). The example retries a whole sample
+  only if nothing was yielded yet; on 408, 429, 502, 503, 529, a 500 with `retry_after`,
+  and a transport error (the `__cause__`); never a plain 500, which llama.cpp uses for
+  deterministic errors.
+- **D4. No value lists.** `check` keeps type checks and the API judges values, so a new
+  `effort` level or `thinking.type` needs no release here. It still refuses what can never
+  work here: options needing a beta header (`thinking.display: "updates"`,
+  `thinking.block_binding`, `extra_body.context_management`), and the Anthropic budget
+  check (`budget_tokens` at least 1024 and below `max_tokens`).
+- **D5. `request()` is private** (`_request`), without its re-check: the driver runs
+  `check` first, and `Provider.sample` assumes it passed. A one-off call needs no new API;
+  the recipe is in the glossary (`examples/one_off.py`).
+- **D6. A `Refused` reply's parts are still replayed.** Dropping them would change the
+  history the user saw; kept by default.
+- **D7. No timeout option yet.** The defaults stand (10 s to connect, 300 s between bytes).
+  `return_progress` is documented below. A configurable timeout is Open.
+- **D8. No flag for dropped live events.** A slow subscriber's drops are not marked; the
+  frontend rules below make that safe, and the tree is the truth.
+- **D10. The client on a loop change is dropped (unawaited) and documented.** The old loop
+  is gone, so the client cannot be closed; a new one is made. The leak matters only to a
+  REPL that starts a new loop per command (Open).
+- **D11. `[system note: ...]` everywhere** after the first non-`System` turn, OpenAI
+  included. Leading `System` nodes stay `role: system`. One rule for every provider.
+- **D12. An empty send is allowed.** Gemini renders blank turns as nothing (they are
+  dropped); the API judges the rest.
+- **`structured=bool(tools)` for every provider.** A sample that offers no tools never
+  sends `tool_use` or `functionCall` blocks; they go as text.
+- **Replay that is not understood counts as unsigned.** Data we cannot read never fails a
+  branch.
+- **Provider errors fail one sample, with `internal: true`.** Any `Exception` from `check`
+  or `sample` that is not a `SampleError` keeps the parts, saves `meta.error` as
+  `"Type: msg"` with `internal: true`, and prints the traceback to stderr, never the log.
+  Driver and core invariant breaks still kill the driver. An abort always saves
+  `Cancelled`.
+- **Strict JSON.** Server events and call arguments with `NaN` or infinity are invalid (a
+  NaN argument counts as "not an object" and goes as text); `meta` is written with
+  `allow_nan=False`; `retry_after` is `None` when not finite; a lone surrogate in an event
+  is a `SampleError`.
+- **Keys safe in headers.** `ModelConfig.api_key` refuses any character outside
+  `0x21-0x7E`, naming the variable or the literal, never the key. A header an HTTP client
+  cannot encode is a `SampleError` that never contains the header value.
+
+Also carried out: `Connection` ignores content after the reply is done (only `meta` is
+read); `CallArgs` needs an open `CallNamed` with the same index; a provider's `check` does
+not verify its own name (the driver's name-keyed map does); `_typed_body(model)` is each
+provider's one source of request keys and `extra_body` conflicts; Gemini refuses non-list
+`parts`, parts with more than one data key, a non-bool `thought` and a `models/` prefix on
+the model name, ignores chunks after a `blockReason` and metadata part keys, quotes the
+model in the URL, and drops blank turns; OpenAI refuses a chunk with more than one choice
+and a `base_url` ending in `/chat/completions`, and turns `delta.refusal` into text and
+`Refused`; Anthropic refuses `extra_body.thinking`, checks the block index, skips null
+usage values, and gives a non-object error event status 500; the config loader bounds JSON
+integers to 64 bits; `tau config check` turns a raising provider check into a problem
+line, and a bad literal key is an error while a bad key inside a variable is a warning
+(the variable is read at sample time).
+
+**Declined:**
+
+- *Capping meta strings.* Meta records what the server said; a cap would hide it.
+- *A content-type check on responses.* Servers and proxies disagree about it, and the SSE
+  reader already fails on what is not SSE.
+- *A total deadline.* A long stream is legitimate and abort exists; the wait between bytes
+  is bounded. Revisit with the timeout option.
+- *A startup check* (probing a provider when the driver is built). It would make startup
+  need the network; `tau config check` and the per-sample `check` suffice.
+
+### Frontend rules for events
+
+1. Live events are advisory until the next `Saved`. A subscriber that fell behind lost
+   some; read the tree.
+2. Ignore a `CallArgs` whose `CallNamed` you never saw (the `Live` before it may have been
+   dropped).
+3. Drop a reply's streamed layer (text, thinking, call deltas) at `Saved(reply=True)`. No
+   other `Saved` clears it.
+4. Drop a call's progress layer, keyed by `(node, call_id)`, when a `Saved.calls` names it.
+
+### Provider settings worth knowing
+
+- **llama.cpp `return_progress`.** `options.extra_body: {"return_progress": true}` asks the
+  server to send progress while it processes a long prompt, which keeps the read alive
+  (the read timeout is 300 s between bytes). Not exercised against a live server in this
+  review.
+- **OpenAI proper and `max_completion_tokens`.** Newer OpenAI models refuse `max_tokens`.
+  Leave `max_tokens` unset and send `options.extra_body: {"max_completion_tokens": N}`.
+- **Gemini 3 and switching mid tool loop.** A call from another provider carries no
+  signature, so switching to a Gemini 3 model in the middle of a tool loop fails with a 400
+  ("Function call is missing a thought_signature") until the next user text starts a new
+  loop. There is no fallback signature (Fail Early).
+
 ## Open
 
-- Text after tool results. A `Results` node followed by a `User` node merges into one user
-  message of `tool_result` blocks and text. The docs say empty `end_turn` replies are commonly
-  caused by text right after tool results; the provider then drops the empty reply, the next
-  request merges again, and the loop repeats. Policy is John's call.
-- A walk that ends on an `Assistant` node is sent as prefill; models 4.6 and later reject that
-  with a 400, which surfaces as a `SampleError`.
-- `_walk` replays the parts of a `Refused` reply; the docs say to discard partial output after a
-  refusal. This affects every provider.
-- A mid-walk `System` node becomes `[system: ...]` user text, which carries user authority;
-  some models now take native `role: "system"` messages.
+- The Anthropic empty-reply-after-tool-results loop. A `Results` node followed by a `User`
+  node merges into one user message of `tool_result` blocks and text. The docs say text right
+  after tool results commonly gives an empty `end_turn`; the provider drops the empty reply,
+  the next request merges again, and the loop repeats. John chose A, leave it, for now. B (a
+  placeholder) if it is seen in practice. C (do not merge) needs a live test first.
+- An Anthropic tool-id length limit. Ids must match `[a-zA-Z0-9_-]+` and are mapped by a pure
+  function, never shortened; whether the API limits their length is unverified.
+- Whether `Refused` should override `Length` for OpenAI when both apply (a `refusal` delta,
+  then `finish_reason: length`). It does now; the spec is open.
+- A configurable timeout (D7).
+- The REPL client leak (D10): a REPL that starts a new event loop per command drops one
+  unclosed client each time.
 
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from
@@ -363,7 +490,7 @@ whose `provider` is not its own.
 | Every setting typed in `ModelConfig` | The core config grows with every provider's knobs. |
 | Every setting in `options`, `base_url` included | Proxies make `base_url` common to all; one shared spelling. |
 | Save live events | The tree already holds what arrived (`Interrupted`); saving deltas doubles the log for display only. |
-| Retries in core or the driver | A cursor never spins; a wrapper provider retries where it knows the status. |
+| Retries in core or the driver | A cursor never spins; a wrapper provider retries where it knows the status (an example, not built in). |
 
 ## Consequences
 
@@ -372,7 +499,7 @@ whose `provider` is not its own.
 - Rust: `replay` on `Text`, `Thinking`, `Call` (serde default; old logs load).
 - `config_layers` loses its fixed provider list; `check_config` takes the
   provider map.
-- The OpenAI provider keeps one client per endpoint and maps `reasoning` /
+- The OpenAI provider keeps one client per provider per event loop and maps `reasoning` /
   `reasoning_content` to `Thinking`.
 - Tests: a part's replay data round-trips through the log; another provider's
   replay data is never sent; a misspelt option fails `tau config check`; a

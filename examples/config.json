@@ -4,7 +4,10 @@
     "local": {
       "base_url": "http://192.168.1.100:8100/v1",
       "models": {
-        "qwen": { "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf" }
+        "qwen": {
+          "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
+          "options": { "extra_body": { "return_progress": true } }
+        }
       }
     },
     "hosted": {

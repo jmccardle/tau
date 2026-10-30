@@ -10,7 +10,7 @@ This file holds only the phases and where we are. The original hand-off plan,
 with its model sketch (§1) and decisions table (§4), is in git history
 (`b07efb9` and earlier).
 
-## Status (2026-10-29)
+## Status (2026-10-30)
 
 | phase | state |
 |---|---|
@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). D15 (providers and events) is a candidate: first slice built 2026-10-29 (provider contract, `max_tokens`/`options`, provider map, live and saved events, mock provider); replay data, the shared walk, and the Anthropic, Gemini and OpenAI-compatible providers built; tool progress built 2026-10-30. Missing: the 4 exit review. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). D15 (providers and events) is a candidate: first slice built 2026-10-29 (provider contract, `max_tokens`/`options`, provider map, live and saved events, mock provider); replay data, the shared walk, and the OpenAI-compatible, Anthropic and Gemini providers built; tool progress built 2026-10-30. A layered review of the providers and events (2026-10-30) is merged and recorded in D15 ("Review 2026-10-30"); its Open items remain, and retries are an example (`examples/retry.py`), not built in. Missing: the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -43,8 +43,7 @@ proptests are in. The store (3b, `crates/tau-store`, ~270 lines) writes the
 log and the scratchpad file, holds the lease, and cuts torn tails; a stored
 turn costs ~3 ms (fsyncs). The clippy gate (pedantic, `-D warnings`) is
 green. `docs/benchmarks.md` records the access-pattern benchmarks and how
-to rerun them. Missing: the JMFTS replica trait (nothing feeds it before Phase 7) and
-the bindings.
+to rerun them. Missing: the JMFTS replica trait (nothing feeds it before Phase 7). The bindings (`tau-py`) are built.
 
 ### Order from here (approved 2026-10-27; bends rule 5)
 
@@ -194,12 +193,13 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - **Exit:** property tests green; clippy gate green; ratchet on (rule 7); the
   3d review signed off.
 
-### Phase 4: Python driver, one provider, built-in tools
+### Phase 4: Python driver, providers, built-in tools
 - The driver performs jobs: hook calls, samples, calls (each call's
   `pre_tool`, tool, `pre_result`), waits. It cancels what the machine says to.
-- OpenAI-compatible provider first (covers llama.cpp), including `Results`
-  expansion and rendering unanswered calls as text. Typed request settings
-  from `Config`.
+- Providers: OpenAI-compatible (covers llama.cpp), Anthropic and Gemini are built
+  (D15), all sharing one HTTP module and one walk, with `Results` expansion and
+  unanswered calls rendered as text. Typed request settings from `Config`; a
+  provider's own settings in `options`.
 - Typed config file schema (pydantic); unknown keys are errors. The parser
   and checker land earlier (order step 4); here the provider's keys fill in.
 - Built-in tools as one `Tool` type. Rust tools ship as their own PyO3
@@ -223,6 +223,6 @@ and scratchpads replayed on connect), then print/json, REPL, RPC, TUI, each a
 client of the same model. One event projector per wire.
 
 ### Phase 7: release
-Anthropic and Google providers with `cache_state`; JMFTS replica; docs (no
+Anthropic and Google providers are built (D15); remaining for them is `cache_state`; JMFTS replica; docs (no
 0.15 session converter: D9 superseded); absorption into the τ repository as
 0.16.0.
