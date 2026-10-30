@@ -109,7 +109,11 @@ async def test_a_stream_cut_mid_reply_commits_the_partial_reply_as_an_error(
     async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
         driver.send(c, "test", "hello")
         await driver.rest(c)
-        assert bodies(s, c)[-1] == Body.Assistant([Part.Text("par")], Stop.Error, None)
+        reply = bodies(s, c)[-1]
+        assert isinstance(reply, Body.Assistant)
+        assert (reply.parts, reply.stop) == ([Part.Text("par")], Stop.Error)
+        assert reply.meta is not None
+        assert "connection reset" in json.loads(reply.meta)["error"]["message"]
 
 
 @scenario
@@ -126,7 +130,9 @@ async def test_a_failed_reply_keeps_the_meta_that_arrived_before_the_failure(
         assert isinstance(reply, Body.Assistant)
         assert reply.stop == Stop.Error
         assert reply.meta is not None
-        assert json.loads(reply.meta) == {"id": "c9", "model": "m-9"}
+        said = json.loads(reply.meta)
+        assert (said["id"], said["model"]) == ("c9", "m-9")
+        assert "connection reset" in said["error"]["message"]
 
 
 @scenario

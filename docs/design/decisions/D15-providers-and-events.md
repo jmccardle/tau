@@ -235,6 +235,17 @@ whose `provider` is not its own.
      with its results; model turns left empty (unsigned thinking only) are dropped and
      neighbouring contents merge; a `System` node after the first message is a
      `[system note: ...]` user turn; data core refuses as replay fails the sample.
+17. **A failed reply says why.** A sample that failed after parts arrived saved an
+   `Error` reply, and the error text went only to `post_step` (`Ending::Failed`): a
+   Gemini 503 inside the stream left a lone `Thinking` part and no reason in the tree.
+   Chosen: the failed reply carries the error in its `meta`, as
+   `error: {message, status?, retry_after?}`, added by the driver (`effects.py`) from
+   `SampleError`. Rejected: a core-written `sample_error` node after the reply. It would
+   hang a side child under the cursor's node, so a frontend reading the reply would
+   still not learn why, and a second place to look. Core keeps `meta` opaque, so no
+   Rust change. The no-parts case is unchanged (a `sample_error` node holding the
+   text; the sample left no reply to carry it). An old log loads: its failed replies
+   just have no `error` entry.
 
 ## Open
 
