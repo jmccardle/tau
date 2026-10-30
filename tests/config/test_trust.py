@@ -4,6 +4,7 @@ import io
 import json
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -290,34 +291,39 @@ def test_a_created_project_dir_is_private_ignored_and_trusted(world: World) -> N
 # -- .env
 
 
-def test_dotenv_is_read_only_for_a_trusted_project(world: World) -> None:
+def yes() -> Callable[[str], bool]:
+    return terminal_ask(io.StringIO("y\n"), io.StringIO())
+
+
+def test_dotenv_is_read_only_through_a_trusted_project(world: World) -> None:
     root = world.project()
     (root / ".env").write_text("FROM_DOTENV=yes\n", encoding="utf-8")
     shell = {**world.environ, "PATH": "/bin"}
-    assert project_environment(root, world.tau, shell) == shell
-    approve_project(root, world.tau)
-    assert project_environment(root, world.tau, shell) == {**shell, "FROM_DOTENV": "yes"}
+    with pytest.raises(UntrustedProject):
+        ensure_trusted(root, world.tau, ask=None)
+    trusted = ensure_trusted(root, world.tau, ask=yes())
+    assert project_environment(trusted, shell) == {**shell, "FROM_DOTENV": "yes"}
 
 
 def test_the_shell_overrides_dotenv(world: World) -> None:
     root = world.project()
     (root / ".env").write_text("KEY=from-file\nONLY=file\n", encoding="utf-8")
-    approve_project(root, world.tau)
-    merged = project_environment(root, world.tau, {**world.environ, "KEY": "from-shell"})
+    trusted = approve_project(root, world.tau)
+    merged = project_environment(trusted, {**world.environ, "KEY": "from-shell"})
     assert merged["KEY"] == "from-shell"
     assert merged["ONLY"] == "file"
 
 
 def test_no_project_means_just_the_shell(world: World) -> None:
-    assert project_environment(None, world.tau, world.environ) == world.environ
+    assert project_environment(None, world.environ) == world.environ
 
 
 def test_a_malformed_dotenv_in_a_trusted_project_fails_early(world: World) -> None:
     root = world.project()
-    approve_project(root, world.tau)
+    trusted = approve_project(root, world.tau)
     (root / ".env").write_text("A=1\nnonsense\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"\.env:2:"):
-        project_environment(root, world.tau, world.environ)
+        project_environment(trusted, world.environ)
 
 
 # -- A: approve exactly what was shown
@@ -397,12 +403,12 @@ def test_a_symlinked_ignore_file_is_refused_at_approval(world: World, tmp_path: 
 
 def test_a_symlinked_dotenv_is_refused(world: World, tmp_path: Path) -> None:
     root = world.project()
-    approve_project(root, world.tau)
+    trusted = approve_project(root, world.tau)
     target = tmp_path / "real.env"
     target.write_text("A=1\n", encoding="utf-8")
     (root / ".env").symlink_to(target)
     with pytest.raises(TrustError, match="symlink"):
-        project_environment(root, world.tau, world.environ)
+        project_environment(trusted, world.environ)
     with pytest.raises(TrustError, match="symlink"):
         trust_report(root, world.tau)
 
@@ -489,19 +495,19 @@ def test_a_foreign_tau_dir_is_skipped_by_the_search(world: World) -> None:
 # -- G: tau's own state must be private
 
 
-def test_a_group_readable_tau_home_is_refused_not_fixed(world: World) -> None:
+def test_a_group_writable_tau_home_is_refused_not_fixed(world: World) -> None:
     root = world.project()
     world.tau.mkdir(mode=0o700)
-    world.tau.chmod(0o750)
+    world.tau.chmod(0o770)
     with pytest.raises(TrustError, match="chmod 700"):
         approve_project(root, world.tau)
-    assert stat.S_IMODE(world.tau.stat().st_mode) == 0o750
+    assert stat.S_IMODE(world.tau.stat().st_mode) == 0o770
 
 
-def test_a_readable_trusted_json_is_refused(world: World) -> None:
+def test_a_writable_trusted_json_is_refused(world: World) -> None:
     root = world.project()
     approve_project(root, world.tau)
-    (world.tau / "trusted.json").chmod(0o644)
+    (world.tau / "trusted.json").chmod(0o664)
     with pytest.raises(TrustError, match="chmod 600"):
         is_trusted(root, world.tau)
 
@@ -522,3 +528,103 @@ def test_a_star_ignore_file_is_fine(world: World) -> None:
     root = world.project()
     (root / ".tau" / ".gitignore").write_text("# all\n*\n", encoding="utf-8")
     assert "[ok] .tau/.gitignore exists" in trust_report(root, world.tau)
+
+
+def test_group_readable_state_is_fine_only_writable_is_refused(world: World) -> None:
+    root = world.project()
+    approve_project(root, world.tau)
+    world.tau.chmod(0o750)
+    (world.tau / "trusted.json").chmod(0o640)
+    assert is_trusted(root, world.tau)
+
+
+# -- D1: nothing a project file says can drive the terminal
+
+EVIL = "http://evil.example/v1\x1b[2K\r    base_url: http://good/v1 -> http://good/v1"
+
+
+def test_control_characters_in_config_values_are_escaped(world: World) -> None:
+    world.user_config(models(g={}))
+    root = world.project(config=models(g={"base_url": EVIL}))
+    report = trust_report(root, world.tau)
+    assert "http://evil.example/v1\\x1b[2K\\x0d    base_url: http://good/v1" in report
+    assert not any((ord(c) < 0x20 and c != "\n") or c == "\x7f" for c in report)
+    with pytest.raises(UntrustedProject) as caught:
+        ensure_trusted(root, world.tau, ask=None)
+    assert "\x1b" not in str(caught.value)
+    out = io.StringIO()
+    with pytest.raises(UntrustedProject):
+        ensure_trusted(root, world.tau, ask=terminal_ask(io.StringIO("n\n"), out))
+    assert "\x1b" not in out.getvalue()
+
+
+def test_control_characters_in_names_errors_and_diffs_are_escaped(world: World) -> None:
+    nasty = "a\x1b[31m\x85b"
+    root = world.project(config={"models": {nasty: {"model": "m", "base_url": URL}}})
+    report = trust_report(root, world.tau)
+    assert "new model a\\x1b[31m\\x85b" in report
+    bad = world.project("bad", config={"models": {"x\x1b[0m": {"modle": "q"}}})
+    problems = trust_report(bad, world.tau)
+    assert "\x1b" not in problems
+    assert "\\x1b" in problems
+
+
+# -- D2, D6: odd files
+
+
+def test_a_fifo_config_is_refused_without_hanging(world: World) -> None:
+    root = world.project()
+    os.mkfifo(root / ".tau" / "config.json")
+    with pytest.raises(TrustError, match="not a regular file"):
+        ensure_trusted(root, world.tau, ask=None)
+
+
+def test_a_config_over_a_mebibyte_is_an_error_naming_file_and_size(world: World) -> None:
+    root = world.project(config="{" + " " * (2 << 20) + "}")
+    with pytest.raises(TrustError, match=r"config\.json is 2097154 bytes"):
+        ensure_trusted(root, world.tau, ask=None)
+
+
+def test_a_dotenv_over_a_mebibyte_is_an_error(world: World) -> None:
+    root = world.project()
+    trusted = approve_project(root, world.tau)
+    (root / ".env").write_text("A=" + "x" * (2 << 20), encoding="utf-8")
+    with pytest.raises(TrustError, match=r"\.env is 2097154 bytes"):
+        project_environment(trusted, world.environ)
+
+
+# -- D3: the approved text is what gets read
+
+
+def test_trusted_reads_models_from_the_approved_text_not_the_file(world: World) -> None:
+    root = world.project(config=models(a={}))
+    trusted = ensure_trusted(root, world.tau, ask=yes())
+    (root / ".tau" / "config.json").write_text(json.dumps(models(b={})), encoding="utf-8")
+    assert trusted.read_models().names() == ("a",)
+    world.user_config(models(u={}))
+    user = world.tau / "config.json"
+    assert trusted.read_models(user).names() == ("u", "a")
+
+
+# -- D4: missing is not empty
+
+
+def test_a_missing_config_is_not_the_same_as_an_empty_one(world: World) -> None:
+    root = world.project()
+    approve_project(root, world.tau)
+    assert is_trusted(root, world.tau)
+    (root / ".tau" / "config.json").write_text("", encoding="utf-8")
+    assert not is_trusted(root, world.tau)
+
+
+# -- D5: hostile JSON is an ordinary error
+
+
+@pytest.mark.parametrize(
+    "text", ["[" * 200_000, '{"a": ' * 100_000, '{"models": {}, "x": ' + "9" * 5000 + "}"]
+)
+def test_deep_or_huge_json_is_a_reported_error(world: World, text: str) -> None:
+    root = world.project(config=text)
+    assert "cannot be trusted until these are fixed" in trust_report(root, world.tau)
+    with pytest.raises(TrustError, match=r"invalid JSON|nested too deeply"):
+        approve_project(root, world.tau)

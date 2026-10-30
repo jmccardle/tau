@@ -681,7 +681,8 @@ are read. Approval also makes `.tau/` the user's, mode `700`, with a
 - `trusted.json` (in `TAU_HOME`, written atomically) holds per project the
   sha256 of the approved config bytes, which decides, and a redacted copy
   (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs.
-  `is_trusted(root, home)` is hash equality; an absent config pins as no bytes.
+  `is_trusted(root, home)` is hash equality; the hash covers a marker byte, so an absent
+  config differs from an empty one.
 - `trust_report(root, home)` is what the user reads before agreeing: what the
   project config changes in the user config per qualified model (old to new;
   a literal `api_key` only as `(set)`), the variable names (never values) its
@@ -690,14 +691,15 @@ are read. Approval also makes `.tau/` the user's, mode `700`, with a
 - `approve_project(root, home)`: sets `.tau/` to `700`, writes `.tau/.gitignore`
   (`*`, mode `644`) if missing, records the config. `ensure_trusted(root, home,
   *, ask)` returns a frozen **`Trusted`** (`root`, `config_text`, `layer()` as a
-  `LayerText` for `read_models`; callers use it, not the file) if trusted;
+  `LayerText`, and `read_models(user=, cli=)` returning the catalog from the approved
+  text; callers use these, never `project_config_path`, which is for display) if trusted;
   otherwise `ask(report)` decides, and no `ask` (no live terminal) or a no
   raises **`UntrustedProject`** (message: the report and `tau trust <root>`).
   **`TrustError`** (a `PermissionError`) is every other refusal.
   `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the
   terminal side. `create_project_dir(root, home)` makes a `.tau/` tau owns and
-  trusts it in one step. `project_environment(root, home, environ)` overlays
-  `environ` on the `.env` of a trusted project. A **`LayerText`** is a config
+  trusts it in one step. `project_environment(trusted, environ)` overlays
+  `environ` on the `.env` of a `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config
   layer already read (source and text), accepted where a layer takes a `Path`.
 
 Rules. (A) The config is read once per `ensure_trusted`; report, question, and
@@ -709,8 +711,11 @@ against `lstat`. (C) As above: hash decides, redacted copy shows. (D) A config
 with errors (or a malformed `.env`) cannot be approved; the report lists them.
 (E) `.env` is not content-pinned; it is refused if a symlink or not yours.
 (F) A foreign `.tau` is not a project. (G) `TAU_HOME` or `trusted.json`
-readable by group or others refuses all trust operations with the `chmod` to
-run; tau never changes them. (H) A `.gitignore` without a line of exactly `*`,
+writable by group or others refuses all trust operations with the `chmod` to
+run; tau never changes them. (I) Every project-supplied string in a report or
+trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes.
+(J) `config.json` and `.env` over 1 MiB are an error naming file and size; files are
+opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` without a line of exactly `*`,
 or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
 
 ### parse_dotenv, read_dotenv, DotenvError

@@ -203,10 +203,20 @@ def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
         problem = ConfigProblem("error", f"invalid JSON: {e.msg}", source, "", e.lineno, e.colno)
         problems.found.append(problem)
         return None
+    except RecursionError:
+        problems.add("error", "invalid JSON: nested too deeply", source, "")
+        return None
+    except ValueError as e:
+        problems.add("error", f"invalid JSON: {e}", source, "")
+        return None
     if not isinstance(data, dict):
         problems.add("error", f"must be a JSON object, not {type(data).__name__}", source, "")
         return None
-    return _leafify(cast("dict[str, object]", data), source, "", problems)
+    try:
+        return _leafify(cast("dict[str, object]", data), source, "", problems)
+    except RecursionError:
+        problems.add("error", "nested too deeply", source, "")
+        return None
 
 
 def _merge(base: _Tree, over: _Tree) -> _Tree:

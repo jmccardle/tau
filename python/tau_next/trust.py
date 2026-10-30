@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import stat
+import unicodedata
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,9 +33,28 @@ _GITIGNORE = "*\n"
 _PRIVATE = 0o700
 _PRIVATE_FILE = 0o600
 _PUBLIC_FILE = 0o644
-_GROUP_OTHER = 0o077
+_WRITABLE_BY_OTHERS = 0o022
+_MAX_BYTES = 1 << 20
+_LATIN1_MAX = 0xFF
 _FIELDS = ("model", "base_url", "provider", "api_key_env", "api_key")
 _SECRET = "(secret)"
+
+
+def _safe(text: str) -> str:
+    """`text` with every control character written as an escape (`\\x1b`), so nothing a
+    project file says can move the cursor or repaint a line of the report."""
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if unicodedata.category(ch) == "Cc" or code in (0x2028, 0x2029):
+            out.append(f"\\x{code:02x}" if code <= _LATIN1_MAX else f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _p(path: Path) -> str:
+    return _safe(str(path))
 
 
 class TrustError(PermissionError):
@@ -46,7 +66,7 @@ class UntrustedProject(TrustError):
     what is wrong with `.tau/`; the message adds the command that trusts it."""
 
     def __init__(self, root: Path, report: str) -> None:
-        super().__init__(f"{report}\nTrust it with: tau trust {root}")
+        super().__init__(f"{report}\nTrust it with: tau trust {_p(root)}")
         self.root = root
         self.report = report
 
@@ -54,7 +74,8 @@ class UntrustedProject(TrustError):
 @dataclass(frozen=True)
 class Trusted:
     """A trusted project: its `root` and the exact `.tau/config.json` text that was approved
-    (`None`: it has no config file). Use `layer()` rather than re-reading the file."""
+    (`None`: it has no config file). Use `layer()` or `read_models()` rather than
+    re-reading the file."""
 
     root: Path
     config_text: str | None
@@ -64,6 +85,13 @@ class Trusted:
         if self.config_text is None:
             return None
         return LayerText(str(project_config_path(self.root)), self.config_text)
+
+    def read_models(
+        self, user: Path | LayerText | None = None, cli: Mapping[str, object] | None = None
+    ) -> ModelCatalog:
+        """`read_models(user, <the approved project config>, cli)`: the project layer is
+        the text that was approved, not whatever the file says now."""
+        return read_models(user, self.layer(), cli)
 
 
 @dataclass(frozen=True)
@@ -105,7 +133,8 @@ def tau_home(environ: Mapping[str, str]) -> Path:
 
 
 def project_config_path(root: Path) -> Path:
-    """`<root>/.tau/config.json`."""
+    """`<root>/.tau/config.json`, for display. To read the project config use
+    `Trusted.read_models`; never pass this path to `read_models`."""
     return root / TAU_DIR / "config.json"
 
 
@@ -143,10 +172,10 @@ def find_project(start: Path, environ: Mapping[str, str]) -> Path | None:
 
 def _refuse(path: Path, info: os.stat_result, what: str) -> None:
     if stat.S_ISLNK(info.st_mode):
-        raise TrustError(f"{path} is a symlink; tau refuses symlinks inside a project")
+        raise TrustError(f"{_p(path)} is a symlink; tau refuses symlinks inside a project")
     expected = stat.S_ISDIR if what == "a directory" else stat.S_ISREG
     if not expected(info.st_mode):
-        raise TrustError(f"{path} is not {what}")
+        raise TrustError(f"{_p(path)} is not {what}")
 
 
 def _same(a: os.stat_result, b: os.stat_result) -> bool:
@@ -155,29 +184,35 @@ def _same(a: os.stat_result, b: os.stat_result) -> bool:
 
 def _symlink_error(path: Path, e: OSError) -> TrustError | OSError:
     if e.errno == errno.ELOOP:
-        return TrustError(f"{path} is a symlink; tau refuses symlinks inside a project")
+        return TrustError(f"{_p(path)} is a symlink; tau refuses symlinks inside a project")
     return e
 
 
-def _read_regular(path: Path, *, owned: bool = False) -> bytes | None:
+def _read_regular(path: Path, *, owned: bool = False, limit: int = _MAX_BYTES) -> bytes | None:
     """The bytes of a regular file, or `None` if absent. A symlink or other kind of file is a
-    `TrustError` naming the path; with `owned`, so is a file that is not yours."""
+    `TrustError` naming the path; with `owned`, so is a file that is not yours, and so is
+    one over `limit` bytes. Opened non-blocking, so a FIFO swapped in cannot hang us."""
     try:
         before = path.lstat()
     except FileNotFoundError:
         return None
     _refuse(path, before, "a regular file")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
         raise _symlink_error(path, e) from e
     with os.fdopen(fd, "rb") as f:
         after = os.fstat(f.fileno())
         if not stat.S_ISREG(after.st_mode) or not _same(before, after):
-            raise TrustError(f"{path} changed while it was being read; run again")
+            raise TrustError(f"{_p(path)} changed while it was being read; run again")
         if owned and after.st_uid != os.geteuid():
-            raise TrustError(f"{path} is not owned by you")
-        return f.read()
+            raise TrustError(f"{_p(path)} is not owned by you")
+        if after.st_size > limit:
+            raise TrustError(f"{_p(path)} is {after.st_size} bytes; the limit is {limit}")
+        raw = f.read(limit + 1)
+        if len(raw) > limit:
+            raise TrustError(f"{_p(path)} grew past {limit} bytes while it was being read")
+        return raw
 
 
 @contextlib.contextmanager
@@ -193,7 +228,7 @@ def _tau_dir(root: Path) -> Generator[tuple[int, os.stat_result]]:
     try:
         after = os.fstat(fd)
         if not _same(before, after):
-            raise TrustError(f"{tau} changed while it was being read; run again")
+            raise TrustError(f"{_p(tau)} changed while it was being read; run again")
         yield fd, after
     finally:
         os.close(fd)
@@ -210,7 +245,7 @@ def _decode(raw: bytes | None, path: Path) -> str | None:
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise TrustError(f"{path} is not valid UTF-8") from e
+        raise TrustError(f"{_p(path)} is not valid UTF-8") from e
 
 
 # -- trusted.json
@@ -219,9 +254,9 @@ def _decode(raw: bytes | None, path: Path) -> str | None:
 def _require_private(path: Path, fix: str) -> None:
     with contextlib.suppress(FileNotFoundError):
         mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & _GROUP_OTHER:
+        if mode & _WRITABLE_BY_OTHERS:
             raise TrustError(
-                f"{path} is accessible to group or others (mode {mode:o}); run: {fix} {path}"
+                f"{_p(path)} is writable by group or others (mode {mode:o}); run: {fix} {_p(path)}"
             )
 
 
@@ -251,7 +286,9 @@ def _approved(home: Path) -> dict[str, _Approval]:
 
 
 def _digest(raw: bytes | None) -> str:
-    return hashlib.sha256(raw or b"").hexdigest()
+    """sha256 of the bytes behind a marker byte, so a missing config differs from an empty one."""
+    marker = b"\x00" if raw is None else b"\x01" + raw
+    return hashlib.sha256(marker).hexdigest()
 
 
 def _blank(value: object) -> object:
@@ -310,7 +347,7 @@ def _shown(config: ModelConfig, key: str) -> str:
     if key == "api_key":
         return "(set)" if config.literal_api_key is not None else "(unset)"
     value = cast("str | None", getattr(config, key))
-    return "(unset)" if value is None else value
+    return "(unset)" if value is None else _safe(value)
 
 
 def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
@@ -318,7 +355,7 @@ def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
     for name, found in after.models.items():
         old = before.models.get(name)
         if old is None:
-            lines.append(f"  new model {name}")
+            lines.append(f"  new model {_safe(name)}")
             lines += [f"    {k}: {_shown(found.config, k)}" for k in _FIELDS]
             continue
         changes = [
@@ -327,10 +364,11 @@ def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
             if _shown(old.config, k) != _shown(found.config, k)
         ]
         if changes:
-            lines += [f"  {name}", *changes]
-    lines += [f"  removed model {n}" for n in before.models if n not in after.models]
+            lines += [f"  {_safe(name)}", *changes]
+    lines += [f"  removed model {_safe(n)}" for n in before.models if n not in after.models]
     if before.default_model != after.default_model:
-        lines.append(f"  default_model: {before.default_model} -> {after.default_model}")
+        was, now = (_safe(str(m)) for m in (before.default_model, after.default_model))
+        lines.append(f"  default_model: {was} -> {now}")
     return lines
 
 
@@ -348,7 +386,7 @@ def _config_errors(seen: _Seen, home: Path) -> list[str]:
     if text is None:
         return []
     layer = LayerText(str(path), text)
-    return [str(p) for p in check_config(_user_layer(home), layer) if p.severity == "error"]
+    return [_safe(str(p)) for p in check_config(_user_layer(home), layer) if p.severity == "error"]
 
 
 def _overrides(seen: _Seen, home: Path) -> list[str]:
@@ -368,11 +406,11 @@ def _env_names(root: Path) -> tuple[list[str], str | None]:
     if raw is None:
         return [], None
     try:
-        return list(parse_dotenv(raw.decode("utf-8-sig"), str(path))), None
+        return [_safe(k) for k in parse_dotenv(raw.decode("utf-8-sig"), _p(path))], None
     except UnicodeDecodeError:
-        return [], f"{path} is not valid UTF-8"
+        return [], f"{_p(path)} is not valid UTF-8"
     except DotenvError as e:
-        return [], str(e)
+        return [], _safe(str(e))
 
 
 def _gitignore_check(tau: Path) -> str:
@@ -408,6 +446,7 @@ def _diff(approval: _Approval, seen: _Seen) -> list[str]:
             lineterm="",
         )
     )
+    diff = [_safe(line) for line in diff]
     return diff or ["  (no visible difference: a secret value changed, or only the formatting)"]
 
 
@@ -424,7 +463,7 @@ def _assess(seen: _Seen, home: Path, approval: _Approval | None) -> _Assessment:
     names, env_error = _env_names(root)
     if env_error is not None:
         errors.append(env_error)
-    lines = [f"Project {root} {state}.", ""]
+    lines = [f"Project {_p(root)} {state}.", ""]
     if errors:
         lines += ["It cannot be trusted until these are fixed:", *(f"  {e}" for e in errors)]
     else:
@@ -469,11 +508,11 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
     with _tau_dir(root) as (fd, info):
         if info.st_uid != os.geteuid():
             raise TrustError(
-                f"{root / TAU_DIR} is not owned by you; take it over (chown) before trusting it"
+                f"{_p(root / TAU_DIR)} is not owned by you; take it over (chown) before trusting it"
             )
         if _read_regular(project_config_path(root)) != seen.raw:
             raise TrustError(
-                f"{project_config_path(root)} changed while you were reading; run again"
+                f"{_p(project_config_path(root))} changed while you were reading; run again"
             )
         os.fchmod(fd, _PRIVATE)
         _write_gitignore(fd)
@@ -539,18 +578,16 @@ def create_project_dir(root: Path, home: Path) -> Path:
     return tau
 
 
-def project_environment(
-    root: Path | None, home: Path, environ: Mapping[str, str]
-) -> dict[str, str]:
-    """`environ` over the project's `.env`: the `.env` is read only if `root` is trusted
-    (a symlinked or foreign `.env` is a `TrustError`), and the shell environment wins."""
+def project_environment(project: Trusted | None, environ: Mapping[str, str]) -> dict[str, str]:
+    """`environ` over the `.env` of a trusted project (`None`: no project, just `environ`).
+    A symlinked or foreign `.env` is a `TrustError`; the shell environment wins."""
     found: dict[str, str] = {}
-    if root is not None and is_trusted(root, home):
-        path = root / ".env"
+    if project is not None:
+        path = project.root / ".env"
         raw = _read_regular(path, owned=True)
         if raw is not None:
             try:
-                found = parse_dotenv(raw.decode("utf-8-sig"), str(path))
+                found = parse_dotenv(raw.decode("utf-8-sig"), _p(path))
             except UnicodeDecodeError as e:
-                raise DotenvError(f"{path} is not valid UTF-8") from e
+                raise DotenvError(f"{_p(path)} is not valid UTF-8") from e
     return {**found, **environ}
