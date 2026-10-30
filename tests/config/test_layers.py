@@ -549,3 +549,75 @@ def test_a_number_json_cannot_hold_is_a_config_problem(tmp_path: Path, number: s
     text = '{"models": {"m": {"model": "x", "options": {"extra_body": {"t": ' + number + "}}}}}"
     problem = only_error(check(tmp_path, text))
     assert "invalid JSON" in problem.message
+
+
+def test_an_integer_beyond_64_bits_is_a_config_problem(world: World) -> None:
+    big = "9" * 400
+    model = json.dumps(MODEL)[:-1] + f', "max_tokens": {big}}}'
+    world.user_config('{"models": {"a": ' + model + "}}")
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert "out of range" in result.both
+
+
+# -- keys that cannot travel in an HTTP header, and a provider whose check raises
+
+BAD_KEYS = {
+    "newline": "sk-real\nsecret-9f3a",
+    "smart quote": "sk-real“secret-9f3a",
+    "nul": "sk-real\x00secret-9f3a",
+    "space": "sk-real secret-9f3a",
+}
+
+
+@pytest.mark.parametrize("key", BAD_KEYS.values(), ids=BAD_KEYS.keys())
+def test_a_key_that_cannot_be_a_header_is_refused_without_echoing_it(key: str) -> None:
+    literal = ModelConfig("m", URL, None, "openai", key)
+    named = ModelConfig("m", URL, "KEY", "openai")
+    for config, who in ((literal, "api_key"), (named, "KEY")):
+        with pytest.raises(ConfigError) as caught:
+            config.api_key({"KEY": key})
+        assert who in str(caught.value)
+        assert "secret-9f3a" not in str(caught.value)
+        assert "sk-real" not in str(caught.value)
+    assert named.api_key({"KEY": "sk-ok~!"}) == "sk-ok~!"
+
+
+def test_config_check_reports_a_bad_literal_key_and_a_bad_variable(world: World) -> None:
+    config = {
+        "models": {
+            "lit": {**MODEL, "api_key": BAD_KEYS["smart quote"]},
+            "nul": {**MODEL, "api_key": BAD_KEYS["nul"]},
+            "env": {**MODEL, "api_key_env": "BAD"},
+        }
+    }
+    world.user_config(config)
+    world.environ["BAD"] = BAD_KEYS["newline"]
+    result = tau(world, "config", "check")
+    assert "literal api_key contains a non-ASCII character" in result.both
+    assert "literal api_key contains a control character" in result.both
+    assert "BAD contains a control character" in result.both
+    assert "secret-9f3a" not in result.both
+    assert "sk-real" not in result.both
+
+
+def test_a_bad_key_variable_is_a_warning_since_it_is_read_at_sample_time(tmp_path: Path) -> None:
+    config = {"models": {"a": {**MODEL, "api_key_env": "BAD"}}}
+    (problem,) = check(tmp_path, config, {"BAD": BAD_KEYS["newline"]})
+    assert problem.severity == "warning"
+    assert "secret-9f3a" not in str(problem)
+
+
+class RaisingProvider:
+    name = "acme"
+
+    def check(self, model: ModelConfig) -> list[str]:
+        raise RuntimeError("cannot look at " + model.model)
+
+
+def test_a_provider_whose_check_raises_is_a_problem_line(tmp_path: Path) -> None:
+    user = write(tmp_path / "c.json", {"models": {"a": {**MODEL, "provider": "acme"}}})
+    problem = only_error(check_config(user, providers={"acme": RaisingProvider()}))  # type: ignore[dict-item]
+    assert "acme" in problem.message
+    assert "RuntimeError: cannot look at m" in problem.message
+    assert problem.path == "models.a"
