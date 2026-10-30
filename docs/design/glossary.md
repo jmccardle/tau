@@ -643,7 +643,11 @@ duplicate keys, unknown keys with a suggestion, `:` in a name, a missing
 not in the config, 0.15's `backend` key, and as warnings a literal `api_key`
 and (given `environ`) an unset `api_key_env` variable. A literal `api_key`
 is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
-in a problem, origin, or catalog text.
+in a problem, origin, or catalog text. `api_key` and `api_key_env` are one
+setting: the nearer one wins and drops the other. A name that is a model in one
+layer and a group in another is an error. `provider` unset shows in `explain`
+with source `"default"`. The top level takes `models` and `default_model`;
+frontend settings will widen it in a later part.
 
 ### trusted directory, trusted.json
 D13 · new
