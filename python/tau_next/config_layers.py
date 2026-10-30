@@ -257,13 +257,15 @@ def _merge_models(  # noqa: PLR0913, PLR0917 - the layer's whole merge state
                 _forget(kinds, here)
             out[name] = node
             continue
-        kind = "group" if "models" in node else "model"
         source = _source_of(node) or layer
         prev = kinds.get(here)
-        if prev is not None and prev[0] != kind:
-            msg = f"{name!r} is a {prev[0]} in {prev[1]} and a {kind} in {source}"
+        if prev is not None and prev[0] == "model" and "models" in node:
+            msg = f"{name!r} is a model in {prev[1]} and a group in {source}"
             problems.add("error", msg, source, _dotted(here))
             continue
+        # The first layer to define a name sets its kind (`models` makes a group);
+        # later layers without `models` just tune whichever it is.
+        kind = prev[0] if prev is not None else ("group" if "models" in node else "model")
         kinds.setdefault(here, (kind, source))
         existing = out.get(name)
         mine = existing if isinstance(existing, dict) else {}
@@ -274,9 +276,12 @@ def _merge_models(  # noqa: PLR0913, PLR0917 - the layer's whole merge state
             {k: v for k, v in mine.items() if k != "models"},
             {k: v for k, v in node.items() if k != "models"},
         )
-        group["models"] = _merge_models(
-            mine.get("models"), node["models"], kinds, here, problems, layer
-        )
+        if "models" in node:
+            group["models"] = _merge_models(
+                mine.get("models"), node["models"], kinds, here, problems, layer
+            )
+        elif "models" in mine:
+            group["models"] = mine["models"]
         out[name] = group
     return out
 

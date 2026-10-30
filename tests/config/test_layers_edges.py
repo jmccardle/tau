@@ -30,20 +30,27 @@ RENAMED = "`backend` is now `provider`"  # rules: allow(backend): 0.15's key, re
 MODEL = {"model": "m", "base_url": URL}
 
 
-@pytest.mark.parametrize("model_first", [True, False])
-def test_a_name_that_is_a_model_in_one_layer_and_a_group_in_another(
-    tmp_path: Path, model_first: bool
-) -> None:
-    as_model = write(tmp_path / "model.json", {"models": {"x": MODEL}})
-    as_group = write(tmp_path / "group.json", {"models": {"x": {**MODEL, "models": {}}}})
-    user, project = (as_model, as_group) if model_first else (as_group, as_model)
+def test_a_later_layer_giving_models_to_a_model_is_an_error(tmp_path: Path) -> None:
+    user = write(tmp_path / "model.json", {"models": {"x": MODEL}})
+    project = write(tmp_path / "group.json", {"models": {"x": {**MODEL, "models": {}}}})
     problem = only_error(check_config(user, project))
     assert problem.path == "models.x"
-    assert problem.message.startswith("'x' is a ")
-    assert str(user) in problem.message
-    assert str(project) in problem.message
-    with pytest.raises(ConfigError, match="'x' is a"):
+    assert problem.message == f"'x' is a model in {user} and a group in {project}"
+    with pytest.raises(ConfigError, match="'x' is a model"):
         read_models(user, project)
+
+
+def test_a_project_tunes_a_user_group_without_saying_models(tmp_path: Path) -> None:
+    user = write(
+        tmp_path / "u.json",
+        {"models": {"free_tokens": {**MODEL, "models": {"gpt": {"model": "gpt"}}}}},
+    )
+    project = write(tmp_path / "p.json", {"models": {"free_tokens": {"api_key_env": "MINE"}}})
+    catalog = read_models(user, project)
+    assert catalog.names() == ("free_tokens:gpt",)
+    assert catalog.resolve("free_tokens:gpt").api_key_env == "MINE"
+    origin = {o.key: o for o in catalog.explain("free_tokens:gpt")}["api_key_env"]
+    assert (origin.source, origin.group) == (str(project), "free_tokens")
 
 
 def test_a_nested_kind_conflict_names_the_full_path(tmp_path: Path) -> None:

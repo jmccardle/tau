@@ -140,7 +140,7 @@ def test_null_drops_an_inherited_key(tmp_path: Path) -> None:
         tmp_path / "u.json",
         {"models": {"g": {"base_url": URL, "api_key_env": "K", "models": {"m": {"model": "x"}}}}},
     )
-    project = write(tmp_path / "p.json", {"models": {"g": {"api_key_env": None, "models": {}}}})
+    project = write(tmp_path / "p.json", {"models": {"g": {"api_key_env": None}}})
     assert read_models(user).resolve("g:m").api_key_env == "K"
     assert read_models(user, project).resolve("g:m").api_key_env is None
     # and a null on the model itself drops the group's value for that model only
@@ -172,7 +172,7 @@ def test_explain_names_the_layer_and_group_of_each_value(tmp_path: Path) -> None
         {"models": {"g": {"base_url": URL, "api_key_env": "K", "models": {"m": {"model": "x"}}}}},
     )
     project = write(tmp_path / "p.json", {"models": {"g": {"models": {"m": {"model": "y"}}}}})
-    cli = {"models": {"g": {"api_key_env": "CLI_KEY", "models": {}}}}
+    cli = {"models": {"g": {"api_key_env": "CLI_KEY"}}}
     origins = {o.key: o for o in read_models(user, project, cli).explain("g:m")}
     assert (origins["model"].source, origins["model"].group) == (str(project), None)
     assert (origins["base_url"].source, origins["base_url"].group) == (str(user), "g")
