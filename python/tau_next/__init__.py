@@ -45,6 +45,14 @@ from tau_next._core import (
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
 from tau_next.config import ConfigError, ModelConfig
+from tau_next.config_layers import (
+    ConfigProblem,
+    ModelCatalog,
+    Origin,
+    ResolvedModel,
+    check_config,
+    read_models,
+)
 from tau_next.driver import Driver, Outstanding, Question
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
@@ -75,6 +83,7 @@ __all__ = [
     "Closed",
     "Config",
     "ConfigError",
+    "ConfigProblem",
     "Corrupt",
     "Cursor",
     "CursorHook",
@@ -93,6 +102,7 @@ __all__ = [
     "ItemData",
     "Job",
     "Leased",
+    "ModelCatalog",
     "ModelConfig",
     "Move",
     "Next",
@@ -105,6 +115,7 @@ __all__ = [
     "NotASession",
     "NotInHook",
     "NotPending",
+    "Origin",
     "Outcome",
     "Outstanding",
     "Part",
@@ -112,6 +123,7 @@ __all__ = [
     "Provider",
     "Question",
     "ReadTool",
+    "ResolvedModel",
     "RunCall",
     "SampleError",
     "Session",
@@ -132,5 +144,7 @@ __all__ = [
     "WrongAnswer",
     "__version__",
     "base_tools",
+    "check_config",
+    "read_models",
     "tool",
 ]
