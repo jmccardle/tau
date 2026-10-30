@@ -1,8 +1,8 @@
 # D15: Providers own their connections; frontends get saved and live events
 
-Status: candidate (2026-10-29): the first slice is built (provider contract, settings,
+Status: candidate (2026-10-30): the first slice is built (provider contract, settings,
 live and saved events, mock provider), and the OpenAI provider keeps to the contract
-(item 10), and tool progress is built (item 14); replay data is not built. Amends `model.md` §9 and §10.
+(item 10); replay data and the shared walk are built (item 14); a Gemini provider is built (item 15); tool progress is built (items 19 and 20). Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -83,7 +83,7 @@ whose `provider` is not its own.
 - The provider's stream yields live events as they arrive and whole parts as
   they finish; the driver forwards the first and saves only the second.
 - A tool may take a `progress` callback; the driver turns each call into a
-  live event, `ToolProgress(call_id, text)`, tagged with the call's id (item 14).
+  live event, `ToolProgress(call_id, text)`, tagged with the call's id (item 19).
 - Every event names its cursor. The driver offers one async stream
   (`driver.events()`) with an optional cursor filter.
 
@@ -161,7 +161,108 @@ whose `provider` is not its own.
    merging. `Retry-After` and the status are taken before an error body is read.
    A malformed cached count leaves `usage` out.
 
-14. **Tool progress (built).** A tool opts in by giving `call` a parameter named
+14. **Replay and the shared walk are built** (slice 3). `Replay(provider, data)` is a frozen
+   class, not loose JSON: `data` is the text of a JSON object with no repeated key and
+   `provider` a visible name, checked in Rust at construction (`BadReplay`, a `ValueError`) and
+   when a log loads (without building a parse tree; a refusal there says why). A `BadReplay`
+   escaping a provider's `sample` fails that sample like a `SampleError`. A part's `replay` is
+   `None` by default; a part without one is logged in the old spelling, and one with it as
+   `{"Text": {"text", "replay"}}`, so old logs load. `tau_next.replay_for(part, provider)`
+   returns the parsed data only for the part's own provider; the exact text is
+   `part.replay.data` (parsing keeps string values but not necessarily number or escape
+   spelling). The ordering rule already
+   compared only text, tool and arguments, so a final part may carry replay its deltas lacked.
+   The walk rules live in the private `providers/_walk.py` (`turns(walk)`), which the OpenAI
+   provider uses with byte-identical requests; it is private until a third-party provider
+   needs it. A `ToolResults` result also carries the call's `tool` (Gemini names it) and
+   `error` (Anthropic flags it). A signed part cut off at a cancel is saved without its
+   signature, so it counts as unsigned and is never sent.
+
+15. **The Anthropic provider** (`providers/anthropic.py`, request half in
+   `providers/_anthropic_request.py`) keeps to the contract. What the docs showed that
+   shaped it: the API requires `max_tokens`, so `check` requires it (no default); newer
+   models take `thinking.type` `adaptive` with `output_config.effort`, and `enabled` with
+   `budget_tokens` is refused by 4.7 and later, so `thinking` is passed through as an object
+   and the API judges the model; `display` defaults to `omitted` on newer models, which
+   streams an empty `thinking_delta` and a signature, so a signed `Thinking("")` is normal;
+   thinking blocks must come back unmodified, `redacted_thinking` too, and under manual
+   `enabled` thinking the last assistant turn must open with one. Choices: replay data is
+   `{"type": "thinking", "signature"}` or `{"type": "redacted_thinking", "data"}`; usage
+   `input` counts every prompt token (`input_tokens` + cache reads + cache writes) to match
+   OpenAI's `prompt_tokens`, `cached` is reads only; `pause_turn` and
+   `model_context_window_exceeded` map to `Length` (no server tools are offered, so
+   `pause_turn` is not expected), `stop_sequence` to `End`; a stream `error` event takes the
+   status its `type` stands for. Walks that would make the API refuse are sent as text
+   instead of failing every later sample (§10.7): a runnable batch whose `args_raw` is not a
+   JSON object, any batch when the sample offers no tools (the API refuses `tool_use` blocks
+   without `tools`), or a batch of a loop that did not open with thinking under manual thinking
+   (a tool loop is one assistant turn, and the final turn of a request must start with a
+   thinking block; checked only when the walk ends in tool results, on the loop's first
+   assistant message), goes as call markup with its results
+   as `[tool result ...]` user text; empty assistant turns are dropped and neighbours merge;
+   a `System` node after the start becomes user text `[system note: ...]`; ids the API refuses
+   are mapped by a pure function (bad characters to `_`, plus a hash). Replay that cannot
+   become a `Replay` fails the sample. Caching marks the system text and the last message
+   (default on); a turn that adds 20 or more blocks past the last mark misses the cache
+   (the API's lookback window). The provider sends no `anthropic-beta` header, so `check`
+   refuses the options that need one. It keeps `anthropic-version: 2023-06-01`:
+   `2026-10-21` removes `temperature`, `top_p` and `top_k`. `Part.Thinking` text is the summary, so a round trip sends
+   the signature and the summary together as received.
+
+16. **The Gemini provider** (`providers/gemini.py`) is built to the contract, and building it
+   showed:
+   - *Signatures arrive on the last chunk of the text they sign*, often one with no text (live,
+     `gemini-3.5-flash`: three text chunks, then `{"text": "", "thoughtSignature": ...}` with the
+     finish reason; a short reply carries it on the one text part). A signature therefore ends the
+     saved `Text`, and replay is `{"thoughtSignature": ...}` on that part. On a call it is a
+     sibling of `functionCall` in the same part. Thought summaries carried none in any capture.
+   - *A tool call in the current turn without its signature is a 400* on Gemini 3 ("Function call
+     is missing a thought_signature"). A call from another provider, or from a model that sent
+     none, therefore fails the sample with the API's message; there is no fallback signature (the
+     documented dummy value is a workaround and is not used).
+   - *Signatures crossed models* in one check (a `gemini-3.5-flash` call signature accepted by
+     `gemini-3.5-flash-lite`), so replay is tagged with the provider and not the model.
+   - *Ids are optional.* This API gave `call_<n>` ids on calls. A call without one gets a
+     random UUID id (`gemini-<hex>`), unique in any session, and its replay marks it
+     `synthesized_id`; only an API id (replay `id`) goes back, on the `functionCall` and its
+     `functionResponse`. Without ids Gemini matches responses by name and order, so the batch
+     keeps call order.
+   - *Errors can arrive inside a 200 stream* (`{"error": {"code": 503, ...}}`), after parts.
+   - *Thoughts are counted separately*: `thoughtsTokenCount` is not in `candidatesTokenCount`.
+     Normalized `output` is their sum.
+   - Rules the review of the walk module asked of a provider, now in `_walk` beside Anthropic's
+     (item 18): a batch whose call arguments are not a JSON object goes as text with its
+     results; model turns left empty (unsigned thinking only) are dropped and neighbouring
+     contents merge; a `System` node after the first message is a `[system note: ...]` user
+     turn. Data core refuses as replay fails the sample, which stays in the provider.
+17. **A failed reply says why.** A sample that failed after parts arrived saved an
+   `Error` reply, and the error text went only to `post_step` (`Ending::Failed`): a
+   Gemini 503 inside the stream left a lone `Thinking` part and no reason in the tree.
+   Chosen: the failed reply carries the error in its `meta`, as
+   `error: {message, status?, retry_after?}`, added by the driver (`effects.py`) from
+   `SampleError`. Rejected: a core-written `sample_error` node after the reply. It would
+   hang a side child under the cursor's node, so a frontend reading the reply would
+   still not learn why, and a second place to look. Core keeps `meta` opaque, so no
+   Rust change. The no-parts case is unchanged (a `sample_error` node holding the
+   text; the sample left no reply to carry it). An old log loads: its failed replies
+   just have no `error` entry.
+
+18. **One HTTP module and one walk for the three hosted providers.** `_wire.Connection` holds
+   the client (per loop, `ProviderClosed`, `aclose`) and the sample loop that all three had
+   copied; each provider keeps its request, its `_Stream`, and how its error bodies read
+   (Anthropic leads with the error `type`; Google's `RetryInfo` is read in `gemini.py`, since no
+   other API sends it). `_walk.turns` takes the rules that were local: `object_args`
+   (Anthropic and Gemini; a blank `args_raw` is `{}` for both, which Gemini used to send as text),
+   `structured` (Anthropic sends no `tool_use` without `tools`; nothing says Gemini refuses
+   `functionCall` parts without `tools`, so it does not ask), and the provider hook `text_from`
+   (only Anthropic's manual thinking depends on what a provider would send). `Messages` does
+   the merge and drops what a provider rendered empty; what counts as empty stays the
+   provider's. OpenAI asks for `object_args` only: llama.cpp answers HTTP 500 "Failed to parse tool call
+   arguments as JSON" to a history call whose `arguments` is `{"p"` (probed by hand), and an empty
+   `arguments` goes as `{}`. It offers tools whenever it has any, so it has no use for `structured`. The system note
+   is `[system note: ...]` everywhere. A negative token count is malformed for all three.
+
+19. **Tool progress (built).** A tool opts in by giving `call` a parameter named
    `progress`, detected once when the driver is built (`takes_progress`); the driver then
    passes a `Progress` (`Callable[[str], None]`) by keyword. A tool without it is called with
    `args_raw` alone. Chosen over a context-local `tau_next.progress(text)` because it is
@@ -186,9 +287,9 @@ whose `provider` is not its own.
 
    *Found while building:* `Saved(c)` was emitted after every answer, and a batch answers
    once per call, so it fired while other calls of the batch still ran, and wiped that
-   cursor's buffered `Live` events, tool progress included. Fixed in item 15.
+   cursor's buffered `Live` events, tool progress included. Fixed in item 20.
 
-15. **`Saved` names the calls it settled; progress outlives other saves.** A call answered
+20. **`Saved` names the calls it settled; progress outlives other saves.** A call answered
    before its batch is whole only fills a slot in core: no node is added, so the driver now
    emits no `Saved` for it (a `Saved` means the tree changed). The batch's `Results` node
    is the save that answers its calls, and that `Saved` carries `calls`, the ids it
@@ -205,6 +306,17 @@ whose `provider` is not its own.
    can still arrive mid-batch with `calls=()`; progress survives them.
 
 ## Open
+
+- Text after tool results. A `Results` node followed by a `User` node merges into one user
+  message of `tool_result` blocks and text. The docs say empty `end_turn` replies are commonly
+  caused by text right after tool results; the provider then drops the empty reply, the next
+  request merges again, and the loop repeats. Policy is John's call.
+- A walk that ends on an `Assistant` node is sent as prefill; models 4.6 and later reject that
+  with a 400, which surfaces as a `SampleError`.
+- `_walk` replays the parts of a `Refused` reply; the docs say to discard partial output after a
+  refusal. This affects every provider.
+- A mid-walk `System` node becomes `[system: ...]` user text, which carries user authority;
+  some models now take native `role: "system"` messages.
 
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from

@@ -399,7 +399,10 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
     `pre_result` finishes (Q34).
 - **A sample fails** (`Sampled { parts, end: Failed { error, meta } }`). With
   output: core commits the reply with `stop: Error` and the response `meta`,
-  then `post_step` gets `Failed`. With none: core appends a
+  then `post_step` gets `Failed`. The driver adds the failure to that `meta` as
+  `error: {message, status?, retry_after?}` (`SampleError`'s text, HTTP status
+  and seconds the server asked to wait), so the reply itself says why it
+  failed and a reload keeps it; core does not read `meta` (D15, amendment 17). With none: core appends a
   `Custom { kind: "sample_error" }` under `at` without moving, and
   `post_step` gets `Failed`. A conversion error is a failed sample (Q11).
 - **A tool fails**: an `Err` outcome.

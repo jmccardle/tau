@@ -96,10 +96,12 @@ class Reply:
 
 @dataclass(frozen=True)
 class Fail:
-    """A scripted sample that raises `SampleError(error)` after `parts`."""
+    """A scripted sample that raises `SampleError(error, status=, retry_after=)` after `parts`."""
 
     error: str
     parts: Sequence[Part | Delta] = ()
+    status: int | None = None
+    retry_after: float | None = None
 
 
 @dataclass(frozen=True)
@@ -161,10 +163,10 @@ class FakeProvider:
                 if gate is not None and after >= len(parts):
                     await gate.wait()
                 yield Finish(stop, reason, meta)
-            case Fail(error=error, parts=parts):
+            case Fail(error=error, parts=parts, status=status, retry_after=retry_after):
                 for part in parts:
                     yield part
-                raise SampleError(error)
+                raise SampleError(error, status=status, retry_after=retry_after)
 
 
 class FakeTool:

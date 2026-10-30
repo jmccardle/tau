@@ -5,24 +5,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod part;
 mod replay;
 
+pub use part::{Part, Replay, ReplayError};
 pub use replay::{load, reconcile};
 
 pub type NodeId = u64;
 pub type CursorId = u64;
 pub type ItemId = u64;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Part {
-    Text(String),
-    Thinking(String),
-    Call {
-        id: String,
-        tool: String,
-        args_raw: String,
-    },
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Stop {
@@ -675,9 +666,9 @@ pub fn calls(body: &Body) -> Vec<(&str, &str, &str)> {
         } => parts
             .iter()
             .filter_map(|p| match p {
-                Part::Call { id, tool, args_raw } => {
-                    Some((id.as_str(), tool.as_str(), args_raw.as_str()))
-                }
+                Part::Call {
+                    id, tool, args_raw, ..
+                } => Some((id.as_str(), tool.as_str(), args_raw.as_str())),
                 _ => None,
             })
             .collect(),

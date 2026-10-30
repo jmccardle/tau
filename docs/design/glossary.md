@@ -29,7 +29,57 @@ output).
 *spike* `Part` · retires content block
 
 One piece of a reply in stream order: `Text`, `Thinking`, or
-`Call { id, tool, args_raw }`.
+`Call { id, tool, args_raw }`. Each takes an optional `replay` (see **replay**).
+A `Thinking` part may have no text when it has replay data (a redacted block).
+
+### replay
+`tau_next.Replay(provider, data)` · D15 · new
+
+Data only the provider that wrote a part can send back: Anthropic's
+`thinking.signature` and `redacted_thinking` data, Gemini's `thoughtSignature` (on text and
+on calls). `provider` is the name of the provider that wrote it; `data` is the text of a
+JSON object, kept exactly as given: `part.replay.data` is the exact text. Core checks both on
+construction and when a log loads (`BadReplay`, a `ValueError`: a provider name that is empty,
+blank, or holds a control character; `data` not a strict JSON object, or with a repeated key
+at any depth; `NaN` and `Infinity` are not JSON). A logged `replay: null` is refused, as is
+any other non-replay, with the reason in the `Undecodable` message. A part's `replay` is `None` unless the provider sets it; logs written before
+replay existed load with `None`, and a part without replay is logged exactly as before. The
+driver's ordering rule (see **provider, model**) ignores it: a provider learns a signature
+only at the end of a block, so it is on the part and on none of its deltas.
+
+### replay_for
+`tau_next.replay_for(part, provider)` (`protocols.py`) · D15 · new
+
+The replay data a provider may send back for a part, parsed: the JSON object in
+`part.replay.data` when the part's replay is tagged with `provider`, else `None`. String
+values parse back exactly; numbers and escapes may not re-serialize to the same bytes, so a
+provider that needs the exact text reads `part.replay.data`. A non-`Part` raises `TypeError`. A part with another provider's replay is
+treated as unsigned (`model.md` §10.4), so no provider repeats the tag check.
+
+### turns (the walk module)
+`tau_next.providers._walk.turns(walk, ...)` · D15 · new
+
+The rules every provider shares (`model.md` §10.5 to §10.7), applied once to a walk:
+which nodes count (`Config` and `Custom` do not), which replies are runnable (a batch
+with a `Results` right below it), a `Results` that answers no batch becoming a user turn,
+a `Results` that does not answer its batch call for call failing the sample, and a stop
+note (`length`, `interrupted`, `error`) for calls that cannot run. It returns
+`SystemTurn`, `UserTurn`, `AssistantTurn(parts, runnable, note)` and
+`ToolResults(results)`, where each `CallResult` is `(id, tool, text, error)` in call
+order; a provider maps them to its own wire shapes. `call_markup`, `outcome_markup` and
+`stop_note` are the one text markup, and `system_note` (`[system note: <text>]`) is the one
+spelling of a `System` node after the walk's start, for a provider whose single system
+instruction cannot hold it. Three options cover the rules only some APIs need, so each
+provider says whether it asks: `structured=False` (the request offers no tools, so no batch can
+go as calls), `object_args=True` (a batch whose call has `args_raw` that is not a JSON object,
+no arguments counting as `{}`, `call_object`), and `text_from` (a provider's own rule, given
+the turns, naming the index from which batches go as text; Anthropic's manual thinking). A
+batch any of them demotes goes as text (`runnable` false), and its `Results` becomes a
+`UserTurn` of `[tool result <id>: <text>]` lines, so a walk the API would refuse never fails
+every later sample. `Messages(items_key)` builds the wire messages from the turns: neighbouring
+turns of one role merge, a turn with nothing to send leaves none, and `System` turns before any
+message are the instruction. The module is private to the package: its shapes may change with
+the next provider.
 
 ### stop
 *spike* `Stop` · retires `stopReason`, `AgentEndReason`
@@ -51,7 +101,9 @@ provider sent none: an interrupted reply, a failed sample, a fake.
 What a response carried besides its parts, as the text of a JSON object: for
 the OpenAI provider the `model` the server says answered, the response `id`,
 `system_fingerprint`, and `usage` (token counts), whichever the stream sent.
-Opaque to core, like `Config.data`; persisted and replayed verbatim. `None`
+Opaque to core, like `Config.data`; persisted and replayed verbatim. On an
+`Error` reply it holds `error: {message, status?, retry_after?}`, the failed
+sample's `SampleError`, put there by the driver. `None`
 when the provider had nothing to report, or the reply was interrupted. The
 driver refuses a `Finish` whose `meta` is not a JSON object.
 
@@ -470,6 +522,10 @@ The driver reports what happened; core decides what the tree records: a
 finish is the reply, a cancel with parts an `Interrupted` reply, a failure
 with parts an `Error` reply (and the step fails), and a cancel or failure
 with no parts writes no reply (a failure leaves a `sample_error` side node).
+With parts, the driver puts the failure into the `Failed` `meta` as
+`{"error": {"message", "status"?, "retry_after"?}}` (over any `error` the
+response `meta` had), so the `Error` reply says why. Core still treats `meta`
+as opaque.
 
 ### RunCall
 *spike* `RunCall` · new
@@ -934,7 +990,7 @@ API keys are read from the provider's environ.
 ### builtin_providers
 `tau_next.builtin_providers(environ)` (module `tau_next.providers`) · D15 · new
 
-The built-in providers by name, `{"openai": OpenAIProvider, "mock": MockProvider}`:
+The built-in providers by name, `{"openai": OpenAIProvider, "gemini": GeminiProvider, "mock": MockProvider}`:
 what the CLI and the examples give `Driver` and `check_config`. `environ` is where
 OpenAI looks up keys. The caller closes them.
 
@@ -999,6 +1055,114 @@ loop the provider drops it unawaited and makes a new one. The response body is r
 end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
+
+### AnthropicProvider
+`tau_next.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new
+
+The provider for the Anthropic Messages API (`POST {base_url}/v1/messages`, SSE; `base_url`
+is the API root, `https://api.anthropic.com` when unset; one ending in `/v1` is a `check`
+problem). Headers `x-api-key` and `anthropic-version: 2023-06-01`. `check` requires
+`max_tokens` (the API requires it; there is no default) and a key (`api_key_env`), and
+reads exactly these options: `thinking` (an object as the API takes it: `type` `adaptive`,
+`enabled` with `budget_tokens` of at least 1024 and below `max_tokens`, `disabled`, or
+`between_tools`; `display` `summarized` or `omitted` for the first two; which a model accepts
+is the API's to say), `effort` (`low` `medium` `high` `xhigh` `max`, sent as
+`output_config.effort`), `temperature`, `top_p`, `top_k` (newer models refuse these), `prompt_caching`
+(boolean, default true: `cache_control: ephemeral` on the system text and on the last block of
+the last message), and `extra_body` (merged last; may not set `model`, `messages`, `system`,
+`stream`, `tools`, `max_tokens`, or a key the model's settings set). Request: the first
+`System` nodes are top-level `system`, one later is user text `[system note: ...]`; turns of
+one role merge; `Thinking` parts are sent only with Anthropic replay data (`replay_for`), so
+unsigned, cut-off and foreign thinking never go; a reply with nothing left to send is dropped;
+a runnable batch is `tool_use` blocks (`input` the parsed `args_raw`, `{}` for none) and
+`tool_result` blocks with `is_error`, but goes as text, with its results as `[tool result
+<id>: <text>]` lines, when a call's `args_raw` is not a JSON object or, under `thinking.type`
+`enabled`, the last assistant turn has no thinking to open with. A call id the API would refuse
+is sent with bad characters replaced by `_` and a hash of the original added, alike in the
+call and its result. Replay data: `{"type": "thinking", "signature": s}` on a `Thinking`
+part (text is the block's `thinking`), `{"type": "redacted_thinking", "data": d}` on a
+`Thinking("")`. Response: `thinking_delta`, `text_delta` as deltas; `tool_use` as `CallNamed`
+then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_sequence` to
+`End`, `tool_use` to `Tools`, `max_tokens`, `model_context_window_exceeded` and `pause_turn` to
+`Length`, `refusal` to `Refused`; any other fails the sample. `meta`: `id`, `model`, `usage`
+`{"input", "output", "cached"}` (`input` is `input_tokens` plus cache reads plus
+`cache_creation_input_tokens`, `cached` the reads alone), `usage_raw` (the cumulative usage
+as sent), `stop_details` when sent, and the `request-id` response header as `request_id` (on
+failures too). The provider sends no `anthropic-beta` header, so `check` refuses what needs
+one: `thinking.display` `updates`, `thinking.block_binding`, and `extra_body.context_management`. Errors: an HTTP error or `error` event is a `SampleError`
+whose `status` is the response's, or for an event the status its `type` stands for (529 for
+`overloaded_error`), with `retry_after` from the header. Client handling is `Connection`'s.
+
+### _anthropic_request (the Anthropic request module)
+`tau_next.providers._anthropic_request` · D15 · new
+
+The walk as an Anthropic request, split from `providers/anthropic.py` (which reads the
+response) to stay under the file-size ratchet: `conversation(walk, manual_thinking, has_tools)`
+gives `system` and `messages`, `tools_array`, and `breakpoints` the cache marks. It
+applies `turns` and holds every rule above that turns a walk into text instead of failing it.
+Private: the shapes may change with the next provider.
+
+### _wire (the provider helpers module)
+`tau_next.providers._wire` · D15 · new
+
+What every hosted provider shares over HTTP: `retry_after` (a `Retry-After` header as
+seconds), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
+end), `error_text` (`HTTP <status>: <message>` from an `error` object, `typed` for
+`<type>: <message>`), and the JSON and number checks `plain`, `non_finite`, `is_number`,
+`is_count`, `count`. `Connection` holds the one `httpx.AsyncClient` a provider keeps (made on the
+first sample, one per event loop, dropped when its loop is gone, closed by `aclose()`, after
+which a sample raises `ProviderClosed`) and runs the sample loop: it POSTs, reads each event
+into a `ReplyReader`, maps an `httpx` error or a bad status to a `SampleError` with `status` and
+`retry_after`, and yields the parts left at a failure. A provider gives it only how its error
+bodies read (`typed_errors`, `body_wait` for a wait inside the body, `meta_headers`) and a
+`ReplyReader`: the one-response reader (`feed`, `done`, `stop`, `close`, `meta`) that each provider's
+`_Stream` is. Private to the package.
+
+### GeminiProvider
+`tau_next.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
+
+The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
+`OpenAIProvider` (`Connection`: one client per loop, `ProviderClosed`, `status` and `retry_after`, the
+ordering rule, `usage_raw`). `base_url` defaults to `https://generativelanguage.googleapis.com/v1beta`
+(a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so; for an unset variable `tau config check` warns and sampling fails) and travels in the `x-goog-api-key`
+header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`.
+Request: `systemInstruction` (the `System` nodes before any other node), `contents`
+(`user` and `model`), `tools` (one `functionDeclarations` list, each tool's schema as
+`parametersJsonSchema`), `generationConfig` (`maxOutputTokens` from `max_tokens`, then the
+options), `safetySettings`, then `extra_body`. A `System` node later in the walk is a user
+turn `[system note: <text>]` (`system_note`). A `Results` that follows its batch is one `user` content of
+`functionResponse` parts, in call order, `{"result": text}` or `{"error": text}`, with the call's
+`id` where the API gave one. A batch goes as text (the call markup, and its results as
+`[tool result <id>: <text>]` user text) when a call's `args_raw` is not a JSON object, so a
+cut-off call from another provider never fails the branch. A reply with nothing to send is
+dropped and neighbouring same-role contents merge; text parts are never merged with each
+other. `Thinking` is sent back only when Gemini signed it.
+
+Response: a part with `thought: true` is `ThinkingDelta`s and one `Thinking`; other text is
+`TextDelta`s and one `Text`; a `functionCall` arrives whole (`CallNamed`, one `CallArgs`, the
+part). A `thoughtSignature` is the part's replay data `{"thoughtSignature": ...}`; it rides the
+last chunk of the text it signs, often one with no text, and ends the part, so text after it
+is a new part. On a call it sits on the `functionCall` part and the replay also holds the
+`id` the API gave (`{"id": ...}`). A call with no id gets `gemini-` and a random UUID, and its
+replay is `{"synthesized_id": true}`: a made-up id is never sent. A signature is sent back
+only on the part it came from and only when `replay_for(part, "gemini")` returns data.
+Replay that core cannot hold fails the sample. `finishReason`: `STOP` is `End` (`Tools` when
+calls were made), `MAX_TOKENS` and `CONTINUATION` `Length`; `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`,
+`PROHIBITED_CONTENT`, `SPII`, `ESCALATION` and the image refusals `Refused`; any other fails the sample. A
+`promptFeedback.blockReason` ends as `Refused` with the reason as `finish_reason` and the
+block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`responseId`),
+`finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
+`output` is `candidatesTokenCount` plus `thoughtsTokenCount` (thinking is billed as output),
+`cached` is `cachedContentTokenCount`; an absent count is 0. An error event in the stream
+(`{"error": {...}}`) fails the sample with its `code` as `status`. A non-200 response is a
+`SampleError` with `status` and `retry_after` (the `Retry-After` header, else the body's
+`RetryInfo.retryDelay`). Options (`check` refuses any other): `temperature`, `top_p`, `top_k`
+(`top_k` an integer); `thinking`, an object of `include_thoughts` (bool; thought summaries are requested
+only when true), `budget` (integer >= -1; Gemini 2.5) or `level` (a string; Gemini 3), not
+both; `safety_settings` (a list of `{category, threshold}`, one per category); `extra_body`
+(merged last; `contents`, `systemInstruction`, `tools`, and any key the model's settings set
+are refused; its `generationConfig` merges into ours, and may not set `candidateCount`).
+A walk ending in a `model` turn fails the sample before any request.
 
 ### MockProvider
 `tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new

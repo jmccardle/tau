@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). D15 (providers and events) is a candidate: first slice built 2026-10-29 (provider contract, `max_tokens`/`options`, provider map, live and saved events, mock provider); tool progress built 2026-10-30; replay data not yet. Missing: the 4 exit review. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). D15 (providers and events) is a candidate: first slice built 2026-10-29 (provider contract, `max_tokens`/`options`, provider map, live and saved events, mock provider); replay data, the shared walk, and the Anthropic, Gemini and OpenAI-compatible providers built; tool progress built 2026-10-30. Missing: the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):

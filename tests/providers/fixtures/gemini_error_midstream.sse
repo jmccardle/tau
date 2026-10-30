@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "**Calculating the Multiplication**\n\nI've determined the core task is to compute 17 multiplied by 23. My initial step involves a straightforward calculation, and a brief explanatory sentence or two will follow. I'm considering using different methods to ensure accuracy, starting with breaking down the multiplication for easier handling.\n\n\n","thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 16,"totalTokenCount": 141,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 16}],"thoughtsTokenCount": 125,"serviceTier": "standard"},"modelVersion": "gemini-3.6-flash","responseId": "9DvkavLWOpm-xdIP0vuEqAo"}
+
+data: {"error": {"code": 503,"message": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status": "UNAVAILABLE"}}
+

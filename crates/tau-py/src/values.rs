@@ -5,6 +5,7 @@
 //! it reads, Python to core for everything it builds.
 
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use tau_core::tree;
 
 /// `__repr__` is the Rust `Debug` text: mechanical, and readable in a failing
@@ -21,39 +22,115 @@ macro_rules! debug_repr {
 }
 pub(crate) use debug_repr;
 
+/// Python view of [`tree::Replay`]. Construction validates, so a `Part` never holds a bad one.
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Replay {
+    inner: tree::Replay,
+}
+
+#[pymethods]
+impl Replay {
+    #[new]
+    fn new(provider: String, data: String) -> PyResult<Self> {
+        let inner = tree::Replay::new(provider, data)
+            .map_err(|e| crate::error::BadReplay::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn provider(&self) -> &str {
+        self.inner.provider()
+    }
+
+    #[getter]
+    fn data(&self) -> &str {
+        self.inner.data()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let quoted = |s: &str| PyString::new(py, s).repr().map(|r| r.to_string());
+        Ok(format!(
+            "Replay(provider={}, data={})",
+            quoted(self.inner.provider())?,
+            quoted(self.inner.data())?
+        ))
+    }
+}
+
 /// Python view of [`tree::Part`].
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
+    #[pyo3(constructor = (text, replay = None))]
     Text {
         text: String,
+        replay: Option<Replay>,
     },
+    #[pyo3(constructor = (text, replay = None))]
     Thinking {
         text: String,
+        replay: Option<Replay>,
     },
+    #[pyo3(constructor = (id, tool, args_raw, replay = None))]
     Call {
         id: String,
         tool: String,
         args_raw: String,
+        replay: Option<Replay>,
     },
 }
 
 impl From<tree::Part> for Part {
     fn from(p: tree::Part) -> Self {
+        let own = |r: Option<tree::Replay>| r.map(|inner| Replay { inner });
         match p {
-            tree::Part::Text(text) => Self::Text { text },
-            tree::Part::Thinking(text) => Self::Thinking { text },
-            tree::Part::Call { id, tool, args_raw } => Self::Call { id, tool, args_raw },
+            tree::Part::Text { text, replay } => Self::Text {
+                text,
+                replay: own(replay),
+            },
+            tree::Part::Thinking { text, replay } => Self::Thinking {
+                text,
+                replay: own(replay),
+            },
+            tree::Part::Call {
+                id,
+                tool,
+                args_raw,
+                replay,
+            } => Self::Call {
+                id,
+                tool,
+                args_raw,
+                replay: own(replay),
+            },
         }
     }
 }
 
 impl From<Part> for tree::Part {
     fn from(p: Part) -> Self {
+        let own = |r: Option<Replay>| r.map(|r| r.inner);
         match p {
-            Part::Text { text } => Self::Text(text),
-            Part::Thinking { text } => Self::Thinking(text),
-            Part::Call { id, tool, args_raw } => Self::Call { id, tool, args_raw },
+            Part::Text { text, replay } => Self::Text {
+                text,
+                replay: own(replay),
+            },
+            Part::Thinking { text, replay } => Self::Thinking {
+                text,
+                replay: own(replay),
+            },
+            Part::Call {
+                id,
+                tool,
+                args_raw,
+                replay,
+            } => Self::Call {
+                id,
+                tool,
+                args_raw,
+                replay: own(replay),
+            },
         }
     }
 }

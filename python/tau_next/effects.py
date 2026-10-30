@@ -4,6 +4,7 @@ No effect touches the session except to read it. The driver answers.
 """
 
 import asyncio
+import json
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import aclosing
 from typing import cast
@@ -14,6 +15,7 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
+    BadReplay,
     Job,
     Outcome,
     Part,
@@ -116,6 +118,19 @@ class _Run:
             raise SampleError(
                 f"the {kind} part {said!r} is not the text streamed for it ({self.text!r})"
             )
+
+
+def _failed(error: Exception) -> SampleEnd:
+    """The end of a failed sample. The failure goes into `meta` under `error`
+    (`message`, and `status` and `retry_after` when the error has them), so a failed reply
+    says why it failed; with no parts nothing is saved and core writes a `sample_error`."""
+    meta = getattr(error, "meta", None)
+    said: dict[str, object] = {} if meta is None else json.loads(meta)
+    detail: dict[str, object] = {"message": str(error)}
+    for key in ("status", "retry_after"):
+        if (value := getattr(error, key, None)) is not None:
+            detail[key] = value
+    return SampleEnd.Failed(str(error), json.dumps({**said, "error": detail}))
 
 
 class SampleRun:
@@ -225,9 +240,11 @@ class SampleRun:
             return Answer.Sampled(
                 self._parts, SampleEnd.Finished(finish.stop, finish.reason, finish.meta)
             )
+        if isinstance(error, BadReplay):
+            return Answer.Sampled(self._unfinished(), _failed(error))
         if not isinstance(error, SampleError):
             raise error
-        return Answer.Sampled(self._unfinished(), SampleEnd.Failed(str(error), error.meta))
+        return Answer.Sampled(self._unfinished(), _failed(error))
 
 
 class _HookError(Exception):

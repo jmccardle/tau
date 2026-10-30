@@ -391,7 +391,10 @@ def test_an_unknown_provider_is_a_problem_once_even_in_a_group(tmp_path: Path) -
 
 def test_an_unknown_provider_names_the_providers_the_driver_was_given(tmp_path: Path) -> None:
     problem = only_error(check(tmp_path, {"models": {"a": {**MODEL, "provider": "acme"}}}))
-    assert "unknown provider 'acme'; known providers are ['mock', 'openai']" in problem.message
+    assert (
+        "unknown provider 'acme'; known providers are ['anthropic', 'gemini', 'mock', 'openai']"
+        in problem.message
+    )
     only = check_config(
         write(tmp_path / "d.json", {"models": {"a": {**MODEL, "provider": "openai"}}}),
         providers={"mock": PROVIDERS["mock"]},

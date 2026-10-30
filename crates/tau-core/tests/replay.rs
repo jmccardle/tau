@@ -115,6 +115,7 @@ fn apply(s: &mut Session, op: &Op) {
                     id: format!("c{j}"),
                     tool: "t".into(),
                     args_raw: "{}".into(),
+                    replay: None,
                 })
                 .collect();
             let body = Body::Assistant {
@@ -328,7 +329,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
         |j| match j {
             Job::Sample => {
                 sampled += 1;
-                vec![reply(vec![Part::Text("hello".into())], Stop::End)]
+                vec![reply(vec![Part::text("hello")], Stop::End)]
             }
             _ => vec![echo(j)],
         },
@@ -353,6 +354,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
         id: id.into(),
         tool: "ls".into(),
         args_raw: "{}".into(),
+        replay: None,
     };
     let fed_a = std::cell::Cell::new(false);
     until(
