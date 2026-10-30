@@ -7,15 +7,17 @@ from tau_next._core import (
     Author,
     Body,
     Config,
+    CursorState,
     Draft,
     Ending,
-    Item,
+    HandleWrites,
     ItemData,
-    Move,
     Node,
+    NoSuchLabel,
     NotInHook,
     Outcome,
     Session,
+    Tree,
 )
 
 Poke = Callable[[], None]
@@ -81,7 +83,7 @@ class TreeHandle:
         self._now = now
         self._poke = poke
         self._changed = changed
-        self._hook = hook
+        self._writes = HandleWrites(session, hook)
         self._live = True
         self.extension = extension
 
@@ -100,49 +102,28 @@ class TreeHandle:
 
     # Reads
 
-    def get_node(self, id: int) -> Node:
-        return self._session.tree.node(id)
+    @property
+    def tree(self) -> Tree:
+        """The session's nodes."""
+        return self._session.tree
 
-    def lca(self, a: int, b: int) -> int | None:
-        return self._session.tree.lca(a, b)
+    def cursor(self, cursor: int) -> CursorState:
+        """`cursor` as it stands now: `at`, `auto`, `items`, `labels`, `moves`, ..."""
+        return self._session.cursor(cursor)
 
     def cursors(self) -> list[int]:
         return self._session.cursors()
 
-    def cursor_at(self, cursor: int) -> int:
-        return self._session.cursor(cursor).at
-
-    def items_of(self, cursor: int) -> list[Item]:
-        return self._session.cursor(cursor).items
-
-    def moves_of(self, cursor: int) -> list[Move]:
-        return self._session.cursor(cursor).moves
-
-    def labels_of(self, cursor: int) -> list[str]:
-        return self._session.cursor(cursor).labels
-
     def label(self, label: str) -> int:
         """The cursor `label` is on; raises `NoSuchLabel`."""
         return self._session.label(label)
-
-    def all_labels(self) -> dict[str, int]:
-        """Every label and its cursor."""
-        return dict(self._session.labels())
-
-    def children(self, node: int) -> list[int]:
-        """The children of `node`, in append order."""
-        return self._session.tree.children(node)
-
-    def node_count(self) -> int:
-        """How many nodes the session has; ids are `0..node_count()`."""
-        return len(self._session.tree)
 
     # Writes
 
     def append(self, parent: int, body: Body) -> int:
         """Append a node under `parent` without moving any cursor. Returns its id."""
         self._check()
-        node = self._session.append(parent, body, self.by, self._now(), self._hook)
+        node = self._writes.append(parent, body, self.by, self._now())
         self._changed(None)
         return node
 
@@ -150,14 +131,14 @@ class TreeHandle:
         """Append a root (a detached tree) holding `config`, without moving any
         cursor. Returns its id."""
         self._check()
-        node = self._session.append_root(config, self.by, self._now(), self._hook)
+        node = self._writes.append_root(config, self.by, self._now())
         self._changed(None)
         return node
 
     def open(self, at: int) -> int:
         """Open a cursor at `at`; it wakes. Returns its id."""
         self._check()
-        cursor = self._session.open(at, self.by, self._now(), self._hook)
+        cursor = self._writes.open(at, self.by, self._now())
         self._changed(cursor)
         self._poke()
         return cursor
@@ -165,7 +146,7 @@ class TreeHandle:
     def add_item(self, to: int, data: str) -> int:
         """Add this extension's item to a cursor's scratchpad; the cursor wakes."""
         self._check()
-        item = self._session.add_item(to, ItemData.Extension(self.extension, data), self._hook)
+        item = self._writes.add_item(to, ItemData.Extension(self.extension, data))
         self._changed(to)
         self._poke()
         return item
@@ -173,19 +154,31 @@ class TreeHandle:
     def remove_item(self, id: int) -> None:
         """Remove any item; raises `NoSuchItem`. Wakes nothing."""
         self._check()
-        self._session.remove_item(id, self._hook)
-        self._changed(None)
+        owner = next(
+            (c for c in self._session.cursors() if any(i.id == id for i in self.cursor(c).items)),
+            None,
+        )
+        self._writes.remove_item(id)
+        self._changed(owner)
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
         self._check()
-        self._session.set_label(label, cursor, self._hook)
+        try:
+            was = self._session.label(label)
+        except NoSuchLabel:
+            was = None
+        self._writes.set_label(label, cursor)
         self._changed(cursor)
+        if was is not None and was != cursor:
+            self._changed(was)
 
     def remove_label(self, label: str) -> None:
+        """Remove `label`; raises `NoSuchLabel`."""
         self._check()
-        self._session.remove_label(label, self._hook)
-        self._changed(None)
+        was = self._session.label(label)
+        self._writes.remove_label(label)
+        self._changed(was)
 
 
 class NodeHandle(TreeHandle):
@@ -202,13 +195,13 @@ class NodeHandle(TreeHandle):
 
     @property
     def node(self) -> Node:
-        return self._session.tree.node(self.id)
+        return self.tree.node(self.id)
 
     def walk(self) -> list[Node]:
-        return self._session.tree.walk(self.id)
+        return self.tree.walk(self.id)
 
     def config(self) -> Config:
-        return self._session.tree.config_at(self.id)
+        return self.tree.config_at(self.id)
 
 
 class Cursor(TreeHandle):
@@ -235,35 +228,14 @@ class Cursor(TreeHandle):
         self._asker = asker
         self.id = id
 
-    @property
-    def at(self) -> int:
-        return self._session.cursor(self.id).at
-
-    @property
-    def auto(self) -> bool:
-        return self._session.cursor(self.id).auto
-
     def node(self, id: int | None = None) -> Node:
-        return self._session.tree.node(self.at if id is None else id)
+        return self.tree.node(self.cursor(self.id).at if id is None else id)
 
     def walk(self) -> list[Node]:
-        return self._session.tree.walk(self.at)
+        return self.tree.walk(self.cursor(self.id).at)
 
     def config(self) -> Config:
-        return self._session.tree.config_at(self.at)
-
-    def items(self) -> list[Item]:
-        return self._session.cursor(self.id).items
-
-    def labels(self) -> list[str]:
-        return self._session.cursor(self.id).labels
-
-    def moves(self, *, since_step: bool = False) -> list[Move]:
-        """This cursor's move records; with `since_step`, only those since the
-        running step woke (other hooks' moves included)."""
-        if since_step:
-            return self._session.cursor(self.id).moves_since_step
-        return self._session.cursor(self.id).moves
+        return self.tree.config_at(self.cursor(self.id).at)
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""

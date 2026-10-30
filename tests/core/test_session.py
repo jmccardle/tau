@@ -264,7 +264,7 @@ def test_open_and_add_item_outside_a_step_are_durable_on_return(tmp_path: Path) 
 
 def test_a_draft_must_state_what_it_delivers() -> None:
     with pytest.raises(TypeError):
-        Draft(Body.User("x"), Author.Core())  # pyright: ignore[reportCallIssue]
+        Draft(Body.User("x"), [])  # pyright: ignore[reportCallIssue]
 
 
 def test_values_have_a_readable_repr() -> None:
@@ -274,5 +274,96 @@ def test_values_have_a_readable_repr() -> None:
     assert "hi" in repr(session.cursor(cursor).items[0])
     assert "System" in repr(session.tree.walk(session.cursor(cursor).at)[-1])
     assert "Ok" in repr(Outcome.Ok("fine"))
-    assert "Frontend" in repr(Draft(Body.User("x"), Author.Frontend("term"), [1]))
+    assert "Frontend" in repr(Draft(Body.User("x"), [1], Author.Frontend("term")))
     assert "Halted" in repr(Ending.Halted("why"))
+
+
+def test_a_cursor_state_repr_names_the_snapshot_not_the_session() -> None:
+    session, cursor = new()
+    session.input(cursor, "term", "a secret scratchpad line")
+    state = session.cursor(cursor)
+    shown = repr(state)
+    assert f"cursor: {cursor}" in shown
+    assert "secret" not in shown
+    session.append(state.at, Body.User("a later node"), Author.Core(), 1)
+    session.set_label("later", cursor)
+    assert repr(state) == shown
+    assert "later" not in shown
+
+
+def test_enums_are_not_integers() -> None:
+    assert tau_next.Stop.Tools != 1
+    assert tau_next.Stop.Tools not in {1}
+    assert tau_next.Next.Sample != 1
+    assert tau_next.Hook.PreStep != 0
+    assert tau_next.Hook.PreStep.name == "pre_step"
+
+
+def test_a_config_states_its_data_and_a_draft_follows_its_fields() -> None:
+    with pytest.raises(TypeError):
+        Config()  # pyright: ignore[reportCallIssue]
+    draft = Draft(Body.User("x"), [3], Author.Core())
+    assert (draft.body, draft.delivers, draft.by) == (Body.User("x"), [3], Author.Core())
+
+
+# Errors
+
+
+def test_an_os_error_keeps_its_errno_and_the_directory(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(FileNotFoundError) as caught:
+        Session.load(missing)
+    assert caught.value.errno == 2
+    assert caught.value.strerror == "No such file or directory"
+    assert caught.value.filename == str(missing)
+
+
+def test_a_directory_that_cannot_be_made_names_itself(tmp_path: Path) -> None:
+    (tmp_path / "file").write_text("")
+    with pytest.raises(NotADirectoryError) as caught:
+        Session.create(Config("{}"), "sys", 0, tmp_path / "file" / "s")
+    assert caught.value.errno == 20
+    assert caught.value.filename == str(tmp_path / "file" / "s")
+
+
+def test_the_job_loop_is_public_and_refuses_an_answer_to_no_job() -> None:
+    session, cursor = new()
+    assert session.next_job(cursor) == tau_next.Job.Rest()
+    before = state(session)
+    with pytest.raises(tau_next.WrongAnswer):
+        session.answer(cursor, tau_next.Answer.HookFailed("nothing asked"), 1)
+    session.input(cursor, "term", "go")
+    job = session.next_job(cursor)
+    assert isinstance(job, tau_next.Job.Hooks)
+    assert job.point == tau_next.Hook.PreStep
+    with pytest.raises(tau_next.WrongAnswer):
+        session.answer(cursor, tau_next.Answer.CallDone("c", Outcome.Ok("x"), Author.Core()), 2)
+    assert before["at"] == state(session)["at"], "a refused answer changed nothing"
+    session.answer(cursor, tau_next.Answer.Hooks(None, None), 3)
+    ended = session.next_job(cursor)
+    assert isinstance(ended, tau_next.Job.Hooks)
+    assert (ended.point, ended.ending) == (tau_next.Hook.PostStep, Ending.Done())
+
+
+def test_a_log_record_that_cannot_replay_is_a_bad_record(tmp_path: Path) -> None:
+    session, _ = new(tmp_path)
+    session.close()
+    records = (
+        b'{"Label":{"label":"ghost","cursor":99}}',  # a label on a cursor that never was
+        b'{"Sync":{"pad":null}}',  # then a sync, or load cuts the unsynced tail
+    )
+    with (tmp_path / "log").open("ab") as log:
+        for payload in records:
+            length = len(payload).to_bytes(4, "little")
+            crc = zlib.crc32(length + payload).to_bytes(4, "little")
+            log.write(length + crc + payload)
+    with pytest.raises(tau_next.BadRecord):
+        Session.load(tmp_path)
+
+
+def test_the_hook_argument_is_not_a_frontend_affordance() -> None:
+    session, cursor = new()
+    with pytest.raises(TypeError):
+        session.add_item(cursor, ItemData.Extension("x", "y"), hook=cursor)  # pyright: ignore[reportCallIssue]
+    with pytest.raises(TypeError):
+        session.set_label("main", cursor, hook=cursor)  # pyright: ignore[reportCallIssue]

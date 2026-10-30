@@ -32,7 +32,7 @@ def answer_with_orphan_results(subject: object) -> None:
     assert isinstance(subject, Subject)
     assert subject.draft is not None
     outcomes = [("zz", Outcome.Ok("v"), Author.Tools())]
-    subject.draft = Draft(Body.Results(outcomes), Author.Provider(), [])
+    subject.draft = Draft(Body.Results(outcomes), [], Author.Provider())
 
 
 @scenario

@@ -82,7 +82,7 @@ impl Tree {
 /// `moves` (under the lock, raising `Closed` if the session is closed) when
 /// asked. A move made after the snapshot is not in it.
 #[pyclass(frozen, module = "tau_next._core")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CursorState {
     shared: Arc<Shared>,
     id: u64,
@@ -134,6 +134,21 @@ impl CursorState {
     fn moves_since_step(&self, py: Python<'_>) -> PyResult<Vec<Move>> {
         let span = tracing::info_span!("py.cursor_state.moves_since_step");
         self.moves_from(py, self.step_start, span)
+    }
+}
+
+/// The snapshot's own fields, never the session behind its handle.
+impl std::fmt::Debug for CursorState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CursorState")
+            .field("cursor", &self.id)
+            .field("at", &self.at)
+            .field("auto", &self.auto)
+            .field("busy", &self.busy)
+            .field("next", &self.next)
+            .field("items", &self.items.len())
+            .field("labels", &self.labels.len())
+            .finish_non_exhaustive()
     }
 }
 

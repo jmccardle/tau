@@ -10,8 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use pyo3::create_exception;
-use pyo3::exceptions::PyRuntimeError;
+use crate::error::TraceError;
 use pyo3::prelude::*;
 use tracing_chrome::{ChromeLayerBuilder, FlushGuard, TraceStyle};
 use tracing_subscriber::filter::LevelFilter;
@@ -20,13 +19,6 @@ use tracing_subscriber::{Registry, reload};
 
 /// How long `stop_trace` waits for the writer thread to finish the file.
 const FINISH: Duration = Duration::from_secs(10);
-
-create_exception!(
-    tau_next._core,
-    TraceError,
-    PyRuntimeError,
-    "A trace started while one runs, stopped while none runs, or that cannot be installed."
-);
 
 /// A file that says so when the writer thread is done with it and drops it.
 struct Finished<W: Write> {
@@ -115,21 +107,26 @@ pub fn trace_to(path: PathBuf) -> PyResult<()> {
 /// Stop recording and return once the trace file is complete.
 #[pyfunction]
 pub fn stop_trace(py: Python<'_>) -> PyResult<()> {
-    let mut slot = tracer()?;
-    let t = slot
-        .as_mut()
-        .filter(|t| t.running.is_some())
-        .ok_or_else(|| TraceError::new_err("no trace is running"))?;
-    t.filter
-        .modify(|f| *f = LevelFilter::OFF)
-        .map_err(|e| TraceError::new_err(e.to_string()))?;
-    let (_, finished) = t.running.take().expect("checked above");
-    // Closing the current file is starting the next one, which we do not use.
-    let (done, _unused) = channel();
-    t.guard.start_new(Some(Box::new(Finished {
-        inner: io::sink(),
-        done,
-    })));
+    // The lock is released before the GIL is: `trace_clock` runs with the GIL
+    // and waits for this lock, so holding both here would freeze the process.
+    let finished = {
+        let mut slot = tracer()?;
+        let t = slot
+            .as_mut()
+            .filter(|t| t.running.is_some())
+            .ok_or_else(|| TraceError::new_err("no trace is running"))?;
+        t.filter
+            .modify(|f| *f = LevelFilter::OFF)
+            .map_err(|e| TraceError::new_err(e.to_string()))?;
+        let (_, finished) = t.running.take().expect("checked above");
+        // Closing the current file is starting the next one, which we do not use.
+        let (done, _unused) = channel();
+        t.guard.start_new(Some(Box::new(Finished {
+            inner: io::sink(),
+            done,
+        })));
+        finished
+    };
     py.detach(move || finished.recv_timeout(FINISH))
         .map_err(|_| TraceError::new_err("the trace file was not finished"))
 }
