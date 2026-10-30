@@ -142,7 +142,9 @@ class SampleRun:
             return Answer.Sampled(self._reply(finish.stop, finish.reason, finish.meta), None)
         if not isinstance(error, SampleError):
             raise error
-        return Answer.Sampled(self._reply(Stop.Error) if self._parts else None, str(error))
+        return Answer.Sampled(
+            self._reply(Stop.Error, None, error.meta) if self._parts else None, str(error)
+        )
 
 
 class _HookError(Exception):

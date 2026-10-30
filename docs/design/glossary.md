@@ -750,7 +750,9 @@ finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
 raw string is kept as `finish_reason` (via `Finish`). The request sets
 `stream_options.include_usage`, and the stream is read to its end (usage comes after
-the finish) to fill `meta` with `model`, `id`, `system_fingerprint`, `usage`. Fails with `SampleError`: a
+the finish) to fill `meta` with `model`, `id`, `system_fingerprint`, `usage`. Once `finish_reason` arrives the reply is done: later content deltas are ignored and
+any later failure (reset, error chunk, malformed SSE, no `[DONE]`) costs only the
+meta not yet received. A `SampleError` carries the `meta` that had arrived. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
 Parts begun before a failure are yielded first; a call cut off with no id or
@@ -972,7 +974,8 @@ above instead.
 
 What a provider yields last: `Finish(stop, reason, meta)`, the normalised `Stop`,
 the provider's own string (`None` if it has none), and the response `meta`
-(`None` if none; otherwise JSON object text, checked on construction). The
+(`None` if none; otherwise strict JSON object text, checked on construction:
+`TypeError` for a non-`str`). The
 driver builds the reply draft with all three.
 
 ### extension

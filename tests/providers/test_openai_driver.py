@@ -113,6 +113,23 @@ async def test_a_stream_cut_mid_reply_commits_the_partial_reply_as_an_error(
 
 
 @scenario
+async def test_a_failed_reply_keeps_the_meta_that_arrived_before_the_failure(
+    tmp_path: Path,
+) -> None:
+    first = {"id": "c9", "model": "m-9", "choices": [{"index": 0, "delta": {"content": "par"}}]}
+    head = f"data: {json.dumps(first)}\n\n".encode()
+    server = Server(httpx.Response(200, stream=CutStream(head)))
+    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
+        driver.send(c, "test", "hello")
+        await driver.rest(c)
+        reply = bodies(s, c)[-1]
+        assert isinstance(reply, Body.Assistant)
+        assert reply.stop == Stop.Error
+        assert reply.meta is not None
+        assert json.loads(reply.meta) == {"id": "c9", "model": "m-9"}
+
+
+@scenario
 async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
     config = ModelConfig(MODEL, BASE_URL, KEY_ENV).to_config()
     server = sse("plain")

@@ -19,7 +19,7 @@ from transcripts import (
     sse_text,
 )
 
-from tau_next import Finish, Part, Stop
+from tau_next import Finish, Part, SampleError, Stop
 from tau_next.providers.openai import OpenAIProvider
 
 DONE = "data: [DONE]\n\n"
@@ -71,6 +71,113 @@ async def test_usage_arrives_after_the_finish_and_joins_the_meta() -> None:
 
 
 @scenario
+async def test_the_llama_cpp_usage_chunk_joins_the_meta_and_timings_do_not() -> None:
+    """`plain_usage.sse` is `plain.sse` plus llama.cpp's trailing chunk: empty `choices`,
+    `usage`, `timings`, then `[DONE]`."""
+    items, error = await collect(provider(sse("plain_usage")), fresh_walk())
+    assert error is None
+    assert items[:-1] == [Part.Text("Hello, how are you?")]
+    meta = meta_of(items[-1])
+    assert meta == {
+        "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
+        "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
+        "system_fingerprint": "b1637-9c7a7553",
+        "usage": {"completion_tokens": 7, "prompt_tokens": 20, "total_tokens": 27},
+    }
+
+
+@scenario
+async def test_a_usage_chunk_without_a_choices_key_is_not_an_error() -> None:
+    usage = {"total_tokens": 5}
+    text = chunk({"content": "x"}, "stop") + f"data: {json.dumps({'usage': usage})}\n\n" + DONE
+    items, error = await collect(provider(sse_text(text)), fresh_walk())
+    assert error is None
+    assert meta_of(items[-1]) == {"usage": usage}
+
+
+AFTER_FINISH = [
+    pytest.param(None, id="no-done-no-usage"),
+    pytest.param('data: {"choices":[],"usage":{"total_tokens":5}}\n\n', id="usage-then-end"),
+    pytest.param('data: {"error":{"message":"boom"}}\n\n', id="error-chunk"),
+    pytest.param("data: {not json\n\n", id="malformed-sse"),
+    pytest.param("data: [1]\n\n", id="chunk-not-an-object"),
+]
+
+
+@pytest.mark.parametrize("after", AFTER_FINISH)
+@scenario
+async def test_trouble_after_the_finish_costs_only_the_meta_not_the_reply(
+    after: str | None,
+) -> None:
+    head = chunk({"content": "x"}, "stop")
+    server = sse_text(head + (after or ""))
+    items, error = await collect(provider(server), fresh_walk())
+    assert error is None
+    assert items[:-1] == [Part.Text("x")]
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason) == (Stop.End, "stop")
+
+
+@pytest.mark.parametrize("tail", ["reset", "usage-then-reset"])
+@scenario
+async def test_a_reset_after_the_finish_still_ends_the_reply_normally(tail: str) -> None:
+    usage = 'data: {"choices":[],"id":"c1","usage":{"total_tokens":5}}\n\n'
+    head = (
+        chunk({"content": "x"}, "stop") + (usage if tail == "usage-then-reset" else "")
+    ).encode()
+    server = Server(httpx.Response(200, stream=CutStream(head)))
+    items, error = await collect(provider(server), fresh_walk())
+    assert error is None
+    assert items[:-1] == [Part.Text("x")]
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason) == (Stop.End, "stop")
+    if tail == "usage-then-reset":
+        assert meta_of(finish) == {"id": "c1", "usage": {"total_tokens": 5}}
+    else:
+        assert finish.meta is None
+
+
+@scenario
+async def test_content_after_the_finish_is_ignored() -> None:
+    text = (
+        chunk({"content": "x"}, "stop")
+        + chunk({"content": "late"})
+        + chunk({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "t"}}]})
+        + 'data: {"choices":[],"usage":{"total_tokens":5}}\n\n'
+        + DONE
+    )
+    items, error = await collect(provider(sse_text(text)), fresh_walk())
+    assert error is None
+    assert items[:-1] == [Part.Text("x")]
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert finish.stop == Stop.End
+    assert meta_of(finish) == {"usage": {"total_tokens": 5}}
+
+
+@scenario
+async def test_an_error_before_the_finish_still_fails_and_carries_the_meta_so_far() -> None:
+    text = 'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"p"}}]}\n\n' + (
+        'data: {"error":{"message":"boom"}}\n\n'
+    )
+    items, error = await collect(provider(sse_text(text)), fresh_walk())
+    assert items == [Part.Text("p")]
+    assert error is not None
+    assert "boom" in str(error)
+    assert error.meta == '{"id": "c1"}'
+
+
+@scenario
+async def test_a_chunk_with_no_choices_and_no_usage_is_still_an_error_before_the_finish() -> None:
+    items, error = await collect(provider(sse_text('data: {"id":"c1"}\n\n')), fresh_walk())
+    assert items == []
+    assert error is not None
+    assert "choices" in str(error)
+
+
+@scenario
 async def test_a_response_that_says_nothing_about_itself_has_no_meta() -> None:
     items, error = await collect(provider(sse_text(chunk({"content": "x"}, "stop"))), fresh_walk())
     assert error is None
@@ -78,9 +185,17 @@ async def test_a_response_that_says_nothing_about_itself_has_no_meta() -> None:
 
 
 def test_a_finish_meta_that_is_not_a_json_object_is_refused() -> None:
-    for bad in ("not json", "[1]", '"s"', "3"):
-        with pytest.raises(ValueError, match="JSON object"):
+    for bad in ("not json", "[1]", '"s"', "3", '{"a": NaN}', '{"a": Infinity}', '{"a": -Infinity}'):
+        with pytest.raises(ValueError, match="JSON"):
             Finish(Stop.End, "stop", bad)
+
+
+def test_a_finish_meta_that_is_not_text_is_a_type_error() -> None:
+    for bad in (b'{"a": 1}', {"a": 1}, 3):
+        with pytest.raises(TypeError, match="meta must be"):
+            Finish(Stop.End, "stop", bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="meta must be"):
+        SampleError("x", b"{}")  # type: ignore[arg-type]
 
 
 @scenario

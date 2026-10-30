@@ -208,12 +208,19 @@ class _Stream:
             self.open.chunks.append(cast("str", function["arguments"]))
         return out
 
+    def meta_text(self) -> str | None:
+        return json.dumps(self.meta) if self.meta else None
+
     def feed(self, chunk: Json) -> list[Part]:
         error = chunk.get("error")
-        if error is not None:
+        if error is not None and self.finish is None:
             raise SampleError(f"the server sent an error in the stream: {error}")
         self._note(chunk)
+        if self.finish is not None:
+            return []  # the reply is done; only the meta fields and usage are still read
         choices = chunk.get("choices")
+        if choices is None and "usage" in chunk:
+            return []
         if not isinstance(choices, list):
             raise SampleError("a stream chunk has no 'choices' list")
         if not choices:
@@ -227,8 +234,8 @@ class _Stream:
             out += self._call(raw)
         finish = choice.get("finish_reason")
         if isinstance(finish, str):
+            out += self.close()  # a cut-off call raises here, before the reply counts as done
             self.finish = finish
-            out += self.close()
         return out
 
     def stop(self) -> Finish:
@@ -237,7 +244,7 @@ class _Stream:
         stop = STOPS.get(self.finish)
         if stop is None:
             raise SampleError(f"unknown finish_reason {self.finish!r}")
-        return Finish(stop, self.finish, json.dumps(self.meta) if self.meta else None)
+        return Finish(stop, self.finish, self.meta_text())
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -335,9 +342,14 @@ class OpenAIProvider:
         self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
     ) -> AsyncIterator[Part | Finish]:
         """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
-        after yielding every part the stream had finished or begun."""
+        after yielding every part the stream had finished or begun; it carries the meta fields
+        that had arrived. Once `finish_reason` has arrived the reply is done: the stream is
+        still read for `usage`, but content and tool-call deltas after it are ignored, and an
+        error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
+        meta not yet received, never the reply."""
         url, headers, body = self.request(walk, config, tools)
         reply = _Stream()
+        error: SampleError | None = None
         try:
             async with (
                 httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client,
@@ -354,20 +366,25 @@ class OpenAIProvider:
                         raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
                     for part in reply.feed(chunk):
                         yield part
-                    # No break at the finish: usage arrives in a chunk after it.
-            finish = reply.stop()
         except httpx.HTTPError as e:
             error = SampleError(f"{type(e).__name__}: {e}")
         except SampleError as e:
             error = e
-        else:
-            yield finish
-            return
+        if error is None or reply.finish is not None:
+            try:
+                finish = reply.stop()
+            except SampleError as e:
+                error = e
+            else:
+                yield finish
+                return
+        assert error is not None
+        error.meta = reply.meta_text()
         try:
             leftover = reply.close()
         except SampleError as cut_off:
             # A cut-off call with no id or name is not a part; the failure records what arrived.
-            raise SampleError(f"{error}; {cut_off}") from error
+            raise SampleError(f"{error}; {cut_off}", reply.meta_text()) from error
         for part in leftover:
             yield part
         raise error

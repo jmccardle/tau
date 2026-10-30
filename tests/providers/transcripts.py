@@ -1,7 +1,9 @@
 """Recorded llama.cpp responses (fixtures/) served through `httpx.MockTransport`.
 
 The fixtures are raw bytes from a real server (Qwen3, llama.cpp b1637), recorded with
-`stream: true`; nothing here edits them.
+`stream: true`; nothing here edits them. The exception is `plain_usage.sse`: `plain.sse` plus
+the trailing chunk llama.cpp sends when asked for usage (empty `choices`, `usage`, `timings`),
+built by hand from the recorded chunk's own fields, not re-recorded.
 """
 
 import asyncio

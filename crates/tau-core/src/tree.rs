@@ -53,6 +53,7 @@ pub enum Body {
         finish_reason: Option<String>,
         /// What the response carried besides its parts (model, id, usage...), as JSON
         /// object text. Opaque to core; `None` when the provider sent none.
+        #[serde(default)]
         meta: Option<String>,
     },
     /// One `(call id, outcome, by)` per call, in call order. `by` is who
