@@ -1,6 +1,6 @@
 # D15: Providers own their connections; frontends get saved and live events
 
-Status: candidate (2026-10-30; John has not signed it off). Built: the provider contract,
+Status: accepted (2026-10-30), after the live checks below. Built: the provider contract,
 settings, live and saved events and the mock provider (items 1-8); the OpenAI provider
 (10-13); replay data and the shared walk (14); the Anthropic provider (15); the Gemini
 provider (16); failed replies that say why (17); one HTTP module and one walk for the
@@ -429,6 +429,30 @@ line, and a bad literal key is an error while a bad key inside a variable is a w
   is bounded. Revisit with the timeout option.
 - *A startup check* (probing a provider when the driver is built). It would make startup
   need the network; `tau config check` and the per-sample `check` suffice.
+
+### Live checks 2026-10-30
+
+Every hosted provider ran against the real API, directly and through a LiteLLM proxy, with
+`examples/cache_rate.py` (four turns on a ~7k-token system prompt). Cached share of the
+prompt, turns 2-4:
+
+| route | cached |
+|---|---|
+| Anthropic direct, and through LiteLLM's `/anthropic` passthrough | 99-100% |
+| Anthropic through LiteLLM's OpenAI endpoint (our `openai` provider) | 0%: nothing marks the prefix; 100% when LiteLLM injects the marks (`cache_control_injection_points`) |
+| Gemini direct, passthrough, or LiteLLM's OpenAI endpoint | 66% (Gemini's implicit caching covers ~4k of 6.1k) |
+| Mistral direct (`openai` provider) | 99%, 0%, 99% (a miss on Mistral's side) |
+| Mistral through LiteLLM (`openai` or `anthropic` provider) | 99-100% |
+| llama.cpp (`openai` provider) | 100% |
+
+- The `anthropic` provider drives non-Anthropic models through LiteLLM's unified
+  `/v1/messages`: Mistral caches at 100%. Gemini fails on a free-tier key: LiteLLM turns our
+  cache marks into Gemini's explicit cached content, which the free tier allows none of
+  (`TotalCachedContentStorageTokensPerModelFreeTier ... limit=0`). The failure is a sample
+  error with the server's message, as it should be.
+- A reasoning model behind an OpenAI-compatible endpoint (Paper Instruments
+  `ultramarine-1-flash`) streams `reasoning_content`; it is kept as a `Thinking` part.
+- OpenAI proper is not exercised (no key or credits).
 
 ### Frontend rules for events
 

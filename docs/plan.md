@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. D13 config built (2026-10-29). D15 (providers and events) is a candidate: first slice built 2026-10-29 (provider contract, `max_tokens`/`options`, provider map, live and saved events, mock provider); replay data, the shared walk, and the OpenAI-compatible, Anthropic and Gemini providers built; tool progress built 2026-10-30. A layered review of the providers and events (2026-10-30) is merged and recorded in D15 ("Review 2026-10-30"); its Open items remain, and retries are an example (`examples/retry.py`), not built in. Missing: the 4 exit review. |
+| 4 driver, provider, tools | **mostly built**: driver, `@tool`, base tools, D13 config, and D15 (providers and events: OpenAI-compatible, Anthropic, Gemini and mock providers, live and saved events, tool progress), **accepted 2026-10-30** after a layered review and live checks against every hosted provider, direct and through LiteLLM (`examples/cache_rate.py`). Retries are an example (`examples/retry.py`), not built in. D15's Open items remain. Missing: the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
