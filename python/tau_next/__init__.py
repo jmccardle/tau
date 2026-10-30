@@ -60,7 +60,7 @@ from tau_next._startup import (
 from tau_next._trust import Trusted, TrustError, UntrustedProject, safe_block
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
-from tau_next.driver import Driver, Outstanding, Question
+from tau_next.driver import Driver, DriverState, Question
 from tau_next.events import (
     CallArgs,
     CallNamed,
@@ -74,11 +74,13 @@ from tau_next.events import (
     ThinkingDelta,
     ToolProgress,
 )
-from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
+from tau_next.handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
+    CallDraft,
     Clock,
     CursorHook,
     Extension,
+    ExtensionContractError,
     Finish,
     Progress,
     Provider,
@@ -118,12 +120,14 @@ __all__ = [
     "DotenvError",
     "Draft",
     "Driver",
+    "DriverState",
     "DuplicateCall",
     "Ending",
     "Event",
     "EventStream",
     "Exists",
     "Extension",
+    "ExtensionContractError",
     "Finish",
     "FunctionTool",
     "GrepTool",
@@ -147,7 +151,6 @@ __all__ = [
     "NotInHook",
     "NotPending",
     "Outcome",
-    "Outstanding",
     "Part",
     "Poisoned",
     "Progress",

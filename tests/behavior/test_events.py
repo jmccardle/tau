@@ -8,14 +8,14 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
-from fakes import Fail, FakeProvider, Gate, Recorder, Reply
+from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 from tau_next import (
-    Author,
     Body,
     CallArgs,
     CallNamed,
+    Closed,
     Delta,
     Event,
     EventStream,
@@ -37,6 +37,17 @@ SYS = 1  # the system node's id: a new session is Config 0, System 1
 DELTAS = [ThinkingDelta("hm"), TextDelta("hel"), TextDelta("lo")]
 # A part is yielded before the first delta of the next part.
 SCRIPT = [DELTAS[0], Part.Thinking("hm"), DELTAS[1], DELTAS[2], Part.Text("hello")]
+
+
+async def failing_harness(tmp_path: Path) -> tuple[Harness, Gate]:
+    """A harness with one call parked at the returned gate. Close the session, then release
+    the gate: the call's answer meets a closed session, which the pump dies of."""
+    gate = Gate()
+    reply = Reply([Part.Call("a", "wait", "{}")], Stop.Tools)
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([reply]), tools=[FakeTool("wait", "ok", gate)]
+    )
+    return h, gate
 
 
 def held(gate: Gate) -> Reply:
@@ -96,7 +107,7 @@ async def test_a_saved_event_clears_that_cursors_live_layer_and_earlier_saved(
 async def test_a_cursor_filter_hears_only_that_cursor(tmp_path: Path) -> None:
     gate = Gate()
     h = await Harness.create(tmp_path, provider=FakeProvider([held(gate)]))
-    other = h.driver.open(SYS, Author.Frontend("term"))
+    other = h.driver.open(SYS, "term")
     mine, theirs, everyone = (h.driver.events(c) for c in (h.cursor, other, None))
     await h.send("hi")
     await h.settle()
@@ -133,7 +144,7 @@ async def test_a_slow_subscriber_loses_live_events_and_never_slows_the_pump(
 async def test_buffers_are_bounded_by_capacity_plus_one_saved_per_cursor(tmp_path: Path) -> None:
     replies = [Reply([Part.Text(f"r{i}")]) for i in range(6)]
     h = await Harness.create(tmp_path, provider=FakeProvider(replies))
-    second = h.driver.open(SYS, Author.Frontend("term"))
+    second = h.driver.open(SYS, "term")
     stream = h.driver.events(buffer=4)
     for _ in range(3):
         await h.send("a")
@@ -162,10 +173,29 @@ async def test_a_frontend_call_that_changes_a_cursor_is_heard_by_another_fronten
     stream = h.driver.events()
     await h.input("hello")
     assert await anext(stream) == Saved(h.cursor)
-    opened = h.driver.open(SYS, Author.Frontend("term"))
+    opened = h.driver.open(SYS, "term")
     assert await anext(stream) == Saved(opened)
-    h.driver.go_to(opened, SYS, "term")
-    assert await anext(stream) == Saved(opened)
+    mine = h.driver.events(opened)  # the cursor's own steps are not the subject here
+    h.driver.go_to(opened, 0, "term")
+    assert await anext(mine) == Saved(opened)
+    await mine.aclose()
+    await stream.aclose()
+    await h.close()
+
+
+@scenario
+async def test_a_frontend_call_that_changes_nothing_is_not_announced(tmp_path: Path) -> None:
+    """An abort on a resting cursor, a `set_auto` to the value it has: nothing a frontend could
+    see changed, so no `Saved`."""
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
+    stream = h.driver.events()
+    waiting = asyncio.ensure_future(anext(stream))
+    assert not await h.abort()
+    await h.set_auto(False)
+    await h.settle()
+    assert not waiting.done()
+    await h.set_auto(True)  # this does change the cursor
+    assert await waiting == Saved(h.cursor)
     await stream.aclose()
     await h.close()
 
@@ -173,15 +203,15 @@ async def test_a_frontend_call_that_changes_a_cursor_is_heard_by_another_fronten
 @scenario
 async def test_closing_the_stream_unsubscribes(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([Reply(SCRIPT)]))
-    assert h.driver.subscribers == 0
+    assert h.driver.state().subscribers == 0
     stream = h.driver.events()
     async with h.driver.events() as other:
-        assert h.driver.subscribers == 2
+        assert h.driver.state().subscribers == 2
         assert other is not stream
-    assert h.driver.subscribers == 1
+    assert h.driver.state().subscribers == 1
     await stream.aclose()
     await stream.aclose()  # closing twice is fine
-    assert h.driver.subscribers == 0
+    assert h.driver.state().subscribers == 0
     assert [e async for e in stream] == []
     await h.send("hi")
     await h.settle()
@@ -197,7 +227,7 @@ async def test_an_abandoned_stream_is_collected(tmp_path: Path) -> None:
         break  # never closed
     del stream
     gc.collect()
-    assert h.driver.subscribers == 0
+    assert h.driver.state().subscribers == 0
     await h.close()
 
 
@@ -216,31 +246,74 @@ async def test_a_second_consumer_of_one_stream_is_refused(tmp_path: Path) -> Non
 
 @scenario
 async def test_a_driver_that_fails_ends_every_stream_with_the_failure(tmp_path: Path) -> None:
-    # A tool that breaks its return contract is the driver's own invariant breaking (the
-    # same as a provider's failure only if the provider is the one at fault).
-    class Broken:
-        name = "bad"
-        description = "Returns the wrong thing."
+    h, gate = await failing_harness(tmp_path)
+    stream = h.driver.events()
+    await h.send("hi")
+    await h.settle()
+    h.session.close()  # the next answer meets a closed session: the pump dies of it
+    gate.release()
+    # buffered events are delivered first, then the failure
+    assert await anext(stream) == Saved(h.cursor, reply=True)
+    with pytest.raises(Closed):
+        await anext(stream)
+    await h.driver.stop()
+
+
+@scenario
+async def test_stopping_a_failed_driver_does_not_turn_the_failure_into_a_clean_end(
+    tmp_path: Path,
+) -> None:
+    h, gate = await failing_harness(tmp_path)
+    stream = h.driver.events()
+    await h.send("hi")
+    await h.settle()
+    h.session.close()
+    gate.release()
+    with pytest.raises(Closed):
+        await read_all(stream)
+    await h.driver.stop()  # the natural cleanup
+    with pytest.raises(Closed):
+        await read_all(stream)  # the frontend still learns the driver died
+
+
+@scenario
+async def test_a_driver_failure_cancels_the_effects_still_running(tmp_path: Path) -> None:
+    """A sibling call keeps running (and billing) until `stop` unless the failure cancels it."""
+    cancelled: list[str] = []
+    never = Gate()
+
+    class Slow:
+        name = "slow"
+        description = "Waits until cancelled."
         parameters: Mapping[str, object] = {"type": "object", "properties": {}}
 
         async def call(self, args_raw: str) -> Outcome:
-            return "text"  # type: ignore[return-value]
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                cancelled.append("slow")
+                raise
+            return Outcome.Ok("never")
 
+    gate = Gate()
+    reply = Reply([Part.Call("a", "fast", "{}"), Part.Call("b", "slow", "{}")], Stop.Tools)
     h = await Harness.create(
         tmp_path,
-        provider=FakeProvider([Reply([Part.Call("c", "bad", "{}")], Stop.Tools)]),
-        tools=[Broken()],
+        provider=FakeProvider([reply]),
+        tools=[FakeTool("fast", "ok", gate), Slow()],
+        gates=[never],
     )
     stream = h.driver.events()
-    waiting = asyncio.ensure_future(anext(stream))
-    await h.send("hi")
-    with pytest.raises(TypeError, match=r"tool .bad. answered"):
-        await h.driver.rest(h.cursor)
-    # buffered events are delivered first, then the failure
-    assert await waiting == Saved(h.cursor)  # what was buffered comes first
-    with pytest.raises(TypeError, match=r"tool .bad. answered"):
+    await h.send("go")
+    await h.settle()
+    h.session.close()
+    gate.release()  # the fast call answers into a closed session
+    with pytest.raises(Closed):
         await read_all(stream)
-    await h.close()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert cancelled == ["slow"], "cancelled by the failure, not left for `stop`"
+    await h.driver.stop()
 
 
 @scenario
@@ -312,7 +385,7 @@ async def test_a_provider_that_breaks_the_ordering_rule_fails_the_sample_and_kee
     h = await Harness.create(tmp_path, provider=FakeProvider([Reply(script)]))
     await h.send("hi")
     await h.settle()
-    h.driver.check()
+    h.check()
     bodies = [n.body for n in h.nodes()]
     replies = [b for b in bodies if isinstance(b, Body.Assistant)]
     notes = [b for b in bodies if isinstance(b, Body.Custom) and b.kind == "sample_error"]
@@ -389,7 +462,7 @@ async def test_a_provider_that_raises_mid_stream_fails_that_sample_and_no_other(
         yield Finish(Stop.End)
 
     h = await Harness.create(tmp_path, provider=Rogue(script))
-    other = h.driver.open(SYS, Author.Frontend("term"))
+    other = h.driver.open(SYS, "term")
     await h.send("hi")
     await h.settle()
     (reply,) = replies(h)
@@ -413,7 +486,7 @@ async def test_a_check_that_raises_fails_the_sample_and_not_the_driver(tmp_path:
     h = await Harness.create(tmp_path, provider=Rogue(script, RuntimeError("check bug")))
     await h.send("hi")
     await h.settle()
-    h.driver.check()
+    h.check()
     (error,) = [n.body for n in h.nodes() if isinstance(n.body, Body.Custom)]
     assert error.kind == "sample_error"
     assert "RuntimeError" in error.data
@@ -452,7 +525,7 @@ async def test_an_abort_is_an_abort_whatever_the_provider_raises_while_cancelled
     await h.settle()
     await h.abort()
     await h.settle()
-    h.driver.check()
+    h.check()
     assert replies(h) == [Body.Assistant([Part.Text("x")], Stop.Interrupted)]
     await h.close()
 

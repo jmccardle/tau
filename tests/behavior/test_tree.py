@@ -102,7 +102,7 @@ async def test_a_hook_moves_to_a_node_that_does_not_exist_and_fails_the_step(
     await h.settle()
     assert len(raised) == 1
     assert h.session.cursor(h.cursor).at == SYS
-    assert recorder.endings == [Ending.Failed("no node 999")]
+    assert recorder.endings == [Ending.Failed("NoSuchNode: no node 999")]
 
 
 @scenario
@@ -403,11 +403,11 @@ async def test_a_frontend_go_to_during_a_question_declines_it_then_moves(tmp_pat
     h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_step=ask)])
     await h.step()
     await h.settle()
-    assert h.driver.open_questions == 1
+    assert h.driver.state().open_questions == 1
     assert not await h.go_to(0), "nothing to cancel: the hook finishes"
     await h.settle()
     assert responses == [None], "declined"
-    assert h.driver.open_questions == 0
+    assert h.driver.state().open_questions == 0
     assert h.session.cursor(h.cursor).at == 0
 
 
@@ -438,7 +438,7 @@ async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
 async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     """Labels (section 1): set moves a label, remove drops it, unknown is `NoSuchLabel`."""
     h = await Harness.create(tmp_path)
-    other = h.driver.open(SYS, Author.Frontend("term"))
+    other = h.driver.open(SYS, "term")
     h.driver.session.set_label("main", h.cursor)
     h.driver.session.set_label("main", other)
     assert h.session.label("main") == other
@@ -544,7 +544,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("s", pre_step=steal)])
-    victim = h.driver.open(SYS, Author.Frontend("term"))
+    victim = h.driver.open(SYS, "term")
     await h.add_item("x", "for-victim", cursor=victim)
     await h.settle()
     await h.step()
@@ -708,7 +708,7 @@ async def test_an_input_draft_delivering_a_foreign_item_fails_the_step_and_does_
         provider=FakeProvider([]),
         extensions=[Scripted("r", pre_input=redirect), recorder],
     )
-    other = h.driver.open(SYS, Author.Frontend("term"))
+    other = h.driver.open(SYS, "term")
     await h.add_item("x", "for-other", cursor=other)
     await h.settle()
     await h.send("hi")
@@ -769,7 +769,7 @@ async def test_a_retired_handle_refuses_every_write_and_ask_but_still_reads(
                 write()
     with pytest.raises(tau_next.NotInHook):
         await kept[0].ask("term", "q?")
-    assert h.driver.open_questions == 0
+    assert h.driver.state().open_questions == 0
     assert h.snapshot() == before
 
 

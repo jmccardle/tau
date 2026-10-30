@@ -167,8 +167,14 @@ class Harness:
         self.driver.respond(self._c(cursor), response)
 
     async def add_item(self, name: str, data: str, cursor: int | None = None) -> int:
-        """An extension's item for the cursor: wakes it."""
-        return self.driver.add_item(self._c(cursor), ItemData.Extension(name, data))
+        """An extension's item for the cursor: wakes it. A real extension adds items from
+        inside a hook; this stands in for one whose timer fired while the cursor rests. Core
+        wakes the cursor; the driver's `set_auto` to the value it has is the frontend call
+        that makes its pump look."""
+        c = self._c(cursor)
+        item = self.session.add_item(c, ItemData.Extension(name, data))
+        self.driver.set_auto(c, self.session.cursor(c).auto)
+        return item
 
     def _c(self, cursor: int | None) -> int:
         return self.cursor if cursor is None else cursor
@@ -185,20 +191,27 @@ class Harness:
         """
         quiet = 0
         for _ in range(PASSES):
-            self.driver.check()
+            self.check()
             quiet = quiet + 1 if self._quiet() else 0
             if quiet == 2:
                 return
             await asyncio.sleep(0)
         raise AssertionError(f"settle: not quiet after {PASSES} passes")
 
+    def check(self) -> None:
+        """Raise what an effect or the pump died of."""
+        failure = self.driver.state().failure
+        if failure is not None:
+            raise failure
+
     def _quiet(self) -> bool:
-        return not self.driver.queued() and self.driver.units == self.parked()
+        state = self.driver.state()
+        return not state.queued and state.units == self.parked()
 
     def parked(self) -> int:
         gates = {*self.provider.gates, *self.gates}
         gates.update(t.gate for t in self.tools if isinstance(t, FakeTool) and t.gate is not None)
-        return sum(g.held for g in gates) + self.driver.open_questions
+        return sum(g.held for g in gates) + self.driver.state().open_questions
 
     async def crash(self) -> None:
         """Drop memory, keep disk: cancel every task without answering, close the

@@ -44,7 +44,7 @@ async def test_the_providers_problems_with_a_model_fail_the_sample_before_it_sta
     h = await Harness.create(tmp_path, provider=provider)
     await h.send("hello")
     await h.settle()
-    h.driver.check()
+    h.check()
     errors = [n.body.data for n in h.nodes() if isinstance(n.body, Body.Custom)]
     assert len(errors) == 1
     assert all(p in errors[0] for p in problems), "every problem, not the first"
