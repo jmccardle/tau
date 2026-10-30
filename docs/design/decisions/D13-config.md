@@ -78,7 +78,18 @@ Three needs:
 - Without a live terminal, tau refuses to start and prints the same report and
   the command that trusts the directory (`tau trust <dir>`).
 - Approval is consent to everything the project config sets, `base_url`
-  included: the report shows it before the user agrees.
+  included: the report shows it before the user agrees. What is approved is
+  exactly what was shown: a config that changes during the prompt is refused,
+  and the caller uses the approved text instead of reading the file again.
+- A project config with errors cannot be approved; the report lists them.
+- Symlinks are refused: `.tau/`, its `config.json` and `.gitignore`, and
+  `.env` must be the real thing, owned by the user. A `.tau/` owned by
+  someone else is not a project; the search goes on past it.
+- The report lists the variable names a trusted directory's `.env` sets, never
+  their values. `.env` is not pinned: directory trust covers it.
+- `trusted.json` holds a hash of each approved config and a copy with every
+  `api_key` value blanked, for diffs; never a key. Trust operations refuse
+  while `$TAU_HOME` or `trusted.json` is writable by others.
 
 **Environment.**
 - Shell environment variables are trusted. A project's `.env` is read only if
@@ -102,7 +113,7 @@ The parser, trust check, and CLI are Python (`tau_next.config`, the `tau`
 command). `tau-core` never reads config: `Config.data` stays opaque to it.
 
 **Trust follows content.** `trusted.json` records each directory with a hash
-of its `.tau/config.json`. A different hash is untrusted again: a live
+of its `.tau/config.json` (and a redacted copy for diffs). A different hash is untrusted again: a live
 terminal is prompted with the diff, a script fails. A `git pull` that changes
 a committed project config cannot slip through.
 
