@@ -1041,7 +1041,7 @@ end, so the connection returns to the pool. Constructor: `transport`
 The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
 `OpenAIProvider` (one client per loop, `ProviderClosed`, `status` and `retry_after`, the
 ordering rule, `usage_raw`). `base_url` defaults to `https://generativelanguage.googleapis.com/v1beta`
-(a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so, and sampling fails if the variable is unset) and travels in the `x-goog-api-key`
+(a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so; for an unset variable `tau config check` warns and sampling fails) and travels in the `x-goog-api-key`
 header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`.
 Request: `systemInstruction` (the `System` nodes before any other node), `contents`
 (`user` and `model`), `tools` (one `functionDeclarations` list, each tool's schema as
@@ -1064,8 +1064,8 @@ is a new part. On a call it sits on the `functionCall` part and the replay also 
 replay is `{"synthesized_id": true}`: a made-up id is never sent. A signature is sent back
 only on the part it came from and only when `replay_for(part, "gemini")` returns data.
 Replay that core cannot hold fails the sample. `finishReason`: `STOP` is `End` (`Tools` when
-calls were made), `MAX_TOKENS` `Length`; `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`,
-`PROHIBITED_CONTENT`, `SPII` and the image refusals `Refused`; any other fails the sample. A
+calls were made), `MAX_TOKENS` and `CONTINUATION` `Length`; `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`,
+`PROHIBITED_CONTENT`, `SPII`, `ESCALATION` and the image refusals `Refused`; any other fails the sample. A
 `promptFeedback.blockReason` ends as `Refused` with the reason as `finish_reason` and the
 block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`responseId`),
 `finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
@@ -1074,11 +1074,12 @@ block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`re
 (`{"error": {...}}`) fails the sample with its `code` as `status`. A non-200 response is a
 `SampleError` with `status` and `retry_after` (the `Retry-After` header, else the body's
 `RetryInfo.retryDelay`). Options (`check` refuses any other): `temperature`, `top_p`, `top_k`
-(numbers); `thinking`, an object of `include_thoughts` (bool; thought summaries are requested
+(`top_k` an integer); `thinking`, an object of `include_thoughts` (bool; thought summaries are requested
 only when true), `budget` (integer >= -1; Gemini 2.5) or `level` (a string; Gemini 3), not
 both; `safety_settings` (a list of `{category, threshold}`, one per category); `extra_body`
 (merged last; `contents`, `systemInstruction`, `tools`, and any key the model's settings set
-are refused; its `generationConfig` merges into ours).
+are refused; its `generationConfig` merges into ours, and may not set `candidateCount`).
+A walk ending in a `model` turn fails the sample before any request.
 
 ### MockProvider
 `tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new

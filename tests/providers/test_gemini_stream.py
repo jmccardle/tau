@@ -239,3 +239,27 @@ async def test_a_cancel_mid_text_leaves_an_interrupted_reply_holding_what_arrive
     assert reply == Body.Assistant(
         [Part.Thinking("hm"), Part.Text("hello")], Stop.Interrupted, None
     )
+
+
+@scenario
+@pytest.mark.parametrize(
+    ("reason", "stop"), [("CONTINUATION", Stop.Length), ("ESCALATION", Stop.Refused)]
+)
+async def test_continuation_is_length_and_escalation_is_refused(reason: str, stop: Stop) -> None:
+    text = gemini_chunk([{"text": "x"}], reason)
+    items, error = await collect(provider_for(text), gemini_walk())
+    assert error is None
+    assert items[-1] == Finish(stop, reason)
+
+
+@scenario
+async def test_an_empty_chunk_of_the_other_kind_does_not_split_a_run() -> None:
+    chunks = [
+        gemini_chunk([{"text": "a", "thought": True}]),
+        gemini_chunk([{"text": ""}]),
+        gemini_chunk([{"text": "b", "thought": True}]),
+        gemini_chunk([{"text": "answer"}], "STOP"),
+    ]
+    items, error = await collect(provider_for("".join(chunks)), gemini_walk())
+    assert error is None
+    assert [i for i in items if isinstance(i, Part)] == [Part.Thinking("ab"), Part.Text("answer")]

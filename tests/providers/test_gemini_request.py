@@ -256,6 +256,7 @@ def test_signed_and_unsigned_text_parts_stay_separate_parts() -> None:
             Stop.End,
             None,
         ),
+        Body.User("next"),
     )
     assert body["contents"][1]["parts"] == [  # type: ignore[index]
         {"text": "a", "thoughtSignature": "S"},
@@ -280,7 +281,9 @@ async def test_data_that_cannot_be_kept_as_replay_fails_the_sample_not_core() ->
     [
         ({"tempreature": 1}, "unknown option 'tempreature'"),
         ({"temperature": "hot"}, "'temperature' must be a number"),
-        ({"top_k": True}, "'top_k' must be a number"),
+        ({"top_k": True}, "'top_k' must be an integer"),
+        ({"top_k": 40.5}, "'top_k' must be an integer"),
+        ({"extra_body": {"generationConfig": {"candidateCount": 2}}}, "candidateCount"),
         ({"thinking": 3}, "'thinking' must be an object"),
         ({"thinking": {"budget": -2}}, "'budget' must be an integer >= -1"),
         ({"thinking": {"level": "low", "budget": 0}}, "both 'budget' and 'level'"),
@@ -379,3 +382,9 @@ async def test_many_samples_share_one_client_until_aclose() -> None:
     assert transport.closes == 1
     _, error = await collect(provider, gemini_walk())
     assert type(error).__name__ == "ProviderClosed"
+
+
+def test_a_walk_ending_in_a_model_turn_fails_before_any_request() -> None:
+    walk = walk_of(Body.User("go"), Body.Assistant([Part.Text("hi")], Stop.End, None))
+    with pytest.raises(SampleError, match="ends with a model turn"):
+        GeminiProvider(environ=ENVIRON).request(walk, model(), [])

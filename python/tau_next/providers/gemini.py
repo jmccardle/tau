@@ -66,6 +66,8 @@ STOPS: dict[str, Stop] = {
     "IMAGE_SAFETY": Stop.Refused,
     "IMAGE_PROHIBITED_CONTENT": Stop.Refused,
     "IMAGE_RECITATION": Stop.Refused,
+    "ESCALATION": Stop.Refused,
+    "CONTINUATION": Stop.Length,
 }
 
 
@@ -360,6 +362,8 @@ class _Stream:
             raise SampleError(f"a part's text is not a string: {text!r}")
         if signature is not None and not (isinstance(signature, str) and signature):
             raise SampleError(f"a part's thoughtSignature is not a string: {signature!r}")
+        if not text and signature is None:
+            return []  # live streams send an empty text part; it ends no run
         out = self.close() if self.open is not None and self.open.kind != kind else []
         if text:
             if self.open is None:
@@ -484,6 +488,10 @@ def _extra_problems(model: ModelConfig, extra: object) -> list[str]:
         return problems
     if not isinstance(generation, Mapping):
         return [*problems, "option 'extra_body' key 'generationConfig' must be an object"]
+    if "candidateCount" in generation:
+        problems.append(
+            "option 'extra_body' may not set generationConfig.candidateCount: one is read"
+        )
     taken = _generation_keys(model)
     problems += [
         f"option 'extra_body' sets generationConfig.{k}, which the model's settings already set"
@@ -604,8 +612,8 @@ class GeminiProvider:
         return NAME
 
     def check(self, model: ModelConfig) -> list[str]:
-        """Problems with the model's settings: no key named, an unknown or ill-typed option. Whether
-        the named variable is set is found when sampling."""
+        """Problems with the model's settings: no key named, an unknown or ill-typed option. An
+        unset `api_key_env` variable is not one: `tau config check` warns of it, sampling fails."""
         problems: list[str] = []
         if model.provider != NAME:
             problems.append(f"provider is {model.provider!r}, not {NAME!r}")
@@ -619,9 +627,12 @@ class GeminiProvider:
         ]
         problems += [
             f"option {key!r} must be a number"
-            for key in ("temperature", "top_p", "top_k")
+            for key in ("temperature", "top_p")
             if key in options and not _is_number(options[key])
         ]
+        top_k = options.get("top_k")
+        if "top_k" in options and not (isinstance(top_k, int) and not isinstance(top_k, bool)):
+            problems.append("option 'top_k' must be an integer")
         if "thinking" in options:
             problems += _thinking_problems(options["thinking"])
         if "safety_settings" in options:
@@ -662,11 +673,13 @@ class GeminiProvider:
             raise SampleError("; ".join(problems))
         try:
             key = model.api_key(self._environ)
-        except ConfigError as e:  # the variable `api_key_env` names is unset: known only now
+        except ConfigError as e:  # `tau config check` warns of an unset variable; sampling fails
             raise SampleError(str(e)) from e
         system, history = contents(walk)
         if not history:
             raise SampleError("the walk has no user content to send")
+        if history[-1]["role"] == "model":
+            raise SampleError("the walk ends with a model turn, which the API refuses (HTTP 400)")
         body: Json = {}
         if system is not None:
             body["systemInstruction"] = {"parts": [{"text": system}]}
