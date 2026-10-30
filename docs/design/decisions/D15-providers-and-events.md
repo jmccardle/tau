@@ -444,8 +444,8 @@ line, and a bad literal key is an error while a bad key inside a variable is a w
 
 - **llama.cpp `return_progress`.** `options.extra_body: {"return_progress": true}` asks the
   server to send progress while it processes a long prompt, which keeps the read alive
-  (the read timeout is 300 s between bytes). Not exercised against a live server in this
-  review.
+  (the read timeout is 300 s between bytes). Exercised against llama.cpp b1637 with
+  `examples/config.json`'s `local:qwen` (2026-10-30): the reply and usage arrive as without it.
 - **OpenAI proper and `max_completion_tokens`.** Newer OpenAI models refuse `max_tokens`.
   Leave `max_tokens` unset and send `options.extra_body: {"max_completion_tokens": N}`.
 - **Gemini 3 and switching mid tool loop.** A call from another provider carries no
