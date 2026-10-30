@@ -208,7 +208,6 @@ def test_check_demands_a_key_and_max_tokens_and_a_root_base_url() -> None:
     assert (
         "/v1/messages itself" in anthropic.check(replace(RESOLVED, base_url="http://p.test/v1"))[0]
     )
-    assert "not 'anthropic'" in anthropic.check(replace(RESOLVED, provider="openai"))[0]
 
 
 def test_check_leaves_the_values_to_the_api() -> None:

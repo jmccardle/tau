@@ -9,10 +9,9 @@ never in the URL.
 
 import json
 import os
-import re
 import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import cast
 from urllib.parse import quote
 
@@ -37,10 +36,13 @@ from tau_next.providers._wire import (
     Connection,
     Json,
     count,
-    is_number,
+    delay,
+    extra_body_problems,
+    finish,
     json_object,
     meta_text,
-    non_finite,
+    note_usage,
+    option_problems,
     plain,
 )
 
@@ -52,7 +54,6 @@ _OWNED_KEYS = ("contents", "systemInstruction", "tools")  # `extra_body` may not
 _DATA_KEYS = ("text", "functionCall")  # what a part carries; a part sets one
 _METADATA_KEYS = ("partMetadata", "mediaResolution", "mediaProcessing", "speechMetadata")
 _PART_KEYS = {*_DATA_KEYS, "thought", "thoughtSignature", *_METADATA_KEYS}
-_DELAY = re.compile(r"^(\d+(?:\.\d+)?)s$")  # Google's `retryDelay`: "30s", "0.5s"
 
 # Finish reasons that end a reply. `STOP` is `End`, or `Tools` when the reply made calls.
 # Every other reason (OTHER, MALFORMED_FUNCTION_CALL, MISSING_THOUGHT_SIGNATURE, ...) fails the
@@ -217,18 +218,6 @@ def _replay(data: Json) -> Replay:
         raise SampleError(f"the response holds data that cannot be kept for replay: {e}") from e
 
 
-def _delay(error: Json) -> float | None:
-    """Seconds from the `RetryInfo` in an error object's `details`, if it has one."""
-    details = error.get("details")
-    for detail in cast("list[object]", details) if isinstance(details, list) else []:
-        if isinstance(detail, dict):
-            delay = cast("Json", detail).get("retryDelay")
-            found = _DELAY.match(delay) if isinstance(delay, str) else None
-            if found:
-                return float(found.group(1))
-    return None
-
-
 def _stream_signature(part: Json) -> str | None:
     """The `thoughtSignature` of a streamed part: `None` for none, a `SampleError` for a
     value that is not a non-empty string."""
@@ -245,7 +234,7 @@ def _stream_error(error: object) -> SampleError:
     return SampleError(
         f"the server sent an error in the stream: {error}",
         status=status,
-        retry_after=_delay(body),
+        retry_after=delay(body),
     )
 
 
@@ -288,13 +277,7 @@ class _Stream:
                 self.meta[key] = value
         usage = chunk.get("usageMetadata")
         if isinstance(usage, dict):
-            raw = cast("Json", usage)
-            self.meta["usage_raw"] = raw
-            normal = _usage(raw)
-            if normal is None:
-                self.meta.pop("usage", None)  # the latest report is the one that counts
-            else:
-                self.meta["usage"] = normal
+            note_usage(self.meta, cast("Json", usage), _usage)
         feedback = chunk.get("promptFeedback")
         if isinstance(feedback, dict):
             self.meta["promptFeedback"] = feedback
@@ -426,67 +409,56 @@ class _Stream:
     def stop(self) -> Finish:
         if self.blocked is not None:
             return Finish(Stop.Refused, self.blocked, meta_text(self.meta))
-        if self.finish is None:
-            raise SampleError("the stream ended without a finishReason")
-        stop = STOPS.get(self.finish)
-        if stop is None:
-            message = self.meta.get("finishMessage")
-            raise SampleError(
-                f"finishReason {self.finish!r} is not a finished reply"
-                + (f": {message}" if message else "")
-            )
-        if stop == Stop.End and self.calls:
-            stop = Stop.Tools
-        return Finish(stop, self.finish, meta_text(self.meta))
+        done = finish(self.finish, STOPS, "finishReason", self.meta)
+        return replace(done, stop=Stop.Tools) if done.stop == Stop.End and self.calls else done
 
 
 # Options
 
 
+def _typed_body(model: ModelConfig) -> Json:
+    """The request keys the model's own settings set, with their values: `generationConfig`
+    (merged with the `extra_body` one) and `safetySettings`."""
+    options = model.options
+    generation: Json = {}
+    if model.max_tokens is not None:
+        generation["maxOutputTokens"] = model.max_tokens
+    for option, wire in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
+        if option in options:
+            generation[wire] = options[option]
+    if "thinking" in options:
+        generation["thinkingConfig"] = _thinking_config(options["thinking"])
+    body: Json = {}
+    if generation:
+        body["generationConfig"] = generation
+    if "safety_settings" in options:
+        body["safetySettings"] = plain(options["safety_settings"])
+    return body
+
+
 def _extra_problems(model: ModelConfig, extra: object) -> list[str]:
-    if not isinstance(extra, Mapping):
-        return ["option 'extra_body' must be an object"]
-    fields = cast("Mapping[str, object]", extra)
-    problems = [
-        f"option 'extra_body' may not set {k!r}; the provider owns it"
-        for k in fields
-        if k in _OWNED_KEYS
-    ]
-    problems += [
-        f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)
-    ]
-    if "safetySettings" in fields and "safety_settings" in model.options:
-        problems.append("option 'extra_body' sets 'safetySettings', which 'safety_settings' sets")
-    generation = fields.get("generationConfig")
-    if generation is None:
+    typed = _typed_body(model)
+    generation = cast("Json", typed.pop("generationConfig", {}))  # merged, not replaced
+    problems = extra_body_problems(extra, _OWNED_KEYS, typed)
+    wanted = (
+        cast("Mapping[str, object]", extra).get("generationConfig")
+        if isinstance(extra, Mapping)
+        else None
+    )
+    if wanted is None:
         return problems
-    if not isinstance(generation, Mapping):
+    if not isinstance(wanted, Mapping):
         return [*problems, "option 'extra_body' key 'generationConfig' must be an object"]
-    if "candidateCount" in generation:
+    if "candidateCount" in wanted:
         problems.append(
             "option 'extra_body' may not set generationConfig.candidateCount: one is read"
         )
-    taken = _generation_keys(model)
     problems += [
         f"option 'extra_body' sets generationConfig.{k}, which the model's settings already set"
-        for k in cast("Mapping[str, object]", generation)
-        if k in taken
+        for k in cast("Mapping[str, object]", wanted)
+        if k in generation
     ]
     return problems
-
-
-def _generation_keys(model: ModelConfig) -> list[str]:
-    """The `generationConfig` keys the model's own settings set."""
-    mapping = {
-        "temperature": "temperature",
-        "top_p": "topP",
-        "top_k": "topK",
-        "thinking": "thinkingConfig",
-    }
-    keys = [wire for option, wire in mapping.items() if option in model.options]
-    if model.max_tokens is not None:
-        keys.append("maxOutputTokens")
-    return keys
 
 
 def _thinking_problems(thinking: object) -> list[str]:
@@ -533,15 +505,6 @@ def _safety_problems(settings: object) -> list[str]:
     return problems
 
 
-def _retry_delay(body: bytes) -> float | None:
-    try:
-        parsed: object = json.loads(body)
-    except ValueError:
-        return None
-    error = cast("Json", parsed).get("error") if isinstance(parsed, dict) else None
-    return _delay(cast("Json", error)) if isinstance(error, dict) else None
-
-
 class GeminiProvider:
     """Samples Gemini's `streamGenerateContent` (`?alt=sse`) for the `ModelConfig` the driver
     resolved.
@@ -569,7 +532,7 @@ class GeminiProvider:
         timeout: httpx.Timeout | None = None,
     ) -> None:
         self._environ = os.environ if environ is None else environ
-        self._connection = Connection(transport, timeout, body_wait=_retry_delay)
+        self._connection = Connection(transport, timeout)
 
     @property
     def name(self) -> str:
@@ -579,8 +542,6 @@ class GeminiProvider:
         """Problems with the model's settings: no key named, an unknown or ill-typed option. An
         unset `api_key_env` variable is not one: `tau config check` warns of it, sampling fails."""
         problems: list[str] = []
-        if model.provider != NAME:
-            problems.append(f"provider is {model.provider!r}, not {NAME!r}")
         if model.api_key_env is None and model.literal_api_key is None:
             problems.append("needs an API key: set api_key_env (or api_key)")
         if model.model.startswith("models/"):
@@ -589,16 +550,7 @@ class GeminiProvider:
                 f"name the model {model.model.removeprefix('models/')!r}"
             )
         options = model.options
-        problems += [
-            f"unknown option {key!r}; known options are {list(_OPTIONS)}"
-            for key in options
-            if key not in _OPTIONS
-        ]
-        problems += [
-            f"option {key!r} must be a number"
-            for key in ("temperature", "top_p")
-            if key in options and not is_number(options[key])
-        ]
+        problems += option_problems(model, _OPTIONS, numbers=("temperature", "top_p"))
         top_k = options.get("top_k")
         if "top_k" in options and not (isinstance(top_k, int) and not isinstance(top_k, bool)):
             problems.append("option 'top_k' must be an integer")
@@ -638,23 +590,19 @@ class GeminiProvider:
         body["contents"] = history
         if tools:
             body["tools"] = _tools(tools)
-        options = model.options
-        extra = cast("Json", plain(options["extra_body"])) if "extra_body" in options else {}
-        generation: Json = {}
-        if model.max_tokens is not None:
-            generation["maxOutputTokens"] = model.max_tokens
-        for option, wire in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
-            if option in options:
-                generation[wire] = options[option]
-        if "thinking" in options:
-            generation["thinkingConfig"] = _thinking_config(
-                cast("Mapping[str, object]", options["thinking"])
-            )
-        generation.update(cast("Json", extra.pop("generationConfig", {})))
+        extra = (
+            cast("Json", plain(model.options["extra_body"]))
+            if "extra_body" in model.options
+            else {}
+        )
+        typed = _typed_body(model)
+        generation = {
+            **cast("Json", typed.pop("generationConfig", {})),
+            **cast("Json", extra.pop("generationConfig", {})),
+        }
         if generation:
             body["generationConfig"] = generation
-        if "safety_settings" in options:
-            body["safetySettings"] = plain(options["safety_settings"])
+        body.update(typed)
         body.update(extra)
         name = quote(model.model if "/" in model.model else f"models/{model.model}", safe="/")
         base = (model.base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -677,10 +625,14 @@ class GeminiProvider:
             yield item
 
 
-def _thinking_config(thinking: Mapping[str, object]) -> Json:
+def _thinking_config(thinking: object) -> Json:
+    """`thinking` as `thinkingConfig`. Only its keys are looked at when `check` builds the
+    typed body of a `thinking` it is about to refuse, so a non-object has none."""
     wire = {
         "include_thoughts": "includeThoughts",
         "budget": "thinkingBudget",
         "level": "thinkingLevel",
     }
-    return {wire[k]: v for k, v in thinking.items()}
+    if not isinstance(thinking, Mapping):
+        return {}
+    return {wire[k]: v for k, v in cast("Mapping[str, object]", thinking).items() if k in wire}

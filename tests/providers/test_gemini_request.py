@@ -321,14 +321,11 @@ def test_options_are_checked_and_refused_when_unknown_or_ill_shaped(
     assert any(problem in p for p in problems), problems
 
 
-def test_a_model_naming_no_key_and_a_foreign_provider_name_are_problems() -> None:
+def test_a_model_naming_no_key_is_a_problem() -> None:
     provider = GeminiProvider(environ={})
     assert provider.check(ModelConfig(MODEL, provider="gemini")) == [
         "needs an API key: set api_key_env (or api_key)"
     ]
-    assert provider.check(ModelConfig(MODEL, api_key_env="K", provider="openai"))[0].startswith(
-        "provider is 'openai'"
-    )
 
 
 @scenario

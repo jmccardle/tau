@@ -1,8 +1,9 @@
 """What every hosted provider shares over HTTP: private to the package.
 
-Three parts. JSON and number checks (`strict_loads`, `plain`, `non_finite`, `is_number`,
-`is_count`, `count`).
-Reading a response (`retry_after`, `error_text`, `sse_data`, `events`). And `Connection`, which
+Four parts. JSON and number checks (`strict_loads`, `plain`, `non_finite`, `is_number`,
+`is_count`, `count`). The option checks every `check` shares (`option_problems`,
+`extra_body_problems`). Reading a response (`retry_after`, `error_text`, `sse_data`, `events`,
+`note_usage`, `finish`). And `Connection`, which
 holds the one client a provider keeps and runs the sample loop every provider repeats: send the
 request, read the body to its end, turn an `httpx` error or a bad status into a `SampleError`.
 A provider supplies its request, a `ReplyReader` that reads its events, and how its error
@@ -12,20 +13,23 @@ bodies read.
 import asyncio
 import json
 import math
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+import re
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Protocol, cast
 
 import httpx
 
-from tau_next._core import Part
+from tau_next._config import ModelConfig
+from tau_next._core import Part, Stop
 from tau_next.events import Delta
 from tau_next.protocols import Finish, ProviderClosed, SampleError
 
 Json = dict[str, object]
 HTTP_OK = 200
 DEFAULT_TIMEOUT = httpx.Timeout(10.0, read=300.0)
+_DELAY = re.compile(r"^(\d+(?:\.\d+)?)s$")  # Google's `retryDelay`: "30s", "0.5s"
 _BAD_HEADER = "the request could not be sent: a request header holds a character HTTP can't carry"
 
 
@@ -104,6 +108,60 @@ def is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def option_problems(
+    model: ModelConfig,
+    known: Sequence[str],
+    *,
+    numbers: Sequence[str] = (),
+    flags: Sequence[str] = (),
+) -> list[str]:
+    """The problems every provider's `check` finds in `model.options` by name alone: a key not
+    in `known`, a `numbers` key that is not a finite number, a `flags` key that is not a
+    boolean. The driver hands a provider only models that name it, so no provider checks that."""
+    options = model.options
+    return (
+        [
+            f"unknown option {key!r}; known options are {list(known)}"
+            for key in options
+            if key not in known
+        ]
+        + [
+            f"option {key!r} must be a number"
+            for key in numbers
+            if key in options and not is_number(options[key])
+        ]
+        + [
+            f"option {key!r} must be true or false"
+            for key in flags
+            if key in options and not isinstance(options[key], bool)
+        ]
+    )
+
+
+def extra_body_problems(
+    extra: object, owned: Sequence[str], typed: Mapping[str, object]
+) -> list[str]:
+    """The problems in an `extra_body` option: not an object, a key in `owned` (the provider
+    sets it), a key in `typed` (the request body the model's own settings build), or a NaN or
+    infinity anywhere inside."""
+    if not isinstance(extra, Mapping):
+        return ["option 'extra_body' must be an object"]
+    fields = cast("Mapping[str, object]", extra)
+    return (
+        [
+            f"option 'extra_body' may not set {k!r}; the provider owns it"
+            for k in fields
+            if k in owned
+        ]
+        + [
+            f"option 'extra_body' sets {k!r}, which the model's settings already set"
+            for k in typed
+            if k in fields
+        ]
+        + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)]
+    )
+
+
 async def sse_data(response: httpx.Response) -> AsyncIterator[str]:
     """The `data` of each SSE event: its `data:` lines joined by newlines. The body is read to
     its end, so the connection goes back to the pool."""
@@ -132,9 +190,55 @@ def meta_text(meta: Json) -> str | None:
     return json.dumps(kept, allow_nan=False) if kept else None
 
 
-def error_text(status: int, body: bytes, *, typed: bool = False) -> str:
+def note_usage(meta: Json, raw: Json, normalize: Callable[[Json], Json | None]) -> None:
+    """Keep a `usage` report in `meta`: as sent (`usage_raw`) and normalized (`usage`). The
+    latest report is the one that counts, so a malformed one drops the earlier `usage`."""
+    meta["usage_raw"] = raw
+    normal = normalize(raw)
+    if normal is None:
+        meta.pop("usage", None)
+    else:
+        meta["usage"] = normal
+
+
+def finish(reason: str | None, stops: Mapping[str, Stop], field: str, meta: Json) -> Finish:
+    """The `Finish` for a provider's stop `reason` (`field` is its name for it): a `SampleError`
+    when none arrived or `stops` does not know it."""
+    if reason is None:
+        raise SampleError(f"the stream ended without a {field}")
+    stop = stops.get(reason)
+    if stop is None:
+        raise SampleError(f"unknown {field} {reason!r}")
+    return Finish(stop, reason, meta_text(meta))
+
+
+def delay(error: Json) -> float | None:
+    """Seconds from the `RetryInfo` in an error object's `details` (Google's `retryDelay`), if
+    it has one."""
+    details = error.get("details")
+    for detail in cast("list[object]", details) if isinstance(details, list) else []:
+        if isinstance(detail, dict):
+            wait = cast("Json", detail).get("retryDelay")
+            found = _DELAY.match(wait) if isinstance(wait, str) else None
+            if found:
+                return float(found.group(1))
+    return None
+
+
+def _body_wait(body: bytes) -> float | None:
+    """The wait an error body names when the `Retry-After` header is missing."""
+    try:
+        parsed: object = json.loads(body)
+    except ValueError:
+        return None
+    error = cast("Json", parsed).get("error") if isinstance(parsed, dict) else None
+    return delay(cast("Json", error)) if isinstance(error, dict) else None
+
+
+def error_text(status: int, body: bytes) -> str:
     """`HTTP <status>: <the server's error message, else its body>`, from the `error` object
-    most APIs send. With `typed` the object's `type` leads the message (`<type>: <message>`)."""
+    most APIs send. The object's `type`, when it has one, leads the message
+    (`<type>: <message>`)."""
     text = body.decode("utf-8", errors="replace").strip()
     try:
         parsed: object = strict_loads(text)
@@ -145,8 +249,8 @@ def error_text(status: int, body: bytes, *, typed: bool = False) -> str:
         if isinstance(error, dict):
             fields = cast("Json", error)
             text = str(fields.get("message", text))
-            if typed:
-                text = f"{fields.get('type', 'error')}: {text}"
+            if isinstance(fields.get("type"), str):
+                text = f"{fields['type']}: {text}"
     return f"HTTP {status}: {text[:500]}"
 
 
@@ -213,24 +317,19 @@ class Connection:
     garbage collected (D10), so a program with one loop per command holds one idle socket per
     finished loop until then. `transport` replaces the network (a test's `httpx.MockTransport`).
 
-    `typed_errors` is whether the provider's error bodies lead with their `type`; `body_wait`
-    reads a wait out of an error body when the `Retry-After` header is missing (Google sends
-    `RetryInfo` there); `meta_headers` maps response headers to `meta` keys, kept on success
-    and on failure alike."""
+    An error body's `type` leads its message (`error_text`), and a wait missing from the
+    `Retry-After` header is read from the body (Google sends `RetryInfo` there). `meta_headers`
+    maps response headers to `meta` keys, kept on success and on failure alike."""
 
     def __init__(
         self,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: httpx.Timeout | None = None,
         *,
-        typed_errors: bool = False,
-        body_wait: Callable[[bytes], float | None] | None = None,
         meta_headers: Mapping[str, str] | None = None,
     ) -> None:
         self._transport = transport
         self._timeout = timeout or DEFAULT_TIMEOUT
-        self._typed = typed_errors
-        self._body_wait = body_wait
         self._meta_headers = meta_headers or {}
         self._http: httpx.AsyncClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None  # the loop `_http` belongs to
@@ -267,13 +366,11 @@ class Connection:
                 status=status,
                 retry_after=wait,
             ) from e
-        if wait is None and self._body_wait is not None:
-            wait = self._body_wait(body)
+        if wait is None:
+            wait = _body_wait(body)
             if wait is not None and not math.isfinite(wait):
                 wait = None
-        raise SampleError(
-            error_text(status, body, typed=self._typed), status=status, retry_after=wait
-        )
+        raise SampleError(error_text(status, body), status=status, retry_after=wait)
 
     def _read_meta_headers(self, response: httpx.Response, reply: ReplyReader) -> None:
         for header, key in self._meta_headers.items():

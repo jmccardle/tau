@@ -26,11 +26,12 @@ from tau_next.providers._wire import (
     Connection,
     Json,
     count,
+    extra_body_problems,
+    finish,
     is_count,
-    is_number,
     json_object,
-    meta_text,
-    non_finite,
+    note_usage,
+    option_problems,
     plain,
 )
 
@@ -153,12 +154,7 @@ class _Stream:
         if not isinstance(raw, dict):
             return
         self.usage.update({k: v for k, v in cast("Json", raw).items() if v is not None})
-        self.meta["usage_raw"] = dict(self.usage)
-        normal = _usage(self.usage)
-        if normal is None:
-            self.meta.pop("usage", None)
-        else:
-            self.meta["usage"] = normal
+        note_usage(self.meta, dict(self.usage), _usage)
 
     @property
     def done(self) -> bool:
@@ -311,12 +307,7 @@ class _Stream:
         return [Part.Thinking(text) if block.kind == "thinking" else Part.Text(text)]
 
     def stop(self) -> Finish:
-        if self.stop_reason is None:
-            raise SampleError("the stream ended without a stop_reason")
-        stop = STOPS.get(self.stop_reason)
-        if stop is None:
-            raise SampleError(f"unknown stop_reason {self.stop_reason!r}")
-        return Finish(stop, self.stop_reason, meta_text(self.meta))
+        return finish(self.stop_reason, STOPS, "stop_reason", self.meta)
 
 
 def stream_error(event: Json) -> SampleError:
@@ -372,62 +363,42 @@ def _thinking_problems(value: object, max_tokens: int | None) -> list[str]:
     return problems
 
 
-def _typed_keys(model: ModelConfig) -> list[str]:
-    """The request keys the model's own settings already set."""
+def _typed_body(model: ModelConfig) -> Json:
+    """The request keys the model's own settings set, with their values."""
     options = model.options
-    keys = [k for k in ("thinking", "temperature", "top_p", "top_k") if k in options]
+    body: Json = {}
+    if "thinking" in options:
+        body["thinking"] = plain(options["thinking"])
     if "effort" in options:
-        keys.append("output_config")
-    return keys
+        body["output_config"] = {"effort": options["effort"]}
+    body.update({k: options[k] for k in ("temperature", "top_p", "top_k") if k in options})
+    return body
 
 
 def _extra_body_problems(model: ModelConfig, extra: object) -> list[str]:
-    if not isinstance(extra, Mapping):
-        return ["option 'extra_body' must be an object"]
-    fields = cast("Mapping[str, object]", extra)
-    return (
-        [
-            f"option 'extra_body' may not set {k!r}; the provider owns it"
-            for k in fields
-            if k in _OWNED_KEYS
-        ]
-        + [
-            f"option 'extra_body' sets {k!r}, which the model's settings already set"
-            for k in _typed_keys(model)
-            if k in fields
-        ]
-        + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)]
-        + (
-            ["option 'extra_body' may not set 'thinking'; the 'thinking' option covers it"]
-            if "thinking" in fields
-            else []
-        )
-        + (
-            ["option 'extra_body' sets 'context_management', which needs a beta header"]
-            if "context_management" in fields
-            else []
-        )
-    )
+    problems = extra_body_problems(extra, _OWNED_KEYS, _typed_body(model))
+    if isinstance(extra, Mapping):
+        fields = cast("Mapping[str, object]", extra)
+        if "thinking" in fields:
+            problems.append(
+                "option 'extra_body' may not set 'thinking'; the 'thinking' option covers it"
+            )
+        if "context_management" in fields:
+            problems.append(
+                "option 'extra_body' sets 'context_management', which needs a beta header"
+            )
+    return problems
 
 
 def _option_problems(model: ModelConfig) -> list[str]:
     options = model.options
-    problems = [
-        f"unknown option {key!r}; known options are {list(_OPTIONS)}"
-        for key in options
-        if key not in _OPTIONS
-    ]
-    problems += [
-        f"option {key!r} must be a number"
-        for key in ("temperature", "top_p")
-        if key in options and not is_number(options[key])
-    ]
+    problems = option_problems(
+        model, _OPTIONS, numbers=("temperature", "top_p"), flags=("prompt_caching",)
+    )
     if "top_k" in options and not is_count(options["top_k"]):
         problems.append("option 'top_k' must be a non-negative integer")
     if "effort" in options and not (isinstance(options["effort"], str) and options["effort"]):
         problems.append("option 'effort' must be a non-empty string")
-    if "prompt_caching" in options and not isinstance(options["prompt_caching"], bool):
-        problems.append("option 'prompt_caching' must be true or false")
     if "thinking" in options:
         problems += _thinking_problems(options["thinking"], model.max_tokens)
     if "extra_body" in options:
@@ -465,7 +436,6 @@ class AnthropicProvider:
         self._connection = Connection(
             transport,
             timeout,
-            typed_errors=True,
             meta_headers={"request-id": "request_id"},  # what support asks for
         )
 
@@ -476,8 +446,6 @@ class AnthropicProvider:
     def check(self, model: ModelConfig) -> list[str]:
         """Problems with the model's settings as this provider reads them."""
         problems: list[str] = []
-        if model.provider != NAME:
-            problems.append(f"provider is {model.provider!r}, not {NAME!r}")
         if model.max_tokens is None:
             problems.append(
                 "needs max_tokens: the Messages API requires it and there is no default"
@@ -526,13 +494,7 @@ class AnthropicProvider:
             body["system"] = system_value
         if tools:
             body["tools"] = tools_array(tools)
-        if "thinking" in options:
-            body["thinking"] = plain(options["thinking"])
-        if "effort" in options:
-            body["output_config"] = {"effort": options["effort"]}
-        for name in ("temperature", "top_p", "top_k"):
-            if name in options:
-                body[name] = options[name]
+        body.update(_typed_body(model))
         if "extra_body" in options:
             body.update(cast("Json", plain(options["extra_body"])))
         base = API_URL if model.base_url is None else model.base_url.rstrip("/")
