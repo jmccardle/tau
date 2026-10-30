@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
-from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
+from fakes import FAKE_CONFIG, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 import tau_next
@@ -26,7 +26,7 @@ from tau_next import (
     Subject,
 )
 
-SYSTEM = [Body.Config(Config("{}")), Body.System("sys")]
+SYSTEM = [Body.Config(FAKE_CONFIG), Body.System("sys")]
 SYS = 1  # the system node's id: a new session is Config 0, System 1
 
 Hookfn = Callable[[Cursor, Subject], Awaitable[str | None]]

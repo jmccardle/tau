@@ -16,9 +16,9 @@ from typing import cast
 import httpx
 
 from tau_next import (
-    Config,
     Driver,
     Finish,
+    ModelCatalog,
     ModelConfig,
     Node,
     Part,
@@ -26,13 +26,28 @@ from tau_next import (
     Session,
     SystemClock,
     Tool,
+    model_config,
+    read_models,
 )
 from tau_next.providers.openai import OpenAIProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE_URL = "http://llama.test:8100/v1"
 MODEL = "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf"
-CONFIG = ModelConfig(MODEL, BASE_URL).to_config()
+NAME = "llama"
+CONFIG = model_config(NAME)
+RESOLVED = ModelConfig(MODEL, BASE_URL)
+
+
+def catalog(
+    api_key_env: str | None = None, model: str = MODEL, base_url: str = BASE_URL
+) -> ModelCatalog:
+    """A catalog whose one model `NAME` is `model` at `base_url` (`RESOLVED` by default),
+    reading its key from `api_key_env`."""
+    settings = {"model": model, "base_url": base_url}
+    if api_key_env is not None:
+        settings["api_key_env"] = api_key_env
+    return read_models(cli={"models": {NAME: settings}})
 
 
 class Server:
@@ -124,13 +139,13 @@ def chunk(delta: dict[str, object], finish: str | None = None) -> str:
 async def collect(
     provider: OpenAIProvider,
     walk: Sequence[Node],
-    config: Config = CONFIG,
+    model: ModelConfig = RESOLVED,
     tools: Sequence[Tool] = (),
 ) -> tuple[list[Part | Finish], SampleError | None]:
     """Everything `sample` yielded, and the `SampleError` it ended with, if any."""
     items: list[Part | Finish] = []
     try:
-        async for item in provider.sample(walk, config, tools):
+        async for item in provider.sample(walk, model, tools):
             items.append(item)
     except SampleError as e:
         return items, e
@@ -147,11 +162,12 @@ def fresh_walk() -> list[Node]:
 
 @asynccontextmanager
 async def running(
-    directory: Path, provider: OpenAIProvider, config: Config = CONFIG
+    directory: Path, provider: OpenAIProvider, models: ModelCatalog | None = None
 ) -> AsyncIterator[tuple[Session, Driver, int]]:
-    """A session on disk in `directory` and a started driver over `provider`."""
-    session = Session.create(config, "sys", SystemClock().now(), directory)
-    driver = Driver(session, provider)
+    """A session on disk in `directory` naming `NAME`, and a started driver over `provider`
+    and `models` (`catalog()` by default)."""
+    session = Session.create(CONFIG, "sys", SystemClock().now(), directory)
+    driver = Driver(session, provider, models or catalog())
     driver.start()
     try:
         yield session, driver, session.cursors()[0]

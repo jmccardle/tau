@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import pytest
-from fakes import FakeProvider, Reply
+from fakes import FAKE_CONFIG, FakeProvider, Reply, fake_catalog
 from harness import Harness, scenario
 
 from tau_next import (
     Author,
     Body,
-    Config,
     Driver,
     Outcome,
     Part,
@@ -433,15 +432,15 @@ class Twin(Good):
 def test_the_driver_refuses_what_is_not_a_tool(
     tmp_path: Path, tools: list[object], needle: str
 ) -> None:
-    session = Session.create(Config("{}"), "sys", 0)
+    session = Session.create(FAKE_CONFIG, "sys", 0)
     with pytest.raises(ToolContractError, match=needle):
-        Driver(session, FakeProvider([]), tools)  # type: ignore[arg-type]
+        Driver(session, FakeProvider([]), fake_catalog(), tools=tools)  # type: ignore[arg-type]
     session.close()
 
 
 def test_distinct_hand_written_tools_are_accepted() -> None:
-    session = Session.create(Config("{}"), "sys", 0)
-    Driver(session, FakeProvider([]), [Good(), Other()])
+    session = Session.create(FAKE_CONFIG, "sys", 0)
+    Driver(session, FakeProvider([]), fake_catalog(), tools=[Good(), Other()])
     session.close()
 
 

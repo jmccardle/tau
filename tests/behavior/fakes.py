@@ -7,10 +7,11 @@ from dataclasses import dataclass
 
 from tau_next import (
     CallDraft,
-    Config,
     Cursor,
     Ending,
     Finish,
+    ModelCatalog,
+    ModelConfig,
     Node,
     NodeHandle,
     Outcome,
@@ -19,7 +20,18 @@ from tau_next import (
     Stop,
     Subject,
     Tool,
+    model_config,
+    read_models,
 )
+
+FAKE_MODEL = "fake"
+FAKE_CONFIG = model_config(FAKE_MODEL)
+
+
+def fake_catalog(*names: str) -> ModelCatalog:
+    """A catalog of models (`fake` if no names), each at a URL nothing listens on."""
+    models = {n: {"model": n, "base_url": "http://fake.invalid/v1"} for n in names or (FAKE_MODEL,)}
+    return read_models(cli={"models": models})
 
 
 class Gate:
@@ -88,10 +100,10 @@ class Fail:
 
 @dataclass(frozen=True)
 class Request:
-    """What a sample was asked: the walk's node ids, the config (I1), and the tools offered."""
+    """What a sample was asked: the walk's node ids, the resolved model (I1), the tools."""
 
     walk: tuple[int, ...]
-    config: Config
+    model: ModelConfig
     tools: tuple[Tool, ...] = ()
 
     @property
@@ -112,9 +124,9 @@ class FakeProvider:
         return [e.gate for e in self._script if isinstance(e, Reply) and e.gate is not None]
 
     async def sample(
-        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncIterator[Part | Finish]:
-        self.requests.append(Request(tuple(n.id for n in walk), config, tuple(tools)))
+        self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools)))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")
         scripted = self._script[self._next]

@@ -5,7 +5,8 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from tau_next._core import Config, Node, Outcome, Part, Stop
+from tau_next._core import Node, Outcome, Part, Stop
+from tau_next.config import ModelConfig
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 
 
@@ -83,9 +84,10 @@ class Provider(Protocol):
     """One API family. Owes the driver `model.md` section 10 (the parts of it built so far)."""
 
     def sample(
-        self, walk: Sequence[Node], config: Config, tools: Sequence["Tool"]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence["Tool"]
     ) -> AsyncIterator[Part | Finish]:
-        """Yield the reply's parts in order, then its `Finish`, then end. `tools` are the
+        """`model` is the session's named model, resolved by the driver at this sample. Yield
+        the reply's parts in order, then its `Finish`, then end. `tools` are the
         driver's, offered to the model for this sample only; they are never recorded.
 
         Raise `SampleError` to fail; parts yielded before it are kept.

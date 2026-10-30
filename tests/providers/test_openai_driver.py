@@ -13,6 +13,7 @@ from transcripts import (
     MODEL,
     CutStream,
     Server,
+    catalog,
     chunk,
     collect,
     fresh_walk,
@@ -27,7 +28,6 @@ from tau_next import (
     Body,
     Driver,
     FunctionTool,
-    ModelConfig,
     Node,
     Part,
     Session,
@@ -131,21 +131,20 @@ async def test_a_failed_reply_keeps_the_meta_that_arrived_before_the_failure(
 
 @scenario
 async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
-    config = ModelConfig(MODEL, BASE_URL, KEY_ENV).to_config()
     server = sse("plain")
     directory = tmp_path / "s"
     provider = OpenAIProvider(server.transport, {KEY_ENV: SECRET})
-    async with running(directory, provider, config) as (s, driver, c):
+    async with running(directory, provider, catalog(KEY_ENV)) as (s, driver, c):
         driver.send(c, "test", "hello")
         await driver.rest(c)
         assert bodies(s, c)[-1] == Body.Assistant(
             [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
         )
     assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
-    assert KEY_ENV in repr(config), "the variable's name is in the Config"
     for file in directory.rglob("*"):
         if file.is_file():
             assert SECRET.encode() not in file.read_bytes(), f"the key is in {file}"
+            assert BASE_URL.encode() not in file.read_bytes(), f"the URL is in {file}"
     loaded = Session.load(directory)
     try:
         for node in nodes(loaded):
@@ -158,9 +157,8 @@ async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
 async def test_an_unset_key_variable_fails_the_sample_before_any_request(
     tmp_path: Path,
 ) -> None:
-    config = ModelConfig(MODEL, BASE_URL, KEY_ENV).to_config()
     server = sse("plain")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), config) as (
+    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), catalog(KEY_ENV)) as (
         s,
         driver,
         c,
@@ -192,8 +190,8 @@ async def test_live_a_plain_turn(tmp_path: Path) -> None:
     """Against a real server: `TAU_LIVE_BASE_URL` and `TAU_LIVE_MODEL` (the id from /v1/models)."""
     model = os.environ.get("TAU_LIVE_MODEL")
     assert model, "TAU_LIVE_MODEL must name the model when TAU_LIVE_BASE_URL is set"
-    config = ModelConfig(model, os.environ["TAU_LIVE_BASE_URL"]).to_config()
-    async with running(tmp_path / "s", OpenAIProvider(), config) as (s, driver, c):
+    live = catalog(model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
+    async with running(tmp_path / "s", OpenAIProvider(), live) as (s, driver, c):
         driver.send(c, "test", "Say hello in five words or fewer.")
         await driver.rest(c)
         reply = bodies(s, c)[-1]
@@ -220,7 +218,7 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
     server = sse_sequence("tool_call", "plain")
     weather = get_weather_tool()
     session = Session.create(CONFIG, "sys", SystemClock().now(), tmp_path / "s")
-    driver = Driver(session, OpenAIProvider(server.transport, {}), tools=[weather])
+    driver = Driver(session, OpenAIProvider(server.transport, {}), catalog(), tools=[weather])
     driver.start()
     c = session.cursors()[0]
     try:
@@ -329,10 +327,10 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
         """Read a text file and return its contents."""
         return Path(path).read_text()
 
-    config = ModelConfig(model, os.environ["TAU_LIVE_BASE_URL"]).to_config()
-    session = Session.create(config, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
+    live = catalog(model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
+    session = Session.create(CONFIG, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
     # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
-    driver = Driver(session, OpenAIProvider(), tools=[read_file], extensions=[StepLimit(6)])
+    driver = Driver(session, OpenAIProvider(), live, tools=[read_file], extensions=[StepLimit(6)])
     driver.start()
     c = session.cursors()[0]
     try:

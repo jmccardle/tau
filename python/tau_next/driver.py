@@ -12,6 +12,7 @@ from functools import partial
 from tau_next import trace
 from tau_next._core import Answer, Author, ItemData, Job, Session
 from tau_next.clock import SystemClock
+from tau_next.config_layers import ModelCatalog
 from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for
 from tau_next.handles import Cursor, NodeHandle
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
@@ -39,16 +40,20 @@ class Outstanding:
 class Driver:
     """Runs one session's cursors over a provider, tools, and extensions.
 
+    `catalog` is where a `Config` node's model name is resolved, at each sample.
+
     Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`,
     `open`, `respond`) run on the loop thread and then poke the pump.
     Extensions are listed in the constructor, in hook order; `model.md` does
     not yet say how `config_at` names them.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
         self,
         session: Session,
         provider: Provider,
+        catalog: ModelCatalog,
+        *,
         tools: Sequence[Tool] = (),
         extensions: Sequence[Extension] = (),
         clock: Clock | None = None,
@@ -56,6 +61,7 @@ class Driver:
         self.session = session
         self.clock: Clock = clock if clock is not None else SystemClock()
         self._provider = provider
+        self._catalog = catalog
         self._tools: Mapping[str, Tool] = check_tools(tools)
         self._extensions = tuple(extensions)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
@@ -313,7 +319,9 @@ class Driver:
                 )
                 self._out[cursor] = Outstanding([self._unit(cursor, effect)])
             case Job.Sample():
-                sample = SampleRun(self._provider, session, cursor, tuple(self._tools.values()))
+                sample = SampleRun(
+                    self._provider, self._catalog, session, cursor, tuple(self._tools.values())
+                )
                 self._out[cursor] = Outstanding([self._unit(cursor, sample.run)], sample=sample)
             case Job.RunCalls(node=node, calls=calls):
                 if not calls:

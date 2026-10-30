@@ -11,7 +11,7 @@ answer depended on which object you asked.
 
 ## Decision
 
-- A `Config` node holds a **full snapshot**. `config_at(n)` is the nearest
+- A `Config` node holds the **model's name** (D13; it was a full snapshot). `config_at(n)` is the nearest
   `Config` on `walk(n)`; every root is `Config`, so it is always defined.
 - A cursor's config is `config_at(at)`. Going to an old line uses that
   line's config; core restates nothing.

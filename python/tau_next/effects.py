@@ -21,6 +21,8 @@ from tau_next._core import (
     Session,
     Stop,
 )
+from tau_next.config import ConfigError, model_name
+from tau_next.config_layers import ModelCatalog
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
     CursorHook,
@@ -90,7 +92,12 @@ class SampleRun:
     """One sample: streams the provider into parts; `cancel` stops it."""
 
     def __init__(
-        self, provider: Provider, session: Session, cursor: int, tools: Sequence[Tool]
+        self,
+        provider: Provider,
+        catalog: ModelCatalog,
+        session: Session,
+        cursor: int,
+        tools: Sequence[Tool],
     ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
         with trace.span("driver", "request"):
@@ -98,6 +105,7 @@ class SampleRun:
             self._walk = session.tree.walk(at)
             self._config = session.tree.config_at(at)
         self._provider = provider
+        self._catalog = catalog
         self._tools = tools
         self._parts: list[Part] = []
         self._task: asyncio.Future[Finish] | None = None
@@ -110,7 +118,11 @@ class SampleRun:
 
     async def _stream(self) -> Finish:
         finish: Finish | None = None
-        async for item in self._provider.sample(self._walk, self._config, self._tools):
+        try:
+            model = self._catalog.resolve(model_name(self._config))
+        except ConfigError as e:
+            raise SampleError(str(e)) from e
+        async for item in self._provider.sample(self._walk, model, self._tools):
             if finish is not None:
                 raise SampleError("provider yielded after its finish")
             if isinstance(item, Finish):
