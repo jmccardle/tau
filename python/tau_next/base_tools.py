@@ -37,6 +37,7 @@ anywhere else raises `OSError`.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -186,7 +187,8 @@ class BashTool(_Described):
     `timeout_ms` is the timeout of a call that gives none, `max_timeout_ms` the most a call may
     ask for (more is an `Err`), `kill_grace_ms` the time between SIGTERM and SIGKILL.
     Cancelling `call` terminates the command's whole process group and waits for it to end
-    before the `CancelledError` propagates: no child is left running. Each call has a thread
+    before the `CancelledError` propagates, however often it is cancelled meanwhile: no child
+    is left running. Each call has a thread
     of its own.
     """
 
@@ -232,7 +234,10 @@ class BashTool(_Described):
             return await asyncio.shield(waiting)
         except asyncio.CancelledError:
             run.kill()
-            await asyncio.wait([waiting])  # returns once the group is dead and the pipe closed
+            while not waiting.done():  # until the group is dead and the pipe closed
+                # cancelled again: the command still has to die before we leave
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.wait([waiting])
             raise
 
 

@@ -127,8 +127,9 @@ a committed project config cannot slip through.
 upward, stopping at `$HOME`, as git finds `.git`. `tau trust DIR` where the
 search finds none creates `DIR/.tau/` (mode `700`) and trusts it; `$HOME`,
 `TAU_HOME`, anything inside it, and the directory whose `.tau/` is `TAU_HOME`
-are refused. A symlinked or foreign `.tau/` that the search passed over is
-reported instead of creating a project beside it.
+are refused. A symlinked or foreign `.tau/` at `DIR` itself is reported instead
+of creating a project there; one further up is passed over, and `DIR/.tau/` is
+created as usual. If approval then fails, the `.tau/` just created is removed.
 
 ## Alternatives
 

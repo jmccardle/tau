@@ -99,7 +99,7 @@ impl Read {
             return Err(past_end());
         }
         let more = !reader.fill_buf().map_err(io)?.is_empty();
-        Ok(answer(sink.finish()?, offset, read, more))
+        Ok(answer(sink.finish(), offset, read, more))
     }
 
     /// Open `shown` (relative to the working directory) as a regular text file.
@@ -146,10 +146,12 @@ fn answer(finished: Finished, offset: u64, read: u64, more: bool) -> String {
     }
     .max(1);
     if finished.cut_line {
-        // No whole line fit: line `offset` is shown only in part.
+        // No whole line fit: the start of line `offset` is all that read can show of it.
         let _ = write!(
             text,
-            "\n[line {offset} is shown only in part; offset={} continues after it]",
+            "\n[line {offset} is cut at byte {}; read cannot show the rest (use bash: cut -c or \
+             tail -c); offset={} continues after it]",
+            finished.kept_bytes,
             offset + 1
         );
     } else {
@@ -214,7 +216,7 @@ fn read_lines(
         if buf[..take].contains(&0) {
             return Err(binary(shown));
         }
-        sink.push(&buf[..take])?;
+        sink.push(&buf[..take]);
         reader.consume(take);
         if ends {
             read += 1;
@@ -382,7 +384,8 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "{}\n[line 1 is shown only in part; offset=2 continues after it]",
+                "{}\n[line 1 is cut at byte 20; read cannot show the rest (use bash: cut -c or \
+                 tail -c); offset=2 continues after it]",
                 "x".repeat(20)
             )
         );

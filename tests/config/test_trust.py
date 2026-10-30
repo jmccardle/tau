@@ -491,3 +491,106 @@ def test_approval_writes_a_private_ignore_file_and_keeps_an_existing_one(world: 
     assert result.code == 0
     assert "does not ignore everything" in result.out  # warned, not blocked
     assert (kept / ".tau" / ".gitignore").read_text(encoding="utf-8") == "config.json\n"
+
+
+# -- permission errors are one line naming the path, never a traceback
+
+CANNOT_DENY_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="chmod cannot deny root")
+
+
+def one_line_refusal(
+    world: World, root: Path, path: Path, argvs: tuple[tuple[str, ...], ...]
+) -> None:
+    """Each command fails with status 1 and says which path, without a traceback; in one line."""
+    for argv in argvs:
+        result = tau(world, *argv, cwd=root)
+        assert result.code == 1, result.both
+        assert "Traceback" not in result.both
+        assert str(path) in result.both, result.both
+        refusals = [line for line in result.both.splitlines() if "Permission denied" in line]
+        assert len(refusals) == 1, result.both
+
+
+@CANNOT_DENY_ROOT
+def test_a_config_nobody_can_read_is_one_line_naming_it(world: World) -> None:
+    root = world.project(config=models(a={}))
+    (root / ".tau" / "config.json").chmod(0)
+    one_line_refusal(world, root, root / ".tau" / "config.json", (("trust",), ("config", "check")))
+
+
+@CANNOT_DENY_ROOT
+def test_a_tau_dir_nobody_can_open_is_one_line_naming_it(world: World) -> None:
+    root = world.project()
+    (root / ".tau").chmod(0)
+    try:
+        one_line_refusal(world, root, root / ".tau", (("trust",), ("config", "check")))
+    finally:
+        (root / ".tau").chmod(0o700)
+
+
+@CANNOT_DENY_ROOT
+def test_a_tau_home_nobody_can_open_is_one_line_naming_it(world: World) -> None:
+    root = world.project()
+    world.tau.mkdir(mode=0o700)
+    world.tau.chmod(0)
+    try:
+        one_line_refusal(world, root, world.tau, (("trust",), ("config", "check")))
+    finally:
+        world.tau.chmod(0o700)
+
+
+@CANNOT_DENY_ROOT
+def test_a_read_only_tau_home_cannot_take_the_approval_and_says_so(world: World) -> None:
+    root = world.project()
+    world.tau.mkdir(mode=0o500)
+    try:
+        one_line_refusal(world, root, world.tau, (("trust",),))
+    finally:
+        world.tau.chmod(0o700)
+    assert not (root / "trusted.json").exists()
+
+
+@CANNOT_DENY_ROOT
+def test_a_failed_approval_leaves_no_new_tau_dir_behind(world: World) -> None:
+    work = world.home / "work"
+    work.mkdir()
+    world.tau.mkdir(mode=0o500)
+    try:
+        assert tau(world, "trust", cwd=work).code == 1
+    finally:
+        world.tau.chmod(0o700)
+    assert not (work / ".tau").exists()
+    assert not has_project(world, work)
+
+
+def test_a_record_from_before_dotenv_was_pinned_is_untrusted_not_an_error(world: World) -> None:
+    root = world.project(config=models(a={}))
+    world.tau.mkdir(mode=0o700)
+    record = {"sha256": "0" * 64, "config": ""}
+    state = world.tau / "trusted.json"
+    state.write_text(json.dumps({"projects": {str(root.resolve()): record}}), encoding="utf-8")
+    state.chmod(0o600)
+    with pytest.raises(UntrustedProject):
+        load_config(root, world.environ, ask=None)
+    trust(world, root)  # asking again works, and replaces the old record
+    assert project_root(world, root) == root
+
+
+def test_an_untrusted_project_with_errors_does_not_offer_the_trust_command(world: World) -> None:
+    root = world.project(config=models(a={"max_tokens": 0}))
+    with pytest.raises(UntrustedProject) as raised:
+        load_config(root, world.environ, ask=None)
+    assert "tau trust" not in str(raised.value)
+    assert "cannot be trusted until these are fixed" in str(raised.value)
+
+
+def test_a_symlinked_tau_above_does_not_block_trusting_below_it(
+    world: World, tmp_path: Path
+) -> None:
+    shared = tmp_path / "shared"
+    (shared / "proj").mkdir(parents=True)
+    (shared / ".tau").symlink_to(tmp_path / "nowhere")
+    result = tau(world, "trust", str(shared / "proj"), cwd=tmp_path)
+    assert result.code == 0, result.err
+    assert (shared / "proj" / ".tau").is_dir()
+    assert project_root(world, shared / "proj") == shared / "proj"

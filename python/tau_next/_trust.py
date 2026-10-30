@@ -93,15 +93,25 @@ def _refusal(path: Path, rest: str) -> TrustError:
     return TrustError(f"{_p(path)} {rest}", path)
 
 
-class UntrustedProject(TrustError):
-    """The project is not trusted (or its config or `.env` changed). `report` says what it
-    sets and what is wrong with `.tau/`; `layer` is the config it holds (`None`: no file),
-    for showing its problems; the message adds the command that trusts it."""
+@contextlib.contextmanager
+def _unless_io_fails(path: Path, doing: str) -> Generator[None]:
+    """An `OSError` inside is a `TrustError` naming `path` and what we were doing to it."""
+    try:
+        yield
+    except TrustError:
+        raise
+    except OSError as e:
+        raise _refusal(path, f"cannot be {doing}: {e.strerror or e}") from e
 
-    def __init__(self, root: Path, report: str, layer: LayerText | None) -> None:
-        super().__init__(f"{report}\nTrust it with: tau trust {shlex.quote(_p(root))}", root)
+
+class UntrustedProject(TrustError):
+    """The project is not trusted (or its config or `.env` changed). The message says what it
+    sets and what is wrong with `.tau/`, and the command that trusts it unless it has errors
+    to fix first; `layer` is the config it holds (`None`: no file), for showing its problems."""
+
+    def __init__(self, root: Path, message: str, layer: LayerText | None) -> None:
+        super().__init__(message, root)
         self.root = root
-        self.report = report
         self.layer = layer
 
 
@@ -197,6 +207,11 @@ def _not_a_project(tau: Path, info: os.stat_result) -> str | None:
     return None
 
 
+def _holds_tau_home(directory: Path, config_dir: Path) -> bool:
+    """Whether `directory/.tau` is `TAU_HOME`: that directory is never a project."""
+    return config_dir.name == TAU_DIR and config_dir.parent == directory
+
+
 def find_project(start: Path, environ: Mapping[str, str]) -> ProjectSearch:
     """The nearest directory from `start` upward whose `.tau/` is a real directory owned
     by you. A symlinked or foreign `.tau` is passed over and the search goes on; if it
@@ -219,7 +234,7 @@ def find_project(start: Path, environ: Mapping[str, str]) -> ProjectSearch:
         except OSError:
             continue
         if stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid():
-            if tau.resolve() != config_dir:
+            if not _holds_tau_home(directory, config_dir):
                 return ProjectSearch(directory, None)
         elif skipped is None:
             skipped = _not_a_project(tau, info)
@@ -233,9 +248,9 @@ def refuse_special(path: Path, environ: Mapping[str, str]) -> None:
     config = tau_home(environ).resolve()
     special = {_home_dir(environ): "your home directory"}
     special.setdefault(config, "TAU_HOME")
-    if config.name == TAU_DIR:
-        special.setdefault(config.parent, "the parent of TAU_HOME")
     what = special.get(path) or ("inside TAU_HOME" if config in path.parents else None)
+    if what is None and _holds_tau_home(path, config):
+        what = "the parent of TAU_HOME"
     if what is not None:
         raise TrustError(f"refusing to trust {_p(path)}: it is {what}")
 
@@ -254,8 +269,8 @@ def create_project(root: Path) -> None:
 
 def _read_regular(path: Path) -> bytes | None:
     """The bytes of a regular file, or `None` if absent. A symlink or other kind of file is a
-    `TrustError` naming the path, and so is one over the size limit. Opened non-blocking, so
-    a FIFO swapped in cannot hang us."""
+    `TrustError` naming the path, and so is one over the size limit or one that cannot be
+    read. Opened non-blocking, so a FIFO swapped in cannot hang us."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
@@ -263,8 +278,8 @@ def _read_regular(path: Path) -> bytes | None:
     except OSError as e:
         if e.errno == errno.ELOOP:
             raise _refusal(path, "is a symlink; tau refuses symlinks inside a project") from e
-        raise
-    with os.fdopen(fd, "rb") as f:
+        raise _refusal(path, f"cannot be read: {e.strerror}") from e
+    with _unless_io_fails(path, "read"), os.fdopen(fd, "rb") as f:
         info = os.fstat(f.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise _refusal(path, "is not a regular file")
@@ -287,7 +302,7 @@ def _tau_dir(root: Path) -> Generator[tuple[int, os.stat_result]]:
             if tau.is_symlink():
                 raise _refusal(tau, "is a symlink; tau refuses symlinks inside a project") from e
             raise _refusal(tau, "is not a directory") from e
-        raise
+        raise _refusal(tau, f"cannot be opened: {e.strerror}") from e
     try:
         yield fd, os.fstat(fd)
     finally:
@@ -330,7 +345,7 @@ def _see(root: Path) -> _Seen:
 
 
 def _require_private(path: Path, fix: str) -> None:
-    with contextlib.suppress(FileNotFoundError):
+    with _unless_io_fails(path, "inspected"), contextlib.suppress(FileNotFoundError):
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & _WRITABLE_BY_OTHERS:
             raise _refusal(
@@ -346,22 +361,24 @@ def _approved(home: Path) -> dict[str, _Approval]:
     _require_private(home, "chmod 700")
     path = _trusted_path(home)
     _require_private(path, "chmod 600")
-    if not path.exists():
-        return {}
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
     except OSError as e:
         raise _refusal(path, f"cannot be read ({e.strerror}); fix or delete it") from e
     except ValueError as e:
         raise ConfigError(f"{path} is not tau's trusted.json ({e!r}); fix or delete it") from e
     try:
         projects = cast("dict[str, dict[str, object]]", cast("dict[str, object]", data)["projects"])
+        # A record from before `.env` was pinned has no `env_sha256`: not approved.
+        current = {root: r for root, r in projects.items() if "env_sha256" in r}
         keys = ("sha256", "env_sha256", "config")
-        if not all(isinstance(r[k], str) for r in projects.values() for k in keys):
+        if not all(isinstance(r[k], str) for r in current.values() for k in keys):
             raise TypeError("a project's record is not text")
         return {
             root: _Approval(str(r["sha256"]), str(r["env_sha256"]), str(r["config"]))
-            for root, r in projects.items()
+            for root, r in current.items()
         }
     except (KeyError, TypeError, AttributeError) as e:
         raise ConfigError(f"{path} is not tau's trusted.json ({e!r}); fix or delete it") from e
@@ -389,7 +406,6 @@ def _record(home: Path, seen: _Seen) -> None:
     projects[str(seen.root.resolve())] = _Approval(
         seen.config_sha, seen.env_sha, _redacted(seen.config)
     )
-    home.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
     body = json.dumps(
         {
             "projects": {
@@ -401,16 +417,18 @@ def _record(home: Path, seen: _Seen) -> None:
     )
     final = _trusted_path(home)
     scratch = final.with_name(f"trusted.json.{os.getpid()}.tmp")
-    fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as out:
-            out.write(body)
-            out.flush()
-            os.fsync(out.fileno())
-        scratch.replace(final)
-    except BaseException:
-        scratch.unlink(missing_ok=True)
-        raise
+    with _unless_io_fails(final, "written"):
+        home.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
+        fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(body)
+                out.flush()
+                os.fsync(out.fileno())
+            scratch.replace(final)
+        except BaseException:
+            scratch.unlink(missing_ok=True)
+            raise
 
 
 def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
@@ -425,9 +443,11 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
 
 
 def user_config_path(home: Path) -> Path | None:
-    """`<home>/config.json` if it exists, else `None` (no user config is fine)."""
+    """`<home>/config.json` if it exists, else `None` (no user config is fine). `TrustError`
+    if `<home>` cannot be searched."""
     user = home / "config.json"
-    return user if user.exists() else None
+    with _unless_io_fails(user, "inspected"):
+        return user if user.exists() else None
 
 
 def _layer(seen: _Seen) -> LayerText | None:
@@ -543,7 +563,7 @@ def _write_gitignore(tau_fd: int) -> None:
 
 def _approve(seen: _Seen, home: Path) -> Trusted:
     root = seen.root
-    with _tau_dir(root) as (fd, _):
+    with _tau_dir(root) as (fd, _), _unless_io_fails(root / TAU_DIR, "set up for approval"):
         again = tuple(_digest(raw) for raw in _read_pair(root))
         if again != (seen.config_sha, seen.env_sha):
             raise TrustError(
@@ -569,7 +589,8 @@ def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None)
     if _pinned(approval, seen):
         return Trusted(root, seen.config, seen.env)
     assessment = _assess(seen, home, approval)
-    refusal = UntrustedProject(root, assessment.report, _layer(seen))
+    hint = "" if assessment.errors else f"\nTrust it with: tau trust {shlex.quote(_p(root))}"
+    refusal = UntrustedProject(root, assessment.report + hint, _layer(seen))
     if ask is None:
         raise refusal
     if assessment.errors:

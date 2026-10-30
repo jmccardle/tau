@@ -804,8 +804,9 @@ report), and `tau config check`. Tests do the same.
 - `find_project(start, environ)` returns a **`ProjectSearch`** (`root`, `skipped`): the
   nearest directory upward whose `.tau/` is a real directory owned by you, or `root` of
   `None` and in `skipped` why the nearest `.tau` the one walk passed over is not a
-  project (a symlink, or not owned by you), so `tau trust` says that instead of making a
-  project beside it. A symlinked or foreign `.tau` is skipped and the search goes on.
+  project (a symlink, or not owned by you); `tau trust` says that instead of making a
+  project when the `.tau` is `DIR/.tau` itself, and makes it as usual when it is further
+  up (and removes the `.tau/` it made if approval fails). A symlinked or foreign `.tau` is skipped and the search goes on.
   `$HOME` itself and the directory whose `.tau` is `TAU_HOME` are never a project; the
   search stops at `$HOME` (outside it, runs to `/`). `refuse_special(path, environ)` is
   `TrustError` for `$HOME`, `TAU_HOME`, anything inside it, and the parent of a `TAU_HOME`
@@ -825,7 +826,8 @@ report), and `tau config check`. Tests do the same.
   configs ("a secret value changed" when only a secret did) and ".env changed since you
   approved it". With no `ask` (no live terminal), or on a no, it raises
   **`UntrustedProject`** (message: the report and `tau trust <root>`, the path
-  shell-quoted; `layer`: the config it holds, to show its problems). On a yes it sets
+  shell-quoted, the command left out when the config or `.env` has errors to fix first;
+  `layer`: the config it holds, to show its problems). On a yes it sets
   `.tau/` to `700`, writes `.tau/.gitignore` (`*`, mode `644`) if missing, and records the
   hashes. With an `ask`, a config or `.env` with errors cannot be approved: **`TrustError`**
   (a `PermissionError`, with `where`: the path it is about, if any) is every other refusal.
@@ -845,7 +847,11 @@ with errors (or a malformed `.env`) cannot be approved; the report lists them.
 owner check. (F) A foreign `.tau` directory is not a project. (G) `TAU_HOME` or `trusted.json`
 writable by group or others refuses all trust operations with the `chmod` to
 run; tau never changes them. (I) Every project-supplied string in a report or
-trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes.
+trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes. (J) An `OSError` in trust's file
+access (a mode-000 `config.json`, `.tau/` or `TAU_HOME`, a read-only `TAU_HOME` that cannot
+take the approval) is a `TrustError` naming the path, never a traceback. (K) A record in
+`trusted.json` from before `.env` was pinned (no `env_sha256`) is not an approval: the
+project is untrusted, and the next approval replaces the record.
 (J) `config.json` and `.env` over 1 MiB are an error naming file and size; files are
 opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` without a line of exactly `*`,
 or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
@@ -1373,7 +1379,7 @@ are strict: an unknown or missing field is an `Err`.
 
 | tool | parameters | does |
 |---|---|---|
-| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, it is shown in part and the last line says `offset=N+1` continues after it. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, its start is shown and the last line says `[line N is cut at byte B; read cannot show the rest (use bash: cut -c or tail -c); offset=N+1 continues after it]`: `read` has no way to reach past the first `B` bytes of one line. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
 | `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
 | `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes (before decoding) with ` [+N bytes]`; a file with a line over 16 MiB (the searcher's heap limit) is not searched and is named in the could-not-search note. The search stops once the matches held reach the overflow cap, and a note says that some files were not searched. No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
 | `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; `setsid` runs in the child before `exec`, so the session exists when the call starts), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. The one `unsafe` block of the workspace is here (`pre_exec`); the workspace lint is `deny`, not `forbid`, for that. |
@@ -1411,15 +1417,15 @@ directory that fails is found when the first file is needed, by opening it with
 `O_DIRECTORY|O_NOFOLLOW`, checking it with `fstat` on that fd, and creating the file
 relative to the fd with `openat`, so a path swapped in between cannot redirect it, and
 another user's squatted `/tmp/tau-<uid>` costs the overflow file and never startup. A
-directory (or file) that cannot be used does not fail the call: the answer keeps its
-text and the note says `the full output (N bytes) was not saved: <reason>`; the command
-of a `bash` call runs on. Files are created `0600` with `O_EXCL`, so an existing file is
-never touched. Whenever the directory is opened, `.out` files in it older than a day are
-removed (best effort). For `grep`, the file holds all matches (without a trailing newline);
+directory that cannot be used, or a file that cannot be written (disk full), does not fail
+the call: the answer keeps its text and its exit code, and the note says `the full output
+(N bytes) was not saved: <reason>` (`was not saved after B bytes` when the file held `B`
+bytes when the write failed); the command of a `bash` call runs on. Files are created `0600` with `O_EXCL`, so an existing file is
+never touched. Whenever the directory is opened, files in it older than a day whose names are
+the ones we generate (`<id>.out`) are removed (best effort). For `grep`, the file holds all matches (without a trailing newline);
 for `bash`, stdout and stderr interleaved, without the exit-code trailer. The file holds
 at most `max_overflow` bytes (at least `max_output`); bytes and lines past it are still
-counted, and the note says the file holds only the first part. A write error on a file
-that was made is an `Err`, and `bash` terminates its command.
+counted, and the note says the file holds only the first part.
 
 ### truncation note
 `limit.rs` · new
@@ -1492,7 +1498,7 @@ the directory when the caller names none. `read` has no `Limits`, only a byte li
 `tau_tools::limit::Finished` · new
 
 What a `Sink` answers: `text` (the kept text with its notes), `kept_lines`
-(lines shown; a cut-short line counts as one), `truncated` (the output passed
+(lines shown; a cut-short line counts as one), `kept_bytes` (bytes of text shown, without notes), `truncated` (the output passed
 the limit) and `cut_line` (the one line shown is only the start of a line). Used
 by `read` to word its continuation hint. A `Sink` also answers `is_over` (more than
 the limit pushed; `read` stops reading then) and `total` (bytes pushed).

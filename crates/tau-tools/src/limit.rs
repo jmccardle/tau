@@ -11,9 +11,9 @@
 //! The overflow directory is private to us, and is checked each time a file is
 //! first needed, on the open directory itself: created `0700`, and refused unless
 //! it is a real directory (not a symlink) owned by the effective user and closed
-//! to everyone else. A directory that fails costs the overflow file, not the
-//! call: the answer still has the kept text, and its note says why the full
-//! output was not saved. Files are created `0600`, never overwritten, and files
+//! to everyone else. A directory that fails, or a file that cannot be written (disk
+//! full), costs the overflow file, not the call: the answer still has the kept text, and
+//! its note says why the full output was not saved. Files are created `0600`, never overwritten, and files
 //! in the directory older than a day are removed whenever it is opened.
 
 use std::fmt::Write as _;
@@ -31,7 +31,7 @@ use nix::fcntl::{AtFlags, OFlag, open, openat};
 use nix::sys::stat::{Mode, SFlag, fstat, fstatat};
 use nix::unistd::{Uid, UnlinkatFlags, unlinkat};
 
-use crate::{Limits, Result, ToolError};
+use crate::Limits;
 
 /// Which end of the output the model keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,8 +71,12 @@ enum Spill {
         dir: PathBuf,
         cap: usize,
     },
-    /// The file could not be made; the reason goes in the note.
-    Failed(String),
+    /// The file could not be made or written; the note says why, and how many bytes it
+    /// held (0: it was never made).
+    Failed {
+        reason: String,
+        saved: usize,
+    },
     Open(Overflow),
 }
 
@@ -83,6 +87,8 @@ pub struct Finished {
     pub text: String,
     /// Lines of the output shown (a cut-short line counts as one).
     pub kept_lines: usize,
+    /// Bytes of the output shown, without the notes.
+    pub kept_bytes: usize,
     /// Whether the output passed the limit.
     pub truncated: bool,
     /// Whether the one line shown is only the start of a line (none fit whole).
@@ -143,34 +149,41 @@ impl Sink {
         self.total
     }
 
-    /// Take more output.
-    ///
-    /// # Errors
-    /// The overflow file could not be written.
-    pub fn push(&mut self, chunk: &[u8]) -> Result<()> {
+    /// Take more output. A failure to write the overflow file does not fail the push: the
+    /// sink goes on without a file and its note says why.
+    pub fn push(&mut self, chunk: &[u8]) {
         let Some(&last) = chunk.last() else {
-            return Ok(());
+            return;
         };
         if matches!(self.spill, Spill::Pending { .. }) && self.total + chunk.len() > self.max {
             // The window still holds everything pushed so far (it holds
             // `2 * max` bytes at least, and the total has not passed `max`).
             self.spill = match mem::replace(&mut self.spill, Spill::Never) {
-                Spill::Pending { dir, cap } => self.open_spill(&dir, cap)?,
+                Spill::Pending { dir, cap } => self.open_spill(&dir, cap),
                 other => other,
             };
         }
         if let Spill::Open(overflow) = &mut self.spill {
             let take = (overflow.cap - overflow.written).min(chunk.len());
-            overflow
-                .out
-                .write_all(&chunk[..take])
-                .map_err(|e| write_failed(&overflow.path, &e))?;
-            overflow.written += take;
-            overflow.capped |= take < chunk.len();
+            match overflow.out.write_all(&chunk[..take]) {
+                Ok(()) => {
+                    overflow.written += take;
+                    overflow.capped |= take < chunk.len();
+                }
+                Err(e) => {
+                    let saved = bytes_in(overflow.out.get_ref());
+                    let reason = write_failed(&overflow.path, &e);
+                    self.spill = Spill::Failed { reason, saved };
+                }
+            }
         }
         self.total += chunk.len();
         self.newlines += newlines_in(chunk);
         self.last = Some(last);
+        self.keep_in_window(chunk);
+    }
+
+    fn keep_in_window(&mut self, chunk: &[u8]) {
         match self.keep {
             Keep::Head => {
                 let room = (self.max + 1).saturating_sub(self.window.len());
@@ -185,14 +198,14 @@ impl Sink {
                 }
             }
         }
-        Ok(())
     }
 
     /// The overflow file, holding what has been pushed so far; or why there is none.
-    fn open_spill(&self, dir: &Path, cap: usize) -> Result<Spill> {
+    fn open_spill(&self, dir: &Path, cap: usize) -> Spill {
+        let never_made = |reason| Spill::Failed { reason, saved: 0 };
         let dir_fd = match open_private_dir(dir) {
             Ok(fd) => fd,
-            Err(reason) => return Ok(Spill::Failed(reason)),
+            Err(reason) => return never_made(reason),
         };
         for _ in 0..ID_TRIES {
             let id: String = (0..ID_LEN)
@@ -214,47 +227,48 @@ impl Sink {
             ) {
                 Ok(fd) => {
                     let mut out = BufWriter::new(File::from(fd));
-                    out.write_all(&self.window)
-                        .map_err(|e| write_failed(&path, &e))?;
+                    if let Err(e) = out.write_all(&self.window) {
+                        return never_made(write_failed(&path, &e));
+                    }
                     let written = self.window.len();
-                    return Ok(Spill::Open(Overflow {
+                    return Spill::Open(Overflow {
                         path,
                         out,
                         written,
                         cap,
                         capped: false,
-                    }));
+                    });
                 }
                 Err(Errno::EEXIST) => {}
                 Err(e) => {
-                    return Ok(Spill::Failed(format!(
+                    return never_made(format!(
                         "the file {} could not be created: {e}",
                         path.display()
-                    )));
+                    ));
                 }
             }
         }
-        Ok(Spill::Failed(format!(
+        never_made(format!(
             "no unused file name was found in {}",
             dir.display()
-        )))
+        ))
     }
 
     /// The text for the model: all of the output if it fit, else the kept end
     /// and the truncation note.
     ///
-    /// # Errors
-    /// The overflow file could not be completed.
-    pub fn finish(mut self) -> Result<Finished> {
+    #[must_use]
+    pub fn finish(mut self) -> Finished {
         if !self.is_over() {
             let kept = self.window.as_slice();
             let text = self.compose(kept, None);
-            return Ok(Finished {
+            return Finished {
                 text,
                 kept_lines: count_lines(kept),
+                kept_bytes: kept.len(),
                 truncated: false,
                 cut_line: false,
-            });
+            };
         }
         let spill = mem::replace(&mut self.spill, Spill::Never);
         let (kept, cut_line) = match self.keep {
@@ -264,19 +278,20 @@ impl Sink {
         let kept_lines = count_lines(kept);
         let note = match spill {
             Spill::Never => None,
-            spill => Some(self.truncation_note(spill, kept_lines, cut_line)?),
+            spill => Some(self.truncation_note(spill, kept_lines, cut_line)),
         };
         let text = self.compose(kept, note.as_deref());
-        Ok(Finished {
+        Finished {
             text,
             kept_lines,
+            kept_bytes: kept.len(),
             truncated: true,
             cut_line,
-        })
+        }
     }
 
     /// The note of an answer that was cut: what was omitted and where the whole is.
-    fn truncation_note(&self, spill: Spill, kept_lines: usize, cut_line: bool) -> Result<String> {
+    fn truncation_note(&self, spill: Spill, kept_lines: usize, cut_line: bool) -> String {
         let total_lines = self.newlines + usize::from(self.last != Some(b'\n'));
         let omitted = total_lines.saturating_sub(kept_lines);
         let mut note = format!("[truncated: {}", lines(omitted));
@@ -287,15 +302,36 @@ impl Sink {
         if cut_line {
             note.push_str(", and one long line cut short");
         }
-        let _ = match spill {
+        let spill = match spill {
             Spill::Open(Overflow {
                 path,
                 mut out,
+                written,
+                capped,
+                cap,
+            }) => match out.flush() {
+                Ok(()) => Spill::Open(Overflow {
+                    path,
+                    out,
+                    written,
+                    cap,
+                    capped,
+                }),
+                Err(e) => Spill::Failed {
+                    reason: write_failed(&path, &e),
+                    saved: bytes_in(out.get_ref()),
+                },
+            },
+            other => other,
+        };
+        let _ = match spill {
+            Spill::Open(Overflow {
+                path,
+                out,
                 capped,
                 cap,
                 ..
             }) => {
-                out.flush().map_err(|e| write_failed(&path, &e))?;
                 drop(out);
                 if capped {
                     write!(
@@ -314,16 +350,23 @@ impl Sink {
                     )
                 }
             }
-            Spill::Failed(reason) => write!(
-                note,
-                "; the full output ({} bytes) was not saved: {reason}]",
-                self.total
-            ),
+            Spill::Failed { reason, saved } => {
+                let after = if saved > 0 {
+                    format!(" after {saved} bytes")
+                } else {
+                    String::new()
+                };
+                write!(
+                    note,
+                    "; the full output ({} bytes) was not saved{after}: {reason}]",
+                    self.total
+                )
+            }
             Spill::Never | Spill::Pending { .. } => {
                 unreachable!("a sink past its limit has a file or a reason")
             }
         };
-        Ok(note)
+        note
     }
 
     /// The kept bytes as text, with the truncation note and the invalid-UTF-8
@@ -419,7 +462,7 @@ fn open_private_dir(dir: &Path) -> std::result::Result<OwnedFd, String> {
     Ok(fd)
 }
 
-/// Remove the `.out` files in the directory `fd` that are older than [`KEEP_FILES`].
+/// Remove the overflow files (see [`is_overflow_name`]) in the directory `fd` that are older than [`KEEP_FILES`].
 /// Cleanup: a file that cannot be listed or removed stays, which costs disk and
 /// nothing else, so there is no one to tell.
 fn remove_old_files(fd: &OwnedFd) {
@@ -438,7 +481,7 @@ fn remove_old_files(fd: &OwnedFd) {
         .iter()
         .flatten()
         .map(|item| item.file_name().to_owned())
-        .filter(|name| name.to_bytes().ends_with(b".out"))
+        .filter(|name| is_overflow_name(name.to_bytes()))
         .collect();
     for name in names {
         let Ok(stat) = fstatat(fd, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) else {
@@ -450,6 +493,12 @@ fn remove_old_files(fd: &OwnedFd) {
             let _ = unlinkat(fd, name.as_c_str(), UnlinkatFlags::NoRemoveDir);
         }
     }
+}
+
+/// Whether `name` is one we generate: `ID_LEN` characters of `ID_CHARS`, then `.out`.
+fn is_overflow_name(name: &[u8]) -> bool {
+    name.strip_suffix(b".out")
+        .is_some_and(|id| id.len() == ID_LEN && id.iter().all(|c| ID_CHARS.contains(c)))
 }
 
 /// What is wrong with a directory of this owner and mode, if anything.
@@ -483,11 +532,14 @@ fn is_continuation(byte: u8) -> bool {
     byte & 0xC0 == 0x80
 }
 
-fn write_failed(path: &Path, e: &std::io::Error) -> ToolError {
-    ToolError(format!(
-        "could not write the full output to {}: {e}",
-        path.display()
-    ))
+/// What the file holds, as the file system has it (a failed write may have been partial).
+fn bytes_in(file: &File) -> usize {
+    file.metadata()
+        .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX))
+}
+
+fn write_failed(path: &Path, e: &std::io::Error) -> String {
+    format!("could not write the full output to {}: {e}", path.display())
 }
 
 /// Lines in `text`: its newlines, plus one for a last line without one.

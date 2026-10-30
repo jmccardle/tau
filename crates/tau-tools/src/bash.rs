@@ -441,8 +441,8 @@ impl Running {
 
     /// Read the pipe to its end into a tail-keeping sink. Once the shell has
     /// exited, only for [`DRAIN_GRACE`] more: a process that left the group
-    /// can hold the pipe open forever. A failure of the sink terminates the
-    /// command and is the call's error.
+    /// can hold the pipe open forever. A failure to poll or read the pipe
+    /// terminates the command and is the call's error.
     fn read_output(
         &self,
         mut reader: PipeReader,
@@ -470,7 +470,7 @@ impl Running {
                     if let Some(shown) = shown {
                         shown.push(&buf[..n]);
                     }
-                    self.absorb(&mut sink, &mut failure, &buf[..n]);
+                    sink.push(&buf[..n]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
@@ -481,7 +481,7 @@ impl Running {
         }
         match failure {
             Some(e) => Err(e),
-            None => Ok(sink.finish()?.text),
+            None => Ok(sink.finish().text),
         }
     }
 
@@ -492,15 +492,6 @@ impl Running {
         let over = ctl.exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE);
         ctl.escaped |= over;
         over
-    }
-
-    /// Push a chunk of output, unless the sink has already failed.
-    fn absorb(&self, sink: &mut Sink, failure: &mut Option<ToolError>, chunk: &[u8]) {
-        if failure.is_none()
-            && let Err(e) = sink.push(chunk)
-        {
-            self.fail(failure, e.0);
-        }
     }
 
     /// Keep the first failure and terminate the command.

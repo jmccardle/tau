@@ -100,19 +100,30 @@ fn signal_each(
 /// process of the session is left (a process may start another while dying).
 ///
 /// # Errors
-/// As [`signal_all`], or processes still there after [`SWEEPS`] passes.
+/// The first failure of [`signal_all`] or of the `/proc` scan, reported once the sweeps
+/// are done (a failure does not stop them); or processes still there after [`SWEEPS`] passes.
 pub(crate) fn kill_all(leader: Pid) -> Result<()> {
+    let mut first = None;
     for _ in 0..SWEEPS {
-        signal_all(leader, Signal::SIGKILL)?;
-        if members(leader)?.is_empty() {
-            return Ok(());
+        first = keep_first(first, signal_all(leader, Signal::SIGKILL));
+        match members(leader) {
+            Ok(left) if left.is_empty() => return first.map_or(Ok(()), Err),
+            Ok(_) => {}
+            Err(e) => first = keep_first(first, Err(e)),
         }
         std::thread::sleep(SWEEP_PAUSE);
     }
-    Err(
-        format!("processes of the command are still running after {SWEEPS} attempts to kill them")
-            .into(),
-    )
+    Err(first.unwrap_or_else(|| {
+        ToolError(format!(
+            "processes of the command are still running after {SWEEPS} attempts to kill them"
+        ))
+    }))
+}
+
+/// `kept` if there is one, else the error in `result`: a failed sweep must not end the
+/// sweeps, and the first failure is the one reported.
+fn keep_first(kept: Option<ToolError>, result: Result<()>) -> Option<ToolError> {
+    kept.or_else(|| result.err())
 }
 
 #[cfg(test)]
@@ -198,6 +209,15 @@ mod tests {
         let err = outcome.unwrap_err();
         assert!(err.0.contains(&Errno::EPERM.to_string()), "{err}");
         assert!(signal_each(Err(Errno::ESRCH), [Ok(())].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn a_failed_sweep_is_kept_and_a_later_failure_does_not_replace_it() {
+        let first = keep_first(None, Err(ToolError("one".into())));
+        assert_eq!(first, Some(ToolError("one".into())));
+        let still = keep_first(first, Err(ToolError("two".into())));
+        assert_eq!(still, Some(ToolError("one".into())));
+        assert_eq!(keep_first(None, Ok(())), None);
     }
 
     #[test]

@@ -166,8 +166,8 @@ from common import run_until_signalled
 from tau_next import BashTool
 
 async def main():
-    command = json.dumps({"command": "sleep " + sys.argv[2], "timeout": 600_000})
-    await BashTool(sys.argv[3]).call(command)
+    command = json.dumps({"command": sys.argv[4] + "sleep " + sys.argv[2], "timeout": 600_000})
+    await BashTool(sys.argv[3], kill_grace_ms=1500).call(command)
 
 run_until_signalled(main())
 """
@@ -195,7 +195,7 @@ def test_a_program_killed_by_sigterm_or_sighup_leaves_no_command_running(
     the call, which kills the command's session. The sleep's duration is unique to this run."""
     duration = f"{1000 + number}.{os.getpid()}"
     program = subprocess.Popen(
-        [sys.executable, "-c", DIES_WITH_THE_SIGNAL, str(EXAMPLES), duration, str(tmp_path)]
+        [sys.executable, "-c", DIES_WITH_THE_SIGNAL, str(EXAMPLES), duration, str(tmp_path), ""]
     )
     try:
         deadline = time.monotonic() + 10
@@ -208,6 +208,43 @@ def test_a_program_killed_by_sigterm_or_sighup_leaves_no_command_running(
         while running(duration):
             assert time.monotonic() < deadline, "the sleep outlived the program"
             time.sleep(0.02)
+    finally:
+        program.kill()
+        for pid in running(duration):
+            os.kill(pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [(signal.SIGTERM, signal.SIGTERM), (signal.SIGHUP, signal.SIGTERM)]
+)
+def test_a_second_signal_in_the_grace_period_still_leaves_no_command_running(
+    tmp_path: Path, first: signal.Signals, second: signal.Signals
+) -> None:
+    """A command that ignores SIGTERM lives until the grace period ends and SIGKILL; a second
+    cancellation arriving meanwhile does not end the wait."""
+    duration = f"{2000 + first}.{os.getpid()}"
+    program = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            DIES_WITH_THE_SIGNAL,
+            str(EXAMPLES),
+            duration,
+            str(tmp_path),
+            "trap '' TERM; ",
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not running(duration):
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.02)
+        program.send_signal(first)
+        time.sleep(0.4)
+        assert running(duration), "the command should still be inside its grace period"
+        program.send_signal(second)
+        assert program.wait(timeout=10) == 128 + first
+        assert not running(duration), "the program left before the command was dead"
     finally:
         program.kill()
         for pid in running(duration):
