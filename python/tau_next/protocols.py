@@ -1,5 +1,6 @@
 """What the driver asks of providers, tools, extensions, and the clock."""
 
+import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -11,14 +12,46 @@ from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 @dataclass(frozen=True)
 class Finish:
     """The end of a reply: the normalised `stop`, and the provider's own finish string
-    (`None` if it has none to report)."""
+    (`None` if it has none to report), and `meta`: what the response carried besides its
+    parts, as the text of a JSON object (`None` if it carried nothing). Anything else raises
+    `ValueError` here."""
 
     stop: Stop
     reason: str | None = None
+    meta: str | None = None
+
+    def __post_init__(self) -> None:
+        check_meta(self.meta)
+
+
+def _no_constant(name: str) -> object:
+    raise ValueError(f"{name} is not JSON")
+
+
+def check_meta(meta: object) -> None:
+    """`meta` is `None` or the text of a strict JSON object. Anything else fails here, not in
+    the binding: `TypeError` for a non-`str`, `ValueError` for text that is not a JSON object
+    (`NaN` and `Infinity` are not JSON)."""
+    if meta is None:
+        return
+    if not isinstance(meta, str):
+        raise TypeError(f"meta must be JSON object text (str) or None, got {type(meta).__name__}")
+    try:
+        ok = isinstance(json.loads(meta, parse_constant=_no_constant), dict)
+    except ValueError as e:
+        raise ValueError(f"meta must be the text of a JSON object, got {meta!r}: {e}") from e
+    if not ok:
+        raise ValueError(f"meta must be the text of a JSON object, got {meta!r}")
 
 
 class SampleError(Exception):
-    """A sample that failed: an HTTP error, a reset connection, a conversion error."""
+    """A sample that failed: an HTTP error, a reset connection, a conversion error. `meta` is
+    what the response had already said about itself (as on `Finish`), kept on the failed reply."""
+
+    def __init__(self, message: str = "", meta: str | None = None) -> None:
+        super().__init__(message)
+        check_meta(meta)
+        self.meta = meta
 
 
 class ToolContractError(TypeError):

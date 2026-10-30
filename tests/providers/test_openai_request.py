@@ -53,6 +53,7 @@ async def test_system_and_user_become_messages_and_config_nodes_are_skipped(
     assert body == {
         "model": MODEL,
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [
             {"role": "system", "content": "be brief"},
             {"role": "user", "content": "hello"},

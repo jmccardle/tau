@@ -75,6 +75,7 @@ class Reply:
     gate: Gate | None = None
     gate_after: int = 0
     finish_reason: str | None = None
+    meta: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,14 +120,21 @@ class FakeProvider:
         scripted = self._script[self._next]
         self._next += 1
         match scripted:
-            case Reply(parts=parts, stop=stop, gate=gate, gate_after=after, finish_reason=reason):
+            case Reply(
+                parts=parts,
+                stop=stop,
+                gate=gate,
+                gate_after=after,
+                finish_reason=reason,
+                meta=meta,
+            ):
                 for i, part in enumerate(parts):
                     if gate is not None and i == after:
                         await gate.wait()
                     yield part
                 if gate is not None and after >= len(parts):
                     await gate.wait()
-                yield Finish(stop, reason)
+                yield Finish(stop, reason, meta)
             case Fail(error=error, parts=parts):
                 for part in parts:
                     yield part

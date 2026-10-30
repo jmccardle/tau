@@ -202,11 +202,12 @@ pub enum Body {
     User {
         text: String,
     },
-    #[pyo3(constructor = (parts, stop, finish_reason = None))]
+    #[pyo3(constructor = (parts, stop, finish_reason = None, meta = None))]
     Assistant {
         parts: Vec<Part>,
         stop: Stop,
         finish_reason: Option<String>,
+        meta: Option<String>,
     },
     Results {
         outcomes: Vec<(String, Outcome, Author)>,
@@ -229,10 +230,12 @@ impl From<tree::Body> for Body {
                 parts,
                 stop,
                 finish_reason,
+                meta,
             } => Self::Assistant {
                 parts: parts.into_iter().map(Into::into).collect(),
                 stop: stop.into(),
                 finish_reason,
+                meta,
             },
             tree::Body::Results(outcomes) => Self::Results {
                 outcomes: outcomes
@@ -257,10 +260,12 @@ impl From<Body> for tree::Body {
                 parts,
                 stop,
                 finish_reason,
+                meta,
             } => Self::Assistant {
                 parts: parts.into_iter().map(Into::into).collect(),
                 stop: stop.into(),
                 finish_reason,
+                meta,
             },
             Body::Results { outcomes } => Self::Results(
                 outcomes

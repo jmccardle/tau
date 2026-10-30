@@ -67,7 +67,7 @@ Node   { id, parent?, time, by, body, delivers, copied_from*, derived_from* }
 
 body   = System(text)
        | User(text, images*)
-       | Assistant { parts, stop, finish_reason? }
+       | Assistant { parts, stop, finish_reason?, meta? }
        | Results(outcomes)                  [(call id, outcome, by)], in call order
        | Config { data }                  data: opaque to core
        | Custom { kind, data }

@@ -9,6 +9,7 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
             parts,
             stop,
             finish_reason: None,
+            meta: None,
         },
         delivers: vec![],
         by: Author::Provider,
@@ -103,7 +104,8 @@ fn plain_turn() {
             Body::Assistant {
                 parts: vec![text("hello")],
                 stop: Stop::End,
-                finish_reason: None
+                finish_reason: None,
+                meta: None,
             }
         ]
     );
@@ -152,7 +154,8 @@ fn batch_answers_in_call_order_then_samples_again() {
         Body::Assistant {
             parts: vec![text("done")],
             stop: Stop::End,
-            finish_reason: None
+            finish_reason: None,
+            meta: None,
         }
     );
     assert_eq!(s.items(c).count(), 0, "nothing left behind");
@@ -430,7 +433,8 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
             Body::Assistant {
                 parts: vec![text("hello")],
                 stop: Stop::End,
-                finish_reason: None
+                finish_reason: None,
+                meta: None,
             }
         ]
     );
@@ -473,7 +477,8 @@ fn abort_during_sample_commits_the_partial_reply() {
         &Body::Assistant {
             parts: vec![text("hel")],
             stop: Stop::Interrupted,
-            finish_reason: None
+            finish_reason: None,
+            meta: None,
         }
     );
     assert!(!s.auto[&c]);
@@ -670,7 +675,8 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
         &Body::Assistant {
             parts: vec![text("hel")],
             stop: Stop::Error,
-            finish_reason: None
+            finish_reason: None,
+            meta: None,
         }
     );
 }
@@ -891,7 +897,8 @@ fn a_pre_sample_move_chooses_what_is_sampled_and_where_the_reply_lands() {
             Body::Assistant {
                 parts: vec![text("hello")],
                 stop: Stop::End,
-                finish_reason: None
+                finish_reason: None,
+                meta: None,
             }
         ]
     );
@@ -910,6 +917,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
                 parts: vec![call("old")],
                 stop: Stop::Tools,
                 finish_reason: None,
+                meta: None,
             },
             vec![],
             0,

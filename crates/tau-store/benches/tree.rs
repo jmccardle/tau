@@ -228,6 +228,7 @@ impl Agent {
                     parts,
                     stop,
                     finish_reason: None,
+                    meta: None,
                 },
                 delivers: vec![],
                 by: Author::Provider,

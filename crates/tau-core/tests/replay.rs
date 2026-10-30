@@ -121,6 +121,8 @@ fn apply(s: &mut Session, op: &Op) {
                 parts,
                 stop: Stop::Tools,
                 finish_reason: None,
+                // Half the batches carry meta, so replay sees both shapes.
+                meta: (k % 2 == 0).then(|| r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
             };
             s.write(cursor(i), body, vec![], Author::Provider, 0)
                 .unwrap();
@@ -263,6 +265,7 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Answer {
                 parts,
                 stop,
                 finish_reason: None,
+                meta: None,
             },
             delivers: vec![],
             by: Author::Provider,

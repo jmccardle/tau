@@ -36,6 +36,7 @@ fn dir() -> tempfile::TempDir {
 enum Op {
     Open(usize),
     User(usize),
+    Reply(usize, bool),
     Go(usize, usize),
     Label(usize, usize),
     Input(usize),
@@ -48,6 +49,7 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         n.clone().prop_map(Op::Open),
         n.clone().prop_map(Op::User),
+        (n.clone(), any::<bool>()).prop_map(|(c, m)| Op::Reply(c, m)),
         (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         (0..3usize, n.clone()).prop_map(|(l, c)| Op::Label(l, c)),
         n.clone().prop_map(Op::Input),
@@ -72,6 +74,16 @@ fn apply(s: &mut Session, op: &Op) {
             s.write(cursor(i), Body::User("u".into()), vec![], by, 0)
                 .unwrap(),
         ),
+        Op::Reply(i, with_meta) => {
+            let body = Body::Assistant {
+                parts: vec![Part::Text("r".into())],
+                stop: Stop::End,
+                finish_reason: Some("stop".into()),
+                meta: with_meta.then(|| r#"{"id":"r1","usage":{"total_tokens":3}}"#.into()),
+            };
+            s.write(cursor(i), body, vec![], Author::Provider, 0)
+                .unwrap();
+        }
         Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
         Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
         Op::Input(i) => {
@@ -337,6 +349,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                         parts: vec![Part::Text("hello".into())],
                         stop: Stop::End,
                         finish_reason: Some("stop".into()),
+                        meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
                     },
                     delivers: vec![],
                     by: Author::Provider,
@@ -353,6 +366,17 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     drop(store);
     let (_, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(loaded, as_loaded(&m.session));
+    assert!(
+        loaded
+            .tree
+            .walk(loaded.at(c).unwrap())
+            .iter()
+            .any(|n| matches!(
+                &n.body,
+                Body::Assistant { meta: Some(m), .. } if m.contains("total_tokens")
+            )),
+        "the reply's meta came back"
+    );
     assert_eq!(loaded.items(c).count(), 0, "the input was delivered");
 }
 
@@ -456,4 +480,39 @@ fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     fs::remove_dir(&block).unwrap();
     let (_, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(loaded, synced);
+}
+
+/// A record line as it was written before `meta` existed: no `meta` key.
+#[test]
+fn a_record_from_before_meta_loads_with_none() {
+    fn on_disk(payload: &str) -> Vec<u8> {
+        let len = u32::try_from(payload.len()).unwrap().to_le_bytes();
+        let mut crc = crc32fast::Hasher::new();
+        crc.update(&len);
+        crc.update(payload.as_bytes());
+        let mut out = len.to_vec();
+        out.extend_from_slice(&crc.finalize().to_le_bytes());
+        out.extend_from_slice(payload.as_bytes());
+        out
+    }
+    let d = dir();
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    drop(Store::create(d.path(), &mut s).unwrap());
+    let old = r#"{"Write":{"node":{"id":2,"parent":1,"time":0,"by":"Provider","body":{"Assistant":{"parts":[{"Text":"hi"}],"stop":"End","finish_reason":"stop"}},"delivers":[]},"mv":null}}"#;
+    let log = d.path().join("log");
+    let mut bytes = fs::read(&log).unwrap();
+    bytes.extend(on_disk(old));
+    bytes.extend(on_disk(r#"{"Sync":{"pad":null}}"#));
+    fs::write(&log, bytes).unwrap();
+    let (store, loaded) = Store::open(d.path()).unwrap();
+    assert_eq!(store.dropped, 0);
+    assert_eq!(
+        loaded.tree.node(2).unwrap().body,
+        Body::Assistant {
+            parts: vec![Part::Text("hi".into())],
+            stop: Stop::End,
+            finish_reason: Some("stop".into()),
+            meta: None,
+        }
+    );
 }
