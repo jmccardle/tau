@@ -672,6 +672,64 @@ working directory, stopping at `$HOME`. Only a trusted directory's project confi
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
+### tau_home, find_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, create_project_dir, project_environment, LayerText
+`tau_next.trust` (`LayerText`: `tau_next.config_layers`) · D13 · new
+
+- `tau_home(environ)`: `$TAU_HOME` or `~/.tau` (`~` from `environ["HOME"]`).
+- `find_project(start, environ)`: the nearest directory upward whose `.tau/` is
+  a real directory owned by you, or `None`. A symlinked or foreign `.tau` is
+  skipped and the search goes on. `$HOME` itself and the directory whose `.tau`
+  is `TAU_HOME` are never a project; the search stops at `$HOME` (outside it,
+  runs to `/`). `project_config_path(root)` is `<root>/.tau/config.json`.
+- `trusted.json` (in `TAU_HOME`, written atomically) holds per project the
+  sha256 of the approved config bytes, which decides, and a redacted copy
+  (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs.
+  `is_trusted(root, home)` is hash equality; the hash covers a marker byte, so an absent
+  config differs from an empty one.
+- `trust_report(root, home)` is what the user reads before agreeing: what the
+  project config changes in the user config per qualified model (old to new;
+  a literal `api_key` only as `(set)`), the variable names (never values) its
+  `.env` sets, the `.tau/` checks, and for a changed project a unified diff of
+  the redacted copies ("a secret value changed" when only a secret did).
+- `approve_project(root, home)`: sets `.tau/` to `700`, writes `.tau/.gitignore`
+  (`*`, mode `644`) if missing, records the config. `ensure_trusted(root, home,
+  *, ask)` returns a frozen **`Trusted`** (`root`, `config_text`, `layer()` as a
+  `LayerText`, and `read_models(user=, cli=)` returning the catalog from the approved
+  text; callers use these, never `project_config_path`, which is for display) if trusted;
+  otherwise `ask(report)` decides, and no `ask` (no live terminal) or a no
+  raises **`UntrustedProject`** (message: the report and `tau trust <root>`).
+  **`TrustError`** (a `PermissionError`) is every other refusal.
+  `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the
+  terminal side. `create_project_dir(root, home)` makes a `.tau/` tau owns and
+  trusts it in one step. `project_environment(trusted, environ)` overlays
+  `environ` on the `.env` of a `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config
+  layer already read (source and text), accepted where a layer takes a `Path`.
+
+Rules. (A) The config is read once per `ensure_trusted`; report, question, and
+approval use those bytes, and approval refuses ("changed while you were
+reading; run again") if the file differs. (B) Everything read inside a project
+goes through one helper that refuses symlinks and non-regular files (naming the
+path, never the content), opens with `O_NOFOLLOW`, and checks the descriptor
+against `lstat`. (C) As above: hash decides, redacted copy shows. (D) A config
+with errors (or a malformed `.env`) cannot be approved; the report lists them.
+(E) `.env` is not content-pinned; it is refused if a symlink or not yours.
+(F) A foreign `.tau` is not a project. (G) `TAU_HOME` or `trusted.json`
+writable by group or others refuses all trust operations with the `chmod` to
+run; tau never changes them. (I) Every project-supplied string in a report or
+trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes.
+(J) `config.json` and `.env` over 1 MiB are an error naming file and size; files are
+opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` without a line of exactly `*`,
+or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
+
+### parse_dotenv, read_dotenv, DotenvError
+`tau_next.dotenv` · D13 · new
+
+Our own `.env` reader: `KEY=value` lines, optional `export `, `#` comments (a
+`#` starts one only at line start or after whitespace, so `K=#x` is `#x`),
+single-quoted values literal, double-quoted values with `\n`, `\"`, `\\`,
+unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. A
+malformed line is a `DotenvError` naming the file and line, never the value.
+
 ### tau config check, tau trust
 D13 · new
 
