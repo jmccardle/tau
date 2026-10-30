@@ -45,7 +45,7 @@ fn cancelled(parts: Vec<Part>) -> Answer {
 }
 
 fn text(t: &str) -> Part {
-    Part::Text(t.into())
+    Part::text(t)
 }
 
 fn call(id: &str) -> Part {
@@ -53,6 +53,7 @@ fn call(id: &str) -> Part {
         id: id.into(),
         tool: "ls".into(),
         args_raw: "{}".into(),
+        replay: None,
     }
 }
 

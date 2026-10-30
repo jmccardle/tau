@@ -78,7 +78,7 @@ fn body_bytes(b: &Body) -> usize {
         Body::Assistant { parts, .. } => parts
             .iter()
             .map(|p| match p {
-                Part::Text(t) | Part::Thinking(t) => t.len(),
+                Part::Text { text: t, .. } | Part::Thinking { text: t, .. } => t.len(),
                 Part::Call { args_raw, .. } => args_raw.len(),
             })
             .sum(),
@@ -209,7 +209,7 @@ impl Agent {
     }
 
     fn reply(&mut self, p: &Payloads) -> Answer {
-        let mut parts = vec![Part::Text(p.assistant.clone())];
+        let mut parts = vec![Part::text(p.assistant.clone())];
         let stop = if self.rounds > 0 {
             self.rounds -= 1;
             self.calls += 1;
@@ -217,6 +217,7 @@ impl Agent {
                 id: format!("c{}", self.calls),
                 tool: "read".into(),
                 args_raw: r#"{"path":"src/lib.rs"}"#.into(),
+                replay: None,
             });
             Stop::Tools
         } else {

@@ -224,7 +224,7 @@ fn hook(
         }
         3 if point == Hook::PreSample => Answer::Hooks {
             stop: None,
-            draft: Some(reply(vec![Part::Text("answered".into())], Stop::End)),
+            draft: Some(reply(vec![Part::text("answered")], Stop::End)),
         },
         _ => echo(),
     })
@@ -234,13 +234,14 @@ fn hook(
 /// an error, or a cancel.
 fn sample(k: usize) -> Answer {
     match k % 4 {
-        0 => sampled(reply(vec![Part::Text("hi".into())], Stop::End)),
+        0 => sampled(reply(vec![Part::text("hi")], Stop::End)),
         1 => {
             let parts = (0..=k / 4 % 3)
                 .map(|j| Part::Call {
                     id: format!("c{j}"),
                     tool: "t".into(),
                     args_raw: "{}".into(),
+                    replay: None,
                 })
                 .collect();
             sampled(reply(parts, Stop::Tools))
@@ -372,6 +373,7 @@ fn body() -> impl Strategy<Value = Body> {
                 id: format!("c{i}"),
                 tool: "t".into(),
                 args_raw: "{}".into(),
+                replay: None,
             })
             .collect(),
         stop: Stop::Tools,
@@ -383,14 +385,14 @@ fn body() -> impl Strategy<Value = Body> {
         Just(Body::System("s".into())),
         Just(Body::User("u".into())),
         Just(Body::Assistant {
-            parts: vec![Part::Text("a".into())],
+            parts: vec![Part::text("a")],
             stop: Stop::End,
             finish_reason: None,
             meta: None,
         }),
         calls,
         Just(Body::Assistant {
-            parts: vec![Part::Text("a".into())],
+            parts: vec![Part::text("a")],
             stop: Stop::End,
             finish_reason: Some("stop".into()),
             meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),

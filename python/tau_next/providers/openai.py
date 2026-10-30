@@ -18,9 +18,18 @@ from typing import cast
 import httpx
 
 from tau_next._config import ConfigError, ModelConfig
-from tau_next._core import Body, Node, Outcome, Part, Stop
+from tau_next._core import Node, Part, Stop
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
 from tau_next.protocols import Finish, ProviderClosed, SampleError, Tool
+from tau_next.providers._walk import (
+    AssistantTurn,
+    SystemTurn,
+    ToolResults,
+    UserTurn,
+    call_markup,
+    stop_note,
+    turns,
+)
 
 Json = dict[str, object]
 HTTP_OK = 200
@@ -34,58 +43,29 @@ STOPS: dict[str, Stop] = {
     "length": Stop.Length,
     "content_filter": Stop.Refused,
 }
-STOP_NOTES: dict[Stop, str] = {
-    Stop.Length: "length",
-    Stop.Interrupted: "interrupted",
-    Stop.Error: "error",
-}
 
 
 # Walk to request
 
 
-def _is_batch(body: Body) -> bool:
-    return (
-        isinstance(body, Body.Assistant)
-        and body.stop == Stop.Tools
-        and any(isinstance(p, Part.Call) for p in body.parts)
-    )
-
-
-def _outcome_text(outcome: Outcome) -> str:
-    match outcome:
-        case Outcome.Ok(value=value):
-            return value
-        case Outcome.Err(error=error):
-            return f"Error: {error}"
-        case _:
-            return "Interrupted"
-
-
-def _call_text(call: Part.Call) -> str:
-    return f"[tool call {call.id}: {call.tool} {call.args_raw}]"
-
-
-def _assistant(body: Body.Assistant, answered: bool) -> Json:
+def _assistant(turn: AssistantTurn) -> Json:
     """Thinking is not sent back: this API takes none. Calls are `tool_calls` only when
-    the reply is a batch with a `Results` after it; otherwise they are text (`model.md` 10.6)."""
-    runnable = answered and _is_batch(body)
+    the turn is runnable; otherwise they are text (`model.md` 10.6)."""
     texts: list[str] = []
     wire_calls: list[Json] = []
-    for part in body.parts:
+    for part in turn.parts:
         match part:
             case Part.Text(text=text):
                 texts.append(text)
-            case Part.Call() if runnable:
+            case Part.Call() if turn.runnable:
                 function = {"name": part.tool, "arguments": part.args_raw}
                 wire_calls.append({"id": part.id, "type": "function", "function": function})
             case Part.Call():
-                texts.append(_call_text(part))
+                texts.append(call_markup(part))
             case _:
                 pass
-    note = STOP_NOTES.get(body.stop)
-    if note is not None and any(isinstance(p, Part.Call) for p in body.parts) and not runnable:
-        texts.append(f"[reply stopped: {note}]")
+    if turn.note is not None:
+        texts.append(stop_note(turn.note))
     message: Json = {"role": "assistant", "content": "\n".join(texts) if texts else None}
     if wire_calls:
         message["tool_calls"] = wire_calls
@@ -94,40 +74,20 @@ def _assistant(body: Body.Assistant, answered: bool) -> Json:
     return message
 
 
-def _results(body: Body.Results, batch: Body | None) -> list[Json]:
-    """One tool message per outcome, in call order, if `body` answers `batch`; else one
-    user message, so the walk stays legal."""
-    if batch is not None and isinstance(batch, Body.Assistant) and _is_batch(batch):
-        want = [p.id for p in batch.parts if isinstance(p, Part.Call)]
-        got = [call for call, _, _ in body.outcomes]
-        if want != got:
-            raise SampleError(f"a Results answers calls {got}, but its batch made {want}")
-        return [
-            {"role": "tool", "tool_call_id": call, "content": _outcome_text(outcome)}
-            for call, outcome, _ in body.outcomes
-        ]
-    lines = [f"[tool result {call}: {_outcome_text(o)}]" for call, o, _ in body.outcomes]
-    return [{"role": "user", "content": "\n".join(lines)}]
-
-
 def messages(walk: Sequence[Node]) -> list[Json]:
     """The wire messages for a walk. `Config` and `Custom` nodes never reach the model."""
-    bearing = [n.body for n in walk if not isinstance(n.body, Body.Config | Body.Custom)]
     out: list[Json] = []
-    for i, body in enumerate(bearing):
-        following = bearing[i + 1] if i + 1 < len(bearing) else None
-        previous = bearing[i - 1] if i > 0 else None
-        match body:
-            case Body.System(text=text):
+    for turn in turns(walk):
+        match turn:
+            case SystemTurn(text=text):
                 out.append({"role": "system", "content": text})
-            case Body.User(text=text):
+            case UserTurn(text=text):
                 out.append({"role": "user", "content": text})
-            case Body.Assistant():
-                out.append(_assistant(body, isinstance(following, Body.Results)))
-            case Body.Results():
-                out += _results(body, previous)
-            case _:
-                raise SampleError(f"a body this provider cannot send: {body}")
+            case AssistantTurn():
+                out.append(_assistant(turn))
+            case ToolResults(results=results):
+                for r in results:
+                    out.append({"role": "tool", "tool_call_id": r.id, "content": r.text})
     return out
 
 

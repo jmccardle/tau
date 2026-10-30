@@ -80,8 +80,8 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
         *calls += 1;
         let id = format!("c{calls}");
         let parts = vec![
-            Part::Thinking(text.take(THINKING)),
-            Part::Text(text.take(TEXT)),
+            Part::thinking(text.take(THINKING)),
+            Part::text(text.take(TEXT)),
             Part::Call {
                 id: id.clone(),
                 tool: "read".into(),
@@ -97,7 +97,7 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
         s.write(c, results, vec![], Author::Tools, 0).unwrap();
     }
     let done = Body::Assistant {
-        parts: vec![Part::Text(text.take(FINAL))],
+        parts: vec![Part::text(text.take(FINAL))],
         stop: Stop::End, finish_reason: None,
  meta: None, };
     s.write(c, done, vec![], Author::Provider, 0).unwrap();
@@ -195,7 +195,7 @@ fn strings(body: &Body) -> Vec<&str> {
         Body::Assistant { parts, .. } => parts
             .iter()
             .map(|p| match p {
-                Part::Text(t) | Part::Thinking(t) => t.as_str(),
+                Part::Text { text: t, .. } | Part::Thinking { text: t, .. } => t.as_str(),
                 Part::Call { args_raw, .. } => args_raw.as_str(),
             })
             .collect(),
