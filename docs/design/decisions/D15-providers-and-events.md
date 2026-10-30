@@ -246,8 +246,9 @@ whose `provider` is not its own.
    `functionCall` parts without `tools`, so it does not ask), and the provider hook `text_from`
    (only Anthropic's manual thinking depends on what a provider would send). `Messages` does
    the merge and drops what a provider rendered empty; what counts as empty stays the
-   provider's. OpenAI asks for none of them: its `arguments` is a string the API does not parse,
-   and no live check has shown a server that refuses a non-object (unchecked). The system note
+   provider's. OpenAI asks for `object_args` only: llama.cpp answers HTTP 500 "Failed to parse tool call
+   arguments as JSON" to a history call whose `arguments` is `{"p"` (probed by hand), and an empty
+   `arguments` goes as `{}`. It offers tools whenever it has any, so it has no use for `structured`. The system note
    is `[system note: ...]` everywhere. A negative token count is malformed for all three.
 
 ## Open

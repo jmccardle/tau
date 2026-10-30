@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
+from gemini_support import walk_of
 from harness import Harness, scenario
 from transcripts import BASE_URL, MODEL, RESOLVED, sent
 
@@ -182,3 +183,26 @@ async def test_the_key_is_read_from_the_named_variable_at_sample_time(tmp_path: 
     with pytest.raises(SampleError, match=KEY_ENV):
         OpenAIProvider(environ={}).request(walk, model, [])
     await h.close()
+
+
+def test_a_batch_with_a_cut_off_call_goes_as_text_with_its_results() -> None:
+    results = [("a", Outcome.Ok("one"), Author.Tools()), ("b", Outcome.Err("bad"), Author.Tools())]
+    batch = [Part.Call("a", "ta", "{}"), Part.Call("b", "ta", '{"p"')]
+    walk = walk_of(Body.User("go"), Body.Assistant(batch, Stop.Tools, None), Body.Results(results))
+    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    assert sent(body)[1:] == [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": '[tool call a: ta {}]\n[tool call b: ta {"p"]'},
+        {"role": "user", "content": "[tool result a: one]\n[tool result b: Error: bad]"},
+    ]
+
+
+def test_a_call_with_no_arguments_is_sent_with_an_empty_object() -> None:
+    walk = walk_of(
+        Body.User("go"),
+        Body.Assistant([Part.Call("a", "ta", "")], Stop.Tools, None),
+        Body.Results([("a", Outcome.Ok("one"), Author.Tools())]),
+    )
+    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    function = {"name": "ta", "arguments": "{}"}
+    assert sent(body)[2]["tool_calls"] == [{"id": "a", "type": "function", "function": function}]

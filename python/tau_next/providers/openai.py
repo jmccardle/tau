@@ -61,7 +61,8 @@ def _assistant(turn: AssistantTurn) -> Json:
             case Part.Text(text=text):
                 texts.append(text)
             case Part.Call() if turn.runnable:
-                function = {"name": part.tool, "arguments": part.args_raw}
+                arguments = part.args_raw if part.args_raw.strip() else "{}"
+                function = {"name": part.tool, "arguments": arguments}
                 wire_calls.append({"id": part.id, "type": "function", "function": function})
             case Part.Call():
                 texts.append(call_markup(part))
@@ -78,9 +79,11 @@ def _assistant(turn: AssistantTurn) -> Json:
 
 
 def messages(walk: Sequence[Node]) -> list[Json]:
-    """The wire messages for a walk. `Config` and `Custom` nodes never reach the model."""
+    """The wire messages for a walk. `Config` and `Custom` nodes never reach the model. A batch
+    whose call arguments are not a JSON object goes as text with its results (llama.cpp refuses
+    the history otherwise, HTTP 500); no arguments are sent as `{}`."""
     out: list[Json] = []
-    for turn in turns(walk):
+    for turn in turns(walk, object_args=True):
         match turn:
             case SystemTurn(text=text):
                 out.append({"role": "system", "content": text})
