@@ -1460,18 +1460,21 @@ A frontend draws it as a layer over the cursor and drops the layer at the next
 `Saved`. Never saved. A slow subscriber's buffer drops it.
 
 ### saved event, Saved
-`tau_next.Saved(cursor, calls=())` · D15 · new
+`tau_next.Saved(cursor, calls=(), reply=False)` · D15 · new
 
 The tree changed for this cursor: look at it. `calls` are the calls, as `(node, call_id)`,
 whose results the save put in the tree (the batch's `Results` node answers them), else empty;
-a frontend drops those calls' `ToolProgress` layers now. A call answered before its batch
+a frontend drops those calls' `ToolProgress` layers now. `reply` is true only when the answer
+saved was a sample's (`Answer.Sampled`). A call answered before its batch
 is whole adds no node, so it emits no `Saved`. Emitted after the driver applies each
 answer (hooks, sample, call) to core, and by the frontend calls that change the tree or a
 cursor with no answer (`input`, `send`, `step`, `go_to`, `set_auto`, `open`, `add_item`,
 `abort`), so a second frontend hears of them, and by each write a hook makes through its
-handle (`append`, `set_label`, `add_item`, a cursor hook's `write`, ...), when it is made. Never dropped from a subscriber's buffer;
-it removes that cursor's buffered provider deltas and earlier `Saved` (their `calls` move to
-it) but not buffered `ToolProgress`, except for the calls in its `calls`. Finer kinds are a later slice.
+handle (`append`, `set_label`, `add_item`, a cursor hook's `write`, ...), when it is made. A hook's answer that left the tree, the labels, and the cursor's place,
+state and items as they were emits none. Never dropped from a subscriber's buffer; it removes
+that cursor's earlier `Saved` (their `calls` move to it, their `reply` is ORed in) and, only
+if `reply`, that cursor's buffered provider deltas. It never removes buffered `ToolProgress`,
+except for the calls in its `calls`. Finer kinds are a later slice.
 
 ### EventStream
 `tau_next.EventStream` · D15 · new
@@ -1480,9 +1483,8 @@ One subscriber's async iterator of `Event` (`Live | Saved`) from `driver.events(
 an optional cursor filter and a bounded buffer of its own, for one consumer (a second
 concurrent `anext` raises `RuntimeError`). `offer` never waits, so a subscriber cannot
 slow the pump. A buffer holding `capacity` events drops further `Live` events, tool progress
-included. A `Saved(c)` is never dropped: it first removes the buffered provider deltas for
-`c` and any earlier `Saved(c)` (the frontend drops that cursor's live layer at `Saved(c)`
-anyway), and the buffered `ToolProgress` of the calls in its `calls`; buffered progress of
+included. A `Saved(c)` is never dropped: it first removes any earlier `Saved(c)`, the buffered
+provider deltas for `c` if it has `reply` (the frontend drops that cursor's live layer then), and the buffered `ToolProgress` of the calls in its `calls`; buffered progress of
 other calls survives it. Then it joins the end. So the bound holds with progress: the buffer
 never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
 (and may be called twice); `async with` closes it; the driver holds streams weakly, so one

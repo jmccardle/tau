@@ -158,14 +158,16 @@ class Provider(Protocol):
         of the next part; a delta that breaks this fails the sample. `tools` are the driver's,
         offered to the model for this sample only; they are never recorded.
 
-        The driver calls `check(model)` first and fails the sample, with the problems listed,
-        if it returns any; `sample` may rely on a model that passed. It closes the generator
-        when it stops reading.
+        `sample` assumes `check(model)` returned no problems: the driver calls it first, for
+        every sample, and fails the sample with the problems listed if it returns any, so
+        `sample` does not re-check. It closes the generator when it stops reading.
 
-        Raise `SampleError` to fail; parts yielded before it are kept. A `BadReplay` escaping
-        `sample` (the response held replay data core refuses) fails the sample the same way. If
-        the sample is cancelled or fails, the driver saves the text or thinking whose deltas
-        arrived but whose part never did. A part yielded while deltas are open must be the part
+        Raise `SampleError` to fail; parts yielded before it are kept. Any other `Exception`
+        (from `check` or from `sample`) fails this sample the same way, with its message as
+        `Type: message` and `internal: true` in `meta.error`, and its traceback on stderr: a
+        bug in a provider costs one sample, never the driver. If the sample is cancelled or
+        fails, the driver saves the text or thinking whose deltas arrived but whose part never
+        did. A part yielded while deltas are open must be the part
         those deltas were building (same kind, same text), and `Finish` may not come with deltas
         open.
         """

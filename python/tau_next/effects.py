@@ -5,6 +5,9 @@ No effect touches the session except to read it. The driver answers.
 
 import asyncio
 import json
+import math
+import sys
+import traceback
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import aclosing
 from typing import cast
@@ -15,7 +18,6 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
-    BadReplay,
     Job,
     Outcome,
     Part,
@@ -23,7 +25,7 @@ from tau_next._core import (
     SampleEnd,
     Session,
 )
-from tau_next.events import DELTAS, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
+from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
     CursorHook,
@@ -120,17 +122,31 @@ class _Run:
             )
 
 
-def _failed(error: Exception) -> SampleEnd:
-    """The end of a failed sample. The failure goes into `meta` under `error`
-    (`message`, and `status` and `retry_after` when the error has them), so a failed reply
-    says why it failed; with no parts nothing is saved and core writes a `sample_error`."""
+def _failed(error: Exception, *, internal: bool = False) -> SampleEnd:
+    """The end of a failed sample. The failure goes into `meta` under `error`: `message`, and
+    `status` and `retry_after` when the error has them and they are finite (strict JSON has no
+    infinity). An `internal` failure (the provider raised something other than `SampleError`)
+    has the message `"<Type>: <msg>"` and `internal: true`. If the provider's own `meta` has an
+    `error` key, it is kept as `error.provider` beside the driver's detail. With no parts
+    nothing is saved and core writes a `sample_error`."""
     meta = getattr(error, "meta", None)
     said: dict[str, object] = {} if meta is None else json.loads(meta)
-    detail: dict[str, object] = {"message": str(error)}
+    message = f"{type(error).__name__}: {error}" if internal else str(error)
+    detail: dict[str, object] = {"message": message}
     for key in ("status", "retry_after"):
-        if (value := getattr(error, key, None)) is not None:
+        value = getattr(error, key, None)
+        if value is not None and not (isinstance(value, float) and not math.isfinite(value)):
             detail[key] = value
-    return SampleEnd.Failed(str(error), json.dumps({**said, "error": detail}))
+    if internal:
+        detail["internal"] = True
+    if "error" in said:
+        detail["provider"] = said["error"]
+    return SampleEnd.Failed(message, json.dumps({**said, "error": detail}, allow_nan=False))
+
+
+class _DriverBreak(Exception):
+    """`on_delta` raised: the driver's own invariant broke. Carried out of the provider's
+    stream untouched, then re-raised as the original."""
 
 
 class SampleRun:
@@ -177,7 +193,7 @@ class SampleRun:
                 f"model {model.model!r} names provider {model.provider!r}, which is not one of "
                 f"{sorted(self._providers)}; `tau config check` reports this"
             )
-        if problems := provider.check(model):
+        if problems := provider.check(model):  # any Exception: an internal failure
             raise SampleError(f"model {model.model!r} ({provider.name}): " + "; ".join(problems))
         async with aclosing(provider.sample(self._walk, model, self._tools)) as stream:
             async for item in stream:
@@ -187,7 +203,7 @@ class SampleRun:
                     if self._open is not None:
                         raise SampleError(f"provider finished with a {self._open.kind} unfinished")
                     finish = item
-                elif isinstance(item, DELTAS):
+                elif isinstance(item, Delta):
                     self._delta(item)
                 elif not isinstance(item, Part):  # pyright: ignore[reportUnnecessaryIsInstance]
                     raise SampleError(f"provider yielded {item!r}: not a part, delta or finish")
@@ -208,6 +224,12 @@ class SampleRun:
             if isinstance(delta, ThinkingDelta)
             else "call"
         )
+        if isinstance(delta, CallArgs) and (
+            self._open is None or self._open.call is None or self._open.call.index != delta.index
+        ):
+            raise SampleError(
+                f"provider streamed arguments of call {delta.index} with no such call named"
+            )
         if self._open is not None and self._open.kind != kind:
             raise SampleError(f"provider streamed {kind} before finishing a {self._open.kind} part")
         if isinstance(delta, CallNamed):
@@ -218,7 +240,10 @@ class SampleRun:
         else:
             self._open = self._open or _Run(kind)
             self._open.chunks.append(delta.text)
-        self._on_delta(delta)
+        try:
+            self._on_delta(delta)
+        except Exception as e:
+            raise _DriverBreak from e
 
     def _unfinished(self) -> list[Part]:
         """The parts so far, and the text or thinking whose deltas arrived without a part."""
@@ -232,19 +257,24 @@ class SampleRun:
             self._task.cancel()
         with trace.span("sample", "provider"):
             await _finish(self._task)
-        if self._task.cancelled():
+        error = None if self._task.cancelled() else self._task.exception()
+        if isinstance(error, _DriverBreak):
+            raise error.__cause__ or error
+        if self._cancelled or self._task.cancelled():  # an abort is an abort, however it ended
             return Answer.Sampled(self._unfinished(), SampleEnd.Cancelled())
-        error = self._task.exception()
         if error is None:
             finish = self._task.result()
             return Answer.Sampled(
                 self._parts, SampleEnd.Finished(finish.stop, finish.reason, finish.meta)
             )
-        if isinstance(error, BadReplay):
+        if isinstance(error, SampleError):
             return Answer.Sampled(self._unfinished(), _failed(error))
-        if not isinstance(error, SampleError):
+        if not isinstance(error, Exception):
             raise error
-        return Answer.Sampled(self._unfinished(), _failed(error))
+        # Anything else the provider raised fails this sample only; the traceback has absolute
+        # paths, so it goes to stderr, never the log.
+        traceback.print_exception(error, file=sys.stderr)
+        return Answer.Sampled(self._unfinished(), _failed(error, internal=True))
 
 
 class _HookError(Exception):

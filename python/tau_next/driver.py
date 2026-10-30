@@ -297,11 +297,17 @@ class Driver:
         if out is None:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
         before = len(self.session.tree)
+        seen = self._seen(cursor)
         with trace.span("driver", "answer"):
             self.session.answer(cursor, answer, self.clock.now())
-        # A call answered before its batch is whole only fills a slot in core: no node.
-        if len(self.session.tree) > before or not isinstance(answer, Answer.CallDone):
-            self._emit(Saved(cursor, self._answered(before)))
+        # A call answered before its batch is whole only fills a slot in core: no node. A hook
+        # answer that changed nothing has nothing to announce.
+        reply = isinstance(answer, Answer.Sampled)
+        if reply or (
+            (len(self.session.tree) > before or not isinstance(answer, Answer.CallDone))
+            and self._seen(cursor) != seen
+        ):
+            self._emit(Saved(cursor, self._answered(before), reply))
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             return
@@ -310,6 +316,20 @@ class Driver:
         if not isinstance(job, Job.Pending):
             del self._out[cursor]
             self._dispatch(cursor, job)
+
+    def _seen(self, cursor: int) -> tuple[object, ...]:
+        """What a frontend could see change: the tree's size, the labels, and the cursor's
+        place, state, labels and items."""
+        state = self.session.cursor(cursor)
+        return (
+            len(self.session.tree),
+            self.session.labels(),
+            state.at,
+            state.auto,
+            state.busy,
+            state.labels,
+            state.items,
+        )
 
     def _answered(self, since: int) -> tuple[CallKey, ...]:
         """The calls answered by the `Results` nodes added since node count `since`, each as
