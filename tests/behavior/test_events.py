@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import json
 from pathlib import Path
 
 import pytest
@@ -237,6 +238,37 @@ async def test_text_that_never_became_a_part_is_saved_when_the_sample_fails(
     await h.settle()
     reply = next(b for b in h.bodies() if isinstance(b, Body.Assistant))
     assert reply.parts == [Part.Text("hello")]
+    await h.close()
+
+
+@scenario
+async def test_a_failed_reply_says_why_after_a_reload(tmp_path: Path) -> None:
+    # A Gemini 503 inside the stream, after a thought: the reply holds the thought and the
+    # error, so a reader of that one node learns why it failed.
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Fail("boom", [Part.Thinking("hm")], status=503, retry_after=2.5)]),
+    )
+    await h.send("hi")
+    await h.settle()
+    await h.crash()
+    reply = next(b for b in h.bodies() if isinstance(b, Body.Assistant))
+    assert reply.stop == Stop.Error
+    assert reply.parts == [Part.Thinking("hm")]
+    assert reply.meta is not None
+    assert json.loads(reply.meta) == {
+        "error": {"message": "boom", "status": 503, "retry_after": 2.5}
+    }
+    await h.close()
+
+
+@scenario
+async def test_a_failure_before_any_part_stays_a_sample_error_node(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([Fail("boom", status=503)]))
+    await h.send("hi")
+    await h.settle()
+    assert not any(isinstance(b, Body.Assistant) for b in h.bodies())
+    assert Body.Custom("sample_error", "boom") in [n.body for n in h.nodes()]
     await h.close()
 
 

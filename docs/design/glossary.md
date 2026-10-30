@@ -90,7 +90,9 @@ provider sent none: an interrupted reply, a failed sample, a fake.
 What a response carried besides its parts, as the text of a JSON object: for
 the OpenAI provider the `model` the server says answered, the response `id`,
 `system_fingerprint`, and `usage` (token counts), whichever the stream sent.
-Opaque to core, like `Config.data`; persisted and replayed verbatim. `None`
+Opaque to core, like `Config.data`; persisted and replayed verbatim. On an
+`Error` reply it holds `error: {message, status?, retry_after?}`, the failed
+sample's `SampleError`, put there by the driver. `None`
 when the provider had nothing to report, or the reply was interrupted. The
 driver refuses a `Finish` whose `meta` is not a JSON object.
 
@@ -509,6 +511,10 @@ The driver reports what happened; core decides what the tree records: a
 finish is the reply, a cancel with parts an `Interrupted` reply, a failure
 with parts an `Error` reply (and the step fails), and a cancel or failure
 with no parts writes no reply (a failure leaves a `sample_error` side node).
+With parts, the driver puts the failure into the `Failed` `meta` as
+`{"error": {"message", "status"?, "retry_after"?}}` (over any `error` the
+response `meta` had), so the `Error` reply says why. Core still treats `meta`
+as opaque.
 
 ### RunCall
 *spike* `RunCall` · new
