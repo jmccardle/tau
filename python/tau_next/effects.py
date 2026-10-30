@@ -5,6 +5,7 @@ No effect touches the session except to read it. The driver answers.
 
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import aclosing
 from typing import cast
 
 from tau_next import trace
@@ -20,6 +21,7 @@ from tau_next._core import (
     SampleEnd,
     Session,
 )
+from tau_next.events import DELTAS, CallNamed, Delta, TextDelta, ThinkingDelta
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
     CursorHook,
@@ -68,25 +70,75 @@ async def _finish[T](task: asyncio.Future[T]) -> None:
             await asyncio.wait([task])
 
 
-class SampleRun:
-    """One sample: streams the provider into parts; `cancel` stops it."""
+class _Run:
+    """The run of text, thinking, or call arguments whose deltas have arrived but whose part
+    has not: its `kind` (`"text"`, `"thinking"`, `"call"`), the deltas' text, and for a call
+    the id and tool `CallNamed` gave."""
 
-    def __init__(
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.chunks: list[str] = []
+        self.call: CallNamed | None = None
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks)
+
+    def part(self) -> Part | None:
+        """The part this run's text would have been; a call that never finished is not one."""
+        if not self.text:
+            return None
+        if self.kind == "thinking":
+            return Part.Thinking(self.text)
+        return Part.Text(self.text) if self.kind == "text" else None
+
+    def check(self, part: Part) -> None:
+        """Raise `SampleError` unless `part` is the part this run was streaming."""
+        match part:
+            case Part.Text(text=text):
+                kind, said = "text", text
+            case Part.Thinking(text=text):
+                kind, said = "thinking", text
+            case Part.Call(id=cid, tool=tool, args_raw=args):
+                kind, said = "call", args
+                if self.call is not None and (self.call.id, self.call.tool) != (cid, tool):
+                    raise SampleError(
+                        f"call part {cid!r} {tool!r} does not match the call streamed "
+                        f"({self.call.id!r} {self.call.tool!r})"
+                    )
+            case _:
+                raise SampleError(f"provider yielded a part this driver does not know: {part}")
+        if kind != self.kind:
+            raise SampleError(f"provider yielded a {kind} part while streaming {self.kind}")
+        if said != self.text:
+            raise SampleError(
+                f"the {kind} part {said!r} is not the text streamed for it ({self.text!r})"
+            )
+
+
+class SampleRun:
+    """One sample: streams the provider into parts and forwards its deltas to `on_delta`;
+    `cancel` stops it."""
+
+    def __init__(  # noqa: PLR0913, PLR0917 - what one sample is given
         self,
-        provider: Provider,
+        providers: Mapping[str, Provider],
         catalog: ModelCatalog,
         session: Session,
         cursor: int,
         tools: Sequence[Tool],
+        on_delta: Callable[[Delta], None],
     ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
         with trace.span("driver", "request"):
             at = session.cursor(cursor).at
             self._walk = session.tree.walk(at)
             self._config = session.tree.config_at(at)
-        self._provider = provider
+        self._providers = providers
         self._catalog = catalog
         self._tools = tools
+        self._on_delta = on_delta
+        self._open: _Run | None = None
         self._parts: list[Part] = []
         self._task: asyncio.Future[Finish] | None = None
         self._cancelled = False
@@ -102,16 +154,57 @@ class SampleRun:
             model = self._catalog.resolve(model_name(self._config))
         except ConfigError as e:
             raise SampleError(str(e)) from e
-        async for item in self._provider.sample(self._walk, model, self._tools):
-            if finish is not None:
-                raise SampleError("provider yielded after its finish")
-            if isinstance(item, Finish):
-                finish = item
-            else:
-                self._parts.append(item)
+        provider = self._providers.get(model.provider)
+        if provider is None:
+            raise SampleError(
+                f"model {model.model!r} names provider {model.provider!r}, which is not one of "
+                f"{sorted(self._providers)}; `tau config check` reports this"
+            )
+        if problems := provider.check(model):
+            raise SampleError(f"model {model.model!r} ({provider.name}): " + "; ".join(problems))
+        async with aclosing(provider.sample(self._walk, model, self._tools)) as stream:
+            async for item in stream:
+                if finish is not None:
+                    raise SampleError("provider yielded after its finish")
+                if isinstance(item, Finish):
+                    if self._open is not None:
+                        raise SampleError(f"provider finished with a {self._open.kind} unfinished")
+                    finish = item
+                elif isinstance(item, DELTAS):
+                    self._delta(item)
+                else:
+                    if self._open is not None:
+                        self._open.check(item)
+                    self._parts.append(item)
+                    self._open = None
         if finish is None:
             raise SampleError("provider ended without a finish")
         return finish
+
+    def _delta(self, delta: Delta) -> None:
+        kind = (
+            "text"
+            if isinstance(delta, TextDelta)
+            else "thinking"
+            if isinstance(delta, ThinkingDelta)
+            else "call"
+        )
+        if self._open is not None and self._open.kind != kind:
+            raise SampleError(f"provider streamed {kind} before finishing a {self._open.kind} part")
+        if isinstance(delta, CallNamed):
+            if self._open is not None:
+                raise SampleError("provider named a call before finishing the one streaming")
+            self._open = _Run(kind)
+            self._open.call = delta
+        else:
+            self._open = self._open or _Run(kind)
+            self._open.chunks.append(delta.text)
+        self._on_delta(delta)
+
+    def _unfinished(self) -> list[Part]:
+        """The parts so far, and the text or thinking whose deltas arrived without a part."""
+        open_ = self._open.part() if self._open is not None else None
+        return self._parts if open_ is None else [*self._parts, open_]
 
     async def run(self) -> Answer:
         """What happened, for core to record: the parts so far and how the sample ended."""
@@ -121,7 +214,7 @@ class SampleRun:
         with trace.span("sample", "provider"):
             await _finish(self._task)
         if self._task.cancelled():
-            return Answer.Sampled(self._parts, SampleEnd.Cancelled())
+            return Answer.Sampled(self._unfinished(), SampleEnd.Cancelled())
         error = self._task.exception()
         if error is None:
             finish = self._task.result()
@@ -130,7 +223,7 @@ class SampleRun:
             )
         if not isinstance(error, SampleError):
             raise error
-        return Answer.Sampled(self._parts, SampleEnd.Failed(str(error), error.meta))
+        return Answer.Sampled(self._unfinished(), SampleEnd.Failed(str(error), error.meta))
 
 
 class _HookError(Exception):

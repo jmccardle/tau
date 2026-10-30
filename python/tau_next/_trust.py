@@ -27,6 +27,7 @@ from typing import TextIO, cast
 from tau_next._config import ConfigError, ModelConfig
 from tau_next._config_layers import LayerText, ModelCatalog, check_config, read_models
 from tau_next._dotenv import DotenvError, parse_dotenv
+from tau_next.providers import builtin_providers
 
 TAU_DIR = ".tau"
 _GITIGNORE = "*\n"
@@ -416,7 +417,8 @@ def _config_errors(seen: _Seen, home: Path) -> list[str]:
     if text is None:
         return []
     layer = LayerText(str(path), text)
-    problems = check_config(user_config_path(home), layer)
+    # Trust asks only whether the file is sound; the CLI's providers are the built-in ones.
+    problems = check_config(user_config_path(home), layer, providers=builtin_providers({}))
     return [safe_text(str(p)) for p in problems if p.severity == "error"]
 
 

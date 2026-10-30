@@ -392,13 +392,13 @@ def test_the_driver_refuses_what_is_not_a_tool(
 ) -> None:
     session = Session.create(FAKE_CONFIG, "sys", 0)
     with pytest.raises(ToolContractError, match=needle):
-        Driver(session, FakeProvider([]), fake_catalog(), tools=tools)  # type: ignore[arg-type]
+        Driver(session, {"fake": FakeProvider([])}, fake_catalog(), tools=tools)  # type: ignore[arg-type]
     session.close()
 
 
 def test_distinct_hand_written_tools_are_accepted() -> None:
     session = Session.create(FAKE_CONFIG, "sys", 0)
-    Driver(session, FakeProvider([]), fake_catalog(), tools=[Good(), Other()])
+    Driver(session, {"fake": FakeProvider([])}, fake_catalog(), tools=[Good(), Other()])
     session.close()
 
 

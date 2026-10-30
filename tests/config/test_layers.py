@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from world import URL, World, tau, trust
+from world import PROVIDERS, URL, World, tau, trust
 
 from tau_next import (
     ConfigError,
@@ -18,6 +18,7 @@ from tau_next import (
     ModelConfig,
     check_config,
     load_config,
+    read_models,
 )
 
 OLD_KEY = "backend"  # rules: allow(backend): τ 0.15's key, which D13 rejects by name
@@ -74,7 +75,7 @@ def only_error(problems: tuple[ConfigProblem, ...]) -> ConfigProblem:
 def check(
     tmp_path: Path, data: object, environ: dict[str, str] | None = None
 ) -> tuple[ConfigProblem, ...]:
-    return check_config(write(tmp_path / "c.json", data), environ=environ)
+    return check_config(write(tmp_path / "c.json", data), environ=environ, providers=PROVIDERS)
 
 
 # -- reading and lookup
@@ -203,7 +204,7 @@ def test_the_first_layer_decides_model_or_group_and_a_later_models_on_a_model_is
 ) -> None:
     user = write(tmp_path / "model.json", {"models": {"x": MODEL}})
     project = write(tmp_path / "group.json", {"models": {"x": {**MODEL, "models": {}}}})
-    problem = only_error(check_config(user, project))
+    problem = only_error(check_config(user, project, providers=PROVIDERS))
     assert problem.path == "models.x"
     assert str(user) in problem.message
     assert str(project) in problem.message
@@ -211,6 +212,7 @@ def test_the_first_layer_decides_model_or_group_and_a_later_models_on_a_model_is
         check_config(
             write(tmp_path / "u.json", {"models": {"g": {"models": {"x": MODEL}}}}),
             cli={"models": {"g": {"models": {"x": {"models": {}}}}}},
+            providers=PROVIDERS,
         )
     )
     assert nested.path == "models.g.models.x"
@@ -276,10 +278,10 @@ def test_invalid_json_has_file_line_and_column_and_does_not_hide_another_layer(
     world: World, tmp_path: Path
 ) -> None:
     user = write(tmp_path / "c.json", '{\n  "models": {\n    "a": oops\n  }\n}\n')
-    problem = only_error(check_config(user))
+    problem = only_error(check_config(user, providers=PROVIDERS))
     assert (problem.source, problem.line, problem.column) == (str(user), 3, 10)
     other = write(tmp_path / "p.json", {"models": {"a:b": MODEL}})
-    assert len(errors(check_config(user, other))) == 2
+    assert len(errors(check_config(user, other, providers=PROVIDERS))) == 2
     world.user_config('{\n  "models": {\n    "a": oops\n  }\n}\n')
     result = tau(world, "config", "check")
     assert result.code == 1
@@ -289,7 +291,7 @@ def test_invalid_json_has_file_line_and_column_and_does_not_hide_another_layer(
 
 
 def test_an_unreadable_file_is_a_problem(tmp_path: Path) -> None:
-    problem = only_error(check_config(tmp_path / "missing.json"))
+    problem = only_error(check_config(tmp_path / "missing.json", providers=PROVIDERS))
     assert "cannot read" in problem.message
     assert problem.source == str(tmp_path / "missing.json")
 
@@ -337,12 +339,14 @@ def test_missing_values_after_merge_name_the_layer_that_introduced_the_model(
     tmp_path: Path,
 ) -> None:
     user = write(tmp_path / "u.json", {"models": {"m": {"base_url": URL}}})
-    problem = only_error(check_config(user, cli={"models": {"m": {"api_key_env": "K"}}}))
+    problem = only_error(
+        check_config(user, cli={"models": {"m": {"api_key_env": "K"}}}, providers=PROVIDERS)
+    )
     assert problem.source == str(user)
     assert "missing 'model'" in problem.message
     assert str(user) in problem.message
     bare = check(tmp_path, {"models": {"a": {}}})
-    assert [p.message.split(" is ")[-1] for p in bare] == ["missing 'model'", "missing 'base_url'"]
+    assert [p.message.split(" is ")[-1] for p in bare] == ["missing 'model'"]
     group = {"models": {"g": {"model": "m", "base_url": URL, "models": {"a": {}}}}}
     assert check(tmp_path, group) == ()  # a group can supply them
 
@@ -369,7 +373,7 @@ def test_a_bad_base_url_is_a_problem_at_its_key_and_an_error_not_a_crash(
     world: World, url: str
 ) -> None:
     cli = {"models": {"a": {"model": "m", "base_url": url}}}
-    assert [p.path for p in check_config(cli=cli)] == ["models.a.base_url"]
+    assert [p.path for p in check_config(cli=cli, providers=PROVIDERS)] == ["models.a.base_url"]
     with pytest.raises(ConfigError, match="base_url"):
         load_config(world.home, world.environ, ask=None, cli=cli)
     with pytest.raises(ConfigError, match="base_url"):
@@ -383,6 +387,75 @@ def test_an_unknown_provider_is_a_problem_once_even_in_a_group(tmp_path: Path) -
     assert "unknown provider 'acme'" in problem.message
     ok = {"models": {"a": {**MODEL, "provider": "openai"}}}
     assert check(tmp_path, ok) == ()
+
+
+def test_an_unknown_provider_names_the_providers_the_driver_was_given(tmp_path: Path) -> None:
+    problem = only_error(check(tmp_path, {"models": {"a": {**MODEL, "provider": "acme"}}}))
+    assert "unknown provider 'acme'; known providers are ['mock', 'openai']" in problem.message
+    only = check_config(
+        write(tmp_path / "d.json", {"models": {"a": {**MODEL, "provider": "openai"}}}),
+        providers={"mock": PROVIDERS["mock"]},
+    )
+    assert "known providers are ['mock']" in only_error(only).message
+
+
+def test_max_tokens_and_options_merge_by_layer_and_down_through_groups(world: World) -> None:
+    user = {
+        "models": {
+            "g": {
+                "provider": "mock",
+                "max_tokens": 8,
+                "options": {"delay_ms": 5, "reply": "hi"},
+                "models": {"m": {"model": "m"}, "n": {"model": "n", "options": {"delay_ms": 9}}},
+            }
+        }
+    }
+    cli = {"models": {"g": {"models": {"m": {"max_tokens": 4, "options": {"reply": None}}}}}}
+    catalog = load(world, user, cli=cli)
+    m, n = catalog.resolve("g:m"), catalog.resolve("g:n")
+    assert (m.max_tokens, m.options) == (4, {"delay_ms": 5})
+    assert (n.max_tokens, n.options) == (8, {"delay_ms": 9, "reply": "hi"})
+    assert m.base_url is None
+    assert {o.key: o.source for o in catalog.explain("g:m")}["max_tokens"] == "cli"
+
+
+def test_options_that_are_not_an_object_are_a_problem_even_under_a_group_of_objects(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "models": {
+            "g": {
+                "provider": "mock",
+                "options": {"delay_ms": 1},
+                "models": {"m": {"model": "m", "options": 5}},
+            }
+        }
+    }
+    assert only_error(check(tmp_path, config)).path == "models.g.models.m.options"
+    with pytest.raises(ConfigError, match="'options' must be an object"):
+        read_models(cli=config)
+
+
+def test_a_resolved_models_options_cannot_be_changed_through_the_catalog(world: World) -> None:
+    config = {"models": {"m": {"model": "m", "provider": "mock", "options": {"a": {"b": [1]}}}}}
+    catalog = load(world, config)
+    options = catalog.resolve("m").options
+    with pytest.raises(TypeError):
+        options["a"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        options["a"]["b"] = 1  # type: ignore[index]
+    assert options == catalog.resolve("m").options == {"a": {"b": (1,)}}
+    given = {"x": [1]}
+    model = ModelConfig("m", options=given)
+    given["x"].append(2)
+    assert model.options == {"x": (1,)}
+
+
+def test_bad_max_tokens_and_options_are_problems_at_their_key(tmp_path: Path) -> None:
+    bad = [("max_tokens", 0), ("max_tokens", "9"), ("max_tokens", True), ("options", [])]
+    for key, value in bad:
+        config = {"models": {"a": {"model": "a", "provider": "mock", key: value}}}
+        assert only_error(check(tmp_path, config)).path == f"models.a.{key}"
 
 
 def test_an_invalid_group_value_is_not_repeated_as_missing_on_each_model(tmp_path: Path) -> None:
@@ -448,7 +521,7 @@ def test_a_literal_key_works_but_warns_and_is_never_printed(world: World) -> Non
     config = {"models": {"a": {**MODEL, "api_key": secret}}}
     world.user_config(config)
     catalog = load_config(world.home, world.environ, ask=None).catalog
-    (problem,) = check_config(world.tau / "config.json")
+    (problem,) = check_config(world.tau / "config.json", providers=PROVIDERS)
     assert problem.severity == "warning"
     assert catalog.warnings == (problem,)
     resolved = catalog.resolve("a")

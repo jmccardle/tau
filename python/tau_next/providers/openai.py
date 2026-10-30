@@ -7,7 +7,7 @@ only what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stre
 
 import json
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -315,6 +315,23 @@ class OpenAIProvider:
         self._environ = os.environ if environ is None else environ
         self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
 
+    @property
+    def name(self) -> str:
+        return "openai"
+
+    def check(self, model: ModelConfig) -> list[str]:
+        """This provider needs a `base_url` and reads no `options` yet."""
+        problems: list[str] = []
+        if model.provider != self.name:
+            problems.append(f"provider is {model.provider!r}, not {self.name!r}")
+        if model.base_url is None:
+            problems.append("needs a base_url")
+        problems += [f"unknown option {key!r}; there are no options" for key in model.options]
+        return problems
+
+    async def aclose(self) -> None:
+        """Nothing is held open yet: each sample opens its own client."""
+
     def request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
@@ -336,11 +353,15 @@ class OpenAIProvider:
         }
         if tools:
             body["tools"] = _tools(tools)
+        if model.base_url is None:
+            raise SampleError(f"model {model.model!r} has no base_url, which this provider needs")
+        if model.max_tokens is not None:
+            body["max_tokens"] = model.max_tokens
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncIterator[Part | Finish]:
+    ) -> AsyncGenerator[Part | Finish, None]:
         """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
         after yielding every part the stream had finished or begun; it carries the meta fields
         that had arrived. Once `finish_reason` has arrived the reply is done: the stream is

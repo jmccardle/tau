@@ -13,6 +13,12 @@
       "models": {
         "large": { "model": "example-large" }
       }
+    },
+    "mock": {
+      "provider": "mock",
+      "models": {
+        "echo": { "model": "echo", "options": { "delay_ms": 120 } }
+      }
     }
   }
 }

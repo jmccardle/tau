@@ -59,6 +59,17 @@ from tau_next._trust import Trusted, TrustError, UntrustedProject, safe_block
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
 from tau_next.driver import Driver, Outstanding, Question
+from tau_next.events import (
+    CallArgs,
+    CallNamed,
+    Delta,
+    Event,
+    EventStream,
+    Live,
+    Saved,
+    TextDelta,
+    ThinkingDelta,
+)
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
     Clock,
@@ -71,6 +82,7 @@ from tau_next.protocols import (
     ToolContractError,
     ToolHook,
 )
+from tau_next.providers import builtin_providers
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 
@@ -82,7 +94,9 @@ __all__ = [
     "BashTool",
     "Body",
     "Busy",
+    "CallArgs",
     "CallDraft",
+    "CallNamed",
     "Clock",
     "Closed",
     "Config",
@@ -92,11 +106,14 @@ __all__ = [
     "Cursor",
     "CursorHook",
     "CursorState",
+    "Delta",
     "DotenvError",
     "Draft",
     "Driver",
     "DuplicateCall",
     "Ending",
+    "Event",
+    "EventStream",
     "Exists",
     "Extension",
     "Finish",
@@ -105,6 +122,7 @@ __all__ = [
     "Item",
     "ItemData",
     "Leased",
+    "Live",
     "LoadedConfig",
     "ModelCatalog",
     "ModelConfig",
@@ -129,11 +147,14 @@ __all__ = [
     "ReadTool",
     "ResolvedModel",
     "SampleError",
+    "Saved",
     "Session",
     "StepLimit",
     "Stop",
     "Subject",
     "SystemClock",
+    "TextDelta",
+    "ThinkingDelta",
     "Tool",
     "ToolContractError",
     "ToolDefinitionError",
@@ -151,6 +172,7 @@ __all__ = [
     "WrongAnswer",
     "__version__",
     "base_tools",
+    "builtin_providers",
     "check_config",
     "load_config",
     "model_config",

@@ -10,7 +10,7 @@ without it the config's default_model is used.
 import tempfile
 from pathlib import Path
 
-from common import rest, run
+from common import close_all, rest, run
 
 from tau_next import (
     Body,
@@ -19,10 +19,10 @@ from tau_next import (
     Session,
     StepLimit,
     SystemClock,
+    builtin_providers,
     model_config,
     tool,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 PHRASE = "violet anchor 42"
 
@@ -48,28 +48,34 @@ def text(body: Body) -> str:
 
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
-    with tempfile.TemporaryDirectory() as tmp:
-        secret = Path(tmp) / "secret.txt"
-        secret.write_text(f"The secret phrase is: {PHRASE}\n")
-        config = model_config(name)
-        session = Session.create(config, "Use your tools when asked.", clock.now(), Path(tmp) / "s")
-        # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
-        driver = Driver(
-            session,
-            OpenAIProvider(environ=loaded.environ),
-            loaded.catalog,
-            tools=[read_file],
-            extensions=[StepLimit(6)],
-            clock=clock,
-        )
-        driver.start()
-        cursor = session.cursors()[0]
-        driver.send(cursor, "example", f"Read the file {secret} and tell me the secret phrase.")
-        await rest(driver, session, cursor)
-        for node in session.tree.walk(session.cursor(cursor).at):
-            print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
-        await driver.stop()
-        session.close()
+    providers = builtin_providers(loaded.environ)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "secret.txt"
+            secret.write_text(f"The secret phrase is: {PHRASE}\n")
+            config = model_config(name)
+            session = Session.create(
+                config, "Use your tools when asked.", clock.now(), Path(tmp) / "s"
+            )
+            # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
+            driver = Driver(
+                session,
+                providers,
+                loaded.catalog,
+                tools=[read_file],
+                extensions=[StepLimit(6)],
+                clock=clock,
+            )
+            driver.start()
+            cursor = session.cursors()[0]
+            driver.send(cursor, "example", f"Read the file {secret} and tell me the secret phrase.")
+            await rest(driver, session, cursor)
+            for node in session.tree.walk(session.cursor(cursor).at):
+                print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
+            await driver.stop()
+            session.close()
+    finally:
+        await close_all(providers)
 
 
 if __name__ == "__main__":

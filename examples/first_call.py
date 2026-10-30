@@ -10,7 +10,7 @@ without it the config's default_model is used.
 import tempfile
 from pathlib import Path
 
-from common import rest, run
+from common import close_all, rest, run
 
 from tau_next import (
     Body,
@@ -18,9 +18,9 @@ from tau_next import (
     LoadedConfig,
     Session,
     SystemClock,
+    builtin_providers,
     model_config,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 
 def text(body: Body) -> str:
@@ -35,21 +35,23 @@ def text(body: Body) -> str:
 
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
-    with tempfile.TemporaryDirectory() as tmp:
-        session = Session.create(
-            model_config(name), "You are terse.", clock.now(), Path(tmp) / "session"
-        )
-        driver = Driver(
-            session, OpenAIProvider(environ=loaded.environ), loaded.catalog, clock=clock
-        )
-        driver.start()
-        cursor = session.cursors()[0]
-        driver.send(cursor, "example", "hello")
-        await rest(driver, session, cursor)
-        for node in session.tree.walk(session.cursor(cursor).at):
-            print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
-        await driver.stop()
-        session.close()
+    providers = builtin_providers(loaded.environ)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session.create(
+                model_config(name), "You are terse.", clock.now(), Path(tmp) / "session"
+            )
+            driver = Driver(session, providers, loaded.catalog, clock=clock)
+            driver.start()
+            cursor = session.cursors()[0]
+            driver.send(cursor, "example", "hello")
+            await rest(driver, session, cursor)
+            for node in session.tree.walk(session.cursor(cursor).at):
+                print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
+            await driver.stop()
+            session.close()
+    finally:
+        await close_all(providers)
 
 
 if __name__ == "__main__":

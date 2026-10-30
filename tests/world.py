@@ -9,12 +9,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from tau_next import LoadedConfig, UntrustedProject, load_config, prompts
+from tau_next import LoadedConfig, UntrustedProject, builtin_providers, load_config, prompts
 from tau_next.cli import main
 
 Ask = Callable[[str], bool]
 Pick = Callable[[tuple[str, ...]], str]
 URL = "http://localhost:8100/v1"
+PROVIDERS = builtin_providers({})  # the names `check_config` accepts; nothing is sampled
 EOF = "\x04"  # Ctrl-D at the start of a line, on a terminal
 
 

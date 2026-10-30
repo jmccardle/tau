@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from harness import scenario
@@ -53,9 +54,11 @@ def test_an_empty_name_cannot_be_written() -> None:
         (("", URL), "'model' must not be empty"),
         (("m", "localhost"), "must be an http"),
         (("m", URL, ""), "'api_key_env' must not be empty"),
+        (("m", URL, None, "openai", None, 0), "'max_tokens' must be a positive integer"),
+        (("m", URL, None, "openai", None, None, ["x"]), "'options' must be an object"),
     ],
 )
-def test_a_resolved_model_is_validated(args: tuple[str, ...], message: str) -> None:
+def test_a_resolved_model_is_validated(args: tuple[Any, ...], message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         ModelConfig(*args)
 
@@ -152,7 +155,7 @@ async def test_the_same_bare_name_in_two_groups_is_told_apart_by_the_node(tmp_pa
         session = Session.create(
             model_config(f"{group}:gpt"), "sys", SystemClock().now(), tmp_path / group
         )
-        driver = Driver(session, OpenAIProvider(server.transport, environ), models)
+        driver = Driver(session, {"openai": OpenAIProvider(server.transport, environ)}, models)
         driver.start()
         c = session.cursors()[0]
         try:
@@ -178,7 +181,7 @@ async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path:
     for i, data in enumerate(shapes):
         server = sse("plain")
         session = Session.create(Config(data), "sys", SystemClock().now(), tmp_path / str(i))
-        driver = Driver(session, OpenAIProvider(server.transport, {}), catalog())
+        driver = Driver(session, {"openai": OpenAIProvider(server.transport, {})}, catalog())
         driver.start()
         c = session.cursors()[0]
         try:

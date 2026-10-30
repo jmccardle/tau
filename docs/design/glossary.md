@@ -615,15 +615,29 @@ which resolves the name in its `ModelCatalog` at each sample.
 
 The **resolved model**, built by the driver at each sample from the
 `ModelCatalog` and the name in `config_at(at)`; no node holds it. Fields:
-`model` (the name as its API spells it), `base_url` (an http or https URL),
-optional `api_key_env`, the *name* of the environment variable holding the API
-key, `provider` (default `"openai"`, the only one) and, for a literal `api_key`
-in a file, `literal_api_key` (hidden from `repr`). Invalid values raise
+`model` (the name as its API spells it), `base_url` (optional; an http or https
+URL; a provider that needs one says so in its `check`), optional `api_key_env`,
+the *name* of the environment variable holding the API
+key, `provider` (default `"openai"`; a name in the driver's provider map), for a
+literal `api_key` in a file `literal_api_key` (hidden from `repr`), `max_tokens`
+(optional positive integer) and `options` (see *options*; stored as a deep read-only
+copy: objects become read-only mappings, lists tuples). Invalid values raise
 `ConfigError` (a `ValueError`), which also reports a `Config` that is not a
 model name and a name the catalog lacks (`model 'x' is not in your config`);
 the driver turns those into a failed sample. `api_key(environ)` reads the key
 at sample time (the provider's environ); it is never a field, so it reaches no
 node and no log (tested). Groups, merging, and files are `read_models`.
+
+### options
+`ModelConfig.options`, the model key `options` · D15 · new
+
+A JSON object only the named provider reads (a thinking budget, `delay_ms` for the
+mock). Layers merge it like any object, and a group's passes down to its models
+and merges with theirs; a `null` inside drops that key. The loader checks only that
+it is an object; the provider's `check` checks what is inside, so a misspelt option
+fails `tau config check`. The driver also calls `check` before every sample and fails the
+sample with the problems listed, so a bad option never reaches `sample`. An `options` that
+is not an object is a problem at its key, whatever the group above it holds.
 
 ### api_key_env
 `ModelConfig.api_key_env` · a model's key in the config files
@@ -667,11 +681,14 @@ per key, the layer, file path or `"cli"`, and the group that set it, `None`
 for the model itself), `default_model`, `warnings`. `find(name)` returns the
 qualified names matching a qualified or bare name (0, 1, or many: the caller
 decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
-origins. `check_config(user, project, cli, environ)` returns every
+origins. `check_config(user, project, cli, environ, *, providers)` (`providers`: the
+driver's map of name to provider, required) accepts exactly those provider names and
+adds each provider's `check(model)` problems for every model naming it (at the
+model's path, as `model 'x' (mock): ...`). It returns every
 **`ConfigProblem`** (severity `error` or `warning`; file, dotted path, and
 for JSON syntax errors line and column) instead of raising: syntax errors,
 duplicate keys, unknown keys with a suggestion, `:` in a name, a missing
-`model` or `base_url`, wrong types, an unknown `provider`, a `default_model`
+`model`, wrong types, an unknown `provider`, a bad `max_tokens` or `options`, a `default_model`
 not in the config, 0.15's `backend` key, and as warnings a literal `api_key`
 and (given `environ`) an unset `api_key_env` variable. A literal `api_key`
 is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
@@ -800,8 +817,8 @@ argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
 (no traceback). Anything printed from config data is escaped with `safe_text`. A `ConfigError`, `TrustError`, or
 `DotenvError` is one `tau: message` line on stderr and exit 1, no traceback.
 
-`tau config check` runs `check_config` over the user config and the project
-config and prints each problem as `file:line:col: severity: message` (the
+`tau config check` runs `check_config` (with `builtin_providers`) over the user config
+and the project config and prints each problem as `file:line:col: severity: message` (the
 dotted path before the message when there is no line). The project's problems
 are reported even if it is not trusted, each tagged `[untrusted project: ...]`; an untrusted
 project is never used, and it is itself an error (startup would refuse it), even with no
@@ -897,10 +914,29 @@ retires backend (config key), `ProviderSpec`, `Model` descriptor,
 `model_spec`
 
 The **provider** is the Python adapter for one API family; it converts walks
-to messages (`model.md` §10). Its contract is `sample(walk, model, tools)`: `model` is
-the `ModelConfig` the driver resolved for this sample, and the provider reads no node data.
+to messages (`model.md` §10). It is long-lived (D15): the program that builds it
+closes it. Its contract (`tau_next.Provider`): `name` (what a model's `provider`
+calls it); `check(model) -> list[str]` (problems with the model's settings as this
+provider reads them, empty if fine; a model whose `provider` is not its own is
+one); `sample(walk, model, tools)` (an async stream of live deltas and whole parts,
+then one `Finish`; `model` is the `ModelConfig` the driver resolved for this
+sample, and the provider reads no node data); `aclose()`. Before each sample the driver
+calls `check` and fails the sample (the cursor survives) if it returns problems; it closes
+the `sample` generator when it stops reading. A part yielded while deltas are open must be
+the part they were building (same kind, same text; a call: same id, tool and arguments),
+and `Finish` may not come with deltas open; a violation fails the sample, and the open
+text is saved. A part is yielded before
+the first delta of the next part. If a sample is cancelled or fails, the driver
+saves the text or thinking whose deltas arrived without a part.
 The **model** is a name, as its API spells it.
 API keys are read from the provider's environ.
+
+### builtin_providers
+`tau_next.builtin_providers(environ)` (module `tau_next.providers`) · D15 · new
+
+The built-in providers by name, `{"openai": OpenAIProvider, "mock": MockProvider}`:
+what the CLI and the examples give `Driver` and `check_config`. `environ` is where
+OpenAI looks up keys. The caller closes them.
 
 ### OpenAIProvider
 `tau_next.providers.openai.OpenAIProvider` · new
@@ -934,9 +970,25 @@ non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
 Parts begun before a failure are yielded first; a call cut off with no id or
 no name is not a part, so its raw argument text and whatever id and name arrived
-are appended to the `SampleError` message. Constructor: `transport`
+are appended to the `SampleError` message. `name` is `"openai"`; its `check` requires a
+`base_url` and refuses every option (it has none yet); `aclose()` does nothing (each
+sample opens its own client; D15 will pool). `max_tokens`, if set, is sent as
+`max_tokens`. It streams no deltas yet. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
+
+### MockProvider
+`tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new
+
+Hits no network and needs no key. It streams a reply as `TextDelta`s, a word and the
+space after it each, with a delay before each; then yields the whole `Text` and a
+`Finish` (`End`, finish reason `"stop"`) with normalized `usage` (word counts) in
+`meta`. `check` refuses `base_url` and any option but `reply` (a string: the text to
+stream, non-empty; default `mock: ` and the walk's last user text) and `delay_ms` (a
+non-negative integer, default 30). `max_tokens` caps the chunks streamed and ends the
+reply with the `Length` stop. Cancelling it mid-stream leaves an `Interrupted` reply
+holding exactly the text streamed. It fails the sample if the walk has no user text
+and there is no `reply`.
 
 ### tool, Tool
 `tau_next.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
@@ -1153,7 +1205,9 @@ What a provider yields last: `Finish(stop, reason, meta)`, the normalised `Stop`
 the provider's own string (`None` if it has none), and the response `meta`
 (`None` if none; otherwise strict JSON object text, checked on construction:
 `TypeError` for a non-`str`). The
-driver builds the reply draft with all three.
+driver builds the reply draft with all three. A provider that reports usage puts the
+normalized `usage` in `meta` as `{"input", "output", "cached"}` token counts, beside its
+own fields (D15; only `MockProvider` does so far).
 
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket
@@ -1169,22 +1223,65 @@ A program that drives sessions and shows events (`tau serve` first). A
 ### event, status
 not yet spiked · retires `AgentEvent`, `WireEvent`
 
-One type in eight kinds (`model.md` §9); observers cannot change anything.
-**Status** is the state an extension shows every frontend (`cursor.show`),
-driver memory.
+One type in eight kinds (`model.md` §9); observers cannot change anything. Built so
+far (D15): the two kinds `Live` and `Saved`. **Status** is the state an extension
+shows every frontend (`cursor.show`), driver memory.
+
+### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
+`tau_next.events` (exported) · D15 · new
+
+What a provider's `sample` yields while a part is still arriving, with no cursor
+(the provider does not know it): `TextDelta(text)`, `ThinkingDelta(text)`,
+`CallNamed(index, id, tool)` (a call begins forming), `CallArgs(index, text)` (more
+of its `args_raw`). `Delta` is their union. Never saved.
+
+### live event, Live
+`tau_next.Live(cursor, delta)` · D15 · new (the ADR's first draft said "draft event")
+
+A `Delta` on the cursor whose sample produced it, as `driver.events()` yields it.
+A frontend draws it as a layer over the cursor and drops the layer at the next
+`Saved`. Never saved. A slow subscriber's buffer drops it.
+
+### saved event, Saved
+`tau_next.Saved(cursor)` · D15 · new
+
+The tree changed for this cursor: look at it. Emitted after the driver applies each
+answer (hooks, sample, call) to core, and by the frontend calls that change the tree or a
+cursor with no answer (`input`, `send`, `step`, `go_to`, `set_auto`, `open`, `add_item`,
+`abort`), so a second frontend hears of them. Never dropped from a subscriber's buffer;
+it replaces that cursor's buffered `Live` events and earlier `Saved`. Finer kinds are a later slice.
+
+### EventStream
+`tau_next.EventStream` · D15 · new
+
+One subscriber's async iterator of `Event` (`Live | Saved`) from `driver.events()`:
+an optional cursor filter and a bounded buffer of its own, for one consumer (a second
+concurrent `anext` raises `RuntimeError`). `offer` never waits, so a subscriber cannot
+slow the pump. A buffer holding `capacity` events drops further `Live` events. A `Saved(c)`
+is never dropped: it first removes the buffered `Live`s for `c` and any earlier `Saved(c)`
+(the frontend drops that cursor's live layer at `Saved(c)` anyway), then joins the end. So
+the buffer never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
+(and may be called twice); `async with` closes it; the driver holds streams weakly, so one
+abandoned without `aclose()` is collected. The driver's `stop()` ends it after what it
+holds; if the driver fails (the pump or an effect died), `anext` raises that failure after
+what it holds.
 
 ### driver
 Python `tau_next.driver.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
-place that awaits. `Driver(session, provider, catalog, *, tools, extensions, clock)`:
-built from a session, a provider, a `ModelCatalog` (where it resolves the model name in
+place that awaits. `Driver(session, providers, catalog, *, tools, extensions, clock)`:
+built from a session, a mapping of provider name to provider (each keyed by its own
+`name`, else `ValueError`; a sample whose model names another provider fails with the
+known names in the `sample_error`), a `ModelCatalog` (where it resolves the model name in
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
 files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
 `abort`, `open`, `add_item`, `respond`) run on the loop thread, call the
 session, then poke the pump. Extensions are a list given to the constructor,
-in hook order; how `config_at` will name them is open.
+in hook order; how `config_at` will name them is open. `events(cursor=None, *, buffer=256)`
+subscribes at once and returns an `EventStream`; `subscribers` counts the open ones;
+`stop()` ends them.
 
 ### pump
 `Driver._pump` · new

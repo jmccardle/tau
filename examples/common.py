@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import os
 import sys
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
 
 from tau_next import (
@@ -17,6 +17,7 @@ from tau_next import (
     DotenvError,
     Driver,
     LoadedConfig,
+    Provider,
     Session,
     TrustError,
     load_config,
@@ -52,6 +53,12 @@ async def rest(driver: Driver, session: Session, cursor: int) -> None:
                 raise SampleFailed(f"the sample failed: {data}")
             case _:
                 pass
+
+
+async def close_all(providers: Mapping[str, Provider]) -> None:
+    """The program that built the providers closes them."""
+    for provider in providers.values():
+        await provider.aclose()
 
 
 def run(main: Callable[[str, LoadedConfig], Coroutine[object, object, None]]) -> None:

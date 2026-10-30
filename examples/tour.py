@@ -16,7 +16,7 @@ without it the config's default_model is used.
 import tempfile
 from pathlib import Path
 
-from common import rest, run
+from common import close_all, rest, run
 
 from tau_next import (
     Body,
@@ -26,9 +26,9 @@ from tau_next import (
     StepLimit,
     SystemClock,
     base_tools,
+    builtin_providers,
     model_config,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 
 def show(body: Body) -> str:
@@ -53,56 +53,63 @@ async def ask(driver: Driver, session: Session, cursor: int, text: str) -> None:
 
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
-    with tempfile.TemporaryDirectory() as tmp:
-        where = Path(tmp) / "session"
-        session = Session.create(
-            model_config(name),
-            "You are a terse assistant. Use your tools when asked.",
-            clock.now(),
-            where,
-        )
-        tools = base_tools(tmp)
-        driver = Driver(
-            session,
-            OpenAIProvider(environ=loaded.environ),
-            loaded.catalog,
-            tools=tools,
-            extensions=[StepLimit(6)],
-            clock=clock,
-        )
-        driver.start()
-        cursor = session.cursors()[0]
+    providers = builtin_providers(loaded.environ)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            where = Path(tmp) / "session"
+            session = Session.create(
+                model_config(name),
+                "You are a terse assistant. Use your tools when asked.",
+                clock.now(),
+                where,
+            )
+            tools = base_tools(tmp)
+            driver = Driver(
+                session,
+                providers,
+                loaded.catalog,
+                tools=tools,
+                extensions=[StepLimit(6)],
+                clock=clock,
+            )
+            driver.start()
+            cursor = session.cursors()[0]
 
-        print("== 1. bash with output past the 10 kB limit")
-        before = session.cursor(cursor).at
-        await ask(
-            driver,
-            session,
-            cursor,
-            "Run `seq 1 5000` with bash and tell me the last number you see.",
-        )
-        print_walk(session, session.cursor(cursor).at)
-        first_branch = session.cursor(cursor).at
+            print("== 1. bash with output past the 10 kB limit")
+            before = session.cursor(cursor).at
+            await ask(
+                driver,
+                session,
+                cursor,
+                "Run `seq 1 5000` with bash and tell me the last number you see.",
+            )
+            print_walk(session, session.cursor(cursor).at)
+            first_branch = session.cursor(cursor).at
 
-        print(f"\n== 2. go back to node {before} and ask something else")
-        driver.go_to(cursor, before, "tour")
-        await ask(
-            driver, session, cursor, "Use bash to print the current date, then tell me the weekday."
-        )
-        print_walk(session, session.cursor(cursor).at)
-        print(f"\n  node {before} now has children {session.tree.children(before)}")
-        meet = session.tree.lca(first_branch, session.cursor(cursor).at)
-        print(f"  the branches meet at node {meet}")
+            print(f"\n== 2. go back to node {before} and ask something else")
+            driver.go_to(cursor, before, "tour")
+            await ask(
+                driver,
+                session,
+                cursor,
+                "Use bash to print the current date, then tell me the weekday.",
+            )
+            print_walk(session, session.cursor(cursor).at)
+            print(f"\n  node {before} now has children {session.tree.children(before)}")
+            meet = session.tree.lca(first_branch, session.cursor(cursor).at)
+            print(f"  the branches meet at node {meet}")
 
-        await driver.stop()
-        size = len(session.tree)
-        session.close()
+            await driver.stop()
+            size = len(session.tree)
+            session.close()
 
-        print("\n== 3. reload from disk")
-        again = Session.load(where)
-        at = again.cursor(again.cursors()[0]).at
-        print(f"  {len(again.tree)} nodes (was {size}); cursor at {at}")
-        again.close()
+            print("\n== 3. reload from disk")
+            again = Session.load(where)
+            at = again.cursor(again.cursors()[0]).at
+            print(f"  {len(again.tree)} nodes (was {size}); cursor at {at}")
+            again.close()
+    finally:
+        await close_all(providers)
 
 
 if __name__ == "__main__":
