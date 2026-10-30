@@ -21,6 +21,7 @@ from transcripts import (
     collect,
     collect_all,
     fresh_walk,
+    posted,
     running,
     sse,
     sse_text,
@@ -48,8 +49,10 @@ def with_options(**options: object) -> ModelConfig:
     return ModelConfig(MODEL, BASE_URL, options=options)
 
 
-def body_for(model: ModelConfig) -> dict[str, object]:
-    return OpenAIProvider(environ={}).request(fresh_walk(), model, [])[2]
+async def body_for(model: ModelConfig) -> dict[str, object]:
+    server, error = await posted(fresh_walk(), model)
+    assert error is None
+    return server.bodies[0]
 
 
 def provider_for(text: str) -> OpenAIProvider:
@@ -291,8 +294,9 @@ def test_extra_body_may_not_set_what_max_tokens_set() -> None:
     assert "sets 'max_tokens', which" in problem
 
 
-def test_options_reach_the_request_and_extra_body_goes_last() -> None:
-    body = body_for(
+@scenario
+async def test_options_reach_the_request_and_extra_body_goes_last() -> None:
+    body = await body_for(
         ModelConfig(
             MODEL,
             BASE_URL,
@@ -314,9 +318,10 @@ def test_options_reach_the_request_and_extra_body_goes_last() -> None:
     assert body["stream"] is True
 
 
-def test_usage_is_asked_for_unless_the_option_says_no() -> None:
-    assert body_for(RESOLVED)["stream_options"] == {"include_usage": True}
-    assert "stream_options" not in body_for(with_options(include_usage=False))
+@scenario
+async def test_usage_is_asked_for_unless_the_option_says_no() -> None:
+    assert (await body_for(RESOLVED))["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in await body_for(with_options(include_usage=False))
 
 
 @scenario

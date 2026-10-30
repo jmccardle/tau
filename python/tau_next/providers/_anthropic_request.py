@@ -51,8 +51,8 @@ def _wire_id(call_id: str) -> str:
 
 def _signed(part: Part.Thinking) -> Json | None:
     """The block to send for a thinking part: `None` for one with no Anthropic replay data
-    (unsigned, cut off, or another provider's), which is never sent (`model.md` 10.4). Strings
-    in the parsed data are exact; the signature and redacted data are always strings."""
+    this version understands (unsigned, cut off, another provider's, or a shape it did not
+    write), which is never sent (`model.md` 10.4). Strings in the parsed data are exact."""
     data = replay_for(part, NAME)
     if data is None:
         return None
@@ -61,7 +61,7 @@ def _signed(part: Part.Thinking) -> Json | None:
         return {"type": "thinking", "thinking": part.text, "signature": data["signature"]}
     if kind == "redacted_thinking" and isinstance(data.get("data"), str):
         return {"type": "redacted_thinking", "data": data["data"]}
-    raise SampleError(f"a thinking part carries replay data this provider did not write: {data}")
+    return None
 
 
 def _text(text: str) -> Json:

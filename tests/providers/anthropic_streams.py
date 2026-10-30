@@ -147,6 +147,22 @@ async def running(
         session.close()
 
 
+async def sent_request(
+    walk: Sequence[Node],
+    model: ModelConfig = RESOLVED,
+    tools: Sequence[Tool] = (),
+    environ: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str], dict[str, object]]:
+    """The URL, headers and JSON body the provider posted for one sample of `walk`, against a
+    server that answers with a one-word reply. A sample that fails raises its `SampleError`."""
+    server = stream(message(text(0, ["ok"])))
+    anthropic = AnthropicProvider(server.transport, ENVIRON if environ is None else environ)
+    async for _ in anthropic.sample(walk, model, tools):
+        pass
+    request = server.requests[0]
+    return str(request.url), dict(request.headers), server.bodies[0]
+
+
 async def collect_all(
     anthropic: AnthropicProvider,
     walk: Sequence[Node],

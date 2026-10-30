@@ -305,7 +305,8 @@ async def test_a_cut_off_call_with_no_id_or_name_is_recorded_in_the_failure(
         records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
         data = custom_data(records[0])
         assert '{"ci' in data, "the raw argument text is kept"
-        assert "no id or no name" in data
+        assert "ReadError" in data
+        assert "a call was cut off and dropped" in data
 
 
 @scenario

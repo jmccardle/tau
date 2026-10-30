@@ -23,6 +23,7 @@ from tau_next.providers._walk import (
     UserTurn,
     call_markup,
     stop_note,
+    system_note,
     turns,
 )
 from tau_next.providers._wire import (
@@ -78,13 +79,19 @@ def _assistant(turn: AssistantTurn) -> Json:
     return message
 
 
-def messages(walk: Sequence[Node]) -> list[Json]:
-    """The wire messages for a walk. `Config` and `Custom` nodes never reach the model. A batch
-    whose call arguments are not a JSON object goes as text with its results (llama.cpp refuses
-    the history otherwise, HTTP 500); no arguments are sent as `{}`."""
+def messages(walk: Sequence[Node], *, structured: bool) -> list[Json]:
+    """The wire messages for a walk. `Config` and `Custom` nodes never reach the model. The
+    `System` nodes that open the walk are `system` messages; one later is a user message
+    `[system note: ...]` (llama.cpp with the Qwen template answers HTTP 500 to a `system`
+    message after the first turn). A batch whose call arguments are not a JSON object, or any
+    batch when `structured` is false (no tools are offered), goes as text with its results
+    (llama.cpp refuses the history otherwise, HTTP 500); no arguments are sent as `{}`."""
     out: list[Json] = []
-    for turn in turns(walk):
+    spoken = False  # a turn other than `System` has been seen
+    for turn in turns(walk, structured=structured):
         match turn:
+            case SystemTurn(text=text) if spoken:
+                out.append({"role": "user", "content": system_note(text)})
             case SystemTurn(text=text):
                 out.append({"role": "system", "content": text})
             case UserTurn(text=text):
@@ -94,6 +101,7 @@ def messages(walk: Sequence[Node]) -> list[Json]:
             case ToolResults(results=results):
                 for r in results:
                     out.append({"role": "tool", "tool_call_id": r.id, "content": r.text})
+        spoken = spoken or not isinstance(turn, SystemTurn)
     return out
 
 
@@ -110,6 +118,13 @@ class _Open:
     tool: str = ""
     named: bool = False  # `CallNamed` has been yielded
     chunks: list[str] = field(default_factory=lambda: [])
+
+    def raw(self) -> str:
+        """What a call dropped at a cut was, as the failure reports it."""
+        return (
+            f"tool call {self.index} (id {self.id!r}, name {self.tool!r}), "
+            f"arguments so far {''.join(self.chunks)!r}"
+        )
 
     def identify(self, id_: object, tool: object) -> None:
         """Take the call's id and name from a delta. Until the call is announced they are
@@ -145,10 +160,13 @@ class _Open:
 
 @dataclass
 class _Stream:
-    """One response being read. `feed` takes a decoded chunk and returns its parts and deltas."""
+    """One response being read. `feed` takes a decoded chunk and returns its parts and deltas.
+    What a `feed` built before it raised waits in `held` for `close`."""
 
     open: _Open | None = None
+    held: list[Part | Delta] = field(default_factory=lambda: [])
     finish: str | None = None
+    refused: bool = False  # a `refusal` delta arrived
     calls_done: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - typed for pyright
     meta: Json = field(default_factory=lambda: Json())  # noqa: PLW0108 - typed for pyright
 
@@ -166,44 +184,57 @@ class _Stream:
             if normal is not None:
                 self.meta["usage"] = normal
 
-    def close(self) -> list[Part | Delta]:
-        """Complete the open part, if any."""
+    def _end_open(self) -> None:
+        """Complete the open part, if any, into `held`. A call with no id or name raises and
+        stays open."""
         if self.open is None:
-            return []
-        done, self.open = self.open, None
-        if done.kind == "call":
-            self.calls_done.add(done.index)
-        return [done.part()]
+            return
+        part = self.open.part()
+        if self.open.kind == "call":
+            self.calls_done.add(self.open.index)
+        self.open = None
+        self.held.append(part)
 
-    def _run(self, kind: str, text: object) -> list[Part | Delta]:
-        if not isinstance(text, str) or not text:
-            return []
-        out = [] if self.open is not None and self.open.kind == kind else self.close()
-        if self.open is None:
-            self.open = _Open(kind)
-        self.open.chunks.append(text)
-        out.append(ThinkingDelta(text) if kind == "thinking" else TextDelta(text))
+    def close(self) -> list[Part | Delta]:
+        """What `feed` built and could not return, then the open text or thinking. An open call
+        is dropped whole: its raw text goes in `meta["cut_off_call"]` (D1)."""
+        out, self.held = self.held, []
+        run, self.open = self.open, None
+        if run is None:
+            return out
+        if run.kind == "call":
+            self.meta["cut_off_call"] = run.raw()
+        else:
+            out.append(run.part())
         return out
 
-    def _thinking(self, delta: Json) -> list[Part | Delta]:
+    def _run(self, kind: str, text: object) -> None:
+        if not isinstance(text, str) or not text:
+            return
+        if self.open is None or self.open.kind != kind:
+            self._end_open()
+            self.open = _Open(kind)
+        self.open.chunks.append(text)
+        self.held.append(ThinkingDelta(text) if kind == "thinking" else TextDelta(text))
+
+    def _thinking(self, delta: Json) -> None:
         """Servers spell it `reasoning_content` or `reasoning`; vLLM sends both, equal."""
         said = [delta[k] for k in ("reasoning_content", "reasoning") if delta.get(k)]
         if len(said) == 2 and said[0] != said[1]:  # noqa: PLR2004 - two spellings
             raise SampleError(
                 f"a delta carries different 'reasoning_content' and 'reasoning': {said}"
             )
-        return self._run("thinking", said[0] if said else None)
+        self._run("thinking", said[0] if said else None)
 
-    def _call(self, raw: object) -> list[Part | Delta]:
+    def _call(self, raw: object) -> None:
         call = json_object(raw, "a tool call delta")
         index = call.get("index", 0)
         if not isinstance(index, int):
             raise SampleError(f"tool call index is not an integer: {index!r}")
-        out: list[Part | Delta] = []
         if self.open is None or self.open.kind != "call" or self.open.index != index:
             if index in self.calls_done:
                 raise SampleError(f"tool call {index} continues after it was complete")
-            out = self.close()
+            self._end_open()
             self.open = _Open("call", index)
         function = json_object(call.get("function", {}), "a tool call's function")
         args = function.get("arguments")
@@ -212,13 +243,12 @@ class _Stream:
             self.open.chunks.append(args)
         if not self.open.named and self.open.id and self.open.tool:
             self.open.named = True
-            out.append(CallNamed(index, self.open.id, self.open.tool))
-            held = "".join(self.open.chunks)  # arguments that arrived before the name
-            if held:
-                out.append(CallArgs(index, held))
+            self.held.append(CallNamed(index, self.open.id, self.open.tool))
+            early = "".join(self.open.chunks)  # arguments that arrived before the name
+            if early:
+                self.held.append(CallArgs(index, early))
         elif self.open.named and isinstance(args, str) and args:
-            out.append(CallArgs(index, args))
-        return out
+            self.held.append(CallArgs(index, args))
 
     @property
     def done(self) -> bool:
@@ -226,37 +256,42 @@ class _Stream:
 
     def feed(self, chunk: Json) -> list[Part | Delta]:
         """The parts and deltas this chunk produced, in order: a part comes before the first
-        delta of whatever follows it."""
+        delta of whatever follows it. If it raises, what it had built waits for `close`."""
+        self._read(chunk)
+        out, self.held = self.held, []
+        return out
+
+    def _read(self, chunk: Json) -> None:
         error = chunk.get("error")
-        if error is not None and self.finish is None:
+        if error is not None:
             raise SampleError(f"the server sent an error in the stream: {error}")
         self._note(chunk)
-        if self.finish is not None:
-            return []  # the reply is done; only the meta fields and usage are still read
         choices = chunk.get("choices")
         if choices is None and "usage" in chunk:
-            return []
+            return
         if not isinstance(choices, list):
             raise SampleError("a stream chunk has no 'choices' list")
         if not choices:
-            return []
+            return
+        if len(cast("list[object]", choices)) > 1:
+            raise SampleError("the stream carries more than one choice; this provider reads one")
         choice = json_object(cast("list[object]", choices)[0], "a choice")
-        for other in cast("list[object]", choices):
-            if json_object(other, "a choice").get("index", 0) != 0:
-                raise SampleError(
-                    "the stream carries more than one choice; this provider reads one"
-                )
+        if choice.get("index", 0) != 0:
+            raise SampleError("the stream carries a choice other than index 0")
         delta = json_object(choice.get("delta") or {}, "a delta")
-        out = self._thinking(delta)
-        out += self._run("text", delta.get("content"))
+        self._thinking(delta)
+        self._run("text", delta.get("content"))
+        refusal = delta.get("refusal")
+        if isinstance(refusal, str) and refusal:
+            self.refused = True
+            self._run("text", refusal)
         raw_calls = delta.get("tool_calls")
         for raw in cast("list[object]", raw_calls) if isinstance(raw_calls, list) else []:
-            out += self._call(raw)
+            self._call(raw)
         finish = choice.get("finish_reason")
         if isinstance(finish, str):
-            out += self.close()  # a cut-off call raises here, before the reply counts as done
+            self._end_open()  # a call with no id or name raises here, before the reply is done
             self.finish = finish
-        return out
 
     def stop(self) -> Finish:
         if self.finish is None:
@@ -264,6 +299,8 @@ class _Stream:
         stop = STOPS.get(self.finish)
         if stop is None:
             raise SampleError(f"unknown finish_reason {self.finish!r}")
+        if self.refused:
+            stop = Stop.Refused
         return Finish(stop, self.finish, meta_text(self.meta))
 
 
@@ -366,6 +403,11 @@ class OpenAIProvider:
             problems.append(f"provider is {model.provider!r}, not {self.name!r}")
         if model.base_url is None:
             problems.append("needs a base_url")
+        elif model.base_url.rstrip("/").endswith("/chat/completions"):
+            problems.append(
+                "base_url is the API's root (such as http://host:8100/v1): "
+                "this provider adds /chat/completions itself"
+            )
         options = model.options
         problems += [
             f"unknown option {key!r}; known options are {list(_OPTIONS)}"
@@ -390,11 +432,12 @@ class OpenAIProvider:
         """Close the client and its connections. Later samples fail."""
         await self._connection.aclose()
 
-    def request(
+    def _request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
         """The URL, headers, and JSON body of the request for this sample. `tools` become the
-        `tools` array, omitted when there are none; `extra_body` is merged last.
+        `tools` array, omitted when there are none; `extra_body` is merged last. `check` has
+        passed (the driver runs it first).
 
         Raises `SampleError` if the model's key cannot be read.
         """
@@ -402,10 +445,11 @@ class OpenAIProvider:
             key = model.api_key(self._environ)
         except ConfigError as e:
             raise SampleError(str(e)) from e
+        assert model.base_url is not None  # `check` required one
         headers = {} if key is None else {"Authorization": f"Bearer {key}"}
         body: Json = {
             "model": model.model,
-            "messages": messages(walk),
+            "messages": messages(walk, structured=bool(tools)),
             "stream": True,
         }
         options = model.options
@@ -413,13 +457,11 @@ class OpenAIProvider:
             body["stream_options"] = {"include_usage": True}
         if tools:
             body["tools"] = _tools(tools)
-        if model.base_url is None:
-            raise SampleError(f"model {model.model!r} has no base_url, which this provider needs")
         if model.max_tokens is not None:
             body["max_tokens"] = model.max_tokens
-        for key in ("temperature", "top_p", "reasoning_effort"):
-            if key in options:
-                body[key] = options[key]
+        for name in ("temperature", "top_p", "reasoning_effort"):
+            if name in options:
+                body[name] = options[name]
         if "extra_body" in options:
             body.update(cast("Json", plain(options["extra_body"])))
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
@@ -434,7 +476,8 @@ class OpenAIProvider:
         reply is done: the stream is
         still read for `usage`, but content and tool-call deltas after it are ignored, and an
         error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
-        meta not yet received, never the reply."""
-        url, headers, body = self.request(walk, model, tools)
+        meta not yet received, never the reply. A `refusal` delta is text, and the reply ends
+        `Refused`."""
+        url, headers, body = self._request(walk, model, tools)
         async for item in self._connection.sample(url, headers, body, _Stream(), end="[DONE]"):
             yield item

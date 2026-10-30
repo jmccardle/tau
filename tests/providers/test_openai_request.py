@@ -1,28 +1,37 @@
 """The request the OpenAI provider builds from a walk. Walks come from Harness sessions."""
 
+from collections.abc import Sequence
 from pathlib import Path
 
-import pytest
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
 from gemini_support import walk_of
 from harness import Harness, scenario
-from transcripts import BASE_URL, MODEL, RESOLVED, sent
+from transcripts import BASE_URL, MODEL, RESOLVED, posted, sent
 
 from tau_next import (
     Author,
     Body,
     Draft,
     ModelConfig,
+    Node,
     Outcome,
     Part,
-    SampleError,
     Stop,
     Subject,
+    Tool,
 )
-from tau_next.providers.openai import OpenAIProvider
 
 KEY_ENV = "TAU_TEST_KEY"
 SECRET = "sk-test-0123456789"
+
+
+async def body_of(
+    walk: Sequence[Node], model: ModelConfig = RESOLVED, tools: Sequence[Tool] = ()
+) -> dict[str, object]:
+    """The body the provider posted for one sample of `walk`."""
+    server, error = await posted(walk, model, tools)
+    assert error is None
+    return server.bodies[0]
 
 
 def answer_with_orphan_results(subject: object) -> None:
@@ -45,11 +54,11 @@ async def test_system_and_user_become_messages_and_config_nodes_are_skipped(
     await h.settle()
     await h.step()
     await h.settle()
-    url, headers, body = OpenAIProvider(environ={}).request(
-        h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1], RESOLVED, []
-    )
-    assert url == f"{BASE_URL}/chat/completions"
-    assert headers == {}
+    server, error = await posted(h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1])
+    assert error is None
+    body = server.bodies[0]
+    assert str(server.requests[0].url) == f"{BASE_URL}/chat/completions"
+    assert "authorization" not in server.requests[0].headers
     assert body == {
         "model": MODEL,
         "stream": True,
@@ -84,7 +93,7 @@ async def test_an_answered_batch_becomes_tool_calls_and_one_tool_message_per_out
     await h.settle()
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     assert isinstance(walk[-1].body, Body.Assistant), "the second reply is last"
-    _, _, body = OpenAIProvider(environ={}).request(walk[:-1], RESOLVED, [])
+    body = await body_of(walk[:-1], tools=tools)
     assert sent(body)[2:] == [
         {
             "role": "assistant",
@@ -126,7 +135,7 @@ async def test_an_unanswered_batch_is_rendered_as_text_never_as_tool_calls(
     await h.step()
     await h.settle()
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1]
-    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    body = await body_of(walk)
     assert sent(body)[2:] == [
         {"role": "assistant", "content": 'checking\n[tool call a: ta {"p": 1}]'},
         {"role": "user", "content": "the power went out"},
@@ -144,7 +153,7 @@ async def test_a_cut_off_reply_with_calls_says_why_it_stopped(tmp_path: Path) ->
     await h.step()
     await h.settle()
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
-    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    body = await body_of(walk)
     assert sent(body)[1:] == [
         {"role": "user", "content": "look"},
         {"role": "assistant", "content": '[tool call a: ta {"p"]\n[reply stopped: length]'},
@@ -164,7 +173,7 @@ async def test_results_that_answer_no_batch_become_a_user_message(tmp_path: Path
     await h.settle()
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     assert isinstance(walk[-1].body, Body.Results)
-    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    body = await body_of(walk)
     assert sent(body)[-1] == {"role": "user", "content": "[tool result zz: v]"}
     await h.close()
 
@@ -174,22 +183,25 @@ async def test_the_key_is_read_from_the_named_variable_at_sample_time(tmp_path: 
     model = ModelConfig(MODEL, BASE_URL, KEY_ENV)
     h = await Harness.create(tmp_path)
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
-    environ = {KEY_ENV: SECRET}
-    _, headers, _ = OpenAIProvider(environ=environ).request(walk, model, [])
-    assert headers == {"Authorization": f"Bearer {SECRET}"}
-    environ[KEY_ENV] = "rotated"
-    _, headers, _ = OpenAIProvider(environ=environ).request(walk, model, [])
-    assert headers == {"Authorization": "Bearer rotated"}
-    with pytest.raises(SampleError, match=KEY_ENV):
-        OpenAIProvider(environ={}).request(walk, model, [])
+    server, error = await posted(walk, model, environ={KEY_ENV: SECRET})
+    assert error is None
+    assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
+    server, error = await posted(walk, model, environ={KEY_ENV: "rotated"})
+    assert error is None
+    assert server.requests[0].headers["authorization"] == "Bearer rotated"
+    server, error = await posted(walk, model, environ={})
+    assert error is not None
+    assert KEY_ENV in str(error)
+    assert server.requests == [], "nothing is sent without the key"
     await h.close()
 
 
-def test_a_batch_with_a_cut_off_call_goes_as_text_with_its_results() -> None:
+@scenario
+async def test_a_batch_with_a_cut_off_call_goes_as_text_with_its_results() -> None:
     results = [("a", Outcome.Ok("one"), Author.Tools()), ("b", Outcome.Err("bad"), Author.Tools())]
     batch = [Part.Call("a", "ta", "{}"), Part.Call("b", "ta", '{"p"')]
     walk = walk_of(Body.User("go"), Body.Assistant(batch, Stop.Tools, None), Body.Results(results))
-    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    body = await body_of(walk)
     assert sent(body)[1:] == [
         {"role": "user", "content": "go"},
         {"role": "assistant", "content": '[tool call a: ta {}]\n[tool call b: ta {"p"]'},
@@ -197,12 +209,48 @@ def test_a_batch_with_a_cut_off_call_goes_as_text_with_its_results() -> None:
     ]
 
 
-def test_a_call_with_no_arguments_is_sent_with_an_empty_object() -> None:
+@scenario
+async def test_a_call_with_no_arguments_is_sent_with_an_empty_object() -> None:
     walk = walk_of(
         Body.User("go"),
         Body.Assistant([Part.Call("a", "ta", "")], Stop.Tools, None),
         Body.Results([("a", Outcome.Ok("one"), Author.Tools())]),
     )
-    _, _, body = OpenAIProvider(environ={}).request(walk, RESOLVED, [])
+    body = await body_of(walk, tools=[FakeTool("ta", "A")])
     function = {"name": "ta", "arguments": "{}"}
     assert sent(body)[2]["tool_calls"] == [{"id": "a", "type": "function", "function": function}]
+
+
+@scenario
+async def test_a_system_node_after_the_first_turn_goes_as_a_user_system_note() -> None:
+    walk = walk_of(
+        Body.User("hi"),
+        Body.Assistant([Part.Text("hello")], Stop.End, None),
+        Body.System("now in French"),
+        Body.User("again"),
+    )
+    body = await body_of(walk)
+    assert sent(body) == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "[system note: now in French]"},
+        {"role": "user", "content": "again"},
+    ]
+
+
+@scenario
+async def test_calls_in_history_go_as_text_when_the_sample_offers_no_tools() -> None:
+    walk = walk_of(
+        Body.User("go"),
+        Body.Assistant([Part.Call("a", "ta", "{}")], Stop.Tools, None),
+        Body.Results([("a", Outcome.Ok("one"), Author.Tools())]),
+    )
+    body = await body_of(walk)
+    assert sent(body)[1:] == [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "[tool call a: ta {}]"},
+        {"role": "user", "content": "[tool result a: one]"},
+    ]
+    body = await body_of(walk, tools=[FakeTool("ta", "A")])
+    assert "tool_calls" in sent(body)[2]

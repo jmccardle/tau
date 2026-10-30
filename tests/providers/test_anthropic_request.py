@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from anthropic_streams import (
-    ENVIRON,
     KEY_ENV,
     MODEL,
     RESOLVED,
@@ -16,6 +15,7 @@ from anthropic_streams import (
     message,
     provider,
     running,
+    sent_request,
     stream,
     text,
 )
@@ -44,10 +44,10 @@ async def walk_after(
     return h, h.session.tree.walk(h.session.cursor(h.cursor).at)
 
 
-def request(
+async def request(
     walk: list[Node], model: ModelConfig = RESOLVED, tools: tuple[()] = ()
 ) -> dict[str, object]:
-    return AnthropicProvider(environ=ENVIRON).request(walk, model, tools)[2]
+    return (await sent_request(walk, model, tools))[2]
 
 
 def with_options(**options: object) -> ModelConfig:
@@ -59,9 +59,10 @@ async def test_system_is_top_level_and_the_request_names_the_endpoint_and_key(
     tmp_path: Path,
 ) -> None:
     h, walk = await walk_after(tmp_path, [Reply([Part.Text("hi")])], "hello")
-    url, headers, body = AnthropicProvider(environ=ENVIRON).request(walk[:-1], RESOLVED, [])
+    url, headers, body = await sent_request(walk[:-1])
     assert url == "https://api.anthropic.com/v1/messages"
-    assert headers == {"x-api-key": SECRET, "anthropic-version": "2023-06-01"}
+    assert headers["x-api-key"] == SECRET
+    assert headers["anthropic-version"] == "2023-06-01"
     assert body == {
         "model": MODEL,
         "max_tokens": 4096,
@@ -72,9 +73,7 @@ async def test_system_is_top_level_and_the_request_names_the_endpoint_and_key(
         ],
     }
     proxy = replace(RESOLVED, base_url="http://proxy.test:8080/")
-    assert AnthropicProvider(environ=ENVIRON).request(walk, proxy, [])[0] == (
-        "http://proxy.test:8080/v1/messages"
-    )
+    assert (await sent_request(walk, proxy))[0] == "http://proxy.test:8080/v1/messages"
     await h.close()
 
 
@@ -84,7 +83,7 @@ async def test_the_key_is_read_at_sample_time_and_a_missing_one_fails_before_any
 ) -> None:
     h, walk = await walk_after(tmp_path, [Reply([Part.Text("hi")])], "hello")
     with pytest.raises(SampleError, match=KEY_ENV):
-        AnthropicProvider(environ={}).request(walk, RESOLVED, [])
+        await sent_request(walk, environ={})
     await h.close()
 
 
@@ -104,7 +103,7 @@ async def test_foreign_and_unsigned_thinking_is_not_sent_and_signed_thinking_is(
         Reply([Part.Text("next")]),
     ]
     h, walk = await walk_after(tmp_path, script, "q1", "q2")
-    body = request(walk[:-1], with_options(prompt_caching=False))
+    body = await request(walk[:-1], with_options(prompt_caching=False))
     assert body["messages"][1] == {  # type: ignore[index]
         "role": "assistant",
         "content": [
@@ -122,7 +121,7 @@ async def test_a_reply_with_nothing_to_send_is_left_out_and_its_neighbours_merge
     h, walk = await walk_after(
         tmp_path, [Reply([Part.Thinking("cut off")]), Reply([Part.Text("x")])], "first", "second"
     )
-    body = request(walk[:-1], with_options(prompt_caching=False))
+    body = await request(walk[:-1], with_options(prompt_caching=False))
     assert body["messages"] == [  # type: ignore[comparison-overlap]
         {
             "role": "user",
@@ -136,7 +135,7 @@ async def test_a_reply_with_nothing_to_send_is_left_out_and_its_neighbours_merge
 async def test_a_call_that_cannot_run_is_text_with_the_stop_note(tmp_path: Path) -> None:
     script = [Reply([Part.Text("looking"), Part.Call("a", "ta", '{"p"')], Stop.Length)]
     h, walk = await walk_after(tmp_path, script, "look")
-    body = request(walk, with_options(prompt_caching=False))
+    body = await request(walk, with_options(prompt_caching=False))
     assert body["messages"][1] == {  # type: ignore[index]
         "role": "assistant",
         "content": [
@@ -156,7 +155,7 @@ async def test_prompt_caching_marks_the_system_text_and_the_last_message_only(
         tmp_path, [Reply([Part.Text("a")]), Reply([Part.Text("b")])], "q1", "q2"
     )
     walk = walk[:-1]
-    body = request(walk)
+    body = await request(walk)
     assert body["system"] == [{"type": "text", "text": "be brief", "cache_control": CACHE}]
     marks = [
         "cache_control" in block
@@ -164,7 +163,7 @@ async def test_prompt_caching_marks_the_system_text_and_the_last_message_only(
         for block in m["content"]
     ]
     assert marks == [False, False, True]
-    off = request(walk, with_options(prompt_caching=False))
+    off = await request(walk, with_options(prompt_caching=False))
     assert off["system"] == "be brief"
     assert "cache_control" not in json.dumps(off["messages"])
     await h.close()
@@ -181,7 +180,7 @@ async def test_options_reach_the_request_and_extra_body_goes_last(tmp_path: Path
         "top_k": 40,
         "extra_body": {"metadata": {"user_id": "u1"}},
     }
-    body = request(walk[:-1], with_options(**options))
+    body = await request(walk[:-1], with_options(**options))
     assert list(body)[-6:] == [
         "thinking",
         "output_config",
@@ -212,6 +211,12 @@ def test_check_demands_a_key_and_max_tokens_and_a_root_base_url() -> None:
     assert "not 'anthropic'" in anthropic.check(replace(RESOLVED, provider="openai"))[0]
 
 
+def test_check_leaves_the_values_to_the_api() -> None:
+    anthropic = AnthropicProvider(environ={})
+    options = {"effort": "extreme", "thinking": {"type": "on", "display": "full"}}
+    assert anthropic.check(with_options(**options)) == []
+
+
 def test_check_accepts_the_listed_options() -> None:
     anthropic = AnthropicProvider(environ={})
     options: dict[str, object] = {
@@ -235,22 +240,18 @@ def test_check_accepts_the_listed_options() -> None:
         ({"temperature": "hot"}, "'temperature' must be a number"),
         ({"top_p": True}, "'top_p' must be a number"),
         ({"top_k": 1.5}, "'top_k' must be a non-negative integer"),
-        ({"effort": "extreme"}, "'effort' must be one of"),
+        ({"effort": 3}, "'effort' must be a non-empty string"),
         ({"prompt_caching": "yes"}, "'prompt_caching' must be true or false"),
         ({"thinking": "adaptive"}, "'thinking' must be an object"),
-        ({"thinking": {"type": "on"}}, "needs a 'type'"),
+        ({"thinking": {"type": 3}}, "needs a 'type'"),
         ({"thinking": {"type": "enabled"}}, "needs budget_tokens >= 1024"),
         ({"thinking": {"type": "enabled", "budget_tokens": 100}}, "needs budget_tokens >= 1024"),
         ({"thinking": {"type": "enabled", "budget_tokens": 4096}}, "less than max_tokens"),
-        ({"thinking": {"type": "adaptive", "budget_tokens": 2048}}, "may not set 'budget_tokens'"),
-        ({"thinking": {"type": "disabled", "display": "omitted"}}, "may not set 'display'"),
-        ({"thinking": {"type": "adaptive", "display": "full"}}, "display must be one of"),
+        ({"thinking": {"type": "adaptive", "budget_tokens": "lots"}}, "budget_tokens must be"),
+        ({"thinking": {"type": "adaptive", "display": 3}}, "display must be a string"),
         ({"thinking": {"type": "adaptive", "display": "updates"}}, "needs a beta header"),
         ({"thinking": {"type": "adaptive", "block_binding": {}}}, "block_binding needs a beta"),
-        (
-            {"extra_body": {"thinking": {"type": "adaptive", "display": "updates"}}},
-            "needs a beta header",
-        ),
+        ({"extra_body": {"thinking": {"type": "adaptive"}}}, "may not set 'thinking'"),
         ({"extra_body": {"context_management": {}}}, "needs a beta header"),
         ({"extra_body": []}, "'extra_body' must be an object"),
         ({"extra_body": {"messages": []}}, "may not set 'messages'"),
