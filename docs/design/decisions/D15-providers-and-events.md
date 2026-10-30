@@ -116,7 +116,7 @@ whose `provider` is not its own.
    this cursor, look at it", emitted after the driver applies each answer to core that
    changed something (Review, D2) and
    by the frontend calls that change a cursor with no answer (`input`, `go_to`, `open`,
-   `add_item`, ...), so a second frontend hears of them. The
+   `add_item`, `set_label`, ...), so a second frontend hears of them. The
    fine-grained kinds (node added, cursor moved, label changed, item changed, busy or
    idle, question, notice) are a later slice.
 4. **Subscribing is immediate.** `driver.events()` is a plain call that subscribes

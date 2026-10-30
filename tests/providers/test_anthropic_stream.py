@@ -282,7 +282,7 @@ async def test_a_tool_loop_sends_the_signed_thinking_the_tool_use_and_each_resul
                 {
                     "type": "tool_result",
                     "tool_use_id": "toolu_01B",
-                    "content": "Error: boom",
+                    "content": "Error: RuntimeError: boom",
                     "is_error": True,
                     "cache_control": {"type": "ephemeral"},
                 },

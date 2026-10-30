@@ -3,9 +3,10 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
-from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
+from fakes import FakeClock, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 from tau_next import (
@@ -14,12 +15,15 @@ from tau_next import (
     CallDraft,
     Cursor,
     Ending,
+    Event,
+    EventStream,
     ExtensionContractError,
     NodeHandle,
     Outcome,
     Part,
     Stop,
     Subject,
+    ToolError,
 )
 
 CALL = Reply([Part.Call("c", "echo", "{}")], Stop.Tools)
@@ -354,3 +358,249 @@ async def test_a_bad_extension_is_refused_when_the_driver_is_built(
 ) -> None:
     with pytest.raises(ExtensionContractError, match=needle):
         await Harness.create(tmp_path, extensions=extensions)  # type: ignore[arg-type]
+
+
+# A tool that is not an async function, or that fails in an odd way, costs its call only
+
+
+@scenario
+async def test_a_tool_whose_call_is_not_async_makes_its_call_err(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Plain:
+        name = "echo"
+        description = "A call that is a plain def."
+        parameters: ClassVar[dict[str, object]] = {"type": "object"}
+
+        def call(self, args_raw: str) -> Outcome:
+            return Outcome.Ok("hi")
+
+    h = await one_call(tmp_path, Plain())  # type: ignore[arg-type]
+    ((_, outcome, by),) = results(h)
+    assert isinstance(outcome, Outcome.Err)
+    assert outcome.error.startswith("TypeError:")
+    assert by == Author.Tools()
+    assert "Traceback" in capsys.readouterr().err
+    await h.close()
+
+
+@scenario
+async def test_a_tool_whose_call_raises_before_returning_an_awaitable_makes_its_call_err(
+    tmp_path: Path,
+) -> None:
+    class Eager:
+        name = "echo"
+        description = "Raises when called."
+        parameters: ClassVar[dict[str, object]] = {"type": "object"}
+
+        def call(self, args_raw: str) -> Outcome:
+            raise ValueError("no")
+
+    h = await one_call(tmp_path, Eager())  # type: ignore[arg-type]
+    assert results(h) == [("c", Outcome.Err("ValueError: no"), Author.Tools())]
+    await h.close()
+
+
+@scenario
+async def test_a_tool_error_is_saved_as_its_message_and_any_other_error_with_its_type(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    h = await one_call(tmp_path, FakeTool("echo", ToolError("for the model")))
+    assert results(h) == [("c", Outcome.Err("for the model"), Author.Tools())]
+    assert "Traceback" not in capsys.readouterr().err
+    await h.close()
+    h = await one_call(tmp_path / "2", FakeTool("echo", KeyError("x")))
+    assert results(h) == [("c", Outcome.Err("KeyError: 'x'"), Author.Tools())]
+    assert "Traceback" in capsys.readouterr().err
+    await h.close()
+
+
+@scenario
+async def test_a_pre_tool_hook_that_clears_an_outcome_does_not_become_the_blame(
+    tmp_path: Path,
+) -> None:
+    class Cache:
+        name = "cache"
+
+        async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+            call.outcome = Outcome.Ok("cached")
+            return None
+
+    class Undo:
+        name = "undo"
+
+        async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+            call.outcome = None
+            return None
+
+    h = await one_call(tmp_path, FakeTool("echo", "ran"), Cache(), Undo())
+    assert results(h) == [("c", Outcome.Ok("ran"), Author.Tools())]
+    await h.close()
+
+
+@scenario
+async def test_a_pre_result_hook_that_clears_the_outcome_makes_its_call_err(
+    tmp_path: Path,
+) -> None:
+    class Undo:
+        name = "undo"
+
+        async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None:
+            call.outcome = None
+            return None
+
+    h = await one_call(tmp_path, FakeTool("echo", "ok"), Undo())
+    ((_, outcome, by),) = results(h)
+    assert isinstance(outcome, Outcome.Err)
+    assert outcome.error.startswith("TypeError: pre_result of extension 'undo' cleared")
+    assert by == Author.Extension("undo")
+    await h.close()
+
+
+# A hook that leaks a CancelledError has failed, unless the driver is cancelling it
+
+
+async def leak_a_cancel() -> None:
+    task = asyncio.ensure_future(asyncio.sleep(10))
+    task.cancel()
+    await task
+
+
+@scenario
+async def test_a_cursor_hook_that_leaks_a_cancelled_error_fails_its_step(tmp_path: Path) -> None:
+    async def pre_step(cursor: Cursor, subject: Subject) -> str | None:
+        await leak_a_cancel()
+        return None
+
+    recorder = Recorder()
+    h = await Harness.create(tmp_path, extensions=[Raises(pre_step=pre_step), recorder])
+    await h.step()
+    await h.settle()
+    (ending,) = recorder.endings
+    assert isinstance(ending, Ending.Failed)
+    assert ending.error.startswith("CancelledError")
+    assert not h.session.cursor(h.cursor).busy
+    await h.close()
+
+
+@scenario
+async def test_a_tool_hook_that_leaks_a_cancelled_error_makes_its_call_err(tmp_path: Path) -> None:
+    class Leaky:
+        name = "leaky"
+
+        async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+            await leak_a_cancel()
+            return None
+
+    h = await one_call(tmp_path, FakeTool("echo", "ok"), Leaky())
+    ((_, outcome, by),) = results(h)
+    assert isinstance(outcome, Outcome.Err)
+    assert outcome.error.startswith("CancelledError")
+    assert by == Author.Extension("leaky")
+    await h.close()
+
+
+@scenario
+async def test_stopping_the_driver_cancels_a_running_hook_without_failing_it(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+
+    async def pre_step(cursor: Cursor, subject: Subject) -> str | None:
+        await gate.wait()
+        return None
+
+    recorder = Recorder()
+    h = await Harness.create(
+        tmp_path, extensions=[Raises(pre_step=pre_step), recorder], gates=[gate]
+    )
+    await h.step()
+    await h.settle()
+    await h.driver.stop()
+    assert recorder.endings == [], "a stop is a crash: nothing is recorded"
+    assert h.driver.state().failure is None
+    h.session.close()
+
+
+# The driver dies of its root cause, however it is raised
+
+
+async def read_all(stream: EventStream) -> list[Event]:
+    return [event async for event in stream]
+
+
+class Panic(BaseException):
+    """What a panic in core looks like to Python."""
+
+
+class TickingClock(FakeClock):
+    """A clock that raises `error` once armed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.error: BaseException | None = None
+
+    def now(self) -> int:
+        if self.error is not None:
+            raise self.error
+        return super().now()
+
+
+@scenario
+async def test_a_panic_in_the_pump_fails_the_driver_and_ends_the_streams(tmp_path: Path) -> None:
+    clock = TickingClock()
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("hi")], Stop.End)]), clock=clock
+    )
+    stream = h.driver.events()
+    await h.send("go")
+    clock.error = Panic("core panicked")  # the answer to the sample asks the clock
+    with pytest.raises(RuntimeError, match="Panic: core panicked"):
+        await asyncio.wait_for(h.driver.rest(h.cursor), 1)
+    with pytest.raises(RuntimeError, match="Panic: core panicked"):
+        await asyncio.wait_for(read_all(stream), 1)  # what was buffered, then the failure
+    with pytest.raises(RuntimeError, match="Panic"):
+        h.driver.step(h.cursor)
+    await h.driver.stop()
+    h.session.close()
+
+
+@scenario
+async def test_a_later_error_does_not_replace_the_one_that_killed_the_driver(
+    tmp_path: Path,
+) -> None:
+    """Call `ok` has answered and waits for the pump when call `bad`'s hook dies. The pump then
+    meets an error of its own (the clock), which is not the root cause."""
+    gate = Gate()
+    clock = TickingClock()
+    harness: list[Harness] = []
+
+    class Dies:
+        name = "dies"
+
+        async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+            if call.tool != "bad":
+                return None
+            await gate.wait()
+            while not harness[0].driver.state().queued:  # `ok`'s answer is in the pump's queue
+                await asyncio.sleep(0)
+            clock.error = RuntimeError("the pump's own error")
+            raise Panic("the root cause")
+
+    calls = [Part.Call("1", "ok", "{}"), Part.Call("2", "bad", "{}")]
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply(calls, Stop.Tools)]),
+        tools=[FakeTool("ok", "fine", gate), FakeTool("bad", "never")],
+        extensions=[Dies()],
+        clock=clock,
+        gates=[gate],
+    )
+    harness.append(h)
+    await h.send("go")
+    await h.settle()
+    gate.release()
+    with pytest.raises(RuntimeError, match="the root cause"):
+        await asyncio.wait_for(h.driver.rest(h.cursor), 1)
+    await h.driver.stop()
+    h.session.close()

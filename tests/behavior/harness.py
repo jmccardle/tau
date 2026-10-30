@@ -168,13 +168,8 @@ class Harness:
 
     async def add_item(self, name: str, data: str, cursor: int | None = None) -> int:
         """An extension's item for the cursor: wakes it. A real extension adds items from
-        inside a hook; this stands in for one whose timer fired while the cursor rests. Core
-        wakes the cursor; the driver's `set_auto` to the value it has is the frontend call
-        that makes its pump look."""
-        c = self._c(cursor)
-        item = self.session.add_item(c, ItemData.Extension(name, data))
-        self.driver.set_auto(c, self.session.cursor(c).auto)
-        return item
+        inside a hook; this stands in for one whose timer fired while the cursor rests."""
+        return self.driver.add_item(self._c(cursor), ItemData.Extension(name, data))
 
     def _c(self, cursor: int | None) -> int:
         return self.cursor if cursor is None else cursor

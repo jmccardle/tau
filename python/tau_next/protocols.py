@@ -288,9 +288,10 @@ class Extension(Protocol):
     Cursor hooks (`CursorHook`): `pre_step`, `pre_input`, `pre_sample`,
     `pre_reply`, `post_reply`, `post_result`, `post_step`. Tool hooks
     (`ToolHook`): `pre_tool`, `pre_result`. `name` is non-empty and unique among a
-    driver's extensions; an attribute named `pre_*` or `post_*` that is not a hook point is
+    driver's extensions; any attribute named `pre_*` or `post_*` that is not a hook point is
     refused when the driver is built (`ExtensionContractError`), so a misspelt hook cannot
-    sit silent.
+    sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
+    field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
     """
 
     @property

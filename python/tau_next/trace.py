@@ -51,6 +51,8 @@ class _Span:
         tb: TracebackType | None,
     ) -> None:
         events = _events  # read once: a `stop()` on another thread may clear it meanwhile
+        # A span that exits after `stop()` appends to the list `stop()` already wrote out, so
+        # it is lost; the file holds the spans that ended before it.
         if events is None:
             return
         end = _core.trace_clock()

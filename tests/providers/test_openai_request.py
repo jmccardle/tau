@@ -102,7 +102,7 @@ async def test_an_answered_batch_becomes_tool_calls_and_one_tool_message_per_out
             ],
         },
         {"role": "tool", "tool_call_id": "a", "content": "A"},
-        {"role": "tool", "tool_call_id": "b", "content": "Error: boom"},
+        {"role": "tool", "tool_call_id": "b", "content": "Error: RuntimeError: boom"},
     ]
     await h.close()
 
