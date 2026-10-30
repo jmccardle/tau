@@ -151,8 +151,8 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     question is declined when that client detaches (Phase 6: no client
     attach/detach until `tau serve`); abort during a `pre_tool` gives
     `Interrupted` once the hook finishes (✓ `test_scenarios.py`; the
-    awaiting-approval form needs a tool hook that can `ask`, which
-    `NodeHandle` lacks);
+    awaiting-approval form is Phase 5's permissions extension: a tool
+    hook has no `ask` yet, `NodeHandle` lacks it);
   - hook strings: ✓ `pre_tool` → `Err(reason)` (`test_scenarios.py`); ✓ a cursor hook halts the step;
     ✓ `pre_input` refuses;
   - ✓ a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
