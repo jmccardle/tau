@@ -1,6 +1,10 @@
 """A hands-on tour: base tools, an overflowing tool result, a branch, and a reload.
 
-python examples/tour.py http://192.168.1.100:8100/v1 <model id from /v1/models>
+python examples/tour.py [--model NAME]
+
+Setup: copy examples/config.json to ~/.tau/config.json (or point TAU_HOME at a
+directory holding it). --model takes a qualified name (local:qwen) or a bare one;
+without it the config's default_model is used.
 
 1. The model uses the Rust `bash` tool on output past the 10 kB limit, so it sees
    the tail plus an overflow file name (`/tmp/tau-<uid>/<id>.out`).
@@ -9,7 +13,9 @@ python examples/tour.py http://192.168.1.100:8100/v1 <model id from /v1/models>
 3. We close the session and load it from disk: the same tree comes back.
 """
 
+import argparse
 import asyncio
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -17,12 +23,15 @@ from pathlib import Path
 from tau_next import (
     Body,
     Driver,
+    LoadedConfig,
     Session,
     StepLimit,
     SystemClock,
     base_tools,
+    load_config,
     model_config,
-    read_models,
+    prompts,
+    select_model,
 )
 from tau_next.providers.openai import OpenAIProvider
 
@@ -47,21 +56,24 @@ async def ask(driver: Driver, cursor: int, text: str) -> None:
     await driver.rest(cursor)
 
 
-async def main(base_url: str, model: str) -> None:
+async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
     with tempfile.TemporaryDirectory() as tmp:
         where = Path(tmp) / "session"
-        # Wave 3 reads a config file; until then the CLI layer holds the one model.
-        models = read_models(cli={"models": {"example": {"model": model, "base_url": base_url}}})
         session = Session.create(
-            model_config("example"),
+            model_config(name),
             "You are a terse assistant. Use your tools when asked.",
             clock.now(),
             where,
         )
         tools = base_tools(tmp)
         driver = Driver(
-            session, OpenAIProvider(), models, tools=tools, extensions=[StepLimit(6)], clock=clock
+            session,
+            OpenAIProvider(environ=loaded.environ),
+            loaded.catalog,
+            tools=tools,
+            extensions=[StepLimit(6)],
+            clock=clock,
         )
         driver.start()
         cursor = session.cursors()[0]
@@ -91,5 +103,14 @@ async def main(base_url: str, model: str) -> None:
         again.close()
 
 
+def choose_model(argv: list[str]) -> tuple[str, LoadedConfig]:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
+    args = parser.parse_args(argv)
+    ask = prompts(sys.stdin, sys.stdout)
+    loaded = load_config(Path.cwd(), os.environ, ask=ask.ask)
+    return select_model(loaded.catalog, args.model, pick=ask.pick), loaded
+
+
 if __name__ == "__main__":
-    asyncio.run(main(*sys.argv[1:3]))
+    asyncio.run(main(*choose_model(sys.argv[1:])))

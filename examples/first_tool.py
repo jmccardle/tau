@@ -1,14 +1,32 @@
 """The first tool round-trip: the model reads a file with a tool, and reports what it found.
 
-python examples/first_tool.py http://192.168.1.100:8100/v1 <model id from /v1/models>
+python examples/first_tool.py [--model NAME]
+
+Setup: copy examples/config.json to ~/.tau/config.json (or point TAU_HOME at a
+directory holding it). --model takes a qualified name (local:qwen) or a bare one;
+without it the config's default_model is used.
 """
 
+import argparse
 import asyncio
+import os
 import sys
 import tempfile
 from pathlib import Path
 
-from tau_next import Body, Driver, Session, StepLimit, SystemClock, model_config, read_models, tool
+from tau_next import (
+    Body,
+    Driver,
+    LoadedConfig,
+    Session,
+    StepLimit,
+    SystemClock,
+    load_config,
+    model_config,
+    prompts,
+    select_model,
+    tool,
+)
 from tau_next.providers.openai import OpenAIProvider
 
 PHRASE = "violet anchor 42"
@@ -33,20 +51,18 @@ def text(body: Body) -> str:
             return str(getattr(body, "text", body))
 
 
-async def main(base_url: str, model: str) -> None:
+async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
     with tempfile.TemporaryDirectory() as tmp:
         secret = Path(tmp) / "secret.txt"
         secret.write_text(f"The secret phrase is: {PHRASE}\n")
-        # Wave 3 reads a config file; until then the CLI layer holds the one model.
-        models = read_models(cli={"models": {"example": {"model": model, "base_url": base_url}}})
-        config = model_config("example")
+        config = model_config(name)
         session = Session.create(config, "Use your tools when asked.", clock.now(), Path(tmp) / "s")
         # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
         driver = Driver(
             session,
-            OpenAIProvider(),
-            models,
+            OpenAIProvider(environ=loaded.environ),
+            loaded.catalog,
             tools=[read_file],
             extensions=[StepLimit(6)],
             clock=clock,
@@ -61,5 +77,14 @@ async def main(base_url: str, model: str) -> None:
         session.close()
 
 
+def choose_model(argv: list[str]) -> tuple[str, LoadedConfig]:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
+    args = parser.parse_args(argv)
+    ask = prompts(sys.stdin, sys.stdout)
+    loaded = load_config(Path.cwd(), os.environ, ask=ask.ask)
+    return select_model(loaded.catalog, args.model, pick=ask.pick), loaded
+
+
 if __name__ == "__main__":
-    asyncio.run(main(*sys.argv[1:3]))
+    asyncio.run(main(*choose_model(sys.argv[1:])))

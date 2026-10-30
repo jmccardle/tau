@@ -730,12 +730,57 @@ single-quoted values literal, double-quoted values with `\n`, `\"`, `\\`,
 unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. A
 malformed line is a `DotenvError` naming the file and line, never the value.
 
-### tau config check, tau trust
-D13 · new
+### load_config, LoadedConfig, user_config_path
+`tau_next.startup` · D13 · new
 
-The first `tau` commands. `tau config check` validates the layers and reports
-where each problem is; `--show <model>` prints each resolved value and its
-source. `tau trust <dir>` approves a project directory, as the prompt does.
+What a frontend calls before its first sample. `load_config(cwd, environ, *, ask,
+cli=None)`: `tau_home(environ)`, the user config `<home>/config.json` (absent is
+fine; `user_config_path(home)` is that path or `None`), `find_project(cwd)`, and
+for a project `ensure_trusted(root, home, ask=ask)` (no `ask`, no live terminal:
+`UntrustedProject`), then the catalog from the approved project text and the
+user file (`cli` overrides on top), and the environment from
+`project_environment`. Any `ConfigError` or `TrustError` propagates. It returns a
+frozen **`LoadedConfig`**: `catalog`, `environ` (the shell environment over the
+trusted project's `.env`; the shell wins; pass it to the provider so keys come
+from it), `project` (the `Trusted`, or `None`), `home`.
+
+### select_model, Pick, terminal_pick, Prompts, prompts
+`tau_next.startup` · D13 · new
+
+`select_model(catalog, requested=None, *, pick)` returns one qualified name:
+`requested` (`--model`), else `catalog.default_model`, else a `ConfigError` that
+says to pass `--model` or set `default_model`. A name with `:` is exact; a bare
+name with one match is that match; with several, `pick` (a **`Pick`**: a callable
+from the qualified names to one of them) chooses, and with no `pick` the
+`ConfigError` lists them; with none, the `ConfigError` suggests close names
+(`difflib`) and lists what exists. `terminal_pick(stdin, stdout)` numbers the
+names and reads a number or a name; anything else is a `ConfigError`.
+**`Prompts`** (`ask`, `pick`) is what a person can be asked; `prompts(stdin,
+stdout)` returns both as `None` unless both streams are terminals.
+
+### tau config check, tau trust
+`tau_next.cli` (`main`; the `tau` console script) · D13 · new
+
+`main(argv, *, stdin, stdout, stderr, environ, cwd)` is the `tau` command; each
+argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
+(no subcommand prints help and exits 2). A `ConfigError`, `TrustError`, or
+`DotenvError` is one `tau: message` line on stderr and exit 1, no traceback.
+
+`tau config check` runs `check_config` over the user config and the project
+config and prints each problem as `file:line:col: severity: message` (the
+dotted path before the message when there is no line). The project's problems
+are reported even if it is not trusted, each tagged `[untrusted project: ...]`;
+an untrusted project is never used. A trusted one is checked from the approved
+text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
+0 otherwise (warnings print). `--show MODEL` (after a clean check) selects as
+`select_model` does and prints the qualified name, then each resolved key, its
+value, and `[file or cli or default, group G]`. A literal `api_key` shows as
+`(set)`; no key value is ever printed.
+
+`tau trust [DIR]` (default: the project found from the working directory)
+prints `trust_report` and approves. It is the explicit command, so there is no
+y/N prompt. A config with errors cannot be approved: the errors print and the
+exit is 1.
 
 ## Hooks
 

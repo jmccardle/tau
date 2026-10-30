@@ -69,6 +69,15 @@ from tau_next.protocols import (
     ToolContractError,
     ToolHook,
 )
+from tau_next.startup import (
+    LoadedConfig,
+    Prompts,
+    load_config,
+    prompts,
+    select_model,
+    terminal_pick,
+    user_config_path,
+)
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 from tau_next.trust import (
@@ -123,6 +132,7 @@ __all__ = [
     "Job",
     "LayerText",
     "Leased",
+    "LoadedConfig",
     "ModelCatalog",
     "ModelConfig",
     "Move",
@@ -141,6 +151,7 @@ __all__ = [
     "Outstanding",
     "Part",
     "Poisoned",
+    "Prompts",
     "Provider",
     "Question",
     "ReadTool",
@@ -176,15 +187,20 @@ __all__ = [
     "find_project",
     "is_interactive",
     "is_trusted",
+    "load_config",
     "model_config",
     "model_name",
     "parse_dotenv",
     "project_config_path",
     "project_environment",
+    "prompts",
     "read_dotenv",
     "read_models",
+    "select_model",
     "tau_home",
     "terminal_ask",
+    "terminal_pick",
     "tool",
     "trust_report",
+    "user_config_path",
 ]
