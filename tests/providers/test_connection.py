@@ -340,7 +340,7 @@ async def test_a_key_http_cannot_carry_fails_the_sample_without_quoting_it(key: 
         await provider.aclose()
     assert items == []
     assert error is not None
-    assert "request header" in str(error)
+    assert ANTHROPIC_KEY_ENV in str(error)  # refused by `ModelConfig.api_key`, before any header
     assert "sk-secret" not in str(error)
     assert "sk-secret" not in repr(error.__cause__)
 
