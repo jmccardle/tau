@@ -1,24 +1,30 @@
 """The OpenAI-compatible provider: chat completions over SSE (llama.cpp, vLLM, OpenAI).
 
-Walk to request in `messages`, response to parts in `_Stream`, one per reply. The request carries
-only what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stream`, and
-`tools` when there are any.
+Walk to request in `messages`, response to parts and deltas in `_Stream`, one per reply. The
+request carries what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stream`,
+`tools` when there are any, `max_tokens`, then the options (`OPTIONS`), then `extra_body` last.
 """
 
 import json
+import math
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import cast
 
 import httpx
 
 from tau_next._config import ConfigError, ModelConfig
 from tau_next._core import Body, Node, Outcome, Part, Stop
+from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
 from tau_next.protocols import Finish, SampleError, Tool
 
 Json = dict[str, object]
 HTTP_OK = 200
+OPTIONS = ("temperature", "top_p", "reasoning_effort", "include_usage", "extra_body")
+OWNED_KEYS = ("model", "messages", "stream", "tools")  # `extra_body` may not set these
 
 STOPS: dict[str, Stop] = {
     "stop": Stop.End,
@@ -135,6 +141,7 @@ class _Open:
     index: int = 0
     id: str = ""
     tool: str = ""
+    named: bool = False  # `CallNamed` has been yielded
     chunks: list[str] = field(default_factory=lambda: [])
 
     def part(self) -> Part:
@@ -153,7 +160,7 @@ class _Open:
 
 @dataclass
 class _Stream:
-    """One response being read. `feed` takes a decoded chunk and returns the parts it completed."""
+    """One response being read. `feed` takes a decoded chunk and returns its parts and deltas."""
 
     open: _Open | None = None
     finish: str | None = None
@@ -168,9 +175,13 @@ class _Stream:
                 self.meta[key] = value
         usage = chunk.get("usage")
         if isinstance(usage, dict):
-            self.meta["usage"] = usage
+            raw = cast("Json", usage)
+            self.meta["usage_raw"] = raw
+            normal = _usage(raw)
+            if normal is not None:
+                self.meta["usage"] = normal
 
-    def close(self) -> list[Part]:
+    def close(self) -> list[Part | Delta]:
         """Complete the open part, if any."""
         if self.open is None:
             return []
@@ -179,39 +190,59 @@ class _Stream:
             self.calls_done.add(done.index)
         return [done.part()]
 
-    def _run(self, kind: str, delta: object) -> list[Part]:
-        if not isinstance(delta, str) or not delta:
+    def _run(self, kind: str, text: object) -> list[Part | Delta]:
+        if not isinstance(text, str) or not text:
             return []
         out = [] if self.open is not None and self.open.kind == kind else self.close()
         if self.open is None:
             self.open = _Open(kind)
-        self.open.chunks.append(delta)
+        self.open.chunks.append(text)
+        out.append(ThinkingDelta(text) if kind == "thinking" else TextDelta(text))
         return out
 
-    def _call(self, raw: object) -> list[Part]:
+    def _thinking(self, delta: Json) -> list[Part | Delta]:
+        """Servers spell it `reasoning_content` or `reasoning`; a chunk has one of them."""
+        spelled = [k for k in ("reasoning_content", "reasoning") if delta.get(k)]
+        if len(spelled) > 1:
+            raise SampleError("a delta carries both 'reasoning_content' and 'reasoning'")
+        return self._run("thinking", delta.get(spelled[0]) if spelled else None)
+
+    def _call(self, raw: object) -> list[Part | Delta]:
         call = _json(raw, "a tool call delta")
         index = call.get("index", 0)
         if not isinstance(index, int):
             raise SampleError(f"tool call index is not an integer: {index!r}")
-        out: list[Part] = []
+        out: list[Part | Delta] = []
         if self.open is None or self.open.kind != "call" or self.open.index != index:
             if index in self.calls_done:
                 raise SampleError(f"tool call {index} continues after it was complete")
             out = self.close()
             self.open = _Open("call", index)
         function = _json(call.get("function", {}), "a tool call's function")
-        if isinstance(call.get("id"), str):
-            self.open.id = cast("str", call["id"])
-        if isinstance(function.get("name"), str):
-            self.open.tool += cast("str", function["name"])
-        if isinstance(function.get("arguments"), str):
-            self.open.chunks.append(cast("str", function["arguments"]))
+        args = function.get("arguments")
+        if not self.open.named:  # the id and name are read until the call is announced
+            if isinstance(call.get("id"), str):
+                self.open.id = cast("str", call["id"])
+            if isinstance(function.get("name"), str):
+                self.open.tool += cast("str", function["name"])
+        if isinstance(args, str):
+            self.open.chunks.append(args)
+        if not self.open.named and self.open.id and self.open.tool:
+            self.open.named = True
+            out.append(CallNamed(index, self.open.id, self.open.tool))
+            held = "".join(self.open.chunks)  # arguments that arrived before the name
+            if held:
+                out.append(CallArgs(index, held))
+        elif self.open.named and isinstance(args, str) and args:
+            out.append(CallArgs(index, args))
         return out
 
     def meta_text(self) -> str | None:
         return json.dumps(self.meta) if self.meta else None
 
-    def feed(self, chunk: Json) -> list[Part]:
+    def feed(self, chunk: Json) -> list[Part | Delta]:
+        """The parts and deltas this chunk produced, in order: a part comes before the first
+        delta of whatever follows it."""
         error = chunk.get("error")
         if error is not None and self.finish is None:
             raise SampleError(f"the server sent an error in the stream: {error}")
@@ -227,7 +258,7 @@ class _Stream:
             return []
         choice = _json(cast("list[object]", choices)[0], "a choice")
         delta = _json(choice.get("delta") or {}, "a delta")
-        out = self._run("thinking", delta.get("reasoning_content"))
+        out = self._thinking(delta)
         out += self._run("text", delta.get("content"))
         raw_calls = delta.get("tool_calls")
         for raw in cast("list[object]", raw_calls) if isinstance(raw_calls, list) else []:
@@ -268,6 +299,52 @@ def _json(value: object, what: str) -> Json:
     return cast("Json", value)
 
 
+def _count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _usage(raw: Json) -> Json | None:
+    """The normalized `{"input", "output", "cached"}` from OpenAI's `usage`, or `None` if the
+    server did not report prompt and completion tokens. A server that reports no cached
+    tokens had none to report, so `cached` is 0."""
+    tokens, output = _count(raw.get("prompt_tokens")), _count(raw.get("completion_tokens"))
+    if tokens is None or output is None:
+        return None
+    details = raw.get("prompt_tokens_details")
+    cached = _count(cast("Json", details).get("cached_tokens")) if isinstance(details, dict) else 0
+    return {"input": tokens, "output": output, "cached": cached or 0}
+
+
+def retry_after(value: str | None) -> float | None:
+    """Seconds to wait from a `Retry-After` header: whole seconds as sent, an HTTP-date as
+    seconds from now (0 if past); `None` for no header or anything else."""
+    if value is None:
+        return None
+    text = value.strip()
+    if text.isascii() and text.isdigit():
+        return float(text)
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        return None
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
+
+
+def _plain(value: object) -> object:
+    """`value` as plain JSON: `ModelConfig` options are read-only mappings and tuples."""
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in cast("Mapping[str, object]", value).items()}
+    if isinstance(value, tuple):
+        return [_plain(v) for v in cast("tuple[object, ...]", value)]
+    return value
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _error_text(status: int, body: bytes) -> str:
     """`HTTP <status>: <the server's error message, else its body>`."""
     text = body.decode("utf-8", errors="replace").strip()
@@ -301,8 +378,16 @@ class OpenAIProvider:
     """Samples an OpenAI-compatible `/chat/completions` endpoint for the `ModelConfig` the
     driver resolved.
 
-    `transport` replaces the network (a test's `httpx.MockTransport`); `environ` is where
-    `api_key_env` is looked up, at sample time.
+    One `httpx.AsyncClient` serves every sample (httpx pools connections per host): made on
+    the first sample, closed by `aclose()`, after which a sample fails. `transport` replaces
+    the network (a test's `httpx.MockTransport`); `environ` is where `api_key_env` is looked
+    up, at sample time.
+
+    Options (`check` refuses any other): `temperature` and `top_p` (numbers),
+    `reasoning_effort` (a string), `include_usage` (a boolean, default true: ask the server for
+    token counts in the stream; some reject it), and `extra_body` (an object merged into the
+    request body last, for a server's own parameters such as llama.cpp's `cache_prompt`; it may
+    not set `model`, `messages`, `stream`, or `tools`).
     """
 
     def __init__(
@@ -314,29 +399,67 @@ class OpenAIProvider:
         self._transport = transport
         self._environ = os.environ if environ is None else environ
         self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
+        self._http: httpx.AsyncClient | None = None
+        self._closed = False
 
     @property
     def name(self) -> str:
         return "openai"
 
     def check(self, model: ModelConfig) -> list[str]:
-        """This provider needs a `base_url` and reads no `options` yet."""
+        """This provider needs a `base_url`, and reads the options in `OPTIONS`."""
         problems: list[str] = []
         if model.provider != self.name:
             problems.append(f"provider is {model.provider!r}, not {self.name!r}")
         if model.base_url is None:
             problems.append("needs a base_url")
-        problems += [f"unknown option {key!r}; there are no options" for key in model.options]
+        options = model.options
+        problems += [
+            f"unknown option {key!r}; known options are {list(OPTIONS)}"
+            for key in options
+            if key not in OPTIONS
+        ]
+        problems += [
+            f"option {key!r} must be a number"
+            for key in ("temperature", "top_p")
+            if key in options and not _is_number(options[key])
+        ]
+        effort = options.get("reasoning_effort")
+        if "reasoning_effort" in options and not (isinstance(effort, str) and effort):
+            problems.append("option 'reasoning_effort' must be a non-empty string")
+        if "include_usage" in options and not isinstance(options["include_usage"], bool):
+            problems.append("option 'include_usage' must be true or false")
+        if "extra_body" in options:
+            extra = options["extra_body"]
+            if not isinstance(extra, Mapping):
+                problems.append("option 'extra_body' must be an object")
+            else:
+                problems += [
+                    f"option 'extra_body' may not set {key!r}; the provider owns it"
+                    for key in cast("Mapping[str, object]", extra)
+                    if key in OWNED_KEYS
+                ]
         return problems
 
     async def aclose(self) -> None:
-        """Nothing is held open yet: each sample opens its own client."""
+        """Close the client and its connections. Later samples fail."""
+        self._closed = True
+        client, self._http = self._http, None
+        if client is not None:
+            await client.aclose()
+
+    def _client(self) -> httpx.AsyncClient:
+        if self._closed:
+            raise SampleError("this provider was closed; build a new one to sample again")
+        if self._http is None:
+            self._http = httpx.AsyncClient(transport=self._transport, timeout=self._timeout)
+        return self._http
 
     def request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
         """The URL, headers, and JSON body of the request for this sample. `tools` become the
-        `tools` array, omitted when there are none.
+        `tools` array, omitted when there are none; `extra_body` is merged last.
 
         Raises `SampleError` if the model's key cannot be read.
         """
@@ -349,35 +472,46 @@ class OpenAIProvider:
             "model": model.model,
             "messages": messages(walk),
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        options = model.options
+        if options.get("include_usage", True):
+            body["stream_options"] = {"include_usage": True}
         if tools:
             body["tools"] = _tools(tools)
         if model.base_url is None:
             raise SampleError(f"model {model.model!r} has no base_url, which this provider needs")
         if model.max_tokens is not None:
             body["max_tokens"] = model.max_tokens
+        for key in ("temperature", "top_p", "reasoning_effort"):
+            if key in options:
+                body[key] = options[key]
+        if "extra_body" in options:
+            body.update(cast("Json", _plain(options["extra_body"])))
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncGenerator[Part | Finish, None]:
-        """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
-        after yielding every part the stream had finished or begun; it carries the meta fields
-        that had arrived. Once `finish_reason` has arrived the reply is done: the stream is
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
+        """Yield deltas as they arrive and each part once complete (before the first delta of
+        whatever follows it), then the `Finish`. A failure raises `SampleError` (with `status`
+        and `retry_after` for an HTTP error) after yielding every part the stream had finished
+        or begun; it carries the meta fields that had arrived. Once `finish_reason` has arrived the
+        reply is done: the stream is
         still read for `usage`, but content and tool-call deltas after it are ignored, and an
         error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
         meta not yet received, never the reply."""
         url, headers, body = self.request(walk, model, tools)
+        client = self._client()
         reply = _Stream()
         error: SampleError | None = None
         try:
-            async with (
-                httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client,
-                client.stream("POST", url, headers=headers, json=body) as response,
-            ):
+            async with client.stream("POST", url, headers=headers, json=body) as response:
                 if response.status_code != HTTP_OK:
-                    raise SampleError(_error_text(response.status_code, await response.aread()))
+                    raise SampleError(
+                        _error_text(response.status_code, await response.aread()),
+                        status=response.status_code,
+                        retry_after=retry_after(response.headers.get("retry-after")),
+                    )
                 async for data in _events(response):
                     if data == "[DONE]":
                         break
@@ -385,8 +519,8 @@ class OpenAIProvider:
                         chunk = _json(json.loads(data), "a stream chunk")
                     except ValueError as e:
                         raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
-                    for part in reply.feed(chunk):
-                        yield part
+                    for item in reply.feed(chunk):
+                        yield item
         except httpx.HTTPError as e:
             error = SampleError(f"{type(e).__name__}: {e}")
         except SampleError as e:
@@ -405,7 +539,12 @@ class OpenAIProvider:
             leftover = reply.close()
         except SampleError as cut_off:
             # A cut-off call with no id or name is not a part; the failure records what arrived.
-            raise SampleError(f"{error}; {cut_off}", reply.meta_text()) from error
+            raise SampleError(
+                f"{error}; {cut_off}",
+                reply.meta_text(),
+                status=error.status,
+                retry_after=error.retry_after,
+            ) from error
         for part in leftover:
             yield part
         raise error

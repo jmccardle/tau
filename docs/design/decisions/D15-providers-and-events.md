@@ -1,8 +1,8 @@
 # D15: Providers own their connections; frontends get saved and live events
 
 Status: candidate (2026-10-29): the first slice is built (provider contract, settings,
-live and saved events, mock provider); replay data, the OpenAI provider's own use of
-the contract, and tool progress are not. Amends `model.md` §9 and §10.
+live and saved events, mock provider), and the OpenAI provider keeps to the contract
+(item 10); replay data and tool progress are not built. Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -134,6 +134,22 @@ whose `provider` is not its own.
    `ModelConfig.options` is a deep read-only copy.
 9. **`max_tokens`** is sent by the OpenAI provider as `max_tokens` (its one change, so
    a setting is not silently ignored); `options` it refuses until it has some.
+
+10. **The OpenAI provider is built to the contract.** One `httpx.AsyncClient` (httpx pools
+   per host, so not one per `base_url`), made on the first sample; `aclose()` closes it and a
+   later sample fails. It streams `TextDelta`, `ThinkingDelta` (from `reasoning_content` or
+   `reasoning`), `CallNamed`, `CallArgs`, and yields each part before the next kind's first
+   delta. Options: `temperature`, `top_p`, `reasoning_effort`, `include_usage`,
+   `extra_body` (merged last; `model`, `messages`, `stream`, `tools` refused). `SampleError`
+   has keyword-only `status` and `retry_after`.
+11. **`usage` is normalized; the raw object moves to `usage_raw`.** Before, the OpenAI
+   provider kept the server's `usage` under `usage`; the contract gives that key to the
+   normalized `{input, output, cached}` (the mock's shape), so the raw object is
+   `usage_raw`. Servers that report no cached tokens get `cached: 0`; a server that
+   gives no prompt and completion counts gets no `usage`.
+12. **Call ids and names are read until the call is announced.** `CallNamed` needs both, so
+   the provider yields it when both have arrived (arguments before that are held), and
+   later id or name fields of that call are not read.
 
 ## Open
 

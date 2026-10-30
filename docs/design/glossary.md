@@ -944,7 +944,7 @@ OpenAI looks up keys. The caller closes them.
 The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
 Is handed the resolved `ModelConfig` as `sample(walk, model, tools)`; it parses no node data. The request carries `model`,
 `messages`, `stream: true`, and `tools` when the driver offers any (no
-`tool_choice`, no `parallel_tool_calls`); the model has no sampling settings.
+`tool_choice`, no `parallel_tool_calls`); then `max_tokens` and the options below.
 `tools` is `[{"type": "function", "function": {name, description, parameters}}]`,
 built from each `Tool` for that sample only and recorded nowhere. Conversion: `System`
 and `User` map to their roles; an `Assistant` to `assistant` with its text and
@@ -957,23 +957,37 @@ with no `Results` after it, are `[tool call <id>: <tool> <args_raw>]` lines of
 text (the `partial_calls: text` markup), followed by `[reply stopped: <why>]`
 for `Length`, `Interrupted`, and `Error`. A `Results` whose ids differ from
 its batch's is a conversion error (Q11). The response is read as SSE;
-`reasoning_content` deltas become `Thinking`, `content` `Text`, `tool_calls`
-`Call`s; each part is yielded once the next kind of part begins or the stream
-finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
+`reasoning_content` or `reasoning` deltas (a chunk has one; both is an error)
+become `ThinkingDelta`s and then a `Thinking`, `content` `TextDelta`s and a `Text`,
+`tool_calls` a `CallNamed` (once the id and name have arrived; arguments that came
+first are held until then), `CallArgs`, and a `Call`. Each delta is yielded as it
+arrives; each part is yielded before the first delta of the next kind of part, or
+when the stream finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
 raw string is kept as `finish_reason` (via `Finish`). The request sets
-`stream_options.include_usage`, and the stream is read to its end (usage comes after
-the finish) to fill `meta` with `model`, `id`, `system_fingerprint`, `usage`. Once `finish_reason` arrives the reply is done: later content deltas are ignored and
+`stream_options.include_usage` unless the option says not to, and the stream is read to
+its end (usage comes after the finish) to fill `meta` with `model`, `id`,
+`system_fingerprint`, `usage_raw` (the server's `usage` object as sent) and the
+normalized `usage` `{"input", "output", "cached"}` from `prompt_tokens`,
+`completion_tokens` and `prompt_tokens_details.cached_tokens` (`cached` is 0 for a server
+that reports none; no `usage` at all if the server gave no prompt and completion counts). Once `finish_reason` arrives the reply is done: later content deltas are ignored and
 any later failure (reset, error chunk, malformed SSE, no `[DONE]`) costs only the
 meta not yet received. A `SampleError` carries the `meta` that had arrived. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
 Parts begun before a failure are yielded first; a call cut off with no id or
 no name is not a part, so its raw argument text and whatever id and name arrived
-are appended to the `SampleError` message. `name` is `"openai"`; its `check` requires a
-`base_url` and refuses every option (it has none yet); `aclose()` does nothing (each
-sample opens its own client; D15 will pool). `max_tokens`, if set, is sent as
-`max_tokens`. It streams no deltas yet. Constructor: `transport`
+are appended to the `SampleError` message. A non-200 response fails with `SampleError`
+`status` set and `retry_after` from the `Retry-After` header (whole seconds, or an
+HTTP-date as seconds from now, 0 if past; anything else `None`); a connection error has
+`status` `None`. No retry happens here. `name` is `"openai"`; its `check` requires a
+`base_url` and reads exactly these options, refusing any other: `temperature`, `top_p`
+(numbers), `reasoning_effort` (non-empty string), `include_usage` (boolean, default true;
+some servers reject `stream_options`), `extra_body` (an object merged into the request body
+last, for server-specific parameters such as llama.cpp's `cache_prompt`; it may not set
+`model`, `messages`, `stream` or `tools`). One `httpx.AsyncClient` serves every sample,
+made on the first and closed by `aclose()`; a sample after `aclose()` fails with
+`SampleError`. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
 
@@ -1207,7 +1221,8 @@ the provider's own string (`None` if it has none), and the response `meta`
 `TypeError` for a non-`str`). The
 driver builds the reply draft with all three. A provider that reports usage puts the
 normalized `usage` in `meta` as `{"input", "output", "cached"}` token counts, beside its
-own fields (D15; only `MockProvider` does so far).
+own fields (D15; `MockProvider` and `OpenAIProvider` do so; the latter's raw
+`usage` object is kept as `usage_raw`).
 
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket
@@ -1332,6 +1347,11 @@ What a provider raises to fail a sample. Parts it yielded first are kept: the
 reply is committed with `stop: Error` and the error's `meta`. The driver
 answers `Sampled { parts, end: Failed { error, meta } }`; core decides which. Any other exception from a provider or the
 driver is a bug and surfaces through `Driver.check`.
+
+`SampleError(message, meta, *, status=None, retry_after=None)`. `status` is the HTTP status
+of an error response (`None` when there was no response); `retry_after` is the seconds the
+server asked to wait (`None` if it did not say). A retrying wrapper provider reads both
+(D15); nothing in core or the driver does.
 
 ### rest
 `Driver.rest(cursor)` · new

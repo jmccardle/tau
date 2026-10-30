@@ -48,12 +48,24 @@ def check_meta(meta: object) -> None:
 
 class SampleError(Exception):
     """A sample that failed: an HTTP error, a reset connection, a conversion error. `meta` is
-    what the response had already said about itself (as on `Finish`), kept on the failed reply."""
+    what the response had already said about itself (as on `Finish`), kept on the failed reply.
+    `status` is the HTTP status of an error response (`None` for a failure with none, such as a
+    refused connection); `retry_after` is the seconds the server asked to wait (`None` if it
+    did not say). A retrying wrapper provider reads both (D15)."""
 
-    def __init__(self, message: str = "", meta: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        meta: str | None = None,
+        *,
+        status: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         check_meta(meta)
         self.meta = meta
+        self.status = status
+        self.retry_after = retry_after
 
 
 class ToolContractError(TypeError):
