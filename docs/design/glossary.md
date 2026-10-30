@@ -1557,8 +1557,19 @@ A program that drives sessions and shows events (`tau serve` first). A
 not yet spiked · retires `AgentEvent`, `WireEvent`
 
 One type in eight kinds (`model.md` §9); observers cannot change anything. Built so
-far (D15): the two kinds `Live` and `Saved`. **Status** is the state an extension
+far (D15): the three kinds `Live`, `Saved`, and `HookError`. **Status** is the state an extension
 shows every frontend (`cursor.show`), driver memory.
+
+### hook error, HookError
+`tau_next.HookError(cursor, point, extension, error)` (`events.py`) · D15 · new
+
+A cursor hook of `extension` raised, or broke its contract, at hook `point` while running for
+`cursor`; `error` is `"Type: msg"`, the text a `post_step` hook sees as `Ending.Failed`. A live
+event: not saved, not replayed on reload, so only subscribers at the time hear it. Emitted for
+every cursor-hook failure (`post_step` included), never for a tool hook (that is the `Err` in
+`Results`). Unlike a `Live`, a full buffer never drops it; a newer `HookError` of the same cursor
+replaces an older one still buffered, and no `Saved` removes it. It is the answer to "why did the
+step stop".
 
 ### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
 `tau_next.events` (exported) · D15 · new

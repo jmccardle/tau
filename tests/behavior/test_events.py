@@ -16,10 +16,13 @@ from tau_next import (
     CallArgs,
     CallNamed,
     Closed,
+    Cursor,
     Delta,
+    Ending,
     Event,
     EventStream,
     Finish,
+    HookError,
     ItemData,
     Live,
     ModelConfig,
@@ -29,6 +32,7 @@ from tau_next import (
     SampleError,
     Saved,
     Stop,
+    Subject,
     TextDelta,
     ThinkingDelta,
     Tool,
@@ -712,3 +716,114 @@ async def test_labels_a_frontend_writes_are_announced_for_each_cursor_they_chang
     assert await anext(stream) == Saved(other)
     await stream.aclose()
     await h.close()
+
+
+# A failed cursor hook is a live HookError, never saved (D15, amendment 21)
+
+
+class Breaks:
+    """An extension named `breaks` whose `pre_step` and `post_step` raise when told to."""
+
+    name = "breaks"
+
+    def __init__(self, *, pre: bool = False, post: bool = False) -> None:
+        self.pre, self.post = pre, post
+        self.only: int | None = None  # fail only for this cursor
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        if self.pre and self.only in (None, cursor.id):
+            raise KeyError("x")
+        return None
+
+    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        if self.post:
+            raise ValueError("late")
+        return None
+
+
+def hook_errors(events: list[Event]) -> list[HookError]:
+    return [e for e in events if isinstance(e, HookError)]
+
+
+@scenario
+async def test_a_failing_pre_step_hook_is_heard_as_a_hook_error_and_the_step_ends(
+    tmp_path: Path,
+) -> None:
+    recorder = Recorder()
+    h = await Harness.create(tmp_path, extensions=[Breaks(pre=True), recorder])
+    stream = h.driver.events()
+    await h.step()
+    await h.settle()
+    assert recorder.endings == [Ending.Failed("KeyError: 'x'")]
+    (seen,) = await drain(h, stream)
+    assert hook_errors(seen) == [HookError(h.cursor, "pre_step", "breaks", "KeyError: 'x'")]
+
+
+@scenario
+async def test_a_failing_post_step_hook_is_heard_too(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Breaks(post=True)])
+    stream = h.driver.events()
+    await h.step()
+    await h.settle()
+    (seen,) = await drain(h, stream)
+    assert hook_errors(seen) == [HookError(h.cursor, "post_step", "breaks", "ValueError: late")]
+
+
+@scenario
+async def test_a_hook_error_goes_only_to_the_cursor_filter_that_matches(tmp_path: Path) -> None:
+    breaks = Breaks(pre=True)
+    h = await Harness.create(tmp_path, extensions=[breaks])
+    breaks.only = h.cursor  # the other cursor's steps pass
+    other = h.driver.open(SYS, "term")
+    mine, theirs, everyone = h.driver.events(h.cursor), h.driver.events(other), h.driver.events()
+    await h.step()
+    await h.settle()
+    mine_seen, theirs_seen, all_seen = await drain(h, mine, theirs, everyone)
+    assert len(hook_errors(mine_seen)) == 1
+    assert hook_errors(theirs_seen) == []
+    assert len(hook_errors(all_seen)) == 1
+
+
+@scenario
+async def test_a_hook_error_writes_nothing_to_the_session(tmp_path: Path) -> None:
+    passing = await Harness.create(tmp_path / "ok", extensions=[Breaks()])
+    await passing.step()
+    await passing.settle()
+    failing = await Harness.create(tmp_path / "bad", extensions=[Breaks(pre=True)])
+    await failing.step()
+    await failing.settle()
+    assert len(failing.nodes()) == len(passing.nodes())
+    await passing.close()
+    await failing.close()
+
+
+@scenario
+async def test_a_hook_error_is_not_replayed_on_a_new_subscription(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Breaks(pre=True)])
+    await h.step()
+    await h.settle()
+    late = h.driver.events()
+    (seen,) = await drain(h, late)
+    assert seen == []
+
+
+@scenario
+async def test_a_hook_error_survives_a_full_buffer_and_a_newer_one_replaces_it(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+    breaks = Breaks(pre=True)
+    h = await Harness.create(tmp_path, provider=FakeProvider([held(gate)]), extensions=[breaks])
+    breaking = h.driver.open(SYS, "term")
+    breaks.only = breaking
+    stream = h.driver.events(buffer=1)
+    await h.send("hi")  # this cursor's reply streams into the one-event buffer
+    await h.settle()
+    await h.step(breaking)  # the buffer is full of Live: the HookError still arrives
+    await h.settle()
+    await h.step(breaking)  # a newer failure of the same cursor replaces it
+    await h.settle()
+    gate.release()
+    (seen,) = await drain(h, stream)
+    assert len(hook_errors(seen)) == 1
+    assert len(lives(seen)) <= 1

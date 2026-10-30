@@ -30,7 +30,7 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import Answer, Author, Body, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
-from tau_next.events import CallKey, Event, EventStream, Live, LiveDelta, Saved
+from tau_next.events import CallKey, Event, EventStream, HookError, Live, LiveDelta, Saved
 from tau_next.handles import Changed, Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
 
@@ -472,7 +472,8 @@ class Driver:
                         announce,
                     )
 
-                effect = partial(run_hooks, job, subject, self._extensions, cursor_for)
+                failed = partial(_hook_error, self._streams, cursor)
+                effect = partial(run_hooks, job, subject, self._extensions, cursor_for, failed)
                 self._out[cursor] = _Outstanding()
                 self._unit(cursor, effect)
             case Job.Sample():
@@ -571,6 +572,11 @@ def _answered(session: Session, since: int) -> tuple[CallKey, ...]:
 def _live(streams: _Streams, cursor: int, delta: LiveDelta) -> None:
     """A provider's delta or a tool's progress, as the `Live` of the cursor it serves."""
     streams.emit(Live(cursor, delta))
+
+
+def _hook_error(streams: _Streams, cursor: int, point: str, extension: str, error: str) -> None:
+    """A cursor hook's failure, as the `HookError` of the cursor it ran for."""
+    streams.emit(HookError(cursor, point, extension, error))
 
 
 def _announcer(streams: _Streams, own: int) -> Changed:

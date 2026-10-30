@@ -48,11 +48,13 @@ async def run_hooks(
     subject: Subject,
     extensions: Sequence[Extension],
     cursor_for: Callable[[Extension], Cursor],
+    failed: Callable[[str, str, str], None],
 ) -> Answer:
     """Every extension's hook for the point, in order. The first string halts; an exception, or
     a hook that breaks its contract (returns what is not a `str` or `None`, leaves a `draft`
     that is not a `Draft`), fails the step with `"Type: msg"` and its traceback on stderr;
-    otherwise the subject's draft comes back."""
+    otherwise the subject's draft comes back. A failure is also reported as
+    `failed(point, extension name, "Type: msg")`, once, before the answer."""
     name = job.point.name
     for ext in extensions:
         hook = cast("CursorHook | None", getattr(ext, name, None))
@@ -66,7 +68,9 @@ async def run_hooks(
         except (Exception, asyncio.CancelledError) as e:
             if not _hook_failed(e):
                 raise
-            return Answer.HookFailed(_describe(e))
+            error = _describe(e)
+            failed(name, ext.name, error)
+            return Answer.HookFailed(error)
         finally:
             cursor.retire()
         if stop is not None:

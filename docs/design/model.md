@@ -430,13 +430,14 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
 
 ## 9. Events and frontends (partly built: D15)
 
-Built: two kinds, each tagged with a cursor. `Saved` means "the tree changed for this cursor,
+Built: three kinds, each tagged with a cursor. `Saved` means "the tree changed for this cursor,
 look at it" (it carries `calls`, the calls whose results it saved, and `reply`, true when a
 sample's answer was saved); `Live` carries what is never saved: a provider's `TextDelta`,
 `ThinkingDelta`, `CallNamed`, `CallArgs`, or a tool's `ToolProgress`. Frontend rules (D15): live
 events are advisory until the next `Saved`; ignore a `CallArgs` whose `CallNamed` you never saw;
 drop a reply's streamed layer at `Saved(reply=True)`; drop a call's progress when `Saved.calls`
-names it. The finer kinds below are not spiked.
+names it. `HookError(cursor, point, extension, error)` is a failed cursor hook, live only (not saved, not
+replayed, never dropped by a full buffer); it is how a frontend shows why a step stopped. The finer kinds below are not spiked.
 
 One `Event` type, tagged with a cursor: `node_appended`, `cursor_moved`,
 `label_changed`, `item_changed`, `question`, `status`

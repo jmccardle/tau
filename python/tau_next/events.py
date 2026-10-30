@@ -3,8 +3,8 @@
 A provider's `sample` stream yields deltas (no cursor: the provider does not know which
 cursor it serves), and a running tool reports `ToolProgress` through its `progress` callback.
 The driver wraps each as a `Live` naming the cursor, and after applying each answer to core
-emits a `Saved` naming it. `Driver.events()` hands a frontend an
-`EventStream` of both.
+emits a `Saved` naming it. A cursor hook that fails is a `HookError`, live-only. `Driver.events()`
+hands a frontend an `EventStream` of all three.
 """
 
 import asyncio
@@ -89,7 +89,21 @@ class Saved:
     reply: bool = False
 
 
-Event = Live | Saved
+@dataclass(frozen=True)
+class HookError:
+    """A cursor hook of `extension` raised, or broke its contract, at hook `point` (`"pre_step"`,
+    `"post_step"`, ...) while running for `cursor`. `error` is `"Type: msg"`, the text a
+    `post_step` hook sees in `Ending.Failed`. Never saved and never replayed on reload: it
+    is how a frontend learns why a step stopped. A tool hook's failure is not one: it is the
+    `Err` in the call's `Results` node."""
+
+    cursor: int
+    point: str
+    extension: str
+    error: str
+
+
+Event = Live | Saved | HookError
 
 
 class EventStream:
@@ -102,9 +116,12 @@ class EventStream:
     deltas (text, thinking, call) buffered for cursor `c`, then joins the end, carrying the
     `calls` of the `Saved(c)` it replaced and the OR of their `reply`. Buffered
     `ToolProgress` of `c` survives it, except the progress of the calls in `Saved.calls`:
-    those calls' results are now in the tree. The bound: at most `capacity` events, plus one
-    `Saved` per cursor. A full buffer drops any `Live`, progress included, so progress that
-    survives clears cannot grow it.
+    those calls' results are now in the tree. A `HookError(c)` is never dropped either (it is
+    the only record of why a step stopped, and is not in the tree): it removes any earlier
+    `HookError(c)` (the newest failure is the one that explains where the cursor stands), joins
+    the end, and survives every `Saved`. The bound: at most `capacity` events, plus one `Saved`
+    and one `HookError` per cursor. A full buffer drops any `Live`, progress included, so
+    progress that survives clears cannot grow it.
 
     `aclose()` unsubscribes. The driver holds streams weakly, so one abandoned without
     `aclose()` is collected. When the driver stops the stream ends after what it holds;
@@ -131,6 +148,12 @@ class EventStream:
         if isinstance(event, Saved):
             event = self._merged(event)
             self._buffer = [held for held in self._buffer if self._survives(held, event)]
+        elif isinstance(event, HookError):
+            self._buffer = [
+                held
+                for held in self._buffer
+                if not (isinstance(held, HookError) and held.cursor == event.cursor)
+            ]
         elif len(self._buffer) >= self.capacity:
             return
         self._buffer.append(event)
@@ -148,9 +171,9 @@ class EventStream:
     @staticmethod
     def _survives(held: Event, saved: Saved) -> bool:
         """Whether a buffered event outlives `saved`: another cursor's does; this cursor's
-        `Saved` does not; its `Live` stays unless `saved` is a reply (deltas) or answers the
-        call (progress)."""
-        if held.cursor != saved.cursor:
+        `Saved` does not, its `HookError` does; its `Live` stays unless `saved` is a reply
+        (deltas) or answers the call (progress)."""
+        if held.cursor != saved.cursor or isinstance(held, HookError):
             return True
         if not isinstance(held, Live):
             return False

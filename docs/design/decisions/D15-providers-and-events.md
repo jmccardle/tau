@@ -348,6 +348,25 @@ whose `provider` is not its own.
    until the slow call of the batch ended. A call answer that changed nothing still emits
    nothing.
 
+21. **`HookError`: a failed cursor hook is a live event, not a saved one (ruling 2026-10-30).**
+   When a cursor hook (`pre_input`, `pre_step`, `pre_sample`, `pre_reply`, `post_reply`,
+   `post_result`, `post_step`) raises or breaks its contract, the failure is not written to
+   the session: core ends the step with `Ending.Failed`, and the driver emits
+   `HookError(cursor, point, extension, error)` to the frontends, `error` being the same
+   `"Type: msg"` text `post_step` hooks see (traceback still on stderr). It is emitted for
+   every cursor-hook failure, a failing `post_step` included (that hook's `Ending` is the one
+   it fails *after*, so nothing else would tell). It names the cursor the hook ran for, so
+   `driver.events(cursor)` filters it like the rest. It is not replayed on reload: a frontend
+   that was not subscribed never learns it, and an extension that wants the record keeps it
+   (a logging extension can write it to its own file, or to a node with `cursor.append`).
+   A tool hook's failure is not a `HookError`: it is the `Err` in the call's `Results` node.
+   *Delivery:* a `HookError` is never dropped by a full buffer. It is the only record of why
+   a step stopped and is not in the tree to be re-read, so rule 1 (read the tree) cannot make
+   up for losing it. To keep the stream bounded, a `HookError(c)` replaces the buffered
+   `HookError(c)` before it (the newest failure explains where the cursor stands, as one
+   `Saved(c)` stands for many), and no `Saved` removes one. The bound becomes: at most
+   `capacity` events, plus one `Saved` and one `HookError` per cursor.
+
 ## Review 2026-10-30
 
 A layered review of the providers and the events (driver boundary, shared wire code, each
@@ -474,6 +493,9 @@ prompt, turns 2-4:
 3. Drop a reply's streamed layer (text, thinking, call deltas) at `Saved(reply=True)`. No
    other `Saved` clears it.
 4. Drop a call's progress layer, keyed by `(node, call_id)`, when a `Saved.calls` names it.
+5. Show a `HookError` as why the cursor's step stopped. It is not in the tree and not replayed:
+   keep it as long as the cursor's status is on screen, and expect none for a failure that
+   happened before you subscribed.
 
 ### Provider settings worth knowing
 
