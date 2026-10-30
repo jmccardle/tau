@@ -452,6 +452,14 @@ prompt, turns 2-4:
   error with the server's message, as it should be.
 - A reasoning model behind an OpenAI-compatible endpoint (Paper Instruments
   `ultramarine-1-flash`) streams `reasoning_content`; it is kept as a `Thinking` part.
+- *The Anthropic empty reply after tool results* (was Open; option A, change nothing, stands).
+  A `Results` node followed by a `User` node goes out as one user message, tool results then
+  text, which Anthropic's docs say can give an empty `end_turn`. 80 samples (Haiku and
+  Sonnet, 10 each of four shapes: a follow-up question, a bare "thanks", "go on" mid-task, a
+  new instruction mid-task) gave no empty reply: answers, or the next tool call. No
+  placeholder and no unmerging.
+- *Anthropic tool-id length* (was Open). Ids of 40 to 1024 characters are accepted; ids are
+  mapped for their characters only, never shortened, and that is enough.
 - OpenAI proper is not exercised (no key or credits).
 
 ### Frontend rules for events
@@ -479,13 +487,6 @@ prompt, turns 2-4:
 
 ## Open
 
-- The Anthropic empty-reply-after-tool-results loop. A `Results` node followed by a `User`
-  node merges into one user message of `tool_result` blocks and text. The docs say text right
-  after tool results commonly gives an empty `end_turn`; the provider drops the empty reply,
-  the next request merges again, and the loop repeats. John chose A, leave it, for now. B (a
-  placeholder) if it is seen in practice. C (do not merge) needs a live test first.
-- An Anthropic tool-id length limit. Ids must match `[a-zA-Z0-9_-]+` and are mapped by a pure
-  function, never shortened; whether the API limits their length is unverified.
 - Whether `Refused` should override `Length` for OpenAI when both apply (a `refusal` delta,
   then `finish_reason: length`). It does now; the spec is open.
 - A configurable timeout (D7).
