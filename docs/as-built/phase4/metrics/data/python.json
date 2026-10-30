@@ -1,0 +1,546 @@
+{
+ "src": {
+  "files": 25,
+  "total_lines": 7184,
+  "cc": {
+   "count": 455,
+   "max": 21,
+   "p50": 2,
+   "p90": 9,
+   "p99": 15,
+   "mean": 3.7,
+   "over_10": 25,
+   "over_15": 2,
+   "over_20": 1,
+   "over_40": 0
+  },
+  "function_loc": {
+   "count": 455,
+   "max": 49,
+   "p50": 7,
+   "p90": 24,
+   "p99": 44,
+   "mean": 10.24,
+   "over_50": 0,
+   "over_100": 0
+  },
+  "file_lines": {
+   "count": 25,
+   "max": 713,
+   "p50": 246,
+   "p90": 638,
+   "p99": 713,
+   "mean": 287.36,
+   "over_500": 4,
+   "over_800": 0,
+   "over_1500": 0
+  },
+  "methods_per_class": {
+   "count": 89,
+   "max": 42,
+   "p50": 1,
+   "p90": 8,
+   "p99": 42,
+   "mean": 2.91,
+   "over_25": 1
+  },
+  "top_cc": [
+   {
+    "file": "python/tau_next/_config_layers.py",
+    "name": "_merge_models",
+    "line": 287,
+    "cc": 21,
+    "loc": 49,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/events.py",
+    "name": "offer",
+    "line": 127,
+    "cc": 16,
+    "loc": 18,
+    "class": "EventStream"
+   },
+   {
+    "file": "python/tau_next/tools.py",
+    "name": "_params",
+    "line": 159,
+    "cc": 15,
+    "loc": 48,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/providers/anthropic.py",
+    "name": "_thinking_problems",
+    "line": 331,
+    "cc": 15,
+    "loc": 33,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/providers/gemini.py",
+    "name": "_thinking_problems",
+    "line": 464,
+    "cc": 15,
+    "loc": 22,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/providers/openai.py",
+    "name": "_call",
+    "line": 226,
+    "cc": 14,
+    "loc": 23,
+    "class": "_Stream"
+   },
+   {
+    "file": "python/tau_next/providers/openai.py",
+    "name": "_read",
+    "line": 261,
+    "cc": 14,
+    "loc": 31,
+    "class": "_Stream"
+   },
+   {
+    "file": "python/tau_next/effects.py",
+    "name": "_delta",
+    "line": 219,
+    "cc": 13,
+    "loc": 28,
+    "class": "SampleRun"
+   },
+   {
+    "file": "python/tau_next/cli.py",
+    "name": "main",
+    "line": 219,
+    "cc": 13,
+    "loc": 36,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/tools.py",
+    "name": "_kind",
+    "line": 120,
+    "cc": 13,
+    "loc": 16,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/_config_layers.py",
+    "name": "model",
+    "line": 512,
+    "cc": 13,
+    "loc": 44,
+    "class": "_Resolver"
+   },
+   {
+    "file": "python/tau_next/providers/anthropic.py",
+    "name": "_delta",
+    "line": 215,
+    "cc": 13,
+    "loc": 21,
+    "class": "_Stream"
+   },
+   {
+    "file": "python/tau_next/providers/_anthropic_request.py",
+    "name": "_thinkless_loop",
+    "line": 105,
+    "cc": 13,
+    "loc": 26,
+    "class": null
+   },
+   {
+    "file": "python/tau_next/providers/_wire.py",
+    "name": "sample",
+    "line": 393,
+    "cc": 13,
+    "loc": 49,
+    "class": "Connection"
+   },
+   {
+    "file": "python/tau_next/providers/gemini.py",
+    "name": "_text",
+    "line": 301,
+    "cc": 13,
+    "loc": 27,
+    "class": "_Stream"
+   }
+  ],
+  "top_files": [
+   {
+    "file": "python/tau_next/_config_layers.py",
+    "lines": 713
+   },
+   {
+    "file": "python/tau_next/_trust.py",
+    "lines": 640
+   },
+   {
+    "file": "python/tau_next/providers/gemini.py",
+    "lines": 638
+   },
+   {
+    "file": "python/tau_next/providers/anthropic.py",
+    "lines": 514
+   },
+   {
+    "file": "python/tau_next/providers/_wire.py",
+    "lines": 467
+   },
+   {
+    "file": "python/tau_next/providers/openai.py",
+    "lines": 439
+   },
+   {
+    "file": "python/tau_next/driver.py",
+    "lines": 435
+   },
+   {
+    "file": "python/tau_next/effects.py",
+    "lines": 428
+   },
+   {
+    "file": "python/tau_next/tools.py",
+    "lines": 331
+   },
+   {
+    "file": "python/tau_next/handles.py",
+    "lines": 293
+   }
+  ],
+  "top_classes": [
+   {
+    "file": "python/tau_next/driver.py",
+    "name": "Driver",
+    "line": 51,
+    "methods": 42
+   },
+   {
+    "file": "python/tau_next/handles.py",
+    "name": "TreeHandle",
+    "line": 64,
+    "methods": 22
+   },
+   {
+    "file": "python/tau_next/handles.py",
+    "name": "Cursor",
+    "line": 214,
+    "methods": 13
+   },
+   {
+    "file": "python/tau_next/_config_layers.py",
+    "name": "_Resolver",
+    "line": 396,
+    "methods": 11
+   },
+   {
+    "file": "python/tau_next/providers/anthropic.py",
+    "name": "_Stream",
+    "line": 142,
+    "methods": 11
+   },
+   {
+    "file": "python/tau_next/events.py",
+    "name": "EventStream",
+    "line": 95,
+    "methods": 10
+   },
+   {
+    "file": "python/tau_next/providers/gemini.py",
+    "name": "_Stream",
+    "line": 260,
+    "methods": 10
+   },
+   {
+    "file": "python/tau_next/providers/openai.py",
+    "name": "_Stream",
+    "line": 163,
+    "methods": 10
+   },
+   {
+    "file": "python/tau_next/tools.py",
+    "name": "FunctionTool",
+    "line": 213,
+    "methods": 8
+   },
+   {
+    "file": "python/tau_next/effects.py",
+    "name": "CallRun",
+    "line": 288,
+    "methods": 7
+   }
+  ]
+ },
+ "tests": {
+  "files": 49,
+  "total_lines": 11171,
+  "cc": {
+   "count": 763,
+   "max": 18,
+   "p50": 3,
+   "p90": 6,
+   "p99": 10,
+   "mean": 3.32,
+   "over_10": 6,
+   "over_15": 1,
+   "over_20": 0,
+   "over_40": 0
+  },
+  "function_loc": {
+   "count": 763,
+   "max": 59,
+   "p50": 2,
+   "p90": 13,
+   "p99": 29,
+   "mean": 4.57,
+   "over_50": 1,
+   "over_100": 0
+  },
+  "file_lines": {
+   "count": 49,
+   "max": 856,
+   "p50": 174,
+   "p90": 541,
+   "p99": 856,
+   "mean": 227.98,
+   "over_500": 6,
+   "over_800": 1,
+   "over_1500": 0
+  },
+  "methods_per_class": {
+   "count": 40,
+   "max": 23,
+   "p50": 1,
+   "p90": 5,
+   "p99": 23,
+   "mean": 2.58,
+   "over_25": 0
+  },
+  "top_cc": [
+   {
+    "file": "tests/providers/test_gemini_stream.py",
+    "name": "test_thoughts_then_chunked_text_are_two_parts_and_the_signature_lands_on_the_text",
+    "line": 58,
+    "cc": 18,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_openai_driver.py",
+    "name": "test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message",
+    "line": 88,
+    "cc": 12,
+    "loc": 59,
+    "class": null
+   },
+   {
+    "file": "tests/tools/test_truncation.py",
+    "name": "test_read_keeps_the_head_and_the_file_holds_everything",
+    "line": 19,
+    "cc": 12,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_mock.py",
+    "name": "test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_streamed",
+    "line": 111,
+    "cc": 11,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/behavior/test_tool_progress.py",
+    "name": "test_progress_flooding_a_full_buffer_is_dropped_and_saves_do_not_grow_it",
+    "line": 240,
+    "cc": 11,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/behavior/fakes.py",
+    "name": "sample",
+    "line": 144,
+    "cc": 11,
+    "loc": 28,
+    "class": "FakeProvider"
+   },
+   {
+    "file": "tests/providers/test_connection.py",
+    "name": "test_a_plain_turn_logs_the_model_name_and_neither_the_key_nor_the_url",
+    "line": 313,
+    "cc": 10,
+    "loc": 18,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_anthropic_request.py",
+    "name": "test_foreign_and_unsigned_thinking_is_not_sent_and_signed_thinking_is",
+    "line": 85,
+    "cc": 10,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/behavior/test_events.py",
+    "name": "test_a_provider_that_breaks_the_ordering_rule_fails_the_sample_and_keeps_the_text",
+    "line": 309,
+    "cc": 10,
+    "loc": 14,
+    "class": null
+   },
+   {
+    "file": "tests/core/test_session.py",
+    "name": "test_create_in_memory_has_a_config_root_a_system_node_and_one_cursor",
+    "line": 45,
+    "cc": 10,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_mock.py",
+    "name": "test_the_reply_streams_as_several_deltas_then_is_saved_whole",
+    "line": 65,
+    "cc": 9,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_openai_contract.py",
+    "name": "test_text_arrives_as_deltas_then_the_part_then_the_finish_with_what_the_server_said",
+    "line": 53,
+    "cc": 9,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_gemini_stream.py",
+    "name": "test_a_call_with_no_id_is_given_a_unique_one_that_is_never_sent_back",
+    "line": 121,
+    "cc": 9,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tests/providers/test_anthropic_odd_walks.py",
+    "name": "test_ids_the_api_would_refuse_are_mapped_alike_in_the_call_and_its_result",
+    "line": 115,
+    "cc": 9,
+    "loc": 20,
+    "class": null
+   },
+   {
+    "file": "tests/tools/test_truncation.py",
+    "name": "test_bash_keeps_the_tail_and_the_file_holds_everything",
+    "line": 37,
+    "cc": 9,
+    "loc": 1,
+    "class": null
+   }
+  ],
+  "top_files": [
+   {
+    "file": "tests/behavior/test_tree.py",
+    "lines": 856
+   },
+   {
+    "file": "tests/config/test_layers.py",
+    "lines": 623
+   },
+   {
+    "file": "tests/behavior/test_scenarios.py",
+    "lines": 606
+   },
+   {
+    "file": "tests/providers/wire.py",
+    "lines": 555
+   },
+   {
+    "file": "tests/behavior/test_tools.py",
+    "lines": 541
+   },
+   {
+    "file": "tests/behavior/test_events.py",
+    "lines": 537
+   },
+   {
+    "file": "tests/cli/test_tau_command.py",
+    "lines": 431
+   },
+   {
+    "file": "tests/config/test_trust.py",
+    "lines": 390
+   },
+   {
+    "file": "tests/providers/test_openai_contract.py",
+    "lines": 371
+   },
+   {
+    "file": "tests/providers/test_anthropic_stream.py",
+    "lines": 354
+   }
+  ],
+  "top_classes": [
+   {
+    "file": "tests/behavior/harness.py",
+    "name": "Harness",
+    "line": 53,
+    "methods": 23
+   },
+   {
+    "file": "tests/behavior/fakes.py",
+    "name": "Recorder",
+    "line": 226,
+    "methods": 15
+   },
+   {
+    "file": "tests/behavior/fakes.py",
+    "name": "FakeProvider",
+    "line": 120,
+    "methods": 6
+   },
+   {
+    "file": "tests/providers/wire.py",
+    "name": "KeepAliveServer",
+    "line": 149,
+    "methods": 5
+   },
+   {
+    "file": "tests/examples/test_retry.py",
+    "name": "ScriptedProvider",
+    "line": 58,
+    "methods": 5
+   },
+   {
+    "file": "tests/behavior/fakes.py",
+    "name": "FakeTool",
+    "line": 174,
+    "methods": 5
+   },
+   {
+    "file": "tests/providers/wire.py",
+    "name": "Server",
+    "line": 56,
+    "methods": 4
+   },
+   {
+    "file": "tests/providers/wire.py",
+    "name": "Dialect",
+    "line": 333,
+    "methods": 4
+   },
+   {
+    "file": "tests/behavior/fakes.py",
+    "name": "Gate",
+    "line": 40,
+    "methods": 4
+   },
+   {
+    "file": "tests/behavior/test_events.py",
+    "name": "Rogue",
+    "line": 343,
+    "methods": 4
+   }
+  ]
+ }
+}
