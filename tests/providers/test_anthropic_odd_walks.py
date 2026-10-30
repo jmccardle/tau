@@ -26,11 +26,11 @@ SIGNED = Replay("anthropic", '{"type": "thinking", "signature": "' + SIGNATURE +
 
 
 async def walk_after(
-    tmp_path: Path, script: list[Reply], *inputs: str
+    tmp_path: Path, script: list[Reply], *inputs: str, system: str = "be brief", result: str = "A"
 ) -> tuple[Harness, list[Node]]:
     """A session that has run `script` for each input, and its walk."""
     h = await Harness.create(
-        tmp_path, system="be brief", provider=FakeProvider(script), tools=[FakeTool("ta", "A")]
+        tmp_path, system=system, provider=FakeProvider(script), tools=[FakeTool("ta", result)]
     )
     for line in inputs:
         await h.send(line)
@@ -38,10 +38,14 @@ async def walk_after(
     return h, h.session.tree.walk(h.session.cursor(h.cursor).at)
 
 
-def messages(walk: list[Node], **options: object) -> list[dict[str, object]]:
+def request(walk: list[Node], tools: bool = True, **options: object) -> dict[str, object]:
     model: ModelConfig = replace(RESOLVED, options={"prompt_caching": False, **options})
-    body = AnthropicProvider(environ=ENVIRON).request(walk, model, [])[2]
-    return body["messages"]  # type: ignore[return-value]
+    offered = [FakeTool("ta", "A")] if tools else []
+    return AnthropicProvider(environ=ENVIRON).request(walk, model, offered)[2]
+
+
+def messages(walk: list[Node], **options: object) -> list[dict[str, object]]:
+    return request(walk, **options)["messages"]  # type: ignore[return-value]
 
 
 @scenario
@@ -174,3 +178,107 @@ async def test_a_signature_that_cannot_be_kept_as_replay_data_fails_the_sample()
     assert error is not None
     assert "replay" in str(error)
     assert not any(isinstance(i, Part.Thinking) and i.replay for i in items)
+
+
+def loop_script(first: list[Part]) -> list[Reply]:
+    """A tool loop of two batches (`first` opens it) and a closing reply."""
+    return [
+        Reply(first, Stop.Tools),
+        Reply([Part.Call("b", "ta", "{}")], Stop.Tools),
+        Reply([Part.Text("done")]),
+    ]
+
+
+def kinds(sent: list[dict[str, object]]) -> list[list[str]]:
+    return [[b["type"] for b in m["content"]] for m in sent]  # type: ignore[attr-defined]
+
+
+MANUAL = {"type": "enabled", "budget_tokens": 2048}
+
+
+@scenario
+async def test_manual_thinking_keeps_every_batch_of_a_loop_that_opened_with_thinking(
+    tmp_path: Path,
+) -> None:
+    script = loop_script([Part.Thinking("mine", SIGNED), Part.Call("a", "ta", "{}")])
+    h, walk = await walk_after(tmp_path, script, "go")
+    sent = messages(walk[:-1], thinking=MANUAL)
+    assert kinds(sent) == [
+        ["text"],
+        ["thinking", "tool_use"],
+        ["tool_result"],
+        ["tool_use"],
+        ["tool_result"],
+    ]
+    await h.close()
+
+
+@scenario
+async def test_manual_thinking_sends_every_batch_of_a_loop_that_opened_without_it_as_text(
+    tmp_path: Path,
+) -> None:
+    h, walk = await walk_after(tmp_path, loop_script([Part.Call("a", "ta", "{}")]), "go")
+    sent = messages(walk[:-1], thinking=MANUAL)
+    assert kinds(sent) == [["text"], ["text"], ["text"], ["text"], ["text"]]
+    assert sent[3]["content"] == [{"type": "text", "text": "[tool call b: ta {}]"}]
+    again = messages(walk[:-1], thinking=MANUAL)
+    assert again == sent, "the same walk is the same request"
+    await h.close()
+
+
+@scenario
+async def test_manual_thinking_leaves_a_finished_loop_alone(tmp_path: Path) -> None:
+    script = [*loop_script([Part.Call("a", "ta", "{}")]), Reply([Part.Text("next")])]
+    h, walk = await walk_after(tmp_path, script, "go", "more")
+    sent = messages(walk[:-1], thinking=MANUAL)
+    assert kinds(sent) == [
+        ["text"],
+        ["tool_use"],
+        ["tool_result"],
+        ["tool_use"],
+        ["tool_result"],
+        ["text"],
+        ["text"],
+    ]
+    await h.close()
+
+
+@scenario
+async def test_without_tools_a_batch_in_the_history_goes_as_text(tmp_path: Path) -> None:
+    script = [Reply([Part.Call("a", "ta", "{}")], Stop.Tools), Reply([Part.Text("ok")])]
+    h, walk = await walk_after(tmp_path, script, "go")
+    body = request(walk[:-1], tools=False)
+    assert "tools" not in body
+    assert kinds(body["messages"]) == [["text"], ["text"], ["text"]]  # type: ignore[arg-type]
+    assert kinds(messages(walk[:-1])) == [["text"], ["tool_use"], ["tool_result"]]
+    await h.close()
+
+
+@scenario
+async def test_an_empty_system_and_blank_user_text_are_left_out_of_the_request(
+    tmp_path: Path,
+) -> None:
+    h, walk = await walk_after(tmp_path, [Reply([Part.Text("a")])], "q", system="")
+    blank = h.session.append(walk[-1].id, Body.User(""), Author.Core(), 0)
+    model = RESOLVED
+    body = AnthropicProvider(environ=ENVIRON).request(h.session.tree.walk(blank), model, [])[2]
+    assert "system" not in body
+    assert kinds(body["messages"]) == [["text"], ["text"]]  # type: ignore[arg-type]
+    marks = [b for m in body["messages"] for b in m["content"] if "cache_control" in b]  # type: ignore[attr-defined]
+    assert marks == [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}}]
+    await h.close()
+
+
+@scenario
+async def test_an_empty_tool_result_does_not_carry_the_cache_mark(tmp_path: Path) -> None:
+    script = [
+        Reply([Part.Call("a", "ta", "{}"), Part.Call("b", "ta", "{}")], Stop.Tools),
+        Reply([Part.Text("ok")]),
+    ]
+    h, walk = await walk_after(tmp_path, script, "go", result="")
+    model = RESOLVED
+    tools = [FakeTool("ta", "")]
+    body = AnthropicProvider(environ=ENVIRON).request(walk[:-1], model, tools)[2]
+    results = body["messages"][-1]["content"]  # type: ignore[index]
+    assert all("cache_control" not in r for r in results)
+    await h.close()

@@ -1066,10 +1066,29 @@ then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_
 `Length`, `refusal` to `Refused`; any other fails the sample. `meta`: `id`, `model`, `usage`
 `{"input", "output", "cached"}` (`input` is `input_tokens` plus cache reads plus
 `cache_creation_input_tokens`, `cached` the reads alone), `usage_raw` (the cumulative usage
-as sent), `stop_details` when sent. Errors: an HTTP error or `error` event is a `SampleError`
+as sent), `stop_details` when sent, and the `request-id` response header as `request_id` (on
+failures too). The provider sends no `anthropic-beta` header, so `check` refuses what needs
+one: `thinking.display` `updates`, `thinking.block_binding`, and `extra_body.context_management`. Errors: an HTTP error or `error` event is a `SampleError`
 whose `status` is the response's, or for an event the status its `type` stands for (529 for
 `overloaded_error`), with `retry_after` from the header. Client handling is OpenAI's: one
 long-lived client, per event loop, `ProviderClosed` after `aclose()`.
+
+### _anthropic_request (the Anthropic request module)
+`tau_next.providers._anthropic_request` · D15 · new
+
+The walk as an Anthropic request, split from `providers/anthropic.py` (which reads the
+response) to stay under the file-size ratchet: `conversation(walk, manual_thinking, has_tools)`
+gives `system` and `messages`, `tools_array`, and `breakpoints` the cache marks. It
+applies `turns` and holds every rule above that turns a walk into text instead of failing it.
+Private: the shapes may change with the next provider.
+
+### _wire (the provider helpers module)
+`tau_next.providers._wire` · D15 · new
+
+HTTP and JSON helpers an SSE provider needs: `retry_after` (a `Retry-After` header as seconds),
+`sse_data` (the `data` of each SSE event, reading the body to its end), `plain`, `non_finite`,
+`is_number`, `is_count`. `openai.py` has older copies; one pass moves every provider onto this
+module. Private to the package.
 
 ### MockProvider
 `tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new

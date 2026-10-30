@@ -18,6 +18,7 @@ from tau_next.providers._walk import (
     CallResult,
     SystemTurn,
     ToolResults,
+    Turn,
     UserTurn,
     call_markup,
     stop_note,
@@ -26,7 +27,10 @@ from tau_next.providers._walk import (
 from tau_next.providers._wire import Json, plain
 
 NAME = "anthropic"
-_UNSIGNED_BLOCKS = ("thinking", "redacted_thinking")  # `cache_control` is refused on these
+_SIGNED_BLOCKS = (
+    "thinking",
+    "redacted_thinking",
+)  # blocks only the model may write; no `cache_control`
 _CACHE = {"type": "ephemeral"}
 
 
@@ -93,7 +97,11 @@ def _assistant(turn: AssistantTurn) -> list[Json]:
                     blocks.append(_text(text))
             case Part.Call() if turn.runnable:
                 args = _object_args(part)
-                assert args is not None, "an unsendable batch must be sent as text"
+                if args is None:
+                    raise SampleError(
+                        f"call {part.id} ({part.tool}) would go as tool_use but its arguments "
+                        "are not a JSON object"
+                    )
                 blocks.append(
                     {"type": "tool_use", "id": _wire_id(part.id), "name": part.tool, "input": args}
                 )
@@ -106,20 +114,37 @@ def _assistant(turn: AssistantTurn) -> list[Json]:
     return blocks
 
 
-def _sendable(turn: AssistantTurn, must_open_with_thinking: bool) -> bool:
-    """Whether a runnable batch can go as `tool_use` blocks. Not if a call's arguments are not
-    an object, nor, when `must_open_with_thinking`, if its blocks do not open with thinking:
-    with manual extended thinking (`thinking.type` `enabled`) the final assistant turn must
-    start with a thinking block (docs, "Turn structure in manual mode"), and a batch from
-    another provider has none. Such a batch goes as text, as do its results, so the walk stays
-    sendable (a failure here would fail every later sample on the branch, `model.md` 10.7)."""
-    calls = [p for p in turn.parts if isinstance(p, Part.Call)]
-    if any(_object_args(c) is None for c in calls):
-        return False
-    if must_open_with_thinking:
-        blocks = _assistant(turn)
-        return bool(blocks) and blocks[0]["type"] in _UNSIGNED_BLOCKS
-    return True
+def _args_ok(turn: AssistantTurn) -> bool:
+    """Whether every call of a batch has an object for arguments, as `tool_use.input` must be."""
+    return all(_object_args(p) is not None for p in turn.parts if isinstance(p, Part.Call))
+
+
+def _thinkless_loop(all_turns: list[Turn]) -> int | None:
+    """Under manual extended thinking (`thinking.type` `enabled`) the docs make a tool-use loop
+    one assistant turn, and the final assistant turn of the request must start with a thinking
+    block. So when the walk ends in `tool_result` blocks, the loop in progress (everything after
+    the last user message holding more than `tool_result`) must open with thinking in its first
+    assistant message. Returns the index of that turn when it does not (a loop begun by another
+    provider), and the loop's batches then go as text, as do their results, so the walk stays
+    sendable (a failure here would fail every later sample on the branch, `model.md` 10.7). Only
+    the walk decides, so the answer is the same for every request of the loop."""
+    if not all_turns or not isinstance(all_turns[-1], ToolResults):
+        return None
+    start = 0
+    spoken = False  # a turn other than `System` has been seen
+    for i, turn in enumerate(all_turns):
+        if (isinstance(turn, UserTurn) and turn.text.strip()) or (
+            isinstance(turn, SystemTurn) and spoken
+        ):
+            start = i + 1
+        spoken = spoken or not isinstance(turn, SystemTurn)
+    for i in range(start, len(all_turns)):
+        turn = all_turns[i]
+        if isinstance(turn, AssistantTurn):
+            blocks = _assistant(replace(turn, runnable=False))
+            if blocks:
+                return None if blocks[0]["type"] in _SIGNED_BLOCKS else i
+    return None
 
 
 def _result_markup(result: CallResult) -> str:
@@ -133,20 +158,25 @@ def _system_note(text: str) -> str:
 
 
 def conversation(
-    walk: Sequence[Node], manual_thinking: bool = False
+    walk: Sequence[Node], *, manual_thinking: bool = False, has_tools: bool = True
 ) -> tuple[str | None, list[Json]]:
     """The top-level `system` text and the `messages` for a walk. Consecutive turns of one role
-    are one message (the API wants roles to alternate), and a reply with nothing to send (empty,
-    or only thinking that is not ours to send) is left out. `System` nodes that open the walk
-    make `system`; one later is a user message `[system: ...]`. `Config` and `Custom` nodes never
-    reach the model. `manual_thinking` is whether the request sets `thinking.type` `enabled`."""
+    are one message (the API wants roles to alternate); a reply with nothing to send (empty,
+    or only thinking that is not ours to send), blank user text, and an empty system are left
+    out. `System` nodes that open the walk make `system`; one later is a user message
+    `[system: ...]`. `Config` and `Custom` nodes never reach the model. `manual_thinking` is
+    whether the request sets `thinking.type` `enabled` (see `_thinkless_loop`). `has_tools` is
+    whether the request offers tools: the API refuses `tool_use` blocks without them, so with
+    none every batch goes as text."""
     system: list[str] = []
     out: list[Json] = []
     all_turns = turns(walk)
-    last = max((i for i, t in enumerate(all_turns) if isinstance(t, AssistantTurn)), default=-1)
+    text_from = _thinkless_loop(all_turns) if manual_thinking else None
     results_as_text = False
 
     def add(role: str, blocks: list[Json]) -> None:
+        if not blocks:
+            return
         if out and out[-1]["role"] == role:
             cast("list[Json]", out[-1]["content"]).extend(blocks)
         else:
@@ -160,21 +190,24 @@ def conversation(
                 else:
                     system.append(text)
             case UserTurn(text=text):
-                add("user", [_text(text)])
+                add("user", [_text(text)] if text.strip() else [])
             case AssistantTurn():
                 shown = turn
-                if turn.runnable and not _sendable(turn, manual_thinking and i == last):
+                as_text = not has_tools or (text_from is not None and i >= text_from)
+                if turn.runnable and (as_text or not _args_ok(turn)):
                     shown = replace(turn, runnable=False)
                     results_as_text = True
-                blocks = _assistant(shown)
-                if blocks:
-                    add("assistant", blocks)
+                add("assistant", _assistant(shown))
             case ToolResults(results=results) if results_as_text:
-                add("user", [_text("\n".join(_result_markup(r) for r in results))])
+                add(
+                    "user",
+                    [_text("\n".join(_result_markup(r) for r in results))] if results else [],
+                )
                 results_as_text = False
             case ToolResults(results=results):
                 add("user", [_tool_result(r) for r in results])
-    return ("\n\n".join(system) if system else None), out
+    joined = "\n\n".join(system)
+    return (joined if joined.strip() else None), out
 
 
 def _tool_result(result: CallResult) -> Json:
@@ -197,15 +230,29 @@ def tools_array(tools: Sequence[Tool]) -> list[Json]:
     ]
 
 
+def _markable(block: Json) -> bool:
+    """Whether `cache_control` may go on a block: not on thinking, nor on an empty one."""
+    kind = block["type"]
+    if kind in _SIGNED_BLOCKS:
+        return False
+    if kind == "text":
+        return bool(str(block["text"]).strip())
+    if kind == "tool_result":
+        return bool(block["content"])
+    return True
+
+
 def breakpoints(system: str | None, messages: list[Json]) -> object:
     """Mark the prefix to cache: everything through the system text (tools come before it), and
-    everything through the last message. A request builds on the last one's prefix, which
-    stays within the API's 20-block lookback unless one turn adds that many blocks. Returns the
-    `system` value: a block list when it carries a mark."""
+    everything through the last message (its last block that may carry a mark). A request
+    builds on the last one's prefix, which stays within the API's 20-block lookback unless one
+    turn adds that many blocks. Returns the `system` value: a block list when it carries a
+    mark, `None` for no system."""
     if messages:
-        last = cast("list[Json]", messages[-1]["content"])[-1]
-        if last["type"] not in _UNSIGNED_BLOCKS:
-            last["cache_control"] = dict(_CACHE)
+        for block in reversed(cast("list[Json]", messages[-1]["content"])):
+            if _markable(block):
+                block["cache_control"] = dict(_CACHE)
+                break
     if system is None:
         return None
     return [{"type": "text", "text": system, "cache_control": dict(_CACHE)}]

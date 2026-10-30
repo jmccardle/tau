@@ -51,8 +51,6 @@ _OWNED_KEYS = ("model", "messages", "system", "stream", "tools", "max_tokens")
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 _THINKING_TYPES = ("adaptive", "enabled", "disabled", "between_tools")
 _DISPLAYS = ("summarized", "omitted")
-_CACHE = {"type": "ephemeral"}
-_UNSIGNED_BLOCKS = ("thinking", "redacted_thinking")  # `cache_control` is refused on these
 
 STOPS: dict[str, Stop] = {
     "end_turn": Stop.End,
@@ -72,6 +70,7 @@ ERROR_STATUS: dict[str, int] = {
     "billing_error": 402,
     "permission_error": 403,
     "not_found_error": 404,
+    "conflict_error": 409,
     "request_too_large": 413,
     "rate_limit_error": 429,
     "api_error": 500,
@@ -360,6 +359,21 @@ async def _events(response: httpx.Response) -> AsyncIterator[Json]:
 # Options
 
 
+def _beta_problems(thinking: object, where: str) -> list[str]:
+    """Settings of a `thinking` object that need an `anthropic-beta` header, which this
+    provider does not send: `display` `updates` and `block_binding` (beta
+    `thinking-display-updates-2026-08-18` and `thinking-binding-controls-2026-08-01`)."""
+    if not isinstance(thinking, Mapping):
+        return []
+    fields = cast("Mapping[str, object]", thinking)
+    problems: list[str] = []
+    if fields.get("display") == "updates":
+        problems.append(f"{where} display 'updates' needs a beta header this provider cannot send")
+    if "block_binding" in fields:
+        problems.append(f"{where} block_binding needs a beta header this provider cannot send")
+    return problems
+
+
 def _thinking_problems(value: object, max_tokens: int | None) -> list[str]:
     if not isinstance(value, Mapping):
         return ["option 'thinking' must be an object"]
@@ -375,7 +389,11 @@ def _thinking_problems(value: object, max_tokens: int | None) -> list[str]:
     problems = [
         f"option 'thinking' of type {kind!r} may not set {k!r}" for k in fields if k not in allowed
     ]
-    if "display" in fields and fields["display"] not in _DISPLAYS:
+    beta = _beta_problems(fields, "option 'thinking'")
+    problems += beta
+    if "block_binding" in fields:
+        problems = [p for p in problems if "may not set 'block_binding'" not in p]
+    if "display" in fields and fields["display"] not in (*_DISPLAYS, "updates"):
         problems.append(f"option 'thinking' display must be one of {list(_DISPLAYS)}")
     if kind == "enabled":
         budget = fields.get("budget_tokens")
@@ -413,6 +431,12 @@ def _extra_body_problems(model: ModelConfig, extra: object) -> list[str]:
             if k in fields
         ]
         + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)]
+        + _beta_problems(fields.get("thinking"), "option 'extra_body' thinking")
+        + (
+            ["option 'extra_body' sets 'context_management', which needs a beta header"]
+            if "context_management" in fields
+            else []
+        )
     )
 
 
@@ -539,7 +563,7 @@ class AnthropicProvider:
             isinstance(thinking, Mapping)
             and cast("Mapping[str, object]", thinking).get("type") == "enabled"
         )
-        system, messages = conversation(walk, manual)
+        system, messages = conversation(walk, manual_thinking=manual, has_tools=bool(tools))
         system_value: object = system
         if options.get("prompt_caching", True):
             system_value = breakpoints(system, messages)
@@ -596,6 +620,9 @@ class AnthropicProvider:
         error: SampleError | None = None
         try:
             async with client.stream("POST", url, headers=headers, json=body) as response:
+                request_id = response.headers.get("request-id")
+                if request_id:
+                    reply.meta["request_id"] = request_id  # what support asks for
                 if response.status_code != HTTP_OK:
                     await self._refuse(response)
                 async for event in _events(response):

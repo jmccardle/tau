@@ -245,6 +245,13 @@ def test_check_accepts_the_listed_options() -> None:
         ({"thinking": {"type": "adaptive", "budget_tokens": 2048}}, "may not set 'budget_tokens'"),
         ({"thinking": {"type": "disabled", "display": "omitted"}}, "may not set 'display'"),
         ({"thinking": {"type": "adaptive", "display": "full"}}, "display must be one of"),
+        ({"thinking": {"type": "adaptive", "display": "updates"}}, "needs a beta header"),
+        ({"thinking": {"type": "adaptive", "block_binding": {}}}, "block_binding needs a beta"),
+        (
+            {"extra_body": {"thinking": {"type": "adaptive", "display": "updates"}}},
+            "needs a beta header",
+        ),
+        ({"extra_body": {"context_management": {}}}, "needs a beta header"),
         ({"extra_body": []}, "'extra_body' must be an object"),
         ({"extra_body": {"messages": []}}, "may not set 'messages'"),
         ({"extra_body": {"max_tokens": 9}}, "may not set 'max_tokens'"),

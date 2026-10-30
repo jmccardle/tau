@@ -190,16 +190,33 @@ whose `provider` is not its own.
    `pause_turn` is not expected), `stop_sequence` to `End`; a stream `error` event takes the
    status its `type` stands for. Walks that would make the API refuse are sent as text
    instead of failing every later sample (§10.7): a runnable batch whose `args_raw` is not a
-   JSON object, or lacking thinking under manual thinking, goes as call markup with its results
+   JSON object, any batch when the sample offers no tools (the API refuses `tool_use` blocks
+   without `tools`), or a batch of a loop that did not open with thinking under manual thinking
+   (a tool loop is one assistant turn, and the final turn of a request must start with a
+   thinking block; checked only when the walk ends in tool results, on the loop's first
+   assistant message), goes as call markup with its results
    as `[tool result ...]` user text; empty assistant turns are dropped and neighbours merge;
    a `System` node after the start becomes user text `[system: ...]`; ids the API refuses
    are mapped by a pure function (bad characters to `_`, plus a hash). Replay that cannot
    become a `Replay` fails the sample. Caching marks the system text and the last message
    (default on); a turn that adds 20 or more blocks past the last mark misses the cache
-   (the API's lookback window). `Part.Thinking` text is the summary, so a round trip sends
+   (the API's lookback window). The provider sends no `anthropic-beta` header, so `check`
+   refuses the options that need one. It keeps `anthropic-version: 2023-06-01`:
+   `2026-10-21` removes `temperature`, `top_p` and `top_k`. `Part.Thinking` text is the summary, so a round trip sends
    the signature and the summary together as received.
 
 ## Open
+
+- Text after tool results. A `Results` node followed by a `User` node merges into one user
+  message of `tool_result` blocks and text. The docs say empty `end_turn` replies are commonly
+  caused by text right after tool results; the provider then drops the empty reply, the next
+  request merges again, and the loop repeats. Policy is John's call.
+- A walk that ends on an `Assistant` node is sent as prefill; models 4.6 and later reject that
+  with a 400, which surfaces as a `SampleError`.
+- `_walk` replays the parts of a `Refused` reply; the docs say to discard partial output after a
+  refusal. This affects every provider.
+- A mid-walk `System` node becomes `[system: ...]` user text, which carries user authority;
+  some models now take native `role: "system"` messages.
 
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from

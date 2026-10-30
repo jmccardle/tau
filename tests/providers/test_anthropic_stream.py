@@ -3,12 +3,14 @@ usage, errors, and the one long-lived client. Streams are written by hand (anthr
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 from anthropic_streams import (
     ENVIRON,
+    HEADERS,
     MODEL,
     RESOLVED,
     SIGNATURE,
@@ -31,6 +33,7 @@ from anthropic_streams import (
 )
 from fakes import FakeTool
 from harness import scenario
+from test_openai_contract import KeepAliveServer
 from transcripts import GatedStream, Server, fresh_walk
 
 from tau_next import (
@@ -413,3 +416,40 @@ def test_a_program_that_runs_one_event_loop_per_command_keeps_working() -> None:
         items, error = asyncio.run(collect(anthropic, fresh_walk(), RESOLVED))
         assert error is None
         assert items[0] == Part.Text("x")
+
+
+@scenario
+async def test_the_request_id_header_is_kept_in_meta_on_success_and_on_failure() -> None:
+    headers = {**HEADERS, "request-id": "req_018EeWyXxfu5pfWkrYcMdjWG"}
+    ok = Server(httpx.Response(200, headers=headers, text=message(text(0, ["x"]))))
+    items, _ = await collect(provider(ok), fresh_walk(), RESOLVED)
+    assert isinstance(items[-1], Finish)
+    assert items[-1].meta is not None
+    assert json.loads(items[-1].meta)["request_id"] == "req_018EeWyXxfu5pfWkrYcMdjWG"
+    bad = Server(httpx.Response(500, headers=headers, json={"type": "error", "error": {}}))
+    _, error = await collect(provider(bad), fresh_walk(), RESOLVED)
+    assert error is not None
+    assert error.meta is not None
+    assert json.loads(error.meta) == {"request_id": "req_018EeWyXxfu5pfWkrYcMdjWG"}
+
+
+@scenario
+async def test_a_conflict_error_event_is_status_409() -> None:
+    body = start() + event("error", error={"type": "conflict_error", "message": "busy"})
+    _, error = await collect(provider(stream(body)), fresh_walk(), RESOLVED)
+    assert error is not None
+    assert error.status == 409
+
+
+@scenario
+async def test_two_sequential_samples_use_one_connection() -> None:
+    server = KeepAliveServer(message(text(0, ["hi"])))
+    with server.running() as url:
+        anthropic = AnthropicProvider(environ=ENVIRON)
+        model = replace(RESOLVED, base_url=url.removesuffix("/v1"))
+        for _ in range(3):
+            items, error = await collect(anthropic, fresh_walk(), model)
+            assert error is None
+            assert items[0] == Part.Text("hi")
+        await anthropic.aclose()
+    assert server.connections == 1
