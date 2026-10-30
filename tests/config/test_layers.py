@@ -455,10 +455,15 @@ def test_a_resolved_models_options_cannot_be_changed_through_the_catalog(world: 
 
 
 def test_bad_max_tokens_and_options_are_problems_at_their_key(tmp_path: Path) -> None:
-    bad = [("max_tokens", 0), ("max_tokens", "9"), ("max_tokens", True), ("options", [])]
-    for key, value in bad:
+    for key, value in [("max_tokens", "9"), ("options", [])]:
         config = {"models": {"a": {"model": "a", "provider": "mock", key: value}}}
         assert only_error(check(tmp_path, config)).path == f"models.a.{key}"
+    # a value of the right kind but out of range is `ModelConfig`'s to refuse, at the model
+    for value in (0, True):
+        config = {"models": {"a": {"model": "a", "provider": "mock", "max_tokens": value}}}
+        problem = only_error(check(tmp_path, config))
+        assert problem.path == "models.a"
+        assert "'max_tokens' must be a positive integer" in problem.message
 
 
 def test_an_invalid_group_value_is_not_repeated_as_missing_on_each_model(tmp_path: Path) -> None:

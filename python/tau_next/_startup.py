@@ -58,7 +58,7 @@ def load_config(
     """
     home = tau_home(environ)
     user = user_config_path(home)
-    root = find_project(cwd, environ)
+    root = find_project(cwd, environ).root
     project = None if root is None else ensure_trusted(root, home, ask=ask)
     catalog = project.read_models(user, cli) if project else read_models(user, cli=cli)
     return LoadedConfig(catalog, project_environment(project, environ), project, home)

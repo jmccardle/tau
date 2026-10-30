@@ -109,6 +109,7 @@ def test_check_warns_about_an_unset_key_variable_unless_the_dotenv_sets_it(world
     trust(world, root)
     assert "P_KEY" in tau(world, "config", "check", cwd=root).out
     (root / ".env").write_text("P_KEY=abc\n", encoding="utf-8")
+    trust(world, root)  # approval pins the .env too
     assert tau(world, "config", "check", cwd=root).out == ""
 
 
@@ -223,17 +224,12 @@ def test_trust_refuses_a_config_with_errors_and_the_report_travels_with_the_refu
         loaded(world, root)
 
 
-def test_trust_without_a_project_or_a_directory_says_so_in_one_line(world: World) -> None:
-    work = world.home / "work"
-    work.mkdir()
-    result = tau(world, "trust", cwd=work)
-    assert result.code == 1
-    assert "no project" in result.err
-    assert "Traceback" not in result.err
+def test_trust_of_a_missing_directory_says_so_in_one_line(world: World) -> None:
     missing = tau(world, "trust", "nowhere")
     assert missing.code == 1
     assert missing.err.count("\n") == 1
     assert "not a directory" in missing.err
+    assert "Traceback" not in missing.err
 
 
 def test_trust_twice_says_already_trusted_and_a_change_asks_again(world: World) -> None:

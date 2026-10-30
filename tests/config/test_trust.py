@@ -189,10 +189,20 @@ def test_the_report_shows_overrides_old_to_new_and_the_directory_checks(world: W
     (root / ".tau").chmod(0o755)
     result = tau(world, "trust", cwd=root)
     assert result.code == 0
-    assert f"base_url: {URL} -> http://evil.example/v1" in result.out
-    assert "new model extra" in result.out
+    assert '"base_url": "http://evil.example/v1"' in result.out
+    assert '"extra"' in result.out
     assert ".tau/ mode is 755" in result.out
     assert (root / ".tau").stat().st_mode & 0o777 == 0o700
+
+
+def test_the_report_shows_an_override_of_options_and_max_tokens(world: World) -> None:
+    world.user_config({"models": {"gpt": {"model": "gpt", "provider": "mock"}}})
+    override = {"max_tokens": 77, "options": {"reply": "from-project"}}
+    root = world.project(config={"models": {"gpt": override}})
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 0
+    assert '"max_tokens": 77' in result.out
+    assert '"reply": "from-project"' in result.out
 
 
 def test_the_report_never_prints_a_key_or_a_dotenv_value(world: World) -> None:
@@ -222,7 +232,7 @@ def test_the_report_goes_to_the_asker_and_a_refused_project_stays_untrusted(worl
 
     with pytest.raises(UntrustedProject, match=f"tau trust {root}"):
         load_config(root, world.environ, ask=no)
-    assert "new model a" in shown[0]
+    assert '"models"' in shown[0]
     assert not (root / ".tau" / ".gitignore").exists()
     assert load_config(root, world.environ, ask=yes).project is not None
     assert (root / ".tau" / ".gitignore").read_text(encoding="utf-8") == "*\n"
@@ -254,6 +264,41 @@ def test_a_live_terminal_asks_and_only_yes_approves(
         else:
             with pytest.raises(UntrustedProject, match=f"tau trust {root}"):
                 load_config(root, world.environ, ask=ask.ask)
+
+
+def test_a_changed_or_added_dotenv_is_untrusted_again(world: World) -> None:
+    root = world.project(config=models(a={}))
+    (root / ".env").write_text("A=1\n", encoding="utf-8")
+    trust(world, root)
+    assert loaded(world, root).environ["A"] == "1"
+    (root / ".env").write_text("A=2\nB=3\n", encoding="utf-8")
+    with pytest.raises(UntrustedProject, match=r"\.env changed since you approved it"):
+        loaded(world, root)
+    assert "not trusted" in tau(world, "config", "check", cwd=root).out
+    again = tau(world, "trust", cwd=root)
+    assert again.code == 0
+    assert ".env changed since you approved it" in again.out
+    assert "A, B" in again.out
+    assert loaded(world, root).environ["B"] == "3"
+    (root / ".env").unlink()
+    with pytest.raises(UntrustedProject, match=r"\.env changed"):
+        loaded(world, root)
+
+
+def test_a_dotenv_added_to_a_trusted_project_needs_approval(world: World) -> None:
+    root = world.project(config=models(a={}))
+    trust(world, root)
+    (root / ".env").write_text("LATE=1\n", encoding="utf-8")
+    with pytest.raises(UntrustedProject, match=r"\.env changed"):
+        loaded(world, root)
+
+
+def test_the_trust_command_for_a_path_with_spaces_can_be_pasted(world: World) -> None:
+    root = world.project("my project")
+    with pytest.raises(UntrustedProject) as caught:
+        loaded(world, root)
+    assert f"tau trust '{root}'" in str(caught.value)
+    assert f"tau trust '{root}'" in tau(world, "config", "check", cwd=root).out
 
 
 # -- a config with errors cannot be approved
@@ -299,6 +344,64 @@ def test_a_file_over_a_mebibyte_is_refused_naming_file_and_size(world: World, na
     assert result.code == 1
     assert name in result.err
     assert "2097154" in result.err
+
+
+# -- trusted.json that cannot be read, a project that does not exist yet
+
+
+def test_a_trusted_json_that_is_a_directory_is_one_line_not_a_traceback(world: World) -> None:
+    root = world.project()
+    world.tau.mkdir(mode=0o700)
+    (world.tau / "trusted.json").mkdir(mode=0o700)
+    for argv in (("trust",), ("config", "check")):
+        result = tau(world, *argv, cwd=root)
+        assert result.code == 1
+        assert "Traceback" not in result.both
+        assert "trusted.json" in result.both
+    assert tau(world, "trust", cwd=root).err.count("\n") == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+def test_a_trusted_json_nobody_can_read_is_one_line_not_a_traceback(world: World) -> None:
+    root = world.project()
+    trust(world, root)
+    (world.tau / "trusted.json").chmod(0)
+    for argv in (("trust",), ("config", "check")):
+        result = tau(world, *argv, cwd=root)
+        assert result.code == 1
+        assert "Traceback" not in result.both
+        assert "trusted.json" in result.both
+    assert tau(world, "trust", cwd=root).err.count("\n") == 1
+
+
+def test_trust_makes_the_project_where_there_is_none(world: World) -> None:
+    work = world.home / "work"
+    (work / "src").mkdir(parents=True)
+    result = tau(world, "trust", "src", cwd=work)
+    assert result.code == 0, result.err
+    tau_dir = work / "src" / ".tau"
+    assert stat.S_IMODE(tau_dir.stat().st_mode) == 0o700
+    assert (tau_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    assert project_root(world, work / "src") == work / "src"
+    assert not (work / ".tau").exists()
+
+
+def test_trust_uses_the_project_above_rather_than_making_a_new_one(world: World) -> None:
+    root = world.project()
+    (root / "deep").mkdir()
+    assert tau(world, "trust", "deep", cwd=root).code == 0
+    assert not (root / "deep" / ".tau").exists()
+    assert project_root(world, root) == root
+
+
+def test_trust_cannot_make_a_project_over_a_file_named_dot_tau(world: World) -> None:
+    work = world.home / "work"
+    work.mkdir()
+    (work / ".tau").write_text("not a directory", encoding="utf-8")
+    result = tau(world, "trust", cwd=work)
+    assert result.code == 1
+    assert "Traceback" not in result.err
+    assert result.err.count("\n") == 1
 
 
 # -- symlinks, FIFOs, and foreign owners are refused, never followed

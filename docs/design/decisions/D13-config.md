@@ -82,13 +82,19 @@ Three needs:
   exactly what was shown: a config that changes during the prompt is refused,
   and the caller uses the approved text instead of reading the file again.
 - A project config with errors cannot be approved; the report lists them.
-- Symlinks are refused: `.tau/`, its `config.json` and `.gitignore`, and
-  `.env` must be the real thing, owned by the user. A `.tau/` owned by
-  someone else is not a project; the search goes on past it.
-- The report lists the variable names a trusted directory's `.env` sets, never
-  their values. `.env` is not pinned: directory trust covers it.
-- `trusted.json` holds a hash of each approved config and a copy with every
-  `api_key` value blanked, for diffs; never a key. Trust operations refuse
+- Content pinning decides. Symlinks and FIFOs (anything not a regular file) are
+  refused for `.tau/`, its `config.json` and `.gitignore`, and `.env`; the open
+  itself refuses them, so there is no earlier look to race. There is no owner
+  check on `config.json` or `.env`: what is trusted is those exact bytes, and a
+  file someone else wrote and the user approved is the user's decision. A
+  `.tau/` *directory* owned by someone else is not a project (the search goes on
+  past it): approval would have to `chmod` it, and it cannot.
+- The report shows the project config itself, `api_key` values blanked, and
+  lists the variable names a directory's `.env` sets, never their values.
+  `.env` is pinned like the config: it can carry any variable, including the one
+  `api_key_env` names, so a changed or added `.env` is untrusted again.
+- `trusted.json` holds a hash of each approved config and of its `.env`, and a
+  copy of the config with every `api_key` value blanked, for diffs; never a key. Trust operations refuse
   while `$TAU_HOME` or `trusted.json` is writable by others.
 
 **Environment.**
@@ -113,12 +119,16 @@ The parser, trust check, and CLI are Python (`tau_next.config`, the `tau`
 command). `tau-core` never reads config: `Config.data` stays opaque to it.
 
 **Trust follows content.** `trusted.json` records each directory with a hash
-of its `.tau/config.json` (and a redacted copy for diffs). A different hash is untrusted again: a live
+of its `.tau/config.json` and of its `.env` (and a redacted config copy for diffs). A different hash is untrusted again: a live
 terminal is prompted with the diff, a script fails. A `git pull` that changes
 a committed project config cannot slip through.
 
 **Finding the project.** The nearest `.tau/` from the working directory
-upward, stopping at `$HOME`, as git finds `.git`.
+upward, stopping at `$HOME`, as git finds `.git`. `tau trust DIR` where the
+search finds none creates `DIR/.tau/` (mode `700`) and trusts it; `$HOME`,
+`TAU_HOME`, anything inside it, and the directory whose `.tau/` is `TAU_HOME`
+are refused. A symlinked or foreign `.tau/` that the search passed over is
+reported instead of creating a project beside it.
 
 ## Alternatives
 
