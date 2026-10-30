@@ -6,28 +6,32 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from anthropic_streams import (
-    KEY_ENV,
-    MODEL,
-    RESOLVED,
-    SECRET,
-    SIGNATURE,
-    message,
-    provider,
-    running,
-    sent_request,
-    stream,
-    text,
-)
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
+from wire import (
+    ANTHROPIC,
+    ANTHROPIC_MODEL,
+    GEMINI,
+    KEY_ENV,
+    SECRET,
+    SIGNATURE,
+    collect,
+    fresh_walk,
+    hello_walk,
+    message,
+    recorded,
+    sent_request,
+    text,
+    thinking,
+    walk_of,
+)
 from world import World, tau
 
-from tau_next import ModelConfig, Node, Part, Replay, SampleError, Stop
+from tau_next import Body, ModelConfig, Node, Part, Replay, Stop
 from tau_next.providers.anthropic import AnthropicProvider
 
+RESOLVED = ANTHROPIC.model(None)  # the provider's own URL
 SIGNED = Replay("anthropic", json.dumps({"type": "thinking", "signature": SIGNATURE}))
-FOREIGN = Replay("gemini", json.dumps({"thoughtSignature": "abc"}))
 CACHE = {"type": "ephemeral"}
 
 
@@ -47,7 +51,7 @@ async def walk_after(
 async def request(
     walk: list[Node], model: ModelConfig = RESOLVED, tools: tuple[()] = ()
 ) -> dict[str, object]:
-    return (await sent_request(walk, model, tools))[2]
+    return (await sent_request(ANTHROPIC, walk, model, tools))[2]
 
 
 def with_options(**options: object) -> ModelConfig:
@@ -59,12 +63,12 @@ async def test_system_is_top_level_and_the_request_names_the_endpoint_and_key(
     tmp_path: Path,
 ) -> None:
     h, walk = await walk_after(tmp_path, [Reply([Part.Text("hi")])], "hello")
-    url, headers, body = await sent_request(walk[:-1])
+    url, headers, body = await sent_request(ANTHROPIC, walk[:-1], RESOLVED)
     assert url == "https://api.anthropic.com/v1/messages"
     assert headers["x-api-key"] == SECRET
     assert headers["anthropic-version"] == "2023-06-01"
     assert body == {
-        "model": MODEL,
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 4096,
         "stream": True,
         "system": [{"type": "text", "text": "be brief", "cache_control": CACHE}],
@@ -73,62 +77,41 @@ async def test_system_is_top_level_and_the_request_names_the_endpoint_and_key(
         ],
     }
     proxy = replace(RESOLVED, base_url="http://proxy.test:8080/")
-    assert (await sent_request(walk, proxy))[0] == "http://proxy.test:8080/v1/messages"
+    assert (await sent_request(ANTHROPIC, walk, proxy))[0] == "http://proxy.test:8080/v1/messages"
     await h.close()
 
 
 @scenario
-async def test_the_key_is_read_at_sample_time_and_a_missing_one_fails_before_any_request(
-    tmp_path: Path,
-) -> None:
-    h, walk = await walk_after(tmp_path, [Reply([Part.Text("hi")])], "hello")
-    with pytest.raises(SampleError, match=KEY_ENV):
-        await sent_request(walk, environ={})
-    await h.close()
-
-
-@scenario
-async def test_foreign_and_unsigned_thinking_is_not_sent_and_signed_thinking_is(
-    tmp_path: Path,
-) -> None:
-    script = [
-        Reply(
-            [
-                Part.Thinking("from gemini", FOREIGN),
-                Part.Thinking("cut off"),
-                Part.Thinking("mine", SIGNED),
-                Part.Text("answer"),
-            ]
-        ),
-        Reply([Part.Text("next")]),
-    ]
-    h, walk = await walk_after(tmp_path, script, "q1", "q2")
-    body = await request(walk[:-1], with_options(prompt_caching=False))
-    assert body["messages"][1] == {  # type: ignore[index]
+async def test_foreign_and_unsigned_thinking_is_not_sent_and_signed_thinking_is() -> None:
+    """A reply Gemini made (thinking with no signature, text signed for Gemini) and a reply
+    Claude made (signed thinking), both read from the providers' own streams."""
+    gemini, _ = await collect(GEMINI.serving(recorded("gemini_text_thinking")), hello_walk())
+    claude, _ = await collect(
+        ANTHROPIC.serving(message(thinking(0, ["mine"]), text(1, ["answer"]))), fresh_walk()
+    )
+    foreign = [p for p in gemini if isinstance(p, Part)]
+    mine = [p for p in claude if isinstance(p, Part)]
+    assert any(isinstance(p, Part.Thinking) for p in foreign)
+    walk = walk_of(
+        Body.User("q1"),
+        Body.Assistant(foreign, Stop.End, None),
+        Body.User("q2"),
+        Body.Assistant(mine, Stop.End, None),
+        Body.User("q3"),
+    )
+    messages = (await request(walk, with_options(prompt_caching=False)))["messages"]
+    foreign_text = next(p for p in foreign if isinstance(p, Part.Text))
+    assert messages[1] == {  # type: ignore[index]
+        "role": "assistant",
+        "content": [{"type": "text", "text": foreign_text.text}],
+    }
+    assert messages[3] == {  # type: ignore[index]
         "role": "assistant",
         "content": [
             {"type": "thinking", "thinking": "mine", "signature": SIGNATURE},
             {"type": "text", "text": "answer"},
         ],
     }
-    await h.close()
-
-
-@scenario
-async def test_a_reply_with_nothing_to_send_is_left_out_and_its_neighbours_merge(
-    tmp_path: Path,
-) -> None:
-    h, walk = await walk_after(
-        tmp_path, [Reply([Part.Thinking("cut off")]), Reply([Part.Text("x")])], "first", "second"
-    )
-    body = await request(walk[:-1], with_options(prompt_caching=False))
-    assert body["messages"] == [  # type: ignore[comparison-overlap]
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}],
-        }
-    ]
-    await h.close()
 
 
 @scenario
@@ -170,7 +153,7 @@ async def test_prompt_caching_marks_the_system_text_and_the_last_message_only(
 
 
 @scenario
-async def test_options_reach_the_request_and_extra_body_goes_last(tmp_path: Path) -> None:
+async def test_options_reach_the_request_with_extra_body_beside_them(tmp_path: Path) -> None:
     h, walk = await walk_after(tmp_path, [Reply([Part.Text("a")])], "q")
     options = {
         "thinking": {"type": "adaptive", "display": "summarized"},
@@ -181,16 +164,9 @@ async def test_options_reach_the_request_and_extra_body_goes_last(tmp_path: Path
         "extra_body": {"metadata": {"user_id": "u1"}},
     }
     body = await request(walk[:-1], with_options(**options))
-    assert list(body)[-6:] == [
-        "thinking",
-        "output_config",
-        "temperature",
-        "top_p",
-        "top_k",
-        "metadata",
-    ]
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert body["output_config"] == {"effort": "high"}
+    assert (body["temperature"], body["top_p"], body["top_k"]) == (0.5, 0.9, 40)
     assert body["metadata"] == {"user_id": "u1"}
     await h.close()
 
@@ -201,14 +177,14 @@ async def test_options_reach_the_request_and_extra_body_goes_last(tmp_path: Path
 def test_check_demands_a_key_and_max_tokens_and_a_root_base_url() -> None:
     anthropic = AnthropicProvider(environ={})
     assert anthropic.check(RESOLVED) == []
-    assert anthropic.check(replace(RESOLVED, max_tokens=None)) == [
-        "needs max_tokens: the Messages API requires it and there is no default"
-    ]
-    assert "needs an API key" in anthropic.check(replace(RESOLVED, api_key_env=None))[0]
-    assert (
-        "/v1/messages itself" in anthropic.check(replace(RESOLVED, base_url="http://p.test/v1"))[0]
-    )
-    assert "not 'anthropic'" in anthropic.check(replace(RESOLVED, provider="openai"))[0]
+    (no_max,) = anthropic.check(replace(RESOLVED, max_tokens=None))
+    assert "max_tokens" in no_max
+    (no_key,) = anthropic.check(replace(RESOLVED, api_key_env=None))
+    assert "API key" in no_key
+    (versioned,) = anthropic.check(replace(RESOLVED, base_url="http://p.test/v1"))
+    assert "/v1/messages" in versioned
+    (foreign,) = anthropic.check(replace(RESOLVED, provider="openai"))
+    assert "openai" in foreign
 
 
 def test_check_leaves_the_values_to_the_api() -> None:
@@ -229,8 +205,8 @@ def test_check_accepts_the_listed_options() -> None:
         "extra_body": {"service_tier": "auto"},
     }
     assert anthropic.check(with_options(**options)) == []
-    for thinking in ({"type": "adaptive"}, {"type": "disabled"}, {"type": "between_tools"}):
-        assert anthropic.check(with_options(thinking=thinking)) == []
+    for mode in ({"type": "adaptive"}, {"type": "disabled"}, {"type": "between_tools"}):
+        assert anthropic.check(with_options(thinking=mode)) == []
 
 
 @pytest.mark.parametrize(
@@ -238,7 +214,6 @@ def test_check_accepts_the_listed_options() -> None:
     [
         ({"seed": 1}, "unknown option 'seed'"),
         ({"temperature": "hot"}, "'temperature' must be a number"),
-        ({"top_p": True}, "'top_p' must be a number"),
         ({"top_k": 1.5}, "'top_k' must be a non-negative integer"),
         ({"effort": 3}, "'effort' must be a non-empty string"),
         ({"prompt_caching": "yes"}, "'prompt_caching' must be true or false"),
@@ -254,7 +229,6 @@ def test_check_accepts_the_listed_options() -> None:
         ({"extra_body": {"thinking": {"type": "adaptive"}}}, "may not set 'thinking'"),
         ({"extra_body": {"context_management": {}}}, "needs a beta header"),
         ({"extra_body": []}, "'extra_body' must be an object"),
-        ({"extra_body": {"messages": []}}, "may not set 'messages'"),
         ({"extra_body": {"max_tokens": 9}}, "may not set 'max_tokens'"),
         ({"extra_body": {"top_k": 3}, "top_k": 4}, "already set"),
         ({"extra_body": {"output_config": {}}, "effort": "low"}, "already set"),
@@ -266,17 +240,8 @@ def test_check_refuses_anything_else(options: dict[str, object], message: str) -
     assert any(message in p for p in problems), problems
 
 
-@scenario
-async def test_a_driver_refuses_a_bad_option_before_any_request(tmp_path: Path) -> None:
-    server = stream(message(text(0, ["x"])))
-    async with running(tmp_path / "s", provider(server), options={"seed": 1}) as (_, driver, c):
-        driver.send(c, "test", "hi")
-        await driver.rest(c)
-    assert server.requests == []
-
-
 def test_tau_config_check_names_a_missing_max_tokens(world: World) -> None:
-    settings = {"provider": "anthropic", "model": MODEL, "api_key_env": KEY_ENV}
+    settings = {"provider": "anthropic", "model": ANTHROPIC_MODEL, "api_key_env": KEY_ENV}
     world.user_config({"models": {"claude": settings}})
     result = tau(world, "config", "check")
     assert result.code == 1

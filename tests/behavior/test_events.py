@@ -414,7 +414,10 @@ async def test_a_check_that_raises_fails_the_sample_and_not_the_driver(tmp_path:
     await h.send("hi")
     await h.settle()
     h.driver.check()
-    assert Body.Custom("sample_error", "RuntimeError: check bug") in [n.body for n in h.nodes()]
+    (error,) = [n.body for n in h.nodes() if isinstance(n.body, Body.Custom)]
+    assert error.kind == "sample_error"
+    assert "RuntimeError" in error.data
+    assert "check bug" in error.data
     await h.close()
 
 

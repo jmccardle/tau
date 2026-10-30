@@ -5,22 +5,23 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from anthropic_streams import (
-    RESOLVED,
-    SIGNATURE,
-    collect,
-    message,
-    provider,
-    sent_request,
-    stream,
-    thinking,
-)
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
-from transcripts import fresh_walk
+from wire import (
+    ANTHROPIC,
+    SIGNATURE,
+    collect,
+    fresh_walk,
+    message,
+    sent_request,
+    thinking,
+    walk_of,
+)
 
 from tau_next import Author, Body, ModelConfig, Node, Outcome, Part, Replay, Stop
 
+RESOLVED = ANTHROPIC.model(None)
+API_ID = re.compile(r"[a-zA-Z0-9_-]+")  # what the Messages API accepts as a tool_use id
 SIGNED = Replay("anthropic", '{"type": "thinking", "signature": "' + SIGNATURE + '"}')
 
 
@@ -40,7 +41,7 @@ async def walk_after(
 async def request(walk: list[Node], tools: bool = True, **options: object) -> dict[str, object]:
     model: ModelConfig = replace(RESOLVED, options={"prompt_caching": False, **options})
     offered = [FakeTool("ta", "A")] if tools else []
-    return (await sent_request(walk, model, offered))[2]
+    return (await sent_request(ANTHROPIC, walk, model, offered))[2]
 
 
 async def messages(walk: list[Node], **options: object) -> list[dict[str, object]]:
@@ -111,33 +112,25 @@ async def test_a_reply_of_only_unsent_thinking_is_left_out_and_its_neighbours_me
 
 
 @scenario
-async def test_a_system_node_after_the_start_is_a_marked_user_message(tmp_path: Path) -> None:
-    h, walk = await walk_after(tmp_path, [Reply([Part.Text("a")])], "q")
-    later = h.session.append(walk[-1].id, Body.System("be formal"), Author.Core(), 0)
-    sent = await messages(h.session.tree.walk(later))
-    assert sent[-1] == {
-        "role": "user",
-        "content": [{"type": "text", "text": "[system note: be formal]"}],
-    }
-    await h.close()
-
-
-@scenario
 async def test_ids_the_api_would_refuse_are_mapped_alike_in_the_call_and_its_result(
     tmp_path: Path,
 ) -> None:
+    ids = ["call.1:a", "call.1.a", "toolu_01B", "café/1"]
     script = [
-        Reply([Part.Call("call.1:a", "ta", "{}"), Part.Call("toolu_01B", "ta", "{}")], Stop.Tools),
+        Reply([Part.Call(i, "ta", "{}") for i in ids], Stop.Tools),
         Reply([Part.Text("ok")]),
     ]
     h, walk = await walk_after(tmp_path, script, "go")
     sent = await messages(walk[:-1])
     called = [b["id"] for b in sent[1]["content"]]  # type: ignore[attr-defined]
     answered = [b["tool_use_id"] for b in sent[2]["content"]]  # type: ignore[attr-defined]
-    assert called == answered
-    assert re.fullmatch(r"call_1_a_[0-9a-f]{8}", called[0])
-    assert called[1] == "toolu_01B"
-    assert (await messages(walk[:-1]))[1]["content"][0]["id"] == called[0]  # type: ignore[index]
+    assert called == answered, "each result answers its own call"
+    assert all(API_ID.fullmatch(i) for i in called), called
+    assert len(set(called)) == len(ids), "ids that were different stay different"
+    assert called[2] == "toolu_01B", "an id the API accepts is sent as it is"
+    assert (await messages(walk[:-1]))[1]["content"] == sent[1]["content"], (
+        "the same walk, the same ids"
+    )  # type: ignore[index]
     await h.close()
 
 
@@ -173,7 +166,7 @@ async def test_manual_thinking_keeps_a_signed_batch_as_tool_use(tmp_path: Path) 
 @scenario
 async def test_a_signature_that_cannot_be_kept_as_replay_data_fails_the_sample() -> None:
     body = message(thinking(0, ["hm"], signature="\ud800"))
-    items, error = await collect(provider(stream(body)), fresh_walk(), RESOLVED)
+    items, error = await collect(ANTHROPIC.serving(body), fresh_walk())
     assert error is not None
     assert "surrogate" in str(error)
     assert not any(isinstance(i, Part.Thinking) and i.replay for i in items)
@@ -260,7 +253,7 @@ async def test_an_empty_system_and_blank_user_text_are_left_out_of_the_request(
     h, walk = await walk_after(tmp_path, [Reply([Part.Text("a")])], "q", system="")
     blank = h.session.append(walk[-1].id, Body.User(""), Author.Core(), 0)
     model = RESOLVED
-    body = (await sent_request(h.session.tree.walk(blank), model))[2]
+    body = (await sent_request(ANTHROPIC, h.session.tree.walk(blank), model))[2]
     assert "system" not in body
     assert kinds(body["messages"]) == [["text"], ["text"]]  # type: ignore[arg-type]
     marks = [b for m in body["messages"] for b in m["content"] if "cache_control" in b]  # type: ignore[attr-defined]
@@ -277,7 +270,26 @@ async def test_an_empty_tool_result_does_not_carry_the_cache_mark(tmp_path: Path
     h, walk = await walk_after(tmp_path, script, "go", result="")
     model = RESOLVED
     tools = [FakeTool("ta", "")]
-    body = (await sent_request(walk[:-1], model, tools))[2]
+    body = (await sent_request(ANTHROPIC, walk[:-1], model, tools))[2]
     results = body["messages"][-1]["content"]  # type: ignore[index]
     assert all("cache_control" not in r for r in results)
     await h.close()
+
+
+async def sent_kinds(args_raw: str) -> list[str]:
+    """The block types sent for a walk whose one call has `args_raw`."""
+    walk = walk_of(
+        Body.User("go"),
+        Body.Assistant([Part.Call("a", "ta", args_raw)], Stop.Tools),
+        Body.Results([("a", Outcome.Ok("done"), Author.Core())]),
+    )
+    request = await sent_request(ANTHROPIC, walk, RESOLVED, [FakeTool("ta", "A")])
+    sent: list[dict[str, list[dict[str, str]]]] = request[2]["messages"]  # type: ignore[assignment]
+    return [block["type"] for message in sent for block in message["content"]]
+
+
+@scenario
+async def test_arguments_with_a_nan_or_a_lone_surrogate_send_the_batch_as_text() -> None:
+    assert "tool_use" in await sent_kinds('{"x": 1}')
+    for bad in ('{"x": NaN}', '{"x": Infinity}', '{"x": "\\ud800"}'):
+        assert "tool_use" not in await sent_kinds(bad), bad

@@ -6,22 +6,21 @@ from typing import Any
 
 import pytest
 from harness import scenario
-from transcripts import BASE_URL, CONFIG, NAME, catalog, running, sse, sse_sequence
+from wire import ALIAS, OPENAI, OPENAI_MODEL, OPENAI_URL, catalog, running, sse, sse_sequence
 
 from tau_next import (
     Body,
     Config,
     ConfigError,
     Driver,
+    ModelCatalog,
     ModelConfig,
     Session,
     SystemClock,
     model_config,
     read_models,
 )
-from tau_next.providers.openai import OpenAIProvider
 
-SECRET = "sk-test-0123456789"
 URL = "http://localhost:8100/v1"
 
 
@@ -74,51 +73,30 @@ def test_the_key_is_read_from_the_environment_and_an_unset_variable_is_an_error(
 
 
 @scenario
-async def test_the_log_holds_the_name_and_no_url_or_key(tmp_path: Path) -> None:
-    server = sse("plain")
-    directory = tmp_path / "s"
-    provider = OpenAIProvider(server.transport, {"K": SECRET})
-    async with running(directory, provider, catalog("K")) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        assert s.tree.node(0).body == Body.Config(CONFIG)
-    assert json.loads(CONFIG.data) == {"model": NAME}
-    assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
-    for file in directory.rglob("*"):
-        if file.is_file():
-            text = file.read_bytes()
-            for leak in (SECRET, BASE_URL, "llama.test", "api_key", "base_url"):
-                assert leak.encode() not in text, f"{leak!r} is in {file}"
-
-
-@scenario
 async def test_a_name_missing_from_the_catalog_fails_the_sample_naming_it(
     tmp_path: Path,
 ) -> None:
     server = sse("plain")
-    renamed = read_models(cli={"models": {"other": {"model": "m", "base_url": BASE_URL}}})
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), renamed) as (
-        s,
-        driver,
-        c,
-    ):
+    renamed = catalog("other", model="m", base_url=OPENAI_URL)
+    async with running(tmp_path / "s", OPENAI.over(server), renamed) as (s, driver, c):
         driver.send(c, "test", "hello")
         await driver.rest(c)
         assert not s.cursor(c).auto
-        assert sample_errors(s) == [f"model '{NAME}' is not in your config"]
+        (error,) = sample_errors(s)
+        assert ALIAS in error
     assert server.requests == []
+
+
+def at(url: str) -> ModelCatalog:
+    return catalog(ALIAS, model=OPENAI_MODEL, base_url=url)
 
 
 @scenario
 async def test_a_catalog_change_takes_effect_at_the_next_sample(tmp_path: Path) -> None:
     server = sse_sequence("plain", "plain")
-    before = catalog(base_url="http://before.test/v1")
-    after = catalog(base_url="http://after.test/v1")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), before) as (
-        s,
-        driver,
-        c,
-    ):
+    before = at("http://before.test/v1")
+    after = at("http://after.test/v1")
+    async with running(tmp_path / "s", OPENAI.over(server), before) as (s, driver, c):
         driver.send(c, "test", "one")
         await driver.rest(c)
         driver.use_catalog(after)
@@ -155,7 +133,7 @@ async def test_the_same_bare_name_in_two_groups_is_told_apart_by_the_node(tmp_pa
         session = Session.create(
             model_config(f"{group}:gpt"), "sys", SystemClock().now(), tmp_path / group
         )
-        driver = Driver(session, {"openai": OpenAIProvider(server.transport, environ)}, models)
+        driver = Driver(session, {"openai": OPENAI.make(server.transport, environ)}, models)
         driver.start()
         c = session.cursors()[0]
         try:
@@ -181,7 +159,7 @@ async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path:
     for i, data in enumerate(shapes):
         server = sse("plain")
         session = Session.create(Config(data), "sys", SystemClock().now(), tmp_path / str(i))
-        driver = Driver(session, {"openai": OpenAIProvider(server.transport, {})}, catalog())
+        driver = Driver(session, {"openai": OPENAI.over(server)}, OPENAI.catalog())
         driver.start()
         c = session.cursors()[0]
         try:

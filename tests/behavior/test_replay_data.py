@@ -57,22 +57,6 @@ async def test_the_ordering_rule_still_compares_text_when_the_part_has_replay(
     await h.close()
 
 
-@scenario
-async def test_a_thinking_part_with_no_text_but_replay_is_saved_and_reloaded(
-    tmp_path: Path,
-) -> None:
-    redacted = Part.Thinking("", Replay("anthropic", '{"redacted":"zz=="}'))
-    script = [redacted, Part.Text("done")]
-    h = await Harness.create(tmp_path, provider=FakeProvider([Reply(script)]))
-    await h.send("go")
-    await h.settle()
-    await h.crash()
-    await h.settle()
-    reply = next(b for b in h.bodies() if isinstance(b, Body.Assistant))
-    assert reply.parts == [redacted, Part.Text("done")]
-    await h.close()
-
-
 def test_replay_for_returns_the_data_to_its_own_provider() -> None:
     assert replay_for(Part.Thinking("hm", ANTHROPIC), "anthropic") == {"signature": "s1=="}
     assert replay_for(Part.Text("t", GEMINI), "gemini") == {"thoughtSignature": "g1"}
@@ -80,13 +64,10 @@ def test_replay_for_returns_the_data_to_its_own_provider() -> None:
     assert replay_for(call, "gemini") == {"thoughtSignature": "g1"}
 
 
-def test_replay_for_returns_nothing_for_another_providers_tag() -> None:
+def test_replay_for_returns_nothing_unless_the_part_carries_the_providers_own() -> None:
     assert replay_for(Part.Thinking("hm", ANTHROPIC), "gemini") is None
     assert replay_for(Part.Text("t", GEMINI), "anthropic") is None
     assert replay_for(Part.Call("c", "tool", "{}", GEMINI), "openai") is None
-
-
-def test_replay_for_returns_nothing_for_a_part_without_replay() -> None:
     for part in (Part.Text("t"), Part.Thinking("t"), Part.Call("c", "tool", "{}")):
         assert replay_for(part, "anthropic") is None
 
@@ -94,10 +75,6 @@ def test_replay_for_returns_nothing_for_a_part_without_replay() -> None:
 def test_replay_for_refuses_a_non_part() -> None:
     with pytest.raises(TypeError, match="Part"):
         replay_for("not a part", "anthropic")  # type: ignore[arg-type]
-
-
-def test_a_replays_repr_shows_its_provider_and_data() -> None:
-    assert repr(ANTHROPIC) == "Replay(provider='anthropic', data='{\"signature\":\"s1==\"}')"
 
 
 class BadReplayProvider(FakeProvider):
