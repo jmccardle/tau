@@ -562,7 +562,8 @@ def test_control_characters_in_names_errors_and_diffs_are_escaped(world: World) 
     nasty = "a\x1b[31m\x85b"
     root = world.project(config={"models": {nasty: {"model": "m", "base_url": URL}}})
     report = trust_report(root, world.tau)
-    assert "new model a\\x1b[31m\\x85b" in report
+    assert "\x1b" not in report  # a name like this is an error now, shown escaped
+    assert "control characters" in report
     bad = world.project("bad", config={"models": {"x\x1b[0m": {"modle": "q"}}})
     problems = trust_report(bad, world.tau)
     assert "\x1b" not in problems

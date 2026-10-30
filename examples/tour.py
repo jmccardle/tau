@@ -1,6 +1,10 @@
 """A hands-on tour: base tools, an overflowing tool result, a branch, and a reload.
 
-python examples/tour.py http://192.168.1.100:8100/v1 <model id from /v1/models>
+python examples/tour.py [--model NAME]
+
+Setup: copy examples/config.json to ~/.tau/config.json (or point TAU_HOME at a
+directory holding it). --model takes a qualified name (local:qwen) or a bare one;
+without it the config's default_model is used.
 
 1. The model uses the Rust `bash` tool on output past the 10 kB limit, so it sees
    the tail plus an overflow file name (`/tmp/tau-<uid>/<id>.out`).
@@ -9,20 +13,20 @@ python examples/tour.py http://192.168.1.100:8100/v1 <model id from /v1/models>
 3. We close the session and load it from disk: the same tree comes back.
 """
 
-import asyncio
-import sys
 import tempfile
 from pathlib import Path
+
+from common import rest, run
 
 from tau_next import (
     Body,
     Driver,
+    LoadedConfig,
     Session,
     StepLimit,
     SystemClock,
     base_tools,
     model_config,
-    read_models,
 )
 from tau_next.providers.openai import OpenAIProvider
 
@@ -42,39 +46,49 @@ def print_walk(session: Session, at: int) -> None:
         print(f"  {node.id:>3} {type(node.body).__name__:<10} {show(node.body)}")
 
 
-async def ask(driver: Driver, cursor: int, text: str) -> None:
+async def ask(driver: Driver, session: Session, cursor: int, text: str) -> None:
     driver.send(cursor, "tour", text)
-    await driver.rest(cursor)
+    await rest(driver, session, cursor)
 
 
-async def main(base_url: str, model: str) -> None:
+async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
     with tempfile.TemporaryDirectory() as tmp:
         where = Path(tmp) / "session"
-        # Wave 3 reads a config file; until then the CLI layer holds the one model.
-        models = read_models(cli={"models": {"example": {"model": model, "base_url": base_url}}})
         session = Session.create(
-            model_config("example"),
+            model_config(name),
             "You are a terse assistant. Use your tools when asked.",
             clock.now(),
             where,
         )
         tools = base_tools(tmp)
         driver = Driver(
-            session, OpenAIProvider(), models, tools=tools, extensions=[StepLimit(6)], clock=clock
+            session,
+            OpenAIProvider(environ=loaded.environ),
+            loaded.catalog,
+            tools=tools,
+            extensions=[StepLimit(6)],
+            clock=clock,
         )
         driver.start()
         cursor = session.cursors()[0]
 
         print("== 1. bash with output past the 10 kB limit")
         before = session.cursor(cursor).at
-        await ask(driver, cursor, "Run `seq 1 5000` with bash and tell me the last number you see.")
+        await ask(
+            driver,
+            session,
+            cursor,
+            "Run `seq 1 5000` with bash and tell me the last number you see.",
+        )
         print_walk(session, session.cursor(cursor).at)
         first_branch = session.cursor(cursor).at
 
         print(f"\n== 2. go back to node {before} and ask something else")
         driver.go_to(cursor, before, "tour")
-        await ask(driver, cursor, "Use bash to print the current date, then tell me the weekday.")
+        await ask(
+            driver, session, cursor, "Use bash to print the current date, then tell me the weekday."
+        )
         print_walk(session, session.cursor(cursor).at)
         print(f"\n  node {before} now has children {session.tree.children(before)}")
         meet = session.tree.lca(first_branch, session.cursor(cursor).at)
@@ -92,4 +106,4 @@ async def main(base_url: str, model: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(*sys.argv[1:3]))
+    run(main)

@@ -15,6 +15,9 @@ classifiers = [
     "Programming Language :: Python :: Free Threading :: 2 - Beta",
 ]
 
+[project.scripts]
+tau = "tau_next.cli:main"
+
 [dependency-groups]
 dev = [
     "maturin>=1.15,<2",
@@ -34,7 +37,7 @@ features = ["abi3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests/behavior", "tests/providers"]
+pythonpath = ["tests/behavior", "tests/providers", "tests/cli"]
 addopts = ["--strict-markers"]
 
 [tool.ruff]
@@ -63,4 +66,4 @@ strict = ["python"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
-extraPaths = ["tests/behavior", "tests/providers"]
+extraPaths = ["tests/behavior", "tests/providers", "tests/cli"]

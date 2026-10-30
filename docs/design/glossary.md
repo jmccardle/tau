@@ -658,7 +658,7 @@ and (given `environ`) an unset `api_key_env` variable. A literal `api_key`
 is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
 in a problem, origin, or catalog text. `api_key` and `api_key_env` are one
 setting: the nearer one wins and drops the other. The first layer to define a name sets whether it is a model or a group; a later layer
-giving `models` to a model is an error, and otherwise only tunes it. `provider` unset shows in `explain`
+giving `models` to a model is an error, and otherwise only tunes it. a `base_url` that is not an http(s) URL with a host (including one `urlparse` rejects) is an error at that key. `provider` unset shows in `explain`
 with source `"default"`. The top level takes `models` and `default_model`;
 frontend settings will widen it in a later part.
 
@@ -671,6 +671,16 @@ hash is untrusted again. The project is the nearest `.tau/` upward from the
 working directory, stopping at `$HOME`. Only a trusted directory's project config and `.env`
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
+
+### safe_text, read_project_config, user_config_path
+`tau_next.trust` · D13 · new
+
+`safe_text(text)` writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
+data goes through it (the trust report, `tau config check`, `--show`, suggestions, the pick menu). Model
+and group names may not contain control characters (the checker errors at that path). `read_project_config(root)` reads
+a project's config once through the safe reader and returns it as a `LayerText` (`None`: no file); it
+shows what an untrusted project says and nothing read this way is used. `user_config_path(home)` is
+`<home>/config.json` or `None`.
 
 ### tau_home, find_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, create_project_dir, project_environment, LayerText
 `tau_next.trust` (`LayerText`: `tau_next.config_layers`) · D13 · new
@@ -730,12 +740,63 @@ single-quoted values literal, double-quoted values with `\n`, `\"`, `\\`,
 unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. A
 malformed line is a `DotenvError` naming the file and line, never the value.
 
-### tau config check, tau trust
-D13 · new
+### load_config, LoadedConfig
+`tau_next.startup` · D13 · new
 
-The first `tau` commands. `tau config check` validates the layers and reports
-where each problem is; `--show <model>` prints each resolved value and its
-source. `tau trust <dir>` approves a project directory, as the prompt does.
+What a frontend calls before its first sample. `load_config(cwd, environ, *, ask,
+cli=None)`: `tau_home(environ)`, the user config `<home>/config.json` (absent is
+fine; `user_config_path(home)`, in `tau_next.trust`, is that path or `None`), `find_project(cwd)`, and
+for a project `ensure_trusted(root, home, ask=ask)` (no `ask`, no live terminal:
+`UntrustedProject`), then the catalog from the approved project text and the
+user file (`cli` overrides on top), and the environment from
+`project_environment`. Any `ConfigError` or `TrustError` propagates. It returns a
+frozen **`LoadedConfig`**: `catalog`, `environ` (the shell environment over the
+trusted project's `.env`; the shell wins; pass it to the provider so keys come
+from it), `project` (the `Trusted`, or `None`), `home`.
+
+### select_model, Pick, terminal_pick, Prompts, prompts
+`tau_next.startup` · D13 · new
+
+`select_model(catalog, requested=None, *, pick)` returns one qualified name:
+`requested` (`--model`), else `catalog.default_model`, else a `ConfigError` that
+says to pass `--model` or set `default_model`. A name with `:` is exact; a bare
+name with one match is that match; with several, `pick` (a **`Pick`**: a callable
+from the qualified names to one of them) chooses, and with no `pick` the
+`ConfigError` lists them; with none, the `ConfigError` suggests close names
+(`difflib`) and lists what exists. `terminal_pick(stdin, stdout)` numbers the
+names and reads a number or a name; anything else is a `ConfigError`.
+**`Prompts`** (`ask`, `pick`) is what a person can be asked; `prompts(stdin,
+stdout)` returns both as `None` unless both streams are terminals.
+
+### tau config check, tau trust
+`tau_next.cli` (`main`; the `tau` console script) · D13 · new
+
+`main(argv, *, stdin, stdout, stderr, environ, cwd)` is the `tau` command; each
+argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
+(`tau` alone prints help to stderr, `tau config` alone the help for `config`), 130 Ctrl-C
+(no traceback). Anything printed from config data is escaped with `safe_text`. A `ConfigError`, `TrustError`, or
+`DotenvError` is one `tau: message` line on stderr and exit 1, no traceback.
+
+`tau config check` runs `check_config` over the user config and the project
+config and prints each problem as `file:line:col: severity: message` (the
+dotted path before the message when there is no line). The project's problems
+are reported even if it is not trusted, each tagged `[untrusted project: ...]`; an untrusted
+project is never used, and it is itself an error (startup would refuse it), even with no
+config file. Its `.env` problems (malformed, symlink, foreign-owned) are reported, trusted or not. A trusted one is checked from the approved
+text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
+0 otherwise (warnings print). `--show MODEL` (after a check with no errors; warnings are fine) selects as
+`select_model` does and prints the qualified name, then each resolved key, its
+value, and `[file or cli or default, group G]`. A literal `api_key` shows as
+`(set)`; no key value is ever printed.
+
+`tau trust [DIR]` finds the project by walking up from DIR (a relative DIR is
+taken from the working directory; default: the working directory), as startup
+does. It refuses `$HOME`, `TAU_HOME`, and (when `TAU_HOME` is named `.tau`) its parent, as the start directory or the project found, and a directory with no
+project (one line, exit 1). An already trusted, unchanged project prints
+`already trusted: <root>` and exits 0. Otherwise it approves and prints
+`trust_report`; it is the explicit command, so there is no y/N prompt. A
+config with errors cannot be approved: the report and the refusal go to stderr,
+exit 1.
 
 ## Hooks
 

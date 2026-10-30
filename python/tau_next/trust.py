@@ -36,25 +36,45 @@ _PUBLIC_FILE = 0o644
 _WRITABLE_BY_OTHERS = 0o022
 _MAX_BYTES = 1 << 20
 _LATIN1_MAX = 0xFF
+_BMP_MAX = 0xFFFF
 _FIELDS = ("model", "base_url", "provider", "api_key_env", "api_key")
 _SECRET = "(secret)"
 
 
-def _safe(text: str) -> str:
-    """`text` with every control character written as an escape (`\\x1b`), so nothing a
-    project file says can move the cursor or repaint a line of the report."""
+_SURROGATE_BYTES = range(0xDC80, 0xDD00)  # a byte that was not UTF-8, as surrogateescape holds it
+_UNSAFE = ("Cc", "Cf", "Cs", "Zl", "Zp")
+
+
+def safe_text(text: str) -> str:
+    """`text` with every control, format (such as right-to-left override), line and paragraph
+    separator, and surrogate character written as an escape (`\\x1b`, `\\u202e`), so nothing a
+    project file or a directory name says can move the cursor, repaint or reorder a line, or
+    fail to encode. A byte that was not UTF-8 in a name shows as `\\xNN`. Newlines are escaped
+    too: use `safe_block` for text of several lines."""
     out: list[str] = []
     for ch in text:
         code = ord(ch)
-        if unicodedata.category(ch) == "Cc" or code in (0x2028, 0x2029):
-            out.append(f"\\x{code:02x}" if code <= _LATIN1_MAX else f"\\u{code:04x}")
-        else:
+        if unicodedata.category(ch) not in _UNSAFE:
             out.append(ch)
+        elif code in _SURROGATE_BYTES:
+            out.append(f"\\x{code - 0xDC00:02x}")
+        elif code <= _LATIN1_MAX:
+            out.append(f"\\x{code:02x}")
+        elif code <= _BMP_MAX:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
     return "".join(out)
 
 
+def safe_block(text: str) -> str:
+    """`text` split on `"\\n"` only, each line through `safe_text`, joined again: the lines a
+    caller wrote stay lines, and nothing in the data can start another."""
+    return "\n".join(safe_text(line) for line in text.split("\n"))
+
+
 def _p(path: Path) -> str:
-    return _safe(str(path))
+    return safe_text(str(path))
 
 
 class TrustError(PermissionError):
@@ -335,6 +355,15 @@ def _pinned(home: Path, seen: _Seen) -> bool:
     return approval is not None and approval.sha256 == _digest(seen.raw)
 
 
+def read_project_config(root: Path) -> LayerText | None:
+    """The project's `.tau/config.json` read once through the safe reader (no symlinks, size
+    limited) as a layer, or `None` if there is no file. For showing what an untrusted
+    project says; nothing read this way is used. `TrustError` for a file that is refused."""
+    path = project_config_path(root)
+    text = _decode(_see(root).raw, path)
+    return None if text is None else LayerText(str(path), text)
+
+
 def is_trusted(root: Path, home: Path) -> bool:
     """Whether `root` was approved with exactly its current `.tau/config.json` bytes."""
     return _pinned(home, _see(root))
@@ -347,7 +376,7 @@ def _shown(config: ModelConfig, key: str) -> str:
     if key == "api_key":
         return "(set)" if config.literal_api_key is not None else "(unset)"
     value = cast("str | None", getattr(config, key))
-    return "(unset)" if value is None else _safe(value)
+    return "(unset)" if value is None else safe_text(value)
 
 
 def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
@@ -355,7 +384,7 @@ def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
     for name, found in after.models.items():
         old = before.models.get(name)
         if old is None:
-            lines.append(f"  new model {_safe(name)}")
+            lines.append(f"  new model {safe_text(name)}")
             lines += [f"    {k}: {_shown(found.config, k)}" for k in _FIELDS]
             continue
         changes = [
@@ -364,15 +393,16 @@ def _override_lines(before: ModelCatalog, after: ModelCatalog) -> list[str]:
             if _shown(old.config, k) != _shown(found.config, k)
         ]
         if changes:
-            lines += [f"  {_safe(name)}", *changes]
-    lines += [f"  removed model {_safe(n)}" for n in before.models if n not in after.models]
+            lines += [f"  {safe_text(name)}", *changes]
+    lines += [f"  removed model {safe_text(n)}" for n in before.models if n not in after.models]
     if before.default_model != after.default_model:
-        was, now = (_safe(str(m)) for m in (before.default_model, after.default_model))
+        was, now = (safe_text(str(m)) for m in (before.default_model, after.default_model))
         lines.append(f"  default_model: {was} -> {now}")
     return lines
 
 
-def _user_layer(home: Path) -> Path | None:
+def user_config_path(home: Path) -> Path | None:
+    """`<home>/config.json` if it exists, else `None` (no user config is fine)."""
     user = home / "config.json"
     return user if user.exists() else None
 
@@ -386,7 +416,8 @@ def _config_errors(seen: _Seen, home: Path) -> list[str]:
     if text is None:
         return []
     layer = LayerText(str(path), text)
-    return [_safe(str(p)) for p in check_config(_user_layer(home), layer) if p.severity == "error"]
+    problems = check_config(user_config_path(home), layer)
+    return [safe_text(str(p)) for p in problems if p.severity == "error"]
 
 
 def _overrides(seen: _Seen, home: Path) -> list[str]:
@@ -394,7 +425,7 @@ def _overrides(seen: _Seen, home: Path) -> list[str]:
     text = _decode(seen.raw, path)
     if text is None:
         return ["  (no .tau/config.json)"]
-    user = _user_layer(home)
+    user = user_config_path(home)
     lines = _override_lines(read_models(user), read_models(user, LayerText(str(path), text)))
     return lines or ["  (nothing: it sets no model that differs from your config)"]
 
@@ -406,11 +437,11 @@ def _env_names(root: Path) -> tuple[list[str], str | None]:
     if raw is None:
         return [], None
     try:
-        return [_safe(k) for k in parse_dotenv(raw.decode("utf-8-sig"), _p(path))], None
+        return [safe_text(k) for k in parse_dotenv(raw.decode("utf-8-sig"), _p(path))], None
     except UnicodeDecodeError:
         return [], f"{_p(path)} is not valid UTF-8"
     except DotenvError as e:
-        return [], _safe(str(e))
+        return [], safe_text(str(e))
 
 
 def _gitignore_check(tau: Path) -> str:
@@ -446,7 +477,7 @@ def _diff(approval: _Approval, seen: _Seen) -> list[str]:
             lineterm="",
         )
     )
-    diff = [_safe(line) for line in diff]
+    diff = [safe_text(line) for line in diff]
     return diff or ["  (no visible difference: a secret value changed, or only the formatting)"]
 
 
@@ -561,7 +592,10 @@ def terminal_ask(stdin: TextIO, stdout: TextIO) -> Callable[[str], bool]:
     def ask(report: str) -> bool:
         stdout.write(f"{report}\n\nTrust this project? [y/N] ")
         stdout.flush()
-        return stdin.readline().strip().lower() in ("y", "yes")
+        line = stdin.readline()
+        if not line:  # end of input: leave the prompt line
+            stdout.write("\n")
+        return line.strip().lower() in ("y", "yes")
 
     return ask
 
