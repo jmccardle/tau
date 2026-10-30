@@ -4,7 +4,7 @@
 use pyo3::prelude::*;
 use tau_core::step;
 
-use crate::values::{Author, Body, Outcome, debug_repr};
+use crate::values::{Author, Body, Outcome, Part, Stop, debug_repr};
 
 /// Python view of [`step::Hook`]: the seven cursor hook points.
 #[pyclass(frozen, eq, eq_int, hash, from_py_object, module = "tau_next._core")]
@@ -17,6 +17,25 @@ pub enum Hook {
     PostReply,
     PostResult,
     PostStep,
+}
+
+#[pymethods]
+impl Hook {
+    /// The name an extension defines the hook by.
+    #[getter]
+    #[allow(clippy::trivially_copy_pass_by_ref)] // pyo3 cannot move `self` out of a Python object
+    fn name(&self) -> &'static str {
+        let point = match self {
+            Self::PreStep => step::Hook::PreStep,
+            Self::PreInput => step::Hook::PreInput,
+            Self::PreSample => step::Hook::PreSample,
+            Self::PreReply => step::Hook::PreReply,
+            Self::PostReply => step::Hook::PostReply,
+            Self::PostResult => step::Hook::PostResult,
+            Self::PostStep => step::Hook::PostStep,
+        };
+        point.name()
+    }
 }
 
 impl From<step::Hook> for Hook {
@@ -75,7 +94,7 @@ impl Draft {
     }
 }
 
-debug_repr!(RunCall, Ending, Job, Answer);
+debug_repr!(RunCall, Ending, Job, Answer, SampleEnd);
 
 impl From<step::Draft> for Draft {
     fn from(d: step::Draft) -> Self {
@@ -123,6 +142,7 @@ pub enum Job {
     Hooks {
         point: Hook,
         draft: Option<Draft>,
+        node: Option<u64>,
         ending: Option<Ending>,
     },
     Sample {},
@@ -140,10 +160,12 @@ impl From<step::Job> for Job {
             step::Job::Hooks {
                 point,
                 draft,
+                node,
                 ending,
             } => Self::Hooks {
                 point: point.into(),
                 draft: draft.map(Into::into),
+                node,
                 ending: ending.map(Into::into),
             },
             step::Job::Sample => Self::Sample {},
@@ -153,6 +175,38 @@ impl From<step::Job> for Job {
             },
             step::Job::Pending => Self::Pending {},
             step::Job::Rest => Self::Rest {},
+        }
+    }
+}
+
+/// Python view of [`step::SampleEnd`]: how a sample ended.
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SampleEnd {
+    #[pyo3(constructor = (stop, reason = None, meta = None))]
+    Finished {
+        stop: Stop,
+        reason: Option<String>,
+        meta: Option<String>,
+    },
+    #[pyo3(constructor = (error, meta = None))]
+    Failed {
+        error: String,
+        meta: Option<String>,
+    },
+    Cancelled {},
+}
+
+impl From<SampleEnd> for step::SampleEnd {
+    fn from(e: SampleEnd) -> Self {
+        match e {
+            SampleEnd::Finished { stop, reason, meta } => Self::Finished {
+                stop: stop.into(),
+                reason,
+                meta,
+            },
+            SampleEnd::Failed { error, meta } => Self::Failed { error, meta },
+            SampleEnd::Cancelled {} => Self::Cancelled,
         }
     }
 }
@@ -170,8 +224,8 @@ pub enum Answer {
         error: String,
     },
     Sampled {
-        reply: Option<Draft>,
-        error: Option<String>,
+        parts: Vec<Part>,
+        end: SampleEnd,
     },
     CallDone {
         call: String,
@@ -188,9 +242,9 @@ impl From<Answer> for step::Answer {
                 draft: draft.map(Into::into),
             },
             Answer::HookFailed { error } => Self::HookFailed(error),
-            Answer::Sampled { reply, error } => Self::Sampled {
-                reply: reply.map(Into::into),
-                error,
+            Answer::Sampled { parts, end } => Self::Sampled {
+                parts: parts.into_iter().map(Into::into).collect(),
+                end: end.into(),
             },
             Answer::CallDone { call, outcome, by } => Self::CallDone {
                 call,

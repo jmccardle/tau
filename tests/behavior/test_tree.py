@@ -439,12 +439,12 @@ async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     """Labels (section 1): set moves a label, remove drops it, unknown is `NoSuchLabel`."""
     h = await Harness.create(tmp_path)
     other = h.driver.open(SYS, Author.Frontend("term"))
-    h.driver.set_label("main", h.cursor)
-    h.driver.set_label("main", other)
+    h.driver.session.set_label("main", h.cursor)
+    h.driver.session.set_label("main", other)
     assert h.session.label("main") == other
-    h.driver.remove_label("main")
+    h.driver.session.remove_label("main")
     with pytest.raises(tau_next.NoSuchLabel):
-        h.driver.remove_label("main")
+        h.driver.session.remove_label("main")
     await h.settle()
 
 
@@ -523,7 +523,7 @@ async def test_a_frontends_label_during_a_hook_is_durable(tmp_path: Path) -> Non
     await h.step()
     await h.settle()
     assert gate.held == 1
-    h.driver.set_label("main", h.cursor)
+    h.driver.session.set_label("main", h.cursor)
     await h.crash()
     assert h.session.label("main") == h.cursor
 
@@ -623,14 +623,14 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("look", pre_step=look)])
-    h.driver.set_label("main", h.cursor)
+    h.driver.session.set_label("main", h.cursor)
     await h.step()
     await h.settle()
     assert seen == {"children": [2, 3], "count": 4, "labels": {"main": h.cursor}}
-    assert h.driver.children(SYS) == [2, 3]
-    assert h.driver.children(0) == [SYS]
-    assert h.driver.node_count() == 4 == len(h.nodes())
-    assert h.driver.all_labels() == {"main": h.cursor}
+    assert h.driver.session.tree.children(SYS) == [2, 3]
+    assert h.driver.session.tree.children(0) == [SYS]
+    assert len(h.driver.session.tree) == 4 == len(h.nodes())
+    assert dict(h.driver.session.labels()) == {"main": h.cursor}
 
 
 def stale_delivery(draft: tau_next.Draft | None) -> tau_next.Draft:

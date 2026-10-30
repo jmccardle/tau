@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 #[pymodule(gil_used = false)]
 mod _core {
     #[pymodule_export]
-    use super::job::{Answer, Draft, Ending, Hook, Job, RunCall};
+    use super::job::{Answer, Draft, Ending, Hook, Job, RunCall, SampleEnd};
     #[pymodule_export]
     use super::session::Session;
     #[pymodule_export]

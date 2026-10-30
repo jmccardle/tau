@@ -13,15 +13,12 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
-    Body,
-    Draft,
-    Hook,
     Job,
     Outcome,
     Part,
     RunCall,
+    SampleEnd,
     Session,
-    Stop,
 )
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
@@ -34,23 +31,6 @@ from tau_next.protocols import (
     ToolHook,
 )
 
-HOOK_NAMES: dict[Hook, str] = {
-    Hook.PreStep: "pre_step",
-    Hook.PreInput: "pre_input",
-    Hook.PreSample: "pre_sample",
-    Hook.PreReply: "pre_reply",
-    Hook.PostReply: "post_reply",
-    Hook.PostResult: "post_result",
-    Hook.PostStep: "post_step",
-}
-
-
-def subject_for(session: Session, cursor: int, job: Job.Hooks) -> Subject:
-    """The subject of a `Hooks` job: the draft, the node at `at`, or the ending."""
-    if job.point in (Hook.PostReply, Hook.PostResult):
-        return Subject(node=session.tree.node(session.cursor(cursor).at))
-    return Subject(draft=job.draft, ending=job.ending)
-
 
 async def run_hooks(
     job: Job.Hooks,
@@ -60,7 +40,7 @@ async def run_hooks(
 ) -> Answer:
     """Every extension's hook for the point, in order. The first string halts;
     an exception fails; otherwise the subject's draft comes back."""
-    name = HOOK_NAMES[job.point]
+    name = job.point.name
     for ext in extensions:
         hook = cast("CursorHook | None", getattr(ext, name, None))
         if hook is None:
@@ -133,30 +113,24 @@ class SampleRun:
             raise SampleError("provider ended without a finish")
         return finish
 
-    def _reply(
-        self, stop: Stop, finish_reason: str | None = None, meta: str | None = None
-    ) -> Draft:
-        return Draft(Body.Assistant(self._parts, stop, finish_reason, meta), Author.Provider(), [])
-
     async def run(self) -> Answer:
+        """What happened, for core to record: the parts so far and how the sample ended."""
         self._task = asyncio.ensure_future(self._stream())
         if self._cancelled:
             self._task.cancel()
         with trace.span("sample", "provider"):
             await _finish(self._task)
         if self._task.cancelled():
-            if not self._parts:
-                return Answer.Sampled(None, None)
-            return Answer.Sampled(self._reply(Stop.Interrupted), None)
+            return Answer.Sampled(self._parts, SampleEnd.Cancelled())
         error = self._task.exception()
         if error is None:
             finish = self._task.result()
-            return Answer.Sampled(self._reply(finish.stop, finish.reason, finish.meta), None)
+            return Answer.Sampled(
+                self._parts, SampleEnd.Finished(finish.stop, finish.reason, finish.meta)
+            )
         if not isinstance(error, SampleError):
             raise error
-        return Answer.Sampled(
-            self._reply(Stop.Error, None, error.meta) if self._parts else None, str(error)
-        )
+        return Answer.Sampled(self._parts, SampleEnd.Failed(str(error), error.meta))
 
 
 class _HookError(Exception):

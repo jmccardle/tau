@@ -194,7 +194,7 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 step = Step::wake(session, cursor, asked, now)     asked: a frontend's Session.step
 loop:
     job = step.next_job(session)                   Hooks | Sample | RunCalls | Pending | Rest
-    perform it, then step.answer(session, answer, now)  Hooks | HookFailed | Sampled | CallDone
+    perform it, then step.answer(session, answer, now)  Hooks | HookFailed | Sampled(parts, end) | CallDone
 abort: step.abort(session) -> must the driver cancel the effect in flight?
 ```
 
@@ -212,6 +212,18 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
   the step was `asked`, and its condition holds for `at` at the start of the
   phase. A `post_reply` hook that moves the cursor decides where the tools
   phase looks.
+- **Subjects.** A `Hooks` job carries what its point is about, so the driver
+  does not look it up: `draft` at `pre_input`, `pre_sample`, `pre_reply`; `node`
+  (the id of the node at `at`) at `post_reply`, `post_result`; `ending` at `post_step`;
+  nothing at `pre_step`. `Hook::name` is the name an extension defines the
+  hook by.
+- **A sample's end** is what the driver saw, not what the tree records. It
+  answers `Sampled { parts, end }`, `end` being `Finished { stop, reason, meta }`,
+  `Failed { error, meta }`, or `Cancelled`. Core builds the node: `Finished` is
+  the reply as given; `Cancelled` with parts is an `Interrupted` reply, without
+  parts nothing and the step ends `Aborted`; `Failed` with parts is an `Error`
+  reply and the step then ends `Failed`, without parts a `sample_error` side
+  node.
 - **Drafts.** A `Hooks` job carries the phase's `Draft {body, delivers, by}`;
   `Answer::Hooks { draft }` returns the edited one, and core writes it under
   `at` with `Session::write`. A draft of `None` (a hook cleared it) commits
@@ -223,7 +235,8 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 - **`RunCalls`** hands the driver the batch. For each call the driver runs
   `pre_tool`, the tool, and `pre_result`, and answers `CallDone` in any order.
   The step holds each outcome in its slot; when every slot is filled, the
-  join writes `Results` in call order.
+  join writes `Results` in call order. The driver keeps no count: after each
+  `CallDone` it asks `next_job`, which is `Pending` until the join.
 
 ### Ending
 
@@ -376,15 +389,16 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   effect in flight (`Sample` or `Calls`) and answer what it got. Hooks are never cancelled; post hooks and `post_step`
   run as usual. The driver declines the cursor's open questions (§7), so a
   hook awaiting one finishes.
-  - During a sample with parts: the driver answers the partial reply with
-    `stop: Interrupted`; it goes through `pre_reply`, is committed, and
-    `post_reply` runs (`abort_during_sample_commits_the_partial_reply`).
-    With no parts: `Sampled { reply: None, error: None }`, nothing is
+  - During a sample: the driver answers `Sampled { parts, end: Cancelled }`
+    with the parts it had. Core decides: with parts, an `Interrupted` reply
+    that goes through `pre_reply`, is committed, and `post_reply` runs
+    (`abort_during_sample_commits_the_partial_reply`); with none, nothing is
     committed.
   - During tools: the driver answers `Interrupted` for every call that had not
     finished, and the join writes `Results`. A running `pre_tool` or
     `pre_result` finishes (Q34).
-- **A sample fails.** With output: the reply is committed with `stop: Error`,
+- **A sample fails** (`Sampled { parts, end: Failed { error, meta } }`). With
+  output: core commits the reply with `stop: Error` and the response `meta`,
   then `post_step` gets `Failed`. With none: core appends a
   `Custom { kind: "sample_error" }` under `at` without moving, and
   `post_step` gets `Failed`. A conversion error is a failed sample (Q11).

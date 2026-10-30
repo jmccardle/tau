@@ -80,6 +80,7 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
         Job::Hooks {
             point: tau_core::step::Hook::PreStep,
             draft: None,
+            node: None,
             ending: None,
         }
     );

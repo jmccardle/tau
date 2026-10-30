@@ -15,19 +15,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tau_next import (
-    Answer,
     Author,
     Body,
     Config,
-    Draft,
-    Hook,
     ItemData,
-    Job,
     Outcome,
     Part,
     Session,
     Stop,
 )
+from tau_next._core import Answer, Hook, Job, SampleEnd
 
 NOW = 10
 
@@ -45,11 +42,10 @@ class Ctx:
 
 def reply(*calls: tuple[str, str]) -> Answer:
     if calls:
-        parts = [Part.Call(i, t, "{}") for i, t in calls]
-        body = Body.Assistant(parts, Stop.Tools)
-    else:
-        body = Body.Assistant([Part.Text("ok")], Stop.End)
-    return Answer.Sampled(Draft(body, Author.Provider(), []), None)
+        return Answer.Sampled(
+            [Part.Call(i, t, "{}") for i, t in calls], SampleEnd.Finished(Stop.Tools)
+        )
+    return Answer.Sampled([Part.Text("ok")], SampleEnd.Finished(Stop.End))
 
 
 def result_for(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Answer]:

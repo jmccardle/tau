@@ -39,9 +39,10 @@ impl Machine {
         m
     }
 
+    /// A step is running, or a go-to waits on one to rest: the cursor needs `next_job`.
     #[must_use]
     pub fn busy(&self, cursor: CursorId) -> bool {
-        self.steps.get(&cursor).is_some_and(|s| !s.resting())
+        self.going.contains_key(&cursor) || self.steps.get(&cursor).is_some_and(|s| !s.resting())
     }
 
     // Frontend calls. Each syncs on return.
@@ -95,9 +96,11 @@ impl Machine {
         self.session.at(cursor)?;
         self.session.tree.node(to)?;
         let by = Author::Frontend(client);
-        let cancel = if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
+        let cancel = if self.busy(cursor) {
             self.going.insert(cursor, (to, by, now));
-            step.abort(&mut self.session)
+            self.steps
+                .get_mut(&cursor)
+                .is_some_and(|step| step.abort(&mut self.session))
         } else {
             self.session.move_to(cursor, to, by, now)?;
             self.session.auto.insert(cursor, false);

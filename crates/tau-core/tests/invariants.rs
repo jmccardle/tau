@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Answer, Draft, Hook, Job};
+use tau_core::step::{Answer, Draft, Hook, Job, SampleEnd};
 use tau_core::tree::{
     Author, Body, Config, CursorId, Error, Next, Node, NodeId, Outcome, Part, Record, Session,
     Stop, calls,
@@ -234,10 +234,7 @@ fn hook(
 /// an error, or a cancel.
 fn sample(k: usize) -> Answer {
     match k % 4 {
-        0 => Answer::Sampled {
-            reply: Some(reply(vec![Part::Text("hi".into())], Stop::End)),
-            error: None,
-        },
+        0 => sampled(reply(vec![Part::Text("hi".into())], Stop::End)),
         1 => {
             let parts = (0..=k / 4 % 3)
                 .map(|j| Part::Call {
@@ -246,18 +243,18 @@ fn sample(k: usize) -> Answer {
                     args_raw: "{}".into(),
                 })
                 .collect();
-            Answer::Sampled {
-                reply: Some(reply(parts, Stop::Tools)),
-                error: None,
-            }
+            sampled(reply(parts, Stop::Tools))
         }
         2 => Answer::Sampled {
-            reply: None,
-            error: Some("overloaded".into()),
+            parts: vec![],
+            end: SampleEnd::Failed {
+                error: "overloaded".into(),
+                meta: None,
+            },
         },
         _ => Answer::Sampled {
-            reply: None,
-            error: None,
+            parts: vec![],
+            end: SampleEnd::Cancelled,
         },
     }
 }
@@ -456,5 +453,26 @@ proptest! {
                 prop_assert_eq!(s.at(c), got);
             }
         }
+    }
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
     }
 }

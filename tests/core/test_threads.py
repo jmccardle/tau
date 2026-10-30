@@ -11,13 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from drive import run, say, send
 
-from tau_next import Author, Body, Config, Session
+from tau_next import Author, Body, Config, ItemData, Session
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 THREADS = 16
-TURNS = 20
+CALLS = 20
 
 
 def gil_enabled() -> bool:
@@ -35,19 +34,26 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
     root = session.cursor(session.cursors()[0]).at
     cursors = [session.open(root, Author.Core(), 0) for _ in range(THREADS)]
 
-    def turns(cursor: int) -> int:
-        run(session, cursor)  # the open's own wake
-        for n in range(TURNS):
-            send(session, cursor, "term", f"hi {n}")
-            run(session, cursor, iter([say(f"re {n}")]), n)
+    def calls(cursor: int) -> None:
+        for n in range(CALLS):
+            session.input(cursor, "term", f"hi {n}")
+            session.add_item(cursor, ItemData.Extension("timer", f"tick {n}"))
+            session.set_label(f"cursor {cursor}", cursor)
             session.cursors()
             session.tree.walk(session.cursor(cursor).at)
-        return len(session.tree.walk(session.cursor(cursor).at))
 
     with ThreadPoolExecutor(max_workers=THREADS) as pool:
-        lengths = list(pool.map(turns, cursors))
-    assert lengths == [2 + 2 * TURNS] * THREADS
+        list(pool.map(calls, cursors))
     for cursor in cursors:
-        walk = session.tree.walk(session.cursor(cursor).at)
-        texts = [n.body.text for n in walk if isinstance(n.body, Body.User)]
-        assert texts == [f"hi {n}" for n in range(TURNS)]
+        items = [i.data for i in session.cursor(cursor).items]
+        assert items == [
+            data
+            for n in range(CALLS)
+            for data in (
+                ItemData.Input("term", f"hi {n}"),
+                ItemData.Extension("timer", f"tick {n}"),
+            )
+        ]
+        assert session.label(f"cursor {cursor}") == cursor
+    assert len(session.tree.walk(root)) == 2, "no thread wrote a node"
+    assert isinstance(session.tree.node(root).body, Body.System)

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Answer, Draft, Hook, Job};
+use tau_core::step::{Answer, Draft, Hook, Job, SampleEnd};
 use tau_core::tree::{Author, Body, ItemData, Part, Session, Stop};
 use tau_store::{Error, HEADER, Store, VERSION};
 
@@ -343,19 +343,16 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
         store = store.save(&mut m.session).unwrap();
         let answer = match job {
             Job::Rest => break,
-            Job::Sample => Answer::Sampled {
-                reply: Some(Draft {
-                    body: Body::Assistant {
-                        parts: vec![Part::Text("hello".into())],
-                        stop: Stop::End,
-                        finish_reason: Some("stop".into()),
-                        meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
-                    },
-                    delivers: vec![],
-                    by: Author::Provider,
-                }),
-                error: None,
-            },
+            Job::Sample => sampled(Draft {
+                body: Body::Assistant {
+                    parts: vec![Part::Text("hello".into())],
+                    stop: Stop::End,
+                    finish_reason: Some("stop".into()),
+                    meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
+                },
+                delivers: vec![],
+                by: Author::Provider,
+            }),
             Job::Hooks { draft, .. } => Answer::Hooks { stop: None, draft },
             other => panic!("a plain turn has no {other:?}"),
         };
@@ -579,4 +576,25 @@ fn a_record_from_before_meta_loads_with_none() {
             meta: None,
         }
     );
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
+    }
 }
