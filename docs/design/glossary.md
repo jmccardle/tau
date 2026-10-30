@@ -957,10 +957,13 @@ with no `Results` after it, are `[tool call <id>: <tool> <args_raw>]` lines of
 text (the `partial_calls: text` markup), followed by `[reply stopped: <why>]`
 for `Length`, `Interrupted`, and `Error`. A `Results` whose ids differ from
 its batch's is a conversion error (Q11). The response is read as SSE;
-`reasoning_content` or `reasoning` deltas (a chunk has one; both is an error)
+`reasoning_content` or `reasoning` deltas (vLLM sends both, equal; two different texts is an error)
 become `ThinkingDelta`s and then a `Thinking`, `content` `TextDelta`s and a `Text`,
 `tool_calls` a `CallNamed` (once the id and name have arrived; arguments that came
-first are held until then), `CallArgs`, and a `Call`. Each delta is yielded as it
+first are held until then; before that a repeated id or name replaces the earlier one,
+after it a repeat of the same is ignored and a different one is an error, which is what a
+server that omits `index` or splits a name causes), `CallArgs`, and a `Call`. A choice with
+`index` other than 0 is an error: one choice is read. Each delta is yielded as it
 arrives; each part is yielded before the first delta of the next kind of part, or
 when the stream finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
@@ -970,7 +973,8 @@ its end (usage comes after the finish) to fill `meta` with `model`, `id`,
 `system_fingerprint`, `usage_raw` (the server's `usage` object as sent) and the
 normalized `usage` `{"input", "output", "cached"}` from `prompt_tokens`,
 `completion_tokens` and `prompt_tokens_details.cached_tokens` (`cached` is 0 for a server
-that reports none; no `usage` at all if the server gave no prompt and completion counts). Once `finish_reason` arrives the reply is done: later content deltas are ignored and
+that reports none; no `usage` at all if the server gave no prompt and completion counts,
+or a cached count that is present but not an integer). Once `finish_reason` arrives the reply is done: later content deltas are ignored and
 any later failure (reset, error chunk, malformed SSE, no `[DONE]`) costs only the
 meta not yet received. A `SampleError` carries the `meta` that had arrived. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
@@ -978,16 +982,21 @@ SSE, an error object in the stream, a stream ending without `finish_reason`.
 Parts begun before a failure are yielded first; a call cut off with no id or
 no name is not a part, so its raw argument text and whatever id and name arrived
 are appended to the `SampleError` message. A non-200 response fails with `SampleError`
-`status` set and `retry_after` from the `Retry-After` header (whole seconds, or an
+(`status` and `retry_after` are taken before the body is read, so a body that fails to
+read keeps them) with `status` set and `retry_after` from the `Retry-After` header (whole seconds, or an
 HTTP-date as seconds from now, 0 if past; anything else `None`); a connection error has
 `status` `None`. No retry happens here. `name` is `"openai"`; its `check` requires a
 `base_url` and reads exactly these options, refusing any other: `temperature`, `top_p`
 (numbers), `reasoning_effort` (non-empty string), `include_usage` (boolean, default true;
 some servers reject `stream_options`), `extra_body` (an object merged into the request body
-last, for server-specific parameters such as llama.cpp's `cache_prompt`; it may not set
-`model`, `messages`, `stream` or `tools`). One `httpx.AsyncClient` serves every sample,
-made on the first and closed by `aclose()`; a sample after `aclose()` fails with
-`SampleError`. Constructor: `transport`
+last, for server-specific parameters such as llama.cpp's `cache_prompt`; `check` refuses
+`model`, `messages`, `stream`, `tools`, `n`, any key the model's own settings already set
+(`max_tokens`, `temperature`, `top_p`, `reasoning_effort`, and `stream_options` while
+`include_usage` is true), and NaN or infinity anywhere inside it). One `httpx.AsyncClient` serves every sample,
+made on the first and closed by `aclose()`; a sample after `aclose()`, or one it cuts off,
+fails with `ProviderClosed`. A client belongs to the event loop that made it: on another
+loop the provider drops it unawaited and makes a new one. The response body is read to its
+end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
 
@@ -1352,6 +1361,13 @@ driver is a bug and surfaces through `Driver.check`.
 of an error response (`None` when there was no response); `retry_after` is the seconds the
 server asked to wait (`None` if it did not say). A retrying wrapper provider reads both
 (D15); nothing in core or the driver does.
+
+### ProviderClosed
+`tau_next.ProviderClosed` (a `SampleError`; `protocols.py`) · D15 · new
+
+What a sample raises when its provider was closed (`aclose()`) before it started, or while
+it ran. Not transient: a retry cannot succeed, so a retrying wrapper provider passes it on
+instead of retrying as it would a connection error.
 
 ### rest
 `Driver.rest(cursor)` · new

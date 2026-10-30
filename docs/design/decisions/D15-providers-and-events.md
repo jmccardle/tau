@@ -151,6 +151,16 @@ whose `provider` is not its own.
    the provider yields it when both have arrived (arguments before that are held), and
    later id or name fields of that call are not read.
 
+13. **Review fixes to item 10.** The body is read to its end after `[DONE]` so the
+   connection is pooled. A client belongs to the loop that made it. A sample after
+   `aclose()`, or cut by it, raises `ProviderClosed` (a `SampleError`). `extra_body` may
+   not set `n` or a key the model's settings set; `check` also refuses non-finite numbers
+   in it, and the config loader refuses `NaN`, `Infinity` and out-of-range numbers as
+   invalid JSON. A choice other than index 0 fails the sample. A call that changes its id
+   or name after being announced (no `index`, a split name) fails the sample rather than
+   merging. `Retry-After` and the status are taken before an error body is read.
+   A malformed cached count leaves `usage` out.
+
 ## Open
 
 - Fine-grained saved events (item 3).

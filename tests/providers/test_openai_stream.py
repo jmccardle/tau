@@ -23,10 +23,6 @@ from tau_next import Finish, Part, SampleError, Stop, TextDelta, ThinkingDelta
 from tau_next.providers.openai import OpenAIProvider
 
 DONE = "data: [DONE]\n\n"
-REASONING = (
-    'User asks: "What is 17 times 3? Answer briefly." Need compute 17*3 = 51. '
-    "Final should be brief.\n"
-)
 
 
 def meta_of(item: object) -> object:
@@ -205,16 +201,6 @@ def test_a_finish_meta_that_is_not_text_is_a_type_error() -> None:
 
 
 @scenario
-async def test_reasoning_content_is_a_thinking_part_before_the_text() -> None:
-    items, error = await collect(provider(sse("reasoning")), fresh_walk())
-    assert error is None
-    assert items[:-1] == [Part.Thinking(REASONING), Part.Text("51")]
-    finish = items[-1]
-    assert isinstance(finish, Finish)
-    assert (finish.stop, finish.reason) == (Stop.End, "stop")
-
-
-@scenario
 async def test_a_tool_call_arrives_whole_with_its_arguments_byte_for_byte() -> None:
     items, error = await collect(provider(sse("tool_call")), fresh_walk())
     assert error is None
@@ -240,27 +226,6 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
         TextDelta("llo"),
         Part.Text("hello"),
         Finish(Stop.End, "stop"),
-    ]
-
-
-@scenario
-async def test_parallel_calls_are_separate_parts_in_order() -> None:
-    def call(index: int, id_: str, name: str, args: str) -> str:
-        function = {"name": name, "arguments": args}
-        return chunk({"tool_calls": [{"index": index, "id": id_, "function": function}]})
-
-    text = (
-        call(0, "a", "ta", '{"x"')
-        + chunk({"tool_calls": [{"index": 0, "function": {"arguments": ": 1}"}}]})
-        + call(1, "b", "tb", "{}")
-        + chunk({}, "tool_calls")
-    )
-    items, error = await collect(provider(sse_text(text)), fresh_walk())
-    assert error is None
-    assert items == [
-        Part.Call("a", "ta", '{"x": 1}'),
-        Part.Call("b", "tb", "{}"),
-        Finish(Stop.Tools, "tool_calls"),
     ]
 
 
@@ -302,6 +267,8 @@ async def test_a_non_json_error_body_is_quoted() -> None:
     server = Server(httpx.Response(429, text="slow down"))
     items, error = await collect(provider(server), fresh_walk())
     assert (items, str(error)) == ([], "HTTP 429: slow down")
+    assert error is not None
+    assert (error.status, error.retry_after) == (429, None)
 
 
 @scenario
@@ -309,7 +276,9 @@ async def test_a_refused_connection_fails_the_sample() -> None:
     server = Server(httpx.ConnectError("connection refused"))
     items, error = await collect(provider(server), fresh_walk())
     assert items == []
+    assert error is not None
     assert str(error) == "ConnectError: connection refused"
+    assert (error.status, error.retry_after) == (None, None)
 
 
 @scenario

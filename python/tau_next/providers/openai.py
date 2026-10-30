@@ -2,9 +2,10 @@
 
 Walk to request in `messages`, response to parts and deltas in `_Stream`, one per reply. The
 request carries what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stream`,
-`tools` when there are any, `max_tokens`, then the options (`OPTIONS`), then `extra_body` last.
+`tools` when there are any, `max_tokens`, then the options (`_OPTIONS`), then `extra_body` last.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -19,12 +20,12 @@ import httpx
 from tau_next._config import ConfigError, ModelConfig
 from tau_next._core import Body, Node, Outcome, Part, Stop
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau_next.protocols import Finish, SampleError, Tool
+from tau_next.protocols import Finish, ProviderClosed, SampleError, Tool
 
 Json = dict[str, object]
 HTTP_OK = 200
-OPTIONS = ("temperature", "top_p", "reasoning_effort", "include_usage", "extra_body")
-OWNED_KEYS = ("model", "messages", "stream", "tools")  # `extra_body` may not set these
+_OPTIONS = ("temperature", "top_p", "reasoning_effort", "include_usage", "extra_body")
+_OWNED_KEYS = ("model", "messages", "stream", "tools", "n")  # `extra_body` may not set these
 
 STOPS: dict[str, Stop] = {
     "stop": Stop.End,
@@ -144,6 +145,24 @@ class _Open:
     named: bool = False  # `CallNamed` has been yielded
     chunks: list[str] = field(default_factory=lambda: [])
 
+    def identify(self, id_: object, tool: object) -> None:
+        """Take the call's id and name from a delta. Until the call is announced they are
+        assigned (a server may repeat them); after, a repeat is ignored and a different one
+        means two calls were merged (a server that sends no `index`) or a name was split."""
+        for what, new in (("id", id_), ("name", tool)):
+            if not isinstance(new, str) or not new:
+                continue
+            old = self.id if what == "id" else self.tool
+            if self.named and old != new:
+                raise SampleError(
+                    f"tool call {self.index} changed its {what} from {old!r} to {new!r} "
+                    "after it was announced"
+                )
+            if what == "id":
+                self.id = new
+            else:
+                self.tool = new
+
     def part(self) -> Part:
         text = "".join(self.chunks)
         if self.kind == "thinking":
@@ -201,11 +220,13 @@ class _Stream:
         return out
 
     def _thinking(self, delta: Json) -> list[Part | Delta]:
-        """Servers spell it `reasoning_content` or `reasoning`; a chunk has one of them."""
-        spelled = [k for k in ("reasoning_content", "reasoning") if delta.get(k)]
-        if len(spelled) > 1:
-            raise SampleError("a delta carries both 'reasoning_content' and 'reasoning'")
-        return self._run("thinking", delta.get(spelled[0]) if spelled else None)
+        """Servers spell it `reasoning_content` or `reasoning`; vLLM sends both, equal."""
+        said = [delta[k] for k in ("reasoning_content", "reasoning") if delta.get(k)]
+        if len(said) == 2 and said[0] != said[1]:  # noqa: PLR2004 - two spellings
+            raise SampleError(
+                f"a delta carries different 'reasoning_content' and 'reasoning': {said}"
+            )
+        return self._run("thinking", said[0] if said else None)
 
     def _call(self, raw: object) -> list[Part | Delta]:
         call = _json(raw, "a tool call delta")
@@ -220,11 +241,7 @@ class _Stream:
             self.open = _Open("call", index)
         function = _json(call.get("function", {}), "a tool call's function")
         args = function.get("arguments")
-        if not self.open.named:  # the id and name are read until the call is announced
-            if isinstance(call.get("id"), str):
-                self.open.id = cast("str", call["id"])
-            if isinstance(function.get("name"), str):
-                self.open.tool += cast("str", function["name"])
+        self.open.identify(call.get("id"), function.get("name"))
         if isinstance(args, str):
             self.open.chunks.append(args)
         if not self.open.named and self.open.id and self.open.tool:
@@ -257,6 +274,11 @@ class _Stream:
         if not choices:
             return []
         choice = _json(cast("list[object]", choices)[0], "a choice")
+        for other in cast("list[object]", choices):
+            if _json(other, "a choice").get("index", 0) != 0:
+                raise SampleError(
+                    "the stream carries more than one choice; this provider reads one"
+                )
         delta = _json(choice.get("delta") or {}, "a delta")
         out = self._thinking(delta)
         out += self._run("text", delta.get("content"))
@@ -305,24 +327,32 @@ def _count(value: object) -> int | None:
 
 def _usage(raw: Json) -> Json | None:
     """The normalized `{"input", "output", "cached"}` from OpenAI's `usage`, or `None` if the
-    server did not report prompt and completion tokens. A server that reports no cached
-    tokens had none to report, so `cached` is 0."""
+    server did not report prompt and completion tokens, or sent a malformed cached count. A
+    server that sends no cached count had none to report, so `cached` is 0."""
     tokens, output = _count(raw.get("prompt_tokens")), _count(raw.get("completion_tokens"))
     if tokens is None or output is None:
         return None
-    details = raw.get("prompt_tokens_details")
-    cached = _count(cast("Json", details).get("cached_tokens")) if isinstance(details, dict) else 0
-    return {"input": tokens, "output": output, "cached": cached or 0}
+    details = raw.get("prompt_tokens_details")  # servers send null for "no details"
+    if details is None:
+        return {"input": tokens, "output": output, "cached": 0}
+    if not isinstance(details, dict):
+        return None
+    fields = cast("Json", details)
+    if "cached_tokens" not in fields:
+        return {"input": tokens, "output": output, "cached": 0}
+    cached = _count(fields["cached_tokens"])
+    return None if cached is None else {"input": tokens, "output": output, "cached": cached}
 
 
-def retry_after(value: str | None) -> float | None:
+def _retry_after(value: str | None) -> float | None:
     """Seconds to wait from a `Retry-After` header: whole seconds as sent, an HTTP-date as
     seconds from now (0 if past); `None` for no header or anything else."""
     if value is None:
         return None
     text = value.strip()
     if text.isascii() and text.isdigit():
-        return float(text)
+        seconds = float(text)
+        return seconds if math.isfinite(seconds) else None
     try:
         when = parsedate_to_datetime(text)
     except (TypeError, ValueError):
@@ -339,6 +369,47 @@ def _plain(value: object) -> object:
     if isinstance(value, tuple):
         return [_plain(v) for v in cast("tuple[object, ...]", value)]
     return value
+
+
+def _extra_body_problems(model: ModelConfig, extra: object) -> list[str]:
+    if not isinstance(extra, Mapping):
+        return ["option 'extra_body' must be an object"]
+    fields = cast("Mapping[str, object]", extra)
+    taken = _typed_keys(model)
+    return (
+        [
+            f"option 'extra_body' may not set {k!r}; the provider owns it"
+            for k in fields
+            if k in _OWNED_KEYS
+        ]
+        + [
+            f"option 'extra_body' sets {k!r}, which the model's settings already set"
+            for k in taken
+            if k in fields
+        ]
+        + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in _non_finite(fields)]
+    )
+
+
+def _typed_keys(model: ModelConfig) -> list[str]:
+    """The request keys the model's own settings already set."""
+    keys = [k for k in ("temperature", "top_p", "reasoning_effort") if k in model.options]
+    if model.max_tokens is not None:
+        keys.append("max_tokens")
+    if model.options.get("include_usage", True):
+        keys.append("stream_options")
+    return keys
+
+
+def _non_finite(value: object) -> list[float]:
+    """Every NaN or infinity inside `value`."""
+    if isinstance(value, float):
+        return [] if math.isfinite(value) else [value]
+    if isinstance(value, Mapping):
+        return [b for v in cast("Mapping[str, object]", value).values() for b in _non_finite(v)]
+    if isinstance(value, tuple | list):
+        return [b for v in cast("tuple[object, ...]", value) for b in _non_finite(v)]
+    return []
 
 
 def _is_number(value: object) -> bool:
@@ -374,14 +445,30 @@ async def _events(response: httpx.Response) -> AsyncIterator[str]:
         yield "\n".join(lines)
 
 
+async def _chunks(response: httpx.Response) -> AsyncIterator[Json]:
+    """The decoded chunks up to `[DONE]`. The body is read to its end, so the connection goes
+    back to the pool; whatever follows `[DONE]` is not looked at."""
+    done = False
+    async for data in _events(response):
+        done = done or data == "[DONE]"
+        if done:
+            continue
+        try:
+            yield _json(json.loads(data), "a stream chunk")
+        except ValueError as e:
+            raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
+
+
 class OpenAIProvider:
     """Samples an OpenAI-compatible `/chat/completions` endpoint for the `ModelConfig` the
     driver resolved.
 
     One `httpx.AsyncClient` serves every sample (httpx pools connections per host): made on
-    the first sample, closed by `aclose()`, after which a sample fails. `transport` replaces
-    the network (a test's `httpx.MockTransport`); `environ` is where `api_key_env` is looked
-    up, at sample time.
+    the first sample, closed by `aclose()`, after which a sample fails with `ProviderClosed`.
+    A client belongs to the event loop that made it: a sample on another loop drops it
+    unawaited and makes a new one, so a program may call `asyncio.run` once per command.
+    `transport` replaces the network (a test's `httpx.MockTransport`); `environ` is where
+    `api_key_env` is looked up, at sample time.
 
     Options (`check` refuses any other): `temperature` and `top_p` (numbers),
     `reasoning_effort` (a string), `include_usage` (a boolean, default true: ask the server for
@@ -400,6 +487,7 @@ class OpenAIProvider:
         self._environ = os.environ if environ is None else environ
         self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
         self._http: httpx.AsyncClient | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None  # the loop `_http` belongs to
         self._closed = False
 
     @property
@@ -407,7 +495,7 @@ class OpenAIProvider:
         return "openai"
 
     def check(self, model: ModelConfig) -> list[str]:
-        """This provider needs a `base_url`, and reads the options in `OPTIONS`."""
+        """This provider needs a `base_url`, and reads the options in `_OPTIONS`."""
         problems: list[str] = []
         if model.provider != self.name:
             problems.append(f"provider is {model.provider!r}, not {self.name!r}")
@@ -415,9 +503,9 @@ class OpenAIProvider:
             problems.append("needs a base_url")
         options = model.options
         problems += [
-            f"unknown option {key!r}; known options are {list(OPTIONS)}"
+            f"unknown option {key!r}; known options are {list(_OPTIONS)}"
             for key in options
-            if key not in OPTIONS
+            if key not in _OPTIONS
         ]
         problems += [
             f"option {key!r} must be a number"
@@ -430,29 +518,26 @@ class OpenAIProvider:
         if "include_usage" in options and not isinstance(options["include_usage"], bool):
             problems.append("option 'include_usage' must be true or false")
         if "extra_body" in options:
-            extra = options["extra_body"]
-            if not isinstance(extra, Mapping):
-                problems.append("option 'extra_body' must be an object")
-            else:
-                problems += [
-                    f"option 'extra_body' may not set {key!r}; the provider owns it"
-                    for key in cast("Mapping[str, object]", extra)
-                    if key in OWNED_KEYS
-                ]
+            problems += _extra_body_problems(model, options["extra_body"])
         return problems
 
     async def aclose(self) -> None:
         """Close the client and its connections. Later samples fail."""
         self._closed = True
         client, self._http = self._http, None
-        if client is not None:
+        if client is not None and self._loop is asyncio.get_running_loop():
             await client.aclose()
+        # a client of another loop is dropped: that loop is gone, and it cannot be awaited here
 
     def _client(self) -> httpx.AsyncClient:
         if self._closed:
-            raise SampleError("this provider was closed; build a new one to sample again")
+            raise ProviderClosed("this provider was closed; build a new one to sample again")
+        loop = asyncio.get_running_loop()
+        if self._http is not None and self._loop is not loop:
+            self._http = None  # its loop is gone (a REPL runs `asyncio.run` per command)
         if self._http is None:
             self._http = httpx.AsyncClient(transport=self._transport, timeout=self._timeout)
+            self._loop = loop
         return self._http
 
     def request(
@@ -489,6 +574,22 @@ class OpenAIProvider:
             body.update(cast("Json", _plain(options["extra_body"])))
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
+    @staticmethod
+    async def _refuse(response: httpx.Response) -> None:
+        """Raise the `SampleError` for an error response, with its status and `Retry-After`
+        taken before the body is read (a body that fails to read still has them)."""
+        status = response.status_code
+        wait = _retry_after(response.headers.get("retry-after"))
+        try:
+            text = _error_text(status, await response.aread())
+        except httpx.HTTPError as e:
+            raise SampleError(
+                f"HTTP {status}: the error body could not be read ({type(e).__name__}: {e})",
+                status=status,
+                retry_after=wait,
+            ) from e
+        raise SampleError(text, status=status, retry_after=wait)
+
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncGenerator[Part | Finish | Delta, None]:
@@ -507,22 +608,13 @@ class OpenAIProvider:
         try:
             async with client.stream("POST", url, headers=headers, json=body) as response:
                 if response.status_code != HTTP_OK:
-                    raise SampleError(
-                        _error_text(response.status_code, await response.aread()),
-                        status=response.status_code,
-                        retry_after=retry_after(response.headers.get("retry-after")),
-                    )
-                async for data in _events(response):
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = _json(json.loads(data), "a stream chunk")
-                    except ValueError as e:
-                        raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
+                    await self._refuse(response)
+                async for chunk in _chunks(response):
                     for item in reply.feed(chunk):
                         yield item
         except httpx.HTTPError as e:
-            error = SampleError(f"{type(e).__name__}: {e}")
+            kind = ProviderClosed if self._closed else SampleError
+            error = kind(f"{type(e).__name__}: {e}")
         except SampleError as e:
             error = e
         if error is None or reply.finish is not None:
@@ -539,7 +631,7 @@ class OpenAIProvider:
             leftover = reply.close()
         except SampleError as cut_off:
             # A cut-off call with no id or name is not a part; the failure records what arrived.
-            raise SampleError(
+            raise type(error)(
                 f"{error}; {cut_off}",
                 reply.meta_text(),
                 status=error.status,

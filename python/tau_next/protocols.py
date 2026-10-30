@@ -68,6 +68,11 @@ class SampleError(Exception):
         self.retry_after = retry_after
 
 
+class ProviderClosed(SampleError):
+    """A sample on a provider whose `aclose()` has been called, or one cut off by it. Not a
+    transient failure: a retry cannot succeed, so a retrying wrapper passes it on."""
+
+
 class ToolContractError(TypeError):
     """An object given to the driver as a tool that does not satisfy `Tool`, or a second tool
     with a name already taken. The message names the tool."""

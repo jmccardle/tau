@@ -8,6 +8,7 @@ name. Finding the files and trusting them is not done here.
 
 import difflib
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -189,6 +190,17 @@ def _leafify(obj: dict[str, object], source: str, path: str, problems: _Problems
     return tree
 
 
+def _no_constant(name: str) -> object:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} is out of range")
+    return value
+
+
 def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
     def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
         obj = _Obj()
@@ -199,7 +211,9 @@ def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
         return obj
 
     try:
-        data: object = json.loads(text, object_pairs_hook=pairs)
+        data: object = json.loads(
+            text, object_pairs_hook=pairs, parse_constant=_no_constant, parse_float=_finite_float
+        )
     except json.JSONDecodeError as e:
         problem = ConfigProblem("error", f"invalid JSON: {e.msg}", source, "", e.lineno, e.colno)
         problems.found.append(problem)

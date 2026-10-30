@@ -3,6 +3,9 @@ error status, and normalized usage."""
 
 import asyncio
 import json
+import threading
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from email.utils import formatdate
 from pathlib import Path
 from time import time
@@ -14,6 +17,7 @@ from transcripts import (
     BASE_URL,
     MODEL,
     RESOLVED,
+    CutStream,
     GatedStream,
     Server,
     chunk,
@@ -33,6 +37,7 @@ from tau_next import (
     Live,
     ModelConfig,
     Part,
+    ProviderClosed,
     SampleError,
     Stop,
     TextDelta,
@@ -61,12 +66,75 @@ class CountingTransport(httpx.AsyncBaseTransport):
         self.closes += 1
 
 
+class KeepAliveServer:
+    """A real HTTP/1.1 server on 127.0.0.1, in its own thread and event loop (so it outlives
+    the loops a test runs samples on). It answers every request with `body` as an SSE
+    response of known length, on a connection it keeps open, and counts the connections.
+    With `stall`, it instead sends that much of `body`, promises more, and goes quiet."""
+
+    def __init__(self, body: str, stall: int | None = None) -> None:
+        self._body = body.encode()
+        self._stall = stall
+        self.connections = 0
+        self._loop = asyncio.new_event_loop()
+        self._server: asyncio.Server | None = None
+
+    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        try:
+            while True:
+                head = await reader.readuntil(b"\r\n\r\n")
+                length = 0
+                for line in head.split(b"\r\n"):
+                    if line.lower().startswith(b"content-length:"):
+                        length = int(line.split(b":")[1])
+                await reader.readexactly(length)
+                size = len(self._body) + (0 if self._stall is None else 10)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
+                    + f"content-length: {size}\r\n\r\n".encode()
+                )
+                writer.write(self._body if self._stall is None else self._body[: self._stall])
+                await writer.drain()
+                if self._stall is not None:
+                    await asyncio.sleep(60)  # the promised rest never comes
+        except (EOFError, ConnectionError, asyncio.CancelledError):
+            pass
+        finally:
+            writer.close()
+
+    @contextmanager
+    def running(self) -> Iterator[str]:
+        """The base URL of the server, while it runs."""
+        thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        thread.start()
+
+        async def start() -> asyncio.Server:
+            return await asyncio.start_server(self._serve, "127.0.0.1", 0)
+
+        self._server = asyncio.run_coroutine_threadsafe(start(), self._loop).result()
+        port = self._server.sockets[0].getsockname()[1]
+        try:
+            yield f"http://127.0.0.1:{port}/v1"
+        finally:
+            self._loop.call_soon_threadsafe(self._server.close)
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            thread.join()
+
+
 def with_options(**options: object) -> ModelConfig:
     return ModelConfig(MODEL, BASE_URL, options=options)
 
 
 def body_for(model: ModelConfig) -> dict[str, object]:
     return OpenAIProvider(environ={}).request(fresh_walk(), model, [])[2]
+
+
+def provider_for(text: str) -> OpenAIProvider:
+    return OpenAIProvider(sse_text(text).transport, {})
+
+
+PLAIN = chunk({"content": "hi"}, "stop") + DONE
 
 
 # One client
@@ -87,13 +155,64 @@ async def test_many_samples_share_one_client_until_aclose() -> None:
 
 
 @scenario
-async def test_a_sample_after_aclose_fails() -> None:
+async def test_two_sequential_samples_use_one_connection() -> None:
+    server = KeepAliveServer(PLAIN)
+    with server.running() as url:
+        provider = OpenAIProvider(environ={})
+        model = ModelConfig(MODEL, url)
+        for _ in range(3):
+            items, error = await collect(provider, fresh_walk(), model)
+            assert (items, error) == ([Part.Text("hi"), Finish(Stop.End, "stop")], None)
+        await provider.aclose()
+    assert server.connections == 1
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")  # the dropped client
+def test_a_program_that_runs_one_event_loop_per_command_keeps_working() -> None:
+    server = KeepAliveServer(PLAIN)
+    with server.running() as url:
+        provider = OpenAIProvider(environ={})
+        model = ModelConfig(MODEL, url)
+        for _ in range(2):
+            items, error = asyncio.run(collect(provider, fresh_walk(), model))
+            assert error is None
+            assert items[0] == Part.Text("hi")
+        asyncio.run(provider.aclose())
+
+
+@scenario
+async def test_a_sample_after_aclose_fails_as_closed_not_as_a_transient_error() -> None:
     provider = OpenAIProvider(transport=sse("plain").transport, environ={})
     await provider.aclose()
     items, error = await collect(provider, fresh_walk())
     assert items == []
-    assert error is not None
-    assert "closed" in str(error)
+    assert isinstance(error, ProviderClosed)
+    assert (error.status, error.retry_after) == (None, None)
+
+
+@scenario
+async def test_aclose_cuts_a_sample_in_flight_as_closed() -> None:
+    server = KeepAliveServer(chunk({"content": "he"}), stall=len(chunk({"content": "he"})))
+    with server.running() as url:
+        provider = OpenAIProvider(environ={})
+        stream = provider.sample(fresh_walk(), ModelConfig(MODEL, url), [])
+        assert await anext(stream) == TextDelta("he")
+        rest = asyncio.ensure_future(collect_rest(stream))
+        await asyncio.sleep(0.05)
+        await provider.aclose()
+        parts, error = await asyncio.wait_for(rest, 5)
+    assert parts == [Part.Text("he")], "the text that arrived is still yielded"
+    assert isinstance(error, ProviderClosed)
+
+
+async def collect_rest(stream: AsyncIterator[object]) -> tuple[list[object], SampleError | None]:
+    parts: list[object] = []
+    try:
+        async for item in stream:
+            parts.append(item)
+    except SampleError as e:
+        return parts, e
+    return parts, None
 
 
 # Deltas
@@ -110,18 +229,26 @@ async def test_text_arrives_as_deltas_then_the_part() -> None:
     assert isinstance(finish, Finish)
 
 
-@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        {"reasoning_content": "hm"},
+        {"reasoning": "hm"},
+        {"reasoning_content": "hm", "reasoning": "hm"},
+    ],
+    ids=["reasoning_content", "reasoning", "both-equal"],
+)
 @scenario
-async def test_thinking_arrives_under_either_key_and_the_part_precedes_the_next_kind(
-    key: str,
+async def test_thinking_arrives_under_either_spelling_and_the_part_precedes_the_next_kind(
+    spelling: dict[str, object],
 ) -> None:
-    text = chunk({key: "hm"}) + chunk({key: "m"}) + chunk({"content": "ok"}, "stop") + DONE
-    items, error = await collect_all(OpenAIProvider(sse_text(text).transport, {}), fresh_walk())
+    text = chunk(spelling) + chunk(spelling) + chunk({"content": "ok"}, "stop") + DONE
+    items, error = await collect_all(provider_for(text), fresh_walk())
     assert error is None
     assert items == [
         ThinkingDelta("hm"),
-        ThinkingDelta("m"),
-        Part.Thinking("hmm"),
+        ThinkingDelta("hm"),
+        Part.Thinking("hmhm"),
         TextDelta("ok"),
         Part.Text("ok"),
         Finish(Stop.End, "stop"),
@@ -129,29 +256,38 @@ async def test_thinking_arrives_under_either_key_and_the_part_precedes_the_next_
 
 
 @scenario
-async def test_a_delta_with_both_thinking_keys_fails() -> None:
-    text = chunk({"reasoning_content": "a", "reasoning": "b"})
-    _, error = await collect(OpenAIProvider(sse_text(text).transport, {}), fresh_walk())
+async def test_a_delta_with_two_different_thinking_spellings_fails() -> None:
+    _, error = await collect(
+        provider_for(chunk({"reasoning_content": "a", "reasoning": "b"})), fresh_walk()
+    )
     assert error is not None
-    assert "both" in str(error)
+    assert "different" in str(error)
+
+
+def call_chunk(index: int | None, id_: str | None, name: str | None, args: str | None) -> str:
+    function: dict[str, str] = {}
+    if name is not None:
+        function["name"] = name
+    if args is not None:
+        function["arguments"] = args
+    raw: dict[str, object] = {"function": function}
+    if index is not None:
+        raw["index"] = index
+    if id_ is not None:
+        raw["id"] = id_
+    return chunk({"tool_calls": [raw]})
 
 
 @scenario
-async def test_a_call_is_named_then_its_arguments_stream() -> None:
-    def call(index: int, **function: str) -> str:
-        raw: dict[str, object] = {"index": index, "function": function}
-        if "name" in function:
-            raw["id"] = f"id{index}"
-        return chunk({"tool_calls": [raw]})
-
+async def test_calls_are_named_then_their_arguments_stream() -> None:
     text = (
-        call(0, name="ta", arguments="")
-        + call(0, arguments='{"x"')
-        + call(0, arguments=": 1}")
-        + call(1, name="tb", arguments="{}")
+        call_chunk(0, "id0", "ta", "")
+        + call_chunk(0, None, None, '{"x"')
+        + call_chunk(0, None, None, ": 1}")
+        + call_chunk(1, "id1", "tb", "{}")
         + chunk({}, "tool_calls")
     )
-    items, error = await collect_all(OpenAIProvider(sse_text(text).transport, {}), fresh_walk())
+    items, error = await collect_all(provider_for(text), fresh_walk())
     assert error is None
     assert items == [
         CallNamed(0, "id0", "ta"),
@@ -167,12 +303,58 @@ async def test_a_call_is_named_then_its_arguments_stream() -> None:
 
 @scenario
 async def test_arguments_that_arrive_before_the_name_are_held_until_it_comes() -> None:
-    first = {"index": 0, "function": {"arguments": "{}"}}
-    named = {"index": 0, "id": "a", "function": {"name": "t"}}
-    text = chunk({"tool_calls": [first]}) + chunk({"tool_calls": [named]}) + chunk({}, "tool_calls")
-    items, error = await collect_all(OpenAIProvider(sse_text(text).transport, {}), fresh_walk())
+    text = call_chunk(0, None, None, "{}") + call_chunk(0, "a", "t", None) + chunk({}, "tool_calls")
+    items, error = await collect_all(provider_for(text), fresh_walk())
     assert error is None
     assert items[:3] == [CallNamed(0, "a", "t"), CallArgs(0, "{}"), Part.Call("a", "t", "{}")]
+
+
+@scenario
+async def test_a_name_and_id_repeated_on_every_chunk_are_not_doubled() -> None:
+    text = (
+        call_chunk(0, "a", "read", '{"p"')
+        + call_chunk(0, "a", "read", ":1}")
+        + chunk({}, "tool_calls")
+    )
+    items, error = await collect(provider_for(text), fresh_walk())
+    assert error is None
+    assert items[0] == Part.Call("a", "read", '{"p":1}')
+
+
+@scenario
+async def test_a_second_call_without_an_index_is_refused_not_merged() -> None:
+    text = call_chunk(None, "a", "read", '{"p":1}') + call_chunk(None, "b", "read", '{"p":2}')
+    _, error = await collect(provider_for(text), fresh_walk())
+    assert error is not None
+    assert "changed its id" in str(error)
+
+
+@scenario
+async def test_a_name_split_after_the_announcement_is_refused_not_cut() -> None:
+    text = call_chunk(0, "a", "re", None) + call_chunk(0, None, "ad", "{}")
+    _, error = await collect(provider_for(text), fresh_walk())
+    assert error is not None
+    assert "changed its name from 're' to 'ad'" in str(error)
+
+
+@scenario
+async def test_a_name_assigned_before_the_announcement_is_not_appended() -> None:
+    text = call_chunk(0, None, "read", None) + call_chunk(0, None, "read", "{}")
+    text += call_chunk(0, "a", None, None) + chunk({}, "tool_calls")
+    items, error = await collect(provider_for(text), fresh_walk())
+    assert error is None
+    assert items[0] == Part.Call("a", "read", "{}")
+
+
+@scenario
+async def test_a_second_choice_is_refused_not_mixed_in() -> None:
+    two = {"choices": [{"index": 0, "delta": {"content": "a"}}, {"index": 1, "delta": {}}]}
+    _, error = await collect(provider_for(f"data: {json.dumps(two)}\n\n"), fresh_walk())
+    assert error is not None
+    assert "more than one choice" in str(error)
+    other = {"choices": [{"index": 1, "delta": {"content": "b"}}]}
+    _, error = await collect(provider_for(f"data: {json.dumps(other)}\n\n"), fresh_walk())
+    assert error is not None
 
 
 @scenario
@@ -201,11 +383,7 @@ async def test_a_cancel_mid_stream_leaves_an_interrupted_reply_holding_the_text(
 @scenario
 async def test_a_driver_over_the_provider_streams_live_events_in_order(tmp_path: Path) -> None:
     text = chunk({"content": "a"}) + chunk({"content": "b"}, "stop") + DONE
-    async with running(tmp_path / "s", OpenAIProvider(sse_text(text).transport, {})) as (
-        _,
-        driver,
-        cursor,
-    ):
+    async with running(tmp_path / "s", provider_for(text)) as (_, driver, cursor):
         seen = driver.events(cursor)
 
         async def read() -> list[object]:
@@ -228,7 +406,7 @@ def test_check_accepts_the_listed_options() -> None:
         top_p=1,
         reasoning_effort="low",
         include_usage=False,
-        extra_body={"cache_prompt": True, "n": [1, {"a": 2}]},
+        extra_body={"cache_prompt": True, "chain": [1, {"a": 2.5}], "stream_options": {}},
     )
     assert OpenAIProvider(environ={}).check(model) == []
 
@@ -247,6 +425,13 @@ def test_check_accepts_the_listed_options() -> None:
         ({"extra_body": {"messages": []}}, "may not set 'messages'"),
         ({"extra_body": {"stream": False}}, "may not set 'stream'"),
         ({"extra_body": {"tools": []}}, "may not set 'tools'"),
+        ({"extra_body": {"n": 2}}, "may not set 'n'"),
+        ({"extra_body": {"stream_options": {}}}, "sets 'stream_options', which"),
+        ({"temperature": 1, "extra_body": {"temperature": 0}}, "sets 'temperature', which"),
+        ({"top_p": 1, "extra_body": {"top_p": 0}}, "sets 'top_p', which"),
+        ({"reasoning_effort": "low", "extra_body": {"reasoning_effort": "x"}}, "sets 'reasoning"),
+        ({"extra_body": {"a": {"b": [float("nan")]}}}, "holds nan"),
+        ({"extra_body": {"a": float("inf")}}, "holds inf"),
         ({"seed": 1}, "unknown option 'seed'"),
     ],
 )
@@ -254,6 +439,12 @@ def test_check_refuses_anything_else(options: dict[str, object], message: str) -
     problems = OpenAIProvider(environ={}).check(with_options(**options))
     assert len(problems) == 1
     assert message in problems[0]
+
+
+def test_extra_body_may_not_set_what_max_tokens_set() -> None:
+    model = ModelConfig(MODEL, BASE_URL, max_tokens=5, options={"extra_body": {"max_tokens": 9}})
+    (problem,) = OpenAIProvider(environ={}).check(model)
+    assert "sets 'max_tokens', which" in problem
 
 
 def test_options_reach_the_request_and_extra_body_goes_last() -> None:
@@ -266,15 +457,13 @@ def test_options_reach_the_request_and_extra_body_goes_last() -> None:
                 "temperature": 0.5,
                 "top_p": 0.9,
                 "reasoning_effort": "high",
-                "extra_body": {"cache_prompt": True, "max_tokens": 99, "chain": [{"a": 1}]},
+                "extra_body": {"cache_prompt": True, "chain": [{"a": 1}]},
             },
         )
     )
-    assert body["temperature"] == 0.5
-    assert body["top_p"] == 0.9
-    assert body["reasoning_effort"] == "high"
-    assert body["cache_prompt"] is True
-    assert body["max_tokens"] == 99, "extra_body is merged last"
+    assert (body["temperature"], body["top_p"], body["reasoning_effort"]) == (0.5, 0.9, "high")
+    assert body["max_tokens"] == 10
+    assert list(body)[-2:] == ["cache_prompt", "chain"]
     assert body["chain"] == [{"a": 1}]
     json.dumps(body)  # plain JSON, not read-only containers
     assert body["model"] == MODEL
@@ -332,7 +521,7 @@ async def test_a_past_http_date_is_zero_seconds() -> None:
     assert error.retry_after == 0.0
 
 
-@pytest.mark.parametrize("value", ["soon", "-5", "1.5", "", "2026-10-29T10:00:00Z"])
+@pytest.mark.parametrize("value", ["soon", "-5", "1.5", "", "2026-10-29T10:00:00Z", "9" * 400])
 @scenario
 async def test_any_other_retry_after_is_none(value: str) -> None:
     server = Server(httpx.Response(429, headers={"Retry-After": value}, text="no"))
@@ -342,35 +531,29 @@ async def test_any_other_retry_after_is_none(value: str) -> None:
 
 
 @scenario
-async def test_an_error_without_a_header_has_a_status_and_no_retry_after() -> None:
-    server = Server(httpx.Response(500, text="boom"))
-    _, error = await collect(OpenAIProvider(server.transport, {}), fresh_walk())
+async def test_an_error_body_that_fails_to_read_still_has_its_status_and_retry_after() -> None:
+    response = httpx.Response(503, headers={"Retry-After": "3"}, stream=CutStream(b"{"))
+    _, error = await collect(OpenAIProvider(Server(response).transport, {}), fresh_walk())
     assert error is not None
-    assert (error.status, error.retry_after) == (500, None)
-
-
-@scenario
-async def test_a_connection_error_has_no_status() -> None:
-    server = Server(httpx.ConnectError("refused"))
-    _, error = await collect(OpenAIProvider(server.transport, {}), fresh_walk())
-    assert error is not None
-    assert (error.status, error.retry_after) == (None, None)
-
-
-def test_a_sample_error_status_and_retry_after_are_keyword_only_and_default_to_none() -> None:
-    plain = SampleError("x")
-    assert (plain.status, plain.retry_after) == (None, None)
-    with pytest.raises(TypeError):
-        SampleError("x", None, 429)  # type: ignore[misc]
-    assert SampleError("x", status=429, retry_after=2.5).retry_after == 2.5
+    assert (error.status, error.retry_after) == (503, 3.0)
+    assert "could not be read" in str(error)
 
 
 # Usage
 
 
-def usage_stream(usage: dict[str, object]) -> Server:
+def usage_stream(usage: dict[str, object]) -> OpenAIProvider:
     tail = "data: " + json.dumps({"choices": [], "usage": usage}) + "\n\n"
-    return sse_text(chunk({"content": "x"}, "stop") + tail + DONE)
+    return provider_for(chunk({"content": "x"}, "stop") + tail + DONE)
+
+
+async def usage_meta(usage: dict[str, object]) -> dict[str, object]:
+    items, error = await collect(usage_stream(usage), fresh_walk())
+    assert error is None
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert finish.meta is not None
+    return json.loads(finish.meta)
 
 
 @scenario
@@ -381,22 +564,33 @@ async def test_usage_is_normalized_beside_the_servers_own_fields() -> None:
         "total_tokens": 27,
         "prompt_tokens_details": {"cached_tokens": 12},
     }
-    items, error = await collect(OpenAIProvider(usage_stream(raw).transport, {}), fresh_walk())
-    assert error is None
-    finish = items[-1]
-    assert isinstance(finish, Finish)
-    assert finish.meta is not None
-    assert json.loads(finish.meta) == {
+    assert await usage_meta(raw) == {
         "usage": {"input": 20, "output": 7, "cached": 12},
         "usage_raw": raw,
     }
 
 
+@pytest.mark.parametrize(
+    "details",
+    [{"cached_tokens": "12"}, {"cached_tokens": None}, {"cached_tokens": 1.5}, "none", [1]],
+)
 @scenario
-async def test_a_server_that_reports_no_cached_tokens_has_zero_cached() -> None:
-    raw: dict[str, object] = {"prompt_tokens": 3, "completion_tokens": 1}
-    items, _ = await collect(OpenAIProvider(usage_stream(raw).transport, {}), fresh_walk())
-    finish = items[-1]
-    assert isinstance(finish, Finish)
-    assert finish.meta is not None
-    assert json.loads(finish.meta)["usage"] == {"input": 3, "output": 1, "cached": 0}
+async def test_a_malformed_cached_count_leaves_the_normalized_usage_out(details: object) -> None:
+    raw: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "prompt_tokens_details": details,
+    }
+    assert await usage_meta(raw) == {"usage_raw": raw}
+
+
+@pytest.mark.parametrize("details", [None, {}])
+@scenario
+async def test_no_cached_count_means_zero_cached(details: object) -> None:
+    raw: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "prompt_tokens_details": details,
+    }
+    meta = await usage_meta(raw)
+    assert meta["usage"] == {"input": 3, "output": 1, "cached": 0}
