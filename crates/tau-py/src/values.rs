@@ -5,6 +5,7 @@
 //! it reads, Python to core for everything it builds.
 
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use tau_core::tree;
 
 /// `__repr__` is the Rust `Debug` text: mechanical, and readable in a failing
@@ -47,8 +48,13 @@ impl Replay {
         self.inner.data()
     }
 
-    fn __repr__(&self) -> String {
-        format!("{self:?}")
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let quoted = |s: &str| PyString::new(py, s).repr().map(|r| r.to_string());
+        Ok(format!(
+            "Replay(provider={}, data={})",
+            quoted(self.inner.provider())?,
+            quoted(self.inner.data())?
+        ))
     }
 }
 

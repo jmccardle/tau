@@ -46,6 +46,8 @@ pub enum Error {
         path: PathBuf,
         record: usize,
         offset: usize,
+        /// The decoder's reason.
+        reason: String,
     },
     /// The log's records do not replay (`tree::Error::BadRecord`).
     Core(tau_core::tree::Error),
@@ -70,9 +72,10 @@ impl fmt::Display for Error {
                 path,
                 record,
                 offset,
+                reason,
             } => write!(
                 f,
-                "record {record} (byte {offset}) of {} is intact but does not decode",
+                "record {record} (byte {offset}) of {} is intact but does not decode: {reason}",
                 path.display()
             ),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
@@ -292,7 +295,7 @@ enum Decoded<T> {
     Torn,
     /// Length and checksum agree, so the bytes are as written, but they do
     /// not decode.
-    Undecodable,
+    Undecodable(String),
 }
 
 fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Decoded<T> {
@@ -312,7 +315,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Decoded<T> {
     }
     match serde_json::from_slice(payload) {
         Ok(v) => Decoded::Record(v, end),
-        Err(_) => Decoded::Undecodable,
+        Err(e) => Decoded::Undecodable(e.to_string()),
     }
 }
 
@@ -334,11 +337,12 @@ fn scan(bytes: &[u8], path: &Path) -> Result<(Vec<Record>, usize), Error> {
                 }
             }
             Decoded::Torn => break,
-            Decoded::Undecodable => {
+            Decoded::Undecodable(reason) => {
                 return Err(Error::Undecodable {
                     path: path.into(),
                     record: n,
                     offset: HEADER + at,
+                    reason,
                 });
             }
         }

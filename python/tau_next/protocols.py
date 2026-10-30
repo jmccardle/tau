@@ -47,10 +47,14 @@ def check_meta(meta: object) -> None:
 
 
 def replay_for(part: Part, provider: str) -> dict[str, object] | None:
-    """The replay data `provider` may send back for `part`: the parsed JSON object when the
-    part carries replay tagged with `provider`; `None` for a part with none, or with another
-    provider's, which the caller treats as unsigned (`model.md` 10.4)."""
-    replay = part.replay if isinstance(part, Part.Text | Part.Thinking | Part.Call) else None
+    """The replay data `provider` may send back for `part`, parsed: the JSON object in
+    `part.replay.data` when the part carries replay tagged with `provider`; `None` for a part
+    with none, or with another provider's, which the caller treats as unsigned (`model.md`
+    10.4). The exact text is `part.replay.data`: string values parse back exactly, but numbers
+    and escapes may not re-serialize to the same bytes. Raises `TypeError` for a non-`Part`."""
+    if not isinstance(part, Part.Text | Part.Thinking | Part.Call):
+        raise TypeError(f"replay_for takes a Part, got {part!r}")
+    replay = part.replay
     if replay is None or replay.provider != provider:
         return None
     return cast("dict[str, object]", json.loads(replay.data))
@@ -138,10 +142,12 @@ class Provider(Protocol):
         if it returns any; `sample` may rely on a model that passed. It closes the generator
         when it stops reading.
 
-        Raise `SampleError` to fail; parts yielded before it are kept. If the sample is
-        cancelled or fails, the driver saves the text or thinking whose deltas arrived but
-        whose part never did. A part yielded while deltas are open must be the part those deltas
-        were building (same kind, same text), and `Finish` may not come with deltas open.
+        Raise `SampleError` to fail; parts yielded before it are kept. A `BadReplay` escaping
+        `sample` (the response held replay data core refuses) fails the sample the same way. If
+        the sample is cancelled or fails, the driver saves the text or thinking whose deltas
+        arrived but whose part never did. A part yielded while deltas are open must be the part
+        those deltas were building (same kind, same text), and `Finish` may not come with deltas
+        open.
         """
         ...
 

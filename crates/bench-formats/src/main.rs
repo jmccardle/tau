@@ -86,6 +86,7 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
                 id: id.clone(),
                 tool: "read".into(),
                 args_raw: r#"{"path":"src/lib.rs"}"#.into(),
+                replay: None,
             },
         ];
         let reply = Body::Assistant {
@@ -108,6 +109,7 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
 /// system prompt, a summary on top; the cursor moves there.
 fn compact(s: &mut Session, c: CursorId, text: &mut Text) {
     let walk: Vec<Body> = s
+        .tree
         .walk(s.at(c).unwrap())
         .iter()
         .skip(2)

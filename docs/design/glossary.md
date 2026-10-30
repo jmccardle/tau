@@ -35,12 +35,14 @@ A `Thinking` part may have no text when it has replay data (a redacted block).
 ### replay
 `tau_next.Replay(provider, data)` · D15 · new
 
-Data only the provider that wrote a part can send back, byte for byte: Anthropic's
+Data only the provider that wrote a part can send back: Anthropic's
 `thinking.signature` and `redacted_thinking` data, Gemini's `thoughtSignature` (on text and
 on calls). `provider` is the name of the provider that wrote it; `data` is the text of a
-JSON object, kept exactly as given. Core checks both on construction (`BadReplay`, a
-`ValueError`: no provider name, or `data` not a strict JSON object; `NaN` and `Infinity`
-are not JSON). A part's `replay` is `None` unless the provider sets it; logs written before
+JSON object, kept exactly as given: `part.replay.data` is the exact text. Core checks both on
+construction and when a log loads (`BadReplay`, a `ValueError`: a provider name that is empty,
+blank, or holds a control character; `data` not a strict JSON object, or with a repeated key
+at any depth; `NaN` and `Infinity` are not JSON). A logged `replay: null` is refused, as is
+any other non-replay, with the reason in the `Undecodable` message. A part's `replay` is `None` unless the provider sets it; logs written before
 replay existed load with `None`, and a part without replay is logged exactly as before. The
 driver's ordering rule (see **provider, model**) ignores it: a provider learns a signature
 only at the end of a block, so it is on the part and on none of its deltas.
@@ -48,8 +50,10 @@ only at the end of a block, so it is on the part and on none of its deltas.
 ### replay_for
 `tau_next.replay_for(part, provider)` (`protocols.py`) · D15 · new
 
-The replay data a provider may send back for a part: the parsed JSON object when the part's
-replay is tagged with `provider`, else `None`. A part with another provider's replay is
+The replay data a provider may send back for a part, parsed: the JSON object in
+`part.replay.data` when the part's replay is tagged with `provider`, else `None`. String
+values parse back exactly; numbers and escapes may not re-serialize to the same bytes, so a
+provider that needs the exact text reads `part.replay.data`. A non-`Part` raises `TypeError`. A part with another provider's replay is
 treated as unsigned (`model.md` §10.4), so no provider repeats the tag check.
 
 ### turns (the walk module)

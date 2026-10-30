@@ -1,12 +1,27 @@
 """Replay data through the driver (D15): the ordering rule ignores it, a reload keeps it, and
 `replay_for` hands a provider only its own."""
 
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
+import pytest
 from fakes import FakeProvider, Reply
 from harness import Harness, scenario
 
-from tau_next import Body, Part, Replay, Stop, TextDelta, ThinkingDelta, replay_for
+from tau_next import (
+    Body,
+    Delta,
+    Finish,
+    ModelConfig,
+    Node,
+    Part,
+    Replay,
+    Stop,
+    TextDelta,
+    ThinkingDelta,
+    Tool,
+    replay_for,
+)
 
 ANTHROPIC = Replay("anthropic", '{"signature":"s1=="}')
 GEMINI = Replay("gemini", '{"thoughtSignature":"g1"}')
@@ -74,3 +89,35 @@ def test_replay_for_returns_nothing_for_another_providers_tag() -> None:
 def test_replay_for_returns_nothing_for_a_part_without_replay() -> None:
     for part in (Part.Text("t"), Part.Thinking("t"), Part.Call("c", "tool", "{}")):
         assert replay_for(part, "anthropic") is None
+
+
+def test_replay_for_refuses_a_non_part() -> None:
+    with pytest.raises(TypeError, match="Part"):
+        replay_for("not a part", "anthropic")  # type: ignore[arg-type]
+
+
+def test_a_replays_repr_shows_its_provider_and_data() -> None:
+    assert repr(ANTHROPIC) == "Replay(provider='anthropic', data='{\"signature\":\"s1==\"}')"
+
+
+class BadReplayProvider(FakeProvider):
+    """A provider whose response held replay data core refuses."""
+
+    async def sample(  # type: ignore[override]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
+        yield Part.Text("kept")
+        yield Part.Text("lost", Replay("anthropic", "[1]"))
+
+
+@scenario
+async def test_a_bad_replay_from_a_provider_fails_that_sample_not_the_driver(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=BadReplayProvider([]))
+    await h.send("go")
+    await h.settle()
+    h.driver.check()
+    replies = [b for b in h.bodies() if isinstance(b, Body.Assistant)]
+    assert [(r.stop, r.parts) for r in replies] == [(Stop.Error, [Part.Text("kept")])]
+    await h.close()

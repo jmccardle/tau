@@ -58,6 +58,9 @@ BAD_DATA = {
     "-Infinity": '{"a": -Infinity}',
     "out of range": '{"a": 1e999}',
     "trailing text": '{"a": 1} x',
+    "duplicate key": '{"a":1,"a":2}',
+    "nested duplicate key": '{"a":{"b":1,"b":2}}',
+    "duplicate key in an array": '{"a":[{"b":1,"b":2}]}',
 }
 
 
@@ -67,9 +70,19 @@ def test_bad_replay_data_is_refused_at_construction(data: str) -> None:
         Replay("anthropic", data)
 
 
-def test_a_replay_with_no_provider_is_refused() -> None:
+def test_a_duplicate_key_says_so() -> None:
+    with pytest.raises(tau_next.BadReplay, match="repeated key"):
+        Replay("anthropic", '{"a":1,"a":2}')
+
+
+@pytest.mark.parametrize("name", ["", " ", "\t\n", "a\0b", "a\nb"], ids=repr)
+def test_a_replay_with_no_visible_provider_is_refused(name: str) -> None:
     with pytest.raises(tau_next.BadReplay, match="provider"):
-        Replay("", "{}")
+        Replay(name, "{}")
+
+
+def test_a_replays_repr_is_python_not_rust() -> None:
+    assert repr(Replay("p", '{"a":"x"}')) == "Replay(provider='p', data='{\"a\":\"x\"}')"
 
 
 def test_bad_replay_is_a_value_error() -> None:
@@ -126,5 +139,40 @@ def test_a_log_holding_bad_replay_data_does_not_load(tmp_path: Path) -> None:
         b'"stop":"End","finish_reason":null,"meta":null}},"delivers":[]},"mv":null}}'
     )
     append_record(tmp_path / "s", bad)
-    with pytest.raises(tau_next.Undecodable):
+    with pytest.raises(tau_next.Undecodable, match="JSON object"):
+        Session.load(tmp_path / "s")
+
+
+def _log_with(part: bytes) -> bytes:
+    return (
+        b'{"Write":{"node":{"id":2,"parent":1,"time":1,"by":"Provider","body":{"Assistant":'
+        b'{"parts":[' + part + b"],"
+        b'"stop":"End","finish_reason":null,"meta":null}},"delivers":[]},"mv":null}}'
+    )
+
+
+NULL_REPLAY = {
+    "Text": b'{"Text":{"text":"hi","replay":null}}',
+    "Thinking": b'{"Thinking":{"text":"hi","replay":null}}',
+    "Call": b'{"Call":{"id":"c","tool":"t","args_raw":"{}","replay":null}}',
+}
+
+
+@pytest.mark.parametrize("part", NULL_REPLAY.values(), ids=NULL_REPLAY.keys())
+def test_a_null_replay_in_the_log_is_refused_for_every_kind_of_part(
+    tmp_path: Path, part: bytes
+) -> None:
+    session, _ = new(tmp_path / "s")
+    session.close()
+    append_record(tmp_path / "s", _log_with(part))
+    with pytest.raises(tau_next.Undecodable, match="replay"):
+        Session.load(tmp_path / "s")
+
+
+def test_a_duplicate_key_in_logged_replay_data_says_so(tmp_path: Path) -> None:
+    session, _ = new(tmp_path / "s")
+    session.close()
+    part = b'{"Text":{"text":"hi","replay":{"provider":"p","data":"{\\"a\\":1,\\"a\\":2}"}}}'
+    append_record(tmp_path / "s", _log_with(part))
+    with pytest.raises(tau_next.Undecodable, match="repeated key"):
         Session.load(tmp_path / "s")
