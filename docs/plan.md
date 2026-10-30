@@ -223,6 +223,6 @@ and scratchpads replayed on connect), then print/json, REPL, RPC, TUI, each a
 client of the same model. One event projector per wire.
 
 ### Phase 7: release
-Anthropic and Google providers with `cache_state`; JMFTS replica; one-way
-converter from 0.15 sessions (D9); docs; absorption into the τ repository as
+Anthropic and Google providers with `cache_state`; JMFTS replica; docs (no
+0.15 session converter: D9 superseded); absorption into the τ repository as
 0.16.0.

@@ -1,6 +1,11 @@
 # D9: 0.15 sessions come in through a one-way converter
 
-Status: accepted (Phase 1)
+Status: superseded (2026-10-29): no converter. τ 0.16 keeps its sessions in
+the same store, `$TAU_HOME/sessions`, beside 0.15's `.jsonl` files, which it
+neither reads nor converts. Converting them is left to whoever wants it; the
+reasoning below stands for anyone who writes one.
+
+Original status: accepted (Phase 1)
 
 ## Context
 

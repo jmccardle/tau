@@ -13,7 +13,7 @@ wins; where either differs from the step spike, the spike wins until review.
 | [D6](D06-cursor-persist.md) | Cursor persistence | accepted | `{id, at}`; every write is followed by its move. |
 | [D7](D07-call-result.md) | Calls and results | accepted | Calls in the `Assistant` node; one `Results` per batch at the join. |
 | [D8](D08-extension-compat.md) | 0.15 extensions | accepted | No compatibility; a mapping table. |
-| [D9](D09-session-compat.md) | 0.15 sessions | accepted | A one-way converter in Phase 7; details open. |
+| [D9](D09-session-compat.md) | 0.15 sessions | superseded | No converter: τ 0.16 sessions live in `$TAU_HOME/sessions` beside 0.15's files, which it ignores. |
 | [D10](D10-package-name.md) | Package name | accepted | `tau_next` until absorption into τ 0.16.0. |
 | [D11](D11-core-decides.md) | Where rules live | accepted, spiked | A sans-IO step machine in `tau-core`; the driver performs jobs. |
 | [D12](D12-store-layout.md) | Store layout | accepted | One record log plus a scratchpad file; JMFTS a replica. |
