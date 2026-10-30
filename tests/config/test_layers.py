@@ -539,3 +539,10 @@ def test_an_unset_key_variable_is_a_warning_only_given_an_environ(tmp_path: Path
     assert problem.severity == "warning"
     assert "SOME_KEY" in problem.message
     assert check(tmp_path, config, environ={"SOME_KEY": "x"}) == ()
+
+
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_a_number_json_cannot_hold_is_a_config_problem(tmp_path: Path, number: str) -> None:
+    text = '{"models": {"m": {"model": "x", "options": {"extra_body": {"t": ' + number + "}}}}}"
+    problem = only_error(check(tmp_path, text))
+    assert "invalid JSON" in problem.message

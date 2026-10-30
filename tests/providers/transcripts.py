@@ -16,6 +16,7 @@ from typing import cast
 import httpx
 
 from tau_next import (
+    Delta,
     Driver,
     Finish,
     ModelCatalog,
@@ -136,20 +137,31 @@ def chunk(delta: dict[str, object], finish: str | None = None) -> str:
     return f"data: {json.dumps({'choices': [choice]})}\n\n"
 
 
-async def collect(
+async def collect_all(
     provider: OpenAIProvider,
     walk: Sequence[Node],
     model: ModelConfig = RESOLVED,
     tools: Sequence[Tool] = (),
-) -> tuple[list[Part | Finish], SampleError | None]:
-    """Everything `sample` yielded, and the `SampleError` it ended with, if any."""
-    items: list[Part | Finish] = []
+) -> tuple[list[Part | Finish | Delta], SampleError | None]:
+    """Everything `sample` yielded, deltas included, and the `SampleError` it ended with, if any."""
+    items: list[Part | Finish | Delta] = []
     try:
         async for item in provider.sample(walk, model, tools):
             items.append(item)
     except SampleError as e:
         return items, e
     return items, None
+
+
+async def collect(
+    provider: OpenAIProvider,
+    walk: Sequence[Node],
+    model: ModelConfig = RESOLVED,
+    tools: Sequence[Tool] = (),
+) -> tuple[list[Part | Finish], SampleError | None]:
+    """The parts and `Finish` `sample` yielded, and the `SampleError` it ended with, if any."""
+    items, error = await collect_all(provider, walk, model, tools)
+    return [i for i in items if isinstance(i, Part | Finish)], error
 
 
 def fresh_walk() -> list[Node]:

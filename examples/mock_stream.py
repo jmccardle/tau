@@ -1,10 +1,11 @@
-"""Live events with no network: the mock provider streams a reply word by word.
+"""Live events: a reply streams in delta by delta, then the saved reply is read from the tree.
 
 python examples/mock_stream.py [--model NAME]
 
 Setup: copy examples/config.json to ~/.tau/config.json (or point TAU_HOME at a
-directory holding it). The model defaults to mock:echo, which echoes the message.
-Each word prints as its live event arrives; then the saved reply is read from the tree.
+directory holding it). The model defaults to mock:echo, which echoes the message with no
+network; `--model local:qwen` streams the same question from a real server, thinking
+deltas included.
 """
 
 import asyncio
@@ -23,6 +24,7 @@ from tau_next import (
     Session,
     SystemClock,
     TextDelta,
+    ThinkingDelta,
     builtin_providers,
     model_config,
 )
@@ -45,18 +47,22 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 async for event in events:
                     match event:
                         case Live(delta=TextDelta(text=text)):
-                            print(f"live  {text!r}")
+                            print(f"live  text      {text!r}")
+                        case Live(delta=ThinkingDelta(text=text)):
+                            print(f"live  thinking  {text!r}")
+                        case Live(delta=delta):
+                            print(f"live  {delta}")
                         case Saved():
                             print("saved (the tree changed)")
 
             shown = asyncio.ensure_future(show())
-            driver.send(cursor, "example", "the quick brown fox jumps over the lazy dog")
+            driver.send(cursor, "example", "What is 17 times 3? Answer briefly.")
             await rest(driver, session, cursor)
             reply = session.tree.node(session.cursor(cursor).at).body
             await driver.stop()  # ends the event stream after what it holds
             await shown
             assert isinstance(reply, Body.Assistant)
-            print(f"reply {reply.parts}")
+            print(f"reply {reply.parts}\nmeta  {reply.meta}")
             session.close()
     finally:
         await close_all(providers)

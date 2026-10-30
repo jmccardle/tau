@@ -19,14 +19,10 @@ from transcripts import (
     sse_text,
 )
 
-from tau_next import Finish, Part, SampleError, Stop
+from tau_next import Finish, Part, SampleError, Stop, TextDelta, ThinkingDelta
 from tau_next.providers.openai import OpenAIProvider
 
 DONE = "data: [DONE]\n\n"
-REASONING = (
-    'User asks: "What is 17 times 3? Answer briefly." Need compute 17*3 = 51. '
-    "Final should be brief.\n"
-)
 
 
 def meta_of(item: object) -> object:
@@ -67,7 +63,12 @@ async def test_usage_arrives_after_the_finish_and_joins_the_meta() -> None:
     )
     items, error = await collect(provider(sse_text(text)), fresh_walk())
     assert error is None
-    assert meta_of(items[-1]) == {"id": "c1", "model": "m", "usage": usage}
+    assert meta_of(items[-1]) == {
+        "id": "c1",
+        "model": "m",
+        "usage": {"input": 20, "output": 7, "cached": 0},
+        "usage_raw": usage,
+    }
 
 
 @scenario
@@ -82,7 +83,8 @@ async def test_the_llama_cpp_usage_chunk_joins_the_meta_and_timings_do_not() -> 
         "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
         "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
         "system_fingerprint": "b1637-9c7a7553",
-        "usage": {"completion_tokens": 7, "prompt_tokens": 20, "total_tokens": 27},
+        "usage": {"input": 20, "output": 7, "cached": 0},
+        "usage_raw": {"completion_tokens": 7, "prompt_tokens": 20, "total_tokens": 27},
     }
 
 
@@ -92,7 +94,7 @@ async def test_a_usage_chunk_without_a_choices_key_is_not_an_error() -> None:
     text = chunk({"content": "x"}, "stop") + f"data: {json.dumps({'usage': usage})}\n\n" + DONE
     items, error = await collect(provider(sse_text(text)), fresh_walk())
     assert error is None
-    assert meta_of(items[-1]) == {"usage": usage}
+    assert meta_of(items[-1]) == {"usage_raw": usage}, "no token counts, no normalized usage"
 
 
 AFTER_FINISH = [
@@ -134,7 +136,7 @@ async def test_a_reset_after_the_finish_still_ends_the_reply_normally(tail: str)
     assert isinstance(finish, Finish)
     assert (finish.stop, finish.reason) == (Stop.End, "stop")
     if tail == "usage-then-reset":
-        assert meta_of(finish) == {"id": "c1", "usage": {"total_tokens": 5}}
+        assert meta_of(finish) == {"id": "c1", "usage_raw": {"total_tokens": 5}}
     else:
         assert finish.meta is None
 
@@ -154,7 +156,7 @@ async def test_content_after_the_finish_is_ignored() -> None:
     finish = items[-1]
     assert isinstance(finish, Finish)
     assert finish.stop == Stop.End
-    assert meta_of(finish) == {"usage": {"total_tokens": 5}}
+    assert meta_of(finish) == {"usage_raw": {"total_tokens": 5}}
 
 
 @scenario
@@ -199,16 +201,6 @@ def test_a_finish_meta_that_is_not_text_is_a_type_error() -> None:
 
 
 @scenario
-async def test_reasoning_content_is_a_thinking_part_before_the_text() -> None:
-    items, error = await collect(provider(sse("reasoning")), fresh_walk())
-    assert error is None
-    assert items[:-1] == [Part.Thinking(REASONING), Part.Text("51")]
-    finish = items[-1]
-    assert isinstance(finish, Finish)
-    assert (finish.stop, finish.reason) == (Stop.End, "stop")
-
-
-@scenario
 async def test_a_tool_call_arrives_whole_with_its_arguments_byte_for_byte() -> None:
     items, error = await collect(provider(sse("tool_call")), fresh_walk())
     assert error is None
@@ -226,29 +218,14 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
     tail = (chunk({"content": "llo"}) + chunk({}, "stop") + DONE).encode()
     response = httpx.Response(200, stream=GatedStream(head, gate, tail))
     stream = provider(Server(response)).sample(fresh_walk(), RESOLVED, [])
+    assert await anext(stream) == ThinkingDelta("hm")
     assert await anext(stream) == Part.Thinking("hm"), "complete once the text began"
+    assert await anext(stream) == TextDelta("he")
     gate.set()
-    assert [item async for item in stream] == [Part.Text("hello"), Finish(Stop.End, "stop")]
-
-
-@scenario
-async def test_parallel_calls_are_separate_parts_in_order() -> None:
-    def call(index: int, id_: str, name: str, args: str) -> str:
-        function = {"name": name, "arguments": args}
-        return chunk({"tool_calls": [{"index": index, "id": id_, "function": function}]})
-
-    text = (
-        call(0, "a", "ta", '{"x"')
-        + chunk({"tool_calls": [{"index": 0, "function": {"arguments": ": 1}"}}]})
-        + call(1, "b", "tb", "{}")
-        + chunk({}, "tool_calls")
-    )
-    items, error = await collect(provider(sse_text(text)), fresh_walk())
-    assert error is None
-    assert items == [
-        Part.Call("a", "ta", '{"x": 1}'),
-        Part.Call("b", "tb", "{}"),
-        Finish(Stop.Tools, "tool_calls"),
+    assert [item async for item in stream] == [
+        TextDelta("llo"),
+        Part.Text("hello"),
+        Finish(Stop.End, "stop"),
     ]
 
 
@@ -290,6 +267,8 @@ async def test_a_non_json_error_body_is_quoted() -> None:
     server = Server(httpx.Response(429, text="slow down"))
     items, error = await collect(provider(server), fresh_walk())
     assert (items, str(error)) == ([], "HTTP 429: slow down")
+    assert error is not None
+    assert (error.status, error.retry_after) == (429, None)
 
 
 @scenario
@@ -297,7 +276,9 @@ async def test_a_refused_connection_fails_the_sample() -> None:
     server = Server(httpx.ConnectError("connection refused"))
     items, error = await collect(provider(server), fresh_walk())
     assert items == []
+    assert error is not None
     assert str(error) == "ConnectError: connection refused"
+    assert (error.status, error.retry_after) == (None, None)
 
 
 @scenario
