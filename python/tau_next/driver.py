@@ -73,6 +73,10 @@ class Driver:
         self._failure: Exception | None = None
         self._watchers: list[asyncio.Future[None]] = []
 
+    def use_catalog(self, catalog: ModelCatalog) -> None:
+        """Resolve model names in `catalog` from the next sample dispatched on."""
+        self._catalog = catalog
+
     # Lifecycle
 
     def start(self) -> None:

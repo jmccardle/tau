@@ -758,9 +758,7 @@ The **provider** is the Python adapter for one API family; it converts walks
 to messages (`model.md` §10). Its contract is `sample(walk, model, tools)`: `model` is
 the `ModelConfig` the driver resolved for this sample, and the provider reads no node data.
 The **model** is a name, as its API spells it.
-The `Driver` is given a `ModelCatalog` (`Driver(session, provider, catalog, *, tools,
-extensions, clock)`) to resolve the name in `config_at(at)`; API keys are read from the
-provider's environ.
+API keys are read from the provider's environ.
 
 ### OpenAIProvider
 `tau_next.providers.openai.OpenAIProvider` · new
@@ -796,7 +794,7 @@ Parts begun before a failure are yielded first; a call cut off with no id or
 no name is not a part, so its raw argument text and whatever id and name arrived
 are appended to the `SampleError` message. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
-`timeout`. `request(walk, config, tools)` returns the URL, headers, and body.
+`timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
 
 ### tool, Tool
 `tau_next.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
@@ -1037,8 +1035,11 @@ driver memory.
 Python `tau_next.driver.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
-place that awaits. Built from a session, a provider, tools, extensions, and a
-clock. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+place that awaits. `Driver(session, provider, catalog, *, tools, extensions, clock)`:
+built from a session, a provider, a `ModelCatalog` (where it resolves the model name in
+`config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
+replaces the catalog for samples dispatched after it (a frontend that reloads the config
+files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
 `abort`, `open`, `add_item`, `respond`) run on the loop thread, call the
 session, then poke the pump. Extensions are a list given to the constructor,
 in hook order; how `config_at` will name them is open.

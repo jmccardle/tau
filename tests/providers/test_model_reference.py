@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from harness import scenario
-from transcripts import BASE_URL, CONFIG, NAME, catalog, running, sse
+from transcripts import BASE_URL, CONFIG, NAME, catalog, running, sse, sse_sequence
 
 from tau_next import (
     Body,
@@ -107,7 +107,9 @@ async def test_the_log_holds_the_name_and_no_url_or_key(tmp_path: Path) -> None:
 
 
 @scenario
-async def test_a_renamed_model_fails_the_next_sample_naming_it(tmp_path: Path) -> None:
+async def test_a_name_missing_from_the_catalog_fails_the_sample_naming_it(
+    tmp_path: Path,
+) -> None:
     server = sse("plain")
     renamed = read_models(cli={"models": {"other": {"model": "m", "base_url": BASE_URL}}})
     async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), renamed) as (
@@ -120,6 +122,25 @@ async def test_a_renamed_model_fails_the_next_sample_naming_it(tmp_path: Path) -
         assert not s.cursor(c).auto
         assert sample_errors(s) == [f"model '{NAME}' is not in your config"]
     assert server.requests == []
+
+
+@scenario
+async def test_a_catalog_change_takes_effect_at_the_next_sample(tmp_path: Path) -> None:
+    server = sse_sequence("plain", "plain")
+    before = catalog(base_url="http://before.test/v1")
+    after = catalog(base_url="http://after.test/v1")
+    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), before) as (
+        s,
+        driver,
+        c,
+    ):
+        driver.send(c, "test", "one")
+        await driver.rest(c)
+        driver.use_catalog(after)
+        driver.send(c, "test", "two")
+        await driver.rest(c)
+        assert sample_errors(s) == []
+    assert [r.url.host for r in server.requests] == ["before.test", "after.test"]
 
 
 @scenario

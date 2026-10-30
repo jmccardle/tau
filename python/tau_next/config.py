@@ -88,7 +88,10 @@ def model_name(config: Config) -> str:
     fields = cast("dict[str, object]", data)
     extra = sorted(str(k) for k in fields if k != "model")
     if extra:
-        raise ConfigError(f'config data must be exactly {{"model": name}}; unexpected keys {extra}')
+        raise ConfigError(
+            f'config data must be exactly {{"model": name}}; unexpected keys {extra}; '
+            "a session from before D13 names no model: append a root with model_config(name)"
+        )
     if "model" not in fields:
         raise ConfigError("config is missing 'model'")
     return _text(fields["model"], "model")

@@ -28,10 +28,10 @@ FAKE_MODEL = "fake"
 FAKE_CONFIG = model_config(FAKE_MODEL)
 
 
-def fake_catalog(*names: str) -> ModelCatalog:
-    """A catalog of models (`fake` if no names), each at a URL nothing listens on."""
-    models = {n: {"model": n, "base_url": "http://fake.invalid/v1"} for n in names or (FAKE_MODEL,)}
-    return read_models(cli={"models": models})
+def fake_catalog() -> ModelCatalog:
+    """A catalog of one model, `fake`, at a URL nothing listens on."""
+    model = {"model": FAKE_MODEL, "base_url": "http://fake.invalid/v1"}
+    return read_models(cli={"models": {FAKE_MODEL: model}})
 
 
 class Gate:
