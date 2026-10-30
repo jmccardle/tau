@@ -124,7 +124,12 @@ def test_check_reports_a_symlinked_project_config(world: World) -> None:
 
 
 def test_the_example_config_is_sound() -> None:
-    environ = {"HOME": "/nonexistent-home", "EXAMPLE_API_KEY": "x", "ANTHROPIC_API_KEY": "x"}
+    environ = {
+        "HOME": "/nonexistent-home",
+        "EXAMPLE_API_KEY": "x",
+        "ANTHROPIC_API_KEY": "x",
+        "GEMINI_API_KEY": "x",
+    }
     sample_file = REPO / "examples" / "config.json"
     assert check_config(sample_file, environ=environ, providers=PROVIDERS) == ()
     assert json.loads(sample_file.read_text(encoding="utf-8"))["default_model"] == "local:qwen"

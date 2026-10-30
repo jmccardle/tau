@@ -2,7 +2,7 @@
 
 Status: candidate (2026-10-30): the first slice is built (provider contract, settings,
 live and saved events, mock provider), and the OpenAI provider keeps to the contract
-(item 10); replay data and the shared walk are built (item 14); tool progress is not. Amends `model.md` §9 and §10.
+(item 10); replay data and the shared walk are built (item 14); a Gemini provider is built (item 15); tool progress is not. Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -208,6 +208,33 @@ whose `provider` is not its own.
    refuses the options that need one. It keeps `anthropic-version: 2023-06-01`:
    `2026-10-21` removes `temperature`, `top_p` and `top_k`. `Part.Thinking` text is the summary, so a round trip sends
    the signature and the summary together as received.
+
+16. **The Gemini provider** (`providers/gemini.py`) is built to the contract, and building it
+   showed:
+   - *Signatures arrive on the last chunk of the text they sign*, often one with no text (live,
+     `gemini-3.5-flash`: three text chunks, then `{"text": "", "thoughtSignature": ...}` with the
+     finish reason; a short reply carries it on the one text part). A signature therefore ends the
+     saved `Text`, and replay is `{"thoughtSignature": ...}` on that part. On a call it is a
+     sibling of `functionCall` in the same part. Thought summaries carried none in any capture.
+   - *A tool call in the current turn without its signature is a 400* on Gemini 3 ("Function call
+     is missing a thought_signature"). A call from another provider, or from a model that sent
+     none, therefore fails the sample with the API's message; there is no fallback signature (the
+     documented dummy value is a workaround and is not used).
+   - *Signatures crossed models* in one check (a `gemini-3.5-flash` call signature accepted by
+     `gemini-3.5-flash-lite`), so replay is tagged with the provider and not the model.
+   - *Ids are optional.* This API gave `call_<n>` ids on calls. A call without one gets a
+     random UUID id (`gemini-<hex>`), unique in any session, and its replay marks it
+     `synthesized_id`; only an API id (replay `id`) goes back, on the `functionCall` and its
+     `functionResponse`. Without ids Gemini matches responses by name and order, so the batch
+     keeps call order.
+   - *Errors can arrive inside a 200 stream* (`{"error": {"code": 503, ...}}`), after parts.
+   - *Thoughts are counted separately*: `thoughtsTokenCount` is not in `candidatesTokenCount`.
+     Normalized `output` is their sum.
+   - Rules the review of the walk module asked of a provider, kept local to `gemini.py` for a
+     later move into the walk: a batch whose call arguments are not a JSON object goes as text
+     with its results; model turns left empty (unsigned thinking only) are dropped and
+     neighbouring contents merge; a `System` node after the first message is a
+     `[system note: ...]` user turn; data core refuses as replay fails the sample.
 
 ## Open
 

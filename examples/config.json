@@ -25,6 +25,16 @@
         }
       }
     },
+    "gemini": {
+      "provider": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "models": {
+        "flash": {
+          "model": "gemini-3.5-flash",
+          "options": { "thinking": { "include_thoughts": true } }
+        }
+      }
+    },
     "mock": {
       "provider": "mock",
       "models": {
