@@ -53,6 +53,7 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
             parts,
             stop,
             finish_reason: None,
+            meta: None,
         },
         delivers: vec![],
         by: Author::Provider,
@@ -378,6 +379,7 @@ fn body() -> impl Strategy<Value = Body> {
             .collect(),
         stop: Stop::Tools,
         finish_reason: None,
+        meta: None,
     });
     prop_oneof![
         Just(Body::Config(Config::from("{}"))),
@@ -386,9 +388,16 @@ fn body() -> impl Strategy<Value = Body> {
         Just(Body::Assistant {
             parts: vec![Part::Text("a".into())],
             stop: Stop::End,
-            finish_reason: None
+            finish_reason: None,
+            meta: None,
         }),
         calls,
+        Just(Body::Assistant {
+            parts: vec![Part::Text("a".into())],
+            stop: Stop::End,
+            finish_reason: Some("stop".into()),
+            meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
+        }),
         Just(Body::Custom {
             kind: "note".into(),
             data: "n".into(),

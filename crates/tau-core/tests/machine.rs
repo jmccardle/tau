@@ -37,6 +37,7 @@ fn said(t: &str) -> Answer {
                 parts: vec![Part::Text(t.into())],
                 stop: Stop::End,
                 finish_reason: None,
+                meta: None,
             },
             delivers: vec![],
             by: Author::Provider,

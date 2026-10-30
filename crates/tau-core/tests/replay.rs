@@ -121,6 +121,7 @@ fn apply(s: &mut Session, op: &Op) {
                 parts,
                 stop: Stop::Tools,
                 finish_reason: None,
+                meta: None,
             };
             s.write(cursor(i), body, vec![], Author::Provider, 0)
                 .unwrap();
@@ -263,6 +264,7 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Answer {
                 parts,
                 stop,
                 finish_reason: None,
+                meta: None,
             },
             delivers: vec![],
             by: Author::Provider,

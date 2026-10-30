@@ -835,3 +835,22 @@ async def test_a_hook_appends_a_detached_root_without_moving_any_cursor(tmp_path
     assert node.by == Author.Extension("d")
     assert h.session.cursor(h.cursor).at == at
     assert h.session.tree.lca(root, at) is None
+
+
+@scenario
+async def test_an_assistant_nodes_meta_survives_a_reload(tmp_path: Path) -> None:
+    """`meta` is opaque JSON text a provider attaches to its reply; the log keeps it verbatim."""
+    meta = '{"model": "m-1", "id": "r1", "usage": {"total_tokens": 9}}'
+    provider = FakeProvider([Reply([Part.Text("hi")], finish_reason="stop", meta=meta)])
+    h = await Harness.create(tmp_path, provider=provider)
+    await h.send("hello")
+    await h.settle()
+    reply = h.bodies()[-1]
+    assert reply == Body.Assistant([Part.Text("hi")], Stop.End, "stop", meta)
+    await h.close()
+    again = await Harness.load(tmp_path)
+    loaded = again.bodies()[-1]
+    assert isinstance(loaded, Body.Assistant)
+    assert loaded.meta == meta
+    assert loaded == reply
+    await again.close()

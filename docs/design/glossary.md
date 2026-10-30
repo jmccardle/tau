@@ -45,6 +45,16 @@ The provider's own finish string for a reply, verbatim (`"stop"`,
 `"tool_calls"`, ...), kept beside the normalised `stop`. `None` when the
 provider sent none: an interrupted reply, a failed sample, a fake.
 
+### meta
+*spike* `Body::Assistant.meta`, `Option<String>` · new
+
+What a response carried besides its parts, as the text of a JSON object: for
+the OpenAI provider the `model` the server says answered, the response `id`,
+`system_fingerprint`, and `usage` (token counts), whichever the stream sent.
+Opaque to core, like `Config.data`; persisted and replayed verbatim. `None`
+when the provider had nothing to report, or the reply was interrupted. The
+driver refuses a `Finish` whose `meta` is not a JSON object.
+
 ### call
 *spike* `Part::Call` · retires toolCall block, `BlockedCall`
 
@@ -738,7 +748,9 @@ its batch's is a conversion error (Q11). The response is read as SSE;
 `Call`s; each part is yielded once the next kind of part begins or the stream
 finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
-raw string is kept as `finish_reason` (via `Finish`). Fails with `SampleError`: a
+raw string is kept as `finish_reason` (via `Finish`). The request sets
+`stream_options.include_usage`, and the stream is read to its end (usage comes after
+the finish) to fill `meta` with `model`, `id`, `system_fingerprint`, `usage`. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
 Parts begun before a failure are yielded first; a call cut off with no id or
@@ -958,9 +970,10 @@ above instead.
 ### Finish
 `tau_next.Finish` (`protocols.py`) · new
 
-What a provider yields last: `Finish(stop, reason)`, the normalised `Stop` and
-the provider's own string (`None` if it has none). The driver builds the reply
-draft with both.
+What a provider yields last: `Finish(stop, reason, meta)`, the normalised `Stop`,
+the provider's own string (`None` if it has none), and the response `meta`
+(`None` if none; otherwise JSON object text, checked on construction). The
+driver builds the reply draft with all three.
 
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket

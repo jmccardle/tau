@@ -337,6 +337,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                         parts: vec![Part::Text("hello".into())],
                         stop: Stop::End,
                         finish_reason: Some("stop".into()),
+                        meta: Some(r#"{"model":"m","usage":{"total_tokens":3}}"#.into()),
                     },
                     delivers: vec![],
                     by: Author::Provider,
@@ -353,6 +354,17 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     drop(store);
     let (_, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(loaded, as_loaded(&m.session));
+    assert!(
+        loaded
+            .tree
+            .walk(loaded.at(c).unwrap())
+            .iter()
+            .any(|n| matches!(
+                &n.body,
+                Body::Assistant { meta: Some(m), .. } if m.contains("total_tokens")
+            )),
+        "the reply's meta came back"
+    );
     assert_eq!(loaded.items(c).count(), 0, "the input was delivered");
 }
 

@@ -121,8 +121,10 @@ class SampleRun:
             raise SampleError("provider ended without a finish")
         return finish
 
-    def _reply(self, stop: Stop, finish_reason: str | None = None) -> Draft:
-        return Draft(Body.Assistant(self._parts, stop, finish_reason), Author.Provider(), [])
+    def _reply(
+        self, stop: Stop, finish_reason: str | None = None, meta: str | None = None
+    ) -> Draft:
+        return Draft(Body.Assistant(self._parts, stop, finish_reason, meta), Author.Provider(), [])
 
     async def run(self) -> Answer:
         self._task = asyncio.ensure_future(self._stream())
@@ -137,7 +139,7 @@ class SampleRun:
         error = self._task.exception()
         if error is None:
             finish = self._task.result()
-            return Answer.Sampled(self._reply(finish.stop, finish.reason), None)
+            return Answer.Sampled(self._reply(finish.stop, finish.reason, finish.meta), None)
         if not isinstance(error, SampleError):
             raise error
         return Answer.Sampled(self._reply(Stop.Error) if self._parts else None, str(error))

@@ -1,5 +1,6 @@
 """What the driver asks of providers, tools, extensions, and the clock."""
 
+import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -11,10 +12,23 @@ from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 @dataclass(frozen=True)
 class Finish:
     """The end of a reply: the normalised `stop`, and the provider's own finish string
-    (`None` if it has none to report)."""
+    (`None` if it has none to report), and `meta`: what the response carried besides its
+    parts, as the text of a JSON object (`None` if it carried nothing). Anything else raises
+    `ValueError` here."""
 
     stop: Stop
     reason: str | None = None
+    meta: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.meta is None:
+            return
+        try:
+            ok = isinstance(json.loads(self.meta), dict)
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ValueError(f"Finish.meta must be the text of a JSON object, got {self.meta!r}")
 
 
 class SampleError(Exception):

@@ -158,6 +158,17 @@ class _Stream:
     open: _Open | None = None
     finish: str | None = None
     calls_done: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - typed for pyright
+    meta: Json = field(default_factory=lambda: Json())  # noqa: PLW0108 - typed for pyright
+
+    def _note(self, chunk: Json) -> None:
+        """Keep what the response says about itself, only what a chunk actually sent."""
+        for key in ("model", "id", "system_fingerprint"):
+            value = chunk.get(key)
+            if isinstance(value, str) and value:
+                self.meta[key] = value
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            self.meta["usage"] = usage
 
     def close(self) -> list[Part]:
         """Complete the open part, if any."""
@@ -201,6 +212,7 @@ class _Stream:
         error = chunk.get("error")
         if error is not None:
             raise SampleError(f"the server sent an error in the stream: {error}")
+        self._note(chunk)
         choices = chunk.get("choices")
         if not isinstance(choices, list):
             raise SampleError("a stream chunk has no 'choices' list")
@@ -225,7 +237,7 @@ class _Stream:
         stop = STOPS.get(self.finish)
         if stop is None:
             raise SampleError(f"unknown finish_reason {self.finish!r}")
-        return Finish(stop, self.finish)
+        return Finish(stop, self.finish, json.dumps(self.meta) if self.meta else None)
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -309,7 +321,12 @@ class OpenAIProvider:
         except ConfigError as e:
             raise SampleError(str(e)) from e
         headers = {} if key is None else {"Authorization": f"Bearer {key}"}
-        body: Json = {"model": model.model, "messages": messages(walk), "stream": True}
+        body: Json = {
+            "model": model.model,
+            "messages": messages(walk),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         if tools:
             body["tools"] = _tools(tools)
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
@@ -337,8 +354,7 @@ class OpenAIProvider:
                         raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
                     for part in reply.feed(chunk):
                         yield part
-                    if reply.finish is not None:
-                        break
+                    # No break at the finish: usage arrives in a chunk after it.
             finish = reply.stop()
         except httpx.HTTPError as e:
             error = SampleError(f"{type(e).__name__}: {e}")

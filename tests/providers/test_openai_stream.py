@@ -1,6 +1,7 @@
 """The OpenAI provider's response handling, against recorded and hand-written streams."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -28,6 +29,12 @@ REASONING = (
 )
 
 
+def meta_of(item: object) -> object:
+    assert isinstance(item, Finish)
+    assert item.meta is not None
+    return json.loads(item.meta)
+
+
 def provider(server: Server) -> OpenAIProvider:
     return OpenAIProvider(transport=server.transport, environ={})
 
@@ -37,14 +44,53 @@ async def test_a_plain_reply_is_one_text_part_then_end() -> None:
     server = sse("plain")
     items, error = await collect(provider(server), fresh_walk())
     assert error is None
-    assert items == [Part.Text("Hello, how are you?"), Finish(Stop.End, "stop")]
+    assert items[:-1] == [Part.Text("Hello, how are you?")]
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason) == (Stop.End, "stop")
+    assert meta_of(finish) == {
+        "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
+        "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
+        "system_fingerprint": "b1637-9c7a7553",
+    }, "only what the server sent: the recording has no usage"
+
+
+@scenario
+async def test_usage_arrives_after_the_finish_and_joins_the_meta() -> None:
+    usage = {"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27}
+    text = (
+        chunk({"content": "x"}, "stop")
+        + "data: "
+        + json.dumps({"id": "c1", "model": "m", "choices": [], "usage": usage})
+        + "\n\n"
+        + DONE
+    )
+    items, error = await collect(provider(sse_text(text)), fresh_walk())
+    assert error is None
+    assert meta_of(items[-1]) == {"id": "c1", "model": "m", "usage": usage}
+
+
+@scenario
+async def test_a_response_that_says_nothing_about_itself_has_no_meta() -> None:
+    items, error = await collect(provider(sse_text(chunk({"content": "x"}, "stop"))), fresh_walk())
+    assert error is None
+    assert items[-1] == Finish(Stop.End, "stop", None)
+
+
+def test_a_finish_meta_that_is_not_a_json_object_is_refused() -> None:
+    for bad in ("not json", "[1]", '"s"', "3"):
+        with pytest.raises(ValueError, match="JSON object"):
+            Finish(Stop.End, "stop", bad)
 
 
 @scenario
 async def test_reasoning_content_is_a_thinking_part_before_the_text() -> None:
     items, error = await collect(provider(sse("reasoning")), fresh_walk())
     assert error is None
-    assert items == [Part.Thinking(REASONING), Part.Text("51"), Finish(Stop.End, "stop")]
+    assert items[:-1] == [Part.Thinking(REASONING), Part.Text("51")]
+    finish = items[-1]
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason) == (Stop.End, "stop")
 
 
 @scenario
@@ -54,7 +100,8 @@ async def test_a_tool_call_arrives_whole_with_its_arguments_byte_for_byte() -> N
     thinking, call, finish = items
     assert isinstance(thinking, Part.Thinking)
     assert call == Part.Call("y23a03Z82TN0yjGdHOY18qoUF5gVGfNV", "get_weather", '{"city":"Paris"}')
-    assert finish == Finish(Stop.Tools, "tool_calls")
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason) == (Stop.Tools, "tool_calls")
 
 
 @scenario

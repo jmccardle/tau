@@ -1,5 +1,6 @@
 """The OpenAI provider under the driver: a session on disk, a turn, and what the log holds."""
 
+import json
 import os
 from pathlib import Path
 
@@ -41,6 +42,16 @@ KEY_ENV = "TAU_TEST_KEY"
 SECRET = "sk-test-0123456789"
 
 
+# What the recorded `plain` stream says about itself; it carried no usage.
+PLAIN_META = json.dumps(
+    {
+        "model": MODEL,
+        "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
+        "system_fingerprint": "b1637-9c7a7553",
+    }
+)
+
+
 def bodies(session: Session, cursor: int) -> list[Body]:
     return [n.body for n in session.tree.walk(session.cursor(cursor).at)]
 
@@ -53,7 +64,7 @@ async def test_a_plain_turn_through_the_driver(tmp_path: Path) -> None:
         await driver.rest(c)
         assert bodies(s, c)[2:] == [
             Body.User("hello"),
-            Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop"),
+            Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META),
         ]
     assert server.bodies[0]["messages"][-1] == {"role": "user", "content": "hello"}  # type: ignore[index]
 
@@ -111,7 +122,7 @@ async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
         driver.send(c, "test", "hello")
         await driver.rest(c)
         assert bodies(s, c)[-1] == Body.Assistant(
-            [Part.Text("Hello, how are you?")], Stop.End, "stop"
+            [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
         )
     assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
     assert KEY_ENV in repr(config), "the variable's name is in the Config"
@@ -239,7 +250,9 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
         walk = bodies(session, c)
         assert isinstance(walk[-3], Body.Assistant)
         assert walk[-3].finish_reason == "tool_calls"
-        assert walk[-1] == Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop")
+        assert walk[-1] == Body.Assistant(
+            [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
+        )
         for node in session.tree.walk(session.cursor(c).at):
             if isinstance(node.body, Body.Config | Body.System | Body.User | Body.Custom):
                 assert "get_weather" not in repr(node.body), "tools are not recorded"
