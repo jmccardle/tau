@@ -781,7 +781,7 @@ a project's config once through the safe reader and returns it as a `LayerText` 
 shows what an untrusted project says and nothing read this way is used. `user_config_path(home)` is
 `<home>/config.json` or `None`.
 
-### tau_home, find_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
+### tau_home, find_project, skipped_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
 module `tau_next._trust` (`LayerText`: `tau_next._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
 
 Everything here but those three names is internal: the outside reaches it
@@ -793,7 +793,10 @@ report), and `tau config check`. Tests do the same.
   a real directory owned by you, or `None`. A symlinked or foreign `.tau` is
   skipped and the search goes on. `$HOME` itself and the directory whose `.tau`
   is `TAU_HOME` are never a project; the search stops at `$HOME` (outside it,
-  runs to `/`). `project_config_path(root)` is `<root>/.tau/config.json`.
+  runs to `/`). `skipped_project(start, environ)` says why the nearest `.tau`
+  `find_project` skipped is not a project (a symlink, or not owned by you), so
+  `tau trust` reports that instead of "no .tau/ found".
+  `project_config_path(root)` is `<root>/.tau/config.json`.
 - `trusted.json` (in `TAU_HOME`, written atomically) holds per project the
   sha256 of the approved config bytes, which decides, and a redacted copy
   (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs.

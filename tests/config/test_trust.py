@@ -346,6 +346,7 @@ def test_a_symlinked_tau_dir_is_not_a_project(world: World, tmp_path: Path) -> N
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
     assert "no project" in result.err
+    assert "symlink" in result.err  # says why the .tau it found is not a project
 
 
 @pytest.mark.parametrize("name", ["config.json", ".env"])

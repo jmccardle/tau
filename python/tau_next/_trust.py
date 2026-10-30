@@ -169,6 +169,29 @@ def _is_project_dir(tau: Path, config_dir: Path) -> bool:
     )
 
 
+def skipped_project(start: Path, environ: Mapping[str, str]) -> str | None:
+    """Why the nearest `.tau` from `start` upward that `find_project` skipped is not a
+    project, or `None` if it skipped none. For saying so when no project is found."""
+    home = _home_dir(environ)
+    here = start.resolve()
+    for directory in (here, *here.parents):
+        if directory == home:
+            return None
+        tau = directory / TAU_DIR
+        try:
+            info = tau.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            return f"{_p(tau)} is a symlink; tau refuses symlinks inside a project"
+        if stat.S_ISDIR(info.st_mode) and info.st_uid != os.geteuid():
+            return (
+                f"{_p(tau)} is not owned by you (uid {info.st_uid}); "
+                "take it over (chown) before trusting it"
+            )
+    return None
+
+
 def find_project(start: Path, environ: Mapping[str, str]) -> Path | None:
     """The nearest directory from `start` upward whose `.tau/` is a real directory owned
     by you, or `None`. Skipped, and the search goes on: a symlinked or foreign `.tau`.

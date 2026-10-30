@@ -33,6 +33,7 @@ from tau_next._trust import (
     read_project_config,
     safe_block,
     safe_text,
+    skipped_project,
     tau_home,
     trust_report,
     user_config_path,
@@ -191,6 +192,9 @@ def _trust(run: _Run, given: Path | None) -> int:
         raise TrustError(f"{start} is not a directory")
     root = find_project(start, run.environ)
     if root is None:
+        skipped = skipped_project(start, run.environ)
+        if skipped is not None:
+            raise TrustError(f"no project: {skipped}")
         raise TrustError(f"no project: no .tau/ found from {start}")
     _refuse_special(root, run.environ)
     if is_trusted(root, home):
