@@ -1039,6 +1039,61 @@ end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
 
+### AnthropicProvider
+`tau_next.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new
+
+The provider for the Anthropic Messages API (`POST {base_url}/v1/messages`, SSE; `base_url`
+is the API root, `https://api.anthropic.com` when unset; one ending in `/v1` is a `check`
+problem). Headers `x-api-key` and `anthropic-version: 2023-06-01`. `check` requires
+`max_tokens` (the API requires it; there is no default) and a key (`api_key_env`), and
+reads exactly these options: `thinking` (an object as the API takes it: `type` `adaptive`,
+`enabled` with `budget_tokens` of at least 1024 and below `max_tokens`, `disabled`, or
+`between_tools`; `display` `summarized` or `omitted` for the first two; which a model accepts
+is the API's to say), `effort` (`low` `medium` `high` `xhigh` `max`, sent as
+`output_config.effort`), `temperature`, `top_p`, `top_k` (newer models refuse these), `prompt_caching`
+(boolean, default true: `cache_control: ephemeral` on the system text and on the last block of
+the last message), and `extra_body` (merged last; may not set `model`, `messages`, `system`,
+`stream`, `tools`, `max_tokens`, or a key the model's settings set). Request: the first
+`System` nodes are top-level `system`, one later is user text `[system: ...]`; turns of
+one role merge; `Thinking` parts are sent only with Anthropic replay data (`replay_for`), so
+unsigned, cut-off and foreign thinking never go; a reply with nothing left to send is dropped;
+a runnable batch is `tool_use` blocks (`input` the parsed `args_raw`, `{}` for none) and
+`tool_result` blocks with `is_error`, but goes as text, with its results as `[tool result
+<id>: <text>]` lines, when a call's `args_raw` is not a JSON object or, under `thinking.type`
+`enabled`, the last assistant turn has no thinking to open with. A call id the API would refuse
+is sent with bad characters replaced by `_` and a hash of the original added, alike in the
+call and its result. Replay data: `{"type": "thinking", "signature": s}` on a `Thinking`
+part (text is the block's `thinking`), `{"type": "redacted_thinking", "data": d}` on a
+`Thinking("")`. Response: `thinking_delta`, `text_delta` as deltas; `tool_use` as `CallNamed`
+then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_sequence` to
+`End`, `tool_use` to `Tools`, `max_tokens`, `model_context_window_exceeded` and `pause_turn` to
+`Length`, `refusal` to `Refused`; any other fails the sample. `meta`: `id`, `model`, `usage`
+`{"input", "output", "cached"}` (`input` is `input_tokens` plus cache reads plus
+`cache_creation_input_tokens`, `cached` the reads alone), `usage_raw` (the cumulative usage
+as sent), `stop_details` when sent, and the `request-id` response header as `request_id` (on
+failures too). The provider sends no `anthropic-beta` header, so `check` refuses what needs
+one: `thinking.display` `updates`, `thinking.block_binding`, and `extra_body.context_management`. Errors: an HTTP error or `error` event is a `SampleError`
+whose `status` is the response's, or for an event the status its `type` stands for (529 for
+`overloaded_error`), with `retry_after` from the header. Client handling is OpenAI's: one
+long-lived client, per event loop, `ProviderClosed` after `aclose()`.
+
+### _anthropic_request (the Anthropic request module)
+`tau_next.providers._anthropic_request` · D15 · new
+
+The walk as an Anthropic request, split from `providers/anthropic.py` (which reads the
+response) to stay under the file-size ratchet: `conversation(walk, manual_thinking, has_tools)`
+gives `system` and `messages`, `tools_array`, and `breakpoints` the cache marks. It
+applies `turns` and holds every rule above that turns a walk into text instead of failing it.
+Private: the shapes may change with the next provider.
+
+### _wire (the provider helpers module)
+`tau_next.providers._wire` · D15 · new
+
+HTTP and JSON helpers an SSE provider needs: `retry_after` (a `Retry-After` header as seconds),
+`sse_data` (the `data` of each SSE event, reading the body to its end), `plain`, `non_finite`,
+`is_number`, `is_count`. `openai.py` has older copies; one pass moves every provider onto this
+module. Private to the package.
+
 ### MockProvider
 `tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new
 

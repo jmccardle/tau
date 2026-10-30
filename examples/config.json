@@ -14,6 +14,17 @@
         "large": { "model": "example-large" }
       }
     },
+    "anthropic": {
+      "provider": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "max_tokens": 16000,
+      "models": {
+        "sonnet": {
+          "model": "claude-sonnet-5-5",
+          "options": { "thinking": { "type": "adaptive", "display": "summarized" } }
+        }
+      }
+    },
     "mock": {
       "provider": "mock",
       "models": {

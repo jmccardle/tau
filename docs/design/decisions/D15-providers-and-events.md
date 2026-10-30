@@ -1,6 +1,6 @@
 # D15: Providers own their connections; frontends get saved and live events
 
-Status: candidate (2026-10-29): the first slice is built (provider contract, settings,
+Status: candidate (2026-10-30): the first slice is built (provider contract, settings,
 live and saved events, mock provider), and the OpenAI provider keeps to the contract
 (item 10); replay data and the shared walk are built (item 14); tool progress is not. Amends `model.md` §9 and §10.
 
@@ -178,7 +178,49 @@ whose `provider` is not its own.
    `error` (Anthropic flags it). A signed part cut off at a cancel is saved without its
    signature, so it counts as unsigned and is never sent.
 
+15. **The Anthropic provider** (`providers/anthropic.py`, request half in
+   `providers/_anthropic_request.py`) keeps to the contract. What the docs showed that
+   shaped it: the API requires `max_tokens`, so `check` requires it (no default); newer
+   models take `thinking.type` `adaptive` with `output_config.effort`, and `enabled` with
+   `budget_tokens` is refused by 4.7 and later, so `thinking` is passed through as an object
+   and the API judges the model; `display` defaults to `omitted` on newer models, which
+   streams an empty `thinking_delta` and a signature, so a signed `Thinking("")` is normal;
+   thinking blocks must come back unmodified, `redacted_thinking` too, and under manual
+   `enabled` thinking the last assistant turn must open with one. Choices: replay data is
+   `{"type": "thinking", "signature"}` or `{"type": "redacted_thinking", "data"}`; usage
+   `input` counts every prompt token (`input_tokens` + cache reads + cache writes) to match
+   OpenAI's `prompt_tokens`, `cached` is reads only; `pause_turn` and
+   `model_context_window_exceeded` map to `Length` (no server tools are offered, so
+   `pause_turn` is not expected), `stop_sequence` to `End`; a stream `error` event takes the
+   status its `type` stands for. Walks that would make the API refuse are sent as text
+   instead of failing every later sample (§10.7): a runnable batch whose `args_raw` is not a
+   JSON object, any batch when the sample offers no tools (the API refuses `tool_use` blocks
+   without `tools`), or a batch of a loop that did not open with thinking under manual thinking
+   (a tool loop is one assistant turn, and the final turn of a request must start with a
+   thinking block; checked only when the walk ends in tool results, on the loop's first
+   assistant message), goes as call markup with its results
+   as `[tool result ...]` user text; empty assistant turns are dropped and neighbours merge;
+   a `System` node after the start becomes user text `[system: ...]`; ids the API refuses
+   are mapped by a pure function (bad characters to `_`, plus a hash). Replay that cannot
+   become a `Replay` fails the sample. Caching marks the system text and the last message
+   (default on); a turn that adds 20 or more blocks past the last mark misses the cache
+   (the API's lookback window). The provider sends no `anthropic-beta` header, so `check`
+   refuses the options that need one. It keeps `anthropic-version: 2023-06-01`:
+   `2026-10-21` removes `temperature`, `top_p` and `top_k`. `Part.Thinking` text is the summary, so a round trip sends
+   the signature and the summary together as received.
+
 ## Open
+
+- Text after tool results. A `Results` node followed by a `User` node merges into one user
+  message of `tool_result` blocks and text. The docs say empty `end_turn` replies are commonly
+  caused by text right after tool results; the provider then drops the empty reply, the next
+  request merges again, and the loop repeats. Policy is John's call.
+- A walk that ends on an `Assistant` node is sent as prefill; models 4.6 and later reject that
+  with a 400, which surfaces as a `SampleError`.
+- `_walk` replays the parts of a `Refused` reply; the docs say to discard partial output after a
+  refusal. This affects every provider.
+- A mid-walk `System` node becomes `[system: ...]` user text, which carries user authority;
+  some models now take native `role: "system"` messages.
 
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from
