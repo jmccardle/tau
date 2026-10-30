@@ -53,6 +53,7 @@ from tau_next.config_layers import (
     check_config,
     read_models,
 )
+from tau_next.dotenv import DotenvError, parse_dotenv, read_dotenv
 from tau_next.driver import Driver, Outstanding, Question
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
@@ -68,6 +69,21 @@ from tau_next.protocols import (
 )
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
+from tau_next.trust import (
+    TrustError,
+    UntrustedProject,
+    approve_project,
+    create_project_dir,
+    ensure_trusted,
+    find_project,
+    is_interactive,
+    is_trusted,
+    project_config_path,
+    project_environment,
+    tau_home,
+    terminal_ask,
+    trust_report,
+)
 
 __version__ = version("ffwf-tau-next")
 
@@ -88,6 +104,7 @@ __all__ = [
     "Cursor",
     "CursorHook",
     "CursorState",
+    "DotenvError",
     "Draft",
     "Driver",
     "DuplicateCall",
@@ -139,12 +156,27 @@ __all__ = [
     "TraceError",
     "Tree",
     "TreeHandle",
+    "TrustError",
+    "UntrustedProject",
     "Version",
     "WriteTool",
     "WrongAnswer",
     "__version__",
+    "approve_project",
     "base_tools",
     "check_config",
+    "create_project_dir",
+    "ensure_trusted",
+    "find_project",
+    "is_interactive",
+    "is_trusted",
+    "parse_dotenv",
+    "project_config_path",
+    "project_environment",
+    "read_dotenv",
     "read_models",
+    "tau_home",
+    "terminal_ask",
     "tool",
+    "trust_report",
 ]

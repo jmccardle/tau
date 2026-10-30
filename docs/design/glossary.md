@@ -669,6 +669,39 @@ working directory, stopping at `$HOME`. Only a trusted directory's project confi
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
+### tau_home, find_project, ensure_trusted, trust_report, approve_project, UntrustedProject, TrustError
+`tau_next.trust` · D13 · new
+
+`tau_home(environ)` is `$TAU_HOME` or `~/.tau` (`~` from `environ["HOME"]`).
+`find_project(start, environ)` is the nearest directory upward holding `.tau/`,
+or `None`; `$HOME` itself and the directory whose `.tau` is `TAU_HOME` are never
+a project, and the search stops at `$HOME` (outside it, runs to `/`).
+`trusted.json` (mode `600`, written atomically) maps each project root to the
+exact text of its `.tau/config.json` at approval; `is_trusted(root, home)` is
+text equality, and an absent config pins as empty text. `trust_report(root,
+home)` is what the user reads before agreeing: per qualified model name, each
+key the project config changes in the user config (old to new; a literal
+`api_key` shows only as `(set)`), the three `.tau/` checks, and for a changed
+project a unified diff of approved against current text (literal keys
+redacted). `approve_project` sets `.tau/` to `700`, writes `.tau/.gitignore`
+(`*`) if missing and records the text; a `.tau/` owned by someone else raises
+**`TrustError`** (a `PermissionError`; ownership is never changed).
+`ensure_trusted(root, home, *, ask)` returns if trusted; otherwise `ask(report)`
+decides, and no `ask` (no live terminal) or a no raises **`UntrustedProject`**
+(a `TrustError`) whose message is the report and `tau trust <root>`.
+`terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the
+terminal side; `create_project_dir` makes a `.tau/` tau owns and trusts it in
+one step; `project_environment(root, home, environ)` overlays `environ` on the
+`.env` of a trusted project.
+
+### parse_dotenv, read_dotenv, DotenvError
+`tau_next.dotenv` · D13 · new
+
+Our own `.env` reader: `KEY=value` lines, optional `export `, `#` comments,
+single-quoted values literal, double-quoted values with `\n`, `\"`, `\\`,
+unquoted values trimmed of a trailing ` # comment`. A malformed line is a
+`DotenvError` naming the file and line, never the value.
+
 ### tau config check, tau trust
 D13 · new
 
