@@ -80,6 +80,91 @@ impl Shared {
             result
         })?)
     }
+
+    // The writes of `Session`, shared with `HandleWrites`. `hook`: the cursor whose
+    // hook makes the call, which then rides that phase's sync while its hook job
+    // is out; none for a frontend's or the driver's call, which syncs.
+
+    pub(crate) fn open(
+        &self,
+        py: Python<'_>,
+        at: u64,
+        by: Author,
+        now: u64,
+        hook: Option<u64>,
+    ) -> PyResult<u64> {
+        self.write(py, tracing::info_span!("py.open"), |m| {
+            Ok(m.open(at, by.into(), now, hook)?)
+        })
+    }
+
+    pub(crate) fn add_item(
+        &self,
+        py: Python<'_>,
+        to: u64,
+        data: ItemData,
+        hook: Option<u64>,
+    ) -> PyResult<u64> {
+        self.write(py, tracing::info_span!("py.add_item"), |m| {
+            Ok(m.add_item(to, data.into(), hook)?)
+        })
+    }
+
+    pub(crate) fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<u64>) -> PyResult<()> {
+        self.write(py, tracing::info_span!("py.remove_item"), |m| {
+            Ok(m.remove_item(id, hook)?)
+        })
+    }
+
+    pub(crate) fn append(
+        &self,
+        py: Python<'_>,
+        parent: u64,
+        body: Body,
+        by: Author,
+        now: u64,
+        hook: Option<u64>,
+    ) -> PyResult<u64> {
+        self.write(py, tracing::info_span!("py.append"), |m| {
+            Ok(m.append(parent, body.into(), by.into(), now, hook)?)
+        })
+    }
+
+    pub(crate) fn append_root(
+        &self,
+        py: Python<'_>,
+        config: Config,
+        by: Author,
+        now: u64,
+        hook: Option<u64>,
+    ) -> PyResult<u64> {
+        self.write(py, tracing::info_span!("py.append_root"), |m| {
+            Ok(m.append_root(config.into(), by.into(), now, hook))
+        })
+    }
+
+    pub(crate) fn set_label(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        cursor: u64,
+        hook: Option<u64>,
+    ) -> PyResult<()> {
+        self.write(py, tracing::info_span!("py.set_label"), |m| {
+            Ok(m.set_label(label, cursor, hook)?)
+        })
+    }
+
+    pub(crate) fn remove_label(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        hook: Option<u64>,
+    ) -> PyResult<()> {
+        self.write(py, tracing::info_span!("py.remove_label"), |m| {
+            Ok(m.remove_label(label, hook)?)
+        })
+    }
 }
 
 /// One session: its tree, cursors, scratchpad, and every cursor's step.
@@ -118,6 +203,7 @@ impl Session {
     /// it. In `directory` (created if missing) when given, else in memory.
     #[staticmethod]
     #[pyo3(signature = (config, system, now, directory = None))]
+    #[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
     fn create(
         py: Python<'_>,
         config: Config,
@@ -125,27 +211,32 @@ impl Session {
         now: u64,
         directory: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let inner = py.detach(|| {
-            let (mut session, _) = tree::Session::create(tree::Config::from(config), system, now);
-            let store = directory
-                .map(|dir| Store::create(&dir, &mut session))
-                .transpose()?;
-            Inner {
-                machine: Machine::new(session),
-                store,
-            }
-            .save()
-        })?;
+        let inner = py
+            .detach(|| {
+                let (mut session, _) =
+                    tree::Session::create(tree::Config::from(config), system, now);
+                let store = directory
+                    .as_deref()
+                    .map(|dir| Store::create(dir, &mut session))
+                    .transpose()?;
+                Inner {
+                    machine: Machine::new(session),
+                    store,
+                }
+                .save()
+            })
+            .map_err(|f| f.into_py_in(directory.as_deref()))?;
         open_session(py, inner)
     }
 
     /// Open the session in `directory`, taking its lease. Every cursor loads
     /// with auto-step off, woken (load is a wake).
     #[staticmethod]
+    #[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
     fn load(py: Python<'_>, directory: PathBuf) -> PyResult<Self> {
         let (store, session) = py
-            .detach(move || Store::open(&directory))
-            .map_err(Failure::from)?;
+            .detach(|| Store::open(&directory))
+            .map_err(|e| Failure::from(e).into_py_in(Some(&directory)))?;
         open_session(
             py,
             Inner {
@@ -208,52 +299,22 @@ impl Session {
         )
     }
 
-    // Extension and driver calls.
+    // Extension and driver calls. These sync before they return. The handles
+    // of a running hook write through `HandleWrites` instead.
 
-    /// `hook`: the cursor whose hook makes this call, which then rides that
-    /// phase's sync while its hook job is out; none for a frontend's or the
-    /// driver's call, which syncs.
-    #[pyo3(signature = (at, by, now, hook = None))]
-    fn open(
-        &self,
-        py: Python<'_>,
-        at: u64,
-        by: Author,
-        now: u64,
-        hook: Option<u64>,
-    ) -> PyResult<u64> {
-        self.shared.write(py, tracing::info_span!("py.open"), |m| {
-            Ok(m.open(at, by.into(), now, hook)?)
-        })
+    fn open(&self, py: Python<'_>, at: u64, by: Author, now: u64) -> PyResult<u64> {
+        self.shared.open(py, at, by, now, None)
     }
 
-    /// `hook` as for `open`.
-    #[pyo3(signature = (to, data, hook = None))]
-    fn add_item(
-        &self,
-        py: Python<'_>,
-        to: u64,
-        data: ItemData,
-        hook: Option<u64>,
-    ) -> PyResult<u64> {
-        self.shared
-            .write(py, tracing::info_span!("py.add_item"), |m| {
-                Ok(m.add_item(to, data.into(), hook)?)
-            })
+    fn add_item(&self, py: Python<'_>, to: u64, data: ItemData) -> PyResult<u64> {
+        self.shared.add_item(py, to, data, None)
     }
 
-    /// `hook` as for `open`.
-    #[pyo3(signature = (id, hook = None))]
-    fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<u64>) -> PyResult<()> {
-        self.shared
-            .write(py, tracing::info_span!("py.remove_item"), |m| {
-                Ok(m.remove_item(id, hook)?)
-            })
+    fn remove_item(&self, py: Python<'_>, id: u64) -> PyResult<()> {
+        self.shared.remove_item(py, id, None)
     }
 
-    /// Append a node under `parent` without moving any cursor. `hook` as for
-    /// `open`.
-    #[pyo3(signature = (parent, body, by, now, hook = None))]
+    /// Append a node under `parent` without moving any cursor.
     fn append(
         &self,
         py: Python<'_>,
@@ -261,29 +322,21 @@ impl Session {
         body: Body,
         by: Author,
         now: u64,
-        hook: Option<u64>,
     ) -> PyResult<u64> {
-        self.shared
-            .write(py, tracing::info_span!("py.append"), |m| {
-                Ok(m.append(parent, body.into(), by.into(), now, hook)?)
-            })
+        self.shared.append(py, parent, body, by, now, None)
     }
 
     /// Append a root `Config` (a detached tree) without moving any cursor.
-    /// `hook` as for `open`.
-    #[pyo3(signature = (config, by, now, hook = None))]
-    fn append_root(
-        &self,
-        py: Python<'_>,
-        config: Config,
-        by: Author,
-        now: u64,
-        hook: Option<u64>,
-    ) -> PyResult<u64> {
-        self.shared
-            .write(py, tracing::info_span!("py.append_root"), |m| {
-                Ok(m.append_root(config.into(), by.into(), now, hook))
-            })
+    fn append_root(&self, py: Python<'_>, config: Config, by: Author, now: u64) -> PyResult<u64> {
+        self.shared.append_root(py, config, by, now, None)
+    }
+
+    fn set_label(&self, py: Python<'_>, label: &str, cursor: u64) -> PyResult<()> {
+        self.shared.set_label(py, label, cursor, None)
+    }
+
+    fn remove_label(&self, py: Python<'_>, label: &str) -> PyResult<()> {
+        self.shared.remove_label(py, label, None)
     }
 
     // A cursor hook's calls on its own cursor: refused (`NotInHook`) unless a
@@ -322,30 +375,6 @@ impl Session {
         self.shared
             .write(py, tracing::info_span!("py.hook_set_auto"), |m| {
                 Ok(m.hook_set_auto(cursor, on)?)
-            })
-    }
-
-    /// `hook` as for `open`.
-    #[pyo3(signature = (label, cursor, hook = None))]
-    fn set_label(
-        &self,
-        py: Python<'_>,
-        label: &str,
-        cursor: u64,
-        hook: Option<u64>,
-    ) -> PyResult<()> {
-        self.shared
-            .write(py, tracing::info_span!("py.set_label"), |m| {
-                Ok(m.set_label(label, cursor, hook)?)
-            })
-    }
-
-    /// `hook` as for `open`.
-    #[pyo3(signature = (label, hook = None))]
-    fn remove_label(&self, py: Python<'_>, label: &str, hook: Option<u64>) -> PyResult<()> {
-        self.shared
-            .write(py, tracing::info_span!("py.remove_label"), |m| {
-                Ok(m.remove_label(label, hook)?)
             })
     }
 
@@ -408,5 +437,64 @@ impl Session {
             .write(py, tracing::info_span!("py.take_notices"), |m| {
                 Ok(std::mem::take(&mut m.session.notices))
             })
+    }
+}
+
+/// `Session`'s extension writes made by a hook's handle: with the hook's
+/// cursor, they ride its phase's sync while its hook job is out. Only the
+/// handles hold one (`HandleWrites(session, hook)`), so a frontend cannot name a
+/// cursor and skip a sync.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct HandleWrites {
+    shared: Arc<Shared>,
+    hook: Option<u64>,
+}
+
+#[pymethods]
+impl HandleWrites {
+    /// `hook` is the cursor whose hook the handle belongs to, or `None` for a
+    /// tool hook's.
+    #[new]
+    fn new(session: &Session, hook: Option<u64>) -> Self {
+        Self {
+            shared: Arc::clone(&session.shared),
+            hook,
+        }
+    }
+
+    fn open(&self, py: Python<'_>, at: u64, by: Author, now: u64) -> PyResult<u64> {
+        self.shared.open(py, at, by, now, self.hook)
+    }
+
+    fn add_item(&self, py: Python<'_>, to: u64, data: ItemData) -> PyResult<u64> {
+        self.shared.add_item(py, to, data, self.hook)
+    }
+
+    fn remove_item(&self, py: Python<'_>, id: u64) -> PyResult<()> {
+        self.shared.remove_item(py, id, self.hook)
+    }
+
+    fn append(
+        &self,
+        py: Python<'_>,
+        parent: u64,
+        body: Body,
+        by: Author,
+        now: u64,
+    ) -> PyResult<u64> {
+        self.shared.append(py, parent, body, by, now, self.hook)
+    }
+
+    fn append_root(&self, py: Python<'_>, config: Config, by: Author, now: u64) -> PyResult<u64> {
+        self.shared.append_root(py, config, by, now, self.hook)
+    }
+
+    fn set_label(&self, py: Python<'_>, label: &str, cursor: u64) -> PyResult<()> {
+        self.shared.set_label(py, label, cursor, self.hook)
+    }
+
+    fn remove_label(&self, py: Python<'_>, label: &str) -> PyResult<()> {
+        self.shared.remove_label(py, label, self.hook)
     }
 }

@@ -43,13 +43,15 @@ class StepLimit:
         return None
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        if cursor.auto:
+        if cursor.cursor(cursor.id).auto:
             self._counts[cursor.id] = self._counts.get(cursor.id, 0) + 1
         return None
 
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        if cursor.auto and self._counts.get(cursor.id, 0) >= self.limit:
+        auto = cursor.cursor(cursor.id).auto
+        if auto and self._counts.get(cursor.id, 0) >= self.limit:
             cursor.set_auto(False)
-        if not cursor.auto:
+            auto = False
+        if not auto:
             self._counts[cursor.id] = 0
         return None

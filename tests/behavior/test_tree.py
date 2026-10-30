@@ -61,7 +61,7 @@ async def test_a_pre_reply_move_chooses_where_the_reply_lands(tmp_path: Path) ->
         return None
 
     async def watch(cursor: Cursor, subject: Subject) -> str | None:
-        seen.append(cursor.moves(since_step=True))
+        seen.append(cursor.cursor(cursor.id).moves_since_step)
         return None
 
     h = await Harness.create(
@@ -111,7 +111,7 @@ async def test_an_extension_writes_a_custom_node_that_delivers_its_item(tmp_path
     that appends under `at`, moves onto it, and removes the item. `next` skips `Custom`."""
 
     async def note(cursor: Cursor, subject: Subject) -> str | None:
-        for item in cursor.items():
+        for item in cursor.cursor(cursor.id).items:
             assert isinstance(item.data, ItemData.Extension)
             cursor.write(Body.Custom("note", item.data.data), delivers=[item.id])
         return None
@@ -137,7 +137,7 @@ async def test_a_write_survives_a_reload(tmp_path: Path) -> None:
     """I7: a hook's write and its delivery are one record, replayed on load."""
 
     async def note(cursor: Cursor, subject: Subject) -> str | None:
-        for item in cursor.items():
+        for item in cursor.cursor(cursor.id).items:
             cursor.write(Body.Custom("note", "n"), delivers=[item.id])
         return None
 
@@ -181,7 +181,7 @@ async def test_a_hook_opens_a_cursor_and_labels_it_and_the_label_survives_a_relo
 
     async def spawn(cursor: Cursor, subject: Subject) -> str | None:
         if not opened:
-            other = cursor.open(cursor.at)
+            other = cursor.open(cursor.cursor(cursor.id).at)
             opened.append(other)
             cursor.set_label("worker", other)
         return None
@@ -206,7 +206,7 @@ async def test_a_hook_removes_an_item_without_waking_anything(tmp_path: Path) ->
     refused: list[Exception] = []
 
     async def purge(cursor: Cursor, subject: Subject) -> str | None:
-        for item in cursor.items():
+        for item in cursor.cursor(cursor.id).items:
             cursor.remove_item(item.id)
             try:
                 cursor.remove_item(item.id)
@@ -536,7 +536,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
 
     async def steal(cursor: Cursor, subject: Subject) -> str | None:
         if cursor.id == 0:
-            for item in cursor.items_of(victim):
+            for item in cursor.cursor(victim).items:
                 try:
                     cursor.write(Body.Custom("stolen", ""), delivers=[item.id])
                 except tau_next.NotPending as e:
@@ -560,7 +560,7 @@ async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path:
     commits nothing, so the input is delivered once and there is nothing to sample."""
 
     async def deliver(cursor: Cursor, subject: Subject) -> str | None:
-        for item in cursor.items():
+        for item in cursor.cursor(cursor.id).items:
             cursor.write(Body.Custom("seen", ""), delivers=[item.id])
         subject.draft = None
         return None
@@ -615,18 +615,18 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
     async def look(cursor: Cursor, subject: Subject) -> str | None:
         cursor.append(SYS, Body.Custom("a", ""))
         cursor.append(SYS, Body.Custom("b", ""))
-        seen["children"] = cursor.children(SYS)
-        seen["count"] = cursor.node_count()
-        seen["labels"] = cursor.all_labels()
+        seen["children"] = cursor.tree.children(SYS)
+        seen["count"] = len(cursor.tree)
+        seen["labels"] = cursor.cursor(cursor.id).labels
         with pytest.raises(tau_next.NoSuchNode):
-            cursor.children(999)
+            cursor.tree.children(999)
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("look", pre_step=look)])
     h.driver.session.set_label("main", h.cursor)
     await h.step()
     await h.settle()
-    assert seen == {"children": [2, 3], "count": 4, "labels": {"main": h.cursor}}
+    assert seen == {"children": [2, 3], "count": 4, "labels": ["main"]}
     assert h.driver.session.tree.children(SYS) == [2, 3]
     assert h.driver.session.tree.children(0) == [SYS]
     assert len(h.driver.session.tree) == 4 == len(h.nodes())
@@ -636,7 +636,7 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
 def stale_delivery(draft: tau_next.Draft | None) -> tau_next.Draft:
     """A reply draft that delivers an item that is not pending anywhere."""
     body = draft.body if draft is not None else Body.Assistant([Part.Text("x")], Stop.End)
-    return tau_next.Draft(body, Author.Provider(), [999])
+    return tau_next.Draft(body, [999], Author.Provider())
 
 
 @scenario
@@ -698,8 +698,8 @@ async def test_an_input_draft_delivering_a_foreign_item_fails_the_step_and_does_
     other = 0
 
     async def redirect(cursor: Cursor, subject: Subject) -> str | None:
-        foreign = cursor.items_of(other)[0].id
-        subject.draft = tau_next.Draft(Body.User("hijack"), Author.Frontend("term"), [foreign])
+        foreign = cursor.cursor(other).items[0].id
+        subject.draft = tau_next.Draft(Body.User("hijack"), [foreign], Author.Frontend("term"))
         return None
 
     recorder = Recorder("rec")
@@ -755,7 +755,7 @@ async def test_a_retired_handle_refuses_every_write_and_ask_but_still_reads(
     before = h.snapshot()
     data = Body.Custom("late", "")
     for handle in (kept[0], nodes[0]):
-        assert handle.node_count() == len(h.nodes()), "reads still work"
+        assert len(handle.tree) == len(h.nodes()), "reads still work"
         writes = (
             lambda hd=handle: hd.append(SYS, data),
             lambda hd=handle: hd.open(SYS),
@@ -781,7 +781,7 @@ async def test_a_hook_that_delivers_the_offered_input_but_keeps_the_draft_fails_
     (`NotPending`), through the same path as any bad draft."""
 
     async def deliver(cursor: Cursor, subject: Subject) -> str | None:
-        for item in cursor.items():
+        for item in cursor.cursor(cursor.id).items:
             cursor.write(Body.Custom("seen", ""), delivers=[item.id])
         return None
 
@@ -854,3 +854,35 @@ async def test_an_assistant_nodes_meta_survives_a_reload(tmp_path: Path) -> None
     assert loaded.meta == meta
     assert loaded == reply
     await again.close()
+
+
+@pytest.mark.parametrize("change", ["remove_item", "remove_label", "move_label"])
+@scenario
+async def test_a_change_to_another_cursor_is_saved_for_that_cursor(
+    tmp_path: Path, change: str
+) -> None:
+    """The `Saved` goes to the cursor whose items or labels changed, not the hook's own."""
+    item = 0
+
+    async def meddle(cursor: Cursor, subject: Subject) -> str | None:
+        if cursor.id != 0:
+            return None
+        match change:
+            case "remove_item":
+                cursor.remove_item(item)
+            case "remove_label":
+                cursor.remove_label("theirs")
+            case _:
+                cursor.set_label("theirs", cursor.id)
+        return None
+
+    h = await Harness.create(tmp_path, extensions=[Scripted("meddle", pre_step=meddle)])
+    other = h.driver.open(SYS, Author.Frontend("term"))
+    item = await h.add_item("x", "for-other", cursor=other)
+    h.driver.session.set_label("theirs", other)
+    await h.settle()
+    theirs = h.driver.events(other)
+    await h.step()
+    await h.settle()
+    await h.close()
+    assert [e async for e in theirs] == [tau_next.Saved(other)]

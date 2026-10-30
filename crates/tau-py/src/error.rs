@@ -3,6 +3,9 @@
 //! `Io` is the one exception to "created here": it becomes the builtin
 //! `OSError` (or its subclass for the errno), which already says what failed.
 
+use std::io;
+use std::path::Path;
+
 use pyo3::create_exception;
 use pyo3::exceptions::{PyFileExistsError, PyLookupError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -39,9 +42,11 @@ exceptions! {
     Version: PyValueError = "A session file of a version this build does not read.";
     Corrupt: PyValueError = "A damaged scratchpad file.";
     Undecodable: PyValueError = "A log record whose bytes are intact but do not decode; the log is not cut.";
-    Poisoned: PyRuntimeError = "A call panicked while it held the session; load the session again.";
+    TooLarge: PyValueError = "A record of 4 GiB or more, which the log cannot hold; the session is closed, as after a failed save.";
+    Poisoned: PyRuntimeError = "A call panicked while it held the session (that call raised PanicException); load the session again.";
     WrongAnswer: PyValueError = "An answer to no job; nothing changed.";
     Closed: PyRuntimeError = "The session was closed.";
+    TraceError: PyRuntimeError = "A trace started while one runs, stopped while none runs, or that cannot be installed.";
 }
 
 /// Everything a session call can fail with.
@@ -64,6 +69,17 @@ impl From<tree::Error> for Failure {
 impl From<store::Error> for Failure {
     fn from(e: store::Error) -> Self {
         Self::Store(e)
+    }
+}
+
+impl Failure {
+    /// As `PyErr`, naming `dir` as the file of an OS error: the session
+    /// directory a `create` or `load` was given.
+    pub fn into_py_in(self, dir: Option<&Path>) -> PyErr {
+        match self {
+            Failure::Store(store::Error::Io(e)) => os_err(&e, dir),
+            f => f.into(),
+        }
     }
 }
 
@@ -95,9 +111,25 @@ fn tree_err(e: &tree::Error) -> PyErr {
     }
 }
 
+/// An `OSError` with `errno` (so the interpreter picks the subclass), its message, and
+/// `file` when known.
+fn os_err(e: &io::Error, file: Option<&Path>) -> PyErr {
+    let Some(errno) = e.raw_os_error() else {
+        return PyOSError::new_err(e.to_string());
+    };
+    let text = e.to_string();
+    // `Display` appends " (os error N)", which `OSError` says by `errno`.
+    let message = text.split(" (os error").next().unwrap_or(&text).to_owned();
+    match file {
+        Some(file) => PyOSError::new_err((errno, message, file.to_string_lossy().into_owned())),
+        None => PyOSError::new_err((errno, message)),
+    }
+}
+
 fn store_err(e: store::Error) -> PyErr {
     match e {
-        store::Error::Io(e) => e.into(),
+        store::Error::Io(e) => os_err(&e, None),
+        store::Error::TooLarge(_) => TooLarge::new_err(e.to_string()),
         store::Error::Leased => Leased::new_err(e.to_string()),
         store::Error::Exists => Exists::new_err(e.to_string()),
         store::Error::NotASession(_) => NotASession::new_err(e.to_string()),
@@ -114,5 +146,5 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     for (name, class) in CLASSES {
         m.add(*name, class(py))?;
     }
-    m.add("TraceError", py.get_type::<crate::trace::TraceError>())
+    Ok(())
 }

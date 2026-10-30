@@ -88,7 +88,8 @@ the next provider.
 
 Why a reply ended: `End`, `Tools`, `Length`, `Refused`, `Interrupted`,
 `Error`. Only `Tools` makes calls runnable. The provider's own string is
-`finish_reason`.
+`finish_reason`. Python's `Stop`, `Next`, and `Hook` are not integers:
+`Stop.Tools != 1`, because equal-to-an-int with a different hash breaks sets.
 
 ### finish_reason
 *spike* `Body::Assistant.finish_reason`, `Option<String>` · retires `stop_raw`
@@ -245,7 +246,9 @@ names a call that is not in the batch or already answered; nothing changes); and
 move, write, or auto-step change on a cursor with no cursor hook job out), and
 `NoSuchItem` (removing an item not in the scratchpad), and `NotPending` (a
 write that delivers an item not pending for that cursor). Each becomes a typed Python exception of the same name in `tau-py`, and so does
-each `tau_store::Error` variant except `Io` (the builtin `OSError`) and `Core` (the
+each `tau_store::Error` variant except `Io` (the builtin `OSError`, with `errno` and
+`strerror` set so CPython picks its subclass, and `filename` the session directory
+for `create` and `load`) and `Core` (the
 inner error). Each subclasses the closest builtin (`_core.pyi` has them all);
 there is no common base class.
 
@@ -417,8 +420,13 @@ A frozen snapshot of one cursor, all read under one lock: `at`, `auto`,
 do not reach it, so `busy` and `at` cannot disagree. It replaces the separate
 per-cursor reads (`at`, `auto`, `busy`, `next`, `items`, `labels_of`,
 `moves_of`, `moves_since_step`). The lists are Python objects only when read.
-A snapshot costs a copy of the cursor's lists, so it grows with its
-move count. Not the hook's `Cursor` handle, which acts; this only reads.
+A snapshot copies the cursor's items and labels, not its moves: `moves` and
+`moves_since_step` are read from the session when asked (a move list is
+append-only, so the snapshot keeps where it ended), which raises `Closed` once
+the session is closed, and a move made after the snapshot is not in them.
+Its `repr` shows the cursor, `at`, `auto`, `busy`, `next`, and the item and
+label counts, never the session behind it. Not the hook's `Cursor` handle,
+which acts; this only reads.
 
 ### close, Closed
 `Session.close`, `tau_next.Closed` · new
@@ -433,7 +441,9 @@ store is gone with its lease, and reopening from disk is the recovery.
 
 A call panicked inside the session's lock; the session raises it from then on.
 Not core's: a binding-level guard so a core bug (a panic) is not followed by
-more calls on possibly torn state.
+more calls on possibly torn state. The call that panicked raises
+`PanicException` (pyo3's, a `BaseException`); every call after it raises
+`Poisoned`. Load the session again.
 
 ### busy, at rest
 *spike* `Machine::busy`, `Step::resting` · new
@@ -499,7 +509,10 @@ What the step asks the driver to do: `Hooks { point, draft, node, ending }` (the
 subject is whichever of the three the point is about),
 `Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
 batch; the driver refuses an empty one), `Pending` (calls outstanding),
-`Rest`. Only waits are jobs; writes never are.
+`Rest`. Only waits are jobs; writes never are. `Job`, `Answer`, `SampleEnd`,
+`RunCall`, and `Hook` are exported from `tau_next`: `Session.next_job` and
+`answer` are the job loop a driver runs, and a frontend of another kind can
+run it too.
 
 ### retired handle
 Python `TreeHandle.retire` · new
@@ -541,7 +554,8 @@ One call handed out in `Job::RunCalls`: `{id, tool, args_raw}`.
 ### draft
 *spike* `Draft` · retires the plan's draft under `target`
 
-What the current phase will commit: `{body, delivers, by}`. Carried in a
+What the current phase will commit: `{body, delivers, by}` (the constructor
+takes them in that order). Carried in a
 `Hooks` job; the edited one comes back in `Answer::Hooks`, and a hook that leaves
 none (`None`) means commit nothing. A halt discards it; an abort commits it. Python subjects: input draft, sample draft, reply
 draft, call draft (Phase 4).
@@ -940,18 +954,32 @@ Python `Cursor`, `NodeHandle`, `TreeHandle` · retires `ExtensionAPI`
 What a hook acts through, bound to its extension (which fills in `by`). A
 node handle is a cursor handle without the cursor's own operations. Every
 call goes into Rust at once. Both are a **tree handle**, which holds what they
-share. Reads: `get_node`, `lca`, `cursors`, `cursor_at`, `items_of`,
-`moves_of`, `labels_of`, `label`, `all_labels`, `children`, `node_count`
-(`Tree::children`, `node_count`, `labels`: children in append order; ids are
-`0..node_count`). Writes that belong to no cursor: `append`
+share. Reads: `tree` (the `Tree` view: `node`, `walk`, `children`, `config_at`,
+`lca`, `len`) and `cursor(c)` (a `CursorState`), plus `cursors` and `label`;
+no flat copies of what those two already give. Writes that belong to no cursor: `append`
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`. A cursor handle adds its own cursor's `at`, `auto`, `walk`,
-`config`, `items`, `labels`, `moves(since_step=)`, `move(to)`,
-`write(body, delivers)`, `set_auto(on)`, and `ask`. A handle's writes that
-belong to no cursor pass the hook's cursor to core (`hook`), so they skip their
-sync only while a cursor hook job is out for it. Not built: updating an item
+`remove_label`; the `Saved` of `remove_item`, `remove_label`, and a moving
+`set_label` is for the cursor whose items or labels changed, not the hook's.
+A cursor handle adds `node`, `walk`, `config` (at its `at`), `move(to)`,
+`write(body, delivers)`, `set_auto(on)`, and `ask`; its own `at`, `auto`,
+`items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
+belong to no cursor pass the hook's cursor to core, so they skip their sync
+only while a cursor hook job is out for it. They do it through a
+`HandleWrites`; the public `Session.open`, `add_item`, `remove_item`,
+`append`, `append_root`, `set_label`, `remove_label` take no `hook`, so a
+frontend cannot name a cursor and skip the sync.
+
+### HandleWrites
+`tau_next._core.HandleWrites` (`HandleWrites(session, hook)`) · new
+
+The same seven extension writes as `Session` (`open`, `add_item`,
+`remove_item`, `append`, `append_root`, `set_label`, `remove_label`), bound to
+the cursor whose hook makes them (`None` for a tool hook). While that cursor's
+hook job is out they ride the phase's sync instead of syncing. Only the
+handles hold one; it is not exported from `tau_next`, and it is a type apart
+so the public `Session` cannot be given a hook to skip a sync with. Not built: updating an item
 in place, `show`, `tell` (`docs/plan.md`, roadmap row 8).
 
 ### Poke, Now
@@ -1668,10 +1696,20 @@ links it into place; `Store::open(dir)` takes the lease and loads;
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
 `Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
 scratchpad file), `Undecodable` (an intact log record that does not decode),
-`Core` (the log does not replay). `save` consumes the
+`Core` (the log does not replay), `TooLarge` (a record of 4 GiB or more, refused
+while encoding: nothing of that `save` is written, and the session closes as
+after any failed save). `save` consumes the
 store and returns it on success: after an `Io` error it is gone with its
 lease, as after a crash, and the session is opened again. **JMFTS** (Phase 7) is a replica of the log,
 never the store of record.
+
+### TooLarge
+`tau_next.TooLarge` (`tau_store::Error::TooLarge`, a `ValueError`) · new
+
+A record whose encoding does not fit the log's `u32` length (4 GiB or more).
+It was a panic that poisoned the session; it is an ordinary failed save now.
+The record is refused before anything of that save reaches the log, so the
+session closes and reloads as last synced.
 
 ### torn tail, dropped
 *spike* `Store::dropped`

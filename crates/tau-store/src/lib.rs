@@ -51,6 +51,9 @@ pub enum Error {
     },
     /// The log's records do not replay (`tree::Error::BadRecord`).
     Core(tau_core::tree::Error),
+    /// A record whose encoding is 4 GiB or more, which the format's `u32`
+    /// length cannot hold. Nothing of the failing `save` reached the log.
+    TooLarge(usize),
 }
 
 impl From<io::Error> for Error {
@@ -79,6 +82,9 @@ impl fmt::Display for Error {
                 path.display()
             ),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
+            Self::TooLarge(n) => {
+                write!(f, "a record of {n} bytes does not fit the log's u32 length")
+            }
         }
     }
 }
@@ -187,10 +193,10 @@ impl Store {
         let mut through = None;
         for r in session.outbox.drain(..) {
             let Record::Sync { pad } = r else {
-                encode(&r, &mut self.pending);
+                encode(&r, &mut self.pending)?;
                 continue;
             };
-            encode(&Record::Sync { pad: None }, &mut self.pending);
+            encode(&Record::Sync { pad: None }, &mut self.pending)?;
             let newest = pad.or(through.and_then(|(_, p)| p));
             through = Some((self.pending.len(), newest));
         }
@@ -216,7 +222,7 @@ impl Store {
         let _span = tracing::info_span!("store.write_pad").entered();
         let tmp = self.dir.join(format!("{PAD}.new"));
         let mut bytes = header(PAD_MAGIC);
-        encode(pad, &mut bytes);
+        encode(pad, &mut bytes)?;
         let mut f = File::create(&tmp)?;
         f.write_all(&bytes)?;
         {
@@ -277,14 +283,18 @@ fn checksum(len: &[u8], payload: &[u8]) -> u32 {
     h.finalize()
 }
 
-fn encode(value: &impl Serialize, out: &mut Vec<u8>) {
+/// A payload length as the log stores it, or `TooLarge`.
+fn record_len(len: usize) -> Result<u32, Error> {
+    u32::try_from(len).map_err(|_| Error::TooLarge(len))
+}
+
+fn encode(value: &impl Serialize, out: &mut Vec<u8>) -> Result<(), Error> {
     let payload = serde_json::to_vec(value).expect("core types serialize");
-    let len = u32::try_from(payload.len())
-        .expect("a record under 4 GiB")
-        .to_le_bytes();
+    let len = record_len(payload.len())?.to_le_bytes();
     out.extend_from_slice(&len);
     out.extend_from_slice(&checksum(&len, &payload).to_le_bytes());
     out.extend_from_slice(&payload);
+    Ok(())
 }
 
 /// What `decode` found at a position.
@@ -360,5 +370,17 @@ fn read_pad(path: &Path) -> Result<Scratchpad, Error> {
     match decode(body, 0) {
         Decoded::Record(pad, end) if end == body.len() => Ok(pad),
         _ => Err(Error::Corrupt(path.into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_record_of_4_gib_is_refused() {
+        assert_eq!(record_len(u32::MAX as usize).unwrap(), u32::MAX);
+        let too_big = u32::MAX as usize + 1;
+        assert!(matches!(record_len(too_big), Err(Error::TooLarge(n)) if n == too_big));
     }
 }

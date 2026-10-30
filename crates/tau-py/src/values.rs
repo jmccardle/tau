@@ -136,7 +136,7 @@ impl From<Part> for tree::Part {
 }
 
 /// Python view of [`tree::Stop`].
-#[pyclass(frozen, eq, eq_int, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stop {
     End,
@@ -247,7 +247,6 @@ pub struct Config {
 #[pymethods]
 impl Config {
     #[new]
-    #[pyo3(signature = (data = String::new()))]
     fn new(data: String) -> Self {
         Self { data }
     }
@@ -455,7 +454,7 @@ impl From<tree::Item> for Item {
 }
 
 /// Python view of [`tree::Next`].
-#[pyclass(frozen, eq, eq_int, hash, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, module = "tau_next._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Next {
     Wait,

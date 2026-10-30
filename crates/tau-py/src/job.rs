@@ -7,7 +7,7 @@ use tau_core::step;
 use crate::values::{Author, Body, Outcome, Part, Stop, debug_repr};
 
 /// Python view of [`step::Hook`]: the seven cursor hook points.
-#[pyclass(frozen, eq, eq_int, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hook {
     PreStep,
@@ -85,7 +85,7 @@ pub struct Draft {
 #[pymethods]
 impl Draft {
     #[new]
-    fn new(body: Body, by: Author, delivers: Vec<u64>) -> Self {
+    fn new(body: Body, delivers: Vec<u64>, by: Author) -> Self {
         Self { body, delivers, by }
     }
 
