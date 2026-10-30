@@ -4,7 +4,18 @@
 from pathlib import Path
 
 import pytest
-from fakes import FAKE_CONFIG, FAKE_MODEL, Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
+from fakes import (
+    FAKE_CONFIG,
+    FAKE_MODEL,
+    FAKE_PROVIDER,
+    Fail,
+    FakeProvider,
+    FakeTool,
+    Gate,
+    Recorder,
+    Reply,
+    fake_catalog,
+)
 from harness import Harness, scenario
 
 import tau_next
@@ -12,13 +23,17 @@ from tau_next import (
     Author,
     Body,
     CallDraft,
+    Config,
     Cursor,
     Ending,
+    Finish,
     ItemData,
     Outcome,
     Part,
     Stop,
     Subject,
+    model_config,
+    read_models,
 )
 
 SYSTEM = [Body.Config(FAKE_CONFIG), Body.System("sys")]
@@ -492,3 +507,100 @@ async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path
         Body.User("more"),
         Body.Assistant([Part.Text("ok 2")], Stop.End),
     ]
+
+
+@scenario
+async def test_abort_during_a_pre_tool_hook_lets_it_finish_and_the_call_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    """model.md Q34: abort never cancels a hook; the `pre_tool` that was running finishes,
+    and when it answers nothing the call is `Interrupted` and the tool does not run. (The
+    approval question itself is not here: a tool hook's `NodeHandle` has no `ask`.)"""
+    gate = Gate()
+    tool = FakeTool("ta", "A")
+    provider = FakeProvider([calls("a"), text("never")])
+    recorder = Recorder(gates={"pre_tool": gate})
+    h = await Harness.create(
+        tmp_path, provider=provider, tools=[tool], extensions=[recorder], gates=[gate]
+    )
+    await h.send("go")
+    await h.settle()
+    assert gate.held == 1
+    await h.abort()
+    gate.release()
+    await h.settle()
+    assert h.bodies()[-1] == Body.Results([("a", Outcome.Interrupted(), Author.Tools())])
+    assert tool.calls == []
+    assert recorder.endings == [Ending.Aborted()]
+    assert len(provider.requests) == 1, "no sample after the abort"
+
+
+@scenario
+async def test_a_branch_across_a_config_node_samples_with_each_branchs_own_config(
+    tmp_path: Path,
+) -> None:
+    """model.md section 2 and I1: the config is the nearest `Config` on `walk(at)`. Moving to a
+    node on another branch changes the model, and the walk no longer holds the other
+    branch's `Config`."""
+    catalog = read_models(
+        cli={
+            "models": {
+                FAKE_MODEL: {"model": FAKE_MODEL, "provider": FAKE_PROVIDER},
+                "alt": {"model": "alt", "provider": FAKE_PROVIDER},
+            }
+        }
+    )
+    provider = FakeProvider([text("one"), text("two"), text("three")])
+    h = await Harness.create(tmp_path, provider=provider, catalog=catalog)
+    await h.send("a")
+    await h.settle()
+    first_reply = h.session.cursor(h.cursor).at
+    config = h.session.append(
+        1, Body.Config(model_config("alt")), Author.Frontend("test"), h.clock.now()
+    )
+    await h.go_to(config)
+    await h.send("b")
+    await h.settle()
+    await h.go_to(first_reply)
+    await h.send("c")
+    await h.settle()
+    models = [r.model.model for r in provider.requests]
+    assert models == [FAKE_MODEL, "alt", FAKE_MODEL]
+    assert config in provider.requests[1].walk
+    assert config not in provider.requests[2].walk
+    assert first_reply in provider.requests[2].walk, "the third sample branches under the first"
+
+
+@scenario
+async def test_a_one_off_call_on_a_detached_root_samples_that_walk_and_moves_no_cursor(
+    tmp_path: Path,
+) -> None:
+    """glossary "One-off call": a hook appends a detached root and a `User` under it, then
+    samples the walk with the provider and no tools; no step, cursor, or main-tree node is
+    involved, and the sample sees only the detached walk."""
+    provider = FakeProvider([text("one-off reply")])
+    answers: list[Part | Finish] = []
+
+    async def one_off(cursor: Cursor, subject: Subject) -> str | None:
+        root = cursor.append_root(Config(FAKE_MODEL))
+        question = cursor.append(root, Body.User("just this"))
+        model = fake_catalog().resolve(FAKE_MODEL)
+        async for item in provider.sample(h.session.tree.walk(question), model, []):
+            if isinstance(item, Part | Finish):
+                answers.append(item)
+        return None
+
+    class OneOff:
+        name = "one_off"
+        pre_step = staticmethod(one_off)
+
+    h = await Harness.create(tmp_path, extensions=[OneOff()])
+    before = len(h.nodes())
+    at = h.session.cursor(h.cursor).at
+    await h.step()
+    await h.settle()
+    assert answers == [Part.Text("one-off reply"), Finish(Stop.End, None, None)]
+    assert provider.requests[0].walk == (before, before + 1)
+    assert provider.requests[0].tools == ()
+    assert h.session.cursor(h.cursor).at == at
+    assert len(h.nodes()) == before + 2, "the root and the question; no reply was committed"

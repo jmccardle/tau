@@ -131,9 +131,11 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - `parity/`: a `Harness` adapter over τ 0.15 for the `keep` tests (plain
   turn, tool batch, tool error, unknown tool, bad args, HTTP error). An API
   diff, not the spec; run by `scripts/parity.sh`, never by `check.sh`.
-- Required coverage (✓ = covered in `crates/tau-core/tests/`):
+- Required coverage (✓ = covered in `crates/tau-core/tests/`, or in the Python
+  suite where a test location is named):
   - ✓ plain turn; ✓ tool batch (one `Results`, call order); ✓ tool error;
-    unknown tool; bad args; ✓ HTTP error; ✓ mid-stream error;
+    ✓ unknown tool; ✓ bad args (`tests/behavior/test_scenarios.py`,
+    driver-level); ✓ HTTP error; ✓ mid-stream error;
   - ✓ abort during sample with parts; ✓ abort during sample without parts;
     ✓ abort during tools (running calls `Interrupted`, `post_result` once);
   - ✓ crash during sample (the input is redelivered once); ✓ crash mid-batch:
@@ -146,9 +148,12 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     runs post hooks and `post_step`, then moves; ✓ a go-to wakes with no phase;
   - ✓ a question holds its hook's step (the cursor is busy); ✓ esc and go-to
     decline it; a single-client
-    question is declined when that client detaches; abort during a `pre_tool`
-    awaiting approval, then approval, gives `Interrupted`;
-  - hook strings: `pre_tool` → `Err(reason)`; ✓ a cursor hook halts the step;
+    question is declined when that client detaches (Phase 6: no client
+    attach/detach until `tau serve`); abort during a `pre_tool` gives
+    `Interrupted` once the hook finishes (✓ `test_scenarios.py`; the
+    awaiting-approval form needs a tool hook that can `ask`, which
+    `NodeHandle` lacks);
+  - hook strings: ✓ `pre_tool` → `Err(reason)` (`test_scenarios.py`); ✓ a cursor hook halts the step;
     ✓ `pre_input` refuses;
   - ✓ a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
     the reply lands; ✓ a `post_reply` move changes where tools look;
@@ -160,9 +165,11 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     cursor to rest;
   - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
-  - branch across a config node; detached-root one-off call; ✓ labels across a
+  - ✓ branch across a config node (`test_scenarios.py`); ✓ detached-root
+    one-off call (`test_scenarios.py`); ✓ labels across a
     reload; ✓ `StepLimit` stops a "continue" loop and a model that calls tools forever; ✓ reload equals pre-save state
-    (I7); a provider-illegal walk fails at the next sample (I5).
+    (I7); ✓ a provider-illegal walk fails at the next sample (I5)
+    (`tests/providers/test_illegal_walk.py`).
 - **Exit:** `keep` green through `parity/`; everything else collected and
   failing for the right reason. Sign-off.
 
