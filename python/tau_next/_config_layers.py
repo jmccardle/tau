@@ -583,8 +583,10 @@ def _read_layers(
             continue
         try:
             texts.append((str(path), path.read_text(encoding="utf-8")))
-        except (OSError, UnicodeDecodeError) as e:
-            problems.add("error", f"cannot read: {e}", str(path), "")
+        except OSError as e:
+            problems.add("error", f"cannot be read: {e.strerror}", str(path), "")
+        except UnicodeDecodeError as e:
+            problems.add("error", f"cannot be read: {e}", str(path), "")
     if cli is not None:
         try:
             texts.append((CLI, json.dumps(cli)))

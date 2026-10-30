@@ -664,6 +664,8 @@ async def test_frontend_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_p
         lambda: h.driver.open(SYS, "term"),
         lambda: h.driver.add_item(h.cursor, ItemData.Extension("x", "y")),
         lambda: h.driver.set_label("main", h.cursor),
+        lambda: h.driver.remove_label("no-such-label"),
+        lambda: h.driver.respond(h.cursor, "yes"),
     ]
     for call in calls:
         with pytest.raises(RuntimeError, match="stopped"):
@@ -684,6 +686,10 @@ async def test_frontend_calls_on_a_failed_driver_raise_the_failure(tmp_path: Pat
         h.driver.send(h.cursor, "term", "again")
     with pytest.raises(Closed):
         h.driver.add_item(h.cursor, ItemData.Extension("x", "y"))
+    with pytest.raises(Closed):
+        h.driver.respond(h.cursor, "yes")
+    with pytest.raises(Closed):
+        h.driver.remove_label("no-such-label")
     await h.driver.stop()
 
 

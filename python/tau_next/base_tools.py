@@ -94,9 +94,11 @@ class _Described:
         return self._parameters
 
 
-async def _in_own_thread[T](work: Callable[[], T]) -> T:
+def _in_own_thread[T](work: Callable[[], T]) -> asyncio.Future[T]:
     """Run `work` on a thread of its own (not the loop's default pool, which a few
-    long-running calls could fill) and wait for it. Cancelling the wait does not stop the thread."""
+    long-running calls could fill); the future resolves with its result. It is a plain future,
+    not a task: `asyncio.run` cancels every task on its way out after a second Ctrl-C, and
+    cancelling this one would end the wait for a kill still in progress."""
     loop = asyncio.get_running_loop()
     done: asyncio.Future[T] = loop.create_future()
 
@@ -117,7 +119,7 @@ async def _in_own_thread[T](work: Callable[[], T]) -> T:
             loop.call_soon_threadsafe(deliver, result, None)
 
     threading.Thread(target=run, name="tau-tool", daemon=True).start()
-    return await done
+    return done
 
 
 class _Cancellable(_Described):
@@ -229,7 +231,7 @@ class BashTool(_Described):
         already running and for the final flush, one more call, so a slow `progress` delays
         the answer by that much. Calls stop for good when the interpreter begins to exit."""
         run = self._engine.start(args_raw)
-        waiting = asyncio.ensure_future(_in_own_thread(partial(run.wait, progress)))
+        waiting = _in_own_thread(partial(run.wait, progress))
         try:
             return await asyncio.shield(waiting)
         except asyncio.CancelledError:

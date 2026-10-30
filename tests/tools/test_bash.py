@@ -173,6 +173,18 @@ run_until_signalled(main())
 """
 
 
+DIES_WITH_ASYNCIO_RUN = """
+import asyncio, json, sys
+from tau_next import BashTool
+
+async def main():
+    command = json.dumps({"command": sys.argv[4] + "sleep " + sys.argv[2], "timeout": 600_000})
+    await BashTool(sys.argv[3], kill_grace_ms=1500).call(command)
+
+asyncio.run(main())
+"""
+
+
 def running(argument: str) -> list[int]:
     """The live `sleep <argument>` processes, found by their command line."""
     want = f"sleep\0{argument}\0".encode()
@@ -215,7 +227,12 @@ def test_a_program_killed_by_sigterm_or_sighup_leaves_no_command_running(
 
 
 @pytest.mark.parametrize(
-    ("first", "second"), [(signal.SIGTERM, signal.SIGTERM), (signal.SIGHUP, signal.SIGTERM)]
+    ("first", "second"),
+    [
+        (signal.SIGTERM, signal.SIGTERM),
+        (signal.SIGHUP, signal.SIGTERM),
+        (signal.SIGINT, signal.SIGINT),
+    ],
 )
 def test_a_second_signal_in_the_grace_period_still_leaves_no_command_running(
     tmp_path: Path, first: signal.Signals, second: signal.Signals
@@ -223,11 +240,14 @@ def test_a_second_signal_in_the_grace_period_still_leaves_no_command_running(
     """A command that ignores SIGTERM lives until the grace period ends and SIGKILL; a second
     cancellation arriving meanwhile does not end the wait."""
     duration = f"{2000 + first}.{os.getpid()}"
+    # SIGINT is asyncio.run's own: the first cancels main, the second raises KeyboardInterrupt
+    # and asyncio.run cancels every task on the way out.
+    source = DIES_WITH_ASYNCIO_RUN if first == signal.SIGINT else DIES_WITH_THE_SIGNAL
     program = subprocess.Popen(
         [
             sys.executable,
             "-c",
-            DIES_WITH_THE_SIGNAL,
+            source,
             str(EXAMPLES),
             duration,
             str(tmp_path),
@@ -243,7 +263,8 @@ def test_a_second_signal_in_the_grace_period_still_leaves_no_command_running(
         time.sleep(0.4)
         assert running(duration), "the command should still be inside its grace period"
         program.send_signal(second)
-        assert program.wait(timeout=10) == 128 + first
+        status = program.wait(timeout=10)
+        assert status in (128 + first, -first, 1 if first == signal.SIGINT else 128 + first)
         assert not running(duration), "the program left before the command was dead"
     finally:
         program.kill()

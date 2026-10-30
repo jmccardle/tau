@@ -374,6 +374,7 @@ class Driver:
 
     def remove_label(self, label: str) -> None:
         """Remove `label`; raises `NoSuchLabel`."""
+        _running(self._failure, self._stopped)
         with self._frontend(self.session.label(label)):
             self.session.remove_label(label)
 
@@ -389,6 +390,7 @@ class Driver:
 
     def respond(self, cursor: int, response: str | None) -> None:
         """Respond to the cursor's oldest open question; `None` declines it."""
+        _running(self._failure, self._stopped)
         self._questions.respond(cursor, response)
 
     # The pump

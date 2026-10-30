@@ -5,6 +5,7 @@ problems through `check_config` and `tau config check`, which report every probl
 """
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -292,8 +293,18 @@ def test_invalid_json_has_file_line_and_column_and_does_not_hide_another_layer(
 
 def test_an_unreadable_file_is_a_problem(tmp_path: Path) -> None:
     problem = only_error(check_config(tmp_path / "missing.json", providers=PROVIDERS))
-    assert "cannot read" in problem.message
+    assert problem.message == "cannot be read: No such file or directory"
     assert problem.source == str(tmp_path / "missing.json")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+def test_a_user_config_nobody_can_read_is_one_line_without_errno(world: World) -> None:
+    world.user_config("{}")
+    (world.tau / "config.json").chmod(0)
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert f"{world.tau / 'config.json'}: error: cannot be read: Permission denied" in result.out
+    assert "Errno" not in result.both
 
 
 def test_a_duplicate_key_reports_the_path_of_its_object(tmp_path: Path) -> None:
