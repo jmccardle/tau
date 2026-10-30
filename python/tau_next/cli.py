@@ -29,6 +29,7 @@ from tau_next.trust import (
     project_config_path,
     project_environment,
     read_project_config,
+    safe_block,
     safe_text,
     tau_home,
     trust_report,
@@ -89,17 +90,22 @@ def _project_findings(
     project is trusted. Everything that would make startup refuse is added to `found`."""
     project = Trusted(root, None)
     layer: LayerText | None = None
+    trusted = False
     try:
-        trusted = is_trusted(root, home)
-        if trusted:
-            project = ensure_trusted(root, home, ask=None)
-            layer = project.layer()
-        else:
-            found.error(root / TAU_DIR, f"project is not trusted; run `tau trust {root}`")
-            layer = read_project_config(root)
+        layer = read_project_config(root)
     except TrustError as e:  # a symlinked or foreign file: startup refuses it too
-        trusted = False
         found.error(project_config_path(root), str(e))
+    else:
+        try:
+            trusted = is_trusted(root, home)
+        except TrustError as e:  # TAU_HOME or trusted.json writable by others
+            found.error(home / "trusted.json", str(e))
+        else:
+            if trusted:
+                project = ensure_trusted(root, home, ask=None)
+                layer = project.layer()
+            else:
+                found.error(root / TAU_DIR, f"project is not trusted; run `tau trust {root}`")
     try:
         seen = project_environment(project, environ)
     except (TrustError, DotenvError) as e:
@@ -148,16 +154,18 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         out.write(safe_text(f"  {origin.key:<12} {value}  [{origin.source}{group}]") + "\n")
 
 
-def _refuse_special(start: Path, environ: Mapping[str, str]) -> None:
-    home = tau_home(environ)
+def _refuse_special(path: Path, environ: Mapping[str, str]) -> None:
+    """`path` is never trusted if it is `$HOME`, `TAU_HOME`, or the directory whose `.tau/`
+    is `TAU_HOME` (the parent of a `TAU_HOME` named `.tau`)."""
+    home = tau_home(environ).resolve()
     special = {
         "your home directory": Path(environ["HOME"]).resolve() if environ.get("HOME") else None,
-        "TAU_HOME": home.resolve(),
-        "the parent of TAU_HOME": home.resolve().parent,
+        "TAU_HOME": home,
+        "the parent of TAU_HOME": home.parent if home.name == TAU_DIR else None,
     }
-    for what, path in special.items():
-        if path is not None and start == path:
-            raise TrustError(f"refusing to trust {start}: it is {what}")
+    for what, found in special.items():
+        if found is not None and path == found:
+            raise TrustError(f"refusing to trust {path}: it is {what}")
 
 
 def _trust(run: _Run, given: Path | None) -> int:
@@ -169,22 +177,23 @@ def _trust(run: _Run, given: Path | None) -> int:
     root = find_project(start, run.environ)
     if root is None:
         raise TrustError(f"no project: no .tau/ found from {start}")
+    _refuse_special(root, run.environ)
     if is_trusted(root, home):
-        run.stdout.write(f"already trusted: {safe_text(str(root))}\n")
+        run.stdout.write(safe_block(f"already trusted: {root}") + "\n")
         return 0
     report = trust_report(root, home)
+    shown = safe_block(f"{report}\ntrusted {root}") + "\n"  # all output made before the write
     try:
         approve_project(root, home)
     except TrustError as e:
-        shown = str(e)
-        raise TrustError(shown if shown == report else f"{report}\n{shown}") from e
-    run.stdout.write(f"{report}\ntrusted {safe_text(str(root))}\n")
+        refusal = str(e)
+        raise TrustError(refusal if refusal == report else f"{report}\n{refusal}") from e
+    run.stdout.write(shown)
     return 0
 
 
 def _fail(err: TextIO, message: str) -> int:
-    lines = (safe_text(line) for line in message.splitlines() or [""])
-    err.write("tau: " + "\n".join(lines) + "\n")
+    err.write("tau: " + safe_block(message) + "\n")
     return 1
 
 

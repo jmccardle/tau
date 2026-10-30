@@ -21,7 +21,7 @@ from tau_next import (
     TrustError,
     load_config,
     prompts,
-    safe_text,
+    safe_block,
     select_model,
 )
 
@@ -60,7 +60,7 @@ def run(main: Callable[[str, LoadedConfig], Coroutine[object, object, None]]) ->
         name, loaded = choose_model(sys.argv[1:])
         asyncio.run(main(name, loaded))
     except (ConfigError, TrustError, DotenvError, SampleFailed) as e:
-        sys.exit(f"{Path(sys.argv[0]).name}: {safe_text(str(e))}")
+        sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         sys.exit(_INTERRUPTED)

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from world import URL, World, models
 
-from tau_next import check_config, is_trusted, load_config
+from tau_next import check_config, is_trusted, load_config, safe_block, safe_text
 from tau_next.cli import main
 
 LITERAL = "sk-literal-secret-9f3"
@@ -340,8 +340,8 @@ def test_trust_refuses_home_tau_home_and_its_parent(world: World) -> None:
         result = tau(world, "trust", str(target))
         assert result.code == 1
         assert "refusing to trust" in result.err
-    elsewhere = {**world.environ, "TAU_HOME": str(world.home / "cfg" / "tau")}
-    (world.home / "cfg" / "tau").mkdir(parents=True, mode=0o700)
+    elsewhere = {**world.environ, "TAU_HOME": str(world.home / "cfg" / ".tau")}
+    (world.home / "cfg" / ".tau").mkdir(parents=True, mode=0o700)
     out, err = io.StringIO(), io.StringIO()
     code = main(
         ["trust", str(world.home / "cfg")],
@@ -434,3 +434,95 @@ def test_an_empty_model_name_is_an_error_not_a_fallback(world: World) -> None:
     result = tau(world, "config", "check", "--show", "")
     assert result.code == 1
     assert "must not be empty" in result.err
+
+
+# -- the second review
+
+
+def run_main(
+    world: World, argv: list[str], cwd: Path, environ: dict[str, str] | None = None
+) -> Result:
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        argv,
+        stdin=io.StringIO(),
+        stdout=out,
+        stderr=err,
+        environ=environ or world.environ,
+        cwd=cwd,
+    )
+    return Result(code, out.getvalue(), err.getvalue())
+
+
+def test_safe_block_keeps_written_lines_and_escapes_everything_else() -> None:
+    assert safe_block("one\ntwo") == "one\ntwo"
+    assert safe_block("a\rb\x0bc\x85d\u2028e") == "a\\x0db\\x0bc\\x85d\\u2028e"
+    assert safe_text("x\u202ey") == "x\\u202ey"  # right-to-left override
+    assert safe_text("\U000e0041") == "\\U000e0041"  # a tag character (format)
+    assert safe_text("n" + os.fsdecode(b"\xff")) == "n\\xff"  # a byte that was not UTF-8
+
+
+def test_an_error_cannot_forge_a_second_line(world: World) -> None:
+    result = tau(world, "trust", "nodir\rtau: trusted /etc")
+    assert result.code == 1
+    assert result.err.count("\n") == 1
+    assert result.err.startswith("tau: ")
+    assert "\r" not in result.err
+
+
+def test_a_multi_line_error_stays_multi_line(world: World) -> None:
+    root = world.project(config=models(p={"modle": "x"}))
+    result = tau(world, "trust", cwd=root)
+    assert result.err.count("\n") > 3
+
+
+def test_a_non_utf8_directory_name_does_not_crash_trust(world: World) -> None:
+    root = world.home / os.fsdecode(b"np\xff")
+    (root / ".tau").mkdir(parents=True)
+    (root / ".tau" / "config.json").write_text(json.dumps(models(p={})), encoding="utf-8")
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 0
+    result.out.encode("utf-8")  # strictly encodable
+    assert "np\\xff" in result.out
+    assert is_trusted(root, world.tau)
+
+
+def test_a_non_utf8_directory_name_does_not_crash_check(world: World) -> None:
+    root = world.home / os.fsdecode(b"nq\xfe")
+    (root / ".tau").mkdir(parents=True)
+    (root / ".tau" / "config.json").write_text(json.dumps(models(p={})), encoding="utf-8")
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    (result.out + result.err).encode("utf-8")
+    assert "nq\\xfe" in result.out
+
+
+def test_trust_refuses_a_project_inside_tau_home_found_by_walking_up(world: World) -> None:
+    (world.tau / ".tau").mkdir(parents=True, mode=0o700)
+    sub = world.tau / "sub"
+    sub.mkdir()
+    result = tau(world, "trust", str(sub))
+    assert result.code == 1
+    assert "refusing to trust" in result.err
+    assert not (world.tau / "trusted.json").exists()
+
+
+def test_the_parent_of_tau_home_is_refused_only_when_tau_home_is_named_dot_tau(
+    world: World,
+) -> None:
+    other = world.home / "cfg" / "tau"
+    other.mkdir(parents=True, mode=0o700)
+    (world.home / "cfg" / ".tau").mkdir()
+    environ = {**world.environ, "TAU_HOME": str(other)}
+    result = run_main(world, ["trust", str(world.home / "cfg")], world.home, environ)
+    assert "refusing" not in result.err  # cfg/.tau is a project here, not TAU_HOME
+
+
+def test_a_writable_trusted_json_is_reported_under_its_own_path(world: World) -> None:
+    root = world.project(config=models(p={}))
+    assert tau(world, "trust", cwd=root).code == 0
+    state = world.tau / "trusted.json"
+    state.chmod(0o666)
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert result.out.startswith(f"{state}: error: ")

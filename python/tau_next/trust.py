@@ -36,21 +36,41 @@ _PUBLIC_FILE = 0o644
 _WRITABLE_BY_OTHERS = 0o022
 _MAX_BYTES = 1 << 20
 _LATIN1_MAX = 0xFF
+_BMP_MAX = 0xFFFF
 _FIELDS = ("model", "base_url", "provider", "api_key_env", "api_key")
 _SECRET = "(secret)"
 
 
+_SURROGATE_BYTES = range(0xDC80, 0xDD00)  # a byte that was not UTF-8, as surrogateescape holds it
+_UNSAFE = ("Cc", "Cf", "Cs", "Zl", "Zp")
+
+
 def safe_text(text: str) -> str:
-    """`text` with every control character written as an escape (`\\x1b`), so nothing a
-    project file says can move the cursor or repaint a line of the report."""
+    """`text` with every control, format (such as right-to-left override), line and paragraph
+    separator, and surrogate character written as an escape (`\\x1b`, `\\u202e`), so nothing a
+    project file or a directory name says can move the cursor, repaint or reorder a line, or
+    fail to encode. A byte that was not UTF-8 in a name shows as `\\xNN`. Newlines are escaped
+    too: use `safe_block` for text of several lines."""
     out: list[str] = []
     for ch in text:
         code = ord(ch)
-        if unicodedata.category(ch) == "Cc" or code in (0x2028, 0x2029):
-            out.append(f"\\x{code:02x}" if code <= _LATIN1_MAX else f"\\u{code:04x}")
-        else:
+        if unicodedata.category(ch) not in _UNSAFE:
             out.append(ch)
+        elif code in _SURROGATE_BYTES:
+            out.append(f"\\x{code - 0xDC00:02x}")
+        elif code <= _LATIN1_MAX:
+            out.append(f"\\x{code:02x}")
+        elif code <= _BMP_MAX:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
     return "".join(out)
+
+
+def safe_block(text: str) -> str:
+    """`text` split on `"\\n"` only, each line through `safe_text`, joined again: the lines a
+    caller wrote stay lines, and nothing in the data can start another."""
+    return "\n".join(safe_text(line) for line in text.split("\n"))
 
 
 def _p(path: Path) -> str:

@@ -675,7 +675,7 @@ are read. Approval also makes `.tau/` the user's, mode `700`, with a
 ### safe_text, read_project_config, user_config_path
 `tau_next.trust` · D13 · new
 
-`safe_text(text)` writes every control character as an escape (`\x1b`); everything printed from config
+`safe_text(text)` writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
 data goes through it (the trust report, `tau config check`, `--show`, suggestions, the pick menu). Model
 and group names may not contain control characters (the checker errors at that path). `read_project_config(root)` reads
 a project's config once through the safe reader and returns it as a `LayerText` (`None`: no file); it
@@ -791,7 +791,7 @@ value, and `[file or cli or default, group G]`. A literal `api_key` shows as
 
 `tau trust [DIR]` finds the project by walking up from DIR (a relative DIR is
 taken from the working directory; default: the working directory), as startup
-does. It refuses `$HOME`, `TAU_HOME`, and its parent, and a directory with no
+does. It refuses `$HOME`, `TAU_HOME`, and (when `TAU_HOME` is named `.tau`) its parent, as the start directory or the project found, and a directory with no
 project (one line, exit 1). An already trusted, unchanged project prints
 `already trusted: <root>` and exits 0. Otherwise it approves and prints
 `trust_report`; it is the explicit command, so there is no y/N prompt. A
