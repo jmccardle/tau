@@ -1,6 +1,6 @@
 # D17: Input says who wrote it; cursors close
 
-Status: accepted (2026-10-31). Phase 5 fix plan items B1 and C1
+Status: accepted (2026-10-31); C1 built (2026-10-31), B1 and B2 before it. Phase 5 fix plan items B1 and C1
 (`docs/plan-phase5-fixes.md`), under rulings 3 and 7. Reverses `model.md` Q12.
 Amends D2 (input), D6 (what a cursor is), D12 (file version) and D16 §5 (client
 events).

@@ -7,7 +7,7 @@ use std::path::Path;
 use proptest::prelude::*;
 use tau_core::machine::Machine;
 use tau_core::step::{Answer, Draft, Hook, Job, SampleEnd};
-use tau_core::tree::{Author, Body, ItemData, Part, Session, Stop};
+use tau_core::tree::{Author, Body, Error as CoreError, ItemData, Part, Session, Stop};
 use tau_store::{Error, HEADER, Store, VERSION};
 
 /// Input, then auto-step on: what a frontend does to send.
@@ -41,6 +41,7 @@ enum Op {
     Label(usize, usize),
     Input(usize, usize),
     Deliver(usize),
+    Close(usize),
     Sync,
 }
 
@@ -64,6 +65,7 @@ fn op() -> impl Strategy<Value = Op> {
         (0..3usize, n.clone()).prop_map(|(l, c)| Op::Label(l, c)),
         (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
         n.clone().prop_map(Op::Deliver),
+        n.clone().prop_map(Op::Close),
         Just(Op::Sync),
     ]
 }
@@ -73,9 +75,15 @@ fn count(f: impl Fn(u64) -> bool) -> u64 {
 }
 
 fn apply(s: &mut Session, op: &Op) {
-    let nc = count(|c| s.at(c).is_ok());
+    // Ids are dense, so a closed cursor still counts; only open ones are named.
+    let open: Vec<u64> = (0..count(|c| s.at(c) != Err(CoreError::NoSuchCursor(c))))
+        .filter(|c| s.at(*c).is_ok())
+        .collect();
     let nn = count(|n| s.tree.node(n).is_ok());
-    let cursor = move |i: usize| i as u64 % nc;
+    if open.is_empty() && !matches!(*op, Op::Open(_) | Op::Sync) {
+        return; // every cursor is closed
+    }
+    let cursor = move |i: usize| open[i % open.len()];
     let node = move |i: usize| i as u64 % nn;
     let by = Author::Core;
     match *op {
@@ -110,6 +118,7 @@ fn apply(s: &mut Session, op: &Op) {
                     .unwrap();
             }
         }
+        Op::Close(i) => s.close(cursor(i)).unwrap(),
         Op::Sync => s.sync(),
     }
 }
@@ -174,7 +183,7 @@ proptest! {
         prop_assert_eq!(store.dropped, 0);
         prop_assert_eq!(&again, want);
         // The session goes on from the cut, and that reloads too.
-        again.write(0, Body::User("after".into()), vec![], Author::Core, 0).unwrap();
+        again.append(0, Author::Core, Body::User("after".into()), vec![], 0).unwrap();
         again.sync();
         store = store.save(&mut again).unwrap();
         drop(store);

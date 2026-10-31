@@ -844,6 +844,7 @@ fn load() {
         ("Move", 0, 0),
         ("Label", 0, 0),
         ("Sync", 0, 0),
+        ("Close", 0, 0),
     ];
     let mut bodies = 0;
     for (r, e) in records.iter().zip(&encoded) {
@@ -855,6 +856,7 @@ fn load() {
             Record::Move(_) => 1,
             Record::Label { .. } => 2,
             Record::Sync { .. } => 3,
+            Record::Close { .. } => 4,
         };
         kinds[k].1 += 1;
         kinds[k].2 += e.len();

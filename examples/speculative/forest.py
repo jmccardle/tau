@@ -14,8 +14,8 @@ best-scoring reply and the result is the explored tree.
 
 The judge may be searched: `judge_depth=1` rates each verdict with a smaller fan of judges.
 
-A fan is `open`, `send` to each branch, `await rest` on each. Aborting the search aborts the
-branches in flight, so it stops spending.
+A fan is `open`, `send` to each branch, `await rest` on each, `close_cursor` each once its reply
+is read. Aborting the search aborts the branches in flight, so it stops spending.
 """
 
 import asyncio
@@ -238,7 +238,8 @@ class Forest:
 
     async def _fan(self, cursor: Cursor, at: int, say: str, n: int) -> list[int | None]:
         """Branch `n` cursors from `at`, send each `say`, wait until all rest. Each one's reply
-        node; `None` for a sample a client aborted. If this is cancelled, so are the branches."""
+        node; `None` for a sample a client aborted. If this is cancelled, so are the branches.
+        A branch is closed once its reply is read: the reply stays in the tree, the cursor goes."""
         kids = [cursor.open(at) for _ in range(n)]
         try:
             for k in kids:
@@ -250,10 +251,12 @@ class Forest:
         for k, ending in zip(kids, endings, strict=True):
             if not isinstance(ending, Ending.Done | Ending.Aborted):  # `None`: not known
                 raise RuntimeError(f"cursor {k} ended {ending}")
-        return [
+        replies = [
             None if isinstance(e, Ending.Aborted) else cursor.cursor(k).at
             for k, e in zip(kids, endings, strict=True)
         ]
+        await together(*(cursor.close_cursor(k) for k in kids))
+        return replies
 
 
 def mark(verdict: str) -> float:

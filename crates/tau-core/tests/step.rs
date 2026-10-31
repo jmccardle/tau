@@ -198,6 +198,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
             Record::Write { .. } => "write",
             Record::Move(_) => "move",
             Record::Label { .. } => "label",
+            Record::Close { .. } => "close",
             Record::Sync { pad: Some(_) } => "SYNC+pad",
             Record::Sync { pad: None } => "SYNC",
         })

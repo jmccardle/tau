@@ -299,6 +299,14 @@ impl Session {
         )
     }
 
+    /// Close a cursor at rest (`Busy` otherwise): the driver aborts and waits first.
+    fn close_cursor(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
+        self.shared
+            .write(py, tracing::info_span!("py.close_cursor"), |m| {
+                Ok(m.close(cursor)?)
+            })
+    }
+
     // Extension and driver calls. These sync before they return. The handles
     // of a running hook write through `HandleWrites` instead.
 
@@ -404,6 +412,13 @@ impl Session {
             .read(py, tracing::info_span!("py.cursors"), |i| {
                 Ok(i.machine.session.auto.keys().copied().collect())
             })
+    }
+
+    /// Each closed cursor with its last node, in id order.
+    fn closed(&self, py: Python<'_>) -> PyResult<Vec<(u64, u64)>> {
+        self.shared.read(py, tracing::info_span!("py.closed"), |i| {
+            Ok(i.machine.session.closed().collect())
+        })
     }
 
     /// One cursor as it stands, all read under one lock.

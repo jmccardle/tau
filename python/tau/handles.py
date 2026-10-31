@@ -16,6 +16,7 @@ from tau._core import (
     HandleWrites,
     ItemData,
     Node,
+    NoSuchCursor,
     NotInHook,
     Session,
     Tree,
@@ -43,6 +44,9 @@ Abort = Callable[[int], None]
 """The driver's abort of a cursor's step. Safe to call from any thread: it returns once the
 loop has done it."""
 
+Close = Callable[[int], Awaitable[None]]
+"""The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
+
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
@@ -61,6 +65,25 @@ class OptionsReader(Protocol):
         """Raise `ConfigError` unless a `Config` node under `at` setting `model` and `extensions`
         is valid: a model in the catalog, options that fit their extension's type once folded."""
         ...
+
+
+def reopened(
+    session: Session,
+    cursor: int,
+    open: Callable[[int], int],
+    set_label: Callable[[str, int], None],
+) -> int:
+    """`reopen`, for whoever opens and labels as themselves: open a cursor at the closed
+    `cursor`'s last node, and move each of its labels onto it. `NoSuchCursor` if `cursor` is
+    not closed (open, or never opened)."""
+    closed = dict(session.closed())
+    if cursor not in closed:
+        raise NoSuchCursor(f"cursor {cursor} is not closed")
+    new = open(closed[cursor])
+    for label, on in session.labels():
+        if on == cursor:
+            set_label(label, new)
+    return new
 
 
 async def _ask(
@@ -111,6 +134,7 @@ class TreeHandle:
         changed: Changed,
         rest: Rest,
         abort: Abort,
+        close: Close,
         own: int | None = None,
     ) -> None:
         self._session = session
@@ -119,6 +143,7 @@ class TreeHandle:
         self._changed = changed
         self._rest = rest
         self._abort = abort
+        self._close = close
         self._own = own  # the cursor this handle works for, if it has one
         # A tree handle's writes sync at once. Only `Cursor` rebinds them to a hook: nothing
         # public takes a hook id, and `HandleWrites` is in the private `_core`.
@@ -153,8 +178,12 @@ class TreeHandle:
     def cursors(self) -> list[int]:
         return self._session.cursors()
 
+    def closed(self) -> list[tuple[int, int]]:
+        """Each closed cursor and its last node, in id order."""
+        return self._session.closed()
+
     def label(self, label: str) -> int:
-        """The cursor `label` is on; raises `NoSuchLabel`."""
+        """The cursor `label` is on (a closed cursor too); raises `NoSuchLabel`."""
         return self._session.label(label)
 
     # Writes
@@ -231,6 +260,23 @@ class TreeHandle:
         self._refuse_own(cursor, "abort", "aborting itself would cancel this very call")
         self._abort(cursor)
 
+    async def close_cursor(self, cursor: int) -> None:
+        """Close `cursor`: abort its step as `abort` does, wait for it to rest, drop its pending
+        items, and close it (D17). It leaves `cursors()` and the clients' views; its id, its last
+        node (in `closed()`) and its labels stay, which is what `reopen` restarts from. Anyone
+        waiting on it sees the abort. `CursorClosed` if it is already closed. Async only, like
+        `rest`. `ValueError` for this handle's own cursor: closing it would wait on itself."""
+        self._check()
+        self._refuse_own(cursor, "close_cursor", "closing it would wait on itself")
+        await self._close(cursor)
+
+    def reopen(self, cursor: int) -> int:
+        """Open a new cursor at the closed `cursor`'s last node and move each of its labels
+        onto it, as this extension. Returns the new id. `NoSuchCursor` if `cursor` is not
+        closed."""
+        self._check()
+        return reopened(self._session, cursor, self.open, self.set_label)
+
     def _refuse_own(self, cursor: int, call: str, why: str) -> None:
         if cursor == self._own:
             raise ValueError(f"{call}: cursor {cursor} is this handle's own; {why}")
@@ -267,9 +313,10 @@ class NodeHandle(TreeHandle):
         changed: Changed,
         rest: Rest,
         abort: Abort,
+        close: Close,
         options: OptionsReader,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, rest, abort, cursor)
+        super().__init__(session, extension, now, poke, changed, rest, abort, close, cursor)
         self._asker = asker
         self._options = options
         self.id = id
@@ -320,9 +367,10 @@ class Cursor(TreeHandle):
         changed: Changed,
         rest: Rest,
         abort: Abort,
+        close: Close,
         options: OptionsReader,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, rest, abort, id)
+        super().__init__(session, extension, now, poke, changed, rest, abort, close, id)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
@@ -411,6 +459,7 @@ class Handles:
     options: OptionsReader
     rest: Rest
     abort: Abort
+    close: Close
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
@@ -425,6 +474,7 @@ class Handles:
             self.changed,
             self.rest,
             self.abort,
+            self.close,
             self.options,
         )
 
@@ -441,11 +491,19 @@ class Handles:
             self.changed,
             self.rest,
             self.abort,
+            self.close,
             self.options,
         )
 
     def tree(self, extension: str) -> TreeHandle:
         """A handle on no cursor or node, for `extension`."""
         return TreeHandle(
-            self.session, extension, self.now, self.poke, self.changed, self.rest, self.abort
+            self.session,
+            extension,
+            self.now,
+            self.poke,
+            self.changed,
+            self.rest,
+            self.abort,
+            self.close,
         )

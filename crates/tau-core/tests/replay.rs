@@ -5,8 +5,8 @@ use proptest::prelude::*;
 use tau_core::machine::Machine;
 use tau_core::step::{Answer, Draft, Job, SampleEnd};
 use tau_core::tree::{
-    Author, Body, CursorId, Error, ItemData, NodeId, Outcome, Part, Record, Scratchpad, Session,
-    Stop,
+    Author, Body, CursorId, Error, ItemData, Move, NodeId, Outcome, Part, Record, Scratchpad,
+    Session, Stop,
 };
 
 /// Input, then auto-step on: what a frontend does to send.
@@ -62,6 +62,7 @@ enum Op {
     Go(usize, usize),
     Label(usize, usize),
     Unlabel(usize),
+    Close(usize),
     Input(usize, usize),
     Deliver(usize),
     Drop(usize),
@@ -79,6 +80,7 @@ fn op() -> impl Strategy<Value = Op> {
         (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         (0..3usize, n.clone()).prop_map(|(l, c)| Op::Label(l, c)),
         (0..3usize).prop_map(Op::Unlabel),
+        n.clone().prop_map(Op::Close),
         (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
         n.clone().prop_map(Op::Deliver),
         n.clone().prop_map(Op::Drop),
@@ -96,8 +98,12 @@ fn author(k: usize) -> Author {
     }
 }
 
-fn cursors(s: &Session) -> u64 {
-    (0..CursorId::MAX).take_while(|c| s.at(*c).is_ok()).count() as u64
+/// The open cursors, by id. A closed id is not open but still counts: ids are dense.
+fn open_cursors(s: &Session) -> Vec<CursorId> {
+    (0..CursorId::MAX)
+        .take_while(|c| s.at(*c) != Err(Error::NoSuchCursor(*c)))
+        .filter(|c| s.at(*c).is_ok())
+        .collect()
 }
 
 fn nodes(s: &Session) -> u64 {
@@ -109,10 +115,13 @@ fn nodes(s: &Session) -> u64 {
 /// Applies `op` with every index taken modulo what exists; ops that do not
 /// apply (an answer with no batch, a delivery with no item) do nothing.
 fn apply(s: &mut Session, op: &Op) {
-    let (nc, nn) = (cursors(s), nodes(s));
-    let cursor = move |i: usize| i as u64 % nc;
+    let (open, nn) = (open_cursors(s), nodes(s));
     let node = move |i: usize| i as u64 % nn;
     let by = Author::Core;
+    if open.is_empty() && !matches!(*op, Op::Open(_) | Op::Side(_) | Op::Sync | Op::Unlabel(_)) {
+        return; // every cursor is closed: only ops that name none apply
+    }
+    let cursor = move |i: usize| open[i % open.len()];
     match *op {
         Op::Open(t) => drop(s.open(node(t), by, 0).unwrap()),
         Op::User(i) => drop(
@@ -181,6 +190,7 @@ fn apply(s: &mut Session, op: &Op) {
                 s.remove_item(ids[k % ids.len()]);
             }
         }
+        Op::Close(i) => s.close(cursor(i)).unwrap(),
         Op::Sync => s.sync(),
     }
 }
@@ -418,4 +428,88 @@ fn sampled(d: Draft) -> Answer {
             meta,
         },
     }
+}
+
+/// A session with cursors 0 and 1 where 1 is closed, and its records.
+fn with_a_closed_cursor() -> (Session, Vec<Record>) {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let d = s.open(s.at(c).unwrap(), Author::Core, 0).unwrap();
+    s.set_label("scout", d).unwrap();
+    s.close(d).unwrap();
+    s.sync();
+    let log = s.outbox.clone();
+    (s, log)
+}
+
+#[test]
+fn a_closed_cursor_and_its_labels_survive_a_reload() {
+    let (s, log) = with_a_closed_cursor();
+    let loaded = tau_core::tree::load(log, Scratchpad::default()).unwrap();
+    assert_eq!(loaded.closed().collect::<Vec<_>>(), [(1, s.at(0).unwrap())]);
+    assert_eq!(loaded.label("scout"), Ok(1));
+    assert_eq!(loaded.at(1), Err(Error::Closed(1)));
+    assert!(!loaded.auto.contains_key(&1));
+}
+
+#[test]
+fn replay_refuses_a_record_that_names_a_closed_cursor_with_its_position() {
+    let (s, log) = with_a_closed_cursor();
+    let close_at = log
+        .iter()
+        .position(|r| matches!(r, Record::Close { .. }))
+        .unwrap();
+    let node = s.at(0).unwrap();
+    let after = |r: Record| {
+        let mut l = log.clone();
+        l.insert(close_at + 1, r);
+        tau_core::tree::load(l, Scratchpad::default())
+    };
+    let mv = Move {
+        cursor: 1,
+        from: Some(node),
+        to: node,
+        by: Author::Core,
+        time: 0,
+    };
+    let bad = Err(Error::BadRecord(close_at + 1));
+    assert_eq!(after(Record::Move(mv)), bad, "a move");
+    assert_eq!(after(Record::Close { cursor: 1 }), bad, "a second close");
+    let label = Record::Label {
+        label: "x".into(),
+        cursor: Some(1),
+    };
+    assert_eq!(after(label), bad, "a label onto it");
+    // A label moved off it, or removed, is fine.
+    let off = Record::Label {
+        label: "scout".into(),
+        cursor: Some(0),
+    };
+    assert!(after(off).is_ok());
+    // A close of a cursor never opened.
+    let mut l = log.clone();
+    l[close_at] = Record::Close { cursor: 7 };
+    assert_eq!(
+        tau_core::tree::load(l, Scratchpad::default()),
+        Err(Error::BadRecord(close_at))
+    );
+}
+
+#[test]
+fn a_crash_after_the_close_but_before_the_scratchpad_never_brings_back_its_items() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let d = s.open(s.at(c).unwrap(), Author::Core, 0).unwrap();
+    let item = ItemData::Input {
+        by: Author::Core,
+        text: "late".into(),
+    };
+    s.add_item(d, item);
+    s.sync();
+    let old_pad = s.scratchpad().clone();
+    assert_eq!(old_pad.items.len(), 1);
+    s.close(d).unwrap();
+    s.sync();
+    let (log, _) = on_disk(&s);
+    // The log holds the close; the scratchpad is the one from before it.
+    let loaded = tau_core::tree::load(log, old_pad).unwrap();
+    assert_eq!(loaded.items(d).count(), 0);
 }

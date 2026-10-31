@@ -1,7 +1,7 @@
 //! The session tree: nodes, cursors, labels, the scratchpad, and the records a
 //! store writes. The shape of model.md §1, minus copy relations.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -132,6 +132,11 @@ pub enum Record {
         label: String,
         cursor: Option<CursorId>,
     },
+    /// A tombstone: the cursor is closed (D17). It keeps its id, its last node
+    /// and its labels; nothing may name it again.
+    Close {
+        cursor: CursorId,
+    },
     /// A sync point. `pad`: the scratchpad as it stands here, if it changed
     /// since the last sync.
     Sync {
@@ -144,6 +149,9 @@ pub enum Error {
     NoSuchNode(NodeId),
     NoSuchCursor(CursorId),
     NoSuchLabel(String),
+    /// A call on a closed cursor (D17): the id is real, its last node is in
+    /// `Session::closed`.
+    Closed(CursorId),
     /// A frontend's `Session.step` on a busy cursor.
     Busy(CursorId),
     /// A hook's move, write, or auto-step change on a cursor with no cursor
@@ -173,6 +181,7 @@ impl std::fmt::Display for Error {
             Self::NoSuchNode(n) => write!(f, "no node {n}"),
             Self::NoSuchCursor(c) => write!(f, "no cursor {c}"),
             Self::NoSuchLabel(l) => write!(f, "no label {l:?}"),
+            Self::Closed(c) => write!(f, "cursor {c} is closed"),
             Self::Busy(c) => write!(f, "cursor {c} has a step running"),
             Self::NotInHook(c) => write!(f, "no cursor hook is running on cursor {c}"),
             Self::NoSuchItem(i) => write!(f, "no item {i}"),
@@ -206,6 +215,8 @@ pub struct Tree {
 pub struct Session {
     pub tree: Tree,
     at: BTreeMap<CursorId, NodeId>,
+    /// Cursors closed (D17): still in `at`, so ids stay dense; in no other map.
+    closed: BTreeSet<CursorId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
     pad: Scratchpad,
@@ -371,15 +382,42 @@ impl Session {
         self.queue(Record::Move(mv));
     }
 
+    /// Where `cursor` is. Every call on a cursor goes through here, so this is
+    /// the one place a closed cursor is refused (D17).
     ///
     /// # Errors
     ///
-    /// `NoSuchCursor` if `cursor` is not open.
+    /// `NoSuchCursor` if `cursor` was never opened; `Closed` if it was closed.
     pub fn at(&self, cursor: CursorId) -> Result<NodeId, Error> {
-        self.at
-            .get(&cursor)
-            .copied()
-            .ok_or(Error::NoSuchCursor(cursor))
+        match self.at.get(&cursor) {
+            None => Err(Error::NoSuchCursor(cursor)),
+            Some(_) if self.closed.contains(&cursor) => Err(Error::Closed(cursor)),
+            Some(node) => Ok(*node),
+        }
+    }
+
+    /// Close `cursor`: its auto-step and pending items go, a `Close` record is
+    /// queued, and its id, last node and labels stay. The caller has checked it
+    /// is at rest.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` was never opened; `Closed` if already closed.
+    pub fn close(&mut self, cursor: CursorId) -> Result<(), Error> {
+        self.at(cursor)?;
+        self.auto.remove(&cursor);
+        if self.items(cursor).next().is_some() {
+            self.pad.items.retain(|i| i.to != cursor);
+            self.touch_pad();
+        }
+        self.closed.insert(cursor);
+        self.queue(Record::Close { cursor });
+        Ok(())
+    }
+
+    /// Each closed cursor with its last node, in id order.
+    pub fn closed(&self) -> impl Iterator<Item = (CursorId, NodeId)> + '_ {
+        self.closed.iter().map(|c| (*c, self.at[c]))
     }
 
     /// Set a label on a cursor; a label already set elsewhere moves.

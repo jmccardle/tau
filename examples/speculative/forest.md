@@ -69,7 +69,9 @@ the person, after each round, whether to go on. `/forest_tree <node>` re-renders
    the brief's "judge is a branch", but 12 samples is 12 cursors. **Awkward**.
 4. **Cursors never close** (Q12). Test asserts `1 + 12` cursors after a 12-sample search, all at
    rest, forever; every client's snapshot carries 13 `CursorView`s from now on. **Awkward** (grows
-   with every search; the real cost of N-way fans in `tau agents`).
+   with every search; the real cost of N-way fans in `tau agents`). **Resolved by C1 (D17):**
+   `_fan` calls `close_cursor` on each branch once its reply is read; the test now asserts one
+   open cursor and twelve closed.
 5. **Judge persona.** Only a `User` message in the same walk (the judge sees the candidate and the
    question in its context). A fresh persona means `append_root` + `System` + copying the text
    + the start problem of (2). Did the former. **Cosmetic**.

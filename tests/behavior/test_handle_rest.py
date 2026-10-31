@@ -156,6 +156,10 @@ async def test_rest_on_a_cursor_that_is_aborted_returns_aborted(tmp_path: Path) 
 
 @scenario
 async def test_a_sync_tool_aborts_another_cursor_from_its_worker_thread(tmp_path: Path) -> None:
+    """The abort's effects run on the loop, not on the worker thread. Debug mode makes asyncio
+    refuse a loop-owned operation (cancelling the sample's task, waking a stream's reader) made
+    from any other thread, so an abort that did not hop onto the loop fails the tool."""
+    asyncio.get_running_loop().set_debug(True)
     boss = Boss()
     gate = Gate()
     held = Reply([Part.Text("hel"), Part.Text("lo")], Stop.End, gate, gate_after=1)
@@ -165,20 +169,22 @@ async def test_a_sync_tool_aborts_another_cursor_from_its_worker_thread(tmp_path
         provider=FakeProvider([held, calls("stop"), say("done")]),
         extensions=[boss, recorder],
     )
-    other = await h.client.open(h.session.cursor(h.cursor).at)
-    await h.settle()
-    await h.send("first", cursor=other)
-    await h.settle()
-    assert gate.held == 1
-    await h.send("go")
-    await h.settle()
-    assert boss.threads, "the tool ran"
-    assert boss.threads[0] != threading.get_ident(), "on a worker thread"
-    assert (await h.view(other)).ending == Ending.Aborted()
-    assert h.bodies(other)[-1] == Body.Assistant([Part.Text("hel")], Stop.Interrupted)
-    assert not h.session.cursor(other).auto
-    assert outcome(h) == Outcome.Ok("stopped")
-    await h.close()
+    try:
+        other = await h.client.open(h.session.cursor(h.cursor).at)
+        await h.settle()
+        await h.send("first", cursor=other)
+        await h.settle()
+        assert gate.held == 1
+        await h.send("go")
+        await h.settle()
+        assert boss.threads, "the tool ran"
+        assert boss.threads[0] != threading.get_ident(), "on a worker thread"
+        assert (await h.view(other)).ending == Ending.Aborted()
+        assert h.bodies(other)[-1] == Body.Assistant([Part.Text("hel")], Stop.Interrupted)
+        assert not h.session.cursor(other).auto
+        assert outcome(h) == Outcome.Ok("stopped")
+    finally:
+        await h.close()  # a failed assertion must not leave the tool waiting at teardown
 
 
 @scenario

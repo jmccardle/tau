@@ -8,17 +8,18 @@ once the driver has failed or stopped.
 """
 
 import asyncio
-from collections.abc import Callable, Collection, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 
 from tau import trace
 from tau._commands import Commands
 from tau._config_layers import ModelCatalog
-from tau._core import Author, ItemData, Session
+from tau._core import Author, Busy, ItemData, Session
 from tau._hub import Feed, Hub
 from tau._questions import Questions
 from tau._values import Context, Form
 from tau.events import LiveDelta
+from tau.handles import reopened
 from tau.protocols import Clock
 
 
@@ -55,6 +56,7 @@ class Calls:
         check: Callable[[], None],
         cancel: Callable[[int], None],
         catch_up: Callable[[int], Sequence[LiveDelta]],
+        rest: Callable[[int], Awaitable[None]],
     ) -> None:
         self.session = session
         self._clock = clock
@@ -66,6 +68,7 @@ class Calls:
         self.check = check
         self._cancel = cancel  # core said a step's effect is to be cancelled: stop it
         self._catch_up = catch_up
+        self._rest = rest
 
     def connect(self, client: str, buffer: int) -> Feed:
         return self._hub.connect(client, buffer)
@@ -103,6 +106,29 @@ class Calls:
         if cancel:
             self._cancel(cursor)
         self._questions.decline(cursor, busy=self.session.cursor(cursor).busy)
+
+    async def close_cursor(self, cursor: int) -> None:
+        """Abort, wait for rest, close; again if the cursor woke in between. Each round waits
+        for a rest, so this never spins. Raises `CursorClosed` if the cursor is already closed
+        (the abort refuses it)."""
+        while True:
+            self.abort(cursor)
+            await self._rest(cursor)
+            try:
+                with self._changing():
+                    self.session.close_cursor(cursor)
+                    self._questions.forget(cursor)
+            except Busy:
+                continue  # an item added since the rest woke it: abort what woke it
+            return
+
+    def reopen(self, cursor: int, client: str) -> int:
+        return reopened(
+            self.session,
+            cursor,
+            lambda at: self.open(at, client),
+            lambda label, new: self.set_label(new, label),
+        )
 
     def set_auto(self, cursor: int, on: bool) -> None:
         with self._changing():

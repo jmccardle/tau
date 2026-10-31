@@ -23,10 +23,10 @@ from tau.events import Event
 
 
 class Client(AsyncIterator[Event], Protocol):
-    """What a frontend holds. Iterating it yields the events: a `CursorView` per cursor and
-    `Labels` first, then changes as they happen, until the driver stops (the stream ends), or
-    the driver fails or the client is `CutOff` for falling behind (it raises `ConnectionError`).
-    Every call raises once the driver has failed or stopped."""
+    """What a frontend holds. Iterating it yields the events: a `CursorView` per open cursor, a
+    `CursorGone` per closed one, and `Labels` first, then changes as they happen, until the driver
+    stops (the stream ends), or the driver fails or the client is `CutOff` for falling behind (it
+    raises `ConnectionError`). Every call raises once the driver has failed or stopped."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -56,6 +56,17 @@ class Client(AsyncIterator[Event], Protocol):
 
     async def open(self, at: int) -> int:
         """Open a cursor at node `at`; it wakes. Returns its id."""
+        ...
+
+    async def close_cursor(self, cursor: int) -> None:
+        """Close the cursor (D17): abort its step as `abort` does, wait for it to rest, drop its
+        pending items, and close it. Clients are sent a `CursorGone`. Its id, last node and
+        labels stay; `reopen` restarts from them. `CursorClosed` if it is already closed."""
+        ...
+
+    async def reopen(self, cursor: int) -> int:
+        """Open a new cursor at the closed `cursor`'s last node, and move each of its labels
+        onto it. Returns the new id. `NoSuchCursor` if `cursor` is not closed."""
         ...
 
     async def set_label(self, cursor: int, label: str) -> None:
@@ -184,6 +195,12 @@ class LocalClient(_Stream):
 
     async def open(self, at: int) -> int:
         return self._up().open(at, self.id)
+
+    async def close_cursor(self, cursor: int) -> None:
+        await self._up().close_cursor(cursor)
+
+    async def reopen(self, cursor: int) -> int:
+        return self._up().reopen(cursor, self.id)
 
     async def set_label(self, cursor: int, label: str) -> None:
         self._up().set_label(cursor, label)

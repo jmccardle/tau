@@ -915,6 +915,9 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
     def abort(cursor: int) -> None:
         pass
 
+    async def close(cursor: int) -> None:
+        pass
+
     h = await Harness.create(tmp_path, extensions=[Wait()], gates=[gate])
     await h.step()
     await h.settle()  # the cursor's pre_step hook is out
@@ -927,10 +930,11 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
             lambda: None,
             rest,
             abort,
+            close,
             hook=h.cursor,  # pyright: ignore[reportCallIssue]
         )
     handle = tau.TreeHandle(
-        h.session, "frontend", h.clock.now, lambda: None, lambda: None, rest, abort
+        h.session, "frontend", h.clock.now, lambda: None, lambda: None, rest, abort, close
     )
     node = handle.append(SYS, Body.Custom("note", ""))
     await h.crash()

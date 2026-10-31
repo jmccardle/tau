@@ -269,7 +269,7 @@ class Harness:
         gates = {*self.provider.gates, *self.gates}
         gates.update(t.gate for t in self.tools if isinstance(t, FakeTool) and t.gate is not None)
         state = self.driver.state()
-        return sum(g.held for g in gates) + state.open_questions + state.waiting
+        return sum(g.held for g in gates) + state.parked
 
     async def crash(self) -> None:
         """Drop memory, keep disk: cancel every task without answering, close the

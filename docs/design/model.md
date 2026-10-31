@@ -79,6 +79,7 @@ by      = Frontend(client) | Provider | Tools | Core | Extension(name)
 
 Move   { cursor, from?, to, by, time, opened_by* }
 Label  { label, cursor? }                    no cursor: the label is removed
+Close  { cursor }                            a tombstone (D17): the cursor is closed
 Item   { id, to, data }   data = Input { by, text } | Extension { name, data }
 ```
 
@@ -95,6 +96,11 @@ Item   { id, to, data }   data = Input { by, text } | Extension { name, data }
   integers, never reused (Q8).
 - A **label** maps a unique string to one cursor; a cursor may have several.
   Label records set, move, and remove them; load replays them.
+- A cursor can be **closed** (D17; it was Q12): a `Close` record, after which the cursor is in
+  no list and nothing may name it (`Closed`). Its id stays (ids are dense), as do its last node
+  and its labels, which are its restart record: `open(at=last node)` and move the label
+  (`reopen`). Its pending items go in the same sync. Only a cursor at rest is closed; the driver
+  aborts it and waits for rest first.
 - An **item** is addressed to one cursor (`to`). Input items come from a
   frontend or, by `send`, an extension (`by` says which); every other item belongs to the extensions. No item
   reaches the model (I1).
@@ -140,12 +146,12 @@ back from. Any node may be gone to.
 | I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes answered in any order, aborts mid-batch; every batch run is answered once) |
 | I5 | Append checks only types: **V2** a `Results` node's outcomes, and an `Assistant` node's calls, name distinct call ids. A root is made by `append_root` (a `Config` by construction), so there is no V1; replay refuses a logged root that is not a `Config` as `BadRecord`. Wire legality is the provider's conversion (Q11). | `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V2, any other shape under any node taken; a refusal changes nothing) |
 | I6 | Retired (D5). | — |
-| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `tree::load` |
+| I7 | Reload is replay: state is a pure function of nodes, moves, labels, closes, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `tree::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
 cursor loads at rest), open questions (driver memory), shown state, a
 step's in-memory batch outcomes, events. Load drops every item some node
-`delivers`; anything after the log's last good `Sync` (a torn tail) never
+`delivers` or is addressed to a closed cursor; anything after the log's last good `Sync` (a torn tail) never
 happened. That is the
 whole of `reconcile`.
 
@@ -407,7 +413,9 @@ message authored by the tool's extension, which passes the cursor's `pre_input` 
 line), and `await rest(cursor)`s for the ending of the step the send caused. That holds only if the
 cursor was at rest when sent to: mid-step, the input waits and `rest` returns the earlier step's
 ending with the input still pending, so a tool that may meet a busy cursor `rest`s before it
-`send`s. On failure or its own abort it `abort`s the cursors it started. A cycle (A waits on B while B waits on A) is not
+`send`s. On failure or its own abort it `abort`s the cursors it started; for those that are
+finished it `close_cursor`s them, so a finished sub-agent leaves `cursors()` and the clients' views
+but not the tree, and `reopen` starts it again from its last node if a follow-up comes. A cycle (A waits on B while B waits on A) is not
 detected: the user's abort is the way out. An item the receiving extension turns into something else
 (a task description, a timer tick, a relayed webhook) is still an `add_item`.
 
@@ -468,13 +476,14 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 
 | event | to | carries |
 |---|---|---|
-| `CursorView` | all clients | per cursor: `at`, `busy`, `auto`, open questions, pending items, how the last step ended and the failed hook, if any |
+| `CursorView` | all clients | per open cursor: `at`, `busy`, `auto`, open questions, pending items, how the last step ended and the failed hook, if any |
+| `CursorGone` | all clients | a cursor closed (D17): its last node, `at`, for restarting; replaces that cursor's `CursorView` |
 | `Labels` | all clients | every label and its cursor |
 | `Appended` | all clients | the new nodes, bodies included |
 | `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
 | `Notice` | one client, or all | `cursor.tell`, an input a hook refused |
 
-- **On connect** the stream opens with a `CursorView` per cursor and `Labels`, taken in the same
+- **On connect** the stream opens with a `CursorView` per open cursor, a `CursorGone` per closed one, and `Labels`, taken in the same
   synchronous act as subscribing, so nothing falls between them. Nodes a client reads with calls
   (a node never changes, so one it meets again in an `Appended` is ignored); later ones arrive
   as `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it
@@ -483,7 +492,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   hold with what was last published (after each client call, pump pass, handle write and
   question opened or closed), so nothing is announced by hand and nothing twice.
 - **Order.** One ordered stream per client. A change's `Appended` comes before the `CursorView`
-  that points at its nodes, and a `Labels` after the `CursorView` of every cursor it names. A
+  that points at its nodes, and a `Labels` after the `CursorView` (or `CursorGone`) of every cursor it names. A
   `CursorView` or `Labels` that replaces an earlier copy removes it
   and goes to the end.
 - **`watch(cursors)`** chooses which cursors' `Live` a client hears (default: none), starting for
@@ -492,7 +501,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   catch-up; its result arrives as `Appended`.
 - **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped) and `buffer` of
   `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff`, a `ConnectionError`, and it
-  reconnects to a snapshot), plus one `CursorView` per cursor and one `Labels`. The pump never
+  reconnects to a snapshot), plus one `CursorView` (or `CursorGone`) per cursor and one `Labels`. The pump never
   waits on a client.
 - **Client rules for `Live`** (D15, restated): ignore a `CallArgs` whose `CallNamed` you never
   saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
@@ -533,7 +542,7 @@ Each provider is a Python adapter for one API family. It owes the driver:
 ## 11. Persistence
 
 Core queues what must be made durable in `Session::outbox` as `Record`s
-(`Write { node, mv }`, `Move`, `Label`, `Sync { pad }`). A Rust layer
+(`Write { node, mv }`, `Move`, `Label`, `Close { cursor }`, `Sync { pad }`). A Rust layer
 composing core with `tau-store` hands them to the store inside the call
 (D11). The store may buffer up to a `Sync`; at a `Sync` it syncs the log,
 then, if `pad` is set, rewrites the scratchpad file with it. The log never
@@ -566,7 +575,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q9 | Hook timeouts | not core's; `asyncio.timeout` |
 | Q10 | Is `Results` final? | yes; another answer is a sibling |
 | Q11 | Wire legality | the provider's conversion; a rejection fails the sample |
-| Q12 | Do cursors close? | not in core for now |
+| Q12 | Do cursors close? | yes (D17): a `Close` record; the cursor keeps its id, last node and labels |
 | Q13 | Two cursors at one batch | each runs it |
 | Q15 | How a person branches | go-to, step, input |
 | Q17 | Input at an unanswered batch | goes under it (D4) |

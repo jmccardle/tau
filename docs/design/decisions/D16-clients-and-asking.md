@@ -183,13 +183,14 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
 | event | to | carries |
 |---|---|---|
 | `CursorState(cursor, …)` | all clients | `at`, busy, auto-step, open questions, pending items, the last step's ending including a hook's error |
+| `CursorGone(cursor, at)` | all clients | a cursor closed (D17): its last node, for restarting; replaces its `CursorState` |
 | `Labels(labels)` | all clients | every label and its cursor |
 | `Appended(nodes)` | all clients | the new nodes, bodies included |
 | `Live(cursor, delta)` | clients watching the cursor | text, thinking, call and tool-progress deltas, as in D15 |
 | `Notice(text)` | one client; every client for `cursor.tell` without `to` | `cursor.tell`, a refused input, a command's result and progress |
 
-- **On connect** a client receives one `CursorState` per cursor and `Labels` (after the cursors it
-  names), before anything else; nodes it reads with calls (`node`, `walk`, `children`), and
+- **On connect** a client receives one `CursorState` per open cursor, one `CursorGone` per closed
+  one (D17), and `Labels` (after the cursors it names, closed ones included), before anything else; nodes it reads with calls (`node`, `walk`, `children`), and
   those added later arrive as `Appended`. A node never changes, so a client that read one and then
   meets it in an `Appended` ignores the second. Subscribing and the snapshot are one act on the
   driver's loop, so nothing falls between them.
@@ -209,7 +210,8 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
   and `respond`.
 
 **Calls.** The frontend calls of today's `Driver` (`input`, `send`, `step`, `go_to`,
-`set_auto`, `abort`, `open`, `set_label(cursor, label)`, `remove_label`), with the client filled
+`set_auto`, `abort`, `open`, `set_label(cursor, label)`, `remove_label`, and D17's `close_cursor`
+and `reopen`), with the client filled
 in, plus `watch`, `answer`, `commands()` (each command's `Form`: name, description and schema;
 fixed for the driver's life), `run` (returns the command's result), `options(cursor,
 extension)`, `configure(cursor, extension, values)` and `complete(cursor, type, prefix)`. They

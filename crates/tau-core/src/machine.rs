@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::step::{Answer, Job, Step};
 use crate::transitions;
-use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
+use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, NodeId, Session};
 
 #[derive(Debug)]
 pub struct Machine {
@@ -171,6 +171,24 @@ impl Machine {
         )
     }
 
+    /// Close `cursor` (D17): drop its pending items, record `Close`, sync. It
+    /// aborts nothing: the driver aborts and waits for rest first.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` was never opened; `Closed` if already closed;
+    /// `Busy` unless it is at rest.
+    pub fn close(&mut self, cursor: CursorId) -> Result<(), Error> {
+        self.session.at(cursor)?;
+        if self.busy(cursor) {
+            return Err(Error::Busy(cursor));
+        }
+        self.session.close(cursor)?;
+        self.steps.remove(&cursor);
+        self.session.sync();
+        Ok(())
+    }
+
     // Extension and driver calls. Each syncs on return, unless `hook` names the
     // cursor whose hook job is out and makes the call: that phase's own sync
     // covers it (D11). A frontend's or the driver's call passes `None`.
@@ -326,14 +344,6 @@ impl Machine {
         self.steps
             .get(&cursor)
             .map_or(self.session.moves.len(), Step::first_move)
-    }
-
-    /// `cursor.moves(since_step=True)` for the cursor's current step.
-    pub fn moves_since_step(&self, cursor: CursorId) -> impl Iterator<Item = &Move> {
-        self.steps
-            .get(&cursor)
-            .into_iter()
-            .flat_map(move |st| st.moves(&self.session))
     }
 
     // Driving.

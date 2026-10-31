@@ -12,13 +12,14 @@ from tau.events import OpenQuestion
 @dataclass
 class Question:
     """An open question: what clients see of it (`view`), the future its answer fills, what
-    checks and converts an answer (`expect`), and how to open the cursor a `CursorId` answer of
-    `"new"` means (`new_cursor`)."""
+    checks and converts an answer (`expect`), how to open the cursor a `CursorId` answer of
+    `"new"` means (`new_cursor`), and the effect that asked (`asker`)."""
 
     view: OpenQuestion
     future: asyncio.Future[object]
     expect: Kind = field(repr=False)
     new_cursor: Callable[[], int] = field(repr=False)
+    asker: asyncio.Task[None] = field(repr=False)
 
 
 class Questions:
@@ -51,13 +52,18 @@ class Questions:
     def count(self) -> int:
         return sum(len(self._live(c)) for c in self._by_cursor)
 
-    async def ask(
+    def askers(self) -> set[asyncio.Task[None]]:
+        """The effects with a question open, each once however many it has."""
+        return {q.asker for c in self._by_cursor for q in self._live(c)}
+
+    async def ask(  # noqa: PLR0913, PLR0917 - a question's whole description
         self,
         cursor: int,
         text: str,
         expect: Kind,
         to: str | None,
         new_cursor: Callable[[], int],
+        asker: asyncio.Task[None],
     ) -> object:
         """Wait for the answer; `None` if declined. Nothing is declined for want of someone to
         answer: the question waits. The one exception is a cursor whose step was aborted: it
@@ -69,7 +75,7 @@ class Questions:
             to = None
         future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
         view = OpenQuestion(next(self._ids), to, text, expect.schema)
-        question = Question(view, future, expect, new_cursor)
+        question = Question(view, future, expect, new_cursor, asker)
         asked = self._by_cursor.setdefault(cursor, [])
         asked.append(question)
         self._changed()
@@ -131,6 +137,11 @@ class Questions:
 
     def rested(self, cursor: int) -> None:
         """`cursor` is at rest: the step an abort ended is over, and the next may ask."""
+        self._aborted.discard(cursor)
+
+    def forget(self, cursor: int) -> None:
+        """`cursor` is closed: drop the mark of an abort, which no `rested` will clear now. It has
+        no open question: the abort before the close declined them, and the cursor rested."""
         self._aborted.discard(cursor)
 
     def clear(self) -> None:

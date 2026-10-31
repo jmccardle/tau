@@ -28,6 +28,7 @@ macro_rules! exceptions {
 exceptions! {
     NoSuchNode: PyLookupError = "A node id that is not in the session.";
     NoSuchCursor: PyLookupError = "A cursor id that is not open.";
+    CursorClosed: NoSuchCursor = "A call on a cursor that was closed; its last node is in `closed()`.";
     NoSuchLabel: PyLookupError = "A label that is not set.";
     Busy: PyRuntimeError = "A step on a cursor whose step is running.";
     NotInHook: PyRuntimeError = "A hook's move, write, or auto-step change when no cursor hook is running on that cursor.";
@@ -100,6 +101,7 @@ fn tree_err(e: &tree::Error) -> PyErr {
     match e {
         tree::Error::NoSuchNode(_) => NoSuchNode::new_err(m),
         tree::Error::NoSuchCursor(_) => NoSuchCursor::new_err(m),
+        tree::Error::Closed(_) => CursorClosed::new_err(m),
         tree::Error::NoSuchLabel(_) => NoSuchLabel::new_err(m),
         tree::Error::Busy(_) => Busy::new_err(m),
         tree::Error::NotInHook(_) => NotInHook::new_err(m),

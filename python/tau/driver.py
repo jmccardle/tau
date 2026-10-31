@@ -25,7 +25,15 @@ import concurrent.futures
 import contextvars
 import threading
 from collections import Counter
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Coroutine,
+    Generator,
+    Mapping,
+    Sequence,
+)
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -39,7 +47,7 @@ from tau._hub import Hub
 from tau._options import ExtensionOptions
 from tau._questions import Questions
 from tau._tools import assemble_tools
-from tau._values import Context
+from tau._values import Context, Kind
 from tau.client import LocalClient
 from tau.clock import SystemClock
 from tau.effects import CallRun, SampleRun, run_hooks
@@ -110,15 +118,16 @@ class DriverState:
     """What a harness reads to tell quiet from busy: the effects running (`units`), whether the
     pump has something to do (`queued`: a report or poke to take, or a busy cursor with no
     effect out; never once the driver has failed or stopped, when the session may be closed),
-    the questions open, the effects waiting in a handle's `rest` (`waiting`: an effect with a
-    `rest` out is parked until that cursor rests, however many it waits on at once), what the
-    driver died of, and whether it was stopped. `check` raises the failure or `RuntimeError` for
-    a stopped driver, as every client call does first."""
+    the questions open, the effects parked in the driver (`parked`: an effect with a question
+    open or a handle's `rest` or `close_cursor` out waits for an answer or another cursor, and
+    counts once however many it has out), what the driver died of, and whether it was stopped.
+    `check` raises the failure or `RuntimeError` for a stopped driver, as every client call does
+    first."""
 
     units: int
     queued: bool
     open_questions: int
-    waiting: int
+    parked: int
     failure: Exception | None
     stopped: bool
 
@@ -185,7 +194,7 @@ class Driver:
         self._home: tuple[asyncio.AbstractEventLoop, int] | None = None  # the loop, its thread
         self._handles = Handles(
             session,
-            self._questions.ask,
+            self._ask,
             lambda client, text: on_loop(partial(self._hub.notify, client, text))(),
             self.clock.now,
             on_loop(self._poke),
@@ -193,6 +202,7 @@ class Driver:
             self._options,
             self._ending_at_rest,
             lambda cursor: _on_loop_wait(lambda: self._home, self._calls.abort, cursor),
+            self._close_cursor,
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(
@@ -219,9 +229,12 @@ class Driver:
             check=self._check,
             cancel=partial(_cancel, self._out),
             catch_up=partial(_catch_up, self._out),
+            rest=self.rest,
         )
         self._rested = _Waiters()
-        self._waiting: Counter[asyncio.Task[None] | None] = Counter()  # effect -> `rest` calls out
+        self._waits: Counter[asyncio.Task[None]] = (
+            Counter()
+        )  # effect -> waits on cursors it has out
 
     def _check(self) -> None:
         """Raise the failure the driver died of, or that it is stopped."""
@@ -284,7 +297,7 @@ class Driver:
                 )
             ),
             open_questions=self._questions.count(),
-            waiting=len(self._waiting),
+            parked=len(self._questions.askers() | self._waits.keys()),
             failure=self._failure,
             stopped=self._stopped,
         )
@@ -299,18 +312,50 @@ class Driver:
                 return
             await self._rested.wait()
 
+    @staticmethod
+    def _effect() -> asyncio.Task[None]:
+        """The running effect. Only a handle asks or waits, and a handle is only ever in an
+        effect's hands."""
+        effect = _EFFECT.get()
+        if effect is None:
+            raise RuntimeError("a handle was used outside an effect: a handle is not for keeping")
+        return effect
+
+    @contextmanager
+    def _waiting(self) -> Generator[None]:
+        """The running effect waits on another cursor: `state` counts it parked, once however
+        many such waits it has out."""
+        effect = self._effect()
+        self._waits[effect] += 1
+        try:
+            yield
+        finally:
+            self._waits[effect] -= 1
+            if not self._waits[effect]:
+                del self._waits[effect]
+
+    async def _ask(
+        self,
+        cursor: int,
+        text: str,
+        expect: Kind,
+        to: str | None,
+        new_cursor: Callable[[], int],
+    ) -> object:
+        """A handle's question (`Questions.ask`), for the running effect."""
+        return await self._questions.ask(cursor, text, expect, to, new_cursor, self._effect())
+
     async def _ending_at_rest(self, cursor: int) -> Ending | None:
         """`rest`, then how the cursor's last step ended (`None` if not known): what a handle's
         `rest` returns."""
-        effect = _EFFECT.get()
-        self._waiting[effect] += 1
-        try:
+        with self._waiting():
             await self.rest(cursor)
-        finally:
-            self._waiting[effect] -= 1
-            if not self._waiting[effect]:
-                del self._waiting[effect]
         return self._hub.ending(cursor)
+
+    async def _close_cursor(self, cursor: int) -> None:
+        """What a handle's `close_cursor` does: the close, its effect parked while it waits."""
+        with self._waiting():
+            await self._calls.close_cursor(cursor)
 
     # What a frontend uses
 
@@ -482,10 +527,14 @@ def _on_loop_wait[T](
 ) -> T:
     """`call(arg)` on the loop's thread, whichever thread asks, and its result (or what it
     raises) returned to the asker, who waits for it. Unlike `_on_loop` this is for a call whose
-    effect the asker's next step depends on: an abort made before a `send` must come first."""
+    effect the asker's next step depends on: an abort made before a `send` must come first.
+    `RuntimeError` if the loop is closed or not running: nothing would ever run the call."""
     where = home()
     if where is None or threading.get_ident() == where[1]:
         return call(arg)
+    loop = where[0]
+    if loop.is_closed() or not loop.is_running():
+        raise RuntimeError("the driver's event loop is not running: the call would never run")
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
 
     def run() -> None:
@@ -494,7 +543,7 @@ def _on_loop_wait[T](
         except BaseException as e:
             done.set_exception(e)
 
-    where[0].call_soon_threadsafe(run)
+    loop.call_soon_threadsafe(run)
     return done.result()
 
 

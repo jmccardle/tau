@@ -13,6 +13,7 @@ from types import TracebackType
 from tau._core import Ending, Session
 from tau.events import (
     Appended,
+    CursorGone,
     CursorView,
     CutOff,
     Event,
@@ -33,8 +34,9 @@ class Feed:
     waiting. `Appended` and `Notice` are never dropped: a backlog of `capacity` of them cuts the
     client off (the stream ends with `CutOff`, nothing more is delivered). `Labels` and a
     `CursorView` replace their own earlier copy: it is removed and the new one goes to the end,
-    so the buffer holds at most one per cursor. The bound is `capacity` of each of the first two
-    classes, plus one state event per cursor.
+    so the buffer holds at most one per cursor. A `CursorGone` replaces its cursor's `CursorView`
+    the same way. The bound is `capacity` of each of the first two classes, plus one state event
+    per cursor.
 
     `close()` disconnects. The hub holds feeds weakly, so one abandoned without `close()` is
     collected and its client is no longer connected. When the driver stops the stream ends
@@ -144,8 +146,8 @@ class Feed:
 
 def _replaces(new: Event, held: Event) -> bool:
     """Whether the state event `new` makes the buffered `held` stale."""
-    if isinstance(new, CursorView):
-        return isinstance(held, CursorView) and held.cursor == new.cursor
+    if isinstance(new, CursorView | CursorGone):
+        return isinstance(held, CursorView | CursorGone) and held.cursor == new.cursor
     return type(held) is type(new)
 
 
@@ -174,6 +176,7 @@ class Hub:
         self._nodes = len(session.tree)
         self._labels = tuple(session.labels())
         self._views = {c: self._view(c) for c in session.cursors()}
+        self._gone = {c: CursorGone(c, at) for c, at in session.closed()}
 
     def connected(self, client: str) -> bool:
         """Whether `client` has a stream open."""
@@ -188,8 +191,9 @@ class Hub:
         return {feed.client for feed in self._feeds}
 
     def connect(self, client: str, capacity: int) -> Feed:
-        """A new stream for `client`, opening with the snapshot: a `CursorView` per cursor, then
-        `Labels` (which name cursors the client has by then been sent), as they stand. Publishing
+        """A new stream for `client`, opening with the snapshot: a `CursorView` per open cursor and
+        a `CursorGone` per closed one, then `Labels` (which name cursors the client has by then
+        been sent, closed ones included), as they stand. Publishing
         what is pending first and taking the snapshot from what was published make it one act:
         nothing falls between the snapshot and what follows. The nodes are not in it: a node
         never changes, so a client reads the ones it needs by id, and ignores an `Appended` one
@@ -199,7 +203,7 @@ class Hub:
             feed.end(self._ended[0])
             return feed
         self.sync()
-        for event in (*self._views.values(), Labels(self._labels)):
+        for event in (*self._views.values(), *self._gone.values(), Labels(self._labels)):
             feed.offer(event)
         self._feeds.add(feed)
         self._clients.add(client)
@@ -245,8 +249,9 @@ class Hub:
 
     def sync(self) -> None:
         """Send what changed since the last call: the new nodes, then each changed `CursorView`
-        (so a view never points at nodes the client has not been sent), then `Labels` (so a
-        label never names a cursor the client has not been sent), then the session's notices to
+        (so a view never points at nodes the client has not been sent), then a `CursorGone` for
+        each cursor closed since, then `Labels` (so a label never names a cursor the client has
+        not been sent), then the session's notices to
         the clients they name. A client that has no stream left is `lost` first, so the views
         sent are the ones its loss changed."""
         if self._ended is not None or self._syncing:
@@ -275,6 +280,12 @@ class Hub:
             if self._views.get(cursor) != view:
                 self._views[cursor] = view
                 self._send(view)
+        for cursor, at in session.closed():
+            if cursor not in self._gone:  # the driver's memory of the cursor goes with its view
+                self._gone[cursor] = gone = CursorGone(cursor, at)
+                self._views.pop(cursor, None)  # a cursor closed before any sync has none
+                self._steps.pop(cursor, None)
+                self._send(gone)
         labels = tuple(session.labels())
         if labels != self._labels:
             self._labels = labels

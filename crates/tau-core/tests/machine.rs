@@ -272,7 +272,7 @@ fn frontend_calls_sync_on_return() {
 }
 
 #[test]
-fn moves_since_step_are_the_running_steps() {
+fn moves_from_the_step_start_are_the_running_steps() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
     send(&mut m, c, Author::Frontend(term()), "hi");
@@ -290,7 +290,7 @@ fn moves_since_step_are_the_running_steps() {
         .append(sys, by.clone(), Body::User("n".into()), vec![], 0)
         .unwrap();
     m.session.move_to(c, note, by, 0).unwrap();
-    assert_eq!(m.moves_since_step(c).count(), 1);
+    assert_eq!(m.session.moves_of(c, m.step_start(c)).count(), 1);
     m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
 }
@@ -777,4 +777,113 @@ fn call(id: &str) -> Part {
         args_raw: "{}".into(),
         replay: None,
     }
+}
+
+/// A machine with a second cursor `d` beside `c`, both at the System node.
+fn two_cursors() -> (Machine, u64, u64) {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let d = m.open(sys, Author::Core, 0, None).unwrap();
+    run(&mut m, c, plain);
+    run(&mut m, d, plain);
+    (m, c, d)
+}
+
+#[test]
+fn closing_a_cursor_at_rest_drops_its_items_and_keeps_its_id_node_and_labels() {
+    let (mut m, c, d) = two_cursors();
+    m.set_label("scout", d, None).unwrap();
+    m.input(d, Author::Frontend(term()), "hi").unwrap();
+    run(&mut m, d, |j, _| match j {
+        Job::Sample => vec![said("ok")],
+        _ => vec![echo(j)],
+    });
+    let tick = ItemData::Extension {
+        name: "timer".into(),
+        data: "tick".into(),
+    };
+    m.session.add_item(d, tick); // pending, and nothing woke the cursor
+    let node = m.session.at(d).unwrap();
+    m.close(d).unwrap();
+    assert!(m.session.synced(), "close syncs");
+    assert_eq!(m.session.items(d).count(), 0, "its items went with it");
+    assert_eq!(m.session.closed().collect::<Vec<_>>(), [(d, node)]);
+    assert!(!m.session.auto.contains_key(&d));
+    assert_eq!(m.session.label("scout"), Ok(d), "the label stays");
+    assert_eq!(m.session.labels_of(d).collect::<Vec<_>>(), ["scout"]);
+    assert_eq!(
+        m.session.open(node, Author::Core, 0),
+        Ok(2),
+        "ids stay dense: the next cursor is 2"
+    );
+    assert!(m.session.at(c).is_ok(), "the other cursor is untouched");
+}
+
+#[test]
+fn closing_a_busy_cursor_is_busy_and_changes_nothing() {
+    let (mut m, c) = machine();
+    send(&mut m, c, Author::Frontend(term()), "hi");
+    let before = m.session.clone();
+    assert_eq!(m.close(c), Err(Error::Busy(c)));
+    assert_eq!(m.session, before);
+    assert!(m.busy(c));
+}
+
+#[test]
+fn every_call_on_a_closed_cursor_is_refused_as_closed() {
+    let (mut m, _, d) = two_cursors();
+    m.set_label("scout", d, None).unwrap();
+    m.close(d).unwrap();
+    let before = m.session.clone();
+    let closed = Error::Closed(d);
+    let item = ItemData::Extension {
+        name: "x".into(),
+        data: "y".into(),
+    };
+    assert_eq!(m.close(d).unwrap_err(), closed);
+    assert_eq!(m.step(d).unwrap_err(), closed);
+    assert_eq!(m.set_auto(d, true).unwrap_err(), closed);
+    assert_eq!(m.abort(d).unwrap_err(), closed);
+    assert_eq!(m.input(d, Author::Core, "x").unwrap_err(), closed);
+    assert_eq!(m.add_item(d, item, None).unwrap_err(), closed);
+    assert_eq!(m.go_to(d, 0, term(), 0).unwrap_err(), closed);
+    assert_eq!(m.next_job(d).unwrap_err(), closed);
+    assert_eq!(m.answer(d, ok(), 0).unwrap_err(), closed);
+    assert_eq!(m.set_label("other", d, None).unwrap_err(), closed);
+    assert_eq!(m.session, before, "nothing was recorded");
+    assert!(
+        Error::Closed(d).to_string().contains("closed"),
+        "the message says why"
+    );
+    // Allowed: the name of a closed cursor moves, or is forgotten.
+    m.set_label("scout", 0, None).unwrap();
+    m.remove_label("scout", None).unwrap();
+}
+
+#[test]
+fn a_loaded_machine_wakes_only_open_cursors() {
+    let (mut m, c, d) = two_cursors();
+    m.close(d).unwrap();
+    let log = m.session.outbox.clone();
+    let session = tau_core::tree::load(log, m.session.scratchpad().clone()).unwrap();
+    let loaded = Machine::loaded(session);
+    assert!(loaded.busy(c), "an open cursor wakes");
+    assert!(!loaded.busy(d), "a closed one does not");
+    assert_eq!(loaded.session.closed().count(), 1);
+}
+
+#[test]
+fn a_hook_call_on_a_closed_cursor_is_refused_as_closed() {
+    let (mut m, _, d) = two_cursors();
+    m.close(d).unwrap();
+    let before = m.session.clone();
+    let closed = Error::Closed(d);
+    assert_eq!(m.hook_move(d, 0, Author::Core, 0).unwrap_err(), closed);
+    assert_eq!(m.hook_set_auto(d, true).unwrap_err(), closed);
+    assert_eq!(
+        m.hook_write(d, Body::User("x".into()), vec![], Author::Core, 0)
+            .unwrap_err(),
+        closed
+    );
+    assert_eq!(m.session, before, "nothing was recorded");
 }

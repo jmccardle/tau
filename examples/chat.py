@@ -292,7 +292,11 @@ async def main(name: str, loaded: LoadedConfig) -> None:
     driver = Driver(session, providers, loaded.catalog, extensions=[Demo(), StepLimit()])
     driver.start()
     client = driver.client("chat:line")
-    chat = Chat(client, session.cursors()[0], partial(print, end="", flush=True), prompt)
+    # Every cursor may have been closed (D17): restart the first, which keeps its labels.
+    cursor = (
+        session.cursors()[0] if session.cursors() else await client.reopen(session.closed()[0][0])
+    )
+    chat = Chat(client, cursor, partial(print, end="", flush=True), prompt)
     await chat.refresh()
     await client.watch([chat.cursor])
     listener = asyncio.create_task(chat.listen())

@@ -48,6 +48,12 @@ fn replay(s: &mut Session, r: Record) -> Result<(), Error> {
             }
             Ok(())
         }
+        Record::Close { cursor } => {
+            s.at(cursor)?;
+            s.auto.remove(&cursor);
+            s.closed.insert(cursor);
+            Ok(())
+        }
         Record::Sync { .. } => Ok(()),
     }
 }
@@ -67,10 +73,12 @@ fn replay_move(s: &mut Session, m: Move) -> Result<(), Error> {
     Ok(())
 }
 
-/// What load does after replay (I7): every cursor at rest with auto-step
-/// off, and every item a node delivers dropped.
+/// What load does after replay (I7): every open cursor at rest with auto-step
+/// off, and every item a node delivers, or addressed to a closed cursor, dropped.
 pub fn reconcile(s: &mut Session) {
     s.auto.values_mut().for_each(|a| *a = false);
+    let closed = s.closed.clone();
+    s.pad.items.retain(|i| !closed.contains(&i.to));
     let delivered: Vec<ItemId> = s
         .tree
         .nodes

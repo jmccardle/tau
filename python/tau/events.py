@@ -3,8 +3,9 @@
 A provider's `sample` stream yields deltas (no cursor: the provider does not know which
 cursor it serves), and a running tool reports `ToolProgress` through its `progress` callback.
 The driver wraps each as a `Live` naming the cursor. Everything else a client hears is state
-sent whole whenever it changes: `CursorView` per cursor, `Labels`, the nodes `Appended`, and a
-`Notice` for one client. A stream opens with a `CursorView` per cursor and `Labels`. Every event
+sent whole whenever it changes: `CursorView` per open cursor (or `CursorGone` once it is closed),
+`Labels`, the nodes `Appended`, and a `Notice` for one client. A stream opens with a `CursorView`
+per open cursor, a `CursorGone` per closed one, and `Labels`. Every event
 is a plain frozen value, compared by value. A `CursorView` holds its questions' schemas, which
 are dicts, so it is not hashable: a frontend keys on `cursor`, not on the event.
 """
@@ -117,6 +118,16 @@ class CursorView:
 
 
 @dataclass(frozen=True)
+class CursorGone:
+    """Cursor `cursor` is closed (D17): a client drops its view of it. `at` is the node it was
+    last at, for restarting (`reopen`). A cursor has one state event at a time: its `CursorView`
+    while open, this after it closes. Labels may still name it: they are its restart record."""
+
+    cursor: int
+    at: int
+
+
+@dataclass(frozen=True)
 class Labels:
     """Every label and the cursor it is on, in label order."""
 
@@ -137,7 +148,7 @@ class Notice:
     text: str
 
 
-Event = Live | CursorView | Labels | Appended | Notice
+Event = Live | CursorView | CursorGone | Labels | Appended | Notice
 
 
 class CutOff(ConnectionError):

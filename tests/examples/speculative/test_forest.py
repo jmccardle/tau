@@ -114,10 +114,8 @@ async def test_n_cursors_sample_at_once_and_the_main_cursor_goes_to_the_best_lea
     assert h.session.cursor(h.cursor).at == 20
     assert h.notices()[0].startswith("round 1: [0.2, 0.9, 0.5], 6/12")
     assert len(h.notices()) == 2
-    assert len(h.session.cursors()) == 1 + 12, (
-        "12 samples opened 12 cursors, and nothing closes them"
-    )
-    assert not any(h.session.cursor(c).busy for c in h.session.cursors())
+    assert h.session.cursors() == [h.cursor], "each branch is closed once its reply is read"
+    assert len(h.session.closed()) == 12, "12 samples opened 12 cursors"
     await h.close()
 
 

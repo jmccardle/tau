@@ -237,7 +237,8 @@ call ids) over a whole walk, for tests. `append` checks each node (`Tree::check`
 ### Error
 *spike* `tree::Error`
 
-Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
+Core's refusals: `NoSuchNode`, `NoSuchCursor`, `Closed` (a call on a closed cursor; Python
+`CursorClosed`, a subclass of `NoSuchCursor`), `NoSuchLabel`,
 `DuplicateCall` (V2: a `Results` or `Assistant` node naming a call id twice; checked
 on every append and write), `BadRecord` (load); a driver's: `WrongAnswer`
 (an answer to no job: none is out, it is of another kind, or it
@@ -260,7 +261,8 @@ there is no common base class.
 
 A session's persistent, modifiable list of items, off the tree. A
 **cursor's scratchpad** is the items addressed to it, oldest first. Anyone
-may add, update, or remove any item; adding one wakes its cursor.
+may add, update, or remove any item; adding one wakes its cursor. Closing a cursor removes
+its items, in the same sync as the `Close` record.
 
 ### item
 *spike* `Item`, `ItemId`, `ItemData` · new
@@ -307,7 +309,8 @@ driver, to one client or to all.)
 `TURN_CURSOR`, `TurnFrame`
 
 An insertion point. Its only flag is auto-step. It carries no settings and
-no queue. Cursors do not close (Q12).
+no queue. A cursor can be **closed** (D17; it was Q12): it keeps its id and its last node, and
+leaves `cursors()`.
 
 ### at
 *spike* `Session::at` · retires leaf, `pre_turn_leaf`
@@ -378,20 +381,21 @@ A new session copying `walk(n)` from another. Never inside one session.
 
 A unique string naming one cursor; a cursor may have several. Set, moved,
 and removed by **label records** `{label, cursor?}`; setting a label already
-on that cursor writes nothing.
+on that cursor writes nothing. A label stays on a **closed cursor** as its restart record; it
+can be moved off or removed, but not set onto one (`CursorClosed`).
 
 ### machine
 *spike* `machine::Machine` · new
 
 The session plus every cursor's step: the frontend calls (`input`,
-`step`, `go_to`, `set_auto`, `abort`), the extension calls (`open`,
+`step`, `go_to`, `set_auto`, `abort`, `close`, which is refused with `Busy` unless the cursor is at rest (D17)), the extension calls (`open`,
 `add_item`, `remove_item`, `append`, `set_label`, `remove_label`), a hook's
 own-cursor calls (`hook_move`, `hook_write`, `hook_set_auto`), and
 `next_job`/`answer` per cursor. Each extension call takes `hook: Option<CursorId>`,
 the cursor whose hook makes it: it syncs on return unless a cursor hook job
 is out for that cursor (then the phase's sync covers it); a frontend or the
 driver passes `None`. `abort`, `next_job`, `answer` check the cursor:
-`NoSuchCursor`. Holds a busy go-to until its aborted step
+`NoSuchCursor`, or `Closed` for a closed one. Holds a busy go-to until its aborted step
 rests (`going`). Each frontend call syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
 Also `set_label` and `remove_label` (which sync on return), `Machine::loaded(session,
@@ -409,13 +413,14 @@ GIL released; every call that changes the session then gives the store its
 queued records before it returns, so Python never saves. An in-memory
 session drops them. A failed save is a crash: the call raises the OS error
 and the session closes itself (see **close**). Cursor ids are checked
-by core: an unknown one is `NoSuchCursor`. The value classes have a `__repr__`
+by core: an unknown one is `NoSuchCursor`, a closed one `CursorClosed`. `close_cursor(cursor)` is
+the core call (`Busy` unless the cursor is at rest); the waiting is the driver's. The value classes have a `__repr__`
 (the Rust `Debug` text).
 The calls are the machine's (**machine**) with these differences. `send` is
 not one: it was `input` plus auto-step on, which a frontend does itself
 (`input`, then `set_auto(cursor, True)`; `Driver.send` does both). The reads
 are `tree` (a **Tree**, the nodes), `cursor(c)` (a **CursorState**, one
-cursor), `cursors()` (the open cursors), `label(l)` and `labels()` (the labels),
+cursor), `cursors()` (the open cursors), `closed()` (each closed cursor and its last node, in id order), `label(l)` and `labels()` (the labels),
 and `take_notices()` (drains the notices). There is no whole-scratchpad read
 (`scratchpad()` repeated every cursor's `items`) and no `dropped()`.
 
@@ -435,8 +440,10 @@ Its `repr` shows the cursor, `at`, `auto`, `busy`, `next`, and the item and
 label counts, never the session behind it. Not the hook's `Cursor` handle,
 which acts; this only reads.
 
-### close, Closed
+### close, Closed (the session's)
 `Session.close`, `tau.Closed` · new
+
+(Closing a *cursor* is **close (a cursor)**.)
 
 Drops the store and releases the lease without writing what is not yet
 synced, as a crash would. Every later call, a second `close` included,
@@ -451,6 +458,64 @@ Not core's: a binding-level guard so a core bug (a panic) is not followed by
 more calls on possibly torn state. The call that panicked raises
 `PanicException` (pyo3's, a `BaseException`); every call after it raises
 `Poisoned`. Load the session again.
+
+### close (a cursor), closed cursor, Close
+*spike* `Session::close`, `Machine::close`, `Session::closed`, `Record::Close { cursor }`,
+`Error::Closed` · D17 · new
+
+Closing a cursor appends a **`Close { cursor }` record** to the log (a tombstone, with no `by` or
+`time`) and takes the cursor out of play. A **closed cursor** keeps its id (ids stay dense:
+`open` takes `at.len()`), its last node (still in `at`), its labels, and its moves. It leaves
+`cursors()` and the clients' views, is not woken on load, and has no auto-step. Its pending items
+are removed in the same sync, so none sits in the scratchpad addressed to a cursor that can
+never take it. `Machine::close` is refused with `Busy` unless the cursor is at rest, and aborts
+nothing: the driver aborts and waits first (**close_cursor**). `Session::closed()` lists
+`(cursor, last node)` for each closed cursor, in id order. Every other call on a closed cursor
+fails early with `Error::Closed(cursor)` ("cursor 3 is closed"), checked once in `Session::at`
+(`input`, `send`, `add_item`, `step`, `set_auto`, `go_to`, `abort`, the hook calls, `next_job`,
+`answer`, `cursor(c)`, `watch`, `rest`, a second `close`, and `set_label` onto it); allowed are
+`label(l)` for a label on it, moving that label off, and `remove_label`. Replay applies the same
+rule: a record after the `Close` that names the cursor, a second `Close`, or a `Close` of a
+cursor never opened is `BadRecord`. `reconcile` drops items addressed to a closed cursor, which
+covers a crash between the log's sync and the scratchpad's rewrite. The file `VERSION` is
+unchanged: `Close` is an additive record. Closing the last open cursor is allowed.
+
+### CursorClosed
+`tau.CursorClosed(NoSuchCursor)` · D17 · new
+
+The Python form of `Error::Closed`. A subclass of `NoSuchCursor`, so code that catches that
+still works; the name and message ("cursor 3 is closed") say the id is real and its last node is
+in `closed()`. Not `Closed`, which is the session's.
+
+### close_cursor
+`Client.close_cursor(cursor)`, `TreeHandle.close_cursor(cursor)` (async), `Session.close_cursor`
+(the core call) · D17 · new
+
+Abort the cursor's step as `abort` does (cancel the effect, stop its command, decline open
+questions), wait for it to rest, then `Session.close_cursor`. If the cursor woke in between
+(a sync tool on a worker thread added an item), core's `Busy` sends the driver round again; each
+round aborts what woke it and waits for a rest, so it never spins. Anyone waiting on the cursor
+sees the abort: a `rest` already waiting returns `Aborted`. A tree handle refuses its own
+cursor (`ValueError`), as `rest` and `abort` do: closing it would wait on itself. Driver memory
+for the cursor is dropped when the close lands (its view, last ending and hook error, and the
+question decline mark). The name is not `close` because `Client.close()` and `Session.close()`
+mean something else.
+
+### reopen
+`Client.reopen(cursor)`, `TreeHandle.reopen(cursor)` -> the new cursor id · D17 · new
+
+`open(at=` the closed cursor's last node `)` plus moving each of its labels onto the new cursor.
+Composed in the driver, not core. `NoSuchCursor` if the cursor is not closed (open, or never
+opened). The new cursor is opened by the client, or by the handle's extension.
+
+### CursorGone
+`tau.CursorGone(cursor, at)` (`events.py`) · D17 · new
+
+The state event for a closed cursor: the client drops its `CursorView`, and `at` is the last node,
+for restarting. A cursor has one state event at a time: its `CursorView` while open, its
+`CursorGone` after. In a **Feed** buffer it replaces that cursor's `CursorView`. The connect
+snapshot sends one per closed cursor, before `Labels`, so a label never names a cursor the
+client has not been sent. There is no `Closed` or `Removed` delta on `CursorView`.
 
 ### busy, at rest
 *spike* `Machine::busy`, `Step::resting` · new
@@ -664,8 +729,8 @@ every outcome lost (D4). Input goes under it; a step re-runs it.
 ### reconcile
 *spike* `Session::reconcile` · new
 
-What load does after replay: every cursor's auto-step off, and every
-delivered item dropped (I7).
+What load does after replay: every open cursor's auto-step off, and every
+delivered item dropped, and every item addressed to a closed cursor (I7).
 
 ### load
 *spike* `tree::load(records, scratchpad)` · new
@@ -1003,7 +1068,8 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`, and `send(to, text)` (an *input* for cursor `to` authored by this extension,
+`remove_label`, `closed()` (each closed cursor and its last node), `reopen(cursor)` (see
+**reopen**), and `send(to, text)` (an *input* for cursor `to` authored by this extension,
 `Extension(name)`, with `to`'s auto-step turned on, as `Client.send` does: the other cursor's
 model is given the text as a `User` message; it needs no client). A cursor is oblivious to its
 clients: no handle has a **client**. Each write tells the driver (`Changed`), which publishes the difference to its
@@ -1013,9 +1079,11 @@ returns the *ending* of the cursor's last step once it is at rest with no effect
 `rest` may return that earlier step's ending with the input still pending, so `rest` before
 `send` to be sure), or `None` if that is not known (it has not stepped since the session was loaded; endings are not
 persisted), and `abort(cursor)` aborts its step as a client's `abort` does (cancels the sample
-or calls, stops a command, declines open questions), safe from a sync tool's worker thread. `rest` is async only, so a sync
-tool cannot call it. Both refuse (`ValueError`) the handle's own cursor (a cursor handle's `id`,
-a node handle's `cursor_id`): waiting on itself would never end, and aborting itself would cancel
+or calls, stops a command, declines open questions), safe from a sync tool's worker thread: it hops onto the loop and waits for it, and
+raises `RuntimeError` if the loop is closed or not running. `close_cursor(cursor)` (see
+**close_cursor**) closes a cursor once it is aborted and at rest. `rest` and `close_cursor` are async only, so a sync
+tool cannot call them. All three refuse (`ValueError`) the handle's own cursor (a cursor handle's `id`,
+a node handle's `cursor_id`): waiting on or closing itself would never end, and aborting itself would cancel
 the call; a tree handle with no cursor of its own refuses none. A cycle (A's tool waits on B
 while B waits on A) is not detected: the user's abort is the way out. A node handle adds `ask` (to its batch's cursor) and `cursor_id`, the id of the cursor
 whose batch it is (`id` is the batch's node; `TreeHandle.cursor(c)` already reads a cursor's
@@ -1779,8 +1847,8 @@ buffer=256)`; `client.py`) · D16 · new
 
 A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
 act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`,
-`set_label(cursor, label)`, `remove_label`, each with the client's id as `by: Frontend(id)` where
-the driver takes one; `go_to` and `abort` return nothing), `watch`, `answer`, `commands`, `run`
+`set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
+the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
 (extension)*, */config*, *complete*), the reads `node`, `walk`, `children`, `close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
@@ -1806,7 +1874,7 @@ driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`
 The driver's side of each call of the `Client` protocol: it holds the session, hub, questions and
 commands, and implements `connect`, `watch`, `input`, `send`, `step`, `go_to`, `abort`,
 `set_auto`, `open`, `add_item`, `set_label`, `remove_label`, `answer`, `forms`, `run`, `configure`,
-`options` and `complete`. `LocalClient` calls it; the calls are documented once, on `Client`.
+`options` and `complete`, and `close_cursor` and `reopen` (D17). `LocalClient` calls it; the calls are documented once, on `Client`.
 `frontend(check, hub, poke)` is the wrapper a call that changes the session runs in: check the
 driver is running, change, publish what changed, wake the pump. It exists so that `Driver` has no
 call a frontend makes.
@@ -1814,12 +1882,12 @@ call a frontend makes.
 ### event
 `tau.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
 
-What a client hears: `Live | CursorView | Labels | Appended | Notice`. Small state
+What a client hears: `Live | CursorView | CursorGone | Labels | Appended | Notice`. Small state
 is sent whole whenever it changes, to every client, for every cursor; `Live` goes to clients
 watching the cursor and `Notice` to one client. Observers cannot change anything. One ordered
 stream per client: a change's `Appended` comes before the `CursorView` that points at its
 nodes, and a `CursorView` or `Labels` that replaces an earlier copy removes it
-and goes to the end. A stream opens with a `CursorView` per cursor and `Labels`; the nodes are
+and goes to the end. A stream opens with a `CursorView` per open cursor, a `CursorGone` per closed one, and `Labels`; the nodes are
 not in it (a node never changes, so a client reads the ones it needs by id with `walk`, and
 ignores an `Appended` node it has already read). Events are compared by value; a `CursorView`
 holds schemas (dicts), so it is not hashable. Status (`cursor.show`) is not built.
@@ -1883,12 +1951,13 @@ the result arrives as `Appended`.
 
 The driver's clients. `Hub.sync` is the one place state events are made: it compares the
 session, the driver's questions, and the steps' endings with what it last published and sends
-the difference (new nodes, then each changed `CursorView`, then `Labels`, then notices). The
+the difference (new nodes, then each changed `CursorView`, then a `CursorGone` for each cursor closed since,
+then `Labels`, then notices). The
 driver calls it after each client call, each pump pass, each handle write, and each question
 opened or closed. `Hub.connect` publishes what is pending, then builds the snapshot from what
 was published, so subscribing and the snapshot are one act. A **Feed** is one client's stream:
 its buffer holds at most `buffer` `Live` and `buffer` of `Appended` and `Notice`, plus one state
-event per cursor and one `Labels`; a `Live` that finds its share full is dropped,
+event per cursor (its `CursorView`, or the `CursorGone` that replaces it) and one `Labels`; a `Live` that finds its share full is dropped,
 and an `Appended` or `Notice` that finds its share full cuts the client off. One consumer: a
 second concurrent `anext` raises `RuntimeError`.
 
@@ -1989,9 +2058,9 @@ A cancelled unit reports nothing.
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
-`open_questions`, `waiting` (effects with a handle `rest` out: such an effect is parked until
-that cursor rests, however many cursors it waits on at once, so a harness counts it beside a held
-gate), and `failure` (what the pump or an effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
+`open_questions`, `parked` (effects parked in the driver: one with a question open, or a handle's
+`rest` or `close_cursor` out, waits for an answer or another cursor, and counts once however
+many of those it has out, so a harness counts it beside a held gate), and `failure` (what the pump or an effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
 needs the session open.
 
 ### poke
@@ -2054,6 +2123,7 @@ move time themselves.
 
 What must be made durable, in order, queued in `Session::outbox`:
 `Write { node, mv }` (a node and its move, one record), `Move`, `Label`,
+`Close { cursor }` (a cursor is closed; see **close (a cursor)**; additive, so `VERSION` is unchanged),
 or `Sync { pad }` (a sync point; `pad` is the scratchpad as it stands there,
 if it changed since the last sync, for the store's scratchpad file — never
 written to the log).
