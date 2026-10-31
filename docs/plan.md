@@ -18,8 +18,9 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **built, awaiting sign-off**: driver, `@tool`, base tools, D13 config, D15 providers and events (accepted 2026-10-30). Exit review `docs/as-built/phase4/` (2026-10-30): four layered reviews, two fix waves, re-reviewed; the ratchet now covers `python/`. Waiting on John's sign-off. |
-| 5–7 | not started. |
+| 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
+| 5 extensions | **next**: opens with D16 (clients and asking, draft 2026-10-30). |
+| 6–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
 - writes happen inside the Rust call; persistence is not a job (D11);
@@ -217,6 +218,14 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   languages.
 
 ### Phase 5: extensions that prove the model
+**First, D16** (`decisions/D16-clients-and-asking.md`): the `Client` protocol (local and
+remote, one contract), whole cursor state to every client with a snapshot on connect,
+`Appended` instead of `Saved`, questions with ids, targets and schemas, `@command` and
+extension config as forms, completion from fixed values and named formats. Built in its
+order (Consequences), then the extensions below use it: permissions is the first typed
+question, compaction and prune the first commands. A small chat example is the hands-on
+client. Carried from Phase 4: trust's hash scope once `.tau/` holds hooks.
+
 Compaction (warm in-context summary; cold summary on a detached root; branch
 from the deepest verbatim prefix), prune, sub-agent, permissions (`pre_tool`
 asks through `cursor.ask`), debug frontend (auto-step off), and optionally

@@ -186,4 +186,14 @@ pass, 4 skip; `scripts/check.sh` green including both ratchets.
 | behavior suite green except later-phase tests | **met**: 831 passed; the coverage list is ticked, with one item for Phase 5 (approval in `pre_tool`) and one for Phase 6 (client detach) |
 | as-built review on `python/` | **met**: this page, two fix waves, re-reviewed |
 | a traced turn across both languages | **met**: `traces/summary.md` (measured before the waves) |
-| sign-off | **John** |
+| sign-off | **met**: John, 2026-10-30 |
+
+### At sign-off (2026-10-30)
+
+- `Stop.Refused` removed: refusals end `End`, the provider's raw reason kept (`055aab2`).
+- D15's Open list closed or deferred: no timeout option until someone needs one; a
+  provider used from a second event loop fails the sample instead of leaking a client; a
+  call cut off by a cancel is saved as it arrived.
+- The frontend contract (questions were polled, `Saved` means "go read the tree", no
+  snapshot on subscribe) is redesigned for many networked clients in
+  `docs/design/decisions/D16-clients-and-asking.md` (draft), Phase 5's first step.
