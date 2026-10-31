@@ -19,7 +19,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
-| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 6. |
+| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 6. Next: `plan-phase5-fixes.md` (proposed 2026-10-31), the fix list from the speculative extensions. |
 | 6–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
