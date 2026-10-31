@@ -43,7 +43,6 @@ from tau_next import (
     Driver,
     Finish,
     LoadedConfig,
-    LocalClient,
     ModelConfig,
     Node,
     Part,
@@ -140,7 +139,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             driver = Driver(session, providers, loaded.catalog, clock=clock)
             driver.start()
             cursor = session.cursors()[0]
-            await LocalClient(driver, "example").send(cursor, "What is 17 times 3? Answer briefly.")
+            await driver.client("example").send(cursor, "What is 17 times 3? Answer briefly.")
             await rest(driver, session, cursor)
             reply = session.tree.node(session.cursor(cursor).at).body
             await driver.stop()

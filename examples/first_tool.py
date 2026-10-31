@@ -17,19 +17,16 @@ from tau_next import (
     Body,
     Driver,
     LoadedConfig,
-    LocalClient,
     Session,
     StepLimit,
     SystemClock,
     builtin_providers,
     model_config,
-    tool,
 )
 
 PHRASE = "violet anchor 42"
 
 
-@tool
 def read_file(path: Annotated[str, "path of the file to read"]) -> str:
     """Read a text file and return its contents."""
     return Path(path).read_text()
@@ -70,7 +67,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             )
             driver.start()
             cursor = session.cursors()[0]
-            await LocalClient(driver, "example").send(
+            await driver.client("example").send(
                 cursor, f"Read the file {secret} and tell me the secret phrase."
             )
             await rest(driver, session, cursor)

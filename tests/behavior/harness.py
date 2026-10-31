@@ -28,8 +28,10 @@ from tau_next import (
     ModelCatalog,
     Node,
     Notice,
+    Outcome,
     Part,
     Session,
+    Stop,
     Tool,
 )
 
@@ -66,7 +68,7 @@ class Harness:
         session: Session,
         provider: FakeProvider,
         catalog: ModelCatalog,
-        tools: Sequence[Tool],
+        tools: Sequence[Tool | Callable[..., object]],
         extensions: Sequence[Extension],
         clock: FakeClock,
         gates: Sequence[Gate],
@@ -94,7 +96,7 @@ class Harness:
             clock=self.clock,
         )
         driver.start()
-        self.client = LocalClient(driver, CLIENT)
+        self.client = driver.client(CLIENT)
         self._listener = asyncio.ensure_future(self._listen(self.client))
         return driver
 
@@ -116,7 +118,7 @@ class Harness:
         system: str = "sys",
         provider: FakeProvider | None = None,
         catalog: ModelCatalog | None = None,
-        tools: Sequence[Tool] = (),
+        tools: Sequence[Tool | Callable[..., object]] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
@@ -144,7 +146,7 @@ class Harness:
         *,
         provider: FakeProvider | None = None,
         catalog: ModelCatalog | None = None,
-        tools: Sequence[Tool] = (),
+        tools: Sequence[Tool | Callable[..., object]] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
@@ -175,19 +177,24 @@ class Harness:
     async def step(self, cursor: int | None = None) -> None:
         await self.client.step(self._c(cursor))
 
-    async def abort(self, cursor: int | None = None) -> bool:
-        return await self.client.abort(self._c(cursor))
+    async def abort(self, cursor: int | None = None) -> None:
+        await self.client.abort(self._c(cursor))
 
-    async def go_to(self, to: int, cursor: int | None = None) -> bool:
-        return await self.client.go_to(self._c(cursor), to)
+    async def go_to(self, to: int, cursor: int | None = None) -> None:
+        await self.client.go_to(self._c(cursor), to)
 
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
         await self.client.set_auto(self._c(cursor), on)
 
     async def run(
         self, command: str, args: Mapping[str, object] | None = None, cursor: int | None = None
+    ) -> str | None:
+        return await self.client.run(self._c(cursor), command, args or {})
+
+    async def configure(
+        self, extension: str, values: Mapping[str, object], cursor: int | None = None
     ) -> None:
-        await self.client.run(self._c(cursor), command, args or {})
+        await self.client.configure(self._c(cursor), extension, values)
 
     async def respond(self, value: object, cursor: int | None = None) -> None:
         """Answer the cursor's oldest open question."""
@@ -212,7 +219,7 @@ class Harness:
         self, client: str, *, buffer: int = 256, watching: Collection[int] = ()
     ) -> LocalClient:
         """Another client, connected now and watching `watching`. Close it to disconnect."""
-        connected = LocalClient(self.driver, client, buffer=buffer)
+        connected = self.driver.client(client, buffer=buffer)
         if watching:
             await connected.watch(watching)
         return connected
@@ -220,7 +227,7 @@ class Harness:
     async def view(self, cursor: int | None = None) -> CursorView:
         """The cursor as a client connecting now is told of it."""
         target = self._c(cursor)
-        async with LocalClient(self.driver, f"{CLIENT}:view") as late:
+        async with self.driver.client(f"{CLIENT}:view") as late:
             async for event in late:
                 if isinstance(event, CursorView) and event.cursor == target:
                     return event
@@ -313,13 +320,45 @@ def say(text: str) -> Reply:
     return Reply([Part.Text(text)])
 
 
-def build(extensions: list[object]) -> None:
-    """A driver over `extensions`, built and dropped: what building refuses."""
+def build(extensions: list[object], tools: Sequence[object] = ()) -> None:
+    """A driver over `extensions` and `tools`, built and dropped: what building refuses."""
     session = Session.create(FAKE_CONFIG, "sys", 0, Path(tempfile.mkdtemp()) / "s")
     try:
-        Driver(session, {"fake": FakeProvider([])}, fake_catalog(), extensions=extensions)  # pyright: ignore[reportArgumentType]
+        Driver(
+            session,
+            {"fake": FakeProvider([])},
+            fake_catalog(),
+            tools=tools,  # pyright: ignore[reportArgumentType]
+            extensions=extensions,  # pyright: ignore[reportArgumentType]
+        )
     finally:
         session.close()
+
+
+async def offered(tmp_path: Path, *tools: object) -> tuple[Tool, ...]:
+    """The tools a sample is offered when the driver is given `tools` (functions or `Tool`s)."""
+    provider = FakeProvider([Reply([Part.Text("ok")])])
+    h = await Harness.create(Path(tempfile.mkdtemp(dir=tmp_path)), provider=provider, tools=tools)  # pyright: ignore[reportArgumentType]
+    await h.send("hi")
+    await h.settle()
+    await h.close()
+    return provider.requests[0].tools
+
+
+async def called(tmp_path: Path, function: object, args_raw: str) -> Outcome:
+    """What the model is told when it calls the function `function` with `args_raw`."""
+    name: str = function.__name__  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType]
+    provider = FakeProvider(
+        [Reply([Part.Call("c", name, args_raw)], Stop.Tools), Reply([Part.Text("ok")])]
+    )
+    where = Path(tempfile.mkdtemp(dir=tmp_path))
+    h = await Harness.create(where, provider=provider, tools=[function])  # pyright: ignore[reportArgumentType]
+    await h.send("go")
+    await h.settle()
+    results = h.bodies()[-2]
+    await h.close()
+    assert isinstance(results, Body.Results)
+    return results.outcomes[0][1]
 
 
 def scenario[**P](fn: Callable[P, Coroutine[Any, Any, None]]) -> Callable[P, None]:

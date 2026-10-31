@@ -4,13 +4,15 @@ A provider's `sample` stream yields deltas (no cursor: the provider does not kno
 cursor it serves), and a running tool reports `ToolProgress` through its `progress` callback.
 The driver wraps each as a `Live` naming the cursor. Everything else a client hears is state
 sent whole whenever it changes: `CursorView` per cursor, `Labels`, the nodes `Appended`, and a
-`Notice` for one client. `Connected` opens every stream. Every event is a plain frozen value.
+`Notice` for one client. A stream opens with a `CursorView` per cursor and `Labels`. Every event
+is a plain frozen value, compared by value. A `CursorView` holds its questions' schemas, which
+are dicts, so it is not hashable: a frontend keys on `cursor`, not on the event.
 """
 
 from dataclasses import dataclass
 
 from tau_next._core import Ending, Item, Node
-from tau_next.values import Json
+from tau_next._values import Json
 
 
 @dataclass(frozen=True)
@@ -134,18 +136,10 @@ class Notice:
     text: str
 
 
-@dataclass(frozen=True)
-class Connected:
-    """The first event of a stream: the tree holds `nodes` nodes (ids `0..nodes`). Those a
-    client reads with calls; those from `nodes` on arrive as `Appended`. A `CursorView` per cursor
-    and then `Labels` follow."""
-
-    nodes: int
+Event = Live | CursorView | Labels | Appended | Notice
 
 
-Event = Live | CursorView | Labels | Appended | Notice | Connected
-
-
-class CutOff(RuntimeError):
+class CutOff(ConnectionError):
     """The stream of a client that fell too far behind ended: its `Appended` and `Notice` backlog
-    passed the buffer. Connect again for a fresh snapshot."""
+    passed the buffer. Like every stream that ends in error, it is a `ConnectionError`: connect
+    again for a fresh snapshot."""

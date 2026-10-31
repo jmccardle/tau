@@ -6,7 +6,7 @@ from pathlib import Path
 from harness import scenario
 from wire import EACH, Dialect, Server, bodies, collect, running, sse_text, walk_of
 
-from tau_next import Author, Body, LocalClient, Outcome, Part, SampleError, Stop
+from tau_next import Author, Body, Outcome, Part, SampleError, Stop
 
 BATCH = Body.Assistant([Part.Call("a", "ta", "{}")], Stop.Tools, None)
 WRONG_IDS = Body.Results([("zz", Outcome.Ok("v"), Author.Tools())])
@@ -37,8 +37,8 @@ async def test_the_driver_records_that_failure_as_a_sample_error_at_the_next_sam
         user = session.append(at, Body.User("go"), Author.Core(), 0)
         batch = session.append(user, BATCH, Author.Core(), 0)
         results = session.append(batch, WRONG_IDS, Author.Core(), 0)
-        await LocalClient(driver, "test").go_to(cursor, results)
-        await LocalClient(driver, "test").send(cursor, "again")
+        await driver.client("test").go_to(cursor, results)
+        await driver.client("test").send(cursor, "again")
         await driver.rest(cursor)
         assert server.requests == []
         errors = [

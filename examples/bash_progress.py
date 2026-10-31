@@ -24,7 +24,6 @@ from tau_next import (
     Driver,
     Finish,
     Live,
-    LocalClient,
     ModelConfig,
     Node,
     Part,
@@ -79,7 +78,7 @@ async def main() -> None:
         driver = Driver(session, {"scripted": provider}, catalog, tools=tools, clock=clock)
         driver.start()
         cursor = session.cursors()[0]
-        client = LocalClient(driver, "example")
+        client = driver.client("example")
         await client.watch([cursor])
         start = time.monotonic()
 

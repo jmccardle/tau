@@ -15,9 +15,9 @@ from tau_next import (
     CallDraft,
     Client,
     Cursor,
+    DefinitionError,
     Ending,
     Event,
-    ExtensionContractError,
     NodeHandle,
     Outcome,
     Part,
@@ -325,7 +325,7 @@ async def test_a_complete_sample_answered_after_an_abort_stays_a_complete_reply(
     await h.settle()
     gate.release()
     await asyncio.sleep(0)  # the provider finishes; the driver has not yet taken its answer
-    assert await h.abort()
+    await h.abort()
     await h.settle()
     assert h.bodies()[-1] == Body.Assistant([Part.Text("whole")], Stop.End)
     assert recorder.endings == [Ending.Aborted()]
@@ -356,7 +356,7 @@ class Bare:
 async def test_a_bad_extension_is_refused_when_the_driver_is_built(
     tmp_path: Path, extensions: list[object], needle: str
 ) -> None:
-    with pytest.raises(ExtensionContractError, match=needle):
+    with pytest.raises(DefinitionError, match=needle):
         await Harness.create(tmp_path, extensions=extensions)  # type: ignore[arg-type]
 
 
@@ -557,7 +557,7 @@ async def test_a_panic_in_the_pump_fails_the_driver_and_ends_the_streams(tmp_pat
     clock.error = Panic("core panicked")  # the answer to the sample asks the clock
     with pytest.raises(RuntimeError, match="Panic: core panicked"):
         await asyncio.wait_for(h.driver.rest(h.cursor), 1)
-    with pytest.raises(RuntimeError, match="Panic: core panicked"):
+    with pytest.raises(ConnectionError, match=r"^RuntimeError: Panic: core panicked$"):
         await asyncio.wait_for(read_all(stream), 1)  # what was buffered, then the failure
     with pytest.raises(RuntimeError, match="Panic"):
         await h.step()

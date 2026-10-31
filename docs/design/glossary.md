@@ -683,9 +683,8 @@ entry, `CONFIG_KEYS`, `Settings`, model entry
 How a step runs. Its data is a JSON object with at most two keys: `"model"`, a qualified
 name, and `"extensions"`, `{"<extension>": {"<option>": value}}` (D16 §4). It names a model
 and holds nothing resolved from the config files (no URL, no key variable, no settings;
-D13). A node holds just what it changes: `Cursor.configure(model=..., extensions=...)` and
-`model_config(name, extensions)` / `config_node(model, extensions)` (`tau_next._config`) build
-it, and `config_fields(config)` reads it back, raising `ConfigError` for any other shape (a
+D13). A node holds just what it changes: `Cursor.set_model(model)`, `Cursor.set_options(**changes)`
+and `model_config(model=None, extensions=None)` (`tau_next._config`, the one builder) build it, and `config_fields(config)` reads it back, raising `ConfigError` for any other shape (a
 key other than those two, a `model` that is not a non-empty string, `extensions` that are not
 an object of objects). `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
 node when it is added (`Session::configs`), so it costs the same at any depth; core reads
@@ -763,11 +762,11 @@ error; it finds and trusts no file. It returns a **`ModelCatalog`**: `models`
 (qualified name to **`ResolvedModel`**: the `ModelConfig` and one **`Origin`**
 per key, the layer, file path or `"cli"`, and the group that set it, `None`
 for the model itself), `default_model`, `warnings`, and `extensions` (the merged `extensions.<name>` objects of the
-layers, per option; checked by `check_options`, not by the loader: it does not know the
+layers, per option; checked by `check_config`'s `extensions`, not by the loader: it does not know the
 extensions). `find(name)` returns the
 qualified names matching a qualified or bare name (0, 1, or many: the caller
 decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
-origins. `check_config(user, project, cli, environ, *, providers)` (`providers`: the
+origins. `check_config(user, project, cli, environ, *, providers, extensions=())` (`providers`: the
 driver's map of name to provider, required) accepts exactly those provider names and
 adds each provider's `check(model)` problems for every model naming it (at the
 model's path, as `model 'x' (mock): ...`). It returns every
@@ -922,9 +921,9 @@ config file. A refused file (symlink, not a regular file) is reported under its 
 `tau trust` shows a malformed `.env`. A trusted one is checked from the approved
 text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
 0 otherwise (warnings print). It then checks the `extensions` options of the extensions the
-command knows (`check_options`; today `StepLimit`, so `extensions.step_limit.limit: 0` is an
-error). The command loads no extensions of a project, so their options are checked where they
-are loaded: a program that builds its driver calls `check_options(catalog, extensions)`.
+command knows (`check_config(..., extensions=(StepLimit(),))`, so `extensions.step_limit.limit: 0`
+is an error). The command loads no extensions of a project, so their options are checked where they
+are loaded: a program that builds its driver passes them as `extensions`.
 `--show MODEL` (after a check with no errors; warnings are fine) selects as
 `select_model` does and prints the qualified name, then each resolved key, its
 value, and `[file or cli or default, group G]`. A literal `api_key` shows as
@@ -958,7 +957,7 @@ on; a string stops. Hooks at a point run in `config_at(at)` order.
 `pre_tool`, `pre_result` (tool hooks, run by the driver inside `RunCalls`). Python
 names them as strings: `protocols.CURSOR_POINTS` and `protocols.TOOL_POINTS`. An
 extension attribute named `pre_*` or `post_*` that is not one of these is refused when the
-driver is built (see **ExtensionContractError**), so a misspelt hook cannot sit silent. The
+driver is built (see **check_extensions**), so a misspelt hook cannot sit silent. The
 rule is on the name, not the kind: a dataclass field `pre_prompt` is refused too. Name such a
 field for what it holds (`prompt_prefix`), not with those prefixes.
 
@@ -1000,15 +999,16 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
 `remove_label`, and `send(to, text)` (an input item for cursor `to` from the handle's `client`,
 with its auto-step turned on, as `Client.send` does: the other cursor's model is given the
-text). Each handle has a **client**: the client its work is for, or `None`. A command's is its
-runner; a hook's or a tool's is the client whose input the cursor's current step delivered (the
-newest `Input` item pending when the step began), or the runner of the command that began it; a
-step woken by an extension's item, a `step` call or a load has none. `send` and `tell` without
-`to` raise `ValueError` when there is none. Each write tells the driver (`Changed`), which publishes the difference to its
+text). Each handle has a **client**: the client its work is for, or `None`, kept nowhere but
+found when asked. A command's handle has its runner while the command runs; otherwise a `Cursor`
+has the client of the nearest `User` node authored by a frontend on the walk to its `at`, and a
+`NodeHandle` the same on the walk to its batch's node (so the hooks of a step that delivers an
+input see the previous typist: the input is a node once it is delivered). `send` and `tell`
+without `to` raise `ValueError` when there is none. Each write tells the driver (`Changed`), which publishes the difference to its
 clients. A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`,
-`options()` (also on a node handle, at its node), `configure(*, model,
-extensions)` (see *config*; the model must be in the catalog, and the options folded with the
-walk's must fit their type, or nothing is written), `move(to)`, `write(body, delivers)`,
+`options()` (also on a node handle, at its node), `set_model(model)` (the model must be in the
+catalog) and `set_options(**changes)` (the calling extension's own options, which folded with the
+walk's must fit their type; see *config*; nothing is written otherwise), `move(to)`, `write(body, delivers)`,
 `set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default the handle's
 `client`; dropped if it is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
@@ -1331,125 +1331,121 @@ driver turns it into that call's `Err("TypeError: tool 'x' answered ..., not an 
 (blamed on the tools, explanation on stderr); it costs one call, never the driver. A malformed
 `args_raw` is the tool's to answer (or a `pre_tool` hook's, which may rewrite
 `call.args_raw` before the tool runs; D7); neither the driver nor core parses it.
-The driver checks each tool when it is built (`ToolContractError`).
+The driver checks each tool when it is built (`DefinitionError`).
 Any object with these attributes is a tool, including one written in another
-language (a PyO3 class); `@tool` is one way to build one, and a test drives a
-hand-written class through the `Harness`. Tools are the driver's, not the
+language (a PyO3 class); a plain function the driver describes is the other way
+(see *function tool*), and a test drives a hand-written class through the `Harness`. Tools are the driver's, not the
 history's: each sample is handed the driver's tools, and no `Config` or node
 records them.
 
-### tool (decorator), FunctionTool
-`tau_next.tool`, `tau_next.FunctionTool` (`tools.py`) · new
+### function tool, ToolError, DefinitionError
+`tau_next.ToolError`, `tau_next.DefinitionError` (a `TypeError`); `FunctionTool`,
+`assemble_tools` (`_tools.py`, private) · D16 · new
 
-`tool(fn)` turns a sync or async function into a `FunctionTool`, a `Tool`, for a driver's
-`tools=`; an extension lists plain functions in its `tools` attribute instead and the driver
-makes the `FunctionTool` when it is built (`assemble_tools`; D16 §2). Name: the function's
-`__name__`. Description: its docstring, `inspect.cleandoc`'d. `parameters`: an object schema
-from the type hints (the type language, **values**), as a model is shown it;
-`client_parameters` is the same with the named types' `"format"`. A parameter with a default
-is not `required`; `additionalProperties` is false. A parameter is described with
-`Annotated[T, "text"]`. `call(args_raw, *, progress=None, context=None, handle=None)`
-parses `args_raw`, checks the top-level keys and each value against the annotation, then
-converts them all (so a `CursorId` of `"new"` opens its cursor only for a call whose every
-argument passed), binds by keyword with the **injected parameters**, runs the function, and
-requires a `str` back. `context` is required if an argument is a named type and `handle` if
-the function takes one; a call without them is an `Err`, not a guess. The driver is the only
-caller that supplies them. A sync function runs in a worker
-thread, so it never blocks the loop; aborting the call stops waiting for it,
-not the thread, which finishes and is discarded. A function that `functools.wraps`
-an async one counts as async (`inspect.unwrap`). `FunctionTool.function` is the original function.
+The driver's `tools=` and an extension's `tools` attribute list plain sync or async functions as
+well as `Tool` objects (an item with a `call` is a `Tool`; a function is described); the driver
+makes a private `FunctionTool` of each when it is built (`assemble_tools`; D16 §2), so there is
+no decorator and nothing to export. Name: the function's `__name__`. Description: its
+docstring, `inspect.cleandoc`'d. `parameters`: an object schema from the type hints (the type
+language, **values**), as a model is shown it (no `"format"`, no `"default"`); a parameter with a
+default is not `required`; `additionalProperties` is false. A parameter is described with
+`Annotated[T, "text"]`. `call` parses `args_raw`, checks the top-level keys and each value
+against the annotation, then converts them all (so a `CursorId` of `"new"` opens its cursor only
+for a call whose every argument passed), binds by keyword with the **injected parameters**, runs
+the function, and requires a `str` back. The driver is the only caller. A sync function runs in a
+worker thread, so it never blocks the loop; aborting the call stops waiting for it, not the
+thread, which finishes and is discarded. A function that `functools.wraps` an async one counts as
+async (`inspect.unwrap`).
 
-### ToolDefinitionError, ToolError
-`tau_next.ToolDefinitionError` (a `ValueError`), `tau_next.ToolError` · new
+`ToolError` is how a call fails (malformed JSON, missing, extra, or wrongly typed arguments, an
+exception from the function, a non-`str` return); the call answers it as `Err(message)`, so the
+model reads it. A tool function may raise `ToolError("msg")` itself: the call answers
+`Err("msg")` exactly, with no type prefix (any other exception is `Err("Type: msg")`).
 
-`ToolDefinitionError` (defined in `functions.py`), when a function is described, naming the
-function and parameter: no docstring, a missing or unsupported annotation, `*args`/`**kwargs`,
-positional-only parameters, an `Annotated` with other than one `str`, an annotation that cannot
-be resolved, a default that does not fit its annotation (`s: str = None`
-says to annotate `str | None`), and an injected parameter the function cannot have (a
-`Cursor` in a tool). `ToolError` is how `FunctionTool`
-fails a call (malformed JSON, missing, extra, or wrongly typed arguments, an
-exception from the function, a non-`str` return); `call` answers it as
-`Err(message)`, so the model reads it, and it does not escape `call`. A tool
-function may raise `ToolError("msg")` itself: the call answers `Err("msg")`
-exactly, with no type prefix (any other exception is `Err("Type: msg")`).
+`DefinitionError` is the one error of building: a tool, command, extension, options type or
+question that cannot be built. Its message names the extension, function and parameter: no
+docstring, a missing or unsupported annotation, `*args`/`**kwargs`, positional-only parameters, an
+`Annotated` with other than one `str`, an annotation that cannot be resolved, a default that does
+not fit its annotation (`s: str = None` says to annotate `str | None`), an injected parameter the
+function cannot have (a `Cursor` in a tool, a `NodeHandle` in a command), an object that is not a
+`Tool` or an `Extension` (a missing or non-`str` `name`, `description` or `parameters`, a `call`
+that is not callable, a misspelt `pre_*`/`post_*` attribute), two tools, commands or extensions
+with one name, a function that takes a handle given as a driver tool, a `tools` or `commands`
+that is not a sequence, an options type that is not a frozen dataclass of the language, and
+`ask(expect=...)` of a type outside the language. `check_tools` and `check_extensions`
+(`protocols.py`) make the contract checks and return the tools by name (with the names of those
+that take progress) and the extensions.
 
-### ToolContractError
-`tau_next.ToolContractError` (a `TypeError`), `check_tools` (`protocols.py`) · new
-
-Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
-missing or non-`str` `name` or `description`, `parameters` that is not a
-`Mapping`, a `call` that is not callable, or two tools with one name (across the driver's
-`tools=` and every extension's `tools`); also a `FunctionTool` that takes a handle given as a
-driver tool, an extension whose `tools` is not a sequence, and an item of it that is neither a
-`Tool` nor a function. `check_tools`
-returns the tools by name and the names of those that take progress.
-
-### values, Kind, Context, Field, HintError
-`tau_next.values` (`values.py`), `Kind`, `Context`, `Field`, `HintError`, `kind_of`, `field_of` · D16 · new
+### values, Kind, Context, Field, Form
+`tau_next._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau_next.Form` · D16 · new
 
 The one type language: a Python type hint becomes a `Kind` holding its `schema` (for a
 client, named types with `"format"`), its `model_schema` (without the format, which no
 provider API accepts), `check(value, context)` (the problem as words, or `None`) and
 `convert(value, context)` (what the function receives). A `Context` is what the named types
-are checked against: the session, the model catalog, and `new_cursor`, which opens the cursor a
-`CursorId` of `"new"` means. A `Kind` that `needs_session` cannot `check` without one
-(`ValueError`); `check_default` checks a Python default by shape only. A `Field` is a name,
-a `Kind`, `required`, and `nullable` (a `T | None` with no default: not required, `None` when
-left out); `field_of(name, hint, default, has_default=)` makes one, and
-`object_schema` / `check_object` / `convert_object` treat a tuple of them as an object: tool
-parameters now, a dataclass's fields when options come. `HintError` (a `TypeError`) is a hint
-outside the language, a default that does not fit it, or an `Annotated` carrying other than one
-`str`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
+are checked against: the model catalog, and for the types looked up in the session, the
+session and `new_cursor`, which opens the cursor a `CursorId` of `"new"` means (options are
+checked with the catalog alone). A `Kind` is `session_only` if its values are looked up in the
+session; `check_default` checks a Python default by shape only. A `Field` is a name, a `Kind`, its
+default (if it `has_default`), and `nullable` (a `T | None` with no default: not required, `None`
+when left out); `field_of(name, hint, default, has_default=)` makes one, and
+`object_schema` / `check_object` / `convert_object` treat a tuple of them as an object: a
+function's parameters, or an options dataclass's fields. `object_schema` carries each default as
+`"default"` (a `Path` as its string) in the client schema, or, for an options form, the value now;
+the model's schema has none. A `Form(name, description, schema)` is what a client knows of
+something it fills in: a command, or an extension's options (the `name` is the extension; the
+defaults are the values now); frozen, and not hashable, the schema being a dict. A hint outside the
+language, a default that does not fit it, or an `Annotated` carrying other than one `str` is a
+`DefinitionError`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
 `T | None`, `Annotated[T, "text"]` (the text is the schema's `"description"`),
 `pathlib.Path` (a leading `~` is the home directory), and the named types. A JSON integer
-given to a `float` is converted to one. A `CursorId` default of `"new"` is a `HintError`: only a
+given to a `float` is converted to one. A `CursorId` default of `"new"` is a `DefinitionError`: only a
 caller may ask for a new cursor.
 
 ### named type, Model, CursorId, LabelName, NodeId
 `tau_next.Model` (`str`), `CursorId` (`int`), `LabelName` (`str`), `NodeId` (`int`); `NewType`s · D16 · new
 
-A closed set of hints checked against the session: a `Model` is in the catalog (by qualified
-name), a `CursorId` is an open cursor or `"new"`, a `LabelName` is an existing label, a
+A closed set of hints checked in a context: a `Model` is in the catalog (by qualified
+name; the only one an option may be, since it needs the catalog alone), a `CursorId` is an open cursor or `"new"`, a `LabelName` is an existing label, a
 `NodeId` is an existing node. Each carries `"format"` `"model"`, `"cursor"`, `"label"`,
 `"node"` in the client schema; `pathlib.Path` carries `"path"` (a string, converted to a `Path`,
 not checked against the session). `"new"` is the only value with an effect: converting it opens a
 cursor at the asker's node (the batch's node for a tool, the cursor's `at` for a question).
 
 ### injected parameter, Described, describe
-`tau_next.functions.describe(function, what=, refused=)`, `Described` (`functions.py`) · D16 · new
+`describe(function, what=, extension=, refused=)`, `Described` (`_functions.py`, private) · D16 · new
 
-A parameter of a tool function that the driver fills and the model is never shown, found by
-annotation: `Progress` (or the name `progress`), `TreeHandle` or `NodeHandle` (the batch's
-`NodeHandle`, bound to the extension that lists the function; only for tools listed on an
-extension), and `Cursor` (refused for a tool, `ToolDefinitionError`; for commands later).
-`describe` reads a function once into a `Described`: name, docstring, the `Field`s of its
-arguments, the injected parameters by name and kind, and whether it is async. Commands reuse
-it with their own `refused` set. `invoke(function, described, arguments, progress=, handle=)`
-is the one place a described function is called, for a tool and for a command: it fills the
-injected parameters and awaits an async function or runs a sync one on a worker thread. What a
-handle tells the driver (`poke`, `changed`) is routed back to the loop's thread by the driver,
-so a sync function may write through its handle. (The `describe=` argument of `@tool` is gone: the text
-sits on the parameter, `Annotated[T, "text"]`.)
+A parameter of a function that the driver fills and the model is never shown, found by
+annotation alone (a parameter's name says nothing): `Progress`, `TreeHandle` or `NodeHandle` (the
+batch's `NodeHandle`, bound to the extension that lists the function; only for tools listed on an
+extension), and `Cursor` (refused for a tool; a command's). `describe` reads a function once into
+a `Described`: name, docstring, the `Field`s of its arguments, the injected parameters by name and
+kind, and whether it is async; commands use it with their own `refused` set (`NodeHandle`).
+`invoke(function, described, arguments, progress=, handle=)` is the one place a described
+function is called, for a tool and for a command: it fills the injected parameters and awaits an
+async function or runs a sync one on a worker thread. What a handle tells the driver (`poke`,
+`changed`) is routed back to the loop's thread by the driver, so a sync function may write through
+its handle.
 
-### command, CommandInfo
-`tau_next.CommandInfo(name, description, schema)` (`_commands.py`), `Client.commands()`,
+### command, CommandFailed
+`tau_next.CommandFailed` (a `RuntimeError`), `Client.commands()` (a tuple of `Form`),
 `Client.run(cursor, command, args)` · D16 · new
 
-A plain function an extension lists in its `commands` attribute (or a `FunctionTool`'s
-function), offered to a person as `/name`; the same function may be in `tools`. Described when
-the driver is built by `describe(fn, what="command")`: injected `Progress` (each call is a
-`Notice`), `TreeHandle`, and `Cursor`; `NodeHandle` is refused (`ToolDefinitionError`). Its handle's
-`client` is the client that ran it. Names
-are unique across extensions, the built-in ones included (`ExtensionContractError`). The
-result, `str | None`, is a `Notice` to the client that ran it; an exception is a `Notice`
-`"Type: msg"` (and for a `Cursor` command also the step's ending, see *Cursor command*). A
-sync function runs on a worker thread, as a tool does. `CommandInfo` is what a client knows of
-one: name, docstring, and the JSON Schema of its arguments with the named types' `"format"`;
-fixed for the driver's life. `run` checks `args` as values of the language (with the session;
-`"new"` after the rest) and raises `LookupError` (unknown command), `ValueError` (arguments),
-or `Busy`; nothing is opened or started for a refused call. Not the same as the `pre_input`
-refusal of a `/…` input: a client that does not know a command sends the line as text.
+A plain function an extension lists in its `commands` attribute, offered to a person as `/name`;
+the same function may be in `tools`. Described when the driver is built by
+`describe(fn, what="command")`: injected `Progress` (each call is a `Notice`), `TreeHandle`, and
+`Cursor`; `NodeHandle` is refused (`DefinitionError`). Its handle's `client` is the client that
+ran it. Names are unique across extensions, the built-in ones included, and `config` is taken
+(`DefinitionError`). `Client.run` returns the command's result (`str | None`) when the command
+has finished, and raises `CommandFailed`, whose message is the failure as `"Type: msg"`: for a
+`Cursor` command once the step it began has ended and the cursor is at rest (see *Cursor
+command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
+worker thread, as a tool does. A `Form` (**values**) is what a client knows of one: name,
+docstring, and the JSON Schema of its arguments with the named types' `"format"` and each
+default; fixed for the driver's life. `run` checks `args` as values of the language (with the
+session; `"new"` after the rest) and raises `LookupError` (unknown command), `ValueError`
+(arguments), or `Busy`; nothing is opened or started for a refused call. Not the same as the
+`pre_input` refusal of a `/…` input: a client that does not know a command sends the line as text.
 
 ### Cursor command
 `Commands.before` (`_commands.py`) · D16 · new
@@ -1460,51 +1456,58 @@ driver gives it to the step's `pre_step` job, where it runs with the cursor's ha
 `TreeHandle`) before the extensions' `pre_step` hooks. The rest of the step follows the usual
 rules: a command that leaves the cursor on a `User` node gets a sample, one that leaves it on a
 reply gets none. `abort` and `go_to` cancel a running command (and drop one not yet started),
-whose job then answers without running the hooks; a crash loses a command that has not
-finished, and it is never re-run. A command that raises ends the step `Failed` exactly as a
-failing hook does: the cursor's `hook_error` names `pre_step` and the extension that lists the
-command, and no hook runs after it. A command with no `Cursor` runs at once as a task on the
+whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
+loses a command that has not finished, and it is never re-run. A command that raises ends the step
+`Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the
+extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` once
+the cursor is at rest. A command with no `Cursor` runs at once as a task on the
 loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 
 ### tau (extension), /model, /config
 `tau_next._builtin.Tau` · D16 · new
 
 The built-in extension, always first in the driver's list (its name is taken: a user extension
-named `tau` is an `ExtensionContractError`). `/model <Model>` switches the branch to a
-configured model; `/config <extension> <values>` changes an extension's options on the branch,
-`extension` a `Literal` of the extensions that have options (known when the driver is built;
-`/config` is absent if none has any) and `values` a JSON object of the options to change. Both
-are `Cursor` commands that write a `Config` node with `Cursor.configure`; nothing is written
-if the options do not fit (the step fails and the client is told). A client that wants a form
-reads `Client.options(cursor, extension)` for the schema and current value, and sends the
-changed options as `values`. The user's file stays `tau config`'s to edit.
+named `tau` is a `DefinitionError`). `/model <Model>` is a `Cursor` command that switches the
+branch to a configured model (`Cursor.set_model`). `/config <extension> name=value ...` changes
+an extension's options on the branch: its values are a mapping, which the type language has no
+hint for, so it is not a function. `Client.commands()` lists a `config` `Form` (its one parameter
+the extension, a `Literal` of those that have options; absent if none has any) so a frontend
+learns of it, and `Client.configure(cursor, extension, values)` is the call: it checks the values
+against the extension's options folded at the cursor's `at` (`ConfigError`, nothing written), then
+writes a `Config` node as a step of the cursor, like a `Cursor` command (`Busy` unless at rest).
+`Client.run(cursor, "config", ...)` is a `ValueError`. A frontend reads the options of an extension
+with `Client.options(cursor, extension)`: the `Form` whose defaults are the values now; a bare
+`/config <extension>` shows it, and `commandline.parse` reads `/config <extension> limit=10`
+by it (see *commandline*). The user's file stays `tau config`'s to edit.
 
 ### options (extension)
-`tau_next._options` (`ExtensionOptions`, `OptionsForm`, `OptionsError`, `check_options`) · D16 · new
+`tau_next._options` (`ExtensionOptions`); `ConfigError` · D16 · new
 
 An extension's `options` attribute names a **frozen dataclass**; each field is a hint of the
-values language with a plain default (no `default_factory`; no `Model`, `CursorId`, `LabelName`
-or `NodeId`, which are checked against a session that stored options do not have: use `str` or
-`int`). A field with no default must be configured (a missing one is an `OptionsError`, and
-`check_options` reports it). Anything else is an `ExtensionContractError` when the driver is
-built. A field's value at a node is the last one set: the layers' `extensions.<name>`
-(`ModelCatalog.extensions`), then the `Config` nodes on the node's walk, root to node, each
-setting only the fields it names (so a node can change `size` and leave `mode`); there is no
-way to unset a field back to its default. `handle.options()` returns the dataclass instance at
-the handle's node (`OptionsError` if it does not fit; the type's own `__post_init__` may
-refuse). `configure` and `/config` check the same before writing: the options folded at the
-cursor's `at` with the new values must build. The fold of a node is computed once and shared by its descendants that add no
-`Config`. `Client.options(cursor, extension)` returns an `OptionsForm(extension, schema,
-value)`: the schema of the options object and every option's current value. `check_options(
-catalog, extensions)` is the check `tau config check` makes for the extensions it knows, and a
-program that loads others can call for them.
+values language with a plain default (no `default_factory`; a `Model` is allowed and is checked
+against the catalog, but not a `CursorId`, `LabelName` or `NodeId`, which are looked up in a
+session that stored options do not have: use `int` or `str`). A field with no default must be
+configured (a missing one is a `ConfigError`, and `check_config` reports it). Anything else is a
+`DefinitionError` when the driver is built. A field's value at a node is the last one set: the
+layers' `extensions.<name>` (`ModelCatalog.extensions`), then the `Config` nodes on the node's
+walk, root to node, each setting only the fields it names (so a node can change `size` and leave
+`mode`); there is no way to unset a field back to its default. `handle.options()` returns the
+dataclass instance at the handle's node (`ConfigError` if it does not fit; the type's own
+`__post_init__` may refuse). `set_model`, `set_options`, and `configure` check the same before
+writing: the options folded at the cursor's `at` with the new values must build. The fold of a
+node is computed once and shared by its descendants that add no `Config`. `Client.options(cursor,
+extension)` returns a `Form(extension, description, schema)`: the schema of the options object,
+each default the value now (a required option nobody set has none). `check_config(...,
+extensions=)` is the check `tau config check` makes for the extensions it knows, and a program
+that loads others can pass them.
 
 ### Handles
 `tau_next.handles.Handles` · D16 · new
 
 What the driver wires into every handle it makes (session, question call, clock, `poke`,
-`changed`, options, and `client`: who a cursor's step is for), with `cursor(id, extension)`,
-`node(cursor, id, extension)` and `tree(extension, client)`: one place that builds them, for hooks, tools and commands alike.
+`changed`, options), with `cursor(id, extension, runner=None)` (`runner`: the client of the
+command it runs), `node(cursor, id, extension)` and `tree(extension, client)`: one place that
+builds them, for hooks, tools and commands alike.
 
 ### complete, named type completion
 `Client.complete(cursor, named, prefix)` · D16 · new
@@ -1517,33 +1520,43 @@ first). Any other name is a `ValueError`. No extension code runs, so completion 
 raise on an extension's account.
 
 ### commandline
-`tau_next.commandline`: `parse`, `completions`, `Parsed`, `UnknownCommand` · D16 · new
+`tau_next.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
 
-The pure parts every line-based frontend shares. `parse(line, commands)` reads a line that
-starts with `/` as shell words: `Parsed(command, args, missing)`. A `name=value` word sets the
-parameter of that name; the other words fill the remaining parameters in order; a list takes
-comma-separated items; each word is converted by the parameter's schema (`int`, `float`,
-`true`/`false`, a `Literal`'s values; a named type is a string or integer). `missing` lists the
-required parameters not given, for the frontend to ask. `UnknownCommand` (a `LookupError`)
-names a command there is not, so a frontend can warn and send the line as text; `ValueError`
-for anything unreadable. `async completions(line, commands, client, cursor)` says what could
-finish the word being typed, each a whole word (quoted if needed): command names after `/`,
-a `Literal`'s values, and `client.complete` for a named type. The driver's check stays the
-authority; this only spares a round trip.
+The pure parts every line-based frontend shares. `parse(line, commands, options)` reads a line
+that starts with `/` as shell words: `Parsed(command, args, missing, extension)`. A `name=value`
+word sets the parameter of that name; the other words fill the remaining parameters in order; a
+list takes comma-separated items; each word is converted by the parameter's schema (`int`,
+`float`, `true`/`false`, a `Literal`'s values; a named type is a string or integer). `missing`
+lists the required parameters not given, for the frontend to ask. `UnknownCommand` (a
+`LookupError`) names a command there is not, so a frontend can warn and send the line as text;
+`ValueError` for anything unreadable. `/config <extension> name=value ...` is the one line that is
+not a command's: the words after the extension are read by that extension's options `Form`, which
+the frontend passes as `options` (by extension name; the `config` form lists the names, and
+`Client.options` gives each). Then `command` is the options form, `args` the options to change,
+and `extension` its name; with no `args` the line asks for the form. `Parsed.run(client, cursor)`
+makes the call, `Client.run` or `Client.configure`, and returns the result.
+`value(text, schema)` reads one value of any schema, and `async values(schema, prefix, client,
+cursor)` says what could finish it; both serve a command's argument and a question's answer
+typed as text alike (`new` for a `CursorId` question). `async completions(line, commands, client,
+cursor, options)` says what could finish the word being typed, each a whole word (quoted if
+needed): command names after `/`, then `values` of the parameter (a `Literal`'s values,
+`client.complete` for a named type), the extensions after `/config `, and their options. The
+driver's check stays the authority; this only spares a round trip.
 
 ### assemble_tools
-`tau_next.tools.assemble_tools(tools, extensions)` · D16 · new
+`tau_next._tools.assemble_tools(tools, extensions)` · D16 · new
 
 The driver's `tools=` followed by each extension's `tools` attribute (a sequence of plain
 functions, made `FunctionTool`s, and `Tool` objects), with the extension that lists each; the
 driver then runs `check_tools` over the whole.
 
-### ExtensionContractError
-`tau_next.ExtensionContractError` (a `TypeError`), `check_extensions` (`protocols.py`) · new
+### check_extensions
+`check_extensions` (`protocols.py`) · new
 
-Raised by `Driver.__init__` for an object that is not an `Extension`, naming it: a missing,
-non-`str` or empty `name`, two extensions with one name, or any attribute (method, field,
-class attribute) named `pre_*` or `post_*` that is not a hook point or is not callable.
+Raised as a `DefinitionError` by `Driver.__init__` for an object that is not an `Extension`,
+naming it: a missing, non-`str` or empty `name`, two extensions with one name, or any attribute
+(method, field, class attribute) named `pre_*` or `post_*` that is not a hook point or is not
+callable. A module with a `name` is an extension (D16 §6).
 
 ### ProgressTool
 `protocols.ProgressTool` · D15 · new
@@ -1740,41 +1753,55 @@ A program that drives sessions and shows events (`tau serve` first). A **client*
 program holds: a `Client`, with an id.
 
 ### Client, LocalClient
-`tau_next.Client` (a `Protocol`), `tau_next.LocalClient(driver, id, *, buffer=256)`
-(`client.py`) · D16 · new
+`tau_next.Client` (a `Protocol`), `tau_next.LocalClient` (made by `Driver.client(id, *,
+buffer=256)`; `client.py`) · D16 · new
 
 A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
-act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `set_label`,
-`remove_label`, each with the client's id as `by: Frontend(id)` where the driver takes one),
-`watch`, `answer`, `commands`, `run`, `options`, `complete` (see *command*, *options (extension)*,
-*complete*), the reads `node`, `walk`, `children`, `close`, and one event stream: the
-client itself is an async iterator of `Event`. `id` is stable across reconnects
-(`john@laptop:tui`); a connection is not a client. Every argument and event is a plain frozen
-value, so a remote client serializes each generically (Phase 6). `LocalClient` is the
+act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`,
+`set_label(cursor, label)`, `remove_label`, each with the client's id as `by: Frontend(id)` where
+the driver takes one; `go_to` and `abort` return nothing), `watch`, `answer`, `commands`, `run`
+(returns the command's result), `options`, `configure`, `complete` (see *command*, *options
+(extension)*, */config*, *complete*), the reads `node`, `walk`, `children`, `close`, and one event
+stream: the client itself is an async iterator of `Event`. Each call is documented once, on
+`Client`. `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
+Every argument and event is a plain frozen value. For a remote client (Phase 6) the values of
+the protocol that are not plain (the core's `Node`, `Body`, `Author`, `Item`, `ItemData`,
+`Ending`) need one codec each; events and the rest travel as they are. `LocalClient` is the
 in-process implementation: creating one connects, taking the snapshot and subscribing in one
 synchronous act on the loop. A client is **connected** while it has a stream open; `close()`,
-a cut-off, or dropping the `LocalClient` (the hub holds streams weakly) disconnects it.
-Every call raises once the driver has failed or stopped; the stream ends then (cleanly after a
-stop, raising the failure after one), and a client connecting then gets a stream that is
-already ended. Reconnecting is a new `LocalClient`: the log is the truth, so there is no
-resume.
+a cut-off, or dropping the `LocalClient` (the hub holds streams weakly) disconnects it. Every
+call raises once the driver has failed or stopped. A stream that ends in error raises
+`ConnectionError`: **CutOff**, or one whose message is the `"Type: msg"` of the failure that ended
+the driver, chained to it; after a plain stop the stream ends cleanly, and a client connecting
+after either gets a stream already ended. A frontend's one rule is `except ConnectionError`,
+then reconnect: a new client with the same id, since the log is the truth and there is no
+resume. Its constructor is the driver's: `LocalClient` takes a private `Calls`, which holds the
+driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`, `stop`, `rest`,
+`use_catalog`, `state`, `client` and `add_item`.
+
+### Calls
+`tau_next._calls.Calls`, `frontend` (private) · D16 · new
+
+The driver's side of each call of the `Client` protocol: it holds the session, hub, questions and
+commands, and implements `connect`, `watch`, `input`, `send`, `step`, `go_to`, `abort`,
+`set_auto`, `open`, `add_item`, `set_label`, `remove_label`, `answer`, `forms`, `run`, `configure`,
+`options` and `complete`. `LocalClient` calls it; the calls are documented once, on `Client`.
+`frontend(check, hub, poke)` is the wrapper a call that changes the session runs in: check the
+driver is running, change, publish what changed, wake the pump. It exists so that `Driver` has no
+call a frontend makes.
 
 ### event
 `tau_next.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
 
-What a client hears: `Live | CursorView | Labels | Appended | Notice | Connected`. Small state
+What a client hears: `Live | CursorView | Labels | Appended | Notice`. Small state
 is sent whole whenever it changes, to every client, for every cursor; `Live` goes to clients
 watching the cursor and `Notice` to one client. Observers cannot change anything. One ordered
 stream per client: a change's `Appended` comes before the `CursorView` that points at its
-nodes, and a `CursorView`, `Labels` or `Connected` that replaces an earlier copy removes it
-and goes to the end. Status (`cursor.show`) is not built.
-
-### Connected
-`tau_next.Connected(nodes)` (`events.py`) · D16 · new
-
-The first event of a stream: the tree holds `nodes` nodes (ids `0..nodes`). Those a client
-reads with `node`, `walk`, `children`; those from `nodes` on arrive as `Appended`. One
-`CursorView` per cursor and then `Labels` follow, as they stood in the same act.
+nodes, and a `CursorView` or `Labels` that replaces an earlier copy removes it
+and goes to the end. A stream opens with a `CursorView` per cursor and `Labels`; the nodes are
+not in it (a node never changes, so a client reads the ones it needs by id with `walk`, and
+ignores an `Appended` node it has already read). Events are compared by value; a `CursorView`
+holds schemas (dicts), so it is not hashable. Status (`cursor.show`) is not built.
 
 ### CursorView
 `tau_next.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
@@ -1815,7 +1842,7 @@ A message for one client: `cursor.tell`, an input a hook refused. Sent only to t
 that id; dropped if there is none connected.
 
 ### CutOff
-`tau_next.CutOff` (`events.py`; a `RuntimeError`) · D16 · new
+`tau_next.CutOff` (`events.py`; a `ConnectionError`) · D16 · new
 
 What a client's stream ends with when its `Appended` and `Notice` backlog passed its buffer.
 Nothing buffered is delivered. The client is disconnected; it reconnects to a fresh snapshot.
@@ -1840,7 +1867,7 @@ driver calls it after each client call, each pump pass, each handle write, and e
 opened or closed. `Hub.connect` publishes what is pending, then builds the snapshot from what
 was published, so subscribing and the snapshot are one act. A **Feed** is one client's stream:
 its buffer holds at most `buffer` `Live` and `buffer` of `Appended` and `Notice`, plus one state
-event per cursor and one `Labels` and `Connected`; a `Live` that finds its share full is dropped,
+event per cursor and one `Labels`; a `Live` that finds its share full is dropped,
 and an `Appended` or `Notice` that finds its share full cuts the client off. One consumer: a
 second concurrent `anext` raises `RuntimeError`.
 
@@ -1871,15 +1898,15 @@ buffer drops it).
 ### progress callback, Progress
 `tau_next.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
 
-What a tool is given to show partial output: `progress(text)`. A tool opts in by giving
-`call` a parameter named `progress`, detected once when the driver is built
+What a tool is given to show partial output: `progress(text)`. A hand-written `Tool` opts in by
+giving `call` a parameter named `progress`, detected once when the driver is built
 (`takes_progress`, once, in `check_tools`); a `progress` that cannot be passed by keyword
-is a `ToolContractError`.
+is a `DefinitionError`.
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
-nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A tool
-function takes it as a parameter annotated `Progress` (or named `progress`, unannotated or
-annotated `Progress | None`), an **injected parameter** that is not one of the tool's
-`parameters`; a parameter named `progress` annotated as anything else is a `ToolDefinitionError`.
+nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A described
+function takes it as a parameter annotated `Progress`, whatever its name, an **injected
+parameter** that is not one of the tool's `parameters`; a parameter named `progress` with another
+annotation is an ordinary argument.
 `bash` calls it with its output, at most once per 100 ms; the command never waits on it, the
 answer waits for a call already running and the final flush.
 
@@ -1904,20 +1931,17 @@ built from a session, a mapping of provider name to provider (each keyed by its 
 known names in the `sample_error`), a `ModelCatalog` (where it resolves the model name in
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
-files calls it); a sample already running keeps the model it resolved. Its client calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `add_item`, `set_label`, `remove_label`, `watch`, `answer`) are what a
-`LocalClient` calls; they run on the loop thread, call the session, publish what changed
-(`Hub.sync`), then poke the pump; `open(at, client)` names the client like `input` and `go_to`.
-`connect(client, buffer)` opens a client's stream.
-`add_item(to, data)` is for whoever has something to tell a resting cursor from outside a hook
-(a timer extension, `tau serve` relaying a webhook): any `ItemData` but `Input`, which only
-`input` and `send` add (they say who typed it). `set_label(label, cursor)` and
-`remove_label(label)` are the labels a frontend writes.
-Once the driver has failed or stopped, every call raises (the failure, or `RuntimeError`;
-`DriverState.check()` raises it, and each `LocalClient` call starts with it),
+files calls it); a sample already running keeps the model it resolved. Its public surface is
+`start`, `stop`, `rest`, `use_catalog`, `state`, `client(id)` (how a frontend gets a
+`LocalClient`) and `add_item`; the calls a client makes are implemented by a private `Calls`
+(`_calls.py`), documented on `Client`: they run on the loop thread, call the session, publish what
+changed (`Hub.sync`), then poke the pump. `add_item(to, data)` is for whoever has something to
+tell a resting cursor from outside a hook (a timer extension, `tau serve` relaying a webhook): any
+`ItemData` but `Input`, which only `input` and `send` add (they say who typed it).
+Once the driver has failed or stopped, every client call raises (the failure, or `RuntimeError`),
 and a stream connected then ends at once (with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
-(**ExtensionContractError**); how `config_at` will name them is open.
+(**check_extensions**); how `config_at` will name them is open.
 `stop()` ends the clients' streams. A failure of the pump or an effect cancels the effects
 still running, ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
 `RuntimeError`, also for a caller already waiting. A hook adds its extension's item through
@@ -1940,7 +1964,7 @@ It reports `(cursor, Answer)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
 ### DriverState
-`tau_next.DriverState`, from `Driver.state()` · new
+`tau_next.driver.DriverState` (not exported), from `Driver.state()` · new
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
@@ -2076,7 +2100,7 @@ writes and runs steps; a second open is `Error::Leased`.
 `tests/behavior/harness.py`
 
 What every behavior test drives, shaped like `tau serve`: a session in a
-directory with a `Driver` over the fakes, and a `LocalClient` for client `term`.
+directory with a `Driver` over the fakes, and a client (`Driver.client`) for client `term`.
 `Harness.create`/`load`; the client's calls (`input`, `send`, `step`, `abort`, `go_to`,
 `set_auto`, `respond`: answer the cursor's oldest open question); `connect(id)` for another
 client and `view(cursor)` for a cursor as a client connecting now is told of it; `settle`;
@@ -2191,7 +2215,7 @@ installed because another global tracing subscriber is.
 | `annotate`, node-written hooks | event observers |
 | session write lock | lease |
 | handler policy | nothing (Q9) |
-| `@tool(describe={...})` | `Annotated[T, "text"]` on the parameter (D16) |
+| `@tool(describe={...})` | `Annotated[T, "text"]` on the parameter; no decorator, the driver describes the function (D16) |
 | `Saved` | `Appended`, and the `CursorView` that points at its nodes (D16) |
 | `HookError` (event) | `CursorView.hook_error`, a `HookFailure` (D16) |
 | `EventStream`, `Driver.events` | the `Client`, which is its own stream (D16) |

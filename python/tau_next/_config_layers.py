@@ -11,12 +11,14 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
 from tau_next._config import ConfigError, ModelConfig, key_problem, url_problem
+from tau_next._options import make_options, option_fields
+from tau_next._values import Context, DefinitionError
 from tau_next.protocols import Provider
 
 Severity = Literal["error", "warning"]
@@ -91,7 +93,7 @@ class ResolvedModel:
 class ModelCatalog:
     """Every model the merged layers define, plus `default_model`, any warnings, and the
     `extensions` options the layers set (`{"step_limit": {"limit": 10}}`, merged per option;
-    D16 section 4). Which options an extension has is its own to say (`check_options`)."""
+    D16 section 4). Which options an extension has is its own to say (`check_config`)."""
 
     models: Mapping[str, ResolvedModel]
     default_model: str | None
@@ -673,23 +675,47 @@ def _build(
     return ModelCatalog(resolver.models, default, warnings, extensions), found
 
 
-def check_config(
+def _option_problems(
+    catalog: ModelCatalog, extensions: Sequence[object]
+) -> tuple[ConfigProblem, ...]:
+    """Every problem in what the layers set for the `extensions` that have options."""
+    problems: list[ConfigProblem] = []
+    for ext in extensions:
+        options = getattr(ext, "options", None)
+        if options is None:
+            continue
+        name = cast("str", getattr(ext, "name"))  # noqa: B009
+        raw = dict(catalog.extensions.get(name, {}))
+        try:
+            make_options(name, options, option_fields(name, options), raw, Context(catalog))
+        except (ConfigError, DefinitionError) as e:
+            problems.append(ConfigProblem("error", str(e), None, f"extensions.{name}"))
+    return tuple(problems)
+
+
+def check_config(  # noqa: PLR0913 - the layers, the environment, and what is checked against
     user: Layer | None = None,
     project: Layer | None = None,
     cli: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
     *,
     providers: Mapping[str, Provider],
+    extensions: Sequence[object] = (),
 ) -> tuple[ConfigProblem, ...]:
     """Every problem in the layers, not just the first. Layers: `user` < `project` < `cli`.
 
     `providers` is the driver's map of name to provider: a model may name exactly those, and
     each provider's `check(model)` problems for the models naming it are added (D15).
 
+    `extensions` are those a program loads: an option the layers set for one that its options
+    type does not have, one that does not fit, or a required one nobody set is a problem.
+    Options for an extension not given are not looked at (it may be loaded elsewhere).
+
     With `environ`, a model whose `api_key_env` names an unset variable is a
     warning. An empty result means the layers are sound.
     """
-    return _build(user, project, cli, environ, providers)[1]
+    catalog, found = _build(user, project, cli, environ, providers)
+    return found + _option_problems(catalog, extensions)
 
 
 def read_models(

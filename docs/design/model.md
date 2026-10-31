@@ -372,7 +372,7 @@ stays pending (Q42). Gates are `pre_input` hooks.
 
 `await handle.ask(text, expect=str, *, to=None)` (on a cursor or a tool hook's
 node handle) returns the answer checked against `expect`, a type hint of
-`tau_next.values`, and converted, or `None` if declined (D16 §3). A question is
+the type language (D16 §1), and converted, or `None` if declined (D16 §3). A question is
 a hook awaiting a future the driver holds; core knows nothing of it. It has an
 id, its cursor, `to` (`None`: anyone; or a client id), its text and the schema
 of the answer, and every client sees it in the cursor's state until it closes.
@@ -441,11 +441,13 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
 
 A frontend holds a **client** (`Client`; `LocalClient` in process, a remote one in Phase 6),
 never the driver or the session: async calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `set_label`, `remove_label`, `watch`, `answer`), reads of the tree (`node`,
-`walk`, `children`), and one event stream, which is the client itself. Every client has an id,
-stable across reconnects, and its actions are `by: Frontend(client)`; a connection is not a
-client. Every argument and event is a plain frozen value, so a remote client serializes them
-generically.
+`abort`, `open`, `set_label`, `remove_label`, `watch`, `answer`, `commands`, `run`, `options`,
+`configure`, `complete`), reads of the tree (`node`, `walk`, `children`), and one event stream,
+which is the client itself. Every client has an id, stable across reconnects, and its actions are
+`by: Frontend(client)`; a connection is not a client. Every argument and event is a plain frozen
+value; a remote client serializes them, with one codec each for the core's own values (`Node`,
+`Body`, `Author`, `Item`, `ItemData`, `Ending`). A stream that ends in error is a
+`ConnectionError`; a frontend reconnects.
 
 Small state is sent whole whenever it changes, never as a delta, and every client receives it for
 every cursor, so a frontend can show "cursor 3 is waiting on you" while it watches cursor 1.
@@ -458,10 +460,10 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 | `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
 | `Notice` | one client | `cursor.tell`, an input a hook refused |
 
-- **On connect** the stream opens with `Connected(nodes)` (the tree's node count), a
-  `CursorView` per cursor, and `Labels`, taken in the same synchronous act as subscribing, so nothing falls
-  between them. Nodes below the count a client reads with calls; nodes from it on arrive as
-  `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it
+- **On connect** the stream opens with a `CursorView` per cursor and `Labels`, taken in the same
+  synchronous act as subscribing, so nothing falls between them. Nodes a client reads with calls
+  (a node never changes, so one it meets again in an `Appended` is ignored); later ones arrive
+  as `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it
   failed on, so a late client sees why a step stopped.
 - **One writer.** Events are made in one place, by comparing what the session and the driver
   hold with what was last published (after each client call, pump pass, handle write and
@@ -475,7 +477,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   flight that are not in the tree yet and the text of the open part. Tool progress has no
   catch-up; its result arrives as `Appended`.
 - **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped) and `buffer` of
-  `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff` and it
+  `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff`, a `ConnectionError`, and it
   reconnects to a snapshot), plus one `CursorView` per cursor and one `Labels`. The pump never
   waits on a client.
 - **Client rules for `Live`** (D15, restated): ignore a `CallArgs` whose `CallNamed` you never

@@ -1,4 +1,4 @@
-"""An extension's options (D16 section 4): layers, `Config` nodes, `configure`, `/config`."""
+"""An extension's options (D16 section 4): layers, `Config` nodes, `set_options`, `/config`."""
 
 import dataclasses
 from dataclasses import dataclass, field
@@ -11,20 +11,23 @@ from harness import Harness, build, say, scenario
 
 from tau_next import (
     Body,
+    CommandFailed,
+    ConfigError,
     Cursor,
-    ExtensionContractError,
+    CursorId,
+    DefinitionError,
     Model,
     NodeHandle,
-    OptionsError,
     Part,
     StepLimit,
     Stop,
     Subject,
-    check_options,
+    check_config,
     read_models,
 )
+from tau_next.commandline import completions, parse
 
-DEFAULT_MODEL = Model("x")
+DEFAULT_MODEL = Model(FAKE_MODEL)
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,7 @@ async def test_config_changes_options_for_this_branch_only(tmp_path: Path) -> No
     other = await h.client.open(root)
     await h.settle()
     tuner.seen.clear()
-    await h.run("config", {"extension": "tuner", "values": '{"size": 5}'})
+    await h.configure("tuner", {"size": 5})
     await h.settle()
     node = h.session.tree.node(h.session.cursor(h.cursor).at)
     assert isinstance(node.body, Body.Config)
@@ -96,60 +99,60 @@ async def test_a_config_node_sets_only_the_options_it_names(tmp_path: Path) -> N
     await h.step()
     await h.settle()
     assert tuner.seen == [Options(size=3, mode="fast")], "the layers' size, before any node"
-    await h.run("config", {"extension": "tuner", "values": '{"mode": "slow"}'})
+    await h.configure("tuner", {"mode": "slow"})
     await h.settle()
-    await h.run("config", {"extension": "tuner", "values": '{"size": 7}'})
+    await h.configure("tuner", {"size": 7})
     await h.settle()
     assert tuner.seen[-1] == Options(size=7, mode="slow"), "each node adds to the walk's"
 
 
 @scenario
-async def test_config_with_options_that_do_not_fit_fails_the_step_and_writes_nothing(
+async def test_config_with_options_that_do_not_fit_is_refused_and_writes_nothing(
     tmp_path: Path,
 ) -> None:
     h = await Harness.create(tmp_path, extensions=[Tuner()])
     before = len(h.nodes())
-    await h.run("config", {"extension": "tuner", "values": '{"size": "big"}'})
-    await h.settle()
-    (notice,) = h.notices()
-    assert notice.startswith("OptionsError: extension 'tuner': option 'size' must be integer")
+    with pytest.raises(ConfigError, match="extension 'tuner': option 'size' must be integer"):
+        await h.configure("tuner", {"size": "big"})
+    with pytest.raises(ConfigError, match=r"unexpected options \['colour'\]"):
+        await h.configure("tuner", {"colour": 1})
+    with pytest.raises(ConfigError, match="no options"):
+        await h.configure("nope", {})
     assert len(h.nodes()) == before
-    await h.run("config", {"extension": "tuner", "values": '{"colour": 1}'})
-    await h.settle()
-    await h.run("config", {"extension": "tuner", "values": "[1]"})
-    await h.settle()
-    assert "unexpected options ['colour']" in h.notices()[1]
-    assert "must be a JSON object" in h.notices()[2]
+    assert not (await h.view()).busy
 
 
 @scenario
-async def test_config_names_only_the_extensions_that_have_options(tmp_path: Path) -> None:
+async def test_the_config_form_names_only_the_extensions_that_have_options(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Tuner(), StepLimit()])
     (config,) = [c for c in await h.client.commands() if c.name == "config"]
     assert config.schema["properties"]["extension"] == {  # type: ignore[index]
         "type": "string",
         "enum": ["tuner", "step_limit"],
     }
-    with pytest.raises(ValueError, match="one of"):
-        await h.run("config", {"extension": "nope", "values": "{}"})
+    with pytest.raises(ValueError, match="configure"):
+        await h.run("config", {"extension": "tuner"})
     plain = await Harness.create(tmp_path / "plain")
     assert [c.name for c in await plain.client.commands()] == ["model"]
 
 
 @scenario
-async def test_the_client_gets_the_options_form_at_a_cursor(tmp_path: Path) -> None:
+async def test_the_client_gets_the_options_form_at_a_cursor_with_the_current_values_as_defaults(
+    tmp_path: Path,
+) -> None:
     h = await Harness.create(tmp_path, extensions=[Tuner()], catalog=layered({"size": 3}))  # pyright: ignore[reportArgumentType]
     form = await h.client.options(h.cursor, "tuner")
-    assert form.extension == "tuner"
-    assert form.schema["properties"]["size"] == {  # type: ignore[index]
-        "type": "integer",
-        "description": "how big",
+    assert form.name == "tuner"
+    assert form.schema["properties"] == {
+        "size": {"type": "integer", "description": "how big", "default": 3},
+        "mode": {"type": "string", "enum": ["fast", "slow"], "default": "fast"},
     }
-    assert form.value == {"size": 3, "mode": "fast"}
-    await h.run("config", {"extension": "tuner", "values": '{"mode": "slow"}'})
+    assert "required" not in form.schema
+    await h.configure("tuner", {"mode": "slow"})
     await h.settle()
-    assert (await h.client.options(h.cursor, "tuner")).value == {"size": 3, "mode": "slow"}
-    with pytest.raises(OptionsError, match="no options"):
+    after = await h.client.options(h.cursor, "tuner")
+    assert after.schema["properties"]["mode"]["default"] == "slow"  # type: ignore[index]
+    with pytest.raises(ConfigError, match="no options"):
         await h.client.options(h.cursor, "nope")
 
 
@@ -207,29 +210,32 @@ async def test_an_option_with_no_default_must_be_configured(tmp_path: Path) -> N
     view = await h.view()
     assert view.hook_error is not None
     assert "missing required options ['endpoint']" in view.hook_error.error
-    await h.run("config", {"extension": "client", "values": '{"endpoint": "http://x"}'})
+    form = await h.client.options(h.cursor, "client")
+    assert form.schema["required"] == ["endpoint"], "nobody has set it: it has no default"
+    assert "default" not in form.schema["properties"]["endpoint"]  # type: ignore[index]
+    await h.configure("client", {"endpoint": "http://x"})
     await h.settle()
     await h.step()
     await h.settle()
     assert ext.seen == [Needs("http://x")] * 2, "the /config step, and the asked one"
 
 
-def test_check_options_reports_each_extension_whose_options_do_not_fit() -> None:
-    models = {FAKE_MODEL: {"model": FAKE_MODEL, "provider": "fake"}}
-    catalog = read_models(cli={"models": models, "extensions": {"step_limit": {"limit": 0}}})
-    (limit, endpoint) = check_options(catalog, [StepLimit(), Client()])
-    assert limit.path == "extensions.step_limit"
-    assert "at least 1" in limit.message
-    assert endpoint.path == "extensions.client"
-    assert "missing required options ['endpoint']" in endpoint.message
-    fine = read_models(
-        cli={
-            "models": models,
-            "extensions": {"step_limit": {"limit": 3}, "client": {"endpoint": "e"}},
-        }
-    )
-    assert check_options(fine, [StepLimit(), Client()]) == ()
-    assert check_options(catalog, [Tuner()]) == (), "an extension not given is not looked at"
+def test_check_config_reports_each_extension_whose_options_do_not_fit() -> None:
+    def problems(extensions: dict[str, object], given: list[object]) -> tuple[object, ...]:
+        models = {FAKE_MODEL: {"model": FAKE_MODEL, "provider": "fake"}}
+        layer: dict[str, object] = {"models": models, "extensions": extensions}
+        return check_config(cli=layer, providers={"fake": FakeProvider([])}, extensions=given)  # type: ignore[arg-type]
+
+    bad: dict[str, object] = {"step_limit": {"limit": 0}}
+    (limit, endpoint) = problems(bad, [StepLimit(), Client()])  # type: ignore[misc]
+    assert limit.path == "extensions.step_limit"  # type: ignore[attr-defined]
+    assert "at least 1" in limit.message  # type: ignore[attr-defined]
+    assert endpoint.path == "extensions.client"  # type: ignore[attr-defined]
+    assert "missing required options ['endpoint']" in endpoint.message  # type: ignore[attr-defined]
+    fine: dict[str, object] = {"step_limit": {"limit": 3}, "client": {"endpoint": "e"}}
+    assert problems(fine, [StepLimit(), Client()]) == ()
+    assert problems(bad, [Tuner()]) == (), "an extension not given is not looked at"
+    assert problems(bad, []) == (), "and by default none is"
 
 
 @scenario
@@ -246,7 +252,7 @@ async def test_options_that_set_the_step_limit_through_config(tmp_path: Path) ->
         provider=FakeProvider([say(f"r{i}") for i in range(10)]),
         extensions=[KeepGoing(), StepLimit()],
     )
-    await h.run("config", {"extension": "step_limit", "values": '{"limit": 2}'})
+    await h.configure("step_limit", {"limit": 2})
     await h.settle()
     await h.send("go")
     await h.settle()
@@ -287,8 +293,8 @@ def test_options_must_be_a_frozen_dataclass_of_the_values_language() -> None:
         a: list[int] = field(default_factory=list)
 
     @dataclass(frozen=True)
-    class Named:
-        a: Model = DEFAULT_MODEL
+    class Cursory:
+        a: CursorId = 0  # pyright: ignore[reportAssignmentType]
 
     @dataclass(frozen=True)
     class Odd:
@@ -298,7 +304,7 @@ def test_options_must_be_a_frozen_dataclass_of_the_values_language() -> None:
         (Loose, "frozen dataclass"),
         (dict, "frozen dataclass"),
         (Listy, "use a plain default"),
-        (Named, "checked against a session"),
+        (Cursory, "looked up in a session"),
         (Odd, "unsupported annotation"),
     ]:
 
@@ -306,7 +312,7 @@ def test_options_must_be_a_frozen_dataclass_of_the_values_language() -> None:
             name = "ext"
 
         Ext.options = options  # type: ignore[attr-defined]
-        with pytest.raises(ExtensionContractError, match=message):
+        with pytest.raises(DefinitionError, match=message):
             build([Ext()])
 
 
@@ -316,11 +322,8 @@ async def test_config_the_options_type_refuses_is_not_written_and_the_branch_sti
 ) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([say("ok")]), extensions=[StepLimit()])
     before = len(h.nodes())
-    await h.run("config", {"extension": "step_limit", "values": '{"limit": 0}'})
-    await h.settle()
-    (notice,) = h.notices()
-    assert notice.startswith("OptionsError: extension 'step_limit'")
-    assert "at least 1" in notice
+    with pytest.raises(ConfigError, match=r"extension 'step_limit'.*at least 1"):
+        await h.configure("step_limit", {"limit": 0})
     assert len(h.nodes()) == before
     await h.send("hi")
     await h.settle()
@@ -328,25 +331,157 @@ async def test_config_the_options_type_refuses_is_not_written_and_the_branch_sti
     assert len(h.provider.requests) == 1
 
 
+# An extension sets its own options and the branch's model through its Cursor.
+
+
+def tune(cursor: Cursor, size: int) -> None:
+    """Set this extension's size."""
+    cursor.set_options(size=size)
+
+
 def pick(cursor: Cursor, name: str) -> None:
-    """Configure this branch's model by any name."""
-    cursor.configure(model=name)
+    """Set this branch's model by any name."""
+    cursor.set_model(Model(name))
 
 
 class Picker:
-    name = "picker"
-    commands = (pick,)
+    name = "tuner"
+    options = Options
+    commands = (tune, pick)
+
+
+class NoOptions:
+    name = "plain"
+    commands = (tune,)
 
 
 @scenario
-async def test_configure_checks_the_model_against_the_catalog(tmp_path: Path) -> None:
+async def test_set_options_writes_the_extensions_own_options_folded_with_the_walks(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[Picker()])
+    await h.run("tune", {"size": 4})
+    await h.settle()
+    node = h.session.tree.node(h.session.cursor(h.cursor).at)
+    assert isinstance(node.body, Body.Config)
+    assert node.body.config.data == '{"extensions": {"tuner": {"size": 4}}}'
+    assert node.by.__class__.__name__ == "Extension"
+    assert (await h.client.options(h.cursor, "tuner")).schema["properties"]["size"]["default"] == 4  # type: ignore[index]
+
+
+@scenario
+async def test_set_options_of_an_extension_with_none_fails_the_command(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[NoOptions()])
+    before = len(h.nodes())
+    with pytest.raises(CommandFailed, match="ConfigError: extension 'plain' has no options"):
+        await h.run("tune", {"size": 4})
+    assert len(h.nodes()) == before
+
+
+@dataclass(frozen=True)
+class Bounded:
+    limit: int = 5
+
+    def __post_init__(self) -> None:
+        if self.limit < 1:
+            raise ValueError("a limit is at least 1")
+
+
+def widen(cursor: Cursor, limit: int) -> None:
+    """Set the limit."""
+    cursor.set_options(limit=limit)
+
+
+class Bounds:
+    name = "bounds"
+    options = Bounded
+    commands = (widen,)
+
+
+@scenario
+async def test_set_options_checks_before_it_writes(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Bounds()])
+    before = len(h.nodes())
+    with pytest.raises(CommandFailed, match="ConfigError: extension 'bounds': a limit is at"):
+        await h.run("widen", {"limit": 0})
+    assert len(h.nodes()) == before
+    await h.run("widen", {"limit": 3})
+    await h.settle()
+    assert len(h.nodes()) == before + 1
+
+
+@scenario
+async def test_set_model_checks_the_model_against_the_catalog(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Picker()])
     before = len(h.nodes())
-    await h.run("pick", {"name": "nope"})
-    await h.settle()
-    (notice,) = h.notices()
-    assert notice.startswith("ConfigError: model 'nope' is not in your config")
+    with pytest.raises(CommandFailed, match="ConfigError: model 'nope' is not in your config"):
+        await h.run("pick", {"name": "nope"})
     assert len(h.nodes()) == before
     await h.run("pick", {"name": FAKE_MODEL})
     await h.settle()
     assert len(h.nodes()) == before + 1
+
+
+# A Model is an option; it is checked against the catalog.
+
+
+@dataclass(frozen=True)
+class Delegates:
+    helper: Model = DEFAULT_MODEL
+
+
+class Delegating:
+    name = "delegating"
+    options = Delegates
+
+
+@scenario
+async def test_a_model_may_be_an_option_and_is_checked_against_the_catalog(
+    tmp_path: Path,
+) -> None:
+    models = {name: {"model": name, "provider": "fake"} for name in (FAKE_MODEL, "alt")}
+    h = await Harness.create(
+        tmp_path, extensions=[Delegating()], catalog=read_models(cli={"models": models})
+    )
+    form = await h.client.options(h.cursor, "delegating")
+    assert form.schema["properties"]["helper"] == {  # type: ignore[index]
+        "type": "string",
+        "format": "model",
+        "default": FAKE_MODEL,
+    }, "a frontend offers the configured models"
+    await h.configure("delegating", {"helper": "alt"})
+    await h.settle()
+    with pytest.raises(ConfigError, match="option 'helper' must be a configured model"):
+        await h.configure("delegating", {"helper": "gpt-9"})
+
+
+# /config on a command line.
+
+
+@scenario
+async def test_config_on_a_command_line_reads_the_extensions_options_form(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Tuner(), StepLimit()])
+    forms = await h.client.commands()
+    options = {name: await h.client.options(h.cursor, name) for name in ("tuner", "step_limit")}
+    parsed = parse("/config tuner mode=slow 7", forms, options)
+    assert parsed.extension == "tuner"
+    assert parsed.args == {"mode": "slow", "size": 7}
+    assert await parsed.run(h.client, h.cursor) is None
+    await h.settle()
+    assert (await h.client.options(h.cursor, "tuner")).schema["properties"]["size"]["default"] == 7  # type: ignore[index]
+    bare = parse("/config step_limit", forms, options)
+    assert (bare.extension, bare.args, bare.missing) == ("step_limit", {}, ())
+    assert bare.command == options["step_limit"], "a bare line asks for the form"
+    assert parse("/config", forms, options).missing == ("extension",)
+    with pytest.raises(ValueError, match="'nope' has no options; those that do: "):
+        parse("/config nope", forms, options)
+    with pytest.raises(ValueError, match="limit: 'many' is not an integer"):
+        parse("/config step_limit limit=many", forms, options)
+    assert await completions("/config ", forms, h.client, h.cursor, options) == [
+        "tuner",
+        "step_limit",
+    ]
+    assert await completions("/config tuner 5 s", forms, h.client, h.cursor, options) == ["slow"]
+    assert await completions("/config tuner mode=s", forms, h.client, h.cursor, options) == [
+        "mode=slow"
+    ]

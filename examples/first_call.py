@@ -16,7 +16,6 @@ from tau_next import (
     Body,
     Driver,
     LoadedConfig,
-    LocalClient,
     Session,
     SystemClock,
     builtin_providers,
@@ -45,7 +44,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             driver = Driver(session, providers, loaded.catalog, clock=clock)
             driver.start()
             cursor = session.cursors()[0]
-            await LocalClient(driver, "example").send(cursor, "hello")
+            await driver.client("example").send(cursor, "hello")
             await rest(driver, session, cursor)
             for node in session.tree.walk(session.cursor(cursor).at):
                 print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")

@@ -21,7 +21,9 @@ from tau_next._core import Body, Config, Node
 
 class ConfigError(ValueError):
     """A `Config`'s data that does not name a model, a model that is not in the config, an
-    invalid resolved model, or a key that cannot be read."""
+    invalid resolved model, a key that cannot be read, or options that do not fit their
+    extension: an extension with none, an unknown option, a wrong type, a missing required
+    one, or a refusal by the options type's own `__post_init__`."""
 
 
 def _text(value: object, key: str) -> str:
@@ -132,12 +134,13 @@ class ModelConfig:
         return key
 
 
-def config_node(
+def model_config(
     model: str | None = None, extensions: Mapping[str, Mapping[str, object]] | None = None
 ) -> Config:
-    """The `Config` node body that sets `model` (a catalog's qualified name) and/or the
-    options in `extensions` (`{"step_limit": {"limit": 10}}`), and nothing else. `ConfigError`
-    if it sets neither."""
+    """The `Config` node body that sets `model` (a catalog's qualified name; it holds that name
+    and nothing resolved from the file) and/or the options in `extensions`
+    (`{"step_limit": {"limit": 10}}`), from this node on, and nothing else. `ConfigError` if
+    it sets neither."""
     fields: dict[str, object] = {}
     if model is not None:
         fields["model"] = _text(model, "model")
@@ -146,15 +149,6 @@ def config_node(
     if not fields:
         raise ConfigError("a Config node sets a model or some extension options")
     return Config(json.dumps(fields))
-
-
-def model_config(
-    qualified: str, extensions: Mapping[str, Mapping[str, object]] | None = None
-) -> Config:
-    """The `Config` node body naming the model `qualified` (a catalog's qualified name).
-    It holds that name and nothing resolved from the file. `extensions` adds options
-    (`{"step_limit": {"limit": 10}}`) that hold from this node on."""
-    return config_node(qualified, extensions)
 
 
 @dataclass(frozen=True)

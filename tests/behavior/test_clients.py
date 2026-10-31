@@ -15,10 +15,10 @@ from tau_next import (
     CallArgs,
     CallNamed,
     Client,
-    Connected,
     Cursor,
     CursorView,
     CutOff,
+    Driver,
     Ending,
     Event,
     HookFailure,
@@ -55,13 +55,12 @@ async def test_a_client_connecting_mid_sample_is_told_where_everything_stands(
     reply = Reply([Part.Text("hi")], gate=gate, gate_after=1)
     h = await Harness.create(tmp_path, provider=FakeProvider([reply]))
     other = await h.client.open(SYS)
-    await h.client.set_label("main", h.cursor)
+    await h.client.set_label(h.cursor, "main")
     await h.set_auto(False, other)
     await h.send("go")
     await h.settle()  # the sample is in flight
     late = await h.connect("late")
-    connected, *views, labels = await first(late, 4)
-    assert connected == Connected(len(h.nodes()))
+    *views, labels = await first(late, 3)
     assert labels == Labels((("main", h.cursor),)), "after the cursors it names"
     assert [v.cursor for v in views if isinstance(v, CursorView)] == [h.cursor, other]
     mine = views[0]
@@ -81,15 +80,13 @@ async def test_nodes_are_appended_before_the_state_that_points_at_them(tmp_path:
         provider=FakeProvider([call, Reply([Part.Text("done")])]),
         tools=[FakeTool("ta", "ran")],
     )
+    known = len(h.nodes())  # the nodes the client reads by call: the snapshot holds none
     client = await h.connect("watcher")
     await h.send("go")
     await h.settle()
     total = len(h.nodes())
     (events,) = await _drain(h, client)
-    connected = events[0]
-    assert isinstance(connected, Connected)
-    known = connected.nodes
-    for event in events[1:]:
+    for event in events:
         if isinstance(event, Appended):
             assert event.nodes[0].id == known, "in order, with no gap"
             known += len(event.nodes)
@@ -145,7 +142,7 @@ async def test_watching_catches_up_on_the_reply_in_flight(tmp_path: Path) -> Non
     await h.send("go")
     await h.settle()
     late = await h.connect("late")
-    await first(late, 3)
+    await first(late, 2)
     await late.watch([h.cursor])
     caught = await first(late, 4)
     assert caught == [
@@ -183,11 +180,11 @@ async def test_a_client_that_falls_behind_is_cut_off_and_reconnects_to_a_consist
     for i in range(4):
         await h.send(f"m{i}")
         await h.settle()  # each is an Appended nobody reads
-    with pytest.raises(CutOff):
+    with pytest.raises(ConnectionError) as cut:
         await asyncio.wait_for(_read_all(slow), 1)
+    assert isinstance(cut.value, CutOff)
     again = await h.connect("slow", buffer=2)
-    connected, view, _labels = await first(again, 3)
-    assert connected == Connected(len(h.nodes()))
+    view, _labels = await first(again, 2)
     assert isinstance(view, CursorView)
     assert view.at == len(h.nodes()) - 1
     assert not view.busy
@@ -267,7 +264,7 @@ async def test_every_client_is_told_of_a_question_and_of_its_close(tmp_path: Pat
     asks = Asks("go on?", to="alice")
     h, (alice, bob) = await asked(tmp_path, asks, "alice", "bob")
     for client in (alice, bob):
-        views = [e for e in await first(client, 3) if isinstance(e, CursorView)]
+        views = [e for e in await first(client, 2) if isinstance(e, CursorView)]
         assert [q.text for q in views[0].questions] == ["go on?"]
     (question,) = (await h.view()).questions
     await alice.answer(question.id, "no")
@@ -309,7 +306,7 @@ async def test_a_question_survives_its_clients_disconnect_and_is_answered_on_rec
     await h.settle()
     assert (await h.view()).questions == (question,), "a disconnect declines nothing"
     again = await h.connect("alice")
-    seen = [e for e in await first(again, 3) if isinstance(e, CursorView)]
+    seen = [e for e in await first(again, 2) if isinstance(e, CursorView)]
     assert seen[0].questions == (question,), "the snapshot has it"
     await again.answer(question.id, "yes")
     await h.settle()
@@ -481,7 +478,7 @@ async def test_a_refused_input_is_a_notice_to_the_client_that_typed_it_alone(
 ) -> None:
     h = await Harness.create(tmp_path, extensions=[Refuses()])
     bystander = await h.connect("bystander")
-    await first(bystander, 3)
+    await first(bystander, 2)
     await h.send("/oops")
     await h.settle()
     assert h.notices() == ["no commands here"]
@@ -494,15 +491,11 @@ async def test_a_refused_input_is_a_notice_to_the_client_that_typed_it_alone(
 class Tells:
     name = "tells"
 
-    def __init__(self, to: str, text: object) -> None:
+    def __init__(self, to: str, text: str) -> None:
         self.to, self.text = to, text
-        self.refused: list[Exception] = []
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        try:
-            cursor.tell(self.text, to=self.to)  # type: ignore[arg-type]
-        except TypeError as e:
-            self.refused.append(e)
+        cursor.tell(self.text, to=self.to)
         return None
 
 
@@ -526,18 +519,8 @@ async def test_a_notice_for_a_client_that_is_not_connected_is_dropped(tmp_path: 
     await h.step()
     await h.settle()
     alice = await h.connect("alice")
-    snapshot = await first(alice, 3)
+    snapshot = await first(alice, 2)
     assert not [e for e in snapshot if isinstance(e, Notice)]
-    await h.close()
-
-
-@scenario
-async def test_a_notice_is_text(tmp_path: Path) -> None:
-    tells = Tells("alice", 3)
-    h = await Harness.create(tmp_path, extensions=[tells])
-    await h.step()
-    await h.settle()
-    assert len(tells.refused) == 1
     await h.close()
 
 
@@ -559,7 +542,7 @@ async def test_watching_catches_up_on_calls_under_the_providers_own_index(tmp_pa
     await h.send("go")
     await h.settle()
     late = await h.connect("late")
-    await first(late, 3)
+    await first(late, 2)
     await late.watch([h.cursor])
     caught = await first(late, 5)
     assert caught == [
@@ -586,13 +569,14 @@ async def test_every_call_raises_the_same_way_once_the_driver_has_stopped(tmp_pa
         c.set_auto(at, True),
         c.abort(at),
         c.open(1),
-        c.set_label("l", at),
+        c.set_label(at, "l"),
         c.remove_label("l"),
         c.watch([at]),
         c.answer(0, "x"),
         c.commands(),
         c.run(at, "nosuch", {}),
         c.options(at, "nosuch"),
+        c.configure(at, "nosuch", {}),
         c.complete(at, "nope", ""),
         c.node(99),
         c.walk(99),
@@ -602,3 +586,16 @@ async def test_every_call_raises_the_same_way_once_the_driver_has_stopped(tmp_pa
         with pytest.raises(RuntimeError, match="stopped"):
             await call
     h.session.close()
+
+
+def test_the_drivers_public_surface_is_small() -> None:
+    public = {name for name in dir(Driver) if not name.startswith("_")}
+    assert public == {
+        "start",
+        "stop",
+        "rest",
+        "use_catalog",
+        "state",
+        "client",
+        "add_item",
+    }, "a frontend holds a Client; the driver's other calls are the Client's"

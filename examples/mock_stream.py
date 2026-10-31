@@ -21,7 +21,6 @@ from tau_next import (
     Driver,
     Live,
     LoadedConfig,
-    LocalClient,
     Session,
     SystemClock,
     TextDelta,
@@ -42,7 +41,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             driver = Driver(session, providers, loaded.catalog, clock=clock)
             driver.start()
             cursor = session.cursors()[0]
-            client = LocalClient(driver, "example")
+            client = driver.client("example")
             await client.watch([cursor])
 
             async def show() -> None:

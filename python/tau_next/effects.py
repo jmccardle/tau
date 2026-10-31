@@ -26,6 +26,8 @@ from tau_next._core import (
     SampleEnd,
     Session,
 )
+from tau_next._tools import FunctionTool, ToolError
+from tau_next._values import Context
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
 from tau_next.handles import Cursor, NodeHandle, Subject
 from tau_next.protocols import (
@@ -40,8 +42,6 @@ from tau_next.protocols import (
     Tool,
     ToolHook,
 )
-from tau_next.tools import FunctionTool, ToolError
-from tau_next.values import Context
 
 
 async def run_hooks(
@@ -505,8 +505,7 @@ class CallRun:
         """Call a tool made from a function: it is given the progress, the session `Context`,
         and (if it takes one) a handle bound to the extension that lists it, retired when the
         call is over."""
-        owner = self._owners.get(tool.name)
-        handle = self._node(owner) if tool.takes_handle and owner is not None else None
+        handle = self._node(self._owners[tool.name]) if tool.takes_handle else None
         try:
             return await tool.call(
                 args_raw, progress=self._progress(), context=self._context, handle=handle

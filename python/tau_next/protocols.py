@@ -8,6 +8,7 @@ from typing import Protocol, cast
 
 from tau_next._config import ModelConfig
 from tau_next._core import Node, Outcome, Part, Stop
+from tau_next._values import DefinitionError
 from tau_next.events import Delta
 from tau_next.handles import Cursor, NodeHandle, Subject
 
@@ -88,29 +89,24 @@ class ProviderClosed(SampleError):
     transient failure: a retry cannot succeed, so a retrying wrapper passes it on."""
 
 
-class ToolContractError(TypeError):
-    """An object given to the driver as a tool that does not satisfy `Tool`, or a second tool
-    with a name already taken. The message names the tool."""
-
-
 def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], frozenset[str]]:
     """The tools keyed by name, each checked against the `Tool` contract, and the names of
-    those that take progress; raises `ToolContractError` naming the tool for a missing or
+    those that take progress; raises `DefinitionError` naming the tool for a missing or
     wrong attribute or a duplicate name."""
     out: dict[str, Tool] = {}
     progress: set[str] = set()
     for i, candidate in enumerate(tools):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
-            raise ToolContractError(f"tool {i} ({candidate!r}): `name` must be a non-empty str")
+            raise DefinitionError(f"tool {i} ({candidate!r}): `name` must be a non-empty str")
         if not isinstance(getattr(candidate, "description", None), str):
-            raise ToolContractError(f"tool {name!r}: `description` must be a str")
+            raise DefinitionError(f"tool {name!r}: `description` must be a str")
         if not isinstance(getattr(candidate, "parameters", None), Mapping):
-            raise ToolContractError(f"tool {name!r}: `parameters` must be a Mapping")
+            raise DefinitionError(f"tool {name!r}: `parameters` must be a Mapping")
         if not callable(getattr(candidate, "call", None)):
-            raise ToolContractError(f"tool {name!r}: `call` must be callable")
+            raise DefinitionError(f"tool {name!r}: `call` must be callable")
         if name in out:
-            raise ToolContractError(f"two tools are named {name!r}")
+            raise DefinitionError(f"two tools are named {name!r}")
         if takes_progress(candidate):  # a malformed `progress` fails here, not at the first call
             progress.add(name)
         out[name] = cast("Tool", candidate)
@@ -120,7 +116,7 @@ def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], frozenset[s
 def takes_progress(tool: object) -> bool:
     """Whether `tool.call` opts in to progress: it has a parameter named `progress`, which the
     driver then passes by keyword. A `progress` that cannot be passed by keyword (positional-only)
-    raises `ToolContractError`. A `call` with no inspectable signature has not opted in."""
+    raises `DefinitionError`. A `call` with no inspectable signature has not opted in."""
     try:
         parameters = inspect.signature(getattr(tool, "call")).parameters  # noqa: B009
     except (ValueError, TypeError):
@@ -129,7 +125,7 @@ def takes_progress(tool: object) -> bool:
     if param is None:
         return False
     if param.kind is param.POSITIONAL_ONLY:
-        raise ToolContractError(
+        raise DefinitionError(
             f"tool {getattr(tool, 'name', tool)!r}: `progress` must be passable by keyword"
         )
     return True
@@ -188,7 +184,8 @@ aborted, or was cancelled) calling it does nothing."""
 
 
 class Tool(Protocol):
-    """What the driver and providers depend on; `@tool` is one way to build one.
+    """What the driver and providers depend on. A plain function is described as one
+    (`tau_next._tools`); any object with these attributes works too.
 
     Any object with these attributes works, whatever it is written in. The tool
     owns argument validation: it gets the call's raw JSON text.
@@ -289,7 +286,7 @@ class Extension(Protocol):
     `pre_reply`, `post_reply`, `post_result`, `post_step`. Tool hooks
     (`ToolHook`): `pre_tool`, `pre_result`. `name` is non-empty and unique among a
     driver's extensions; any attribute named `pre_*` or `post_*` that is not a hook point is
-    refused when the driver is built (`ExtensionContractError`), so a misspelt hook cannot
+    refused when the driver is built (`DefinitionError`), so a misspelt hook cannot
     sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
     field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
     """
@@ -298,35 +295,27 @@ class Extension(Protocol):
     def name(self) -> str: ...
 
 
-class ExtensionContractError(TypeError):
-    """An object given to the driver as an extension that does not satisfy `Extension`: a
-    missing or duplicate `name`, or a `pre_*`/`post_*` attribute that is not a callable hook
-    point. The message names the extension."""
-
-
 def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
     """The extensions, in order, each checked against the `Extension` contract; raises
-    `ExtensionContractError` naming the extension."""
+    `DefinitionError` naming the extension."""
     names: set[str] = set()
     for i, candidate in enumerate(extensions):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
-            raise ExtensionContractError(
-                f"extension {i} ({candidate!r}): `name` must be a non-empty str"
-            )
+            raise DefinitionError(f"extension {i} ({candidate!r}): `name` must be a non-empty str")
         if name in names:
-            raise ExtensionContractError(f"two extensions are named {name!r}")
+            raise DefinitionError(f"two extensions are named {name!r}")
         names.add(name)
         for attr in dir(candidate):
             if not attr.startswith(("pre_", "post_")):
                 continue
             if attr not in (*CURSOR_POINTS, *TOOL_POINTS):
-                raise ExtensionContractError(
+                raise DefinitionError(
                     f"extension {name!r}: `{attr}` is not a hook point "
                     f"(the points are {', '.join((*CURSOR_POINTS, *TOOL_POINTS))})"
                 )
             if not callable(getattr(candidate, attr)):
-                raise ExtensionContractError(f"extension {name!r}: hook `{attr}` must be callable")
+                raise DefinitionError(f"extension {name!r}: hook `{attr}` must be callable")
     return tuple(cast("Extension", e) for e in extensions)
 
 

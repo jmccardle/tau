@@ -13,7 +13,6 @@ from types import TracebackType
 from tau_next._core import Ending, Session
 from tau_next.events import (
     Appended,
-    Connected,
     CursorView,
     CutOff,
     Event,
@@ -32,14 +31,15 @@ class Feed:
 
     `Live` is heard only for the cursors being `watching`, and dropped when `capacity` are
     waiting. `Appended` and `Notice` are never dropped: a backlog of `capacity` of them cuts the
-    client off (the stream ends with `CutOff`, nothing more is delivered). `Connected`,
-    `Labels` and a `CursorView` replace their own earlier copy: it is removed and the new one
-    goes to the end, so the buffer holds at most one per cursor. The bound is `capacity` of
-    each of the first two classes, plus one state event per cursor.
+    client off (the stream ends with `CutOff`, nothing more is delivered). `Labels` and a
+    `CursorView` replace their own earlier copy: it is removed and the new one goes to the end,
+    so the buffer holds at most one per cursor. The bound is `capacity` of each of the first two
+    classes, plus one state event per cursor.
 
     `close()` disconnects. The hub holds feeds weakly, so one abandoned without `close()` is
     collected and its client is no longer connected. When the driver stops the stream ends
-    after what it holds; when the driver fails, `anext` raises the failure after what it holds.
+    after what it holds. Every other end is a `ConnectionError` after what it holds: `CutOff`,
+    or, when the driver fails, one whose message is the failure's `"Type: msg"`, chained to it.
     """
 
     def __init__(self, client: str, capacity: int, release: Callable[["Feed"], None]) -> None:
@@ -87,8 +87,9 @@ class Feed:
 
     def end(self, failure: Exception | None = None) -> None:
         """No more events will arrive; what is buffered is still delivered, then `anext`
-        raises `failure` (or ends, if there is none). A stream that has ended stays as it ended:
-        a driver that failed and is then stopped does not turn the failure into a clean end."""
+        raises `failure` as a `ConnectionError` (or ends, if there is none). A stream that has
+        ended stays as it ended: a driver that failed and is then stopped does not turn the
+        failure into a clean end."""
         if self._ended:
             return
         self._ended = True
@@ -115,9 +116,12 @@ class Feed:
                     self._backlog -= 1
                 return event
             if self._ended:
-                if self._failure is not None:
-                    raise self._failure
-                raise StopAsyncIteration
+                failure = self._failure
+                if failure is None:
+                    raise StopAsyncIteration
+                if isinstance(failure, ConnectionError):
+                    raise failure
+                raise ConnectionError(f"{type(failure).__name__}: {failure}") from failure
             if self._waiter is not None:
                 raise RuntimeError("a client has one consumer; another is waiting on it")
             self._waiter = asyncio.get_running_loop().create_future()
@@ -168,17 +172,18 @@ class Hub:
         return any(client in (None, feed.client) for feed in self._feeds)
 
     def connect(self, client: str, capacity: int) -> Feed:
-        """A new stream for `client`, opening with the snapshot: `Connected`, a `CursorView`
-        per cursor, then `Labels` (which name cursors the client has by then been sent), as
-        they stand. Publishing what is pending first and taking the
-        snapshot from what was published make it one act: nothing falls between the snapshot
-        and what follows."""
+        """A new stream for `client`, opening with the snapshot: a `CursorView` per cursor, then
+        `Labels` (which name cursors the client has by then been sent), as they stand. Publishing
+        what is pending first and taking the snapshot from what was published make it one act:
+        nothing falls between the snapshot and what follows. The nodes are not in it: a node
+        never changes, so a client reads the ones it needs by id, and ignores an `Appended` one
+        it has already read."""
         feed = Feed(client, capacity, self._feeds.discard)
         if self._ended is not None:  # too late for anything: it ends as the others did
             feed.end(self._ended[0])
             return feed
         self.sync()
-        for event in (Connected(self._nodes), *self._views.values(), Labels(self._labels)):
+        for event in (*self._views.values(), Labels(self._labels)):
             feed.offer(event)
         self._feeds.add(feed)
         return feed

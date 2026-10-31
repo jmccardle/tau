@@ -13,7 +13,7 @@ from tau_next import (
     CallDraft,
     Cursor,
     CursorId,
-    HintError,
+    DefinitionError,
     Model,
     NodeHandle,
     Outcome,
@@ -140,7 +140,7 @@ class Asks:
         text, expect, to = self.question
         try:
             self.answers.append(await cursor.ask(text, expect, to=to))
-        except HintError as e:
+        except DefinitionError as e:
             self.refusals.append(e)
         return None
 

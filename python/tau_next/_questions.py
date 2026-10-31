@@ -5,8 +5,8 @@ import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from tau_next._values import Context, Kind
 from tau_next.events import OpenQuestion
-from tau_next.values import Context, Kind
 
 
 @dataclass

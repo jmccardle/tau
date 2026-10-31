@@ -3,26 +3,30 @@
 A frontend never touches `Driver` or `Session`. It holds a `Client`: async calls that act for
 the client's id (`by: Frontend(client)`), async reads of the tree, and an event stream, which
 is the client itself (`async for event in client`). `LocalClient` is the in-process
-implementation; a remote one serializes each call and event, which are all plain frozen values,
-so the protocol has no call that takes or returns a handle.
+implementation, made by `Driver.client`; a remote one serializes each call and event, so the
+protocol has no call that takes or returns a handle.
+
+A stream that ends in error raises `ConnectionError`: `CutOff` for a client that fell behind,
+or one whose message is the `"Type: msg"` of the failure that ended the driver. A frontend has
+one rule for both: `except ConnectionError`, then connect again.
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Collection, Mapping
-from typing import Protocol
+from typing import Protocol, Self
 
-from tau_next._commands import CommandInfo
+from tau_next._calls import Calls
 from tau_next._core import Node
 from tau_next._hub import Feed
-from tau_next._options import OptionsForm
-from tau_next.driver import Driver
+from tau_next._values import Form
 from tau_next.events import Event
 
 
 class Client(AsyncIterator[Event], Protocol):
-    """What a frontend holds. Iterating it yields the events: `Connected`, a `CursorView` per
-    cursor and `Labels` first, then changes as they happen, until the driver stops (the stream
-    ends), fails (it raises the failure), or the client is `CutOff` for falling behind. Every
-    call raises once the driver has failed or stopped."""
+    """What a frontend holds. Iterating it yields the events: a `CursorView` per cursor and
+    `Labels` first, then changes as they happen, until the driver stops (the stream ends), or
+    the driver fails or the client is `CutOff` for falling behind (it raises `ConnectionError`).
+    Every call raises once the driver has failed or stopped."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -39,23 +43,22 @@ class Client(AsyncIterator[Event], Protocol):
         """Start a step on a cursor at rest; `Busy` otherwise."""
         ...
 
-    async def go_to(self, cursor: int, to: int) -> bool:
+    async def go_to(self, cursor: int, to: int) -> None:
         """Move the cursor to node `to`, aborting a busy step (which declines its open
-        questions). True if a running step was cancelled."""
+        questions)."""
         ...
 
     async def set_auto(self, cursor: int, on: bool) -> None: ...
 
-    async def abort(self, cursor: int) -> bool:
-        """Abort the cursor's step and decline its open questions. True if a running step was
-        cancelled."""
+    async def abort(self, cursor: int) -> None:
+        """Abort the cursor's step and decline its open questions."""
         ...
 
     async def open(self, at: int) -> int:
         """Open a cursor at node `at`; it wakes. Returns its id."""
         ...
 
-    async def set_label(self, label: str, cursor: int) -> None:
+    async def set_label(self, cursor: int, label: str) -> None:
         """Put `label` on `cursor`; a label set elsewhere moves."""
         ...
 
@@ -75,21 +78,34 @@ class Client(AsyncIterator[Event], Protocol):
         client."""
         ...
 
-    async def commands(self) -> tuple[CommandInfo, ...]:
-        """Each command's name, description and argument schema; fixed for the driver's life."""
+    async def commands(self) -> tuple[Form, ...]:
+        """Each command's form: its name, description and argument schema (named types with
+        their `"format"`, each default), fixed for the driver's life. If some extension has
+        options there is one more, `config`, whose one argument is the extension; it is
+        changed with `configure`, not `run`."""
         ...
 
-    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> None:
-        """Run `/command` with decoded JSON `args` on `cursor`. The result and any failure
-        come back as a `Notice` to this client. `LookupError` for an unknown command,
-        `ValueError` naming the problem for arguments that fit no parameter (the values are
-        checked with the session, `"new"` last), `Busy` for a command that runs as a step of
-        the cursor when it is not at rest."""
+    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None:
+        """Run `/command` with decoded JSON `args` on `cursor`; returns the command's result
+        (`None` if it has none) once it has finished. `CommandFailed` (its message is the
+        failure as `"Type: msg"`) if it raised, or was aborted; for a command that runs as a
+        step of the cursor, once that step has ended. A command's `progress` and `cursor.tell`
+        arrive as `Notice`s. `LookupError` for an unknown command, `ValueError` naming the
+        problem for arguments that fit no parameter (the values are checked with the session,
+        `"new"` last), `Busy` for a command that runs as a step of the cursor when it is not
+        at rest."""
         ...
 
-    async def options(self, cursor: int, extension: str) -> OptionsForm:
-        """`extension`'s options as they stand at `cursor`, with their schema: the form
-        `/config` takes the changed values of. `OptionsError` if it has no options."""
+    async def options(self, cursor: int, extension: str) -> Form:
+        """`extension`'s options as they stand at `cursor`: a form whose schema has every
+        option, each default the value now. `ConfigError` if it has no options."""
+        ...
+
+    async def configure(self, cursor: int, extension: str, values: Mapping[str, object]) -> None:
+        """Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s
+        branch: a step of the cursor writes a `Config` node. `ConfigError` for an extension
+        without options, or values its options type refuses, `Busy` unless the cursor is at
+        rest; nothing is written then."""
         ...
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
@@ -111,18 +127,16 @@ class Client(AsyncIterator[Event], Protocol):
         ...
 
 
-class LocalClient:
-    """A `Client` in the driver's process. Creating one connects: its stream opens with the
-    snapshot, in one act on the loop, so build it inside the running loop. `buffer` bounds the
-    stream (`Feed`). The client is connected while its stream is open: `close()` (or dropping
-    the client) disconnects it, and a reconnect is a new `LocalClient` with the same id."""
+class _Stream:
+    """A client's id and its event stream: connected while the stream is open, so `close()` (or
+    dropping the client) disconnects it, and a reconnect is a new client with the same id."""
 
-    def __init__(self, driver: Driver, id: str, *, buffer: int = 256) -> None:
+    def __init__(self, calls: Calls, id: str, buffer: int) -> None:
         self.id = id
-        self._driver = driver
-        self._feed: Feed = driver.connect(id, buffer)
+        self._calls = calls
+        self._feed: Feed = calls.connect(id, buffer)
 
-    def __aiter__(self) -> "LocalClient":
+    def __aiter__(self) -> Self:
         return self
 
     async def __anext__(self) -> Event:
@@ -131,11 +145,23 @@ class LocalClient:
     async def close(self) -> None:
         await self._feed.close()
 
-    def _up(self) -> Driver:
-        """The driver, if it is running: every call starts here, so each one raises the same
-        way once the driver has failed or stopped."""
-        self._driver.state().check()
-        return self._driver
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
+
+class LocalClient(_Stream):
+    """A `Client` in the driver's process, made by `Driver.client`: its stream opens with the
+    snapshot, in one act on the loop, so make it inside the running loop. Each call is
+    documented on `Client`."""
+
+    def _up(self) -> Calls:
+        """The calls, if the driver is running: every call starts here, so each one raises the
+        same way once the driver has failed or stopped."""
+        self._calls.check()
+        return self._calls
 
     async def input(self, cursor: int, text: str) -> int:
         return self._up().input(cursor, self.id, text)
@@ -146,20 +172,20 @@ class LocalClient:
     async def step(self, cursor: int) -> None:
         self._up().step(cursor)
 
-    async def go_to(self, cursor: int, to: int) -> bool:
-        return self._up().go_to(cursor, to, self.id)
+    async def go_to(self, cursor: int, to: int) -> None:
+        self._up().go_to(cursor, to, self.id)
 
     async def set_auto(self, cursor: int, on: bool) -> None:
         self._up().set_auto(cursor, on)
 
-    async def abort(self, cursor: int) -> bool:
-        return self._up().abort(cursor)
+    async def abort(self, cursor: int) -> None:
+        self._up().abort(cursor)
 
     async def open(self, at: int) -> int:
         return self._up().open(at, self.id)
 
-    async def set_label(self, label: str, cursor: int) -> None:
-        self._up().set_label(label, cursor)
+    async def set_label(self, cursor: int, label: str) -> None:
+        self._up().set_label(cursor, label)
 
     async def remove_label(self, label: str) -> None:
         self._up().remove_label(label)
@@ -170,17 +196,29 @@ class LocalClient:
     async def answer(self, question: int, value: object) -> None:
         self._up().answer(self.id, question, value)
 
-    async def commands(self) -> tuple[CommandInfo, ...]:
-        return self._up().commands.infos()
+    async def commands(self) -> tuple[Form, ...]:
+        return self._up().forms()
 
-    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> None:
-        self._up().commands.run(self.id, cursor, command, args)
+    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None:
+        return await self._finished(self._up().run(self.id, cursor, command, args))
 
-    async def options(self, cursor: int, extension: str) -> OptionsForm:
-        return self._up().commands.form(cursor, extension)
+    async def options(self, cursor: int, extension: str) -> Form:
+        return self._up().options(cursor, extension)
+
+    async def configure(self, cursor: int, extension: str, values: Mapping[str, object]) -> None:
+        await self._finished(self._up().configure(self.id, cursor, extension, values))
+
+    async def _finished(self, outcome: "asyncio.Future[str | None]") -> str | None:
+        """What a command came to. A command the driver gave up on, because it failed or was
+        stopped, is cancelled: the call says so."""
+        try:
+            return await outcome
+        except asyncio.CancelledError:
+            self._calls.check()
+            raise
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
-        return await self._up().commands.complete(cursor, named, prefix)
+        return await self._up().complete(cursor, named, prefix)
 
     async def node(self, id: int) -> Node:
         return self._up().session.tree.node(id)
@@ -190,9 +228,3 @@ class LocalClient:
 
     async def children(self, id: int) -> list[int]:
         return self._up().session.tree.children(id)
-
-    async def __aenter__(self) -> "LocalClient":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.close()

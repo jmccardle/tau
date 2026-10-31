@@ -21,7 +21,6 @@ from typing import TextIO
 from tau_next._config import ConfigError
 from tau_next._config_layers import LayerText, ModelCatalog, check_config
 from tau_next._dotenv import DotenvError
-from tau_next._options import check_options
 from tau_next._startup import load_config, prompts, select_model
 from tau_next._trust import (
     TAU_DIR,
@@ -112,7 +111,15 @@ def _check(run: _Run, show: str | None) -> int:
         layer, environ, trusted = _project_findings(root, home, run.environ, found)
     providers = builtin_providers(environ)
     try:
-        problems = check_config(user_config_path(home), layer, environ=environ, providers=providers)
+        # The options of the extensions this command knows; a project's own are checked where
+        # they are loaded (`check_config`'s `extensions`).
+        problems = check_config(
+            user_config_path(home),
+            layer,
+            environ=environ,
+            providers=providers,
+            extensions=(StepLimit(),),
+        )
     finally:  # a check opens no connection; closing is the builder's duty all the same
         asyncio.run(_close(providers))
     for p in problems:
@@ -123,13 +130,6 @@ def _check(run: _Run, show: str | None) -> int:
     if found.failed or any(p.severity == "error" for p in problems):
         return 1
     loaded = load_config(run.cwd, run.environ, ask=None)
-    # The options of the extensions this command knows; a project's own are checked where
-    # they are loaded (`check_options`).
-    wrong = check_options(loaded.catalog, (StepLimit(),))
-    for p in wrong:
-        run.stdout.write(safe_text(str(p)) + "\n")
-    if wrong:
-        return 1
     if show is not None:
         name = select_model(loaded.catalog, show, pick=prompts(run.stdin, run.stdout).pick)
         _show(loaded.catalog, name, run.stdout)

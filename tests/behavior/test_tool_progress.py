@@ -25,10 +25,8 @@ from tau_next import (
     Part,
     Progress,
     Stop,
-    ToolDefinitionError,
     ToolProgress,
     base_tools,
-    tool,
 )
 
 CALL = Part.Call("c1", "work", "{}")
@@ -114,26 +112,11 @@ async def test_a_tool_that_takes_no_progress_is_called_as_before(tmp_path: Path)
     await h.close()
 
 
-@tool
 def counting(n: int, progress: Progress) -> str:
     """Count to `n`, showing each number."""
     for i in range(n):
         progress(f"{i} ")
     return "counted"
-
-
-@tool
-def optional_progress(n: int, progress: Progress | None = None) -> str:
-    """Count to `n`, showing each number if anyone is listening."""
-    for i in range(n):
-        if progress is not None:
-            progress(f"{i} ")
-    return "counted"
-
-
-def test_progress_may_be_spelled_as_the_tool_protocol_spells_it() -> None:
-    assert list(optional_progress.parameters["properties"]) == ["n"]  # type: ignore[call-overload]
-    assert optional_progress.parameters["required"] == ["n"]
 
 
 @scenario
@@ -315,16 +298,6 @@ async def test_a_hooks_write_mid_batch_is_announced_when_it_happens(
     slow_gate.release()
     await h.close()
     await collecting
-
-
-def shadowed(name: str, progress: int) -> str:
-    """Has an argument that happens to be called progress."""
-    return name
-
-
-def test_a_tool_argument_called_progress_is_refused_not_taken_over() -> None:
-    with pytest.raises(ToolDefinitionError, match=r"'shadowed'.*`progress`"):
-        tool(shadowed)
 
 
 @scenario

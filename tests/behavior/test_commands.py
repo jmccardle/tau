@@ -11,19 +11,20 @@ from harness import Harness, build, say, scenario
 from tau_next import (
     Body,
     Busy,
-    CommandInfo,
+    CommandFailed,
     Cursor,
     CursorId,
-    ExtensionContractError,
+    DefinitionError,
+    Form,
     ItemData,
     ModelCatalog,
     NodeHandle,
     NodeId,
+    Notice,
     Outcome,
     Part,
     Progress,
     Stop,
-    ToolDefinitionError,
     TreeHandle,
     read_models,
 )
@@ -63,9 +64,9 @@ async def test_a_function_that_is_a_tool_and_a_command_tells_the_client(tmp_path
     file = tmp_path / "words.txt"
     file.write_text("one two three")
     h = await Harness.create(tmp_path, extensions=[Words()])
-    await h.run("word_count", {"path": str(file)})
+    assert await h.run("word_count", {"path": str(file)}) == "3 words"
     await h.settle()
-    assert h.notices() == ["3 words"]
+    assert h.notices() == [], "the result comes back from the call, not as a notice"
     assert h.session.cursor(h.cursor).busy is False
     assert len(h.nodes()) == 2, "a command that touches nothing writes nothing"
 
@@ -89,7 +90,7 @@ async def test_the_client_is_told_each_command_and_its_schema(tmp_path: Path) ->
         "path": {"type": "string", "format": "path"}
     }
     assert by_name["branch_from"].schema["required"] == ["node"], "the Cursor is not an argument"
-    assert isinstance(by_name["hand_off"], CommandInfo)
+    assert isinstance(by_name["hand_off"], Form)
     assert list(cast("dict[str, object]", by_name["hand_off"].schema["properties"])) == [
         "to",
         "note",
@@ -151,9 +152,10 @@ async def test_hand_off_to_a_cursor_by_id_is_a_send_its_model_answers(tmp_path: 
     )
     other = await h.client.open(h.session.cursor(h.cursor).at)
     await h.settle()
-    await h.run("hand_off", {"to": other, "note": "look at this"})
+    assert (
+        await h.run("hand_off", {"to": other, "note": "look at this"}) == f"sent to cursor {other}"
+    )
     await h.settle()
-    assert h.notices() == [f"sent to cursor {other}"]
     assert told(h, other)[0] == Body.User("look at this")
     (request,) = h.provider.requests
     assert h.session.tree.node(request.walk[-1]).body == Body.User("look at this"), (
@@ -168,10 +170,10 @@ async def test_hand_off_to_new_opens_a_cursor_at_the_running_cursors_node(tmp_pa
         tmp_path, provider=FakeProvider([say("started")]), extensions=[Navigation()]
     )
     at = h.session.cursor(h.cursor).at
-    await h.run("hand_off", {"to": "new", "note": "start here"})
+    told_of = await h.run("hand_off", {"to": "new", "note": "start here"})
     await h.settle()
     (new,) = [c for c in h.session.cursors() if c != h.cursor]
-    assert h.notices() == [f"sent to cursor {new}"]
+    assert told_of == f"sent to cursor {new}"
     (request,) = h.provider.requests
     sent = h.session.tree.node(request.walk[-1])
     assert sent.body == Body.User("start here")
@@ -264,11 +266,13 @@ async def test_abort_cancels_a_running_command_and_skips_the_hooks(tmp_path: Pat
 
     recorder = Recorder()
     h = await Harness.create(tmp_path, extensions=[Slow(), recorder], gates=[gate])
-    await h.run("slow")
+    running = asyncio.ensure_future(h.run("slow"))
     await h.settle()
     assert h.session.cursor(h.cursor).busy
-    assert await h.abort() is False, "core has no effect of its own to cancel in a hook job"
+    await h.abort()
     await h.settle()
+    with pytest.raises(CommandFailed, match="Aborted"):
+        await running
     assert seen == ["cancelled"]
     assert not h.session.cursor(h.cursor).busy
     assert "pre_step" not in recorder.points
@@ -276,7 +280,7 @@ async def test_abort_cancels_a_running_command_and_skips_the_hooks(tmp_path: Pat
 
 
 @scenario
-async def test_a_failing_cursor_command_tells_the_client_and_fails_the_step(
+async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step(
     tmp_path: Path,
 ) -> None:
     def explode(cursor: Cursor) -> None:
@@ -289,9 +293,10 @@ async def test_a_failing_cursor_command_tells_the_client_and_fails_the_step(
 
     recorder = Recorder()
     h = await Harness.create(tmp_path, extensions=[Explodes(), recorder])
-    await h.run("explode")
-    await h.settle()
-    assert h.notices() == ["RuntimeError: boom"]
+    with pytest.raises(CommandFailed, match=r"^RuntimeError: boom$"):
+        await h.run("explode")
+    assert not h.session.cursor(h.cursor).busy, "it raises once the step it began has ended"
+    assert h.notices() == []
     view = await h.view()
     assert view.hook_error is not None
     assert (view.hook_error.extension, view.hook_error.point) == ("explodes", "pre_step")
@@ -300,7 +305,7 @@ async def test_a_failing_cursor_command_tells_the_client_and_fails_the_step(
 
 
 @scenario
-async def test_a_failing_plain_command_only_tells_the_client(tmp_path: Path) -> None:
+async def test_a_failing_plain_command_only_raises_for_the_client(tmp_path: Path) -> None:
     def explode(tree: TreeHandle) -> None:
         """Fail."""
         raise RuntimeError("boom")
@@ -310,14 +315,13 @@ async def test_a_failing_plain_command_only_tells_the_client(tmp_path: Path) -> 
         commands = (explode,)
 
     h = await Harness.create(tmp_path, extensions=[Explodes()])
-    await h.run("explode")
-    await h.settle()
-    assert h.notices() == ["RuntimeError: boom"]
+    with pytest.raises(CommandFailed, match=r"^RuntimeError: boom$"):
+        await h.run("explode")
     assert (await h.view()).hook_error is None
 
 
 @scenario
-async def test_progress_is_a_notice_each_call(tmp_path: Path) -> None:
+async def test_progress_is_a_notice_each_call_and_the_result_is_returned(tmp_path: Path) -> None:
     def count(progress: Progress, upto: int) -> str:
         """Count."""
         for i in range(upto):
@@ -329,21 +333,30 @@ async def test_progress_is_a_notice_each_call(tmp_path: Path) -> None:
         commands = (count,)
 
     h = await Harness.create(tmp_path, extensions=[Counts()])
-    await h.run("count", {"upto": 2})
+    assert await h.run("count", {"upto": 2}) == "counted"
     await h.settle()
-    assert h.notices() == ["at 0", "at 1", "counted"]
+    assert h.notices() == ["at 0", "at 1"]
 
 
 @scenario
-async def test_only_the_client_that_ran_the_command_is_told(tmp_path: Path) -> None:
-    file = tmp_path / "w.txt"
-    file.write_text("a b")
-    h = await Harness.create(tmp_path, extensions=[Words()])
+async def test_only_the_client_that_ran_the_command_is_told_its_progress(tmp_path: Path) -> None:
+    def count(progress: Progress) -> str:
+        """Count."""
+        progress("at 0")
+        return "counted"
+
+    class Counts:
+        name = "counts"
+        commands = (count,)
+
+    h = await Harness.create(tmp_path, extensions=[Counts()])
     other = await h.connect("other")
-    await h.run("word_count", {"path": str(file)})
+    assert await h.run("count") == "counted"
     await h.settle()
-    assert h.notices() == ["2 words"]
+    assert h.notices() == ["at 0"]
     await other.close()
+    assert not [e for e in [e async for e in other] if isinstance(e, Notice)]
+    await h.close()
 
 
 # Building the driver.
@@ -361,8 +374,20 @@ def test_two_commands_with_one_name_fail_when_the_driver_is_built() -> None:
         name = "two"
         commands = (a,)
 
-    with pytest.raises(ExtensionContractError, match="two commands are named 'a'"):
+    with pytest.raises(DefinitionError, match="two commands are named 'a'"):
         build([One(), Two()])
+
+
+def test_a_command_may_not_be_named_config() -> None:
+    def config(tree: TreeHandle) -> None:
+        """Shadow."""
+
+    class Shadow:
+        name = "shadow"
+        commands = (config,)
+
+    with pytest.raises(DefinitionError, match="'config'"):
+        build([Shadow()])
 
 
 def test_a_command_may_not_be_named_for_a_built_in() -> None:
@@ -373,7 +398,7 @@ def test_a_command_may_not_be_named_for_a_built_in() -> None:
         name = "shadow"
         commands = (model,)
 
-    with pytest.raises(ExtensionContractError, match="'model'"):
+    with pytest.raises(DefinitionError, match="'model'"):
         build([Shadow()])
 
 
@@ -381,7 +406,7 @@ def test_an_extension_may_not_be_named_tau() -> None:
     class Imposter:
         name = "tau"
 
-    with pytest.raises(ExtensionContractError, match="'tau'"):
+    with pytest.raises(DefinitionError, match="'tau'"):
         build([Imposter()])
 
 
@@ -393,7 +418,7 @@ def test_a_command_may_not_take_a_nodes_handle() -> None:
         name = "bad"
         commands = (bad,)
 
-    with pytest.raises(ToolDefinitionError, match="command 'bad', parameter 'node'"):
+    with pytest.raises(DefinitionError, match="command 'bad', parameter 'node'"):
         build([Bad()])
 
 
@@ -460,6 +485,7 @@ class Knows:
 
     def __init__(self) -> None:
         self.step_clients: list[str | None] = []
+        self.after_clients: list[str | None] = []
         self.refused: list[str] = []
         self.commands = (self.runner, self.runner_tree)
         self.tools = (self.tool_client,)
@@ -471,6 +497,9 @@ class Knows:
         except ValueError as e:
             self.refused.append(str(e))
 
+    async def post_step(self, cursor: Cursor, subject: object) -> None:
+        self.after_clients.append(cursor.client)
+
     async def runner(self, cursor: Cursor) -> str:
         """The client a cursor command runs for."""
         return f"{cursor.client}"
@@ -480,7 +509,7 @@ class Knows:
         return f"{tree.client}"
 
     def tool_client(self, node: NodeHandle) -> str:
-        """The client the batch's step was for."""
+        """The client of the nearest typed input up the batch's walk."""
         return f"{node.client}"
 
 
@@ -488,30 +517,34 @@ class Knows:
 async def test_a_commands_handle_knows_its_runner(tmp_path: Path) -> None:
     knows = Knows()
     h = await Harness.create(tmp_path, extensions=[knows])
-    await h.run("runner_tree")
+    assert await h.run("runner_tree") == "term"
+    assert await h.run("runner") == "term"
     await h.settle()
-    await h.run("runner")
-    await h.settle()
-    assert h.notices() == ["term", "term", "step started"], "and its step's hooks know it too"
-    assert knows.step_clients == ["term"]
+    assert knows.step_clients == [None], "the hooks of its step are not the command's"
+    assert len(knows.refused) == 1
 
 
 @scenario
-async def test_a_step_is_for_the_client_whose_input_it_delivers(tmp_path: Path) -> None:
+async def test_a_handle_knows_the_client_who_typed_the_nearest_input_up_its_walk(
+    tmp_path: Path,
+) -> None:
     knows = Knows()
     call = Reply([Part.Call("c1", "tool_client", "{}")], Stop.Tools)
+    again = Reply([Part.Call("c2", "tool_client", "{}")], Stop.Tools)
     h = await Harness.create(
-        tmp_path, provider=FakeProvider([call, say("done"), say("again")]), extensions=[knows]
+        tmp_path,
+        provider=FakeProvider([call, again, say("done"), say("more")]),
+        extensions=[knows],
     )
     other = await h.connect("other")
     await h.client.send(h.cursor, "from term")
     await h.settle()
     await other.send(h.cursor, "from other")
     await h.settle()
-    assert knows.step_clients == ["term", None, "other"], "the step after the tools had no input"
-    (results,) = [b for b in h.bodies() if isinstance(b, Body.Results)]
-    assert results.outcomes[0][1] == Outcome.Ok("term"), "a tool's handle knows it as well"
-    assert len(knows.refused) == 1, "a tell with nobody to tell is refused"
+    results = [b for b in h.bodies() if isinstance(b, Body.Results)]
+    assert [r.outcomes[0][1] for r in results] == [Outcome.Ok("term")] * 2, "in a later step too"
+    assert knows.after_clients == ["term", "term", "term", "other"], "stateless: the walk's"
+    assert knows.step_clients == [None, "term", "term", "term"], "an input is a node once delivered"
 
 
 @scenario
@@ -522,7 +555,7 @@ async def test_a_step_woken_by_an_extension_item_is_for_no_client(tmp_path: Path
     await h.settle()
     assert knows.step_clients == [None]
     assert len(knows.refused) == 1
-    assert "no client started this work" in knows.refused[0]
+    assert "no client typed anything" in knows.refused[0]
     assert h.notices() == [], "tell with nobody to tell is refused, not dropped"
 
 

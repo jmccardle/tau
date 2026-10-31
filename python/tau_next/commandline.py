@@ -1,23 +1,31 @@
 """The parts of a line-based frontend that need no terminal (D16 section 5).
 
-`parse(line, commands)` turns `/name arg arg name=value` into the command, its arguments as
-decoded JSON, and the required parameters still missing; `completions(...)` says what could
-finish the word being typed. Words are shell words (`shlex`): quote a value with spaces.
-Positional words fill the parameters in order, skipping those set by `name=value`; a list
-takes comma-separated items. Each word becomes a value by the parameter's schema (an `int` by
-`int()`, a `Literal` by its values, a `bool` by `true`/`false`). Whether the value is allowed
-(a model that is configured, a cursor that is open) is the driver's check, not this module's:
-it only spares a round trip.
+`parse(line, commands, options)` turns `/name arg arg name=value` into the command, its
+arguments as decoded JSON, and the required parameters still missing; `completions(...)` says
+what could finish the word being typed. `value` and `values` do the same for one value of any
+schema: a question's answer typed as text is read and completed as a command's argument is.
+Words are shell words (`shlex`): quote a value with spaces. Positional words fill the
+parameters in order, skipping those set by `name=value`; a list takes comma-separated items.
+Each word becomes a value by the parameter's schema (an `int` by `int()`, a `Literal` by its
+values, a `bool` by `true`/`false`). Whether the value is allowed (a model that is configured, a
+cursor that is open) is the driver's check, not this module's: it only spares a round trip.
+
+`/config <extension> name=value ...` is the one line that is not a command's: the words after
+the extension are read by that extension's options form (`Client.options`), which a frontend
+passes as `options`, by extension name, for the extensions the `config` form lists.
 """
 
 import shlex
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import cast
 
-from tau_next._commands import CommandInfo
+from tau_next._commands import CONFIG
+from tau_next._values import Form, Json
 from tau_next.client import Client
-from tau_next.values import Json
+
+NO_OPTIONS: Mapping[str, Form] = MappingProxyType({})
 
 
 class UnknownCommand(LookupError):
@@ -30,12 +38,24 @@ class UnknownCommand(LookupError):
 
 @dataclass(frozen=True)
 class Parsed:
-    """A command line, read: the `command`, its `args` (decoded JSON, ready for `Client.run`),
-    and the `missing` required parameters, in order, which a frontend asks for."""
+    """A command line, read: the `command` form, its `args` (decoded JSON), and the `missing`
+    required parameters, in order, which a frontend asks for. For `/config <extension>` the
+    `command` is the extension's options form, `args` the options to change and `extension`
+    its name; with no `args` the line asks for the form, which a frontend shows from
+    `Client.options`. `run` makes the call."""
 
-    command: CommandInfo
+    command: Form
     args: dict[str, object]
     missing: tuple[str, ...]
+    extension: str | None = None
+
+    async def run(self, client: Client, cursor: int) -> str | None:
+        """`client.run` the command, or `client.configure` the extension's options; returns the
+        command's result."""
+        if self.extension is None:
+            return await client.run(cursor, self.command.name, self.args)
+        await client.configure(cursor, self.extension, self.args)
+        return None
 
 
 _TRUE = ("true", "yes", "on", "1")
@@ -67,8 +87,9 @@ def _scalar(word: str, schema: Json) -> object:
     return value
 
 
-def _convert(word: str, schema: Json) -> object:
-    """The decoded JSON `word` stands for under `schema`. `ValueError` if it stands for none."""
+def value(text: str, schema: Json) -> object:
+    """The decoded JSON `text` stands for under `schema`: a command's argument, or the answer
+    to a question. `ValueError` if it stands for none."""
     alternatives = cast("list[Json] | None", schema.get("anyOf"))
     if alternatives is not None:
         problems: list[str] = []
@@ -76,18 +97,18 @@ def _convert(word: str, schema: Json) -> object:
             if alternative.get("type") == "null":
                 continue
             try:
-                return _convert(word, alternative)
+                return value(text, alternative)
             except ValueError as e:
                 problems.append(str(e))
         raise ValueError(" and ".join(problems))
     if schema.get("type") == "array":
         items = cast("Json", schema["items"])
-        return [_convert(w, items) for w in word.split(",")] if word else []
-    return _scalar(word, schema)
+        return [value(w, items) for w in text.split(",")] if text else []
+    return _scalar(text, schema)
 
 
-def _properties(command: CommandInfo) -> Json:
-    return cast("Json", command.schema["properties"])
+def _properties(form: Form) -> Json:
+    return cast("Json", form.schema["properties"])
 
 
 def _split(line: str) -> list[str]:
@@ -97,44 +118,59 @@ def _split(line: str) -> list[str]:
         raise ValueError(f"cannot read the line: {e}") from None
 
 
-def _find(name: str, commands: Sequence[CommandInfo]) -> CommandInfo:
+def _find(name: str, commands: Sequence[Form]) -> Form:
     for command in commands:
         if command.name == name:
             return command
     raise UnknownCommand(name)
 
 
-def parse(line: str, commands: Sequence[CommandInfo]) -> Parsed:
+def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_OPTIONS) -> Parsed:
     """Read a line that starts with `/`. `UnknownCommand` if no command has the name,
     `ValueError` naming the problem for a line that is not a command line, quotes that do not
-    close, too many words, or a word that cannot be the parameter's value."""
+    close, too many words, a word that cannot be the parameter's value, or `/config` of an
+    extension not in `options` (the options forms of `Client.options`, by extension)."""
     words = _split(line)
     if not words or not words[0].startswith("/") or words[0] == "/":
         raise ValueError("a command line starts with /name")
     command = _find(words[0][1:], commands)
-    properties = _properties(command)
+    rest = words[1:]
+    if command.name != CONFIG:
+        return _read(command, rest)
+    if not rest:
+        return Parsed(command, {}, ("extension",))
+    extension = _extension(rest[0])
+    form = options.get(extension)
+    if form is None:
+        raise ValueError(f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)}")
+    return replace(_read(form, rest[1:]), extension=extension)
+
+
+def _read(form: Form, words: Sequence[str]) -> Parsed:
+    """`words` read as the arguments of `form`."""
+    properties = _properties(form)
     args: dict[str, object] = {}
     positional: list[str] = []
-    for word in words[1:]:
-        key, equals, value = word.partition("=")
+    for word in words:
+        key, equals, text = word.partition("=")
         if equals and key in properties:
-            args[key] = _argument(command, key, value)
+            args[key] = _argument(form, key, text)
         else:
             positional.append(word)
     free = [name for name in properties if name not in args]
     if len(positional) > len(free):
-        raise ValueError(f"/{command.name} takes {len(properties)} arguments {list(properties)}")
+        raise ValueError(f"/{form.name} takes {len(properties)} arguments {list(properties)}")
     for name, word in zip(free, positional, strict=False):
-        args[name] = _argument(command, name, word)
-    required = cast("list[str]", command.schema.get("required", []))
-    return Parsed(command, args, tuple(name for name in required if name not in args))
+        args[name] = _argument(form, name, word)
+    required = cast("list[str]", form.schema.get("required", []))
+    return Parsed(form, args, tuple(name for name in required if name not in args))
 
 
-def _argument(command: CommandInfo, name: str, word: str) -> object:
+def _argument(form: Form, name: str, word: str) -> object:
     try:
-        return _convert(word, cast("Json", _properties(command)[name]))
+        return value(word, cast("Json", _properties(form)[name]))
     except ValueError as e:
-        raise ValueError(f"/{command.name} {name}: {e}") from None
+        raise ValueError(f"/{form.name} {name}: {e}") from None
 
 
 def _typing(line: str) -> tuple[list[str], str]:
@@ -151,14 +187,16 @@ def _typing(line: str) -> tuple[list[str], str]:
     return [], ""
 
 
-async def _values(schema: Json, prefix: str, client: Client, cursor: int) -> list[str]:
-    """What could finish `prefix` as a value of `schema`."""
+async def values(schema: Json, prefix: str, client: Client, cursor: int) -> list[str]:
+    """What could finish `prefix` as a value of `schema`, each a whole value to replace it
+    with (unquoted): a named type's through `client.complete` (paths on the driver's machine),
+    the values of a `Literal`, `true` and `false`, the items of a list after its last comma."""
     named = schema.get("format")
     if isinstance(named, str):
         return await client.complete(cursor, named, prefix)
     if schema.get("type") == "array":
         head, comma, tail = prefix.rpartition(",")
-        items = await _values(cast("Json", schema["items"]), tail, client, cursor)
+        items = await values(cast("Json", schema["items"]), tail, client, cursor)
         return [head + comma + item for item in items]
     allowed = cast("list[object] | None", schema.get("enum"))
     if allowed is not None:
@@ -167,44 +205,66 @@ async def _values(schema: Json, prefix: str, client: Client, cursor: int) -> lis
         return [v for v in ("true", "false") if v.startswith(prefix)]
     found: dict[str, None] = {}
     for alternative in cast("list[Json]", schema.get("anyOf", [])):
-        for value in await _values(alternative, prefix, client, cursor):
-            found[value] = None
+        for finish in await values(alternative, prefix, client, cursor):
+            found[finish] = None
     return list(found)
 
 
 async def completions(
-    line: str, commands: Sequence[CommandInfo], client: Client, cursor: int
+    line: str,
+    commands: Sequence[Form],
+    client: Client,
+    cursor: int,
+    options: Mapping[str, Form] = NO_OPTIONS,
 ) -> list[str]:
     """What could finish the word being typed at the end of `line`, each a whole word to
     replace it with (quoted if it needs to be): command names after `/`, then for each
-    parameter the values of its `Literal` and, for a named type, `client.complete` (paths on
-    the driver's machine). Nothing for a line that is not a command line, an unknown command,
-    or a word past the last parameter."""
+    parameter its `values`; after `/config <extension>`, the extension's options. Nothing for a
+    line that is not a command line, an unknown command, or a word past the last parameter."""
     if not line.startswith("/"):
         return []
     words, current = _typing(line)
     if not words:
         return [f"/{c.name}" for c in commands if c.name.startswith(current[1:])]
     try:
-        command = _find(words[0][1:], commands)
+        form = _find(words[0][1:], commands)
     except UnknownCommand:
         return []
-    properties = _properties(command)
+    rest = words[1:]
+    if form.name == CONFIG and rest:
+        chosen = options.get(_extension(rest[0]))
+        if chosen is None:
+            return []
+        form, rest = chosen, rest[1:]
+    wanted = _wanted(form, rest, current)
+    if wanted is None:
+        return []
+    name, prefix, lead = wanted
+    found = await values(cast("Json", _properties(form)[name]), prefix, client, cursor)
+    return [lead + shlex.quote(v) for v in found]
+
+
+def _extension(word: str) -> str:
+    """The extension a word after `/config` names: `step_limit` or `extension=step_limit`."""
+    key, equals, named = word.partition("=")
+    return named if equals and key == "extension" else word
+
+
+def _wanted(form: Form, words: Sequence[str], current: str) -> tuple[str, str, str] | None:
+    """The parameter the word being typed (`current`) is a value of, after `words` were
+    typed: its name, the prefix of its value, and what leads the completion (`name=`);
+    `None` past the last parameter."""
+    properties = _properties(form)
     named: set[str] = set()
     positional = 0
-    for word in words[1:]:
+    for word in words:
         key, equals, _ = word.partition("=")
         if equals and key in properties:
             named.add(key)
         else:
             positional += 1
-    key, equals, value = current.partition("=")
+    key, equals, text = current.partition("=")
     if equals and key in properties:
-        name, prefix, lead = key, value, f"{key}="
-    else:
-        free = [p for p in properties if p not in named]
-        if positional >= len(free):
-            return []
-        name, prefix, lead = free[positional], current, ""
-    values = await _values(cast("Json", properties[name]), prefix, client, cursor)
-    return [lead + shlex.quote(v) for v in values]
+        return key, text, f"{key}="
+    free = [p for p in properties if p not in named]
+    return None if positional >= len(free) else (free[positional], current, "")

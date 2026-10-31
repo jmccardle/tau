@@ -1,4 +1,5 @@
-"""Tools: `@tool` from Python functions, and any hand-written `Tool` through the Harness."""
+"""Tools: plain Python functions the driver describes, and any hand-written `Tool`, through the
+Harness."""
 
 import asyncio
 import functools
@@ -10,20 +11,18 @@ from typing import Annotated, Literal, Optional
 
 import pytest
 from fakes import FAKE_CONFIG, FakeProvider, Reply, fake_catalog
-from harness import Harness, scenario
+from harness import Harness, build, called, offered, scenario
 
 from tau_next import (
     Author,
     Body,
+    DefinitionError,
     Driver,
     Outcome,
     Part,
     Session,
     Stop,
-    ToolContractError,
-    ToolDefinitionError,
     ToolError,
-    tool,
 )
 
 
@@ -41,8 +40,8 @@ def object_of(properties: dict[str, object], *required: str) -> dict[str, object
 # Definition
 
 
-def test_name_description_and_schema_come_from_the_function() -> None:
-    @tool
+@scenario
+async def test_name_description_and_schema_come_from_the_function(tmp_path: Path) -> None:
     def find(  # noqa: PLR0913, PLR0917 - one parameter per supported annotation
         pattern: str,
         limit: int = 10,
@@ -59,9 +58,10 @@ def test_name_description_and_schema_come_from_the_function() -> None:
         """
         return ""
 
-    assert find.name == "find"
-    assert find.description == "Find things.\n\nSeveral lines, indented\n    like this."
-    assert find.parameters == object_of(
+    (found,) = await offered(tmp_path, find)
+    assert found.name == "find"
+    assert found.description == "Find things.\n\nSeveral lines, indented\n    like this."
+    assert found.parameters == object_of(
         {
             "pattern": {"type": "string"},
             "limit": {"type": "integer"},
@@ -75,35 +75,28 @@ def test_name_description_and_schema_come_from_the_function() -> None:
     )
 
 
-def test_annotated_adds_parameter_descriptions() -> None:
-    @tool
+@scenario
+async def test_annotated_adds_parameter_descriptions(tmp_path: Path) -> None:
     def read(path: Annotated[str, "file to read"], tail: int | None) -> str:
         """Read."""
         return ""
 
-    assert read.parameters["properties"] == {
+    (found,) = await offered(tmp_path, read)
+    assert found.parameters["properties"] == {
         "path": {"type": "string", "description": "file to read"},
         "tail": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
     }
-    assert read.parameters["required"] == ["path"], "a T | None may be left out (D16 section 1)"
+    assert found.parameters["required"] == ["path"], "a T | None may be left out (D16 section 1)"
 
 
-def test_a_function_with_no_parameters_has_an_empty_object_schema() -> None:
-    @tool
+@scenario
+async def test_a_function_with_no_parameters_has_an_empty_object_schema(tmp_path: Path) -> None:
     def ping() -> str:
         """Ping."""
         return "pong"
 
-    assert ping.parameters == object_of({})
-
-
-def test_the_function_stays_callable() -> None:
-    @tool
-    def add(a: int, b: int) -> str:
-        """Add."""
-        return str(a + b)
-
-    assert add.function(1, 2) == "3"
+    (found,) = await offered(tmp_path, ping)
+    assert found.parameters == object_of({})
 
 
 def shout(text: str) -> str:
@@ -128,11 +121,11 @@ def unsupported_dict(x: dict[str, str]) -> str:
         (unsupported_dict, ["'unsupported_dict'", "'x'", "dict"]),
     ],
 )
-def test_what_cannot_be_a_tool_fails_at_decoration_naming_function_and_parameter(
+def test_what_cannot_be_a_tool_fails_when_the_driver_is_built_naming_function_and_parameter(
     function: object, needles: list[str]
 ) -> None:
-    with pytest.raises(ToolDefinitionError) as raised:
-        tool(function)  # type: ignore[call-overload]
+    with pytest.raises(DefinitionError) as raised:
+        build([], [function])
     for needle in needles:
         assert needle in str(raised.value)
 
@@ -142,42 +135,56 @@ def test_an_annotated_with_anything_but_one_description_is_a_definition_error() 
         """Read."""
         return path
 
-    with pytest.raises(ToolDefinitionError, match=r"'read'.*'path'.*one str"):
-        tool(read)
+    with pytest.raises(DefinitionError, match=r"'read'.*'path'.*one str"):
+        build([], [read])
+
+
+def test_a_parameter_named_progress_is_an_argument_unless_it_is_annotated_as_progress() -> None:
+    def shadowed(progress: int) -> str:
+        """Takes an argument that happens to be named progress."""
+        return str(progress)
+
+    def unannotated(progress) -> str:  # type: ignore[no-untyped-def]
+        """The name alone says nothing to the driver."""
+        return ""
+
+    build([], [shadowed])
+    with pytest.raises(DefinitionError, match=r"'unannotated'.*'progress'.*no type annotation"):
+        build([], [unannotated])
 
 
 # Calls
 
 
-@tool
 def greet(name: str, times: int = 1, tags: list[str] | None = None) -> str:
     """Greet."""
     return " ".join([f"hi {name}"] * times) + (str(tags) if tags else "")
 
 
-@tool
 async def agreet(name: str) -> str:
     """Greet, asynchronously."""
     return f"hi {name}"
 
 
-@tool
 def explode(why: str) -> str:
     """Raise."""
     raise FileNotFoundError(why)
 
 
-@tool
 def count(n: int) -> str:
     """Return the wrong type."""
     return n  # type: ignore[return-value]
 
 
 @scenario
-async def test_a_call_binds_json_arguments_sync_or_async() -> None:
-    assert await greet.call('{"name": "ann", "times": 2}') == Outcome.Ok("hi ann hi ann")
-    assert await greet.call('{"name": "ann", "tags": ["x"]}') == Outcome.Ok("hi ann['x']")
-    assert await agreet.call('{"name": "bo"}') == Outcome.Ok("hi bo")
+async def test_a_call_binds_json_arguments_sync_or_async(tmp_path: Path) -> None:
+    assert await called(tmp_path, greet, '{"name": "ann", "times": 2}') == Outcome.Ok(
+        "hi ann hi ann"
+    )
+    assert await called(tmp_path, greet, '{"name": "ann", "tags": ["x"]}') == Outcome.Ok(
+        "hi ann['x']"
+    )
+    assert await called(tmp_path, agreet, '{"name": "bo"}') == Outcome.Ok("hi bo")
 
 
 @pytest.mark.parametrize(
@@ -192,30 +199,32 @@ async def test_a_call_binds_json_arguments_sync_or_async() -> None:
 )
 @scenario
 async def test_arguments_that_do_not_fit_are_an_error_the_model_sees(
-    args_raw: str, needle: str
+    tmp_path: Path, args_raw: str, needle: str
 ) -> None:
-    outcome = await greet.call(args_raw)
+    outcome = await called(tmp_path, greet, args_raw)
     assert isinstance(outcome, Outcome.Err)
     assert needle in outcome.error
 
 
 @scenario
-async def test_literals_floats_and_nulls_are_checked() -> None:
-    @tool
+async def test_literals_floats_and_nulls_are_checked(tmp_path: Path) -> None:
     def pick(mode: Literal["a", "b"], ratio: float, note: str | None = None) -> str:
         """Pick."""
         return f"{mode} {ratio} {note}"
 
-    assert await pick.call('{"mode": "a", "ratio": 2, "note": null}') == Outcome.Ok("a 2.0 None")
-    bad = await pick.call('{"mode": "c", "ratio": 1}')
+    ok = await called(tmp_path, pick, '{"mode": "a", "ratio": 2, "note": null}')
+    assert ok == Outcome.Ok("a 2.0 None")
+    bad = await called(tmp_path, pick, '{"mode": "c", "ratio": 1}')
     assert isinstance(bad, Outcome.Err)
     assert "must be one of ['a', 'b']" in bad.error
 
 
 @scenario
-async def test_an_exception_and_a_non_str_return_are_errors() -> None:
-    assert await explode.call('{"why": "gone"}') == Outcome.Err("FileNotFoundError: gone")
-    assert await count.call('{"n": 3}') == Outcome.Err("count returned int, not str")
+async def test_an_exception_and_a_non_str_return_are_errors(tmp_path: Path) -> None:
+    assert await called(tmp_path, explode, '{"why": "gone"}') == Outcome.Err(
+        "FileNotFoundError: gone"
+    )
+    assert await called(tmp_path, count, '{"n": 3}') == Outcome.Err("count returned int, not str")
 
 
 # Through the Harness
@@ -227,7 +236,6 @@ async def test_a_tool_round_trip_through_the_harness(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("violet-anchor-42")
 
-    @tool
     def read_file(path: Annotated[str, "file to read"]) -> str:
         """Read a text file."""
         return Path(path).read_text()
@@ -391,7 +399,7 @@ def test_the_driver_refuses_what_is_not_a_tool(
     tmp_path: Path, tools: list[object], needle: str
 ) -> None:
     session = Session.create(FAKE_CONFIG, "sys", 0)
-    with pytest.raises(ToolContractError, match=needle):
+    with pytest.raises(DefinitionError, match=needle):
         Driver(session, {"fake": FakeProvider([])}, fake_catalog(), tools=tools)  # type: ignore[arg-type]
     session.close()
 
@@ -432,7 +440,7 @@ async def test_a_tool_that_breaks_the_return_contract_costs_one_call(
     await h.close()
 
 
-# Decoration gaps
+# Definition gaps
 
 
 def test_an_unresolvable_annotation_is_a_definition_error() -> None:
@@ -440,8 +448,8 @@ def test_an_unresolvable_annotation_is_a_definition_error() -> None:
         """Doc."""
         return ""
 
-    with pytest.raises(ToolDefinitionError, match=r"'f'.*cannot be resolved"):
-        tool(f)
+    with pytest.raises(DefinitionError, match=r"'f'.*cannot be resolved"):
+        build([], [f])
 
 
 def test_a_default_that_does_not_fit_its_annotation_is_a_definition_error() -> None:
@@ -453,13 +461,14 @@ def test_a_default_that_does_not_fit_its_annotation_is_a_definition_error() -> N
         """Doc."""
         return str(limit)
 
-    with pytest.raises(ToolDefinitionError, match=r"'s'.*default None.*`str \| None`"):
-        tool(none_default)
-    with pytest.raises(ToolDefinitionError, match=r"'limit'.*default 'ten'.*integer"):
-        tool(wrong_default)
+    with pytest.raises(DefinitionError, match=r"'s'.*default None.*`str \| None`"):
+        build([], [none_default])
+    with pytest.raises(DefinitionError, match=r"'limit'.*default 'ten'.*integer"):
+        build([], [wrong_default])
 
 
-def test_optional_and_equivalent_spellings_make_the_same_schema() -> None:
+@scenario
+async def test_optional_and_equivalent_spellings_make_the_same_schema(tmp_path: Path) -> None:
     def old(x: Optional[int] = None) -> str:  # noqa: UP045
         """Doc."""
         return ""
@@ -468,25 +477,26 @@ def test_optional_and_equivalent_spellings_make_the_same_schema() -> None:
         """Doc."""
         return ""
 
-    assert tool(old).parameters == tool(new).parameters
+    (from_old,) = await offered(tmp_path, old)
+    (from_new,) = await offered(tmp_path, new)
+    assert from_old.parameters == from_new.parameters
 
 
 # ToolError, wrapped async, and the event loop
 
 
-@tool
 def refuse(why: str) -> str:
     """Refuse."""
     raise ToolError(f"I will not: {why}")
 
 
 @scenario
-async def test_a_tool_error_raised_by_the_function_is_the_exact_message() -> None:
-    assert await refuse.call('{"why": "tired"}') == Outcome.Err("I will not: tired")
+async def test_a_tool_error_raised_by_the_function_is_the_exact_message(tmp_path: Path) -> None:
+    assert await called(tmp_path, refuse, '{"why": "tired"}') == Outcome.Err("I will not: tired")
 
 
 @scenario
-async def test_a_sync_wrapper_around_an_async_function_is_awaited() -> None:
+async def test_a_sync_wrapper_around_an_async_function_is_awaited(tmp_path: Path) -> None:
     async def inner(name: str) -> str:
         """Inner."""
         return f"hi {name}"
@@ -495,7 +505,7 @@ async def test_a_sync_wrapper_around_an_async_function_is_awaited() -> None:
     def wrapper(name: str) -> object:
         return inner(name)
 
-    assert await tool(wrapper).call('{"name": "bo"}') == Outcome.Ok("hi bo")
+    assert await called(tmp_path, wrapper, '{"name": "bo"}') == Outcome.Ok("hi bo")
 
 
 async def wait_for(event: threading.Event) -> None:
@@ -506,7 +516,6 @@ async def wait_for(event: threading.Event) -> None:
 async def test_a_sync_tool_leaves_the_event_loop_free(tmp_path: Path) -> None:
     started, release = threading.Event(), threading.Event()
 
-    @tool
     def block() -> str:
         """Block until the test lets go."""
         started.set()
@@ -526,7 +535,6 @@ async def test_a_sync_tool_leaves_the_event_loop_free(tmp_path: Path) -> None:
 async def test_aborting_a_running_sync_tool_is_interrupted(tmp_path: Path) -> None:
     started, release = threading.Event(), threading.Event()
 
-    @tool
     def block() -> str:
         """Block until the test lets go."""
         started.set()
@@ -537,7 +545,7 @@ async def test_aborting_a_running_sync_tool_is_interrupted(tmp_path: Path) -> No
     h = await Harness.create(tmp_path, provider=provider, tools=[block])
     await h.send("go")
     await wait_for(started)
-    assert await h.abort()
+    await h.abort()
     release.set()
     await h.settle()
     assert h.bodies()[-1] == Body.Results([("a", Outcome.Interrupted(), Author.Tools())])

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
 
-from tau_next._config import config_node
+from tau_next._config import model_config
 from tau_next._core import (
     Author,
     Body,
@@ -20,7 +20,7 @@ from tau_next._core import (
     Session,
     Tree,
 )
-from tau_next.values import HintError, Kind, kind_of
+from tau_next._values import DefinitionError, Kind, Model, kind_of
 
 Poke = Callable[[], None]
 """Tells the driver's pump a handle call may have woken a cursor."""
@@ -46,8 +46,8 @@ class OptionsReader(Protocol):
     def check_config(
         self, at: int, model: str | None, extensions: Mapping[str, Mapping[str, object]]
     ) -> None:
-        """Raise unless a `Config` node under `at` setting `model` and `extensions` is valid:
-        a model in the catalog, options that fit their extension's type once folded."""
+        """Raise `ConfigError` unless a `Config` node under `at` setting `model` and `extensions`
+        is valid: a model in the catalog, options that fit their extension's type once folded."""
         ...
 
 
@@ -58,16 +58,23 @@ async def _ask(
     to: str | None,
     new_cursor: Callable[[], int],
 ) -> Any:
-    """What `ask` does on either handle: read `expect` as a hint of `tau_next.values`
-    (`HintError` if it is not one) and wait for the answer."""
-    if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-        raise TypeError(f"a question is a str, not {type(text).__name__}")
-    if to is not None and not isinstance(to, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-        raise TypeError(f"`to` is a client id (str) or None, not {type(to).__name__}")
+    """What `ask` does on either handle: read `expect` as a hint of the type language
+    (`DefinitionError` if it is not one) and wait for the answer."""
     kind = kind_of(expect)
     if kind is None:
-        raise HintError(f"cannot ask for {expect!r}: not a type of tau_next.values")
+        raise DefinitionError(f"cannot ask for {expect!r}: not a type the driver can check")
     return await asker(text, kind, to, new_cursor)
+
+
+def _typist(tree: Tree, start: int) -> str | None:
+    """The client of the nearest `User` node authored by a frontend, from `start` up the walk;
+    `None` if there is none."""
+    node: Node | None = tree.node(start)
+    while node is not None:
+        if isinstance(node.body, Body.User) and isinstance(node.by, Author.Frontend):
+            return node.by.client
+        node = None if node.parent is None else tree.node(node.parent)
+    return None
 
 
 @dataclass
@@ -89,9 +96,11 @@ class TreeHandle:
     """What both handles share: reads of the whole session, and the writes that
     belong to no cursor, bound to an extension (which fills in `by`).
 
-    `client` is the client this work is for, or `None`: the runner of a command; for a hook or
-    a tool, the client whose input the cursor's step delivered, or the runner of the command
-    that started the step. A step woken by an extension's item, or by a load, has none.
+    `client` is the client this work is for, or `None`. A tree handle made for a command has
+    that command's runner. A `Cursor` has its command's runner while a command runs; otherwise,
+    and for a `NodeHandle`, it is the client of the nearest `User` node authored by a frontend
+    on the walk (to the cursor's `at`, or the batch's node), found when asked: nothing is
+    remembered per step.
 
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
@@ -114,7 +123,12 @@ class TreeHandle:
         self._writes = HandleWrites(session, None)
         self._live = True
         self.extension = extension
-        self.client = client
+        self._client = client
+
+    @property
+    def client(self) -> str | None:
+        """The client this work is for, or `None`."""
+        return self._client
 
     @property
     def by(self) -> Author:
@@ -199,12 +213,10 @@ class TreeHandle:
 
     def _need_client(self, what: str) -> str:
         """`client`, or `ValueError` saying `what` has nobody to act for."""
-        if self.client is None:
-            raise ValueError(
-                f"{what}: no client started this work (a step woken by an extension's item or "
-                "a load has none)"
-            )
-        return self.client
+        client = self.client
+        if client is None:
+            raise ValueError(f"{what}: no client typed anything on this branch")
+        return client
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
@@ -236,12 +248,15 @@ class NodeHandle(TreeHandle):
         poke: Poke,
         changed: Changed,
         options: OptionsReader,
-        client: str | None,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, client)
+        super().__init__(session, extension, now, poke, changed, None)
         self._asker = asker
         self._options = options
         self.id = id
+
+    @property
+    def client(self) -> str | None:
+        return _typist(self.tree, self.id)
 
     @property
     def node(self) -> Node:
@@ -249,7 +264,7 @@ class NodeHandle(TreeHandle):
 
     def options(self) -> Any:
         """This extension's options at the batch's node (its `options` dataclass); raises
-        `OptionsError` if it has none or what is set does not fit."""
+        `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.id)
 
     def walk(self) -> list[Node]:
@@ -257,7 +272,7 @@ class NodeHandle(TreeHandle):
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
-        (any hint of `tau_next.values`; `str` by default). Returns the checked, converted
+        (any hint of the type language; `str` by default). Returns the checked, converted
         answer, or `None` if declined. `to` names the client asked (`None`: anyone). The
         call stays out meanwhile, so the cursor is busy; an abort or go-to declines it. A
         `CursorId` answer of `"new"` opens a cursor at the batch's node."""
@@ -285,13 +300,20 @@ class Cursor(TreeHandle):
         poke: Poke,
         changed: Changed,
         options: OptionsReader,
-        client: str | None,
+        runner: str | None,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, client)
+        super().__init__(session, extension, now, poke, changed, None)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._options = options
+        self._runner = runner
         self.id = id
+
+    @property
+    def client(self) -> str | None:
+        if self._runner is not None:
+            return self._runner
+        return _typist(self.tree, self.cursor(self.id).at)
 
     def node(self, id: int | None = None) -> Node:
         return self.tree.node(self.cursor(self.id).at if id is None else id)
@@ -301,25 +323,25 @@ class Cursor(TreeHandle):
 
     def options(self) -> Any:
         """This extension's options at the cursor's `at` (its `options` dataclass); raises
-        `OptionsError` if it has none or what is set does not fit."""
+        `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.cursor(self.id).at)
 
-    def configure(
-        self,
-        *,
-        model: str | None = None,
-        extensions: Mapping[str, Mapping[str, object]] | None = None,
-    ) -> int:
-        """Write a `Config` node under `at` holding just these fields and move onto it, as
-        `write` does: the branch's `model` (a qualified name), and/or `extensions` options
-        (`{"step_limit": {"limit": 10}}`), each option replacing the walk's earlier value.
-        `ConfigError` for a model that is not configured, or if nothing is set; `OptionsError`
-        for an extension without options, or options that, folded with the walk's, the
-        extension's type refuses (a `__post_init__` that raises). Nothing is written then.
-        Returns the new node's id."""
-        node = config_node(model, extensions)
-        self._options.check_config(self.cursor(self.id).at, model, extensions or {})
-        return self.write(Body.Config(node))
+    def set_model(self, model: Model) -> int:
+        """Write a `Config` node under `at` that sets the branch's `model` (a qualified name)
+        and move onto it, as `write` does. `ConfigError` if it is not configured; nothing is
+        written then. Returns the new node's id."""
+        self._options.check_config(self.cursor(self.id).at, model, {})
+        return self.write(Body.Config(model_config(model)))
+
+    def set_options(self, **changes: object) -> int:
+        """Write a `Config` node under `at` that sets these options of this extension (JSON
+        values) and move onto it, as `write` does: each replaces the walk's earlier value.
+        `ConfigError` if the extension has no options, or those that result, folded with the
+        walk's, do not fit its options type (a `__post_init__` that raises refuses); nothing is
+        written then. Returns the new node's id."""
+        extensions = {self.extension: changes}
+        self._options.check_config(self.cursor(self.id).at, None, extensions)
+        return self.write(Body.Config(model_config(extensions=extensions)))
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
@@ -343,20 +365,18 @@ class Cursor(TreeHandle):
         self._changed()
 
     def tell(self, text: str, *, to: str | None = None) -> None:
-        """Send `text` to client `to` as a `Notice`; by default the `client` this step is for
-        (`ValueError` if there is none). Dropped if that client is not connected: a notice is
+        """Send `text` to client `to` as a `Notice`; by default the `client` (`ValueError` if
+        there is none). Dropped if that client is not connected: a notice is
         for someone who is there."""
         self._check()
         if to is None:
             to = self._need_client("tell")
-        if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise TypeError(f"a notice is a str, not {type(text).__name__}")
         self._writes.notify(to, text)
         self._changed()
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the cursor's clients `text`, and wait for an answer of type `expect` (any hint
-        of `tau_next.values`; `str` by default). Returns the checked, converted answer, or
+        of the type language; `str` by default). Returns the checked, converted answer, or
         `None` if declined. `to` names the client asked (`None`: anyone). The hook's job stays
         out meanwhile, so the cursor is busy; an abort or go-to declines it. A `CursorId`
         answer of `"new"` opens a cursor at the cursor's `at`."""
@@ -367,8 +387,7 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the clock, `poke` and `changed`, the options, and the client a cursor's step is
-    for (`client`). One place that builds them."""
+    cursor), the clock, `poke` and `changed`, and the options. One place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -376,10 +395,10 @@ class Handles:
     poke: Poke
     changed: Changed
     options: OptionsReader
-    client: Callable[[int], str | None]
 
-    def cursor(self, id: int, extension: str) -> Cursor:
-        """The handle of cursor `id` for `extension`."""
+    def cursor(self, id: int, extension: str, runner: str | None = None) -> Cursor:
+        """The handle of cursor `id` for `extension`; `runner` is the client of the command
+        it runs, if it runs one."""
         return Cursor(
             self.session,
             id,
@@ -389,7 +408,7 @@ class Handles:
             self.poke,
             self.changed,
             self.options,
-            self.client(id),
+            runner,
         )
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:
@@ -403,7 +422,6 @@ class Handles:
             self.poke,
             self.changed,
             self.options,
-            self.client(cursor),
         )
 
     def tree(self, extension: str, client: str) -> TreeHandle:

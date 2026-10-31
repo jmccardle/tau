@@ -3,35 +3,30 @@
 import asyncio
 import json
 import threading
-import types
 from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
-from fakes import FAKE_CONFIG, FakeProvider, Gate, Reply, fake_catalog
-from harness import Harness, say, scenario
+import words as words_module
+from fakes import FakeProvider, Gate, Reply
+from harness import Harness, build, say, scenario
+from words import word_count
 
 from tau_next import (
     Author,
     Body,
     Cursor,
     CursorId,
-    Driver,
-    Extension,
-    FunctionTool,
+    DefinitionError,
     Live,
     NodeHandle,
     Outcome,
     Part,
     Progress,
-    Session,
     Stop,
     Subject,
-    ToolContractError,
-    ToolDefinitionError,
     ToolProgress,
     TreeHandle,
-    tool,
 )
 
 BATCH = 3  # the Assistant node holding the calls: Config 0, System 1, User 2, Assistant 3
@@ -41,33 +36,11 @@ def call(tool_name: str, **args: object) -> Reply:
     return Reply([Part.Call("c1", tool_name, json.dumps(args))], Stop.Tools)
 
 
-def build(tools: list[object], extensions: list[object]) -> None:
-    session = Session.create(FAKE_CONFIG, "sys", 0)
-    try:
-        Driver(
-            session,
-            {"fake": FakeProvider([])},
-            fake_catalog(),
-            tools=tools,  # type: ignore[arg-type]
-            extensions=extensions,  # type: ignore[arg-type]
-        )
-    finally:
-        session.close()
-
-
 # D16 section 6, first case: a function that is a tool.
 
 
-def word_count(path: Path) -> str:
-    """Count the words in a file."""
-    return f"{len(path.read_text().split())} words"
-
-
 # The module is the extension: the model calls it; a person types /word_count <Tab>.
-words = cast(
-    "Extension",
-    types.SimpleNamespace(name="words", tools=[word_count], commands=[word_count]),
-)
+words = words_module
 
 
 @scenario
@@ -87,10 +60,22 @@ async def test_word_count_is_a_tool_the_model_calls(tmp_path: Path) -> None:
         "additionalProperties": False,
         "required": ["path"],
     }, "the model is not shown the path format"
-    assert isinstance(offered, FunctionTool)
-    assert offered.client_parameters["properties"] == {"path": {"type": "string", "format": "path"}}
     results = h.bodies()[-2]
     assert results == Body.Results([("c1", Outcome.Ok("4 words"), Author.Tools())])
+    await h.close()
+
+
+@scenario
+async def test_word_count_is_also_a_command_a_person_runs(tmp_path: Path) -> None:
+    essay = tmp_path / "essay.txt"
+    essay.write_text("the quick brown fox")
+    h = await Harness.create(tmp_path, extensions=[words])
+    forms = {form.name: form for form in await h.client.commands()}
+    assert forms["word_count"].description == "Count the words in a file."
+    assert forms["word_count"].schema["properties"] == {
+        "path": {"type": "string", "format": "path"}
+    }
+    assert await h.run("word_count", {"path": str(essay)}) == "4 words"
     await h.close()
 
 
@@ -143,10 +128,10 @@ async def test_a_handle_is_the_batchs_and_bound_to_the_extension_that_lists_the_
 
 
 def test_a_function_that_takes_a_handle_is_not_a_tool_of_the_driver() -> None:
-    with pytest.raises(ToolContractError, match=r"'where'.*extension"):
-        build([tool(where)], [])
-    with pytest.raises(ToolContractError, match=r"'where_tree'.*extension"):
-        build([tool(where_tree)], [])
+    with pytest.raises(DefinitionError, match=r"'where'.*extension"):
+        build([], [where])
+    with pytest.raises(DefinitionError, match=r"'where_tree'.*extension"):
+        build([], [where_tree])
 
 
 def on_a_cursor(cursor: Cursor) -> str:
@@ -160,10 +145,10 @@ class Cursored:
 
 
 def test_a_tool_cannot_take_a_cursor() -> None:
-    with pytest.raises(ToolDefinitionError, match=r"'on_a_cursor'.*'cursor'.*Cursor"):
-        tool(on_a_cursor)
-    with pytest.raises(ToolDefinitionError, match="'on_a_cursor'"):
-        build([], [Cursored()])
+    with pytest.raises(DefinitionError, match=r"'on_a_cursor'.*'cursor'.*Cursor"):
+        build([], [on_a_cursor])
+    with pytest.raises(DefinitionError, match="'on_a_cursor'"):
+        build([Cursored()])
 
 
 def test_a_function_that_cannot_be_described_fails_when_the_driver_is_built() -> None:
@@ -174,8 +159,8 @@ def test_a_function_that_cannot_be_described_fails_when_the_driver_is_built() ->
         name = "bare"
         tools = (bare,)
 
-    with pytest.raises(ToolDefinitionError, match=r"'bare'.*'x'.*no type annotation"):
-        build([], [Bare()])
+    with pytest.raises(DefinitionError, match=r"'bare'.*'x'.*no type annotation"):
+        build([Bare()])
 
 
 def test_tool_names_are_unique_across_the_driver_and_every_extension() -> None:
@@ -183,11 +168,11 @@ def test_tool_names_are_unique_across_the_driver_and_every_extension() -> None:
         name = "other"
         tools = (word_count,)
 
-    with pytest.raises(ToolContractError, match="two tools are named 'word_count'"):
-        build([tool(word_count)], [words])
-    with pytest.raises(ToolContractError, match="two tools are named 'word_count'"):
-        build([], [words, Other()])
-    build([tool(word_count)], [Places()])
+    with pytest.raises(DefinitionError, match="two tools are named 'word_count'"):
+        build([words], [word_count])
+    with pytest.raises(DefinitionError, match="two tools are named 'word_count'"):
+        build([words, Other()])
+    build([Places()], [word_count])
 
 
 def test_an_extensions_tools_must_be_a_sequence_of_tools_and_functions() -> None:
@@ -199,10 +184,10 @@ def test_an_extensions_tools_must_be_a_sequence_of_tools_and_functions() -> None
         name = "unlike"
         tools = (3,)
 
-    with pytest.raises(ToolContractError, match=r"'wrong'.*sequence"):
-        build([], [Wrong()])
-    with pytest.raises(ToolContractError, match=r"'unlike'.*neither a Tool nor a function"):
-        build([], [Unlike()])
+    with pytest.raises(DefinitionError, match=r"'wrong'.*sequence"):
+        build([Wrong()])
+    with pytest.raises(DefinitionError, match=r"'unlike'.*neither a Tool nor a function"):
+        build([Unlike()])
 
 
 def test_a_foreign_tool_object_may_be_listed_by_an_extension() -> None:
@@ -218,7 +203,7 @@ def test_a_foreign_tool_object_may_be_listed_by_an_extension() -> None:
         name = "lists"
         tools = (Hand(),)
 
-    build([], [Lists()])
+    build([Lists()])
 
 
 # Progress by annotation

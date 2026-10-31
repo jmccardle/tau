@@ -27,7 +27,6 @@ from tau_next import (
     ItemData,
     Labels,
     Live,
-    LocalClient,
     ModelConfig,
     Node,
     Outcome,
@@ -72,8 +71,8 @@ async def read_all(client: Client) -> list[Event]:
 
 
 async def snapshot(client: Client, cursors: int = 1) -> list[Event]:
-    """The snapshot a client opens with: `Connected`, `Labels`, and a state per cursor."""
-    return [await asyncio.wait_for(anext(client), 1) for _ in range(2 + cursors)]
+    """The snapshot a client opens with: a state per cursor, then `Labels`."""
+    return [await asyncio.wait_for(anext(client), 1) for _ in range(1 + cursors)]
 
 
 async def next_view(client: Client, cursor: int) -> CursorView:
@@ -257,8 +256,9 @@ async def test_a_driver_that_fails_ends_every_stream_with_the_failure(tmp_path: 
         async for event in client:
             heard.append(event)
 
-    with pytest.raises(Closed):  # buffered events are delivered first, then the failure
-        await asyncio.wait_for(read(), 1)
+    with pytest.raises(ConnectionError, match=r"^Closed: the session is closed$") as ended:
+        await asyncio.wait_for(read(), 1)  # buffered events are delivered first, then the failure
+    assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
     assert heard, "what was buffered came first"
     await h.driver.stop()
 
@@ -273,10 +273,10 @@ async def test_stopping_a_failed_driver_does_not_turn_the_failure_into_a_clean_e
     await h.settle()
     h.session.close()
     gate.release()
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match="Closed"):
         await read_all(client)
     await h.driver.stop()  # the natural cleanup
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match="Closed"):
         await read_all(client)  # the client still learns the driver died
 
 
@@ -312,7 +312,7 @@ async def test_a_driver_failure_cancels_the_effects_still_running(tmp_path: Path
     await h.settle()
     h.session.close()
     gate.release()  # the fast call answers into a closed session
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match="Closed"):
         await read_all(client)
     for _ in range(5):
         await asyncio.sleep(0)
@@ -466,7 +466,7 @@ async def test_a_provider_that_raises_mid_stream_fails_that_sample_and_no_other(
         yield Finish(Stop.End)
 
     h = await Harness.create(tmp_path, provider=Rogue(script))
-    other = h.driver.open(SYS, "term")
+    other = await h.client.open(SYS)
     await h.send("hi")
     await h.settle()
     (reply,) = replies(h)
@@ -476,7 +476,7 @@ async def test_a_provider_that_raises_mid_stream_fails_that_sample_and_no_other(
     assert json.loads(reply.meta) == {"error": {"message": "RuntimeError: bug", "internal": True}}
     assert "RuntimeError: bug" in capsys.readouterr().err, "the traceback goes to stderr"
     assert "Traceback" not in reply.meta
-    h.driver.send(other, "term", "hello")
+    await h.client.send(other, "hello")
     await h.settle()
     assert [r.parts for r in replies(h, other)] == [[Part.Text("fine")]], "the driver lives on"
     await h.close()
@@ -600,19 +600,20 @@ async def test_a_client_connected_after_the_driver_failed_ends_with_the_failure(
     h.session.close()
     gate.release()
     await h.dies()
-    late = LocalClient(h.driver, "late")
-    with pytest.raises(Closed):
+    late = h.driver.client("late")
+    with pytest.raises(ConnectionError, match="Closed"):
         await asyncio.wait_for(anext(late), 1)
     await h.driver.stop()
-    with pytest.raises(Closed):  # stopping does not turn it into a clean end
-        await asyncio.wait_for(anext(LocalClient(h.driver, "later")), 1)
+    # stopping does not turn it into a clean end
+    with pytest.raises(ConnectionError, match="Closed"):
+        await asyncio.wait_for(anext(h.driver.client("later")), 1)
 
 
 @scenario
 async def test_a_client_connected_after_a_stop_ends_cleanly(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     await h.driver.stop()
-    assert [e async for e in LocalClient(h.driver, "late")] == []
+    assert [e async for e in h.driver.client("late")] == []
     h.session.close()
 
 
@@ -630,7 +631,7 @@ async def test_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_path: Path
         lambda: client.set_auto(c, True),
         lambda: client.abort(c),
         lambda: client.open(SYS),
-        lambda: client.set_label("main", c),
+        lambda: client.set_label(c, "main"),
         lambda: client.remove_label("no-such-label"),
         lambda: client.watch([c]),
         lambda: client.answer(0, "yes"),
@@ -684,10 +685,10 @@ async def test_an_item_added_from_outside_wakes_the_cursor_and_is_announced(
 async def test_labels_a_client_writes_are_sent_whole(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     other = await h.client.open(SYS)
-    await h.client.set_label("main", h.cursor)
+    await h.client.set_label(h.cursor, "main")
     client = await h.connect("watcher")
     await snapshot(client, cursors=2)
-    await h.client.set_label("main", other)  # moves from h.cursor to other
+    await h.client.set_label(other, "main")  # moves from h.cursor to other
     assert await asyncio.wait_for(anext(client), 1) == Labels((("main", other),))
     await h.client.remove_label("main")
     assert await asyncio.wait_for(anext(client), 1) == Labels(())

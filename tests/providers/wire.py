@@ -529,7 +529,7 @@ async def running(
     directory: Path,
     provider: Provider,
     models: ModelCatalog | None = None,
-    tools: Sequence[Tool] = (),
+    tools: Sequence[Tool | Callable[..., object]] = (),
 ) -> AsyncIterator[tuple[Session, Driver, int]]:
     """A session on disk in `directory` naming `ALIAS`, and a started driver over `provider`
     and `models` (the provider's dialect's catalog by default)."""

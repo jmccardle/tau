@@ -439,8 +439,8 @@ async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     """Labels (section 1): set moves a label, remove drops it, unknown is `NoSuchLabel`."""
     h = await Harness.create(tmp_path)
     other = await h.client.open(SYS)
-    await h.client.set_label("main", h.cursor)
-    await h.client.set_label("main", other)
+    await h.client.set_label(h.cursor, "main")
+    await h.client.set_label(other, "main")
     assert h.session.label("main") == other
     await h.client.remove_label("main")
     with pytest.raises(tau_next.NoSuchLabel):
@@ -523,7 +523,7 @@ async def test_a_frontends_label_during_a_hook_is_durable(tmp_path: Path) -> Non
     await h.step()
     await h.settle()
     assert gate.held == 1
-    await h.client.set_label("main", h.cursor)
+    await h.client.set_label(h.cursor, "main")
     await h.crash()
     assert h.session.label("main") == h.cursor
 
@@ -623,7 +623,7 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("look", pre_step=look)])
-    await h.client.set_label("main", h.cursor)
+    await h.client.set_label(h.cursor, "main")
     await h.step()
     await h.settle()
     assert seen == {"children": [2, 3], "count": 4, "labels": ["main"]}
@@ -878,7 +878,7 @@ async def test_a_change_to_another_cursor_is_heard_by_a_client(tmp_path: Path, c
     h = await Harness.create(tmp_path, extensions=[Scripted("meddle", pre_step=meddle)])
     other = await h.client.open(SYS)
     item = await h.add_item("x", "for-other", cursor=other)
-    await h.client.set_label("theirs", other)
+    await h.client.set_label(other, "theirs")
     await h.settle()
     watcher = await h.connect("watcher")
     await h.step()

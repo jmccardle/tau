@@ -131,7 +131,7 @@ async def test_abort_during_a_sample_commits_the_partial_reply(tmp_path: Path) -
     await h.send("hi")
     await h.settle()
     assert gate.held == 1
-    assert await h.abort()
+    await h.abort()
     await h.settle()
     assert h.bodies()[-1] == Body.Assistant([Part.Text("hel")], Stop.Interrupted)
     assert recorder.points.count("post_reply") == 1
@@ -154,7 +154,7 @@ async def test_abort_during_tools_interrupts_unfinished_calls(tmp_path: Path) ->
     await h.send("look")
     await h.settle()
     assert gate.held == 1
-    assert await h.abort()
+    await h.abort()
     await h.settle()
     assert h.bodies()[-1] == Body.Results(
         [("a", Outcome.Ok("A"), Author.Tools()), ("b", Outcome.Interrupted(), Author.Tools())]
@@ -249,7 +249,7 @@ async def test_a_go_to_on_a_busy_cursor_aborts_then_moves(tmp_path: Path) -> Non
     await h.send("hi")
     await h.settle()
     assert gate.held == 1
-    assert await h.go_to(1), "the sample in flight is cancelled"
+    await h.go_to(1)
     await h.settle()
     assert h.session.cursor(h.cursor).at == 1, "moved after post_step"
     assert recorder.endings == [

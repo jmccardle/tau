@@ -9,7 +9,7 @@ import os
 
 from tau_next._config_layers import ModelCatalog
 from tau_next._core import Session
-from tau_next.values import NEW
+from tau_next._values import NEW
 
 NAMED = ("path", "model", "cursor", "label", "node")
 """The names `complete` knows: the `"format"` of each named type's schema."""

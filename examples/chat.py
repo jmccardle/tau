@@ -8,12 +8,13 @@ the config and the session, `chat-session/`, which is reopened on the next run).
 
 Type a message to send it. `/` alone lists the commands; Tab completes a command name and its
 arguments (models, cursors, nodes, paths ...); a command missing arguments asks for each; an
-unknown `/name` is sent to the model as text. The model's `word_count` tool asks permission
-first, and the question is answered inline (an empty answer declines). Ctrl-D leaves.
+unknown `/name` is sent to the model as text. `/config step_limit limit=10` changes an
+extension's options on this branch, and a bare `/config step_limit` shows them. The model's
+`word_count` tool asks permission first, and the question is answered inline, completed with
+Tab like an argument (an empty answer declines). Ctrl-D leaves.
 """
 
 import asyncio
-import json
 import readline
 import shlex
 from collections.abc import Awaitable, Callable
@@ -30,13 +31,13 @@ from tau_next import (
     CallDraft,
     CallNamed,
     Client,
-    CommandInfo,
+    CommandFailed,
     Cursor,
     CursorView,
     Driver,
+    Form,
     Live,
     LoadedConfig,
-    LocalClient,
     NodeHandle,
     NodeId,
     Notice,
@@ -48,7 +49,7 @@ from tau_next import (
     builtin_providers,
     model_config,
 )
-from tau_next.commandline import UnknownCommand, completions, parse
+from tau_next.commandline import UnknownCommand, completions, parse, value, values
 
 SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
 
@@ -86,10 +87,18 @@ class Chat:
         ask: Callable[[str], Awaitable[str]],
     ) -> None:
         self.client, self.cursor, self.out, self.ask = client, cursor, out, ask
-        self.commands: tuple[CommandInfo, ...] = ()
+        self.commands: tuple[Form, ...] = ()
+        self.options: dict[str, Form] = {}
         self.question: OpenQuestion | None = None
         self.busy = False
         self.error: object = None
+
+    async def refresh(self) -> None:
+        """Ask for the commands, and for the options of each extension `/config` names."""
+        self.commands = await self.client.commands()
+        config = next((c for c in self.commands if c.name == "config"), None)
+        names = config.schema["properties"]["extension"]["enum"] if config else []  # type: ignore[index]
+        self.options = {n: await self.client.options(self.cursor, n) for n in names}
 
     async def listen(self) -> None:
         """Show what the client is sent, until its stream ends."""
@@ -142,30 +151,39 @@ class Chat:
         except UnknownCommand as e:
             self.out(f"[no command /{e.name}: sent as text]\n")
             await self.client.send(self.cursor, text)
-        except (ValueError, LookupError, Busy) as e:
+        except (ValueError, LookupError, Busy, CommandFailed) as e:
             self.out(f"[{e}]\n")
 
     async def answer(self, question: OpenQuestion, text: str) -> None:
-        """An empty line declines, whatever the question asks for; otherwise the line is the
-        answer (text for a string, JSON for anything else)."""
+        """An empty line declines, whatever the question asks for; otherwise the line is read by
+        the question's schema, as a command's argument is."""
         if not text.strip():
             await self.client.answer(question.id, None)
             return
-        value = text if question.schema.get("type") == "string" else json.loads(text)
-        await self.client.answer(question.id, value)
+        await self.client.answer(question.id, value(text, question.schema))
 
     async def command(self, text: str) -> None:
-        parsed = parse(text, self.commands)
+        parsed = parse(text, self.commands, self.options)
+        if parsed.extension is not None and not parsed.args:  # a bare /config <extension>
+            self.out(self.show_options(await self.client.options(self.cursor, parsed.extension)))
+            return
         while parsed.missing:
             name = parsed.missing[0]
-            if parsed.command.name == "config" and name == "values":
-                form = await self.client.options(self.cursor, str(parsed.args["extension"]))
-                self.out(f"current: {json.dumps(form.value)}\n")
             text += f" {name}={shlex.quote(await self.ask(f'{name}: '))}"
-            parsed = parse(text, self.commands)
-        await self.client.run(self.cursor, parsed.command.name, parsed.args)
+            parsed = parse(text, self.commands, self.options)
+        result = await parsed.run(self.client, self.cursor)
+        if result is not None:
+            self.out(f"[{result}]\n")
 
-    def describe(self, command: CommandInfo) -> str:
+    def show_options(self, form: Form) -> str:
+        """An extension's options with their values now, as `/config` takes them."""
+        shown = "".join(
+            f"  {name}={schema.get('default', '?')}  {schema.get('description', '')}\n"  # type: ignore[attr-defined]
+            for name, schema in form.schema["properties"].items()  # type: ignore[attr-defined]
+        )
+        return f"/config {form.name} name=value ...\n{shown}"
+
+    def describe(self, command: Form) -> str:
         required = command.schema.get("required", [])
         names = command.schema["properties"]
         params = " ".join(f"<{n}>" if n in required else f"[{n}]" for n in names)  # type: ignore[attr-defined]
@@ -176,8 +194,12 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
     """Tab completes through the client; readline calls this on its own thread."""
 
     def complete(text: str, state: int) -> str | None:
-        line = readline.get_line_buffer()
-        wanted = completions(line, chat.commands, chat.client, chat.cursor)
+        client, cursor = chat.client, chat.cursor
+        if chat.question is not None:  # the answer is completed as an argument is
+            wanted = values(chat.question.schema, text, client, cursor)
+        else:
+            line = readline.get_line_buffer()
+            wanted = completions(line, chat.commands, client, cursor, chat.options)
         found = asyncio.run_coroutine_threadsafe(wanted, loop).result()
         matches = [c for c in found if c.startswith(text)]
         return matches[state] if state < len(matches) else None
@@ -198,9 +220,9 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         session = Session.create(model_config(name), SYSTEM, clock.now(), where)
     driver = Driver(session, providers, loaded.catalog, extensions=[Demo(), StepLimit()])
     driver.start()
-    client = LocalClient(driver, "chat:line")
+    client = driver.client("chat:line")
     chat = Chat(client, session.cursors()[0], partial(print, end="", flush=True), prompt)
-    chat.commands = await client.commands()
+    await chat.refresh()
     await client.watch([chat.cursor])
     listener = asyncio.create_task(chat.listen())
     tab_completion(chat, asyncio.get_running_loop())

@@ -2,7 +2,7 @@
 
 from importlib.metadata import version
 
-from tau_next._commands import CommandInfo
+from tau_next._commands import CommandFailed
 from tau_next._config import ConfigError, ModelConfig, model_config
 from tau_next._config_layers import (
     ConfigProblem,
@@ -57,7 +57,6 @@ from tau_next._core import (
     WrongAnswer,
 )
 from tau_next._dotenv import DotenvError
-from tau_next._options import OptionsError, OptionsForm, check_options
 from tau_next._startup import (
     LoadedConfig,
     Prompts,
@@ -65,16 +64,17 @@ from tau_next._startup import (
     prompts,
     select_model,
 )
+from tau_next._tools import ToolError
 from tau_next._trust import Trusted, TrustError, UntrustedProject, safe_block
+from tau_next._values import CursorId, DefinitionError, Form, LabelName, Model, NodeId
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.client import Client, LocalClient
 from tau_next.clock import SystemClock
-from tau_next.driver import Driver, DriverState
+from tau_next.driver import Driver
 from tau_next.events import (
     Appended,
     CallArgs,
     CallNamed,
-    Connected,
     CursorView,
     CutOff,
     Delta,
@@ -95,21 +95,17 @@ from tau_next.protocols import (
     Clock,
     CursorHook,
     Extension,
-    ExtensionContractError,
     Finish,
     Progress,
     Provider,
     ProviderClosed,
     SampleError,
     Tool,
-    ToolContractError,
     ToolHook,
     replay_for,
 )
 from tau_next.providers import builtin_providers
 from tau_next.step_limit import StepLimit
-from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
-from tau_next.values import CursorId, HintError, LabelName, Model, NodeId
 
 __version__ = version("ffwf-tau-next")
 
@@ -128,11 +124,10 @@ __all__ = [
     "Client",
     "Clock",
     "Closed",
-    "CommandInfo",
+    "CommandFailed",
     "Config",
     "ConfigError",
     "ConfigProblem",
-    "Connected",
     "Corrupt",
     "Cursor",
     "CursorHook",
@@ -140,21 +135,19 @@ __all__ = [
     "CursorState",
     "CursorView",
     "CutOff",
+    "DefinitionError",
     "Delta",
     "DotenvError",
     "Draft",
     "Driver",
-    "DriverState",
     "DuplicateCall",
     "Ending",
     "Event",
     "Exists",
     "Extension",
-    "ExtensionContractError",
     "Finish",
-    "FunctionTool",
+    "Form",
     "GrepTool",
-    "HintError",
     "Hook",
     "HookFailure",
     "Item",
@@ -184,8 +177,6 @@ __all__ = [
     "NotPending",
     "Notice",
     "OpenQuestion",
-    "OptionsError",
-    "OptionsForm",
     "Outcome",
     "Part",
     "Poisoned",
@@ -208,8 +199,6 @@ __all__ = [
     "ThinkingDelta",
     "TooLarge",
     "Tool",
-    "ToolContractError",
-    "ToolDefinitionError",
     "ToolError",
     "ToolHook",
     "ToolProgress",
@@ -227,7 +216,6 @@ __all__ = [
     "base_tools",
     "builtin_providers",
     "check_config",
-    "check_options",
     "load_config",
     "model_config",
     "prompts",
@@ -235,5 +223,4 @@ __all__ = [
     "replay_for",
     "safe_block",
     "select_model",
-    "tool",
 ]

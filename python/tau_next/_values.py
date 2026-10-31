@@ -1,7 +1,7 @@
 """One type language: a Python type hint becomes a schema, a check, and a conversion.
 
-Tool parameters, a question's answer, and (later) command parameters and an extension's
-options are written as hints. `kind_of(hint)` turns one into a `Kind`:
+Tool parameters, command parameters, a question's answer and an extension's options are
+written as hints. `kind_of(hint)` turns one into a `Kind`:
 
 - `schema`: the JSON Schema a client reads. The named types carry a `"format"`
   (`"path"`, `"model"`, `"cursor"`, `"label"`, `"node"`) a frontend completes by.
@@ -14,15 +14,17 @@ options are written as hints. `kind_of(hint)` turns one into a `Kind`:
 
 Supported hints: `str`, `int`, `float`, `bool`, `Literal` of all `str` or all `int`,
 `list[T]`, `T | None`, `Annotated[T, "description"]`, `pathlib.Path`, and the named types
-`Model`, `CursorId`, `LabelName`, `NodeId`. Anything else raises `HintError`.
+`Model`, `CursorId`, `LabelName`, `NodeId`. Anything else raises `DefinitionError`.
 
-The named types are checked against the session through a `Context` the driver supplies.
-`CursorId` also accepts `"new"`; `convert` then opens the cursor, so a caller checks every
-value before converting any, and nothing is opened for a call that is refused.
+The named types are checked through a `Context` the driver supplies: `Model` against the
+catalog, the other three against the session. Options are checked with a catalog alone, so
+they may hold a `Model` and no other named type. `CursorId` also accepts `"new"`; `convert`
+then opens the cursor, so a caller checks every value before converting any, and nothing is
+opened for a call that is refused.
 
 A `Field` is one named hint with a default or without: a function parameter or a dataclass
 field, through the same `field_of`. A `T | None` with no default may be left out, and is then
-`None`.
+`None`. The schema of a set of fields (`object_schema`) carries each default.
 """
 
 import types
@@ -60,44 +62,44 @@ NEW = "new"
 """The `CursorId` value that opens a cursor."""
 
 
-class HintError(TypeError):
-    """A hint that is not in the type language, or a default that does not fit its hint. The
-    message names the hint."""
+class DefinitionError(TypeError):
+    """A tool, command, extension or question that cannot be built: a parameter with no
+    annotation or one outside the type language, a default that does not fit its hint, an
+    injected parameter the function cannot have, a name taken twice, or an object that breaks the
+    `Tool` or `Extension` contract. The message names the extension, function and parameter."""
 
 
 @dataclass(frozen=True)
 class Context:
-    """What the named types are checked against: the session, the model catalog, and how to
-    open a cursor for `"new"` (at the asker's node)."""
+    """What the named types are checked against: the model `catalog`, and for the other named
+    types the `session` and how to open a cursor for `"new"` (at the asker's node). Options are
+    checked with the catalog alone: they may not name a type that needs the rest."""
 
-    session: Session
     catalog: "ModelCatalog"
-    new_cursor: Callable[[], int]
+    session: Session | None = None
+    new_cursor: Callable[[], int] | None = None
 
 
 Check = Callable[[object, "Context | None", bool], str | None]
-Convert = Callable[[object, "Context | None"], object]
+Convert = Callable[[object, "Context"], object]
 
 
 @dataclass(frozen=True)
 class Kind:
     """One hint, understood: its two schemas, and how to check and convert a value.
 
-    `needs_session` is true if a value cannot be checked without a `Context`.
+    `session_only` is true if a value is looked up in the session (a cursor, label or node),
+    which options, read without one, cannot hold.
     """
 
     schema: Json
     model_schema: Json
-    needs_session: bool
+    session_only: bool
     test: Check
     make: Convert
 
-    def check(self, value: object, context: "Context | None") -> str | None:
-        """`None` if the decoded JSON `value` fits, else the problem. A named type needs
-        `context`: asking without one is a `ValueError` (a caller that has no session must
-        not pass its values off as checked)."""
-        if context is None and self.needs_session:
-            raise ValueError("this value is checked against a session, and none was given")
+    def check(self, value: object, context: "Context") -> str | None:
+        """`None` if the decoded JSON `value` fits, else the problem."""
         return self.test(value, context, False)
 
     def check_default(self, value: object) -> str | None:
@@ -105,7 +107,7 @@ class Kind:
         `Path` for a `Path`), since a default is not looked up in the session."""
         return self.test(value, None, True)
 
-    def convert(self, value: object, context: "Context | None") -> object:
+    def convert(self, value: object, context: "Context") -> object:
         """What the function receives for a checked `value`."""
         return self.make(value, context)
 
@@ -114,13 +116,13 @@ class Kind:
         return Kind(
             {**self.schema, "description": text},
             {**self.model_schema, "description": text},
-            self.needs_session,
+            self.session_only,
             self.test,
             self.make,
         )
 
 
-def _identity(value: object, context: Context | None) -> object:
+def _identity(value: object, context: Context) -> object:
     return value
 
 
@@ -163,13 +165,13 @@ def _array(item: Kind) -> Kind:
                 return f"item {i} {problem}"
         return None
 
-    def convert(value: object, context: Context | None) -> object:
+    def convert(value: object, context: Context) -> object:
         return [item.convert(element, context) for element in cast("list[object]", value)]
 
     return Kind(
         {"type": "array", "items": item.schema},
         {"type": "array", "items": item.model_schema},
-        item.needs_session,
+        item.session_only,
         check,
         convert,
     )
@@ -197,13 +199,13 @@ def _nullable(inner: Kind) -> Kind:
     def check(value: object, context: Context | None, native: bool) -> str | None:
         return None if value is None else inner.test(value, context, native)
 
-    def convert(value: object, context: Context | None) -> object:
+    def convert(value: object, context: Context) -> object:
         return None if value is None else inner.convert(value, context)
 
     return Kind(
         {"anyOf": [inner.schema, {"type": "null"}]},
         {"anyOf": [inner.model_schema, {"type": "null"}]},
-        inner.needs_session,
+        inner.session_only,
         check,
         convert,
     )
@@ -222,14 +224,20 @@ def _path() -> Kind:
             return f"cannot be expanded: {e}"
         return None
 
-    def convert(value: object, context: Context | None) -> object:
+    def convert(value: object, context: Context) -> object:
         return Path(cast("str", value)).expanduser()
 
     return Kind({"type": "string", "format": "path"}, {"type": "string"}, False, check, convert)
 
 
-def _named(base: Kind, format_: str, lookup: Callable[[object, Context], str | None]) -> Kind:
-    """A named type: `base`'s shape, then `lookup` against the session."""
+def _named(
+    base: Kind,
+    format_: str,
+    lookup: Callable[[object, Context], str | None],
+    *,
+    session_only: bool,
+) -> Kind:
+    """A named type: `base`'s shape, then `lookup` in the context."""
 
     def test(value: object, context: Context | None, native: bool) -> str | None:
         problem = base.test(value, context, native)
@@ -237,7 +245,15 @@ def _named(base: Kind, format_: str, lookup: Callable[[object, Context], str | N
             return problem
         return lookup(value, context)
 
-    return Kind({**base.schema, "format": format_}, base.model_schema, True, test, base.make)
+    return Kind(
+        {**base.schema, "format": format_}, base.model_schema, session_only, test, base.make
+    )
+
+
+def _session(context: Context) -> Session:
+    """The session of a context that has one: a named type that looks in the session is
+    refused in options, the only values checked without one."""
+    return cast("Session", context.session)
 
 
 def _model_exists(value: object, context: Context) -> str | None:
@@ -247,13 +263,13 @@ def _model_exists(value: object, context: Context) -> str | None:
 
 
 def _label_exists(value: object, context: Context) -> str | None:
-    if any(label == value for label, _ in context.session.labels()):
+    if any(label == value for label, _ in _session(context).labels()):
         return None
     return f"must be an existing label, not {value!r}"
 
 
 def _node_exists(value: object, context: Context) -> str | None:
-    if 0 <= cast("int", value) < len(context.session.tree):
+    if 0 <= cast("int", value) < len(_session(context).tree):
         return None
     return f"must be an existing node, not {value!r}"
 
@@ -269,16 +285,14 @@ def _cursor() -> Kind:
                 f"opens a cursor, which only a caller may ask for with {NEW!r}" if native else None
             )
         problem = integer.test(value, context, native)
-        if problem is not None or context is None or value in context.session.cursors():
+        if problem is not None or context is None or value in _session(context).cursors():
             return problem
         return f"must be an open cursor or {NEW!r}, not {value!r}"
 
-    def make(value: object, context: Context | None) -> object:
+    def make(value: object, context: Context) -> object:
         if value != NEW:
             return value
-        if context is None:
-            raise ValueError("a new cursor is opened through a session, and none was given")
-        return context.new_cursor()
+        return cast("Callable[[], int]", context.new_cursor)()
 
     return Kind({**schema, "format": "cursor"}, schema, True, test, make)
 
@@ -290,10 +304,16 @@ _SCALARS: dict[object, tuple[str, tuple[str, ...]]] = {
 }
 
 _NAMED: dict[object, Callable[[], Kind]] = {
-    Model: lambda: _named(_scalar("string", ("string",)), "model", _model_exists),
+    Model: lambda: _named(
+        _scalar("string", ("string",)), "model", _model_exists, session_only=False
+    ),
     CursorId: _cursor,
-    LabelName: lambda: _named(_scalar("string", ("string",)), "label", _label_exists),
-    NodeId: lambda: _named(_scalar("integer", ("integer",)), "node", _node_exists),
+    LabelName: lambda: _named(
+        _scalar("string", ("string",)), "label", _label_exists, session_only=True
+    ),
+    NodeId: lambda: _named(
+        _scalar("integer", ("integer",)), "node", _node_exists, session_only=True
+    ),
 }
 
 SUPPORTED = (
@@ -305,7 +325,9 @@ SUPPORTED = (
 def _annotated(hint: object) -> Kind | None:
     inner, *metadata = get_args(hint)
     if len(metadata) != 1 or not isinstance(metadata[0], str):
-        raise HintError(f"{hint!r}: Annotated carries one str, the description (got {metadata!r})")
+        raise DefinitionError(
+            f"{hint!r}: Annotated carries one str, the description (got {metadata!r})"
+        )
     kind = kind_of(inner)
     return None if kind is None else kind.described(metadata[0])
 
@@ -325,13 +347,13 @@ def _generic(hint: object) -> Kind | None:
     return None
 
 
-def _float(value: object, context: Context | None) -> object:
+def _float(value: object, context: Context) -> object:
     return float(cast("float", value))  # a JSON integer is a number the function gets as float
 
 
 def kind_of(hint: object) -> Kind | None:
     """The `Kind` of a hint, or `None` if it is not in the language. An `Annotated` whose
-    metadata is not a single `str` raises `HintError`."""
+    metadata is not a single `str` raises `DefinitionError`."""
     if get_origin(hint) is Annotated:
         return _annotated(hint)
     if hint is float:
@@ -346,31 +368,55 @@ def kind_of(hint: object) -> Kind | None:
 
 
 @dataclass(frozen=True)
+class Form:
+    """What a client knows of something it fills in: a command (its `name`, typed as `/name`,
+    its `description` and the `schema` of its arguments, with the named types' `"format"` and
+    each default) or an extension's options (the `name` of the extension, and a `schema` whose
+    defaults are the values now). Frozen, compared by value, and not hashable: the schema is a
+    dict."""
+
+    name: str
+    description: str
+    schema: Json
+
+
+@dataclass(frozen=True)
 class Field:
-    """One named value of the language: its `kind`, and `required` unless it has a default or
-    is `nullable`: a `T | None` with no default, which is `None` when absent."""
+    """One named value of the language: its `kind`, and its `default` if it `has_default`.
+    It is `nullable` if it is a `T | None` with no default, which is `None` when absent;
+    `required` is every other field without a default."""
 
     name: str
     kind: Kind
-    required: bool
+    has_default: bool = False
+    default: object = None
     nullable: bool = False
+
+    @property
+    def required(self) -> bool:
+        return not self.has_default and not self.nullable
 
 
 def field_of(name: str, hint: object, default: object, *, has_default: bool) -> Field:
-    """The `Field` for `name: hint = default`. Raises `HintError` for a hint outside the
+    """The `Field` for `name: hint = default`. Raises `DefinitionError` for a hint outside the
     language, or a default that does not fit it (`s: str = None` says to annotate
     `str | None`)."""
     kind = kind_of(hint)
     if kind is None:
-        raise HintError(f"unsupported annotation {hint!r}; supported: {SUPPORTED}")
+        raise DefinitionError(f"unsupported annotation {hint!r}; supported: {SUPPORTED}")
     if has_default:
         problem = kind.check_default(default)
         if problem is not None:
             shown = getattr(hint, "__name__", repr(hint))
             advice = f"; annotate it as `{shown} | None`" if default is None else ""
-            raise HintError(f"its default {default!r} {problem}{advice}")
-    nullable = not has_default and _optional(hint)
-    return Field(name, kind, not has_default and not nullable, nullable)
+            raise DefinitionError(f"its default {default!r} {problem}{advice}")
+    return Field(
+        name,
+        kind,
+        has_default,
+        default if has_default else None,
+        nullable=not has_default and _optional(hint),
+    )
 
 
 def _optional(hint: object) -> bool:
@@ -380,12 +426,35 @@ def _optional(hint: object) -> bool:
     return get_origin(hint) in (Union, types.UnionType) and type(None) in get_args(hint)
 
 
-def object_schema(fields: tuple[Field, ...], *, model: bool) -> Json:
+def plain(value: object) -> object:
+    """A Python value of the language as JSON: a `Path` as its string."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, list):
+        return [plain(v) for v in cast("list[object]", value)]
+    return value
+
+
+def object_schema(
+    fields: tuple[Field, ...], *, model: bool, current: Mapping[str, object] | None = None
+) -> Json:
     """The JSON Schema of an object with these `fields`: `required` lists those without a
-    default, and no other key is allowed. `model` picks the schema a model is shown."""
-    properties: Json = {f.name: (f.kind.model_schema if model else f.kind.schema) for f in fields}
+    default, and no other key is allowed. `model` picks the schema a model is shown (no
+    `"format"`, no `"default"`, which no provider API accepts); otherwise each field that is not
+    required carries its `"default"`, or its value in `current` (JSON) if there is one."""
+    properties: Json = {}
+    for f in fields:
+        if model:
+            properties[f.name] = f.kind.model_schema
+            continue
+        schema = f.kind.schema
+        if f.name in (current or {}):
+            schema = {**schema, "default": (current or {})[f.name]}
+        elif not f.required:
+            schema = {**schema, "default": plain(f.default)}
+        properties[f.name] = schema
     schema: Json = {"type": "object", "properties": properties, "additionalProperties": False}
-    required = [f.name for f in fields if f.required]
+    required = [f.name for f in fields if f.required and not (current and f.name in current)]
     if required:
         schema["required"] = required
     return schema
@@ -394,7 +463,7 @@ def object_schema(fields: tuple[Field, ...], *, model: bool) -> Json:
 def check_object(
     fields: tuple[Field, ...],
     values: Mapping[str, object],
-    context: Context | None,
+    context: Context,
     noun: str = "argument",
 ) -> str | None:
     """`None` if `values` (a decoded JSON object) has only these fields, every required one,
@@ -415,7 +484,7 @@ def check_object(
 
 
 def convert_object(
-    fields: tuple[Field, ...], values: Mapping[str, object], context: Context | None
+    fields: tuple[Field, ...], values: Mapping[str, object], context: Context
 ) -> dict[str, object]:
     """What the function receives for each of the checked `values`, and `None` for each
     nullable field they leave out."""

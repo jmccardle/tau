@@ -11,15 +11,16 @@ from typing import Any
 from tau_next import (
     Body,
     CallDraft,
+    CursorId,
     Delta,
     Driver,
     Finish,
-    LocalClient,
     ModelConfig,
     Node,
     NodeHandle,
     Part,
     Session,
+    StepLimit,
     Stop,
     TextDelta,
     Tool,
@@ -109,12 +110,13 @@ async def start(
     models = read_models(
         cli={"models": {"scripted": {"model": "scripted", "provider": "scripted"}}}
     )
-    driver = Driver(session, {"scripted": provider}, models, extensions=[chat.Demo(), *extras])  # type: ignore[list-item]
+    extensions = [chat.Demo(), StepLimit(), *extras]
+    driver = Driver(session, {"scripted": provider}, models, extensions=extensions)  # type: ignore[arg-type]
     driver.start()
-    client = LocalClient(driver, "chat:test")
+    client = driver.client("chat:test")
     screen = Screen()
     window = chat.Chat(client, session.cursors()[0], screen, typed)
-    window.commands = await client.commands()
+    await window.refresh()
     await client.watch([window.cursor])
     window.listener = asyncio.ensure_future(window.listen())
     return window, driver, session, screen
@@ -145,7 +147,7 @@ def test_slash_alone_lists_the_commands_with_their_parameters(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
-def test_a_command_missing_its_arguments_asks_for_each_and_tells_the_result(
+def test_a_command_missing_its_arguments_asks_for_each_and_shows_the_result(
     tmp_path: Path,
 ) -> None:
     file = tmp_path / "words.txt"
@@ -224,6 +226,70 @@ def test_an_empty_answer_declines_whatever_the_question_asks_for(tmp_path: Path)
         await asyncio.wait_for(driver.rest(window.cursor), 5)
         results = [b for b in provider.walks[1] if isinstance(b, Body.Results)]
         assert "no number given" in str(results[0].outcomes)
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_config_changes_an_extensions_options_and_a_bare_one_shows_them(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed())
+        await window.line("/")
+        assert "/config <extension>" in screen.text
+        await window.line("/config step_limit")
+        assert "limit=50  unattended steps before auto-step turns off" in screen.text
+        await window.line("/config step_limit limit=7")
+        await driver.rest(window.cursor)
+        await window.line("/config step_limit")
+        assert "limit=7" in screen.text, "the form shows the values now"
+        await window.line("/config step_limit limit=many")
+        assert "limit: 'many' is not an integer" in screen.text
+        await window.line("/config step_limit limit=0")
+        assert "at least 1" in screen.text, "the driver refuses what the options type refuses"
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_failing_command_says_what_failed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed())
+        await window.line(f"/word_count {tmp_path / 'missing.txt'}")
+        assert "[FileNotFoundError: " in screen.text
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+class Picks:
+    """Asks which cursor to send the next tool call's note to."""
+
+    name = "picks"
+
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        picked = await node.ask("which cursor?", CursorId)
+        return None if picked is not None else "no cursor given"
+
+
+def test_an_answer_is_read_by_the_questions_schema_and_new_opens_a_cursor(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        call = Part.Call("c1", "word_count", '{"path": "x"}')
+        provider = Scripted(([call], Stop.Tools), ([Part.Text("ok")], Stop.End))
+        window, driver, session, screen = await start(tmp_path, provider, Typed(), Picks())
+        await window.line("count it")
+        await until(lambda: "[allow/deny]" in screen.text)
+        await window.line("allow")
+        await until(lambda: "? which cursor?" in screen.text)
+        await window.line("seven")
+        assert "is not an integer" in screen.text, "a wrong answer is refused, the question stays"
+        await window.line("new")
+        await asyncio.wait_for(driver.rest(window.cursor), 5)
+        assert len(session.cursors()) == 2, "a new cursor was opened at the batch's node"
         await driver.stop()
         session.close()
 

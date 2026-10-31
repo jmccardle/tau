@@ -15,7 +15,6 @@ from tau_next import (
     Driver,
     Event,
     Live,
-    LocalClient,
     Part,
     Session,
     Stop,
@@ -66,7 +65,7 @@ async def listen(stream: Client, seen: list[Event], heard: asyncio.Event, n: int
 async def test_the_reply_streams_as_several_deltas_then_is_saved_whole() -> None:
     async with mock_session(options={"delay_ms": 1}) as (session, driver, cursor):
         seen: list[Event] = []
-        client = LocalClient(driver, "term")
+        client = driver.client("term")
         await client.watch([cursor])
         listener = asyncio.ensure_future(listen(client, seen, asyncio.Event(), 0))
         await client.send(cursor, "hello brave new world")
@@ -90,7 +89,7 @@ async def test_the_saved_reply_is_the_text_streamed_with_usage_and_a_normal_stop
         driver,
         cursor,
     ):
-        await LocalClient(driver, "term").send(cursor, "a b c")
+        await driver.client("term").send(cursor, "a b c")
         await driver.rest(cursor)
         (reply,) = replies(session)
         assert (reply.parts, reply.stop, reply.finish_reason) == (
@@ -105,7 +104,7 @@ async def test_the_saved_reply_is_the_text_streamed_with_usage_and_a_normal_stop
 async def test_max_tokens_caps_the_words_and_ends_with_the_length_stop() -> None:
     settings = {"max_tokens": 2, "options": {"delay_ms": 0, "reply": "one two three four"}}
     async with mock_session(**settings) as (session, driver, cursor):
-        await LocalClient(driver, "term").send(cursor, "go")
+        await driver.client("term").send(cursor, "go")
         await driver.rest(cursor)
         (reply,) = replies(session)
         assert (reply.parts, reply.stop) == ([Part.Text("one two ")], Stop.Length)
@@ -116,7 +115,7 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_st
     async with mock_session(options={"delay_ms": 1, "reply": WORDS}) as (session, driver, cursor):
         seen: list[Event] = []
         heard_two = asyncio.Event()
-        client = LocalClient(driver, "term")
+        client = driver.client("term")
         await client.watch([cursor])
         listener = asyncio.ensure_future(listen(client, seen, heard_two, 2))
         await client.send(cursor, "go")

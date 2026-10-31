@@ -7,9 +7,8 @@ import pytest
 from fakes import FakeProvider
 from harness import Harness, say, scenario
 
-from tau_next import CommandInfo, Cursor, CursorId, LabelName, Model, NodeId, TreeHandle
-from tau_next.commandline import UnknownCommand, completions, parse
-from tau_next.values import kind_of
+from tau_next import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
+from tau_next.commandline import UnknownCommand, completions, parse, value, values
 
 
 def configure(cursor: Cursor, mode: Literal["fast", "slow"], size: int, ratio: float = 1.0) -> None:
@@ -33,7 +32,7 @@ class Lines:
     )
 
 
-async def commands(h: Harness) -> tuple[CommandInfo, ...]:
+async def commands(h: Harness) -> tuple[Form, ...]:
     return await h.client.commands()
 
 
@@ -93,7 +92,7 @@ async def test_the_driver_stays_the_authority_on_named_values(tmp_path: Path) ->
     parsed = parse("/tag nolabel 99 5", await commands(h))
     assert parsed.missing == ()
     with pytest.raises(ValueError, match="existing label"):
-        await h.client.run(h.cursor, parsed.command.name, parsed.args)
+        await parsed.run(h.client, h.cursor)
 
 
 @scenario
@@ -155,7 +154,7 @@ async def test_named_types_complete_through_the_client(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([say("a")]), extensions=[Lines()])
     await h.send("hi")
     await h.settle()
-    await h.client.set_label("keep", h.cursor)
+    await h.client.set_label(h.cursor, "keep")
     other = await h.client.open(h.session.cursor(h.cursor).at)
     await h.settle()
     assert await complete(h, "/tag k") == ["keep"]
@@ -212,4 +211,42 @@ async def test_a_leading_tilde_is_the_home_directory_in_a_path_and_its_completio
     assert await h.client.complete(h.cursor, "path", "~") == ["~/"]
     found = await h.client.complete(h.cursor, "path", "~/")
     assert [f.removeprefix("~/").removesuffix("/") for f in found] == visible
-    assert kind_of(Path).convert("~/a.txt", None) == home / "a.txt"  # type: ignore[union-attr]
+
+
+def expand(path: Path) -> str:
+    """Say which path it is."""
+    return str(path)
+
+
+class Expands:
+    name = "expands"
+    commands = (expand,)
+
+
+@scenario
+async def test_a_leading_tilde_in_a_path_argument_is_the_home_directory(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Expands()])
+    assert await h.run("expand", {"path": "~/a.txt"}) == str(Path.home() / "a.txt")
+    await h.close()
+
+
+# value and values: one value of any schema, such as a question's answer typed as text.
+
+
+@scenario
+async def test_value_reads_text_and_values_completes_it_as_a_commands_argument_is(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    forms = {form.name: form for form in await commands(h)}
+    cursor_schema = forms["tag"].schema["properties"]["to"]  # type: ignore[index]
+    assert value("new", cursor_schema) == "new"
+    assert value("4", cursor_schema) == 4
+    with pytest.raises(ValueError, match="is not an integer"):
+        value("four", cursor_schema)
+    assert await values(cursor_schema, "n", h.client, h.cursor) == ["new"]
+    assert await values(cursor_schema, "", h.client, h.cursor) == [str(h.cursor), "new"]
+    mode_schema = forms["configure"].schema["properties"]["mode"]  # type: ignore[index]
+    assert value("slow", mode_schema) == "slow"
+    assert await values(mode_schema, "f", h.client, h.cursor) == ["fast"]
+    await h.close()
