@@ -47,29 +47,36 @@
 <!-- Body&#45;&gt;Outcome -->
 <g id="edge2" class="edge">
 <title>Body&#45;&gt;Outcome</title>
-<path fill="none" stroke="#666666" d="M578.78,-209.37C588.24,-220.23 597.18,-231.53 605,-243 673.02,-342.81 719.5,-479.53 739.47,-545.41"/>
-<polygon fill="#666666" stroke="#666666" points="737.19,-546.33 741.55,-552.33 741.88,-544.92 737.19,-546.33"/>
+<path fill="none" stroke="#666666" d="M578.78,-209.37C588.24,-220.23 597.18,-231.53 605,-243 640.58,-295.21 707.16,-467.89 736.27,-545.56"/>
+<polygon fill="#666666" stroke="#666666" points="734.05,-546.63 738.8,-552.33 738.64,-544.91 734.05,-546.63"/>
 </g>
 <!-- Part -->
 <g id="node9" class="node">
 <title>Part</title>
-<polygon fill="lightgray" stroke="transparent" points="692.5,-332 692.5,-348 810.5,-348 810.5,-332 692.5,-332"/>
-<text text-anchor="start" x="694.5" y="-338.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Part</text>
-<text text-anchor="start" x="720.5" y="-338.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, tree.rs)</text>
-<text text-anchor="start" x="694.5" y="-322" font-family="Courier,monospace" font-size="10.00">Text(String)</text>
-<text text-anchor="start" x="694.5" y="-307" font-family="Courier,monospace" font-size="10.00">Thinking(String)</text>
-<text text-anchor="start" x="694.5" y="-292" font-family="Courier,monospace" font-size="10.00">Call {</text>
-<text text-anchor="start" x="694.5" y="-277" font-family="Courier,monospace" font-size="10.00">    id: String</text>
-<text text-anchor="start" x="694.5" y="-262" font-family="Courier,monospace" font-size="10.00">    tool: String</text>
-<text text-anchor="start" x="694.5" y="-247" font-family="Courier,monospace" font-size="10.00">    args_raw: String</text>
-<text text-anchor="start" x="694.5" y="-232" font-family="Courier,monospace" font-size="10.00">}</text>
-<polygon fill="none" stroke="black" points="691.5,-226.5 691.5,-349.5 811.5,-349.5 811.5,-226.5 691.5,-226.5"/>
+<polygon fill="lightgray" stroke="transparent" points="681.5,-359 681.5,-375 822.5,-375 822.5,-359 681.5,-359"/>
+<text text-anchor="start" x="695" y="-365.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Part</text>
+<text text-anchor="start" x="721" y="-365.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, part.rs)</text>
+<text text-anchor="start" x="683.5" y="-349" font-family="Courier,monospace" font-size="10.00">Text {</text>
+<text text-anchor="start" x="683.5" y="-334" font-family="Courier,monospace" font-size="10.00">    text: String</text>
+<text text-anchor="start" x="683.5" y="-319" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="683.5" y="-304" font-family="Courier,monospace" font-size="10.00">}</text>
+<text text-anchor="start" x="683.5" y="-289" font-family="Courier,monospace" font-size="10.00">Thinking {</text>
+<text text-anchor="start" x="683.5" y="-274" font-family="Courier,monospace" font-size="10.00">    text: String</text>
+<text text-anchor="start" x="683.5" y="-259" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="683.5" y="-244" font-family="Courier,monospace" font-size="10.00">}</text>
+<text text-anchor="start" x="683.5" y="-229" font-family="Courier,monospace" font-size="10.00">Call {</text>
+<text text-anchor="start" x="683.5" y="-214" font-family="Courier,monospace" font-size="10.00">    id: String</text>
+<text text-anchor="start" x="683.5" y="-199" font-family="Courier,monospace" font-size="10.00">    tool: String</text>
+<text text-anchor="start" x="683.5" y="-184" font-family="Courier,monospace" font-size="10.00">    args_raw: String</text>
+<text text-anchor="start" x="683.5" y="-169" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="683.5" y="-154" font-family="Courier,monospace" font-size="10.00">}</text>
+<polygon fill="none" stroke="black" points="680,-148 680,-376 823,-376 823,-148 680,-148"/>
 </g>
 <!-- Body&#45;&gt;Part -->
 <g id="edge1" class="edge">
 <title>Body&#45;&gt;Part</title>
-<path fill="none" stroke="#666666" d="M578.53,-179.78C614.23,-202.25 653.13,-226.72 684.88,-246.71"/>
-<polygon fill="#666666" stroke="#666666" points="683.9,-248.99 691.13,-250.64 686.51,-244.84 683.9,-248.99"/>
+<path fill="none" stroke="#666666" d="M578.53,-169.95C610.09,-186.84 644.13,-205.07 673.54,-220.81"/>
+<polygon fill="#666666" stroke="#666666" points="672.42,-222.98 679.75,-224.13 674.73,-218.66 672.42,-222.98"/>
 </g>
 <!-- Node -->
 <g id="node2" class="node">
@@ -210,8 +217,8 @@
 <!-- Answer&#45;&gt;Part -->
 <g id="edge7" class="edge">
 <title>Answer&#45;&gt;Part</title>
-<path fill="none" stroke="#666666" d="M544.34,-516.68C564.26,-497.09 585.75,-475.46 605,-455 635.14,-422.96 667.39,-386.22 693.85,-355.37"/>
-<polygon fill="#666666" stroke="#666666" points="696.03,-356.59 698.72,-349.68 692.31,-353.4 696.03,-356.59"/>
+<path fill="none" stroke="#666666" d="M544.27,-518.54C564.5,-498.72 586.17,-476.49 605,-455 629.11,-427.48 653.68,-396.32 675.59,-367.19"/>
+<polygon fill="#666666" stroke="#666666" points="677.7,-368.47 679.93,-361.4 673.78,-365.53 677.7,-368.47"/>
 </g>
 </g>
 </svg>

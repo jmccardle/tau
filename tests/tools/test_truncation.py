@@ -248,13 +248,16 @@ FILE_SIZE_LIMITED = """
 import asyncio, json, resource, sys
 from tau_next import BashTool, GrepTool
 
-resource.setrlimit(resource.RLIMIT_FSIZE, (50_000, 50_000))  # a disk that fills up
+_, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+resource.setrlimit(resource.RLIMIT_FSIZE, (50_000, hard))  # a disk that fills up
 overflow = sys.argv[1] + "/overflow"
 bash = BashTool(sys.argv[1], max_output=1000, overflow_dir=overflow)
 command = json.dumps({"command": "seq 1 100000; echo LAST; exit 3"})
 print(asyncio.run(bash.call(command)))
 grep = GrepTool(sys.argv[1], max_output=1000, overflow_dir=overflow)
 print(asyncio.run(grep.call(json.dumps({"pattern": "hit"}))))
+# The disk empties again: an instrumented build (scripts/coverage.sh) writes its profile at exit.
+resource.setrlimit(resource.RLIMIT_FSIZE, (hard, hard))
 """
 
 
