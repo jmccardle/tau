@@ -1,0 +1,144 @@
+"""bash_guard: ask before a `bash` call that is likely to print a lot.
+
+A `pre_tool` hook matches the command against `Options.patterns`. On a match it asks the
+frontend `reject | allow | always | truncate`. `truncate` asks again for a grep pattern and
+rewrites the call's `command` to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. A reject is the
+call's `Err`, written so the model can narrow the command. `always` is remembered in the
+options (`allow`), so it sticks on this branch, survives a reload, and shows in
+`/config bash_guard`. When nobody answers (no client, or `wait` seconds pass) `unattended`
+decides.
+"""
+
+import asyncio
+import json
+import re
+import shlex
+from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from tau_next import CallDraft, Cursor, NodeHandle, Outcome, Subject
+
+TAIL = 200
+BOUNDED = re.compile(r"\|\s*(?:head|tail|wc)\b")  # already piped to something short
+BUILT_IN = (
+    r"\bfind\s+/(?:\s|$)",
+    r"\bcat\s+\S+\.(?:bin|iso|log|gz|zip|tar|db|sqlite|so|o)\b",
+    r"\bnpm\s+(?:install|ci)\b",
+    r"\bcargo\s+(?:build|test)\b",
+    r"(?s)\bgit\s+log\b(?!.*(?:\s-n\s*\d|\s-\d|--max-count))",
+    r"(?s)\bgrep\b(?=.*\s-\w*[rR])(?!.*\s-\w*l)",  # recursive, without -l
+    r"(?s)\bjournalctl\b(?!.*\s-n\s*\d)",
+    r"(?s)\bdocker\s+logs\b(?!.*--tail)",
+)
+
+
+@dataclass(frozen=True)
+class Options:
+    """bash_guard's options."""
+
+    # None, not BUILT_IN: a list default is refused by the dataclass, a tuple by the type language.
+    patterns: Annotated[
+        list[str] | None, "regexes of commands that print a lot (none: built-in)"
+    ] = None
+    allow: Annotated[list[str] | None, "patterns the user allowed for good"] = None
+    unattended: Annotated[
+        Literal["reject", "allow", "truncate"], "what happens when nobody answers"
+    ] = "reject"
+    wait: Annotated[float, "seconds to wait for an answer"] = 600.0
+
+    def __post_init__(self) -> None:
+        for pattern in (*(self.patterns or ()), *(self.allow or ())):
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"pattern {pattern!r}: {e}") from e
+
+    def hit(self, command: str) -> str | None:
+        """The first pattern, not allowed for good, that `command` matches."""
+        if BOUNDED.search(command):
+            return None
+        return next(
+            (
+                p
+                for p in (self.patterns or BUILT_IN)
+                if p not in (self.allow or ()) and re.search(p, command)
+            ),
+            None,
+        )
+
+
+class BashGuard:
+    name = "bash_guard"
+    options = Options
+
+    def __init__(self) -> None:
+        self.always: dict[int, set[str]] = {}  # batch node -> patterns, until post_result
+        self.ran: dict[tuple[int, str], str] = {}  # (batch node, call id) -> what really ran
+
+    async def ask(self, node: NodeHandle, text: str, expect: object) -> object:
+        """`node.ask`, giving up after `wait` seconds (a client is connected but nobody looks)."""
+        try:
+            async with asyncio.timeout(node.options().wait):
+                return await node.ask(text, expect)
+        except TimeoutError:
+            return None
+
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        if call.tool != "bash":
+            return None
+        try:
+            args = json.loads(call.args_raw)
+            command = args["command"]
+        except (ValueError, KeyError, TypeError):
+            return None  # the tool owns argument checking
+        options = node.options()
+        pattern = options.hit(command)
+        if pattern is None:
+            return None
+        answer = await self.ask(
+            node,
+            f"bash would print a lot (matches /{pattern}/):\n  {command}",
+            Literal["reject", "allow", "always", "truncate"],
+        )
+        verdict = answer or options.unattended
+        if verdict == "always":
+            # WISH: node.set_options(allow=[..., pattern]). Only Cursor has set_options, so this
+            # waits for post_result below.
+            self.always.setdefault(node.id, set()).add(pattern)
+        if verdict in ("allow", "always"):
+            return None
+        if verdict == "truncate":
+            keep = (
+                await self.ask(node, "grep -e what? (decline: just the tail)", str)
+                if answer
+                else None
+            )
+            pipe = f"grep -e {shlex.quote(str(keep))} | " if keep else ""
+            ran = f"{{ {command}\n}} 2>&1 | {pipe}tail -n {TAIL}"
+            call.args_raw = json.dumps({**args, "command": ran})
+            self.ran[node.id, call.id] = ran
+            return None
+        who = "the user said no" if answer else "nobody was there to approve it"
+        return (
+            f"bash_guard did not run `{command}`: it matches /{pattern}/ and would print a lot "
+            f"({who}). Narrow it (-n, -l, --tail, a path, | head) and call bash again."
+        )
+
+    async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None:
+        """The tree keeps the model's own `args_raw`; tell the model what ran instead."""
+        ran = self.ran.pop((node.id, call.id), None)
+        note = f"[bash_guard ran: {ran}]\n"
+        match call.outcome:
+            case Outcome.Ok(value=value) if ran:
+                call.outcome = Outcome.Ok(note + value)
+            case Outcome.Err(error=error) if ran:
+                call.outcome = Outcome.Err(note + error)
+        return None
+
+    async def post_result(self, cursor: Cursor, subject: Subject) -> str | None:
+        assert subject.node is not None
+        assert subject.node.parent is not None
+        granted = self.always.pop(subject.node.parent, set())
+        if granted:
+            cursor.set_options(allow=sorted({*(cursor.options().allow or ()), *granted}))
+        return None
