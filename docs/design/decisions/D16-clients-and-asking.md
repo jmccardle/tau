@@ -1,6 +1,6 @@
 # D16: Clients and asking
 
-Status: draft (2026-10-30), Phase 5's first step. Amends D15 (events), `model.md` §7
+Status: accepted (2026-10-30), Phase 5's first step. Amends D15 (events), `model.md` §7
 (questions) and §9 (events and frontends).
 
 ## Context
@@ -13,192 +13,304 @@ contract was built for one in-process frontend:
   only by calling `driver.questions(cursor)`. `respond(cursor, …)` answers "the cursor's
   oldest", which is a race once two clients can answer.
 - **`Saved` says "go read the tree".** Over a network every `Saved` costs a round trip.
-- **`HookError` is a special case**: live only, never replayed, "expect none for a failure
-  that happened before you subscribed".
+- **`HookError` is a special case**: live only, never replayed.
 - **Nothing is replayed on subscribe**, so a late frontend must know which reads rebuild
   the state, and a race between subscribing and reading is the frontend's problem.
-- **Nothing typed flows either way** between a person and an extension: no typed question,
-  no command with arguments, no extension config. τ 0.15's version of this (flows,
-  domains, vocabularies, four ways to ask, about 10,000 lines across core and two
-  frontends; extension-typed commands had no users) is the cautionary example. Its
-  experience is worth keeping: `/` lists commands with descriptions, Tab completes typed
-  values, a bare command opens a form, a missing argument is asked for, an unknown command
-  warns that the line goes to the model.
+- **Nothing typed flows either way** between a person and an extension. τ 0.15's version
+  (flows, domains, vocabularies, four ways to ask, about 10,000 lines; extension-typed
+  commands had no users) is the cautionary example. Its experience is worth keeping: `/`
+  lists commands with descriptions, Tab completes typed values, a bare command opens a
+  form, a missing argument is asked for, an unknown command warns that the line goes to
+  the model.
 
 Two directions, two names:
 - a **question** is an extension asking a person (extension → frontend);
 - a **form** is a person asking an extension (frontend → extension): run a command, or
-  change its config.
+  change an extension's options.
+
+The test of this decision is the length of the simple cases (§6). If a permission
+prompt, a command that is also a tool, or an extension's options take more than a
+screen, the design is wrong, not the example.
 
 ## Decision
 
-### 1. A frontend holds a `Client`, local or remote
+### 1. One type language
+
+Tool parameters, command parameters, a question's answer and an extension's options are
+written as Python type hints, and one module (`tau_next.values`) turns a hint into a
+schema, checks a JSON value against it, and converts it to what the function receives.
+Nothing else describes a value.
+
+| hint | JSON | the function gets | a frontend shows |
+|---|---|---|---|
+| `str`, `int`, `float`, `bool` | as JSON | as JSON | a field, a checkbox |
+| `Literal["a", "b"]` (str or int) | the value | the value | a dropdown |
+| `list[T]` | array | `list` | a multi-select of `T` |
+| `T \| None`, or a default | may be absent or `null` | `None` or the default | an optional field, prefilled |
+| `Annotated[T, "text"]` | as `T` | as `T` | `T`, with the text as help |
+| `pathlib.Path` | string | `Path` | a file picker, completed on the driver's machine |
+| `Model` | string | `str` | a searchable list of the configured models |
+| `CursorId` | integer, or `"new"` | `int` | a list of the open cursors, and "new" |
+| `LabelName` | string | `str` | a list of the labels |
+| `NodeId` | integer | `int` | the nodes of the cursor's walk, newest first |
+
+- The last five are **named types**, a closed set. `Model`, `CursorId`, `LabelName` and
+  `NodeId` are `NewType`s; a value of one is checked against the session (a model that is
+  not configured, a cursor that is not open, is refused like a wrong type).
+- `CursorId` `"new"` opens a cursor at the asker's node (the running cursor's `at`, or the
+  batch's node for a tool) after every other argument has been checked, and the function
+  receives its id. Nothing else in the language has an effect.
+- `Annotated[T, "text"]` replaces `@tool(describe=…)`: the description sits on the
+  parameter it describes.
+- A model sees the same schema, without the named types' format, which no provider API
+  accepts. The `Literal`s and descriptions it keeps.
+
+### 2. Functions are tools and commands
+
+An extension lists plain functions, sync or async, with a docstring and typed parameters:
+
+- `tools`: offered to the model; the result (`str`) is the call's outcome.
+- `commands`: offered to a person as `/name`; the result (`str` or `None`) is a `Notice`
+  to the client that ran it.
+
+The same function may be in both lists. No decorator and no wrapper: the driver describes
+each function when it is built (`ToolDefinitionError` names the problem), and `tool(fn)`
+remains for a tool given to the driver outside any extension. A module with a `name` is an
+extension.
+
+Parameters the driver fills, by annotation, are not arguments:
+
+| annotation | as a tool | as a command |
+|---|---|---|
+| `Progress` (`progress`) | the call's `ToolProgress` | a `Notice` to the client |
+| `TreeHandle` | the batch's `NodeHandle` | the cursor's handle, as a `TreeHandle` |
+| `NodeHandle` | the batch's `NodeHandle` | refused when the driver is built |
+| `Cursor` | refused when the driver is built | the cursor it runs on |
+
+So a function that needs nothing is both; one that reads or writes the tree is both; one
+that moves a cursor is a command. Writes are by `Extension(<the extension's name>)`.
+
+**Running a command.** `run(cursor, command, args)` checks `args` (§1).
+- A command that takes `Cursor` runs as a step of that cursor. It is refused (`Busy`)
+  unless the cursor is at rest: commands do not queue. The driver keeps the command in
+  memory and asks for a step (`Session.step`); at that step's `pre_step` it runs the
+  command first, with the cursor's handle, then the extensions' `pre_step` hooks. The rest
+  of the step follows the usual rules (model.md §6): a command that leaves the cursor on a
+  `User` node gets a sample, one that leaves it where a reply already is gets none. Abort
+  cancels a running command (unlike a hook, which abort lets finish). A crash loses a
+  command that has not finished: it is never re-run.
+- Any other command runs at once, on the driver's loop, whatever the cursor is doing.
+
+**Built-in commands** are commands of the built-in extension `tau`: `/model` and
+`/config`. Command names are unique across extensions; a duplicate fails when the driver
+is built.
+
+### 3. Questions
+
+`await handle.ask(text, expect=str, *, to=None) -> value | None`, on `Cursor` and on
+`NodeHandle` (a tool hook asks on its batch's cursor).
+
+- `expect` is any hint of §1: `Literal["allow", "deny", "always"]`, `Model`,
+  `list[pathlib.Path]`. The value comes back checked and converted; `None` is a decline.
+- A question has an **id**, its cursor, `to` (`None`: anyone; or a client id), its text and
+  its schema. It is in its cursor's `CursorState` until it closes.
+- `answer(question_id, value)` answers it. The driver checks the value; a wrong one is
+  refused to the answering client (`ValueError` naming the problem) and the question stays
+  open. The first good answer wins; a later one raises `LookupError`.
+- Abort and go-to decline the cursor's questions, as now. A question `to` one client stays
+  open across that client's disconnects; asking a client that is not connected declines at
+  once, so a cursor never waits on someone who is not there.
+
+### 4. Options and config
+
+An extension's **options** are a frozen dataclass named by its `options` attribute; each
+field is a hint of §1 with a default (a field with none must be configured). They live in
+the D13 layers under `extensions.<name>`, and a `Config` node may override them for a
+branch. `handle.options()` returns the dataclass as it stands at the handle's node.
+`tau config check` checks every extension's options.
+
+`cursor.configure(**fields)` writes a `Config` node holding just `fields` under `at` and
+moves onto it: the branch's model (`configure(model="opus")`), or an extension's options
+(`configure(extensions={"step_limit": {"limit": 10}})`). `/model <Model>` and
+`/config <extension>` are built-in commands that do exactly that; the second's form is the
+extension's options. The user's file stays `tau config`'s to edit.
+
+### 5. A frontend holds a `Client`, local or remote
 
 A frontend never touches `Driver` or `Session`. It holds a `Client`: async calls, reads,
 and one event stream. Two implementations, one protocol:
 
 - `LocalClient(driver, client_id)`: in-process; the transport is free.
-- `RemoteClient(socket)`: `tau serve` runs a `LocalClient` per connection and serializes
-  calls and events generically (every call argument and event is a plain frozen value), so
-  there is no per-call wire code.
+- `RemoteClient(socket)` (Phase 6): `tau serve` runs a `LocalClient` per connection and
+  serializes calls and events generically (every argument and event is a plain frozen
+  value), so there is no per-call wire code.
 
-What a network adds, and nothing else:
-- **Identity.** A client names itself when it connects (a stable id such as
-  `john@laptop:tui`), so a reconnect is the same client; its actions are
-  `by: Frontend(client)`. A connection is not a client: a network blip changes nothing in
-  the session and declines nothing.
-- **Loss.** The stream ends with an error. Reconnecting is a fresh connect (a snapshot,
-  §2); there is no resume protocol, because the log is the truth.
-- **Transport.** A Unix socket with file permissions first. TCP and authentication are
-  not part of this decision.
+A network adds identity (a client names itself with a stable id such as
+`john@laptop:tui`, so a reconnect is the same client and its actions are
+`by: Frontend(client)`; a connection is not a client), loss (the stream ends with an error;
+reconnecting is a fresh snapshot; there is no resume protocol, because the log is the
+truth) and transport (a Unix socket with file permissions first). Nothing else.
 
-The `Harness` drives a `Client`, so the behavior suite tests the contract once for both.
-
-### 2. State is sent whole; growth is sent as it happens
-
-Small state is sent whole whenever it changes, never as a delta. Every client receives it
-for every cursor, which is what lets a frontend show "cursor 3 is waiting on you" while it
-watches cursor 1, and makes switching the viewed cursor a local lookup.
+**Events.** Small state is sent whole whenever it changes, never as a delta; every client
+receives it for every cursor, so a frontend can show "cursor 3 is waiting on you" while
+it watches cursor 1, and switching the viewed cursor is a local lookup.
 
 | event | to | carries |
 |---|---|---|
-| `CursorState(cursor, …)` | all clients | `at`, busy, auto-step, open questions (§3), status per extension (`cursor.show`), pending items, the last step's ending including a hook's error |
-| `Labels(labels)` | all clients | every label and its node |
+| `CursorState(cursor, …)` | all clients | `at`, busy, auto-step, open questions, pending items, the last step's ending including a hook's error |
+| `Labels(labels)` | all clients | every label and its cursor |
 | `Appended(nodes)` | all clients | the new nodes, bodies included |
 | `Live(cursor, delta)` | clients watching the cursor | text, thinking, call and tool-progress deltas, as in D15 |
-| `Notice(text)` | one client | `cursor.tell`, a refused input |
+| `Notice(text)` | one client | `cursor.tell`, a refused input, a command's result and progress |
 
 - **On connect** a client receives `Labels`, one `CursorState` per cursor, and the tree's
-  node count before anything else; nodes below the count it reads as calls (`node`,
+  node count, before anything else; nodes below the count it reads with calls (`node`,
   `walk`, `children`), nodes from it on arrive as `Appended`. Subscribing and the snapshot
   are one act on the driver's loop, so nothing falls between them.
 - **Order.** One ordered stream per client. A change's `Appended` comes before the
   `CursorState` that points at its nodes. A `CursorState` or `Labels` that replaces an
   earlier copy removes it and goes to the end, so it never overtakes what it refers to.
-- **`watch(cursors)`** chooses which cursors' `Live` a client gets. Watching a cursor
-  starts with a catch-up, taken in the same act as the change of watch: the parts of the
-  sample in flight that are not in the tree yet, and the text of the open part (the driver
-  already keeps both, which is how a cancelled reply saves what arrived). Tool progress is
-  not kept, so it has no catch-up; the result arrives as `Appended`.
-- **Bounds.** `Live` is dropped when the client's buffer is full (as in D15). `CursorState`
-  and `Labels` replace their own earlier copy, so they cost one slot per cursor. A client
-  whose `Appended` and `Notice` backlog passes the buffer is cut off and reconnects to a
-  snapshot. No event carries a "dropped" mark.
-- **Gone:** `Saved`, `HookError` as an event (it is part of `CursorState`, so a late
-  client sees it), and `driver.questions()` as the way to learn of a question.
+- **`watch(cursors)`** chooses which cursors' `Live` a client gets, starting with a
+  catch-up taken in the same act: the parts of the sample in flight that are not in the
+  tree yet, and the text of the open part. Tool progress has no catch-up; the result
+  arrives as `Appended`.
+- **Bounds.** `Live` is dropped when the client's buffer is full. `CursorState` and
+  `Labels` replace their own earlier copy, so they cost one slot per cursor. A client whose
+  `Appended` and `Notice` backlog passes the buffer is cut off and reconnects to a snapshot.
+- **Gone:** `Saved`, `HookError` as an event (it is in `CursorState`), `driver.questions()`
+  and `respond`.
 
-### 3. Questions
+**Calls.** The frontend calls of today's `Driver` (`input`, `send`, `step`, `go_to`,
+`set_auto`, `abort`, `open`, `set_label`, `remove_label`), with the client filled in, plus
+`watch`, `answer`, `commands()` (each command's name, description and schema; fixed for the
+driver's life), `run`, `options(extension)` and `complete(cursor, type, prefix)`.
 
-`await cursor.ask(text, schema=None, target=Anyone) -> value | None`.
+**Completion** has two sources and no callbacks: the values in the schema (`Literal`), and
+`complete` for the named types, answered by the driver from the session and the config
+(paths on the driver's machine, which matters when the client is remote). No extension code
+runs per keystroke, so completion cannot hang or raise. `tau_next.commandline` holds the
+pure parts every line-based frontend shares: `parse(line, commands)` (shell words;
+positional values fill parameters in order, `name=value` any; a list takes comma-separated
+values) answering the command, its arguments and the required ones missing, and
+`completions(line, commands, client)`. The driver's check is the authority; the frontend's
+only spares a round trip.
 
-- A question has an **id**, its cursor, a **target** (`Anyone` or one client), its text,
-  and an optional schema (§5). No schema means a string answer.
-- It appears in its cursor's `CursorState` until it closes. `answer(question_id, value)`
-  answers it; `None` declines. The driver validates the value against the schema; an
-  invalid value is refused to the answering client and the question stays open.
-- The first answer wins. A later answer to a closed question raises `LookupError` (as
-  `respond` does today).
-- Abort and go-to decline the cursor's questions, as now. A question for one client stays
-  open across that client's disconnects (it is answered when the client returns, or
-  declined by anyone's abort or go-to); asking a client that is not connected declines at
-  once, so a cursor never waits on someone who is not there.
+The `Harness` drives a `Client`, so the behavior suite tests the contract once for both.
 
-### 4. Forms: commands and extension config
+### 6. The simple cases, as they must read
 
-**Commands.** `@command` is `@tool`'s machinery for a person: an async function whose
-first parameter is the `Cursor` handle and whose other parameters are typed. Its name,
-docstring and schema come from the function, as for a tool. Commands are declared, found
-on the extension like its hooks when the driver is built; no extension code runs to list
-them. A value only known at run time (the current todo ids) is asked for by the command
-itself, with a question whose schema carries the values.
+Each is a behavior test as written here; growing one is a design bug.
 
-- **Running.** `run(cursor, command, args)` is refused (`Busy`) unless the cursor is at
-  rest: commands do not queue. It validates `args` against the schema and adds an
-  `ItemData.Extension` item addressed to the command's extension, its data naming the
-  command, the arguments and the client; the item wakes the cursor. At that step's
-  `pre_step` the driver removes the item, then calls the command, before the point's
-  extension hooks, so they never see it. No core change: it is the existing "add an item,
-  the cursor wakes, `pre_step` acts on it" path.
-- **What follows from that.** The command holds the cursor busy and can `ask`. It runs at
-  most once: a crash before it starts loses it, and a crash during it does not re-run it.
-  Abort cancels it (the driver's task; unlike a hook, which abort lets finish, model.md
-  §8), so `/compact` stops when told to. The rest of the step follows the usual rules: a
-  command that moves the cursor to a `User` node with auto-step on gets a sample, as a
-  hook's move would.
-- **What the person sees.** `/` lists every command with its description; Tab completes
-  the name, then each argument (§5); an unknown name warns that the line goes to the model
-  as text; a command missing a required argument opens a form for the rest.
-- **One registry.** Built-in commands (`/model`, `/tree`) are commands of a built-in
-  extension, not a separate list. Names are unique across extensions; a duplicate fails
-  when the driver is built, like a duplicate extension name.
+```python
+# A function that is a tool and a command.
+def word_count(path: Path) -> str:
+    """Count the words in a file."""
+    return f"{len(path.read_text().split())} words"
 
-**Extension config.** An extension declares `config_schema`. Its config lives in the D13
-layers under `extensions.<name>`, and a `Config` node may override it for a branch with
-the same shape; `config_at` returns it under that key. `tau config check` validates every
-extension's config against its schema. A client reads `config(extension)` (schema and
-current value). Changing it is a command, the built-in `/config <extension>`, whose form is
-that schema and which writes a `Config` node on the cursor's branch (recorded, replayed,
-branch-local). The user's file stays `tau config`'s to edit.
 
-### 5. One schema, one completer, one validator
+name = "words"  # this module is the extension
+tools = commands = [word_count]  # the model calls it; a person types /word_count <Tab>
+```
 
-The schema is the JSON Schema subset `@tool` already produces from type hints: `str`,
-`int`, `float`, `bool`, `list[T]`, `Literal[...]` of str or int, `T | None`. To it D16 adds
-**named formats**, a closed set: `path`, `model`, `cursor`, `label`, `node`, written as
-types (`pathlib.Path`, and `Model`, `CursorRef`, `LabelName`, `NodeRef` from `tau_next`).
+```python
+# Permissions: a typed question from a tool hook.
+class Permissions:
+    name = "permissions"
 
-Completion has two sources and no callbacks:
-- **Fixed values** (`Literal` in a command's signature, or an `enum` in a question's
-  schema).
-- **Named formats**, answered by `complete(cursor, format, prefix)`, a `Client` call the
-  driver implements. Paths are completed on the driver's machine, which matters when the
-  client is remote.
+    def __init__(self) -> None:
+        self.always: set[str] = set()
 
-No extension code runs per keystroke, so completion cannot hang, raise, or need to be
-async on the extension's side. Every frontend needs one form renderer, one completer and
-one validator; the driver's validator is the authority, the frontend's only spares a round
-trip.
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        if call.tool in self.always:
+            return None
+        verdict = await node.ask(f"{call.tool} {call.args_raw}", Literal["allow", "deny", "always"])
+        if verdict == "always":
+            self.always.add(call.tool)
+        return None if verdict in ("allow", "always") else "the user said no"
+```
+
+```python
+# A command that moves the cursor; the type gives the form, the completion and the check.
+async def branch_from(cursor: Cursor, node: NodeId) -> None:
+    """Go back to a node of this cursor's walk."""
+    cursor.move(node)
+
+
+# Handing work to another cursor, or a new one.
+def hand_off(tree: TreeHandle, to: CursorId, note: str) -> str:
+    """Send a note to another cursor."""
+    tree.add_item(to, note)
+    return f"sent to cursor {to}"
+```
+
+```python
+# Options.
+@dataclass(frozen=True)
+class Options:
+    limit: Annotated[int, "unattended steps before auto-step turns off"] = 50
+
+
+class StepLimit:
+    name = "step_limit"
+    options = Options  # read with cursor.options().limit; /config step_limit
+```
+
+### 7. What is not a provider
+
+A provider is the API a step samples through. A fast "decider" model, an embedding
+model, a reranker or a vector index is something an extension uses inside a hook: it holds
+its own client, configured through its options (an endpoint, an `api_key_env`, a model
+name), and nothing about it is recorded unless the extension writes it. The driver offers
+nothing for them; a second extension that needs the same one imports it.
 
 ## Open
 
-- **A command that should not sample.** A command that moves the cursor to a `User` node
-  with auto-step on gets a sample (§4). If `/prune` or `/compact` finds that surprising in
-  practice, the rule to add is "a command's step does not sample unless the command turns
-  auto-step on"; nothing is added before a real command shows the need.
+- **A command that should not sample.** A command that leaves the cursor on a `User` node
+  gets a sample (§2). If `/compact` finds that surprising in practice, the rule to add is
+  "a command's step does not sample unless the command turns auto-step on"; nothing is
+  added before a real command shows the need.
 
-Settled while drafting (from review): edited extension config lands as a `Config` node
-(§4); `CursorState` carries pending items whole, revisited only if measured; an extension
-may still treat plain `/…` input in a `pre_input` hook, and the built-in frontends warn and
-send an unknown `/name` as text (§4). Trust's hash scope once `.tau/` holds hooks is not a
-client question; it moves to Phase 5's trust work.
+Settled while drafting (from review): edited options land as a `Config` node (§4);
+`CursorState` carries pending items whole, revisited only if measured; an extension may
+still treat plain `/…` input in a `pre_input` hook, and the built-in frontends warn and send
+an unknown `/name` as text. Trust's hash scope once `.tau/` holds hooks is not a client
+question; it moves to Phase 5's trust work.
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| Fine-grained state events (`question_opened`, `status`, `cursor_moved`, …), as model.md §9 sketched | Every kind needs its own replay on connect and its own merge rule; whole state is one rule, and it is small. |
+| A `@command` decorator beside `@tool` | Two descriptions of one function; a function useful to both needs a wrapper. Lists on the extension say where it is offered. |
+| A command's handle passed as a first positional parameter | Position is a convention to remember; the annotation already says what is wanted, and lets a function that needs no handle be a tool. |
+| JSON Schema dicts written by hand for questions and options | A second type language beside the hints; every extension author re-learns it. |
+| Open-ended `format` strings an extension registers | Completion would need extension callbacks (τ 0.15's enumerators): extension code per keystroke can hang, raise, or block a remote client. |
+| Fine-grained state events (`question_opened`, `status`, `cursor_moved`, …) | Every kind needs its own replay on connect and merge rule; whole state is one rule, and it is small. |
 | Subscribe per cursor | A client would not see another cursor's question; switching would need a request and would race. |
 | Questions polled (Phase 4) | A frontend cannot know when to poll; over a network it costs round trips forever. |
-| Commands as `pre_input` hooks that parse text (model.md §7 today) | The client has already parsed and validated the arguments; a hook re-parsing text is pure loss, and completion needs declarations anyway. |
-| A command as a new kind of core job, or a new item kind | The `ItemData.Extension` path already gives a busy cursor, `ask` and a step to run in; a new job kind is a core change for nothing. |
-| Commands queue while the cursor is busy | A queued command strands when the step ends other than `Done` (no next step starts) and then runs on whatever wakes the cursor next, long after the person moved on. Refusing is one rule. |
-| `commands()` computed per listing, for dynamic values | Extension code runs on every `/`; the command asks with an `enum` instead, at run time. |
-| A client is a connection | Every network blip would decline that client's questions (a permission question becomes a deny) and fill `by` with throwaway ids. |
-| Completion callbacks into extensions (τ 0.15's enumerators) | Extension code per keystroke: can hang, raise, block a remote client; and needs a sync/async rule. |
+| Commands as `pre_input` hooks that parse text | The client has already parsed and checked the arguments; completion needs declarations anyway. |
+| A command as an item, run when the cursor wakes | Survives a crash and runs on reopen, long after the person moved on; the step it needs is one `Session.step` away. |
+| Commands queue while the cursor is busy | A queued command strands when the step ends other than `Done` and runs on whatever wakes the cursor next. Refusing is one rule. |
+| Decider and embedding models as providers | They are not sampled into the tree; making them providers drags the walk, `Finish` and replay into APIs that have none. |
+| A client is a connection | Every network blip would decline that client's questions (a permission question becomes a deny). |
 | A frontend reads `Driver` and `Session` directly when local | Two contracts, and the remote one rots; τ 0.15's `RemoteBackend` mirrored every call by hand. |
 
 ## Consequences
 
 - Code (Phase 5, in this order):
-  1. `Client`, `LocalClient`, the §2 events and the snapshot; the `Harness` and the tests
-     move to them, and `Saved`, `HookError` and polling go;
-  2. questions with ids, targets and schemas;
-  3. `@command`, `run`, `complete`, extension config and `/config`;
+  1. `tau_next.values` and functions as tools and commands (§1, §2's descriptions and
+     injection, `describe=` replaced by `Annotated`); `ask(text, expect)` (§3) on both
+     handles;
+  2. `Client`, `LocalClient`, the §5 events and snapshot, questions with ids and targets;
+     the `Harness` and the tests move to them, and `Saved`, `HookError`, `questions()` and
+     `respond` go;
+  3. `run`, `complete`, `commandline`, options, `configure`, `/model`, `/config`; the
+     §6 cases as tests; `examples/chat.py`, a line client to try it by hand;
   4. `tau serve` and `RemoteClient` stay Phase 6, but the suite then runs against both.
 - Glossary: client, `LocalClient`, `RemoteClient`, cursor state, `Appended`, `Labels`,
-  `Notice`, watch, question (amended: id, target, schema), form, command, named format,
-  extension config. Removed: `Saved`, `HookError`.
+  watch, question (amended: id, `to`, `expect`), form, command, named type, options
+  (extension), `configure`, `values`, `commandline`. Removed: `Saved`, `HookError`,
+  `describe`.
 - `model.md` §7 (questions) and §9 (events) are rewritten to this; §7's "commands and gates
-  are `pre_input` hooks" becomes "gates are"; D15's frontend rules 1–5 are replaced by §2.
-- Phase 5's permissions extension is the first typed question (allow, deny, always);
-  compaction and prune are the first commands (`/compact`, `/prune`).
+  are `pre_input` hooks" becomes "gates are"; D15's frontend rules 1–5 are replaced by §5.
+- Phase 5's permissions extension is the first typed question; compaction and prune are the
+  first commands that generate.
