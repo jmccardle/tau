@@ -10,7 +10,8 @@ lines changed, tests excluded unless noted.
 1. **Questions belong to the cursor, not to a client.** A question asked
    with no `to` goes to every client and blocks until one answers. With
    nobody connected it simply stays open: under `tau serve` the agent waits on
-   that hook until someone answers. Decline and abort mean the same thing to
+   that hook until someone answers. A lost client is the same as `None`: its
+   questions go into the same pool. Decline and abort mean the same thing to
    the asker: do as little as possible and give up.
 2. **Cursors run the same whether anyone is watching or not.** An extension that
    branches on `cursor.client is None` is a smell. Client matching exists to
@@ -61,7 +62,7 @@ except A3.
 | A1 | `Client.run` settles when the command returns, success or raise. Delete the parked failure path (`_failed`, `settle()`, the pump call). The step still ends `Failed` with `hook_error`. Fix the three docstrings and D16 §2 that say "once the step has ended". | ~30, mostly deleted | the three timings; busy races in 5 of 7 extensions |
 | A2 | `chat.py` runs a command as a task once its arguments are complete. Empty lines pass through, so an empty answer declines. All open questions are shown, not just the first. | ~15 | the deadlock when a command asks |
 | A3 | A `post_step` that raises turns auto-step off, as one that returns a string does. Add a row to model.md's ending table. | 1 Rust | a crash treated more gently than a stop |
-| A4 | `ask` never declines because a client is absent. Delete `_connected`, `Hub.connected` and the driver wiring. Rewrite D16 §3's "nobody connected" lines and two tests. | ~40 net, mostly deleted | ruling 1 |
+| A4 | `ask` never declines because a client is absent. Delete `_connected` and the driver wiring. A question for a client that is not connected goes into the pool at once: `to` becomes `None`, and anyone may answer. A question for a client that later disconnects goes into the pool too; the `CursorView` that clears `to` tells the other clients they may now answer. It stays in the pool if that client returns. Rewrite D16 §3's "nobody connected" lines and two tests. | ~40 net | ruling 1 |
 | A5 | A question asked on an aborted step returns `None` at once. `Questions` marks the cursor in `decline` and clears the mark when the next step begins. The question's removal is already a whole-state `CursorView`. | ~25 | ruling 5: the "busy until someone answers" hole |
 | A6 | `tell` with no `to` goes to every client. Delete the typist derivation (`_typist`, `_need_client`) and `client` on `Cursor` and `NodeHandle`. A command's `TreeHandle.client` (the runner, always set) stays. | ~30, mostly deleted | ruling 2; report theme 4 (the `pre_input` client) dissolves; forest's progress reaches everyone |
 | A7 | A `list[T]` option accepts a tuple default. `commandline.value` reads a JSON array when the text starts with `[`. | ~10 | workarounds in bash_guard, plan_mode, router |
@@ -91,7 +92,7 @@ the abort reaches the leaves. A cycle detector would be 1000-year-flood logic.
 
 | # | fix | size |
 |---|---|---|
-| C1 | **Closing a cursor** (reverses Q12; ADR D17). Closing appends a `Close { cursor }` record. The cursor keeps its id: ids are dense (`at.len()`), and replay checks that. Its last node stays in `at`, and its name stays in its labels, which is the restart record of ruling 7. A closed cursor leaves `cursors()` and the clients' views, and is not woken on load. Restarting is `open(at=last node)` and moving the label. `close` refuses a busy cursor (`Busy`), declines its questions, and drops its pending items. | ~150 Rust, ~80 Python, plus I7 |
+| C1 | **Closing a cursor** (reverses Q12; ADR D17). Closing appends a `Close { cursor }` record. The cursor keeps its id: ids are dense (`at.len()`), and replay checks that. Its last node stays in `at`, and its name stays in its labels, which is the restart record of ruling 7. A closed cursor leaves `cursors()` and the clients' views, and is not woken on load. Restarting is `open(at=last node)` and moving the label. `close` is: abort, wait for rest, remove the pending items, then write `Close`. Abort turns auto-step off, cancels the sample and the calls, and declines open questions; with A5 it also declines any asked later. Two things abort does not do: it does not cancel a running hook, which is why `close` waits for rest, and it does not touch items, which is why `close` removes them. Without that, they would sit in the scratchpad, addressed to a cursor that can never take them. | ~150 Rust, ~80 Python, plus I7 |
 | C2 | **`driver.reload(extensions)`**, only when no effect is out, which is the moment every job's captured set is gone. It rebuilds options, tools, owners and commands, and clears the fold cache. A `Config` node an extension can no longer read fails when it is read (`ConfigError`), not at reload, because the tree is never rewritten. Precedent: `use_catalog`. | ~60–100 |
 | C3 | **`chat.py --extension PATH`** (repeatable). Naming the file on the command line is the consent, so no trust is needed. The trusted loader for `tau` (hash-pinned like `.tau/config.json`) stays with the trust work carried from Phase 4. | ~30, example |
 
@@ -112,11 +113,10 @@ loop runs, and `hook_error` being cleared when the next step starts.
 
 ## Decisions for John
 
-1. **`ask(to="alice")` with alice absent: block** (recommended; consistent with
-   a question already surviving a disconnect) or decline?
-2. **Closing (C1):** tombstone with the id kept, pending items dropped, labels
-   left as the restart record (recommended)? Or refuse to close with pending
-   items?
+1. ~~A named client is absent~~ **Decided 2026-10-31:** a lost client is the same
+   as `None`. The question goes into the pool and blocks until someone
+   answers. Disconnecting is not declining (A4).
+2. ~~Pending items on close~~ **Decided 2026-10-31:** close aborts first (C1).
 3. **`show` (D4):** build it, or leave status to `tell` and the tree?
 4. **Config writes (D1):** an extension handle method `save_options`, or only
    `tau config set` and `/config --save`, so the user always does the writing?
