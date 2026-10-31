@@ -1,0 +1,6 @@
+[run]
+branch = true
+source = ["tau_next"]
+data_file = "/tmp/tau-next-py.coverage"
+[report]
+show_missing = true

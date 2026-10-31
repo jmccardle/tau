@@ -1,0 +1,24 @@
+# Outside the workspace (see the root `exclude`): its encoders are not
+# dependencies of τ, and CI never builds it. Run from this directory:
+#   cargo run --release --locked -- [corpus dir...]
+[package]
+name = "tau-bench-formats"
+description = "Log encodings, compression, and repeated text on a realistic session log (D14 evidence)."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tau-core = { path = "../tau-core" }
+serde_json = "1.0"
+ciborium = "0.2"
+rmp-serde = "1"
+postcard = { version = "1", features = ["use-std"] }
+bson = "2"
+zstd = "0.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[workspace]

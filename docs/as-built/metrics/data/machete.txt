@@ -1,0 +1,14 @@
+Analyzing dependencies of crates in this directory...
+cargo-machete found the following unused dependencies in this directory:
+tau-tools -- ./crates/tau-tools/Cargo.toml:
+	grep-matcher
+
+If you believe cargo-machete has detected an unused dependency incorrectly,
+you can add the dependency to the list of dependencies to ignore in the
+`[package.metadata.cargo-machete]` section of the appropriate Cargo.toml.
+For example:
+
+[package.metadata.cargo-machete]
+ignored = ["prost"]
+
+Done!

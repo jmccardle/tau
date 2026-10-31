@@ -1,0 +1,13 @@
+workspace lints (Cargo.toml):
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+cognitive_complexity = "deny"
+
+per-crate #![deny/forbid/warn] attributes:
+crates/tau-py/src/tools.rs:7:#![allow(clippy::unused_self)]
+check.sh runs clippy with -D warnings, which makes rustc's dead_code (warn by default) an error.

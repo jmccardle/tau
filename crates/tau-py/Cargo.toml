@@ -1,0 +1,38 @@
+[package]
+name = "tau-py"
+description = "PyO3 bindings: exposes tau-core to Python as tau_next._core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[features]
+# Enabled for every maturin build (pyproject.toml). One wheel covers GIL
+# CPython >= 3.12. Free-threaded interpreters have no stable ABI before 3.15
+# (abi3t), so for 3.14t maturin ignores this and builds cp314t. Verified with
+# maturin 1.15 / PyO3 0.30.1.
+abi3 = ["pyo3/abi3-py312"]
+# Diagram builds only (scripts/diagrams.sh): logs step transitions, and adds
+# `_core.transitions_scenario(name)`. Never in a wheel.
+transitions = ["tau-core/transitions"]
+
+[dependencies]
+tau-core.workspace = true
+tau-store.workspace = true
+tau-tools.workspace = true
+serde_json.workspace = true
+# No `extension-module` feature: it is legacy in PyO3 0.30. maturin sets
+# PYO3_BUILD_EXTENSION_MODULE instead, which keeps `cargo test` linkable.
+pyo3.workspace = true
+tracing = { version = "0.1.44", default-features = false }
+tracing-chrome = { version = "0.7.2", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false }
+
+[lints]
+workspace = true

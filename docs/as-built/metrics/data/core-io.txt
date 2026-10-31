@@ -1,0 +1,3 @@
+shipped: proc-macro2, quote, serde, serde_core, serde_derive, syn, unicode-ident
+dev only: autocfg, bit-set, bit-vec, bitflags, borsh, borsh-derive, bytes, cfg-if, cfg_aliases, chacha20, core_detect, cpufeatures, equivalent, errno, fastrand, fnv, getrandom, hashbrown, indexmap, libc, linux-raw-sys, memchr, num-traits, once_cell, proc-macro-crate, proptest, quick-error, r-efi, rand, rand_core, rand_xorshift, regex-syntax, rustix, rusty-fork, tempfile, toml_datetime, toml_edit, toml_parser, unarray, wait-timeout, windows-link, windows-sys, winnow
+tau-core is sans-IO: 7 shipped dependencies, none denied; no std IO in src

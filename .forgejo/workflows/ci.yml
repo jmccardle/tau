@@ -1,0 +1,99 @@
+# CI for τ next on forge.goblincorps.com. Fail early: no continue-on-error,
+# no `|| true`.
+#
+# One runner, Linux x86_64. Nothing here builds or tests aarch64 or macOS,
+# and nothing claims to (docs/plan.md amendments).
+#
+# `gate` runs scripts/check.sh, the same file developers run locally, with
+# only the dev group installed: the test suite must pass without τ 0.15.
+# `wheels` builds portable manylinux2014 wheels (zig as the linker; no
+# docker), tests each installed in a clean venv, then adds ffwf-tau 0.15 to
+# the same venv and runs parity/ (see parity/README.md).
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu
+    strategy:
+      fail-fast: true
+      matrix:
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # scripts/ratchet.py compares ratchet-allow.toml with its version at
+          # the merge-base (or HEAD~1 on master): it needs history.
+          fetch-depth: 0
+      - name: toolchain
+        run: scripts/ci-toolchain.sh ${{ matrix.python }}
+      - name: dev group
+        run: .venv/bin/pip install --group dev
+      - name: scripts/check.sh
+        # The ratchet's allowlist guard checks the whole push, not only its
+        # last commit (all zeros on a new branch: ratchet.py falls back).
+        env:
+          TAU_RATCHET_BASE: ${{ github.event.before }}
+        run: scripts/check.sh
+
+  # Reported, never gating: coverage (Rust tests, then Python tests through the
+  # instrumented cdylib) and the metrics tables. The numbers land in the job
+  # log; docs/as-built/metrics/README.md says how to commit a fresh run.
+  report:
+    runs-on: ubuntu
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: TAU_CI_METRICS=1 scripts/ci-toolchain.sh 3.12
+      - name: dev group
+        run: .venv/bin/pip install --group dev
+      - name: metrics
+        run: scripts/metrics.sh
+      - name: coverage
+        run: scripts/coverage.sh
+
+  wheels:
+    runs-on: ubuntu
+    needs: gate
+    strategy:
+      fail-fast: true
+      matrix:
+        # 3.12 yields the cp312-abi3 wheel; 3.14t the version-specific one.
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: scripts/ci-toolchain.sh ${{ matrix.python }}
+      - name: build
+        run: |
+          set -euo pipefail
+          .venv/bin/pip install "maturin>=1.15,<2" "ziglang==0.17.0"
+          PATH="$PWD/.venv/bin:$PATH" .venv/bin/maturin build --release --locked \
+            --zig --compatibility manylinux2014 --out dist --interpreter .venv/bin/python
+      # Both test steps run from /tmp so the installed wheel, not the
+      # checkout's python/ tree, is what gets imported.
+      - name: tests/ against the installed wheel, no τ 0.15
+        run: |
+          set -euo pipefail
+          uv venv --seed --python ${{ matrix.python }} /tmp/clean
+          /tmp/clean/bin/pip install pytest dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
+      - name: parity/ with ffwf-tau 0.15 added to the same venv
+        run: |
+          set -euo pipefail
+          /tmp/clean/bin/pip install "ffwf-tau==0.15.0"
+          cd /tmp
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/parity"
+      # No artifact upload. Job containers on this runner cannot reach the
+      # forge's public URL, which is where Forgejo points the artifact
+      # service (ECONNREFUSED on forge.goblincorps.com:443), and nothing
+      # consumes the wheels before release. Restore it when release needs
+      # CI-built wheels and the runner can route to the forge.

@@ -1,0 +1,23 @@
+[package]
+name = "tau-core"
+description = "Pure Rust core of τ: the session tree, cursors, and the step algorithm. Sans-IO."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Logs every step position change to stderr (src/transitions.rs). Off by default.
+transitions = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing = { version = "0.1.44", default-features = false }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,48 @@
+{
+  "default_model": "local:qwen",
+  "models": {
+    "local": {
+      "base_url": "http://192.168.1.100:8100/v1",
+      "models": {
+        "qwen": {
+          "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
+          "options": { "extra_body": { "return_progress": true } }
+        }
+      }
+    },
+    "hosted": {
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": "EXAMPLE_API_KEY",
+      "models": {
+        "large": { "model": "example-large" }
+      }
+    },
+    "anthropic": {
+      "provider": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "max_tokens": 16000,
+      "models": {
+        "sonnet": {
+          "model": "claude-sonnet-5-5",
+          "options": { "thinking": { "type": "adaptive", "display": "summarized" } }
+        }
+      }
+    },
+    "gemini": {
+      "provider": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "models": {
+        "flash": {
+          "model": "gemini-3.5-flash",
+          "options": { "thinking": { "include_thoughts": true } }
+        }
+      }
+    },
+    "mock": {
+      "provider": "mock",
+      "models": {
+        "echo": { "model": "echo", "options": { "delay_ms": 120 } }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+Name                                              Stmts   Miss Branch BrPart  Cover   Missing
+---------------------------------------------------------------------------------------------
+python/tau_next/__init__.py                          18      0      0      0   100%
+python/tau_next/_config.py                           92      0     46      0   100%
+python/tau_next/_config_layers.py                   465     15    184      7    97%   243-245, 283, 332->334, 351, 421, 506-507, 548-550, 564, 621-622, 668
+python/tau_next/_dotenv.py                           44      0     22      0   100%
+python/tau_next/_startup.py                          75      0     24      0   100%
+python/tau_next/_trust.py                           396     30    108     13    91%   139, 152, 187-192, 230-232, 246-247, 251, 253, 258, 270-271, 275, 291-292, 323, 343, 372-374, 419->408, 423-424, 438-439, 467, 566, 639
+python/tau_next/base_tools.py                        96      4      6      2    94%   89, 91, 98-99
+python/tau_next/cli.py                              161      0     36      0   100%
+python/tau_next/clock.py                              4      0      0      0   100%
+python/tau_next/driver.py                           252      8     60      7    95%   180->179, 245, 284, 298, 367, 387, 405-406, 431
+python/tau_next/effects.py                          280     23    116     13    90%   115-116, 181->exit, 201, 216, 245-246, 257, 262, 273, 284-285, 334, 349, 351, 369-370, 377-379, 388->exit, 393, 398-399, 414
+python/tau_next/events.py                           104      1     24      1    98%   118
+python/tau_next/handles.py                          147     16      4      1    89%   104, 107, 113, 119, 122, 126, 187-188, 205, 208, 211, 247, 250, 253, 259, 266
+python/tau_next/protocols.py                         91      3     26      1    97%   123-124, 129
+python/tau_next/providers/__init__.py                 9      0      0      0   100%
+python/tau_next/providers/_anthropic_request.py     105      6     62      9    91%   84->77, 89, 98-99, 126->124, 128->124, 130, 158->146, 188, 193
+python/tau_next/providers/_walk.py                  130      8     38      4    92%   86-89, 130, 176-177, 246
+python/tau_next/providers/_wire.py                  248      7     96      8    95%   50, 178, 220->219, 223->219, 249->254, 372, 386-388, 460
+python/tau_next/providers/anthropic.py              299     20    126     17    91%   99-100, 109, 121, 133, 137, 155, 166->165, 174, 176, 191, 209, 218, 235, 242, 258, 261->263, 264, 300-303
+python/tau_next/providers/gemini.py                 376     30    166     28    89%   101, 125->121, 130, 133-136, 138, 179->169, 217-218, 226, 248, 253, 285->exit, 313, 324, 338, 342, 345, 360, 367, 393, 398, 403, 451, 474, 482, 490, 494-495, 498->492, 584, 637
+python/tau_next/providers/mock.py                    50      1     16      2    95%   53->52, 55
+python/tau_next/providers/openai.py                 259      2    120      3    99%   79, 102->105, 230
+python/tau_next/step_limit.py                        21      0      8      0   100%
+python/tau_next/tools.py                            197      9     78      9    93%   64, 78, 95, 150, 169, 185, 187, 220, 273
+python/tau_next/trace.py                             71      3      8      1    95%   54, 94-95
+---------------------------------------------------------------------------------------------
+TOTAL                                              3990    186   1374    126    94%

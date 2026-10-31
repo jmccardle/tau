@@ -1,0 +1,29 @@
+# Rule 7 allowlist: every crates/*/src and python/tau_next violation that
+# exists today, with its current value. scripts/ratchet.py fails if a line gets worse, if a new
+# violation appears, or if a line is fixed (or improved) and still listed.
+# The list only shrinks. Never raise a number or add a line here to get
+# green: fix the code. Lower or delete lines with `scripts/ratchet.py
+# --tighten`.
+#
+# Keys: function_cc is file::Type::fn (or file::fn); type_methods is
+# crate::Type, inherent impl blocks only, summed across blocks. Python keys
+# are repo-relative: python/tau_next/x.py::Class.fn (function_cc),
+# python/tau_next/x.py::Class (type_methods), python/tau_next/x.py (file_lines).
+#
+# [justified] is the other way past the method limit: a type that is one
+# concept, named in one line. Exempt from the count; the ratchet prints every
+# one on every run. Nothing here shrinks a number, so a reviewer must say yes.
+
+
+# Function cyclomatic complexity (file::Type::fn; Python path::Class.fn); limit 15
+[function_cc]
+
+# Inherent methods per type (crate::Type; Python path::Class); limit 25
+[type_methods]
+
+# Lines per file; limit 800
+[file_lines]
+
+# Types over the method limit that are one concept: key = "the one concept it is".
+# Exempt from the count and printed on every run. Adding one needs a reviewer's yes.
+[justified]

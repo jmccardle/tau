@@ -1,55 +1,70 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"  # rules: allow(backend): PEP 517 key
+
 [project]
-name = "ffwf-tau-monorepo"
-version = "0.15.0"
-description = "τ (tau-agent-core) monorepo"
+name = "ffwf-tau-next"
+description = "τ next (\"Trusty\"): Rust core, Python extensions."
 requires-python = ">=3.12"
+license = "MIT"
+dynamic = ["version"]
+dependencies = ["httpx>=0.28"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+]
+
+[project.scripts]
+tau = "tau_next.cli:main"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15,<2",
+    "pytest>=8",
+    "ruff>=0.14",
+    "pyright>=1.1.400",
+    "mypy>=2.4",  # stubtest only; pyright is the type checker
+    "radon==6.0.1",  # scripts/pymetrics.py: rule 7 on python/tau_next
+]
+# parity/ only: τ 0.15 as the oracle for the API diff. Never needed by tests/.
+parity = ["ffwf-tau==0.15.0"]
+
+[tool.maturin]
+manifest-path = "crates/tau-py/Cargo.toml"
+module-name = "tau_next._core"
+python-source = "python"
+features = ["abi3"]
 
 [tool.pytest.ini_options]
-testpaths = ["tau-llm/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tau-jmfts/tests"]
-asyncio_mode = "auto"
-markers = [
-    "jmfts: live integration tests against a running JMFTS server (JMFTS_TEST_URL, required -- there is no default; skips when unset or unreachable, never on a server error)",
-    "llama: live conformance probe against a llama.cpp server (TAU_LLAMA_TEST_URL, required -- there is no default; DESELECTED BY DEFAULT -- opt in with `pytest -m llama`; skips when unset or unreachable, never on a server error)",
-]
-# `llama` is deselected by default; `jmfts` is NOT. The difference is COST, not
-# availability. The jmfts gate skips immediately when JMFTS_TEST_URL is unset and
-# is a 3-second HTTP probe when it is, so attempting it is free either way. The
-# llama suite is a generation sweep -- ~15 s of GPU time per
-# run even when everything passes -- which does not belong in every `pytest`.
-# Opt in with `pytest -m llama`: a command-line `-m` lands after addopts and wins.
-# Re-run it ONLY for changes touching the LLM provider interfaces; see the module
-# docstring of tau-llm/tests/test_llama_conformance.py for the scope rule.
-addopts = ["-m", "not llama"]
-
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true
+testpaths = ["tests"]
+pythonpath = ["tests/behavior", "tests/providers", "tests"]
+addopts = ["--strict-markers"]
 
 [tool.ruff]
-# Lint + format gate (enforced by .git/hooks/pre-commit). Scope mirrors the
-# mypy config: the five package src trees. line-length 100 keeps the format
-# churn small relative to the existing code.
 line-length = 100
 target-version = "py312"
-extend-exclude = ["venv"]
+extend-exclude = ["target", ".venv*"]
 
 [tool.ruff.lint]
-# The rule set is STATED, not inherited. It used to be left implicit -- "ruff's
-# defaults happen to be what we want" -- and that made the gate depend on which
-# ruff version a clone installed, since `dev` pins no version. Measured on this
-# tree: ruff 0.15.17 reports 0 errors and ruff 0.16.4 reports 293, because 0.16
-# widened the default set (I, S, DTZ, FURB, PERF, TRY, …). A contributor whose
-# install date differed by a few weeks got a red pre-commit hook on code they
-# had not touched.
-#
-# Naming the four categories fixes that without pinning ruff: pyflakes (F) plus
-# the pycodestyle subsets that are real errors rather than layout opinions. The
-# formatter owns whitespace and wrapping, so E1/E2/E3 stay out to avoid fighting
-# it. Import sorting (I) is still deferred to its own pass -- deliberately, and
-# now visibly, rather than by accident of a version.
-#
-# The FORMATTER needs no such treatment: `ruff format --check` reports the same
-# 90 files clean on both versions.
-select = ["E4", "E7", "E9", "F"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C90", "PL", "PT", "TID", "SLF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tau_next"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"unittest.mock".msg = "Rule 4: fakes live at the effect boundary (FakeProvider, FakeTool), not in patches."
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004"]
+
+[tool.pyright]
+include = ["python", "tests", "parity", "examples"]
+strict = ["python"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["tests/behavior", "tests/providers", "tests"]
