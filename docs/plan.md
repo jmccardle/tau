@@ -248,19 +248,45 @@ in Rust`), taking Trusty's tree whole. Then: renamed to `tau` / `ffwf-tau`
 0.15 to be carried over selectively, never harness code), and created branch
 `0.15.x` from 0.15's last commit for its hotfixes.
 
-### Phase 7: the wire and the API
+Phases 7–9 (2026-10-31) place every group of capabilities that 0.15 had and
+0.16 neither built nor planned (`docs/from-0.15.md` §4). Order: finish the fix plan
+(B–D), then 7, 8, 9. Syncing tau-code and tau-search comes after 0.16.0: the
+items in these plans take precedence.
+
+### Phase 7: the `tau` program's foundations, and the wire
+Every frontend needs these before it can start a session.
+- **Session catalog** (ADR):
+  - where sessions live (`$TAU_HOME/sessions`, `--session-dir`);
+  - listing them by working directory, naming, opening and continuing them;
+  - `--fork REF`, a new session copying a walk from another (glossary
+    `copied_from`, not yet spiked);
+  - export to Markdown.
+
+  `examples/chat.py` hard-codes one session.
+- **Extension loading** (ADR): the trusted loader carried from Phase 4.
+  - Sources: the built-ins, the `tau.extensions` entry point (tau-search's
+    contract), `~/.tau/extensions/`, the project's `.tau/extensions/` under
+    trust, and `-e PATH`.
+  - Turning them on and off is written to the config (fix plan D1), along with
+    `--no-extensions` and `tau ext list`.
+  - Command namespacing (`/ext:cmd`) for two extensions with the same command.
+- **Context assembly:**
+  - the system prompt from the config and from files (`AGENTS.md`,
+    `CLAUDE.md`, `.tau/SYSTEM.md`);
+  - `--system-prompt`, `--append-system-prompt`, `--no-context-files`;
+  - the ADR decides whether this is a startup step of `tau` or a standard
+    extension.
 - **`tau serve` and `RemoteClient`** (D16 stage 4). The wire is the `Client`
-  contract serialized: JSON-RPC over WebSocket, so that a remote client and a
-  local one see the same behavior. From day one it has:
+  contract serialized: JSON-RPC over WebSocket, plus the same protocol over
+  stdio for consumers that run `tau` as a subprocess (0.15's `--mode rpc`;
+  Tectum). A remote client and a local one see the same behavior. From day
+  one it has:
   - `tau serve --schema`, so clients can generate their types (tau-code does);
   - a protocol version checked at `hello`;
   - daemon discovery with `serve -d --json`.
 
   The server parses and completes a typed command line, so a client outside
   Python does not reimplement `commandline`.
-- **A session catalog** (ADR): where sessions live and how a frontend lists
-  them, opens them and names them. Every frontend needs this.
-  `examples/chat.py` hard-codes one session.
 - **The API documentation:**
   - **Surface manifest.** A generated, checked-in list of every public name
     and signature, compared in CI the way the diagrams are, so any API change
@@ -275,25 +301,39 @@ in Rust`), taking Trusty's tree whole. Then: renamed to `tau` / `ffwf-tau`
   - **Guides**, user-facing and separate from `docs/design/`: quickstart; the
     model in ten minutes; writing an extension; writing a frontend;
     configuration; the wire protocol, generated from the schema.
-- **Exit:** a remote client passes the same behavior tests as a local one;
-  the manifest and reference are checked in CI.
+- **Exit:**
+  - a remote client passes the same behavior tests as a local one;
+  - `tau-search`'s extension loads through the entry point (`-e` for now);
+  - the manifest and the reference are checked in CI.
 
-### Phase 8: frontends and standard extensions
-Each frontend is a client of the same model:
+### Phase 8: frontends, tools and standard extensions
+**Frontends**, each a client of the same model:
 - `tau` launches the Textual TUI. It reuses 0.15's core widgets (message,
   tool and reasoning boxes, the stream strip, themes and `tau.tcss`, dialogs,
-  the session picker), with the app around them written against `Client`.
-- `tau -p`, with text or JSON output.
+  the session picker, the tree widget), with the app around them written
+  against `Client`.
+- `tau -p`, with text or JSON output. The `-p` client is the one that
+  answers questions: with `--answer` rules (0.15's `--ui-defaults`), or it
+  declines. Ruling 1 holds, because someone does answer.
+- `--version` and `--verbose`.
 - A ratatui example TUI, a Rust client of `tau serve` in `examples/ratatui/`
   (its own Cargo package, outside the workspace and the ratchet). It is the
   first client outside Python, and proof that the schema is enough.
-- The tau-code port, done in tau-code's repository. Its protocol package is
-  regenerated from `--schema`. The 0.15 commands that have no counterpart
-  here (elide, commit-branch, paste-subtree, compare, steer and enqueue)
-  become commands or extensions, or are dropped.
 
-The standard extensions are built beside the frontends: compaction,
-permissions, sub-agent and prune (Phase 5's list).
+**Base tools:** `edit` (search and replace, reporting a diff; in Rust beside
+`write`), and `find` (glob).
+
+**Standard extensions**, shipped built in:
+- compaction, which needs `context_window` on `ModelConfig` and a token
+  estimate;
+- permissions, from the bash_guard prototype;
+- sub-agent, from forest and gamemaster;
+- prune;
+- retry on provider errors (today only `examples/retry.py`);
+- skills and prompt templates (commands that insert text);
+- `@file` attachments;
+- usage: per-turn cost (price fields on `ModelConfig`), session stats, and the
+  notice when the cache is not being read.
 
 ### Phase 9: release 0.16.0
 - Wheels beyond Linux x86_64. aarch64 and macOS need runners; the base tools
@@ -301,7 +341,26 @@ permissions, sub-agent and prune (Phase 5's list).
 - The PyPI publish workflow on GitHub. It is rewritten for maturin but keeps
   `publish.yml` as its name, because the trusted publisher is bound to that
   name.
-- The docs site and release notes. There is no 0.15 session converter (D9
-  superseded).
-- Open: move the JMFTS replica past 0.16.0, since nothing feeds it and no
-  frontend needs it.
+- The docs site, and release notes written from `docs/from-0.15.md`
+  (what changed, what was dropped, what comes later). There is no 0.15
+  session converter (D9 superseded), and no 0.15 extension shim.
+- **The JMFTS replica comes after 0.16.0** (decided 2026-10-31). Its absence
+  is an accepted regression.
+
+### After 0.16.0
+- **tau-code:** its protocol package is regenerated from `--schema`, and its
+  React components carry over. 0.15 commands with no counterpart here
+  (elide, commit-branch, paste-subtree, compare, steer and enqueue) become
+  commands or extensions, or are dropped. Its web client replaces 0.15's
+  `tau serve --web-root`.
+- **tau-search:** a small port. Its `tau_agent_core` imports
+  (`tool_from_function`, `ToolError`) become a plain function and `tau`'s
+  `ToolError`, and its dependency becomes `ffwf-tau`.
+- **JMFTS replica.**
+- **Later, each extension-shaped or tooling:** image input, constrained
+  decoding, a models.dev catalog generator (`tau config` subcommand),
+  background tools, code mode, the NATS bus, HTML export, the llama.cpp
+  telemetry strip, `serve --tail`, the Docker image, and a TUI screenshot
+  harness.
+- **Dropped:** the REPL (the TUI and `examples/chat.py` cover it), `ls`
+  (bash), `--fun`.

@@ -14,7 +14,13 @@ anything structural.
 0.15 may be carried over selectively where it is presentation or plumbing that
 fits the new model as-is: TUI widgets, themes, release and docs scripts. Never
 carry harness code or concepts from it. Each carried piece names its 0.15 source
-in its commit message, and it meets every rule below.
+in its commit message, and it meets every rule below. `docs/from-0.15.md` lists
+what 0.16 does with each 0.15 capability.
+
+Sibling projects are clients of τ and sync with it after 0.16.0:
+- `~/Development/tau-code`: TypeScript web and VS Code clients of `tau serve`,
+  with a protocol package generated from the schema.
+- `~/Development/tau-search`: web search tools shipped as a τ extension.
 
 ## Rules
 
@@ -67,8 +73,9 @@ scripts/check.sh                          # the gate
 
 ## Remotes and CI
 
-- `origin`: dev.ffwf.net (private). `goblin`: forge.goblincorps.com, which runs
-  CI. Push to both.
+- `origin`: dev.ffwf.net `john/tau` (private). `goblin`: forge.goblincorps.com
+  `john/trusty`, which runs CI. It still has Trusty's name, and its history
+  is the same as this repository's, since the merge. Push to both.
 - CI (`.forgejo/workflows/ci.yml`) has one Linux x86_64 runner, label
   `ubuntu`. `scripts/ci-toolchain.sh` installs everything a job needs; to
   reproduce a CI job, run it in a bare `ubuntu:24.04` container.
