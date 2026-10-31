@@ -276,6 +276,28 @@ still treat plain `/…` input in a `pre_input` hook, and the built-in frontends
 an unknown `/name` as text. Trust's hash scope once `.tau/` holds hooks is not a client
 question; it moves to Phase 5's trust work.
 
+## Settled in stage 3
+
+Where the text above was silent, as built:
+
+- **A `Config` node holds what it changes** (`{"model": …}` and/or `{"extensions": {…}}`), and
+  the driver folds the walk, because core's `config_at` is the nearest `Config` only: the model
+  is the last named, an option the last set, per field. No way to unset an option.
+- **`Client.options(cursor, extension)`** takes the cursor (a branch may override) and returns
+  `OptionsForm(extension, schema, value)`; `/config <extension> <values>` takes the changed
+  options as a JSON object in a `str`. A frontend wanting a form reads the first and sends the
+  second. `/config` exists only if some extension has options.
+- **`Client.commands()` is a call** (async), so a remote client can ask it; **`complete`'s second
+  argument** is the name of a named type (`"path"`, `"model"`, …), the schema's `"format"`.
+- **A failed `Cursor` command ends its step `Failed`**, like a failing hook (`hook_error`
+  names `pre_step` and its extension), and tells the client `"Type: msg"`; a plain command only
+  tells. An aborted command answers its job without running the hooks.
+- **Options may not be named types** (`Model` and the rest are checked against a session that
+  stored options do not have): a field that names a model is a `str`.
+- **`tau config check`** knows the built-in extensions only (`StepLimit`); it calls
+  `check_options(catalog, extensions)`, which a program that loads others calls for them.
+- **`StepLimit()` takes its limit from its options** (default 50), so `StepLimit(n)` is gone.
+
 ## Alternatives
 
 | option | why not |
@@ -303,7 +325,7 @@ question; it moves to Phase 5's trust work.
   2. (built) `Client`, `LocalClient`, the §5 events and snapshot, questions with ids and targets;
      the `Harness` and the tests move to them, and `Saved`, `HookError`, `questions()` and
      `respond` go;
-  3. `run`, `complete`, `commandline`, options, `configure`, `/model`, `/config`; the
+  3. (built) `run`, `complete`, `commandline`, options, `configure`, `/model`, `/config`; the
      §6 cases as tests; `examples/chat.py`, a line client to try it by hand;
   4. `tau serve` and `RemoteClient` stay Phase 6, but the suite then runs against both.
 - Glossary: client, `LocalClient`, `RemoteClient`, cursor state, `Appended`, `Labels`,

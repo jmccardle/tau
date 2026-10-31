@@ -55,7 +55,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             secret = Path(tmp) / "secret.txt"
             secret.write_text(f"The secret phrase is: {PHRASE}\n")
-            config = model_config(name)
+            config = model_config(name, {"step_limit": {"limit": 6}})
             session = Session.create(
                 config, "Use your tools when asked.", clock.now(), Path(tmp) / "s"
             )
@@ -65,7 +65,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 providers,
                 loaded.catalog,
                 tools=[read_file],
-                extensions=[StepLimit(6)],
+                extensions=[StepLimit()],
                 clock=clock,
             )
             driver.start()

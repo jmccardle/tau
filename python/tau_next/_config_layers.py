@@ -12,7 +12,7 @@ import math
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -24,7 +24,7 @@ Severity = Literal["error", "warning"]
 CLI = "cli"
 _MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
 # Frontend settings will widen the top level in a later part (D13: "and frontend settings").
-_TOP_KEYS = ("models", "default_model")
+_TOP_KEYS = ("models", "default_model", "extensions")
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RENAMED_KEY = "backend"  # rules: allow(backend): 0.15's key name, which D13 rejects by name
@@ -89,11 +89,14 @@ class ResolvedModel:
 
 @dataclass(frozen=True)
 class ModelCatalog:
-    """Every model the merged layers define, plus `default_model` and any warnings."""
+    """Every model the merged layers define, plus `default_model`, any warnings, and the
+    `extensions` options the layers set (`{"step_limit": {"limit": 10}}`, merged per option;
+    D16 section 4). Which options an extension has is its own to say (`check_options`)."""
 
     models: Mapping[str, ResolvedModel]
     default_model: str | None
     warnings: tuple[ConfigProblem, ...]
+    extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
 
     def names(self) -> tuple[str, ...]:
         """All qualified names, in file order."""
@@ -621,6 +624,25 @@ def _default_model(merged: _Tree, declared: list[str], problems: _Problems) -> s
     return name
 
 
+def _extensions(merged: _Tree, problems: _Problems) -> dict[str, dict[str, object]]:
+    """The merged `extensions` object: each extension's options, an object."""
+    node = merged.get("extensions")
+    if node is None or (isinstance(node, _Leaf) and node.value is None):
+        return {}
+    if not isinstance(node, dict):
+        problems.add("error", "'extensions' must be an object", _source_of(node), "extensions")
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for name, options in node.items():
+        if isinstance(options, _Leaf):
+            if options.value is not None:
+                msg = f"'extensions.{name}' must be an object of options"
+                problems.add("error", msg, options.source, f"extensions.{name}")
+            continue
+        out[name] = cast("dict[str, object]", _plain(options))
+    return out
+
+
 def _build(
     user: Layer | None,
     project: Layer | None,
@@ -645,9 +667,10 @@ def _build(
     resolver.provider_problems()
     resolver.key_problems()
     default = _default_model(merged, resolver.declared, problems)
+    extensions = _extensions(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
-    return ModelCatalog(resolver.models, default, warnings), found
+    return ModelCatalog(resolver.models, default, warnings, extensions), found
 
 
 def check_config(

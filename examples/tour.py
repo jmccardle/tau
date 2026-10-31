@@ -59,7 +59,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             where = Path(tmp) / "session"
             session = Session.create(
-                model_config(name),
+                model_config(name, {"step_limit": {"limit": 6}}),
                 "You are a terse assistant. Use your tools when asked.",
                 clock.now(),
                 where,
@@ -70,7 +70,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 providers,
                 loaded.catalog,
                 tools=tools,
-                extensions=[StepLimit(6)],
+                extensions=[StepLimit()],
                 clock=clock,
             )
             driver.start()

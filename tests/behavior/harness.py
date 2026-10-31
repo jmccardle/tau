@@ -6,12 +6,13 @@ and every effect in flight is parked at something a test controls.
 
 import asyncio
 import functools
-from collections.abc import Callable, Collection, Coroutine, Sequence
+import tempfile
+from collections.abc import Callable, Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, fake_catalog
+from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, Reply, fake_catalog
 
 from tau_next import (
     Author,
@@ -27,6 +28,7 @@ from tau_next import (
     ModelCatalog,
     Node,
     Notice,
+    Part,
     Session,
     Tool,
 )
@@ -182,6 +184,11 @@ class Harness:
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
         await self.client.set_auto(self._c(cursor), on)
 
+    async def run(
+        self, command: str, args: Mapping[str, object] | None = None, cursor: int | None = None
+    ) -> None:
+        await self.client.run(self._c(cursor), command, args or {})
+
     async def respond(self, value: object, cursor: int | None = None) -> None:
         """Answer the cursor's oldest open question."""
         questions = (await self.view(cursor)).questions
@@ -300,6 +307,19 @@ class Harness:
             cursors={c: self._seen(c) for c in self.session.cursors()},
             notices=tuple(self.notices()),
         )
+
+
+def say(text: str) -> Reply:
+    return Reply([Part.Text(text)])
+
+
+def build(extensions: list[object]) -> None:
+    """A driver over `extensions`, built and dropped: what building refuses."""
+    session = Session.create(FAKE_CONFIG, "sys", 0, Path(tempfile.mkdtemp()) / "s")
+    try:
+        Driver(session, {"fake": FakeProvider([])}, fake_catalog(), extensions=extensions)  # pyright: ignore[reportArgumentType]
+    finally:
+        session.close()
 
 
 def scenario[**P](fn: Callable[P, Coroutine[Any, Any, None]]) -> Callable[P, None]:

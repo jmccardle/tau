@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from tau_next._commands import CommandInfo
 from tau_next._config import ConfigError, ModelConfig, model_config
 from tau_next._config_layers import (
     ConfigProblem,
@@ -56,6 +57,7 @@ from tau_next._core import (
     WrongAnswer,
 )
 from tau_next._dotenv import DotenvError
+from tau_next._options import OptionsError, OptionsForm, check_options
 from tau_next._startup import (
     LoadedConfig,
     Prompts,
@@ -126,6 +128,7 @@ __all__ = [
     "Client",
     "Clock",
     "Closed",
+    "CommandInfo",
     "Config",
     "ConfigError",
     "ConfigProblem",
@@ -181,6 +184,8 @@ __all__ = [
     "NotPending",
     "Notice",
     "OpenQuestion",
+    "OptionsError",
+    "OptionsForm",
     "Outcome",
     "Part",
     "Poisoned",
@@ -222,6 +227,7 @@ __all__ = [
     "base_tools",
     "builtin_providers",
     "check_config",
+    "check_options",
     "load_config",
     "model_config",
     "prompts",

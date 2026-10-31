@@ -620,8 +620,10 @@ cursor (the **rest rule**), and load. Any reader sees the change the same way:
 `tau_next.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
 and `Session::taken`
 
-`StepLimit(limit)`: an extension that guards loops where the cursor does move
-each step (D1). It keeps its own count per cursor (core keeps none), read
+`StepLimit()`: an extension that guards loops where the cursor does move
+each step (D1). Its `limit` is its option (`step_limit.Options`, `limit` default 50, at least 1;
+D16 §6): `extensions.step_limit.limit` in the config files, or `/config step_limit` for a
+branch; a bad one fails the step at `pre_step`. It keeps its own count per cursor (core keeps none), read
 and changed at three hook points with `cursor.auto`: `pre_input` sets it to 1
 (the step that takes an input is the first; there is no `post_input`),
 `pre_step` adds one while auto-step is on, and `post_step` turns auto-step off
@@ -678,14 +680,19 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 *spike* `tree::Config`, `Body::Config`, `Tree::config_at` · retires config
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
-How a step runs. Its data is exactly `{"model": "<qualified name>"}`: it names
-a model and holds nothing resolved from the config files (no URL, no key
-variable, no settings; D13). `model_config(name)` builds it and
-`model_name(config)` (internal, `tau_next._config`) reads the name back, raising
-`ConfigError` for any other shape; a driver turns that into a failed sample. `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
-node when it is added (`Session::configs`), so it costs the same at any depth.
-Core reads nothing in it: `data` is opaque to core and read by the driver,
-which resolves the name in its `ModelCatalog` at each sample.
+How a step runs. Its data is a JSON object with at most two keys: `"model"`, a qualified
+name, and `"extensions"`, `{"<extension>": {"<option>": value}}` (D16 §4). It names a model
+and holds nothing resolved from the config files (no URL, no key variable, no settings;
+D13). A node holds just what it changes: `Cursor.configure(model=..., extensions=...)` and
+`model_config(name, extensions)` / `config_node(model, extensions)` (`tau_next._config`) build
+it, and `config_fields(config)` reads it back, raising `ConfigError` for any other shape (a
+key other than those two, a `model` that is not a non-empty string, `extensions` that are not
+an object of objects). `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
+node when it is added (`Session::configs`), so it costs the same at any depth; core reads
+nothing in it. The driver therefore **folds the walk** itself: the model is the last one
+named on it (`model_name(walk)`; `ConfigError`, so a failed sample, if none names one), and
+an option is the last one set on it (`ExtensionOptions`), each node adding to those before
+it. The model resolves in the `ModelCatalog` at each sample.
 
 ### ModelConfig, ConfigError
 `tau_next.ModelConfig`, `tau_next.ConfigError` (module `tau_next._config`) · new
@@ -755,7 +762,9 @@ down), then resolves every model. It raises `ConfigError` listing every
 error; it finds and trusts no file. It returns a **`ModelCatalog`**: `models`
 (qualified name to **`ResolvedModel`**: the `ModelConfig` and one **`Origin`**
 per key, the layer, file path or `"cli"`, and the group that set it, `None`
-for the model itself), `default_model`, `warnings`. `find(name)` returns the
+for the model itself), `default_model`, `warnings`, and `extensions` (the merged `extensions.<name>` objects of the
+layers, per option; checked by `check_options`, not by the loader: it does not know the
+extensions). `find(name)` returns the
 qualified names matching a qualified or bare name (0, 1, or many: the caller
 decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
 origins. `check_config(user, project, cli, environ, *, providers)` (`providers`: the
@@ -912,7 +921,11 @@ project is never used, and it is itself an error (startup would refuse it), even
 config file. A refused file (symlink, not a regular file) is reported under its own path;
 `tau trust` shows a malformed `.env`. A trusted one is checked from the approved
 text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
-0 otherwise (warnings print). `--show MODEL` (after a check with no errors; warnings are fine) selects as
+0 otherwise (warnings print). It then checks the `extensions` options of the extensions the
+command knows (`check_options`; today `StepLimit`, so `extensions.step_limit.limit: 0` is an
+error). The command loads no extensions of a project, so their options are checked where they
+are loaded: a program that builds its driver calls `check_options(catalog, extensions)`.
+`--show MODEL` (after a check with no errors; warnings are fine) selects as
 `select_model` does and prints the qualified name, then each resolved key, its
 value, and `[file or cli or default, group G]`. A literal `api_key` shows as
 `(set)`; no key value is ever printed.
@@ -987,7 +1000,8 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
 `remove_label`. Each write tells the driver (`Changed`), which publishes the difference to its
 clients. A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`,
-`config` (at its `at`), `move(to)`, `write(body, delivers)`, `set_auto(on)`, `tell(text, *, to)`
+`config` (at its `at`), `options()` (also on a node handle, at its node), `configure(*, model,
+extensions)` (see *config*), `move(to)`, `write(body, delivers)`, `set_auto(on)`, `tell(text, *, to)`
 (a `Notice` to client `to`, dropped if it is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
 belong to no cursor pass the hook's cursor to core, so they skip their sync
@@ -1403,6 +1417,103 @@ arguments, the injected parameters by name and kind, and whether it is async. Co
 it with their own `refused` set. (The `describe=` argument of `@tool` is gone: the text
 sits on the parameter, `Annotated[T, "text"]`.)
 
+### command, CommandInfo
+`tau_next.CommandInfo(name, description, schema)` (`_commands.py`), `Client.commands()`,
+`Client.run(cursor, command, args)` · D16 · new
+
+A plain function an extension lists in its `commands` attribute (or a `FunctionTool`'s
+function), offered to a person as `/name`; the same function may be in `tools`. Described when
+the driver is built by `describe(fn, what="command")`: injected `Progress` (each call is a
+`Notice`), `TreeHandle`, and `Cursor`; `NodeHandle` is refused (`ToolDefinitionError`). Names
+are unique across extensions, the built-in ones included (`ExtensionContractError`). The
+result, `str | None`, is a `Notice` to the client that ran it; an exception is a `Notice`
+`"Type: msg"` (and for a `Cursor` command also the step's ending, see *Cursor command*). A
+sync function runs on a worker thread, as a tool does. `CommandInfo` is what a client knows of
+one: name, docstring, and the JSON Schema of its arguments with the named types' `"format"`;
+fixed for the driver's life. `run` checks `args` as values of the language (with the session;
+`"new"` after the rest) and raises `LookupError` (unknown command), `ValueError` (arguments),
+or `Busy`; nothing is opened or started for a refused call. Not the same as the `pre_input`
+refusal of a `/…` input: a client that does not know a command sends the line as text.
+
+### Cursor command
+`Commands.before` (`_commands.py`) · D16 · new
+
+A command that takes a `Cursor`. It runs as a step of that cursor: `run` keeps it in memory and
+calls `Session.step`, so it is `Busy` unless the cursor is at rest (commands do not queue); the
+driver gives it to the step's `pre_step` job, where it runs with the cursor's handle (also its
+`TreeHandle`) before the extensions' `pre_step` hooks. The rest of the step follows the usual
+rules: a command that leaves the cursor on a `User` node gets a sample, one that leaves it on a
+reply gets none. `abort` and `go_to` cancel a running command (and drop one not yet started),
+whose job then answers without running the hooks; a crash loses a command that has not
+finished, and it is never re-run. A command that raises ends the step `Failed` exactly as a
+failing hook does: the cursor's `hook_error` names `pre_step` and the extension that lists the
+command, and no hook runs after it. A command with no `Cursor` runs at once as a task on the
+loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
+
+### tau (extension), /model, /config
+`tau_next._builtin.Tau` · D16 · new
+
+The built-in extension, always first in the driver's list (its name is taken: a user extension
+named `tau` is an `ExtensionContractError`). `/model <Model>` switches the branch to a
+configured model; `/config <extension> <values>` changes an extension's options on the branch,
+`extension` a `Literal` of the extensions that have options (known when the driver is built;
+`/config` is absent if none has any) and `values` a JSON object of the options to change. Both
+are `Cursor` commands that write a `Config` node with `Cursor.configure`; nothing is written
+if the options do not fit (the step fails and the client is told). A client that wants a form
+reads `Client.options(cursor, extension)` for the schema and current value, and sends the
+changed options as `values`. The user's file stays `tau config`'s to edit.
+
+### options (extension)
+`tau_next._options` (`ExtensionOptions`, `OptionsForm`, `OptionsError`, `check_options`) · D16 · new
+
+An extension's `options` attribute names a **frozen dataclass**; each field is a hint of the
+values language with a plain default (no `default_factory`; no `Model`, `CursorId`, `LabelName`
+or `NodeId`, which are checked against a session that stored options do not have: use `str` or
+`int`). A field with no default must be configured (a missing one is an `OptionsError`, and
+`check_options` reports it). Anything else is an `ExtensionContractError` when the driver is
+built. A field's value at a node is the last one set: the layers' `extensions.<name>`
+(`ModelCatalog.extensions`), then the `Config` nodes on the node's walk, root to node, each
+setting only the fields it names (so a node can change `size` and leave `mode`); there is no
+way to unset a field back to its default. `handle.options()` returns the dataclass instance at
+the handle's node (`OptionsError` if it does not fit; the type's own `__post_init__` may
+refuse). The fold of a node is computed once and shared by its descendants that add no
+`Config`. `Client.options(cursor, extension)` returns an `OptionsForm(extension, schema,
+value)`: the schema of the options object and every option's current value. `check_options(
+catalog, extensions)` is the check `tau config check` makes for the extensions it knows, and a
+program that loads others can call for them.
+
+### Handles
+`tau_next.handles.Handles` · D16 · new
+
+What the driver wires into every handle it makes (session, question call, clock, `poke`,
+`changed`, options), with `cursor(id, extension)`, `node(cursor, id, extension)` and
+`tree(extension)`: one place that builds them, for hooks, tools and commands alike.
+
+### complete, named type completion
+`Client.complete(cursor, named, prefix)` · D16 · new
+
+The values of a named type that start with `prefix`, as strings: `"path"` (the driver's
+machine, relative to its working directory; a directory ends with `/`; a hidden name only if
+the prefix starts with `.`; a missing or unreadable directory has none), `"model"` (qualified
+names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
+first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or
+raise on an extension's account.
+
+### commandline
+`tau_next.commandline`: `parse`, `completions`, `Parsed`, `UnknownCommand` · D16 · new
+
+The pure parts every line-based frontend shares. `parse(line, commands)` reads a line that
+starts with `/` as shell words: `Parsed(command, args, missing)`. A `name=value` word sets the
+parameter of that name; the other words fill the remaining parameters in order; a list takes
+comma-separated items; each word is converted by the parameter's schema (`int`, `float`,
+`true`/`false`, a `Literal`'s values; a named type is a string or integer). `missing` lists the
+required parameters not given, for the frontend to ask. `UnknownCommand` (a `LookupError`)
+names a command there is not, so a frontend can warn and send the line as text; `ValueError`
+for anything unreadable. `async completions(line, commands, client, cursor)` says what could
+finish the word being typed, each a whole word (quoted if needed): command names after `/`,
+a `Literal`'s values, and `client.complete` for a named type. The driver's check stays the
+authority; this only spares a round trip.
+
 ### assemble_tools
 `tau_next.tools.assemble_tools(tools, extensions)` · D16 · new
 
@@ -1618,7 +1729,8 @@ program holds: a `Client`, with an id.
 A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
 act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `set_label`,
 `remove_label`, each with the client's id as `by: Frontend(id)` where the driver takes one),
-`watch`, `answer`, the reads `node`, `walk`, `children`, `close`, and one event stream: the
+`watch`, `answer`, `commands`, `run`, `options`, `complete` (see *command*, *options (extension)*,
+*complete*), the reads `node`, `walk`, `children`, `close`, and one event stream: the
 client itself is an async iterator of `Event`. `id` is stable across reconnects
 (`john@laptop:tui`); a connection is not a client. Every argument and event is a plain frozen
 value, so a remote client serializes each generically (Phase 6). `LocalClient` is the

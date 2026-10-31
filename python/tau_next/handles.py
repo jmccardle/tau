@@ -1,9 +1,11 @@
 """What a hook is handed: a cursor or node handle, and the thing it works on."""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
+from typing import Any, Protocol
 
+from tau_next._config import config_node
 from tau_next._core import (
     Author,
     Body,
@@ -32,6 +34,18 @@ Now = Callable[[], int]
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
+
+
+class OptionsReader(Protocol):
+    """What a handle reads and checks options by: the driver's `ExtensionOptions`."""
+
+    def at(self, extension: str, node: int) -> Any:
+        """The extension's options instance at `node`."""
+        ...
+
+    def check(self, extensions: Mapping[str, Mapping[str, object]]) -> None:
+        """Raise unless `extensions` names options an extension has, fitting its type."""
+        ...
 
 
 async def _ask(
@@ -192,14 +206,21 @@ class NodeHandle(TreeHandle):
         now: Now,
         poke: Poke,
         changed: Changed,
+        options: OptionsReader,
     ) -> None:
         super().__init__(session, extension, now, poke, changed)
         self._asker = asker
+        self._options = options
         self.id = id
 
     @property
     def node(self) -> Node:
         return self.tree.node(self.id)
+
+    def options(self) -> Any:
+        """This extension's options at the batch's node (its `options` dataclass); raises
+        `OptionsError` if it has none or what is set does not fit."""
+        return self._options.at(self.extension, self.id)
 
     def walk(self) -> list[Node]:
         return self.tree.walk(self.id)
@@ -236,10 +257,12 @@ class Cursor(TreeHandle):
         now: Now,
         poke: Poke,
         changed: Changed,
+        options: OptionsReader,
     ) -> None:
         super().__init__(session, extension, now, poke, changed)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
+        self._options = options
         self.id = id
 
     def node(self, id: int | None = None) -> Node:
@@ -250,6 +273,26 @@ class Cursor(TreeHandle):
 
     def config(self) -> Config:
         return self.tree.config_at(self.cursor(self.id).at)
+
+    def options(self) -> Any:
+        """This extension's options at the cursor's `at` (its `options` dataclass); raises
+        `OptionsError` if it has none or what is set does not fit."""
+        return self._options.at(self.extension, self.cursor(self.id).at)
+
+    def configure(
+        self,
+        *,
+        model: str | None = None,
+        extensions: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> int:
+        """Write a `Config` node under `at` holding just these fields and move onto it, as
+        `write` does: the branch's `model` (a qualified name), and/or `extensions` options
+        (`{"step_limit": {"limit": 10}}`), each option replacing the walk's earlier value.
+        `OptionsError` for an extension without options or an option that does not fit,
+        `ConfigError` if nothing is set. Returns the new node's id."""
+        if extensions:
+            self._options.check(extensions)
+        return self.write(Body.Config(config_node(model, extensions)))
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
@@ -289,3 +332,46 @@ class Cursor(TreeHandle):
         answer of `"new"` opens a cursor at the cursor's `at`."""
         self._check()
         return await _ask(self._asker, text, expect, to, lambda: self.open(self.cursor(self.id).at))
+
+
+@dataclass(frozen=True)
+class Handles:
+    """What the driver wires into every handle it makes: the session, the question call (by
+    cursor), the clock, `poke` and `changed`, and the options. One place that builds them."""
+
+    session: Session
+    ask: Callable[..., Awaitable[object]]
+    now: Now
+    poke: Poke
+    changed: Changed
+    options: OptionsReader
+
+    def cursor(self, id: int, extension: str) -> Cursor:
+        """The handle of cursor `id` for `extension`."""
+        return Cursor(
+            self.session,
+            id,
+            extension,
+            partial(self.ask, id),
+            self.now,
+            self.poke,
+            self.changed,
+            self.options,
+        )
+
+    def node(self, cursor: int, id: int, extension: str) -> NodeHandle:
+        """The handle of node `id`, the batch of `cursor`, for `extension`."""
+        return NodeHandle(
+            self.session,
+            id,
+            extension,
+            partial(self.ask, cursor),
+            self.now,
+            self.poke,
+            self.changed,
+            self.options,
+        )
+
+    def tree(self, extension: str) -> TreeHandle:
+        """A handle on no cursor or node, for `extension`."""
+        return TreeHandle(self.session, extension, self.now, self.poke, self.changed)

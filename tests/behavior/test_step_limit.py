@@ -2,11 +2,10 @@
 
 from pathlib import Path
 
-import pytest
-from fakes import FakeProvider, FakeTool, Reply
+from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 
-from tau_next import Body, Cursor, Part, StepLimit, Stop, Subject
+from tau_next import Body, Config, Cursor, Part, StepLimit, Stop, Subject, model_config
 
 
 def text(t: str) -> Reply:
@@ -28,14 +27,37 @@ def replies(n: int) -> FakeProvider:
     return FakeProvider([text(f"r{i}") for i in range(n)])
 
 
-def test_a_limit_below_one_is_refused() -> None:
-    with pytest.raises(ValueError, match="at least 1"):
-        StepLimit(0)
+def limit(n: int) -> Config:
+    """The session's root config with the step limit set (`extensions.step_limit.limit`)."""
+    return model_config(FAKE_MODEL, {"step_limit": {"limit": n}})
+
+
+@scenario
+async def test_a_limit_below_one_fails_the_step_and_names_the_option(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=replies(1), extensions=[StepLimit()], config=limit(0)
+    )
+    await h.send("go")
+    await h.settle()
+    view = await h.view()
+    assert view.hook_error is not None
+    assert "at least 1" in view.hook_error.error
+    assert h.provider.requests == []
+
+
+@scenario
+async def test_the_default_limit_is_fifty(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=replies(60), extensions=[KeepGoing(), StepLimit()])
+    await h.send("go")
+    await h.settle()
+    assert len(h.provider.requests) == 50
 
 
 @scenario
 async def test_it_stops_a_continue_loop_after_n_steps(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit(2)])
+    h = await Harness.create(
+        tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit()], config=limit(2)
+    )
     await h.send("go")
     await h.settle()
     assert len(h.provider.requests) == 2
@@ -51,7 +73,8 @@ async def test_it_stops_a_model_that_calls_tools_every_step(tmp_path: Path) -> N
         tmp_path,
         provider=FakeProvider([calls] * 10),
         tools=[FakeTool("ta", "A")],
-        extensions=[StepLimit(3)],
+        extensions=[StepLimit()],
+        config=limit(3),
     )
     await h.send("go")
     await h.settle()
@@ -62,7 +85,9 @@ async def test_it_stops_a_model_that_calls_tools_every_step(tmp_path: Path) -> N
 
 @scenario
 async def test_a_new_input_starts_the_count_over(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit(2)])
+    h = await Harness.create(
+        tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit()], config=limit(2)
+    )
     await h.send("go")
     await h.settle()
     assert len(h.provider.requests) == 2
@@ -74,7 +99,9 @@ async def test_a_new_input_starts_the_count_over(tmp_path: Path) -> None:
 
 @scenario
 async def test_resuming_with_set_auto_gets_a_fresh_count(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit(2)])
+    h = await Harness.create(
+        tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit()], config=limit(2)
+    )
     await h.send("go")
     await h.settle()
     assert len(h.provider.requests) == 2
@@ -86,7 +113,9 @@ async def test_resuming_with_set_auto_gets_a_fresh_count(tmp_path: Path) -> None
 
 @scenario
 async def test_a_step_run_with_auto_step_off_is_not_counted(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit(2)])
+    h = await Harness.create(
+        tmp_path, provider=replies(10), extensions=[KeepGoing(), StepLimit()], config=limit(2)
+    )
     await h.input("go")
     await h.settle()
     for _ in range(3):
@@ -100,7 +129,9 @@ async def test_a_step_run_with_auto_step_off_is_not_counted(tmp_path: Path) -> N
 
 @scenario
 async def test_a_run_that_ends_by_itself_is_left_alone(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=replies(1), extensions=[StepLimit(5)])
+    h = await Harness.create(
+        tmp_path, provider=replies(1), extensions=[StepLimit()], config=limit(5)
+    )
     await h.send("hi")
     await h.settle()
     assert len(h.provider.requests) == 1

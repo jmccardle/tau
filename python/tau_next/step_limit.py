@@ -1,10 +1,27 @@
 """`StepLimit`: the extension that stops a cursor from stepping on forever."""
 
+from dataclasses import dataclass
+from typing import Annotated
+
 from tau_next.handles import Cursor, Subject
+
+
+@dataclass(frozen=True)
+class Options:
+    """`StepLimit`'s options (`extensions.step_limit`; `/config step_limit`)."""
+
+    limit: Annotated[int, "unattended steps before auto-step turns off"] = 50
+
+    def __post_init__(self) -> None:
+        if self.limit < 1:
+            raise ValueError(f"a step limit must be at least 1, not {self.limit}")
 
 
 class StepLimit:
     """Turns a cursor's auto-step off after `limit` unattended steps in a row (D1).
+
+    The limit is the extension's option (`Options.limit`, 50 unless configured), read at
+    each hook, so `/config step_limit` changes it for a branch.
 
     It guards the loops where the cursor does move every step, such as a model
     that calls tools forever or a hook that writes "continue" after every reply.
@@ -31,11 +48,9 @@ class StepLimit:
     """
 
     name = "step_limit"
+    options = Options
 
-    def __init__(self, limit: int) -> None:
-        if limit < 1:
-            raise ValueError(f"a step limit must be at least 1, not {limit}")
-        self.limit = limit
+    def __init__(self) -> None:
         self._counts: dict[int, int] = {}
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
@@ -43,13 +58,14 @@ class StepLimit:
         return None
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        cursor.options()  # a bad limit fails the step before it samples
         if cursor.cursor(cursor.id).auto:
             self._counts[cursor.id] = self._counts.get(cursor.id, 0) + 1
         return None
 
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
         auto = cursor.cursor(cursor.id).auto
-        if auto and self._counts.get(cursor.id, 0) >= self.limit:
+        if auto and self._counts.get(cursor.id, 0) >= cursor.options().limit:
             cursor.set_auto(False)
             auto = False
         if not auto:

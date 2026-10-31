@@ -7,11 +7,13 @@ implementation; a remote one serializes each call and event, which are all plain
 so the protocol has no call that takes or returns a handle.
 """
 
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Mapping
 from typing import Protocol
 
+from tau_next._commands import CommandInfo
 from tau_next._core import Node
 from tau_next._hub import Feed
+from tau_next._options import OptionsForm
 from tau_next.driver import Driver
 from tau_next.events import Event
 
@@ -71,6 +73,29 @@ class Client(AsyncIterator[Event], Protocol):
         the value is wrong (the question stays open), `LookupError` if the question is closed
         or unknown (the first good answer wins), `PermissionError` if it is for another
         client."""
+        ...
+
+    async def commands(self) -> tuple[CommandInfo, ...]:
+        """Each command's name, description and argument schema; fixed for the driver's life."""
+        ...
+
+    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> None:
+        """Run `/command` with decoded JSON `args` on `cursor`. The result and any failure
+        come back as a `Notice` to this client. `LookupError` for an unknown command,
+        `ValueError` naming the problem for arguments that fit no parameter (the values are
+        checked with the session, `"new"` last), `Busy` for a command that runs as a step of
+        the cursor when it is not at rest."""
+        ...
+
+    async def options(self, cursor: int, extension: str) -> OptionsForm:
+        """`extension`'s options as they stand at `cursor`, with their schema: the form
+        `/config` takes the changed values of. `OptionsError` if it has no options."""
+        ...
+
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+        """The values of a named type (`"path"`, `"model"`, `"cursor"`, `"label"`, `"node"`;
+        the `"format"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are
+        the driver's machine's, relative to its working directory."""
         ...
 
     async def node(self, id: int) -> Node: ...
@@ -138,6 +163,18 @@ class LocalClient:
 
     async def answer(self, question: int, value: object) -> None:
         self._driver.answer(self.id, question, value)
+
+    async def commands(self) -> tuple[CommandInfo, ...]:
+        return self._driver.commands.infos()
+
+    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> None:
+        self._driver.commands.run(self.id, cursor, command, args)
+
+    async def options(self, cursor: int, extension: str) -> OptionsForm:
+        return self._driver.commands.form(cursor, extension)
+
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+        return await self._driver.commands.complete(cursor, named, prefix)
 
     async def node(self, id: int) -> Node:
         return self._driver.session.tree.node(id)

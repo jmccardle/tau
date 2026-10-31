@@ -21,6 +21,7 @@ from typing import TextIO
 from tau_next._config import ConfigError
 from tau_next._config_layers import LayerText, ModelCatalog, check_config
 from tau_next._dotenv import DotenvError
+from tau_next._options import check_options
 from tau_next._startup import load_config, prompts, select_model
 from tau_next._trust import (
     TAU_DIR,
@@ -38,6 +39,7 @@ from tau_next._trust import (
 )
 from tau_next.protocols import Provider
 from tau_next.providers import builtin_providers
+from tau_next.step_limit import StepLimit
 
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
@@ -120,8 +122,15 @@ def _check(run: _Run, show: str | None) -> int:
         run.stdout.write(safe_text(line) + "\n")
     if found.failed or any(p.severity == "error" for p in problems):
         return 1
+    loaded = load_config(run.cwd, run.environ, ask=None)
+    # The options of the extensions this command knows; a project's own are checked where
+    # they are loaded (`check_options`).
+    wrong = check_options(loaded.catalog, (StepLimit(),))
+    for p in wrong:
+        run.stdout.write(safe_text(str(p)) + "\n")
+    if wrong:
+        return 1
     if show is not None:
-        loaded = load_config(run.cwd, run.environ, ask=None)
         name = select_model(loaded.catalog, show, pick=prompts(run.stdin, run.stdout).pick)
         _show(loaded.catalog, name, run.stdout)
     return 0

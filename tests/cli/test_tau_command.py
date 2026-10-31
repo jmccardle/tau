@@ -60,6 +60,30 @@ def test_check_reports_line_and_column_and_exits_1(world: World) -> None:
     assert ": error: " in result.out
 
 
+def test_check_reports_the_options_of_the_extensions_it_knows(world: World) -> None:
+    world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": 0}}})
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert "extensions.step_limit: " in result.out
+    assert "at least 1" in result.out
+    world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": "ten"}}})
+    assert "option 'limit' must be integer" in tau(world, "config", "check").out
+    world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": 10}, "mine": {}}})
+    assert tau(world, "config", "check") == Result(0, "", ""), "a project's own extension: not here"
+
+
+def test_check_reports_the_options_of_an_extension_that_is_not_an_object(world: World) -> None:
+    world.user_config({**models(a={}), "extensions": 3})
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert "extensions: 'extensions' must be an object" in result.out
+    world.user_config({**models(a={}), "extensions": {"step_limit": 3}})
+    assert (
+        "extensions.step_limit: 'extensions.step_limit' must be an object"
+        in tau(world, "config", "check").out
+    )
+
+
 def test_check_reports_a_problem_with_a_path_and_a_suggestion(world: World) -> None:
     path = world.user_config(models(a={"modle": "x"}))
     result = tau(world, "config", "check")

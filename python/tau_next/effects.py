@@ -69,7 +69,7 @@ async def run_hooks(
         except (Exception, asyncio.CancelledError) as e:
             if not _hook_failed(e):
                 raise
-            error = _describe(e)
+            error = describe_failure(e)
             failed(name, ext.name, error)
             return Answer.HookFailed(error)
         finally:
@@ -89,7 +89,7 @@ def _hook_failed(error: BaseException) -> bool:
     return task is None or task.cancelling() == 0
 
 
-def _describe(error: BaseException) -> str:
+def describe_failure(error: BaseException) -> str:
     """`"Type: msg"` for a failed hook, with its traceback on stderr (it has absolute paths, so
     never in the log)."""
     traceback.print_exception(error, file=sys.stderr)
@@ -212,11 +212,10 @@ class SampleRun:
         tools: Sequence[Tool],
         on_delta: Callable[[Delta], None],
     ) -> None:
-        # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
+        # Read at dispatch: I1, the request is `walk(at)` as `at` stands (the config is in it).
         with trace.span("driver", "request"):
             at = session.cursor(cursor).at
             self._walk = session.tree.walk(at)
-            self._config = session.tree.config_at(at)
         self._providers = providers
         self._catalog = catalog
         self._tools = tools
@@ -234,7 +233,7 @@ class SampleRun:
     async def _stream(self) -> Finish:
         finish: Finish | None = None
         try:
-            model = self._catalog.resolve(model_name(self._config))
+            model = self._catalog.resolve(model_name(self._walk))
         except ConfigError as e:
             raise SampleError(str(e)) from e
         provider = self._providers.get(model.provider)
@@ -455,7 +454,7 @@ class CallRun:
             except (Exception, asyncio.CancelledError) as e:
                 if not _hook_failed(e):
                     raise
-                raise _HookError(author, _describe(e)) from e
+                raise _HookError(author, describe_failure(e)) from e
             finally:
                 handle.retire()
             if stop is not None:
@@ -522,7 +521,7 @@ class CallRun:
             self._task = self._start(tool, args_raw)
         except Exception as e:  # a `call` that is not async, or raises before it returns
             self._showing = False
-            return Outcome.Err(_describe(e))
+            return Outcome.Err(describe_failure(e))
         if self._aborted:
             self._task.cancel()
         try:
@@ -535,7 +534,9 @@ class CallRun:
         error = self._task.exception()
         if error is not None:
             # A ToolError is a message meant for the model; anything else is a bug in the tool.
-            return Outcome.Err(str(error) if isinstance(error, ToolError) else _describe(error))
+            return Outcome.Err(
+                str(error) if isinstance(error, ToolError) else describe_failure(error)
+            )
         outcome = self._task.result()
         if not isinstance(outcome, Outcome.Ok | Outcome.Err):
             message = f"TypeError: tool {self._tool!r} answered {outcome!r}, not an Ok or Err"

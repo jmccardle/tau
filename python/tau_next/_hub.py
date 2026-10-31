@@ -237,9 +237,13 @@ class Hub:
                 self._views[cursor] = view
                 self._send(view)
         for client, text in session.take_notices():
-            for feed in tuple(self._feeds):
-                if feed.client == client:
-                    feed.offer(Notice(text))
+            self.notify(client, text)
+
+    def notify(self, client: str, text: str) -> None:
+        """Send `text` to `client` as a `Notice`; dropped if it is not connected."""
+        for feed in tuple(self._feeds):
+            if feed.client == client:
+                feed.offer(Notice(text))
 
     def end(self, failure: Exception | None = None) -> None:
         """End every stream (with `failure`, if any) and forget them. Streams connected later

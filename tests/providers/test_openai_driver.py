@@ -165,7 +165,10 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
 
     live = catalog(ALIAS, model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
     session = Session.create(
-        model_config(ALIAS), "Use tools when needed.", SystemClock().now(), tmp_path / "s"
+        model_config(ALIAS, {"step_limit": {"limit": 6}}),
+        "Use tools when needed.",
+        SystemClock().now(),
+        tmp_path / "s",
     )
     # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
     driver = Driver(
@@ -173,7 +176,7 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
         {"openai": OpenAIProvider()},
         live,
         tools=[read_file],
-        extensions=[StepLimit(6)],
+        extensions=[StepLimit()],
     )
     driver.start()
     c = session.cursors()[0]

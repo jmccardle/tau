@@ -34,14 +34,17 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from tau_next import trace
+from tau_next._builtin import Tau
+from tau_next._commands import Commands, assemble_commands
 from tau_next._config_layers import ModelCatalog
 from tau_next._core import Answer, Author, Hook, ItemData, Job, Session
 from tau_next._hub import Feed, Hub
+from tau_next._options import ExtensionOptions
 from tau_next._questions import Questions
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
 from tau_next.events import LiveDelta
-from tau_next.handles import Cursor, NodeHandle, Subject
+from tau_next.handles import Handles, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
 from tau_next.tools import assemble_tools
 from tau_next.values import Context
@@ -120,6 +123,9 @@ class Driver:
     changed, and poke the pump. A frontend makes them through a `Client`, which names itself;
     `connect` opens its stream. Once the driver has failed or stopped they raise (the failure,
     or `RuntimeError`), as `rest` does; a stream connected then ends at once.
+    `commands` is the extensions' commands (`/model` and `/config` of the built-in extension
+    `tau` first), run for clients; a command that takes a `Cursor` runs ahead of the
+    `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels it.
     Extensions are listed in the constructor, in hook order, and checked there like tools
     (`ExtensionContractError`); `model.md` does not yet say how `config_at` names them.
     """
@@ -141,7 +147,9 @@ class Driver:
                 raise ValueError(f"provider {provider.name!r} is given as {name!r}")
         self._providers = dict(providers)
         self._catalog = catalog
-        self._extensions = check_extensions(extensions)
+        checked = check_extensions(extensions)
+        self._options = ExtensionOptions(checked, session, lambda: self._catalog)
+        self._extensions = check_extensions([Tau(self._options.names()), *checked])
         self._tools: Mapping[str, Tool]
         listed, self._owners = assemble_tools(tools, self._extensions)
         self._tools, self._progress_tools = check_tools(listed)
@@ -155,6 +163,21 @@ class Driver:
         self._hub = Hub(session, self._questions.open)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
+        self._handles = Handles(
+            session, self._questions.ask, self.clock.now, self._poke, self._hub.sync, self._options
+        )
+        self.commands = Commands(
+            assemble_commands(self._extensions),
+            session=session,
+            catalog=lambda: self._catalog,
+            options=self._options,
+            handles=self._handles,
+            hub=self._hub,
+            clock=self.clock,
+            frontend=self._frontend,
+            at_rest=lambda c: not (session.cursor(c).busy or c in self._out),
+            spawn=lambda coro: self._tasks.spawn(coro, effect=True),
+        )
         self._failure: Exception | None = None
         self._stopped = False
         self._rested = _Waiters()
@@ -191,6 +214,7 @@ class Driver:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._hub.end()
+        self.commands.clear()
         self._out.clear()
         self._questions.clear()
         while not self._queue.empty():
@@ -268,6 +292,7 @@ class Driver:
         core had an effect in flight to cancel."""
         with self._frontend():
             cancel = self.session.go_to(cursor, to, client, self.clock.now())
+            self.commands.stop(cursor)
             if cancel:
                 _cancel(self._out, cursor)
             self._questions.decline(cursor)
@@ -307,6 +332,7 @@ class Driver:
         effects in flight to cancel."""
         with self._frontend():
             cancel = self.session.abort(cursor)
+            self.commands.stop(cursor)
             if cancel:
                 _cancel(self._out, cursor)
             self._questions.decline(cursor)
@@ -381,24 +407,12 @@ class Driver:
     def _dispatch(self, cursor: int, job: Job) -> None:
         session = self.session
         live = partial(self._hub.live, cursor)
-        announce = self._hub.sync
         match job:
             case Job.Rest():
                 return
             case Job.Hooks():
                 at = None if job.node is None else session.tree.node(job.node)
                 subject = Subject(draft=job.draft, node=at, ending=job.ending)
-
-                def cursor_for(ext: Extension) -> Cursor:
-                    return Cursor(
-                        session,
-                        cursor,
-                        ext.name,
-                        partial(self._questions.ask, cursor),
-                        self.clock.now,
-                        self._poke,
-                        announce,
-                    )
 
                 if job.point == Hook.PreStep:
                     self._hub.began(cursor)
@@ -407,7 +421,16 @@ class Driver:
                         raise RuntimeError(f"cursor {cursor}: a post_step job with no ending")
                     self._hub.ended(cursor, job.ending)
                 failed = partial(_hook_failed, self._hub, cursor)
-                effect = partial(run_hooks, job, subject, self._extensions, cursor_for, failed)
+                effect = partial(
+                    run_hooks,
+                    job,
+                    subject,
+                    self._extensions,
+                    lambda ext: self._handles.cursor(cursor, ext.name),
+                    failed,
+                )
+                if job.point == Hook.PreStep:
+                    effect = self.commands.before(cursor, effect)
                 self._out[cursor] = _Outstanding()
                 self._unit(cursor, effect)
             case Job.Sample():
@@ -432,15 +455,7 @@ class Driver:
                 runs = [
                     CallRun(
                         c,
-                        lambda owner: NodeHandle(
-                            session,
-                            node,
-                            owner,
-                            partial(self._questions.ask, cursor),
-                            self.clock.now,
-                            self._poke,
-                            announce,
-                        ),
+                        lambda owner: self._handles.node(cursor, node, owner),
                         self._tools,
                         self._extensions,
                         context=context,

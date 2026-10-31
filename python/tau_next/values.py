@@ -368,21 +368,25 @@ def object_schema(fields: tuple[Field, ...], *, model: bool) -> Json:
 
 
 def check_object(
-    fields: tuple[Field, ...], values: Mapping[str, object], context: Context | None
+    fields: tuple[Field, ...],
+    values: Mapping[str, object],
+    context: Context | None,
+    noun: str = "argument",
 ) -> str | None:
     """`None` if `values` (a decoded JSON object) has only these fields, every required one,
-    and each fitting its kind; else the first problem."""
+    and each fitting its kind; else the first problem. `noun` names a field in it
+    (`"argument"` of a call, `"option"` of an extension)."""
     by_name = {f.name: f for f in fields}
     extra = [k for k in values if k not in by_name]
     if extra:
-        return f"unexpected arguments {extra}; takes {list(by_name)}"
+        return f"unexpected {noun}s {extra}; takes {list(by_name)}"
     missing = [f.name for f in fields if f.required and f.name not in values]
     if missing:
-        return f"missing required arguments {missing}"
+        return f"missing required {noun}s {missing}"
     for key, value in values.items():
         problem = by_name[key].kind.check(value, context)
         if problem is not None:
-            return f"argument {key!r} {problem}"
+            return f"{noun} {key!r} {problem}"
     return None
 
 
