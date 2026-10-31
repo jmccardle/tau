@@ -6,11 +6,14 @@ import sys
 from collections.abc import AsyncGenerator, Callable, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
+
+import pytest
 
 from tau_next import (
     Body,
     CallDraft,
+    Cursor,
     CursorId,
     Delta,
     Driver,
@@ -160,6 +163,7 @@ def test_a_command_missing_its_arguments_asks_for_each_and_shows_the_result(
         await until(lambda: "4 words" in screen.text)
         assert typed.asked == ["path: "]
         await window.line("/model nope")
+        await window.finished()
         assert "configured model" in screen.text, "a refused command says why"
         await driver.stop()
         session.close()
@@ -240,12 +244,14 @@ def test_config_changes_an_extensions_options_and_a_bare_one_shows_them(tmp_path
         await window.line("/config step_limit")
         assert "limit=50  unattended steps before auto-step turns off" in screen.text
         await window.line("/config step_limit limit=7")
+        await window.finished()
         await driver.rest(window.cursor)
         await window.line("/config step_limit")
         assert "limit=7" in screen.text, "the form shows the values now"
         await window.line("/config step_limit limit=many")
         assert "limit: 'many' is not an integer" in screen.text
         await window.line("/config step_limit limit=0")
+        await window.finished()
         assert "at least 1" in screen.text, "the driver refuses what the options type refuses"
         await driver.stop()
         session.close()
@@ -257,6 +263,7 @@ def test_a_failing_command_says_what_failed(tmp_path: Path) -> None:
     async def scenario() -> None:
         window, driver, session, screen = await start(tmp_path, Scripted(), Typed())
         await window.line(f"/word_count {tmp_path / 'missing.txt'}")
+        await window.finished()
         assert "[FileNotFoundError: " in screen.text
         await driver.stop()
         session.close()
@@ -290,6 +297,111 @@ def test_an_answer_is_read_by_the_questions_schema_and_new_opens_a_cursor(
         await window.line("new")
         await asyncio.wait_for(driver.rest(window.cursor), 5)
         assert len(session.cursors()) == 2, "a new cursor was opened at the batch's node"
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+class Confirms:
+    """A command that asks in its body, and a tool-less way to ask two questions at once."""
+
+    name = "confirms"
+
+    def __init__(self) -> None:
+        self.commands = (self.confirm,)
+
+    async def confirm(self, cursor: Cursor) -> str:
+        """Ask before doing anything."""
+        verdict = await cursor.ask("really?", Literal["yes", "no"])
+        return f"you said {verdict}"
+
+
+def test_a_command_that_asks_in_its_body_is_answered_at_the_prompt(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed(), Confirms())
+        await window.line("/confirm")  # returns while the command waits for its answer
+        await until(lambda: "? really? [yes/no]" in screen.text)
+        assert window.running, "the command is still running"
+        await window.line("yes")
+        await window.finished()
+        assert "[you said yes]" in screen.text
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_an_empty_answer_declines_a_commands_question(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed(), Confirms())
+        await window.line("/confirm")
+        await until(lambda: "? really?" in screen.text)
+        await window.line("")
+        await window.finished()
+        assert "[you said None]" in screen.text
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_an_empty_line_with_no_question_does_nothing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = Scripted()
+        window, driver, session, screen = await start(tmp_path, provider, Typed())
+        await window.line("")
+        await window.line("   ")
+        await asyncio.wait_for(driver.rest(window.cursor), 5)  # a sent input would run a step
+        assert provider.walks == []
+        assert screen.text == ""
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_command_that_ends_in_something_unshown_ends_the_chat(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed())
+        await driver.stop()  # the next command meets a stopped driver, which is not for the screen
+        await window.line("/model scripted")
+        await until(lambda: not window.running)
+        assert "the driver is stopped" in screen.text  # said at once, not at the next line
+        with pytest.raises(RuntimeError, match="stopped"):
+            await window.line("")  # the next line raises it, as the loop of `main` sees
+        session.close()
+
+    asyncio.run(scenario())
+
+
+class AsksTwice:
+    """Two questions open at once on one cursor."""
+
+    name = "twice"
+
+    def __init__(self) -> None:
+        self.commands = (self.both,)
+
+    async def both(self, cursor: Cursor) -> str:
+        """Ask two questions together."""
+        first, second = await asyncio.gather(
+            cursor.ask("first?", Literal["a", "b"]), cursor.ask("second?", Literal["c", "d"])
+        )
+        return f"{first}{second}"
+
+
+def test_every_open_question_is_shown_and_a_line_answers_the_first(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed(), AsksTwice())
+        await window.line("/both")
+        await until(lambda: "? second?" in screen.text)
+        assert "? first? [a/b]" in screen.text
+        assert "? second? [c/d]" in screen.text
+        await window.line("a")
+        await window.line("d")  # at once: the second line answers the second question
+        await asyncio.wait_for(window.finished(), 5)
+        assert "[ad]" in screen.text
         await driver.stop()
         session.close()
 

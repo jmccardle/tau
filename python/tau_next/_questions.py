@@ -3,7 +3,7 @@
 import asyncio
 import itertools
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from tau_next._values import Context, Kind
 from tau_next.events import OpenQuestion
@@ -26,13 +26,17 @@ class Questions:
     answered or declined; the `ask` that waits on one removes it when it stops waiting, however
     it stopped (an answer, a decline, a timeout, a cancel).
 
-    `changed` tells the driver a question opened or closed; `connected` says whether a client
-    has a stream open (`None`: any client)."""
+    A question belongs to its cursor, not to a client: it stays open however many clients are
+    connected, even none. `to` only says whom it is first for, and only while that client is
+    connected: a question for a client that is not (at ask time, or from the moment it
+    disconnects) is in the pool, open to everyone, and stays there if the client returns.
 
-    def __init__(
-        self, changed: Callable[[], None], connected: Callable[[str | None], bool]
-    ) -> None:
+    `changed` tells the driver a question opened or closed; `connected` says whether a client
+    has a stream open."""
+
+    def __init__(self, changed: Callable[[], None], connected: Callable[[str], bool]) -> None:
         self._by_cursor: dict[int, list[Question]] = {}
+        self._aborted: set[int] = set()
         self._ids = itertools.count()
         self._changed = changed
         self._connected = connected
@@ -55,11 +59,14 @@ class Questions:
         to: str | None,
         new_cursor: Callable[[], int],
     ) -> object:
-        """Wait for the answer; `None` if declined. A question to a client that is not
-        connected, or to anyone when no client is, is declined at once, so a cursor never waits
-        on someone who is not there."""
-        if not self._connected(to):
+        """Wait for the answer; `None` if declined. Nothing is declined for want of someone to
+        answer: the question waits. The one exception is a cursor whose step was aborted: it
+        gets `None` at once, and no question is opened, until that step has ended and the cursor
+        is at rest."""
+        if cursor in self._aborted:
             return None
+        if to is not None and not self._connected(to):
+            to = None
         future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
         view = OpenQuestion(next(self._ids), to, text, expect.schema)
         question = Question(view, future, expect, new_cursor)
@@ -84,14 +91,16 @@ class Questions:
     ) -> None:
         """`client` answers `question` with a decoded JSON value; `None` declines it. The first
         good answer wins: a closed or unknown question is a `LookupError`, a question for
-        another client a `PermissionError`, and a wrong value a `ValueError` naming the problem
-        (the question stays open)."""
+        another client that is connected a `PermissionError` (a client that is not, however it
+        was lost, has put its questions in the pool), and a wrong value a `ValueError` naming the
+        problem (the question stays open)."""
         found = next(
             (q for c in self._by_cursor for q in self._live(c) if q.view.id == question), None
         )
         if found is None:
             raise LookupError(f"no open question {question}")
-        if found.view.to is not None and found.view.to != client:
+        to = found.view.to
+        if to is not None and to != client and self._connected(to):  # else it is in the pool
             raise PermissionError(f"question {question} is for {found.view.to!r}, not {client!r}")
         if value is None:
             found.future.set_result(None)
@@ -103,9 +112,27 @@ class Questions:
             found.future.set_result(found.expect.convert(value, where))
         self._changed()
 
-    def decline(self, cursor: int) -> None:
+    def pool(self, client: str) -> None:
+        """`client` disconnected: every question open for it is open to everyone now. The
+        caller publishes the cursors' changed views."""
+        for asked in self._by_cursor.values():
+            for question in asked:
+                if question.view.to == client:
+                    question.view = replace(question.view, to=None)
+
+    def decline(self, cursor: int, *, busy: bool) -> None:
+        """The cursor's step is aborted or left: its open questions are declined. If the cursor
+        is `busy` a step is still ending, and so is any question it asks until the cursor is at
+        rest (`rested`); an idle cursor has no step to end."""
+        if busy:
+            self._aborted.add(cursor)
         for question in self._live(cursor):
             question.future.set_result(None)
 
+    def rested(self, cursor: int) -> None:
+        """`cursor` is at rest: the step an abort ended is over, and the next may ask."""
+        self._aborted.discard(cursor)
+
     def clear(self) -> None:
         self._by_cursor.clear()
+        self._aborted.clear()

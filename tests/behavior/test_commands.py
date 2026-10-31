@@ -11,6 +11,7 @@ from harness import Harness, build, say, scenario
 from tau_next import (
     Body,
     Busy,
+    Client,
     CommandFailed,
     Cursor,
     CursorId,
@@ -295,7 +296,9 @@ async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step
     h = await Harness.create(tmp_path, extensions=[Explodes(), recorder])
     with pytest.raises(CommandFailed, match=r"^RuntimeError: boom$"):
         await h.run("explode")
-    assert not h.session.cursor(h.cursor).busy, "it raises once the step it began has ended"
+    assert h.session.cursor(h.cursor).busy, "it raises at once, before the step has ended"
+    await h.settle()
+    assert not h.session.cursor(h.cursor).busy
     assert h.notices() == []
     view = await h.view()
     assert view.hook_error is not None
@@ -475,88 +478,66 @@ async def test_a_model_is_set_per_branch(tmp_path: Path) -> None:
     assert sorted(r.model.model for r in h.provider.requests) == ["alt", FAKE_MODEL]
 
 
-# Who the work is for: a handle knows its client.
+# Who the work is for: no handle knows a client.
 
 
 class Knows:
-    """Records the client its handles know, and tells it."""
+    """Tells every client when a step starts, and what a tool's handle knows."""
 
     name = "knows"
 
     def __init__(self) -> None:
-        self.step_clients: list[str | None] = []
-        self.after_clients: list[str | None] = []
-        self.refused: list[str] = []
-        self.commands = (self.runner, self.runner_tree)
-        self.tools = (self.tool_client,)
+        self.tools = (self.tool_cursor,)
 
     async def pre_step(self, cursor: Cursor, subject: object) -> None:
-        self.step_clients.append(cursor.client)
-        try:
-            cursor.tell("step started")
-        except ValueError as e:
-            self.refused.append(str(e))
+        cursor.tell("step started")
 
-    async def post_step(self, cursor: Cursor, subject: object) -> None:
-        self.after_clients.append(cursor.client)
+    def tool_cursor(self, node: NodeHandle) -> str:
+        """The cursor whose batch this tool runs in."""
+        return f"{node.cursor_id}"
 
-    async def runner(self, cursor: Cursor) -> str:
-        """The client a cursor command runs for."""
-        return f"{cursor.client}"
 
-    def runner_tree(self, tree: TreeHandle) -> str:
-        """The client a command that takes no cursor runs for."""
-        return f"{tree.client}"
-
-    def tool_client(self, node: NodeHandle) -> str:
-        """The client of the nearest typed input up the batch's walk."""
-        return f"{node.client}"
+async def _next_notice(client: Client) -> str:
+    async with asyncio.timeout(1):
+        async for event in client:
+            if isinstance(event, Notice):
+                return event.text
+    raise AssertionError("the stream ended")
 
 
 @scenario
-async def test_a_commands_handle_knows_its_runner(tmp_path: Path) -> None:
-    knows = Knows()
-    h = await Harness.create(tmp_path, extensions=[knows])
-    assert await h.run("runner_tree") == "term"
-    assert await h.run("runner") == "term"
+async def test_a_hooks_tell_goes_to_every_connected_client(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Knows()])
+    other = await h.connect("other")
+    await h.send("hi")
     await h.settle()
-    assert knows.step_clients == [None], "the hooks of its step are not the command's"
-    assert len(knows.refused) == 1
+    assert h.notices() == ["step started"]
+    assert await _next_notice(other) == "step started"
+    await other.close()
+    await h.send("again")
+    await h.settle()
+    assert h.notices() == ["step started"] * 2, "a client that left is not told"
+    await h.client.close()
+    await h.send("headless")  # nobody is connected: the notice has nobody to reach
+    await h.settle()
+    assert (await h.view()).hook_error is None, "the hook did not fail"
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
-async def test_a_handle_knows_the_client_who_typed_the_nearest_input_up_its_walk(
-    tmp_path: Path,
-) -> None:
-    knows = Knows()
-    call = Reply([Part.Call("c1", "tool_client", "{}")], Stop.Tools)
-    again = Reply([Part.Call("c2", "tool_client", "{}")], Stop.Tools)
+async def test_a_tool_knows_its_cursor(tmp_path: Path) -> None:
     h = await Harness.create(
         tmp_path,
-        provider=FakeProvider([call, again, say("done"), say("more")]),
-        extensions=[knows],
+        provider=FakeProvider(
+            [Reply([Part.Call("c1", "tool_cursor", "{}")], Stop.Tools), say("ok")]
+        ),
+        extensions=[Knows()],
     )
-    other = await h.connect("other")
-    await h.client.send(h.cursor, "from term")
+    other = await h.client.open(h.session.cursor(h.cursor).at)
+    await h.send("go", cursor=other)
     await h.settle()
-    await other.send(h.cursor, "from other")
-    await h.settle()
-    results = [b for b in h.bodies() if isinstance(b, Body.Results)]
-    assert [r.outcomes[0][1] for r in results] == [Outcome.Ok("term")] * 2, "in a later step too"
-    assert knows.after_clients == ["term", "term", "term", "other"], "stateless: the walk's"
-    assert knows.step_clients == [None, "term", "term", "term"], "an input is a node once delivered"
-
-
-@scenario
-async def test_a_step_woken_by_an_extension_item_is_for_no_client(tmp_path: Path) -> None:
-    knows = Knows()
-    h = await Harness.create(tmp_path, extensions=[knows])
-    await h.add_item("knows", "tick")
-    await h.settle()
-    assert knows.step_clients == [None]
-    assert len(knows.refused) == 1
-    assert "no client typed anything" in knows.refused[0]
-    assert h.notices() == [], "tell with nobody to tell is refused, not dropped"
+    (results,) = [b for b in h.bodies(other) if isinstance(b, Body.Results)]
+    assert results.outcomes[0][1] == Outcome.Ok(str(other))
 
 
 @scenario

@@ -291,8 +291,9 @@ was added to the scratchpad.
 *spike* `Session::notices` · new
 
 A message to one client: `(client, text)`. Core adds one when `pre_input`
-refuses an input; `cursor.tell` adds one (`HandleWrites.notify`). The driver drains them after
-every change and sends each as a **Notice** to the client it names.
+refuses an input. The driver drains them after every change and sends each as a **Notice** to the
+client it names. (`cursor.tell` does not go through core: it sends its **Notice** through the
+driver, to one client or to all.)
 
 ## Position
 
@@ -997,20 +998,19 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`, and `send(to, text)` (an input item for cursor `to` from the handle's `client`,
-with its auto-step turned on, as `Client.send` does: the other cursor's model is given the
-text). Each handle has a **client**: the client its work is for, or `None`, kept nowhere but
-found when asked. A command's handle has its runner while the command runs; otherwise a `Cursor`
-has the client of the nearest `User` node authored by a frontend on the walk to its `at`, and a
-`NodeHandle` the same on the walk to its batch's node (so the hooks of a step that delivers an
-input see the previous typist: the input is a node once it is delivered). `send` and `tell`
-without `to` raise `ValueError` when there is none. Each write tells the driver (`Changed`), which publishes the difference to its
-clients. A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`,
+`remove_label`, and `send(to, text)` (an input item for cursor `to` from the client who typed
+the nearest `User` node on the handle's walk, with its auto-step turned on, as `Client.send` does:
+the other cursor's model is given the text; `ValueError` when no client typed one; this goes in
+stage B, when an input is authored). A cursor is oblivious to its clients: no handle has a **client**
+(`TreeHandle.send` keeps a private one until stage B authors an input). Each write tells the driver (`Changed`), which publishes the difference to its
+clients. A node handle adds `ask` (to its batch's cursor) and `cursor_id`, the id of the cursor
+whose batch it is (`id` is the batch's node; `TreeHandle.cursor(c)` already reads a cursor's
+state, so the attribute is not `cursor`). A cursor handle adds `node`, `walk`,
 `options()` (also on a node handle, at its node), `set_model(model)` (the model must be in the
 catalog) and `set_options(**changes)` (the calling extension's own options, which folded with the
 walk's must fit their type; see *config*; nothing is written otherwise), `move(to)`, `write(body, delivers)`,
-`set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default the handle's
-`client`; dropped if it is not connected), and `ask`; its own `at`, `auto`,
+`set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default to every
+connected client; dropped if `to` is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
 belong to no cursor pass the hook's cursor to core, so they skip their sync
 only while a cursor hook job is out for it. They do it through a
@@ -1022,8 +1022,7 @@ frontend cannot name a cursor and skip the sync.
 `tau_next._core.HandleWrites` (`HandleWrites(session, hook)`) · new
 
 The same seven extension writes as `Session` (`open`, `add_item`,
-`remove_item`, `append`, `append_root`, `set_label`, `remove_label`), and `notify(client, text)`
-(queue a notice; `cursor.tell` calls it), bound to
+`remove_item`, `append`, `append_root`, `set_label`, `remove_label`), bound to
 the cursor whose hook makes them (`None` for a tool hook). While that cursor's
 hook job is out they ride the phase's sync instead of syncing. Only the
 handles hold one; it is not exported from `tau_next`, and it is a type apart
@@ -1032,7 +1031,8 @@ Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its
 only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
 `hook` parameter and always binds `None`, which syncs, and `_core` is a private module (rule 4
 keeps tests out of it). Not built: updating an item
-in place, `show` (`docs/plan.md`, roadmap row 8).
+in place, `show` (`docs/plan.md`, roadmap row 8; Phase 5 stage D), and a handle's `sample` of a
+walk and running a tool outside any step (model.md §7).
 
 ### Poke, Now, Changed
 Python aliases in `handles.py` · new
@@ -1051,15 +1051,20 @@ driver's publish for a handle: a handle write calls it, and `Hub.sync` sends wha
 hook asks on its batch's cursor) returns the answer checked against `expect` and converted,
 or `None` if declined. `expect` is any hint of the type language (**values**). A question has
 an **id** (an integer, unique in the driver's life, never reused), its cursor, `to` (`None`:
-anyone; or a client id), its text and the JSON Schema of its answer; clients see it as an
+anyone, the **pool**; or a client id), its text and the JSON Schema of its answer; clients see it as an
 `OpenQuestion` in the cursor's `CursorView` until it closes. `Client.answer(question, value)`
 answers it: the driver checks the value (a wrong one is a `ValueError` naming the problem to
 the answering client, and the question stays open), the first good answer wins (a later one,
 or an unknown id, is a `LookupError`), and a question `to` another client is a
-`PermissionError`. `None` declines. Abort and go-to decline the cursor's open questions. A
-question `to` a client stays open across that client's disconnects (the reconnect's snapshot
-has it); asking a client that is not **connected** declines at once, so a cursor never waits on
-someone who is not there. The hook awaiting a question keeps its job out, so the cursor is busy
+`PermissionError` (while that client is connected). `None` declines. A question belongs to its
+cursor, not to a client: it never declines for want of an answerer, and with no client connected
+it stays open and blocks until someone answers. `to` says whom it is first for, only while that
+client is **connected**: a question to a client that is not connected goes into the **pool** at
+once (`to` becomes `None`, anyone may answer), and so does one whose client disconnects while it
+is open (the cursor's `CursorView` is sent again, so the other clients see they may answer); it
+stays in the pool if the client returns. Abort and go-to decline the cursor's open questions, and
+any it asks later in that step: an abort leaves nothing answerable behind (the cursor may ask
+again once its next step begins). The hook awaiting a question keeps its job out, so the cursor is busy
 and core's busy rules apply (model.md §7). A question lives only while its `ask` waits: a hook
 that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it.
 
@@ -1398,7 +1403,9 @@ defaults are the values now); frozen, and not hashable, the schema being a dict.
 language, a default that does not fit it, or an `Annotated` carrying other than one `str` is a
 `DefinitionError`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
 `T | None`, `Annotated[T, "text"]` (the text is the schema's `"description"`),
-`pathlib.Path` (a leading `~` is the home directory), and the named types. A JSON integer
+`pathlib.Path` (a leading `~` is the home directory), and the named types. A `list[T]` default
+may be a tuple, which a dataclass needs (it refuses a list); an options instance holds a list
+either way, set or not. A JSON integer
 given to a `float` is converted to one. A `CursorId` default of `"new"` is a `DefinitionError`: only a
 caller may ask for a new cursor.
 
@@ -1434,12 +1441,11 @@ its handle.
 A plain function an extension lists in its `commands` attribute, offered to a person as `/name`;
 the same function may be in `tools`. Described when the driver is built by
 `describe(fn, what="command")`: injected `Progress` (each call is a `Notice`), `TreeHandle`, and
-`Cursor`; `NodeHandle` is refused (`DefinitionError`). Its handle's `client` is the client that
-ran it. Names are unique across extensions, the built-in ones included, and `config` is taken
+`Cursor`; `NodeHandle` is refused (`DefinitionError`). Its handles have no client (a command that takes both a `TreeHandle` and a `Cursor` is given the
+one `Cursor` for both). Names are unique across extensions, the built-in ones included, and `config` is taken
 (`DefinitionError`). `Client.run` returns the command's result (`str | None`) when the command
-has finished, and raises `CommandFailed`, whose message is the failure as `"Type: msg"`: for a
-`Cursor` command once the step it began has ended and the cursor is at rest (see *Cursor
-command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
+has finished, and raises `CommandFailed`, whose message is the failure as `"Type: msg"`: as soon as
+the command raises (see *Cursor command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
 worker thread, as a tool does. A `Form` (**values**) is what a client knows of one: name,
 docstring, and the JSON Schema of its arguments with the named types' `"format"` and each
 default; fixed for the driver's life. `run` checks `args` as values of the language (with the
@@ -1459,8 +1465,7 @@ reply gets none. `abort` and `go_to` cancel a running command (and drop one not 
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the
-extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` once
-the cursor is at rest. A command with no `Cursor` runs at once as a task on the
+extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` at once, before the step has ended. A command with no `Cursor` runs at once as a task on the
 loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 
 ### tau (extension), /model, /config
@@ -1524,8 +1529,10 @@ raise on an extension's account.
 
 The pure parts every line-based frontend shares. `parse(line, commands, options)` reads a line
 that starts with `/` as shell words: `Parsed(command, args, missing, extension)`. A `name=value`
-word sets the parameter of that name; the other words fill the remaining parameters in order; a
-list takes comma-separated items; each word is converted by the parameter's schema (`int`,
+word sets the parameter of that name; the other words fill the remaining parameters in order,
+except that the last parameter, when it is a plain `str` or a `str | None` (not a `Literal` or a
+named type), takes the rest of the line from the word that would fill it, as typed, quotes
+included; a list takes comma-separated items, or a JSON array when the text starts with `[`; each word is converted by the parameter's schema (`int`,
 `float`, `true`/`false`, a `Literal`'s values; a named type is a string or integer). `missing`
 lists the required parameters not given, for the frontend to ask. `UnknownCommand` (a
 `LookupError`) names a command there is not, so a frontend can warn and send the line as text;
@@ -1838,8 +1845,8 @@ before its batch is whole adds no node, so nothing is sent.
 ### Notice
 `tau_next.Notice(text)` (`events.py`) · D16 · new
 
-A message for one client: `cursor.tell`, an input a hook refused. Sent only to the clients with
-that id; dropped if there is none connected.
+A message for one client, or for every client: `cursor.tell` (without `to`: all), an input a hook
+refused. Sent only to the clients with that id; dropped if there is none connected.
 
 ### CutOff
 `tau_next.CutOff` (`events.py`; a `ConnectionError`) · D16 · new

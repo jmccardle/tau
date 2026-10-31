@@ -5,7 +5,13 @@ arguments as decoded JSON, and the required parameters still missing; `completio
 what could finish the word being typed. `value` and `values` do the same for one value of any
 schema: a question's answer typed as text is read and completed as a command's argument is.
 Words are shell words (`shlex`): quote a value with spaces. Positional words fill the
-parameters in order, skipping those set by `name=value`; a list takes comma-separated items.
+parameters in order, skipping those set by `name=value`; except that when the last parameter
+is a plain `str` (or a `str | None`; not a `Literal` or a named type) it takes the rest of the
+line from the word that would fill it, as typed, quotes and spacing included
+(`/search 3 what is 2+2`), unless that is exactly one shell word, which is read as one
+(`/search 3 "what is 2+2"` is `what is 2+2`); name it, `query="..."`, to give it one shell word
+whatever follows. A list takes comma-separated items, or a JSON array if the text starts with `[`
+(for items that hold a comma; so an item that starts with `[` is typed in an array).
 Each word becomes a value by the parameter's schema (an `int` by `int()`, a `Literal` by its
 values, a `bool` by `true`/`false`). Whether the value is allowed (a model that is configured, a
 cursor that is open) is the driver's check, not this module's: it only spares a round trip.
@@ -15,6 +21,7 @@ the extension are read by that extension's options form (`Client.options`), whic
 passes as `options`, by extension name, for the extensions the `config` form lists.
 """
 
+import json
 import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -102,9 +109,26 @@ def value(text: str, schema: Json) -> object:
                 problems.append(str(e))
         raise ValueError(" and ".join(problems))
     if schema.get("type") == "array":
+        if text.startswith("["):  # a JSON array: its items may hold commas
+            try:
+                decoded = json.loads(text)
+            except ValueError as e:
+                raise ValueError(
+                    f"{text!r} is not a JSON array: {e}{_array_hint(text, schema)}"
+                ) from None
+            return cast("list[object]", decoded)
         items = cast("Json", schema["items"])
         return [value(w, items) for w in text.split(",")] if text else []
     return _scalar(text, schema)
+
+
+def _array_hint(text: str, schema: Json) -> str:
+    """How to type a list whose text starts with `[` but is not JSON: such a value is read as a
+    JSON array whole, so an item that starts with `[` is typed inside one."""
+    hint = "; text starting with [ is read as a JSON array"
+    if cast("Json", schema["items"]).get("type") == "string":
+        hint += f", so for comma-separated items type {json.dumps(text.split(','))}"
+    return hint
 
 
 def _properties(form: Form) -> Json:
@@ -130,26 +154,85 @@ def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_
     `ValueError` naming the problem for a line that is not a command line, quotes that do not
     close, too many words, a word that cannot be the parameter's value, or `/config` of an
     extension not in `options` (the options forms of `Client.options`, by extension)."""
-    words = _split(line)
-    if not words or not words[0].startswith("/") or words[0] == "/":
+    name, *rest = line.strip().split(None, 1)
+    text = rest[0] if rest else ""
+    if not name.startswith("/") or name == "/":
         raise ValueError("a command line starts with /name")
-    command = _find(words[0][1:], commands)
-    rest = words[1:]
+    command = _find(name[1:], commands)
     if command.name != CONFIG:
-        return _read(command, rest)
-    if not rest:
+        return _read(command, *_words_and_rest(command, text))
+    words = _split(text)
+    if not words:
         return Parsed(command, {}, ("extension",))
-    extension = _extension(rest[0])
+    extension = _extension(words[0])
     form = options.get(extension)
     if form is None:
         raise ValueError(f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)}")
-    return replace(_read(form, rest[1:]), extension=extension)
+    return replace(_read(form, words[1:]), extension=extension)
 
 
-def _read(form: Form, words: Sequence[str]) -> Parsed:
-    """`words` read as the arguments of `form`."""
+def _takes_rest(schema: Json) -> bool:
+    """Whether a parameter is a plain `str`, or a `str | None`: no choices, no named type."""
+    alternatives = cast("list[Json]", schema.get("anyOf", [schema]))
+    texts = [a for a in alternatives if a.get("type") != "null"]
+    return (
+        len(texts) == 1
+        and texts[0].get("type") == "string"
+        and not ("enum" in texts[0] or "format" in texts[0])
+    )
+
+
+def _words_and_rest(form: Form, text: str) -> tuple[list[str], str | None]:
+    """The shell words of `text`, up to the word that fills the last parameter when that is a
+    plain `str` (`_takes_rest`), and the rest of the text as typed, from that word on, or `None`
+    if no word fills it. A `name=value` word sets its parameter; any other fills the first
+    parameter not set before it."""
+    properties = list(_properties(form))
+    if not properties or not _takes_rest(cast("Json", _properties(form)[properties[-1]])):
+        return _split(text), None
+    words: list[str] = []
+    named: set[str] = set()
+    positional = 0
+    while text.strip():
+        lexer = shlex.shlex(text, posix=True)
+        lexer.whitespace_split, lexer.commenters = True, ""
+        word: str | None = None
+        problem = ""
+        try:
+            word = lexer.get_token()
+        except ValueError as e:  # an open quote: fine if it starts the rest, which is text
+            problem = str(e)
+        key, equals, _ = (word or "").partition("=")
+        if equals and key in properties:
+            named.add(key)
+        else:
+            free = [p for p in properties if p not in named]
+            if positional < len(free) and free[positional] == properties[-1]:
+                return words, _one_word(text.strip())
+            positional += 1
+        if word is None:
+            raise ValueError(f"cannot read the line: {problem}")
+        words.append(word)
+        text = text[lexer.instream.tell() :]  # type: ignore[union-attr]
+    return words, None
+
+
+def _one_word(rest: str) -> str:
+    """The rest of a line: the one shell word it is, if it is exactly one (`"what is 2+2"`
+    is `what is 2+2`); otherwise as typed."""
+    try:
+        words = shlex.split(rest)
+    except ValueError:  # an open quote: the text is as typed
+        return rest
+    return words[0] if len(words) == 1 else rest
+
+
+def _read(form: Form, words: Sequence[str], rest: str | None = None) -> Parsed:
+    """`words` read as the arguments of `form`, and `rest` as its last parameter."""
     properties = _properties(form)
     args: dict[str, object] = {}
+    if rest is not None:
+        args[next(reversed(properties))] = rest
     positional: list[str] = []
     for word in words:
         key, equals, text = word.partition("=")
@@ -195,6 +278,8 @@ async def values(schema: Json, prefix: str, client: Client, cursor: int) -> list
     if isinstance(named, str):
         return await client.complete(cursor, named, prefix)
     if schema.get("type") == "array":
+        if prefix.startswith("["):  # a JSON array is typed whole, not completed
+            return []
         head, comma, tail = prefix.rpartition(",")
         items = await values(cast("Json", schema["items"]), tail, client, cursor)
         return [head + comma + item for item in items]

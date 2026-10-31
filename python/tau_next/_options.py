@@ -4,6 +4,8 @@ An extension names its options type in its `options` attribute. Each field is a 
 `tau_next._values` with a plain default (a field with none must be configured). What a field
 holds at a node is the last one set: the layers' `extensions.<name>` (`ModelCatalog`), then the
 `Config` nodes on the node's walk, root to node, each setting only the fields it names. A
+`list[T]` field's default is a tuple, since a dataclass refuses a list default; the options
+hold a list either way. A
 named type that is looked up in the session (`CursorId`, `LabelName`, `NodeId`) is refused in
 options: stored options are read without one. A `Model` is checked against the catalog.
 """
@@ -65,8 +67,13 @@ def make_options(
     problem = check_object(fields, raw, context, "option")
     if problem is not None:
         raise ConfigError(f"extension {extension!r}: {problem}")
+    converted = convert_object(fields, raw, context)
+    for f in fields:  # a list option's default is a tuple; its value is a list, set or not
+        default: object = f.default
+        if f.name not in converted and isinstance(default, tuple):
+            converted[f.name] = list(cast("tuple[object, ...]", default))
     try:
-        return options(**convert_object(fields, raw, context))
+        return options(**converted)
     except (TypeError, ValueError) as e:  # the type's own __post_init__
         raise ConfigError(f"extension {extension!r}: {e}") from e
 

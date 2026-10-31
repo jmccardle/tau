@@ -37,7 +37,6 @@ class Options:
 class Loop:
     root: int
     prompt: Path
-    client: str
     iterations: int = 1
 
 
@@ -51,10 +50,8 @@ class Ralph:
 
     async def ralph(self, cursor: Cursor, prompt: Path, root: NodeId | None = None) -> str:
         """Send a prompt file to the model, again each time it finishes, from a fresh context."""
-        if cursor.client is None:
-            raise ValueError("ralph: a command has a client")
         at = cursor.cursor(cursor.id).at
-        loop = Loop(at if root is None else root, prompt, cursor.client)
+        loop = Loop(at if root is None else root, prompt)
         self._restart(cursor, loop)
         self._loops[cursor.id] = loop
         cursor.set_auto(True)
@@ -79,7 +76,7 @@ class Ralph:
         if state.next != Next.Wait:
             self._loops[cursor.id] = loop
             return None  # mid-iteration: tools to run, or results to answer
-        cursor.tell(f"ralph: iteration {loop.iterations} finished", to=loop.client)
+        cursor.tell(f"ralph: iteration {loop.iterations} finished")
         options = cursor.options()
         if (loop.prompt.parent / options.done).exists():
             self._stop(cursor, loop, f"{options.done} exists")
@@ -93,4 +90,4 @@ class Ralph:
 
     def _stop(self, cursor: Cursor, loop: Loop, why: str) -> None:
         cursor.set_auto(False)
-        cursor.tell(f"ralph: stopped after {loop.iterations} iterations: {why}", to=loop.client)
+        cursor.tell(f"ralph: stopped after {loop.iterations} iterations: {why}")

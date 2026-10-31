@@ -23,12 +23,32 @@ def load(paths: list[Path], model: Model, force: bool = False, note: str | None 
     """Load."""
 
 
+def search(limit: int, query: str) -> None:
+    """Search."""
+
+
+def plan(task: str | None = None) -> None:
+    """Plan."""
+
+
+def pick(mode: Literal["a", "b"]) -> None:
+    """Pick."""
+
+
+def mark(name: LabelName) -> None:
+    """Mark."""
+
+
 class Lines:
     name = "lines"
     commands = (
         configure,
         tag,
         load,
+        search,
+        plan,
+        pick,
+        mark,
     )
 
 
@@ -87,6 +107,75 @@ async def test_words_are_shell_words_and_values_are_converted_by_the_schema(
 
 
 @scenario
+async def test_a_list_starting_with_a_bracket_is_a_json_array_so_items_may_hold_commas(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    infos = await commands(h)
+    assert parse("""/load '["a,b.txt", "c"]' force=yes""", infos).args["paths"] == ["a,b.txt", "c"]
+    assert parse("/tag fixes new '[1, 2]'", infos).args["nodes"] == [1, 2]
+    assert parse("/load '[]'", infos).args["paths"] == []
+    with pytest.raises(ValueError, match=r"/load paths: .* is not a JSON array"):
+        parse("/load '[a,b'", infos)
+    assert await complete(h, """/load '["a""") == [], "a JSON array is typed whole"
+
+
+@scenario
+async def test_a_list_of_texts_that_start_with_a_bracket_says_how_to_type_it(
+    tmp_path: Path,
+) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[Lines()]))
+    with pytest.raises(ValueError, match=r"""type \["\[0-9\]\+", "foo"\]"""):
+        parse("/load [0-9]+,foo", infos)
+    assert parse("""/load '["[0-9]+", "foo"]'""", infos).args["paths"] == ["[0-9]+", "foo"]
+    with pytest.raises(ValueError, match=r"read as a JSON array") as raised:
+        parse("/tag fixes new '[1,'", infos)
+    assert "type" not in str(raised.value).split("array", 1)[1], "no string hint for numbers"
+
+
+@scenario
+async def test_the_last_str_parameter_takes_the_rest_of_the_line_as_typed(tmp_path: Path) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[Lines()]))
+    assert parse("/search 3 what is 2+2", infos).args == {"limit": 3, "query": "what is 2+2"}
+    assert parse("/search limit=3 what is 2+2", infos).args == {"limit": 3, "query": "what is 2+2"}
+    assert parse('/search 3 don\'t  panic "x" limit=9', infos).args == {
+        "limit": 3,
+        "query": 'don\'t  panic "x" limit=9',
+    }, "quotes and spacing in the rest are the text, and are not read as shell words"
+    assert parse("/search 3 what", infos).missing == ()
+    assert parse("/search 3", infos).missing == ("query",), "no rest, no value"
+    assert parse('/search 3 "what is 2+2"', infos).args["query"] == "what is 2+2", "one word"
+    assert parse("/search 3 'what is' 2", infos).args["query"] == "'what is' 2", "two words: raw"
+    assert parse("/search", infos).missing == ("limit", "query")
+
+
+@scenario
+async def test_a_str_or_none_parameter_takes_the_rest_too_and_may_be_left_out(
+    tmp_path: Path,
+) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[Lines()]))
+    assert parse("/plan add retry", infos).args == {"task": "add retry"}
+    assert parse("/plan", infos).args == {}
+    assert parse("/plan\tadd retry", infos).args == {"task": "add retry"}, "a tab ends the name"
+    assert parse("/plan task='add retry'", infos).args == {"task": "add retry"}, "named: as before"
+    with pytest.raises(ValueError, match="/plan takes 1 arguments"):
+        parse("/plan task=add retry", infos)
+
+
+@scenario
+async def test_only_a_plain_str_takes_the_rest(tmp_path: Path) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[Lines()]))
+    with pytest.raises(ValueError, match="/pick takes 1 arguments"):
+        parse("/pick a b", infos)
+    with pytest.raises(ValueError, match="/mark takes 1 arguments"):
+        parse("/mark a b", infos)
+    with pytest.raises(ValueError, match="/configure takes 3 arguments"):
+        parse("/configure slow 3 0.5 more", infos)
+    with pytest.raises(ValueError, match="/load takes 4 arguments"):
+        parse("/load a fake yes note=x more", infos)  # `note` was named: no rest is left
+
+
+@scenario
 async def test_the_driver_stays_the_authority_on_named_values(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Lines()])
     parsed = parse("/tag nolabel 99 5", await commands(h))
@@ -132,7 +221,16 @@ async def complete(h: Harness, line: str) -> list[str]:
 @scenario
 async def test_command_names_complete_after_a_slash(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Lines()])
-    assert await complete(h, "/") == ["/model", "/configure", "/tag", "/load"]
+    assert await complete(h, "/") == [
+        "/model",
+        "/configure",
+        "/tag",
+        "/load",
+        "/search",
+        "/plan",
+        "/pick",
+        "/mark",
+    ]
     assert await complete(h, "/l") == ["/load"]
     assert await complete(h, "/zz") == []
     assert await complete(h, "no slash") == []
@@ -147,6 +245,8 @@ async def test_literal_values_complete_from_the_schema(tmp_path: Path) -> None:
     assert await complete(h, "/configure slow 3 1.0 ") == [], "past the last parameter"
     assert await complete(h, "/nope ") == []
     assert await complete(h, "/load x force=") == ["force=true", "force=false"]
+    assert await complete(h, "/search 3 wh") == [], "the rest of the line is text"
+    assert await complete(h, "/search 3 what is 2+2 and ") == []
 
 
 @scenario

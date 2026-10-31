@@ -1,6 +1,6 @@
 # Phase 5 fix plan: the extension and frontend contracts
 
-Status: **proposed, 2026-10-31**, for review. Sources: `examples/speculative/REPORT.md`
+Status: **Stage A built 2026-10-31, stopped for review**; B–D proposed (B and C1 wait on ADR D17). Sources: `examples/speculative/REPORT.md`
 (seven extensions written against D16's surface), John's review of it (rulings
 below), and a read of the code behind each item. Sizes are rough estimates of
 lines changed, tests excluded unless noted.
@@ -64,7 +64,7 @@ except A3.
 | A3 | A `post_step` that raises turns auto-step off, as one that returns a string does. Add a row to model.md's ending table. | 1 Rust | a crash treated more gently than a stop |
 | A4 | `ask` never declines because a client is absent. Delete `_connected` and the driver wiring. A question for a client that is not connected goes into the pool at once: `to` becomes `None`, and anyone may answer. A question for a client that later disconnects goes into the pool too; the `CursorView` that clears `to` tells the other clients they may now answer. It stays in the pool if that client returns. Rewrite D16 §3's "nobody connected" lines and two tests. | ~40 net | ruling 1 |
 | A5 | A question asked on an aborted step returns `None` at once. `Questions` marks the cursor in `decline` and clears the mark when the next step begins. The question's removal is already a whole-state `CursorView`. | ~25 | ruling 5: the "busy until someone answers" hole |
-| A6 | `tell` with no `to` goes to every client. Delete the typist derivation (`_typist`, `_need_client`) and `client` on `Cursor` and `NodeHandle`. A command's `TreeHandle.client` (the runner, always set) stays. | ~30, mostly deleted | ruling 2; report theme 4 (the `pre_input` client) dissolves; forest's progress reaches everyone |
+| A6 | `tell` with no `to` goes to every client. Delete the typist derivation (`_typist`, `_need_client`) and `client` on `Cursor` and `NodeHandle`. `TreeHandle.client` went too (review): cursors are oblivious to clients, and a command taking `(tree, cursor)` is given the one `Cursor` for both, so `tree.client` was silently `None` there. A private runner stays on `TreeHandle` for `send` until stage B. | ~30, mostly deleted | ruling 2; report theme 4 (the `pre_input` client) dissolves; forest's progress reaches everyone |
 | A7 | A `list[T]` option accepts a tuple default. `commandline.value` reads a JSON array when the text starts with `[`. | ~10 | workarounds in bash_guard, plan_mode, router |
 | A8 | The last `str` parameter of a command takes the rest of the line. | ~10, library | `/plan add retry`, `/search 3 what is 2+2` |
 | A9 | `NodeHandle.cursor`: a tool knows its cursor id. | ~3 | harness_sense's `attach` for its own id |
@@ -117,9 +117,9 @@ loop runs, and `hook_error` being cleared when the next step starts.
    as `None`. The question goes into the pool and blocks until someone
    answers. Disconnecting is not declining (A4).
 2. ~~Pending items on close~~ **Decided 2026-10-31:** close aborts first (C1).
-3. **`show` (D4):** build it, or leave status to `tell` and the tree?
-4. **Config writes (D1):** an extension handle method `save_options`, or only
-   `tau config set` and `/config --save`, so the user always does the writing?
+3. ~~`show`~~ **Decided 2026-10-31:** build it (D4).
+4. ~~Config writes~~ **Decided 2026-10-31:** τ writes its own config: the
+   library writer, `tau config set`, `/config --save` and `save_options` (D1).
 
 ## Order
 

@@ -1059,3 +1059,12 @@ fn a_finished_sample_is_the_reply_with_the_providers_finish_string_and_meta() {
         }
     );
 }
+
+#[test]
+fn a_post_step_hook_that_raises_turns_auto_step_off_as_a_string_does() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PostStep, raised("boom"));
+    assert!(has_hook(&jobs, Hook::PostStep, Some(&Ending::Done)));
+    assert!(!s.auto[&c]);
+    let (s, c, _) = turn_with_hook_answer(Hook::PostStep, halting("stop"));
+    assert!(!s.auto[&c]);
+}

@@ -223,20 +223,26 @@ async def test_an_abort_declines_every_open_question(tmp_path: Path) -> None:
     await h.close()
 
 
-# Nobody to ask
+# Nobody to ask: the question waits, and `wait` seconds pass
 
 
 @scenario
-async def test_with_no_client_connected_unattended_decides(tmp_path: Path) -> None:
+async def test_with_no_client_connected_the_question_waits_then_unattended_decides(
+    tmp_path: Path,
+) -> None:
     fake = FakeTool("bash", "output")
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([run("find /"), say("ok")]),
         tools=[fake],
         extensions=[guard.BashGuard()],
+        catalog=configured(wait=0.1),  # pyright: ignore[reportArgumentType]
     )
     await h.client.close()  # overnight: auto-step, nobody attached
     await h.send("go")
+    await h.settle()
+    assert h.session.cursor(h.cursor).busy, "asked, with no one to answer: it waits"
+    await asyncio.sleep(0.3)  # real time: the extension's timeout is the loop's, not the clock's
     await h.settle()
     assert fake.calls == []
     ((_, outcome),) = results(h)
@@ -246,17 +252,19 @@ async def test_with_no_client_connected_unattended_decides(tmp_path: Path) -> No
 
 
 @scenario
-async def test_unattended_truncate_runs_the_tail_without_asking(tmp_path: Path) -> None:
+async def test_unattended_truncate_runs_the_tail_when_nobody_answers(tmp_path: Path) -> None:
     fake = FakeTool("bash", "output")
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([run("find /"), say("ok")]),
         tools=[fake],
         extensions=[guard.BashGuard()],
-        catalog=configured(unattended="truncate"),  # pyright: ignore[reportArgumentType]
+        catalog=configured(unattended="truncate", wait=0.1),  # pyright: ignore[reportArgumentType]
     )
     await h.client.close()
     await h.send("go")
+    await h.settle()
+    await asyncio.sleep(0.3)
     await h.settle()
     assert fake.calls == [{"command": "{ find /\n} 2>&1 | tail -n 200"}]
     await h.close()
@@ -325,13 +333,14 @@ async def test_always_in_a_batch_is_not_applied_to_the_questions_already_open(
 
 
 @scenario
-async def test_the_patterns_are_options_but_the_built_ins_are_not_in_the_form(
+async def test_the_built_in_patterns_are_the_default_and_show_in_the_form(
     tmp_path: Path,
 ) -> None:
     h = await Harness.create(tmp_path, extensions=[guard.BashGuard()])
     form = await h.client.options(h.cursor, "bash_guard")
     properties: Any = form.schema["properties"]
-    assert properties["patterns"]["default"] is None, "the person sees `null`, not the patterns"
+    assert properties["patterns"]["default"] == list(guard.BUILT_IN), "the person sees them"
+    assert properties["allow"]["default"] == []
     assert properties["unattended"]["enum"] == ["reject", "allow", "truncate"]
     with pytest.raises(ConfigError, match=r"pattern '\(': "):
         await h.configure("bash_guard", {"patterns": ["("]})
@@ -341,12 +350,17 @@ async def test_the_patterns_are_options_but_the_built_ins_are_not_in_the_form(
 
 
 @scenario
-async def test_a_regex_with_a_comma_cannot_be_typed_to_config(tmp_path: Path) -> None:
+async def test_a_regex_with_a_comma_is_typed_to_config_as_a_json_array(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[guard.BashGuard()])
     commands = await h.client.commands()
     form = await h.client.options(h.cursor, "bash_guard")
-    parsed = parse(r"/config bash_guard patterns=a{1,2}", commands, {"bash_guard": form})
-    assert parsed.args == {"patterns": ["a{1", "2}"]}, "a list is split on every comma"
+    line = r"""/config bash_guard patterns='["a{1,2}", "b"]'"""
+    parsed = parse(line, commands, {"bash_guard": form})
+    assert parsed.args == {"patterns": ["a{1,2}", "b"]}
+    await h.client.configure(h.cursor, "bash_guard", parsed.args)
+    await h.settle()
+    now: Any = (await h.client.options(h.cursor, "bash_guard")).schema["properties"]
+    assert now["patterns"]["default"] == ["a{1,2}", "b"]
     await h.close()
 
 

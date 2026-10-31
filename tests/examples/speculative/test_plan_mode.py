@@ -315,14 +315,13 @@ async def test_a_line_client_lists_plan_asks_inline_and_never_says_it_is_in_plan
         "/plan [task]  Enter plan mode on this branch, optionally starting with a task to plan.\n"
         in "".join(screen)
     )
-    await window.line("/plan add retry")
-    assert "[/plan takes 1 arguments ['task']]" in "".join(screen), "free text must be quoted"
-    await window.line('/plan "add retry"')
+    await window.line("/plan add retry")  # free text: no quotes
     await until(lambda: "? Approve this plan?" in "".join(screen))
     assert "[approve/revise/reject]" in "".join(screen)
     assert "[plan mode on: read-only tools; you will be asked to approve the plan]" in "".join(
         screen
     )
+    assert (Author.Frontend("chat:test"), "add retry") in users(h)
     await window.line("approve")
     await h.settle()
     assert h.bodies()[-2] == APPROVED

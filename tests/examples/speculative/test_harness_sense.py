@@ -201,7 +201,7 @@ async def test_hook_errors_lists_the_calls_an_extension_refused(tmp_path: Path) 
     await h.settle()  # `run` came back before its step ended: /config now would be Busy
     # "read-only" is not a property of a tool: plan mode knows `read` and `grep` by name, so
     # every observation tool of every other extension has to be named to it
-    await h.configure("plan_mode", {"allow_tools": "read,grep,hook_errors"})
+    await h.configure("plan_mode", {"allow_tools": ["read", "grep", "hook_errors"]})
     await h.send("go")
     await h.settle()
     assert told(h).endswith(
@@ -367,7 +367,7 @@ class Nosy:
 
 
 @scenario
-async def test_a_probes_own_client_makes_a_headless_question_wait_for_nobody(
+async def test_a_headless_question_waits_and_a_probes_own_questions_wait_too(
     tmp_path: Path,
 ) -> None:
     script = [use("probe", prompt="hello"), say("hi"), say("ok")]
@@ -378,16 +378,17 @@ async def test_a_probes_own_client_makes_a_headless_question_wait_for_nobody(
     # Harness does not count as parked
     while h.driver.state().open_questions == 0:
         await asyncio.sleep(0)
-    assert (await h.view(0)).questions == (), "with nobody connected the cursor's own was declined"
-    # ... but while a probe runs, the probe's client is connected, so the probe cursor's questions
-    # wait for answers that only a person could give: its wake, the wake its input causes, its step
+    assert [q.text for q in (await h.view(0)).questions] == ["go on?"], "it waits for someone"
+    # Whoever comes along answers: the cursor's own steps (two), and the probe cursor's wake, the
+    # wake its input causes, and its step (three).
     answered = 0
     while h.session.cursor(h.cursor).busy:
-        if h.driver.state().open_questions:
-            await h.respond(True, cursor=1)
-            answered += 1
+        for cursor in h.session.cursors():
+            if (await h.view(cursor)).questions:
+                await h.respond(True, cursor=cursor)
+                answered += 1
         await asyncio.sleep(0)
-    assert answered == 3
+    assert answered == 5
     assert told(h) == "probe 1 replied: hi"
     await h.close()
 

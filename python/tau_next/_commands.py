@@ -7,8 +7,9 @@ dispatched, and it runs ahead of the extensions' `pre_step` hooks. Any other com
 once, as a task on the loop. `run` answers a future: the command's result (a `str` or `None`),
 or `CommandFailed`, which carries the failure as `"Type: msg"`; a failed `Cursor` command also
 ends its step `Failed`, as a failing hook does (the cursor's `hook_error` names `pre_step` and
-the extension that lists the command), and its future fails once that step has ended. Each
-`progress` call of a command is a `Notice` to the client that ran it.
+the extension that lists the command). The future is answered when the command returns or
+raises, not when its step ends. Each `progress` call of a command is a `Notice` to the client
+that ran it.
 
 `/config` is not a function: its values are a mapping, which the type language has no hint
 for. `configure` runs the built-in `config` the same way a `Cursor` command runs.
@@ -50,8 +51,8 @@ _ABORTED = "Aborted: the cursor's step was aborted or the cursor was moved"
 
 class CommandFailed(RuntimeError):
     """A command raised, or returned what is not a `str` or `None`. The message is the failure
-    as `"Type: msg"`. `Client.run` raises it, for a command that takes a `Cursor` after the
-    step it began has ended; an aborted one raises it too."""
+    as `"Type: msg"`. `Client.run` raises it as soon as the command raises; an aborted one raises
+    it too."""
 
 
 def _settle(
@@ -165,7 +166,6 @@ class Commands:
         self._on_loop = on_loop  # a sync command's `progress` is called off the loop's thread
         self._pending: dict[int, _Pending] = {}
         self._running: dict[int, asyncio.Future[str | None]] = {}
-        self._failed: dict[int, tuple[asyncio.Future[str | None], CommandFailed]] = {}
         config = _builtin.config
         self._config = _Command(
             config,
@@ -281,17 +281,7 @@ class Commands:
         that was waiting (it is cancelled, and the client call says why)."""
         for pending in self._pending.values():
             pending.future.cancel()
-        for future, _ in self._failed.values():
-            future.cancel()
         self._pending.clear()
-        self._failed.clear()
-
-    def settle(self) -> None:
-        """The pump is at a pass's end: a `Cursor` command that failed answers its `run` once
-        its cursor is at rest, the step it began over."""
-        for cursor in [c for c in self._failed if self._at_rest(c)]:
-            future, error = self._failed.pop(cursor)
-            _settle(future, error=error)
 
     def before(
         self, cursor: int, hooks: Callable[[], Awaitable[Answer]]
@@ -323,7 +313,7 @@ class Commands:
             except Exception as e:
                 error = describe_failure(e)
                 self._hub.hook_failed(cursor, "pre_step", owner, error)
-                self._failed[cursor] = (pending.future, CommandFailed(error))
+                _settle(pending.future, error=CommandFailed(error))
                 return Answer.HookFailed(error)
             finally:
                 del self._running[cursor]

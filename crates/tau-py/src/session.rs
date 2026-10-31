@@ -497,13 +497,4 @@ impl HandleWrites {
     fn remove_label(&self, py: Python<'_>, label: &str) -> PyResult<()> {
         self.shared.remove_label(py, label, self.hook)
     }
-
-    /// Queue `text` for `client`, drained by `Session.take_notices`.
-    fn notify(&self, py: Python<'_>, client: String, text: String) -> PyResult<()> {
-        self.shared
-            .write(py, tracing::info_span!("py.notify"), |m| {
-                m.session.notices.push((client, text));
-                Ok(())
-            })
-    }
 }

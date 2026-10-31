@@ -17,7 +17,6 @@ from tau_next import (
     Body,
     Busy,
     Config,
-    Cursor,
     CursorView,
     Ending,
     Next,
@@ -25,7 +24,6 @@ from tau_next import (
     Part,
     StepLimit,
     Stop,
-    Subject,
     WriteTool,
     model_config,
 )
@@ -144,7 +142,7 @@ async def test_the_cursor_never_spins_because_every_iteration_moves_it(tmp_path:
 
 @scenario
 async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_path: Path) -> None:
-    """The count is a Notice for the client that ran `/ralph`; any other client has the nodes."""
+    """The count is a Notice for every client; a client also has the nodes."""
     prompt = prompt_file(tmp_path)
     h = await Harness.create(
         tmp_path / "s",
@@ -167,40 +165,8 @@ async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_pa
     nodes = [n for e in seen if isinstance(e, Appended) for n in e.nodes]
     mine = Author.Extension("ralph")
     assert sum(n.by == mine and isinstance(n.body, Body.User) for n in nodes) == 3
-    assert not [e for e in seen if isinstance(e, Notice)], "the tui is told nothing else"
     assert len(h.notices()) == 4
-    await h.close()
-
-
-class Spy:
-    """Notes which client each hook's handle thinks it works for."""
-
-    name = "spy"
-
-    def __init__(self) -> None:
-        self.clients: list[str | None] = []
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        self.clients.append(cursor.client)
-        return None
-
-
-@scenario
-async def test_back_at_the_root_a_handle_forgets_who_typed(tmp_path: Path) -> None:
-    """The nearest frontend `User` node on the walk is the client; the loop's are its own."""
-    prompt = prompt_file(tmp_path)
-    spy = Spy()
-    h = await Harness.create(
-        tmp_path / "s",
-        provider=FakeProvider([say("a"), say("b")]),
-        extensions=[ralph.Ralph(), spy],
-        config=config(ralph={"max_iterations": 2}),
-    )
-    await h.run("ralph", {"prompt": str(prompt)})
-    await h.settle()
-    assert len(spy.clients) >= 2
-    assert set(spy.clients) == {None}
-    assert len(h.notices()) == 3, "so `tell` needs the client the command remembered"
+    assert [e.text for e in seen if isinstance(e, Notice)] == h.notices(), "the tui is told too"
     await h.close()
 
 
@@ -348,7 +314,7 @@ async def test_a_prompt_that_vanishes_mid_loop_fails_the_hook_and_ends_the_loop(
     assert (view.hook_error.extension, view.hook_error.point) == ("ralph", "post_step")
     assert "FileNotFoundError" in view.hook_error.error
     assert isinstance(view.ending, Ending.Done), "the ending was decided before post_step ran"
-    assert view.auto, "so a failing post_step does not even turn auto-step off"
+    assert not view.auto, "a failing post_step turns auto-step off, as a returned string does"
     assert len(h.provider.requests) == 2
     assert isinstance(h.bodies()[-1], Body.Assistant), "the cursor never left the finished reply"
     prompt.write_text("again")

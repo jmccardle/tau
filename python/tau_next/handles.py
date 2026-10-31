@@ -31,6 +31,10 @@ Changed = Callable[[], None]
 Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
+Notify = Callable[[str | None, str], None]
+"""Sends a `Notice` to a client, or to every client when `None`; dropped if that client is not
+connected."""
+
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
@@ -96,11 +100,9 @@ class TreeHandle:
     """What both handles share: reads of the whole session, and the writes that
     belong to no cursor, bound to an extension (which fills in `by`).
 
-    `client` is the client this work is for, or `None`. A tree handle made for a command has
-    that command's runner. A `Cursor` has its command's runner while a command runs; otherwise,
-    and for a `NodeHandle`, it is the client of the nearest `User` node authored by a frontend
-    on the walk (to the cursor's `at`, or the batch's node), found when asked: nothing is
-    remembered per step.
+    A handle has no client: work on a cursor does not depend on who is watching it. (Until
+    input is authored by the extension, `send` writes as the runner of the command that holds a
+    tree-only handle; no other handle has one.)
 
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
@@ -124,11 +126,6 @@ class TreeHandle:
         self._live = True
         self.extension = extension
         self._client = client
-
-    @property
-    def client(self) -> str | None:
-        """The client this work is for, or `None`."""
-        return self._client
 
     @property
     def by(self) -> Author:
@@ -201,21 +198,25 @@ class TreeHandle:
         self._changed()
 
     def send(self, to: int, text: str) -> int:
-        """Send `text` to cursor `to` as an input from `client`, and turn its auto-step on, as
-        `Client.send` does: `to` takes the text at its next step and answers. Returns the
-        item. `ValueError` if there is no `client`, since an input says who typed it."""
+        """Send `text` to cursor `to` as an input from the client whose typing this work
+        continues, and turn its auto-step on, as `Client.send` does: `to` takes the text at its
+        next step and answers. Returns the item. `ValueError` if no client typed anything on
+        this branch, since an input says who typed it."""
         self._check()
-        item = self._session.input(to, self._need_client("send"), text)
+        item = self._session.input(to, self._sender(), text)
         self._session.set_auto(to, True)
         self._changed()
         self._poke()
         return item
 
-    def _need_client(self, what: str) -> str:
-        """`client`, or `ValueError` saying `what` has nobody to act for."""
-        client = self.client
+    def _typing(self) -> str | None:
+        """The client `send` writes as, if there is one."""
+        return self._client
+
+    def _sender(self) -> str:
+        client = self._typing()
         if client is None:
-            raise ValueError(f"{what}: no client typed anything on this branch")
+            raise ValueError("send: no client typed anything on this branch")
         return client
 
     def set_label(self, label: str, cursor: int) -> None:
@@ -234,14 +235,15 @@ class TreeHandle:
 class NodeHandle(TreeHandle):
     """What a tool hook acts through: the batch's node, bound to its extension.
 
-    The tree handle, plus the batch's node and `ask`, which goes to the batch's cursor. Has
-    none of the cursor's own operations.
+    The tree handle, plus the batch's node (`id`), the cursor whose batch it is (`cursor_id`),
+    and `ask`, which goes to that cursor. Has none of the cursor's own operations.
     """
 
     def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
         self,
         session: Session,
         id: int,
+        cursor: int,
         extension: str,
         asker: Asker,
         now: Now,
@@ -253,9 +255,9 @@ class NodeHandle(TreeHandle):
         self._asker = asker
         self._options = options
         self.id = id
+        self.cursor_id = cursor
 
-    @property
-    def client(self) -> str | None:
+    def _typing(self) -> str | None:
         return _typist(self.tree, self.id)
 
     @property
@@ -273,9 +275,10 @@ class NodeHandle(TreeHandle):
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
         (any hint of the type language; `str` by default). Returns the checked, converted
-        answer, or `None` if declined. `to` names the client asked (`None`: anyone). The
-        call stays out meanwhile, so the cursor is busy; an abort or go-to declines it. A
-        `CursorId` answer of `"new"` opens a cursor at the batch's node."""
+        answer, or `None` if declined. `to` names the client asked first (`None`: anyone; a
+        client that is not connected is the same). The call stays out meanwhile, however long and
+        whoever is connected, so the cursor is busy; an abort or go-to declines it (and any asked
+        later in that step). A `CursorId` answer of `"new"` opens a cursor at the batch's node."""
         self._check()
         return await _ask(self._asker, text, expect, to, lambda: self.open(self.id))
 
@@ -296,6 +299,7 @@ class Cursor(TreeHandle):
         id: int,
         extension: str,
         asker: Asker,
+        notify: Notify,
         now: Now,
         poke: Poke,
         changed: Changed,
@@ -305,12 +309,12 @@ class Cursor(TreeHandle):
         super().__init__(session, extension, now, poke, changed, None)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
+        self._notify = notify
         self._options = options
         self._runner = runner
         self.id = id
 
-    @property
-    def client(self) -> str | None:
+    def _typing(self) -> str | None:
         if self._runner is not None:
             return self._runner
         return _typist(self.tree, self.cursor(self.id).at)
@@ -365,21 +369,19 @@ class Cursor(TreeHandle):
         self._changed()
 
     def tell(self, text: str, *, to: str | None = None) -> None:
-        """Send `text` to client `to` as a `Notice`; by default the `client` (`ValueError` if
-        there is none). Dropped if that client is not connected: a notice is
-        for someone who is there."""
+        """Send `text` as a `Notice` to client `to`, or to every connected client by default.
+        Dropped if `to` is not connected: a notice is for someone who is there."""
         self._check()
-        if to is None:
-            to = self._need_client("tell")
-        self._writes.notify(to, text)
-        self._changed()
+        self._changed()  # what was queued first goes first
+        self._notify(to, text)
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the cursor's clients `text`, and wait for an answer of type `expect` (any hint
         of the type language; `str` by default). Returns the checked, converted answer, or
-        `None` if declined. `to` names the client asked (`None`: anyone). The hook's job stays
-        out meanwhile, so the cursor is busy; an abort or go-to declines it. A `CursorId`
-        answer of `"new"` opens a cursor at the cursor's `at`."""
+        `None` if declined. `to` names the client asked first (`None`: anyone; a client that is
+        not connected is the same). The hook's job stays out meanwhile, however long and whoever
+        is connected, so the cursor is busy; an abort or go-to declines it (and any asked later
+        in that step). A `CursorId` answer of `"new"` opens a cursor at the cursor's `at`."""
         self._check()
         return await _ask(self._asker, text, expect, to, lambda: self.open(self.cursor(self.id).at))
 
@@ -387,10 +389,12 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the clock, `poke` and `changed`, and the options. One place that builds them."""
+    cursor), the `Notice` call, the clock, `poke` and `changed`, and the options. One place that
+    builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
+    notify: Notify
     now: Now
     poke: Poke
     changed: Changed
@@ -404,6 +408,7 @@ class Handles:
             id,
             extension,
             partial(self.ask, id),
+            self.notify,
             self.now,
             self.poke,
             self.changed,
@@ -416,6 +421,7 @@ class Handles:
         return NodeHandle(
             self.session,
             id,
+            cursor,
             extension,
             partial(self.ask, cursor),
             self.now,

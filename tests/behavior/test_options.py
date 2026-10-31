@@ -280,6 +280,52 @@ async def test_the_layers_set_the_step_limit(tmp_path: Path) -> None:
     assert len(h.provider.requests) == 3
 
 
+@dataclass(frozen=True)
+class Tagged:
+    # A list default is a dataclass error, so a list option's default is a tuple.
+    tags: Annotated[list[str], "tags"] = ("a,b", "c")  # pyright: ignore[reportAssignmentType]
+
+
+class Tags:
+    name = "tags"
+    options = Tagged
+
+    def __init__(self) -> None:
+        self.seen: list[Tagged] = []
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        self.seen.append(cursor.options())
+        return None
+
+
+@scenario
+async def test_a_list_option_has_a_tuple_default_that_is_a_list_to_everyone(
+    tmp_path: Path,
+) -> None:
+    ext = Tags()
+    h = await Harness.create(tmp_path, extensions=[ext])
+    form = await h.client.options(h.cursor, "tags")
+    assert form.schema["properties"]["tags"]["default"] == ["a,b", "c"]  # type: ignore[index]
+    await h.step()
+    await h.settle()
+    assert ext.seen == [Tagged(tags=["a,b", "c"])]  # pyright: ignore[reportArgumentType]
+    assert isinstance(ext.seen[0].tags, list), "the default is a list, as a configured value is"
+    await h.configure("tags", {"tags": ["x"]})
+    await h.settle()
+    await h.step()
+    await h.settle()
+    assert ext.seen[-1].tags == ["x"]
+
+
+def test_a_list_options_default_must_still_fit_its_items() -> None:
+    @dataclass(frozen=True)
+    class Wrong:
+        tags: list[str] = (1,)  # pyright: ignore[reportAssignmentType]
+
+    with pytest.raises(DefinitionError, match="item 0 must be string"):
+        build(extensions=[type("E", (), {"name": "wrong", "options": Wrong})()])
+
+
 # What an options type may be.
 
 
@@ -405,6 +451,7 @@ async def test_set_options_checks_before_it_writes(tmp_path: Path) -> None:
     with pytest.raises(CommandFailed, match="ConfigError: extension 'bounds': a limit is at"):
         await h.run("widen", {"limit": 0})
     assert len(h.nodes()) == before
+    await h.settle()
     await h.run("widen", {"limit": 3})
     await h.settle()
     assert len(h.nodes()) == before + 1
@@ -417,6 +464,7 @@ async def test_set_model_checks_the_model_against_the_catalog(tmp_path: Path) ->
     with pytest.raises(CommandFailed, match="ConfigError: model 'nope' is not in your config"):
         await h.run("pick", {"name": "nope"})
     assert len(h.nodes()) == before
+    await h.settle()
     await h.run("pick", {"name": FAKE_MODEL})
     await h.settle()
     assert len(h.nodes()) == before + 1

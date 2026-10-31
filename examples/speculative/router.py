@@ -25,17 +25,18 @@ class Options:
     """router's options. `when[i]` selects `use[i]`: a table of (regex, Model) as two lists,
     because the type language has no mapping and no pair."""
 
-    when: Annotated[list[str] | None, "regexes, tried in order against the input"] = None
-    use: Annotated[list[Model] | None, "the model for each regex in `when`"] = None
+    # A list option's default is a tuple (a dataclass refuses a list); the value is a list.
+    when: Annotated[list[str], "regexes, tried in order against the input"] = ()  # pyright: ignore[reportAssignmentType]
+    use: Annotated[list[Model], "the model for each regex in `when`"] = ()  # pyright: ignore[reportAssignmentType]
     enabled: Annotated[bool, "route by the table (the !model prefix always works)"] = True
     once: Annotated[bool, "after the turn's last reply, go back to the model before routing"] = (
         False
     )
 
     def __post_init__(self) -> None:
-        if len(self.when or ()) != len(self.use or ()):
+        if len(self.when) != len(self.use):
             raise ValueError("`when` and `use` must be the same length")
-        for pattern in self.when or ():
+        for pattern in self.when:
             try:
                 re.compile(pattern)
             except re.error as e:
@@ -44,11 +45,7 @@ class Options:
     def route(self, text: str) -> tuple[str, Model] | None:
         """The first regex that matches `text`, and its model."""
         return next(
-            (
-                (w, m)
-                for w, m in zip(self.when or (), self.use or (), strict=True)
-                if re.search(w, text)
-            ),
+            ((w, m) for w, m in zip(self.when, self.use, strict=True) if re.search(w, text)),
             None,
         )
 
@@ -75,7 +72,7 @@ class Router:
     options = Options
     commands = (route,)
 
-    def switch(self, cursor: Cursor, model: str, why: str, typist: str) -> bool:
+    def switch(self, cursor: Cursor, model: str, why: str) -> bool:
         """Put the branch on `model` (writes nothing if it is on it); False if it is not a
         configured model. # WISH: cursor.models(), so a prefix can be looked up, not tried."""
         if model_on(cursor.walk()) != model:
@@ -84,20 +81,18 @@ class Router:
             except ConfigError:
                 return False
             cursor.write(Body.Custom("route", json.dumps({"model": model, "why": why})))
-            # `to=` because `cursor.client` is the previous typist, and none on the first input.
-            cursor.tell(f"router: {model} ({why})", to=typist)
+            cursor.tell(f"router: {model} ({why})")
         return True
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
         draft = subject.draft
         assert draft is not None
         assert isinstance(draft.body, Body.User)
-        assert isinstance(draft.by, Author.Frontend)
-        text, who = draft.body.text, draft.by.client
-        if (prefix := PREFIX.match(text)) and self.switch(cursor, prefix[1], "prefix", who):
+        text = draft.body.text
+        if (prefix := PREFIX.match(text)) and self.switch(cursor, prefix[1], "prefix"):
             subject.draft = Draft(Body.User(text[prefix.end() :]), draft.delivers, draft.by)
         elif (options := cursor.options()).enabled and (hit := options.route(text)):
-            self.switch(cursor, hit[1], f"/{hit[0]}/", who)
+            self.switch(cursor, hit[1], f"/{hit[0]}/")
         return None
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:

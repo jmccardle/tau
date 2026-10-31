@@ -249,7 +249,8 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 | `Failed(error)` | a sample failed, or a cursor hook raised | off |
 | `Aborted` | `Step::abort` | off |
 
-A string from `post_step` only turns auto-step off.
+A string from `post_step` only turns auto-step off. A raise from `post_step` does
+the same and leaves the ending as it was.
 
 ### After `post_step`
 
@@ -349,8 +350,8 @@ driver writes itself (`Interrupted`, a failed hook's `Err`) skip `pre_result`.
 
 **Handles.** A cursor handle may read the tree, cursors, labels, and move
 records; append anywhere; add, update, or remove any item; open cursors; set
-labels; ask, show, and tell (§9); sample a walk or run a tool outside any
-step. On its own cursor, and only while its hook job is out, it may `move`, `write(body, delivers)`, and set
+labels; ask and tell (§9). *Not built (Phase 5, not yet):* `show` (Stage D), `sample` a walk
+and run a tool outside any step. On its own cursor, and only while its hook job is out, it may `move`, `write(body, delivers)`, and set
 `auto_step`. A node handle (tool hooks) is the same minus anything on the
 cursor. Every handle call goes into Rust at once (§11). An extension reads
 its own cursor's scratchpad in `pre_step` and `post_step`. Writes a hook
@@ -374,7 +375,7 @@ stays pending (Q42). Gates are `pre_input` hooks.
 node handle) returns the answer checked against `expect`, a type hint of
 the type language (D16 §1), and converted, or `None` if declined (D16 §3). A question is
 a hook awaiting a future the driver holds; core knows nothing of it. It has an
-id, its cursor, `to` (`None`: anyone; or a client id), its text and the schema
+id, its cursor, `to` (`None`: anyone, the pool; or a client id), its text and the schema
 of the answer, and every client sees it in the cursor's state until it closes.
 `Client.answer(question, value)` answers it: a wrong value is refused to the
 answering client (`ValueError`) and the question stays open, the first good
@@ -385,10 +386,13 @@ unchanged: input is accepted and waits for the next step's input phase,
 `Session.step` is `Busy`, auto-step on or off only sets the flag (no second
 step starts under the question). Abort and go-to take the abort path: the step
 is aborted, the driver declines the cursor's open questions, and the hook
-finishes with `None`. A question `to` one client stays open across that
-client's disconnects (the client that reconnects is told of it); asking a client
-that is not connected declines at once, so a cursor never waits on someone who
-is not there.
+finishes with `None`; a question the step asks after the abort (a `post_step`
+hook) is declined at once, until the cursor's next step begins. A question
+belongs to its cursor, not to a client: it never declines for want of someone to
+answer, and with no client connected it stays open until one does. `to` holds
+only while that client is connected: a question to a client that is not
+connected, or whose client disconnects, goes into the pool (`to` becomes `None`,
+anyone may answer) and stays there if the client returns.
 
 ### Between cursors
 
@@ -458,7 +462,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 | `Labels` | all clients | every label and its cursor |
 | `Appended` | all clients | the new nodes, bodies included |
 | `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
-| `Notice` | one client | `cursor.tell`, an input a hook refused |
+| `Notice` | one client, or all | `cursor.tell`, an input a hook refused |
 
 - **On connect** the stream opens with a `CursorView` per cursor and `Labels`, taken in the same
   synchronous act as subscribing, so nothing falls between them. Nodes a client reads with calls
@@ -484,7 +488,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
   or is not busy; drop a call's `ToolProgress` layer, keyed by `(node, call_id)`, when the
   `Results` node answering it arrives.
-- **Notices.** `cursor.tell(text, to=client)` (by default the client the step is for) and core's own (a `pre_input` hook refused an
+- **Notices.** `cursor.tell(text, to=None)` (by default every connected client) and core's own (a `pre_input` hook refused an
   input: the client that typed it is told why) reach the client they name, if it is connected.
   No cursor waits on a particular client; a cursor waits on a person only through a question.
 
@@ -571,7 +575,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q32 | Do opened cursors run hooks? | yes, opening wakes them |
 | Q33 | Cursor names | integers plus any number of labels |
 | Q34 | Abort while `pre_tool` runs | it finishes; `None` means `Interrupted` |
-| Q37 | A one-client question's client detaches | declined |
+| Q37 | A one-client question's client detaches | open to everyone |
 | Q39 | A wake with auto-step off | `pre_step` and `post_step` only |
 | Q42 | Pending input on abort | stays pending |
 | Q43 | How a frontend learns `pre_input` refused | a notice; the item is removed |

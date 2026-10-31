@@ -361,9 +361,11 @@ impl Step {
         Ok(())
     }
 
-    /// A hook raised. At `post_step` the step is ending anyway.
+    /// A hook raised. At `post_step` the step is ending anyway, and a raise turns
+    /// auto-step off as a returned string does.
     fn on_hook_failed(&mut self, s: &mut Session, e: String) {
         if self.pos == Pos::PostStep {
+            s.auto.insert(self.cursor, false);
             self.after(s);
         } else {
             self.draft = None;

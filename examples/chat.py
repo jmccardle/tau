@@ -11,7 +11,9 @@ arguments (models, cursors, nodes, paths ...); a command missing arguments asks 
 unknown `/name` is sent to the model as text. `/config step_limit limit=10` changes an
 extension's options on this branch, and a bare `/config step_limit` shows them. The model's
 `word_count` tool asks permission first, and the question is answered inline, completed with
-Tab like an argument (an empty answer declines). Ctrl-D leaves.
+Tab like an argument (an empty answer declines). A command runs in the background once its
+arguments are in, so a question it asks is answered at the prompt like any other; every open
+question is shown, and a line answers the first. Ctrl-D leaves.
 """
 
 import asyncio
@@ -49,7 +51,7 @@ from tau_next import (
     builtin_providers,
     model_config,
 )
-from tau_next.commandline import UnknownCommand, completions, parse, value, values
+from tau_next.commandline import Parsed, UnknownCommand, completions, parse, value, values
 
 SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
 
@@ -89,9 +91,16 @@ class Chat:
         self.client, self.cursor, self.out, self.ask = client, cursor, out, ask
         self.commands: tuple[Form, ...] = ()
         self.options: dict[str, Form] = {}
-        self.question: OpenQuestion | None = None
+        self.questions: tuple[OpenQuestion, ...] = ()
         self.busy = False
         self.error: object = None
+        self.running: set[asyncio.Task[None]] = set()  # commands started and not yet finished
+        self.failure: BaseException | None = None  # what ended a command task unexpectedly
+
+    @property
+    def question(self) -> OpenQuestion | None:
+        """The one a typed line answers: the first open."""
+        return self.questions[0] if self.questions else None
 
     async def refresh(self) -> None:
         """Ask for the commands, and for the options of each extension `/config` names."""
@@ -130,18 +139,24 @@ class Chat:
         if self.busy and not view.busy:
             self.out("\n")
         self.busy = view.busy
-        question = view.questions[0] if view.questions else None
-        if question != self.question and question is not None:
-            choices = question.schema.get("enum")
-            shown = f" [{'/'.join(map(str, choices))}]" if isinstance(choices, list) else ""
-            self.out(f"\n? {question.text}{shown}\n")
-        self.question = question
+        shown_before = {q.id for q in self.questions}
+        for question in view.questions:
+            if question.id not in shown_before:
+                choices = question.schema.get("enum")
+                shown = f" [{'/'.join(map(str, choices))}]" if isinstance(choices, list) else ""
+                self.out(f"\n? {question.text}{shown}\n")
+        self.questions = view.questions
 
     async def line(self, text: str) -> None:
-        """One line typed: an answer, a message, or a command."""
+        """One line typed: an answer, a message, or a command. Raises what a command ended in
+        that is not shown to the person (the driver failed, the client closed): that ends us."""
+        if self.failure is not None:
+            raise self.failure
         try:
             if self.question is not None:
                 await self.answer(self.question, text)
+            elif not text.strip():
+                pass
             elif not text.startswith("/"):
                 await self.client.send(self.cursor, text)
             elif text.strip() == "/":
@@ -159,8 +174,10 @@ class Chat:
         the question's schema, as a command's argument is."""
         if not text.strip():
             await self.client.answer(question.id, None)
-            return
-        await self.client.answer(question.id, value(text, question.schema))
+        else:
+            await self.client.answer(question.id, value(text, question.schema))
+        # Not shown again until the cursor's next view: a fast second line must not re-answer it.
+        self.questions = tuple(q for q in self.questions if q.id != question.id)
 
     async def command(self, text: str) -> None:
         parsed = parse(text, self.commands, self.options)
@@ -171,9 +188,32 @@ class Chat:
             name = parsed.missing[0]
             text += f" {name}={shlex.quote(await self.ask(f'{name}: '))}"
             parsed = parse(text, self.commands, self.options)
-        result = await parsed.run(self.client, self.cursor)
-        if result is not None:
-            self.out(f"[{result}]\n")
+        task = asyncio.create_task(self.finish(parsed))
+        self.running.add(task)
+        task.add_done_callback(self.ended)
+
+    def ended(self, task: asyncio.Task[None]) -> None:
+        """A command task is over. What it raised that `finish` did not show is kept, for `line`
+        to raise: nothing else would read it."""
+        self.running.discard(task)
+        if not task.cancelled() and task.exception() is not None and self.failure is None:
+            self.failure = task.exception()
+            self.out(f"\n[a command ended in {self.failure!r}; the next line ends the chat]\n")
+
+    async def finish(self, parsed: Parsed) -> None:
+        """Run a command whose arguments are complete, and show its result or why it failed. It
+        is a task, not part of `line`: a question the command asks is answered by a later line."""
+        try:
+            result = await parsed.run(self.client, self.cursor)
+        except (ValueError, LookupError, Busy, CommandFailed) as e:
+            self.out(f"[{e}]\n")
+        else:
+            if result is not None:
+                self.out(f"[{result}]\n")
+
+    async def finished(self) -> None:
+        """Wait for the commands started so far."""
+        await asyncio.gather(*self.running)
 
     def show_options(self, form: Form) -> str:
         """An extension's options with their values now, as `/config` takes them."""
@@ -232,9 +272,10 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 text = await prompt("> ")
             except EOFError:
                 break
-            if text.strip():
-                await chat.line(text)
+            await chat.line(text)
     finally:
+        for task in chat.running:
+            task.cancel()
         listener.cancel()
         await client.close()
         await driver.stop()

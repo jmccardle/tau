@@ -124,7 +124,6 @@ class HarnessSense:
         self._driver, self._extensions, self._tools = driver, extensions, tools
 
     # WISH: `attach` should not exist. A handle that knew its harness would be enough:
-    #     node.cursor_id        # the batch's cursor (today: busy cursors whose `at` is the batch)
     #     node.extensions()     # name, source file, tools, commands, hook points, options
     #     node.tools()          # what this sample was offered
     #     node.view(cursor)     # a CursorView: questions, ending and hook_error, as a client has
@@ -146,11 +145,6 @@ class HarnessSense:
                     return views, dict(event.labels)
         raise ToolError("the driver stopped")
 
-    @staticmethod
-    def _mine(node: NodeHandle) -> list[int]:
-        """The batch's cursor (several if cursors share the batch)."""
-        return [c for c in node.cursors() if node.cursor(c).busy and node.cursor(c).at == node.id]
-
     # Where am I?
 
     async def whereami(self, node: NodeHandle) -> str:
@@ -158,7 +152,7 @@ class HarnessSense:
         the branch around you, the model, the extensions (with their files, options and tools),
         other cursors, and notes you left earlier. Call this first in a new session."""
         views, labels = await self._snapshot()
-        walk, here, mine = node.walk(), node.node, self._mine(node)
+        walk, here, mine = node.walk(), node.node, [node.cursor_id]
         siblings = (
             [c for c in node.tree.children(here.parent) if c != here.id] if here.parent else []
         )

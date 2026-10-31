@@ -152,24 +152,40 @@ def _replaces(new: Event, held: Event) -> bool:
 class Hub:
     """The feeds open now, and what was last published to them.
 
-    `questions` says a cursor's open questions. A step's ending and a hook's failure are told
-    to the hub (`began`, `ended`, `hook_failed`) because core keeps neither."""
+    `questions` says a cursor's open questions, and `lost(client)` is told, once, that a client
+    that had a stream open has none now (closed, cut off, or abandoned and collected). A step's
+    ending and a hook's failure are told to the hub (`began`, `ended`, `hook_failed`) because
+    core keeps neither."""
 
     def __init__(
-        self, session: Session, questions: Callable[[int], tuple[OpenQuestion, ...]]
+        self,
+        session: Session,
+        questions: Callable[[int], tuple[OpenQuestion, ...]],
+        lost: Callable[[str], None],
     ) -> None:
         self._session = session
         self._questions = questions
+        self._lost = lost
         self._feeds: weakref.WeakSet[Feed] = weakref.WeakSet()
+        self._clients: set[str] = set()  # who had a stream open at the last sync
+        self._syncing = False
         self._ended: tuple[Exception | None] | None = None
         self._steps: dict[int, tuple[Ending | None, HookFailure | None]] = {}
         self._nodes = len(session.tree)
         self._labels = tuple(session.labels())
         self._views = {c: self._view(c) for c in session.cursors()}
 
-    def connected(self, client: str | None) -> bool:
-        """Whether `client` has a stream open; with `None`, whether any client has."""
-        return any(client in (None, feed.client) for feed in self._feeds)
+    def connected(self, client: str) -> bool:
+        """Whether `client` has a stream open."""
+        return any(client == feed.client for feed in self._feeds)
+
+    def _release(self, feed: Feed) -> None:
+        """A stream closed or was cut off: its client may be gone, so publish what that changes."""
+        self._feeds.discard(feed)
+        self.sync()
+
+    def _streaming(self) -> set[str]:
+        return {feed.client for feed in self._feeds}
 
     def connect(self, client: str, capacity: int) -> Feed:
         """A new stream for `client`, opening with the snapshot: a `CursorView` per cursor, then
@@ -178,7 +194,7 @@ class Hub:
         nothing falls between the snapshot and what follows. The nodes are not in it: a node
         never changes, so a client reads the ones it needs by id, and ignores an `Appended` one
         it has already read."""
-        feed = Feed(client, capacity, self._feeds.discard)
+        feed = Feed(client, capacity, self._release)
         if self._ended is not None:  # too late for anything: it ends as the others did
             feed.end(self._ended[0])
             return feed
@@ -186,6 +202,7 @@ class Hub:
         for event in (*self._views.values(), Labels(self._labels)):
             feed.offer(event)
         self._feeds.add(feed)
+        self._clients.add(client)
         return feed
 
     def watch(
@@ -225,9 +242,23 @@ class Hub:
         """Send what changed since the last call: the new nodes, then each changed `CursorView`
         (so a view never points at nodes the client has not been sent), then `Labels` (so a
         label never names a cursor the client has not been sent), then the session's notices to
-        the clients they name."""
-        if self._ended is not None:
+        the clients they name. A client that has no stream left is `lost` first, so the views
+        sent are the ones its loss changed."""
+        if self._ended is not None or self._syncing:
             return
+        self._syncing = True
+        try:
+            while True:  # a stream cut off while sending is a loss to publish too
+                for client in sorted(self._clients - self._streaming()):
+                    self._lost(client)
+                self._clients = self._streaming()
+                self._publish()
+                if self._clients == self._streaming():
+                    return
+        finally:
+            self._syncing = False
+
+    def _publish(self) -> None:
         session = self._session
         count = len(session.tree)
         if count > self._nodes:
@@ -246,10 +277,11 @@ class Hub:
         for client, text in session.take_notices():
             self.notify(client, text)
 
-    def notify(self, client: str, text: str) -> None:
-        """Send `text` to `client` as a `Notice`; dropped if it is not connected."""
+    def notify(self, client: str | None, text: str) -> None:
+        """Send `text` to `client` as a `Notice`, or to every client if `None`; dropped if
+        `client` is not connected."""
         for feed in tuple(self._feeds):
-            if feed.client == client:
+            if client in (None, feed.client):
                 feed.offer(Notice(text))
 
     def end(self, failure: Exception | None = None) -> None:

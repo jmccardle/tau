@@ -30,12 +30,18 @@ class Options:
     """Plan mode's options (`/config plan_mode`)."""
 
     mode: Annotated[Literal["act", "plan"], "plan: read-only tools, ask before acting"] = "act"
-    # WISH: `list[str]` with a default (`("read", "grep")`). A mutable default is a dataclass
-    # error, `default_factory` and a tuple are refused by the options reader, so these are
-    # comma-separated strings.
-    allow_tools: Annotated[str, "tools usable in plan mode, comma-separated"] = "read,grep"
-    allow_bash: Annotated[str, "shell commands usable in plan mode, comma-separated"] = (
-        "ls,pwd,cat,head,tail,wc,git status,git diff,git log"
+    # A list option's default is a tuple (a dataclass refuses a list); the value is a list.
+    allow_tools: Annotated[list[str], "tools usable in plan mode"] = ("read", "grep")  # pyright: ignore[reportAssignmentType]
+    allow_bash: Annotated[list[str], "shell commands usable in plan mode"] = (  # pyright: ignore[reportAssignmentType]
+        "ls",
+        "pwd",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "git status",
+        "git diff",
+        "git log",
     )
 
 
@@ -88,13 +94,11 @@ async def pre_tool(node: NodeHandle, call: CallDraft) -> str | None:
     # WISH: a per-branch tool list, so `write` and `bash` are not even offered in plan mode.
     # Here the model is shown every tool and finds out by being refused.
     options = node.options()
-    if options.mode != "plan" or call.tool in options.allow_tools.split(","):
+    if options.mode != "plan" or call.tool in options.allow_tools:
         return None
     if call.tool == "bash":
         command = str(json.loads(call.args_raw).get("command", "")).strip()
-        listed = (
-            command == a or command.startswith(a + " ") for a in options.allow_bash.split(",")
-        )
+        listed = (command == a or command.startswith(a + " ") for a in options.allow_bash)
         if not SHELL_SYNTAX.search(command) and any(listed):
             return None  # not a sandbox: `git diff --output=f` writes. A guard, not a wall.
     return f"plan mode: {call.tool} is refused. Put the change in your plan instead."

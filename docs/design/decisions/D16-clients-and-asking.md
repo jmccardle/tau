@@ -83,7 +83,7 @@ Parameters the driver fills, by annotation alone (a name says nothing), are not 
 | annotation | as a tool | as a command |
 |---|---|---|
 | `Progress` | the call's `ToolProgress` | a `Notice` to the client |
-| `TreeHandle` | the batch's `NodeHandle` | the cursor's handle, as a `TreeHandle` |
+| `TreeHandle` | the batch's `NodeHandle` | a handle bound to the extension, with no cursor of its own: it reads and writes the tree, opens cursors, sets labels, adds items; no `walk`, `move`, `ask`. It runs at once, whatever the cursors are doing. With a `Cursor` parameter too, the same object as the `Cursor` |
 | `NodeHandle` | the batch's `NodeHandle` | refused when the driver is built |
 | `Cursor` | refused when the driver is built | the cursor it runs on |
 
@@ -103,8 +103,8 @@ that moves a cursor is a command. Writes are by `Extension(<the extension's name
 
 `Client.run` returns the command's result (`str | None`) when the command has finished and
 raises `CommandFailed` (a typed error whose message is the failure as `"Type: msg"`) if it
-raised; for a command that takes a `Cursor`, once its step has ended. `progress` calls arrive as
-`Notice`s.
+raised, at the moment it raises (a command that takes a `Cursor` still ends its step `Failed`
+afterwards). `progress` calls arrive as `Notice`s.
 
 **Built-in commands** are `/model`, a command of the built-in extension `tau`, and `/config`,
 whose values are a mapping the type language has no hint for, so it is a call, not a function
@@ -119,18 +119,29 @@ driver is built.
 - `expect` is any hint of §1: `Literal["allow", "deny", "always"]`, `Model`,
   `list[pathlib.Path]`. The value comes back checked and converted; `None` is a decline.
 - A question has an **id**, its cursor, `to` (`None`: anyone; or a client id), its text and
-  its schema. It is in its cursor's `CursorState` until it closes.
+  its schema. It is in its cursor's `CursorView` until it closes.
 - `answer(question_id, value)` answers it. The driver checks the value; a wrong one is
   refused to the answering client (`ValueError` naming the problem) and the question stays
   open. The first good answer wins; a later one raises `LookupError`.
-- Abort and go-to decline the cursor's questions, as now. A question `to` one client stays
-  open across that client's disconnects; asking a client that is not connected, or anyone
-  when no client is, declines at once, so a cursor never waits on someone who is not there.
+- **Questions belong to the cursor, not to a client.** A question never declines for want of
+  someone to answer it: asked of anyone (`to=None`) it stays open and blocks until a client
+  answers, even with none connected. Under `tau serve` the agent waits there; an extension that
+  wants to give up on silence does so itself (a timeout around `ask`).
+- `to` names the client a question is first for, and only while that client is connected: a
+  question to a client that is not connected goes into the **pool** at once (`to` becomes `None`,
+  anyone may answer), and so does one whose client disconnects while it is open (the cursor's
+  `CursorView` is sent again, so the other clients see they may answer). It stays in the pool if
+  that client returns. While the client is connected only it may answer (`PermissionError` for
+  another).
+- Abort and go-to decline the cursor's questions, and a question asked later in the same step
+  (a `post_step` hook, a second `ask`) is declined at once: an abort leaves nothing answerable
+  behind. The cursor may ask again once its next step begins.
 
 ### 4. Options and config
 
 An extension's **options** are a frozen dataclass named by its `options` attribute; each
-field is a hint of §1 with a default (a field with none must be configured). They live in
+field is a hint of §1 with a default (a field with none must be configured; a `list[T]` field's
+default is a tuple, since a dataclass refuses a list, and its value is a list). They live in
 the D13 layers under `extensions.<name>`, and a `Config` node may override them for a
 branch. `handle.options()` returns the dataclass as it stands at the handle's node.
 `tau config check` checks every extension's options.
@@ -175,7 +186,7 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
 | `Labels(labels)` | all clients | every label and its cursor |
 | `Appended(nodes)` | all clients | the new nodes, bodies included |
 | `Live(cursor, delta)` | clients watching the cursor | text, thinking, call and tool-progress deltas, as in D15 |
-| `Notice(text)` | one client | `cursor.tell`, a refused input, a command's result and progress |
+| `Notice(text)` | one client; every client for `cursor.tell` without `to` | `cursor.tell`, a refused input, a command's result and progress |
 
 - **On connect** a client receives one `CursorState` per cursor and `Labels` (after the cursors it
   names), before anything else; nodes it reads with calls (`node`, `walk`, `children`), and
@@ -211,8 +222,9 @@ nothing.
 (paths on the driver's machine, which matters when the client is remote). No extension code
 runs per keystroke, so completion cannot hang or raise. `tau_next.commandline` holds the
 pure parts every line-based frontend shares: `parse(line, commands, options)` (shell words;
-positional values fill parameters in order, `name=value` any; a list takes comma-separated
-values) answering the command, its arguments and the required ones missing,
+positional values fill parameters in order, `name=value` any; the last parameter, when a plain
+`str` or `str | None`, takes the rest of the line as typed; a list takes comma-separated values,
+or a JSON array when the text starts with `[`) answering the command, its arguments and the required ones missing,
 `completions(line, commands, client, cursor, options)`, and `value(text, schema)` /
 `values(schema, prefix, client, cursor)`, which read and complete one value of any schema, so a
 question's answer typed as text is handled as a command's argument is. The driver's check is the authority; the frontend's
@@ -321,10 +333,10 @@ Where the text above was silent, as built:
 
 ## Settled in review (fix pass A)
 
-- **A handle knows its client** (`handle.client`, or `None`); fix pass B made it stateless (below).
-  `cursor.tell(text, to=None)` goes to that client and raises if there is none; `ask(to=None)` still
-  means anyone. `TreeHandle.send(to, text)` is `Client.send` for a handle: an input from that
-  client, with auto-step on (raises if none).
+- **A handle knew its client** (`handle.client`, or `None`); fix pass B made it stateless and
+  Phase 5 stage A removed it from every handle (below). `TreeHandle.send(to, text)` is
+  `Client.send` for a handle: an input from the client who typed, with auto-step on (raises if
+  none); stage B makes it authored by the extension instead.
 - **A sync function's writes reach the loop**: the driver routes what a handle tells it back to the
   loop's thread, so a tool or a command may write from its worker thread.
 - **Setting the model or options checks before it writes**: the model is in the catalog, and the options
@@ -335,17 +347,27 @@ Where the text above was silent, as built:
 - **Catch-up replays a call under the provider's own index**; a call part that was never named in
   the stream was never drawn, so it is not replayed.
 - **Every client call raises first** once the driver has failed or stopped.
-- **A question to anyone declines at once when no client is connected.**
+- **A question to anyone declines at once when no client is connected.** Reversed in Phase 5
+  stage A (§3): the question waits.
 - **`handle.config()` is gone**: the nearest `Config` node is only what that node changes; options
   and the model are read folded (`options()`, the sample's own resolution).
 
+## Settled in Phase 5 (stage A)
+
+- **Cursors are oblivious to clients.** `Cursor` and `NodeHandle` have no `client`: a cursor runs
+  the same whether anyone is watching or not, and client matching exists to route a question.
+  `cursor.tell(text, to=None)` sends the `Notice` to every connected client; `to=` names one.
+  Only a command's `TreeHandle` has a `client`, its runner. `TreeHandle.send` still writes as the
+  nearest client who typed (internal, until stage B).
+- **A tool knows its cursor**: `NodeHandle.cursor_id` is the cursor whose batch it runs in.
+  (`TreeHandle.cursor(id)` already reads a cursor's state, so the attribute is `cursor_id`.)
+
 ## Settled in review (fix pass B: interface reshape)
 
-- **A handle's client is read, not remembered.** A command's runner while it runs; otherwise the
-  client of the nearest `User` node authored by a frontend on the walk (to a cursor's `at`, to a
-  tool batch's node), else `None`. So a model calling a tool in any step of a run has the client
-  who typed. The hooks of the step that delivers an input see the previous typist (the input is a
-  node once delivered); nothing is tracked per step.
+- **A handle's client is read, not remembered.** (Superseded by stage A: no handle has a
+  `client`: a cursor is oblivious to its clients, and a command that takes a `TreeHandle` and a
+  `Cursor` is given one object for both, so `tree.client` would have been `None` there.) It was a command's runner while it ran; otherwise the client of the
+  nearest `User` node authored by a frontend on the walk, else `None`.
 - **`/config` has no JSON.** `Client.options(cursor, extension) -> Form` and `Client.configure(cursor,
   extension, values)`; `commandline.parse` reads `/config step_limit limit=10` by the options form,
   and a bare `/config step_limit` is a form to show. One frozen `Form(name, description, schema)`

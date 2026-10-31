@@ -206,7 +206,35 @@ async def test_a_client_cut_off_is_no_longer_connected(tmp_path: Path) -> None:
     asks.skip = False
     await h.send("last")
     await h.settle()
-    assert asks.answers == [None], "declined at once: the stream was cut off"
+    assert [q.to for q in (await h.view()).questions] == [None], (
+        "the stream was cut off: the question is for everyone"
+    )
+    await h.respond("yes")
+    await h.settle()
+    assert asks.answers == ["yes"]
+    await h.close()
+
+
+@scenario
+async def test_a_question_open_when_its_client_is_cut_off_is_open_to_everyone(
+    tmp_path: Path,
+) -> None:
+    asks = Asks("still there?", to="slow")
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])] * 4), extensions=[asks]
+    )
+    slow = await h.connect("slow", buffer=1)
+    await h.send("hi")
+    await h.settle()
+    assert [q.to for q in (await h.view()).questions] == ["slow"]
+    asks.skip = True
+    other = await h.client.open(SYS)
+    for i in range(3):  # more `Appended` than a buffer of one holds
+        await h.send(f"m{i}", cursor=other)
+        await h.settle()
+    assert [q.to for q in (await h.view()).questions] == [None]
+    with pytest.raises(ConnectionError):
+        await first(slow, 5)
     await h.close()
 
 
@@ -296,31 +324,40 @@ async def test_a_question_for_one_client_cannot_be_answered_by_another(tmp_path:
 
 
 @scenario
-async def test_a_question_survives_its_clients_disconnect_and_is_answered_on_reconnect(
+async def test_a_question_for_a_client_that_disconnects_is_open_to_everyone(
     tmp_path: Path,
 ) -> None:
-    asks = Asks("still yours", to="alice")
-    h, (alice,) = await asked(tmp_path, asks, "alice")
+    asks = Asks("still yours?", to="alice")
+    h, (alice, bob) = await asked(tmp_path, asks, "alice", "bob")
     (question,) = (await h.view()).questions
+    assert question.to == "alice"
+    await first(bob, 2)  # the snapshot and the question's view
     await alice.close()
-    await h.settle()
-    assert (await h.view()).questions == (question,), "a disconnect declines nothing"
+    pooled = await _next_view(bob)
+    assert [(q.id, q.to) for q in pooled.questions] == [(question.id, None)], "bob may answer"
+    assert asks.answers == [], "a disconnect declines nothing"
     again = await h.connect("alice")
     seen = [e for e in await first(again, 2) if isinstance(e, CursorView)]
-    assert seen[0].questions == (question,), "the snapshot has it"
-    await again.answer(question.id, "yes")
+    assert [(q.id, q.to) for q in seen[0].questions] == [(question.id, None)], (
+        "it stays in the pool when its client returns"
+    )
+    await bob.answer(question.id, "yes")
     await h.settle()
     assert asks.answers == ["yes"]
     await h.close()
 
 
 @scenario
-async def test_asking_a_client_that_is_not_connected_declines_at_once(tmp_path: Path) -> None:
+async def test_asking_a_client_that_is_not_connected_asks_everyone(tmp_path: Path) -> None:
     asks = Asks("anyone?", to="alice")
     h, () = await asked(tmp_path, asks)
-    assert asks.answers == [None]
-    assert (await h.view()).questions == ()
-    assert not (await h.view()).busy, "the cursor did not wait on someone who is not there"
+    assert asks.answers == [], "the cursor waits"
+    (question,) = (await h.view()).questions
+    assert question.to is None, "in the pool at once"
+    assert (await h.view()).busy
+    await h.respond("yes")
+    await h.settle()
+    assert asks.answers == ["yes"]
     await h.close()
 
 
@@ -333,15 +370,32 @@ async def test_an_abandoned_client_is_no_longer_connected(tmp_path: Path) -> Non
     alice = await h.connect("alice")
     await h.send("one")
     await h.settle()
-    assert len((await h.view()).questions) == 1, "alice is connected"
     (question,) = (await h.view()).questions
-    await alice.answer(question.id, "yes")
-    await h.settle()
+    assert question.to == "alice", "alice is connected"
     del alice  # never closed
     gc.collect()
-    await h.send("two")
+    await h.send("two")  # the driver finds her gone
     await h.settle()
-    assert asks.answers == ["yes", None]
+    assert [q.to for q in (await h.view()).questions] == [None], "and her question is open to all"
+    await h.respond("yes")
+    await h.settle()
+    assert asks.answers == ["yes"]
+    await h.close()
+
+
+@scenario
+async def test_a_question_for_an_abandoned_client_is_answered_before_anything_syncs(
+    tmp_path: Path,
+) -> None:
+    asks = Asks("anyone?", to="alice")
+    h, (alice, bob) = await asked(tmp_path, asks, "alice", "bob")
+    (question,) = (await h.view()).questions
+    assert question.to == "alice"
+    del alice  # never closed; the cursor is idle but for this question, so nothing syncs
+    gc.collect()
+    await bob.answer(question.id, "yes")
+    await h.settle()
+    assert asks.answers == ["yes"]
     await h.close()
 
 

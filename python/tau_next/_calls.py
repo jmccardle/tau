@@ -102,7 +102,7 @@ class Calls:
         self._commands.stop(cursor)
         if cancel:
             self._cancel(cursor)
-        self._questions.decline(cursor)
+        self._questions.decline(cursor, busy=self.session.cursor(cursor).busy)
 
     def set_auto(self, cursor: int, on: bool) -> None:
         with self._changing():

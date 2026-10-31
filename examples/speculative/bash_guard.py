@@ -5,8 +5,8 @@ frontend `reject | allow | always | truncate`. `truncate` asks again for a grep 
 rewrites the call's `command` to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. A reject is the
 call's `Err`, written so the model can narrow the command. `always` is remembered in the
 options (`allow`), so it sticks on this branch, survives a reload, and shows in
-`/config bash_guard`. When nobody answers (no client, or `wait` seconds pass) `unattended`
-decides.
+`/config bash_guard`. When nobody answers within `wait` seconds (a question waits even with
+no client connected) `unattended` decides.
 """
 
 import asyncio
@@ -36,18 +36,16 @@ BUILT_IN = (
 class Options:
     """bash_guard's options."""
 
-    # None, not BUILT_IN: a list default is refused by the dataclass, a tuple by the type language.
-    patterns: Annotated[
-        list[str] | None, "regexes of commands that print a lot (none: built-in)"
-    ] = None
-    allow: Annotated[list[str] | None, "patterns the user allowed for good"] = None
+    # A list option's default is a tuple (a dataclass refuses a list); the value is a list.
+    patterns: Annotated[list[str], "regexes of commands that print a lot"] = BUILT_IN  # pyright: ignore[reportAssignmentType]
+    allow: Annotated[list[str], "patterns the user allowed for good"] = ()  # pyright: ignore[reportAssignmentType]
     unattended: Annotated[
         Literal["reject", "allow", "truncate"], "what happens when nobody answers"
     ] = "reject"
     wait: Annotated[float, "seconds to wait for an answer"] = 600.0
 
     def __post_init__(self) -> None:
-        for pattern in (*(self.patterns or ()), *(self.allow or ())):
+        for pattern in (*self.patterns, *self.allow):
             try:
                 re.compile(pattern)
             except re.error as e:
@@ -58,11 +56,7 @@ class Options:
         if BOUNDED.search(command):
             return None
         return next(
-            (
-                p
-                for p in (self.patterns or BUILT_IN)
-                if p not in (self.allow or ()) and re.search(p, command)
-            ),
+            (p for p in self.patterns if p not in self.allow and re.search(p, command)),
             None,
         )
 
@@ -76,7 +70,7 @@ class BashGuard:
         self.ran: dict[tuple[int, str], str] = {}  # (batch node, call id) -> what really ran
 
     async def ask(self, node: NodeHandle, text: str, expect: object) -> object:
-        """`node.ask`, giving up after `wait` seconds (a client is connected but nobody looks)."""
+        """`node.ask`, giving up after `wait` seconds: none connected, or none looking."""
         try:
             async with asyncio.timeout(node.options().wait):
                 return await node.ask(text, expect)
@@ -140,5 +134,5 @@ class BashGuard:
         assert subject.node.parent is not None
         granted = self.always.pop(subject.node.parent, set())
         if granted:
-            cursor.set_options(allow=sorted({*(cursor.options().allow or ()), *granted}))
+            cursor.set_options(allow=sorted({*cursor.options().allow, *granted}))
         return None

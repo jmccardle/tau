@@ -12,7 +12,8 @@ rules about performing one effect:
   `pre_tool` hook runs even then; a call that names no tool is
   `Err("unknown tool: ...")`.
 - An interrupted call skips `pre_result`.
-- A question open when its cursor is aborted or sent elsewhere is declined.
+- A question open when its cursor is aborted or sent elsewhere is declined, and so is one asked
+  later in that step; a question never waits on a client being there (D16 section 3).
 - Every change a client could see is published by one comparison (`Hub.sync`), after each
   call, each pump pass, and each handle write; nothing is announced by hand.
 - A failure of the driver cancels every effect in flight; `stop()` cancels
@@ -160,7 +161,7 @@ class Driver:
             lambda: self._hub.sync(),  # noqa: PLW0108
             lambda client: self._hub.connected(client),  # noqa: PLW0108
         )
-        self._hub = Hub(session, self._questions.open)
+        self._hub = Hub(session, self._questions.open, self._questions.pool)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
         # A sync tool or command writes through its handle from a worker thread; what the
@@ -170,6 +171,7 @@ class Driver:
         self._handles = Handles(
             session,
             self._questions.ask,
+            lambda client, text: on_loop(partial(self._hub.notify, client, text))(),
             self.clock.now,
             on_loop(self._poke),
             on_loop(self._hub.sync),
@@ -300,13 +302,16 @@ class Driver:
         try:
             while self._failure is None:
                 for cursor in self.session.cursors():
-                    if cursor not in self._out and self.session.cursor(cursor).busy:
-                        with trace.span("driver", "next_job"):
-                            job = self.session.next_job(cursor)
-                        self._dispatch(cursor, job)
+                    if cursor in self._out:
+                        continue
+                    if not self.session.cursor(cursor).busy:
+                        self._questions.rested(cursor)
+                        continue
+                    with trace.span("driver", "next_job"):
+                        job = self.session.next_job(cursor)
+                    self._dispatch(cursor, job)
                 self._hub.sync()
                 self._rested.wake()
-                self._commands.settle()
                 item = await self._queue.get()
                 if self._failure is not None:  # a result after the failure is not delivered
                     break

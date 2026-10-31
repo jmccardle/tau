@@ -225,18 +225,100 @@ async def test_what_is_not_in_the_language_cannot_be_asked_for(tmp_path: Path) -
 
 
 @scenario
-async def test_a_question_to_anyone_is_declined_at_once_when_no_client_is_connected(
-    tmp_path: Path,
-) -> None:
+async def test_a_question_to_anyone_waits_when_no_client_is_connected(tmp_path: Path) -> None:
     tool = FakeTool("ta", "ran")
     provider = FakeProvider([calls("a"), Reply([Part.Text("done")])])
     h = await Harness.create(tmp_path, provider=provider, tools=[tool], extensions=[Permissions()])
-    await h.client.close()  # headless: nobody can answer
+    await h.client.close()  # headless: nobody is connected
     await h.send("go")
     await h.settle()
-    assert tool.calls == []
-    assert h.bodies()[-2] == Body.Results(
-        [("a", Outcome.Err("the user said no"), Author.Extension("permissions"))]
+    assert tool.calls == [], "the tool waits for an answer, however long"
+    assert h.session.cursor(h.cursor).busy
+    late = await h.connect("late")  # someone connects afterwards
+    (question,) = (await h.view()).questions
+    assert question.to is None
+    await late.answer(question.id, "allow")
+    await h.settle()
+    assert tool.calls == [{}]
+    await h.close()
+
+
+class AsksAround:
+    """Asks in `pre_step` and again in `post_step`, and records what came back."""
+
+    name = "asks_around"
+
+    def __init__(self) -> None:
+        self.before: list[object] = []
+        self.after: list[object] = []
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+        self.before.append(await cursor.ask("before?"))
+
+    async def post_step(self, cursor: Cursor, subject: Subject) -> None:
+        self.after.append(await cursor.ask("after?"))
+
+
+@scenario
+async def test_an_aborted_step_asks_nothing_more_and_the_next_step_asks_again(
+    tmp_path: Path,
+) -> None:
+    asks = AsksAround()
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])] * 2), extensions=[asks]
     )
-    assert not h.session.cursor(h.cursor).busy
+    await h.send("one")
+    await h.settle()
+    assert [q.text for q in (await h.view()).questions] == ["before?"]
+    await h.abort()
+    await h.settle()
+    assert (asks.before, asks.after) == ([None], [None]), "post_step's ask returned at once"
+    view = await h.view()
+    assert view.questions == (), "nothing is left to answer"
+    assert not view.busy, "the cursor came to rest"
+
+    await h.send("two")
+    await h.settle()
+    assert [q.text for q in (await h.view()).questions] == ["before?"], "the next step may ask"
+    await h.respond("yes")
+    await h.settle()
+    assert [q.text for q in (await h.view()).questions] == ["after?"]
+    await h.respond("yes")
+    await h.settle()
+    assert (asks.before, asks.after) == ([None, "yes"], [None, "yes"])
+    await h.close()
+
+
+class AsksBefore:
+    """Asks in `pre_step` and records what came back."""
+
+    name = "asks_before"
+
+    def __init__(self) -> None:
+        self.before: list[object] = []
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+        self.before.append(await cursor.ask("before?"))
+
+
+@scenario
+async def test_an_abort_right_after_a_send_leaves_nothing_to_answer(tmp_path: Path) -> None:
+    asks = AsksBefore()
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])] * 2), extensions=[asks]
+    )
+    await h.send("one")
+    await h.abort()  # no turn of the driver between the send and the abort
+    await h.settle()
+    assert asks.before == [None], "the aborted step's ask returned at once"
+    view = await h.view()
+    assert view.questions == (), "nothing is left to answer"
+    assert not view.busy, "the cursor came to rest"
+
+    await h.send("two")
+    await h.settle()
+    assert [q.text for q in (await h.view()).questions] == ["before?"], "the next step may ask"
+    await h.respond("yes")
+    await h.settle()
+    assert asks.before == [None, "yes"]
     await h.close()

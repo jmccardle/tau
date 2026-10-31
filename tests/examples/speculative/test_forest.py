@@ -336,11 +336,9 @@ async def test_tokens_are_summed_from_the_replies_usage(tmp_path: Path) -> None:
 
 
 @scenario
-async def test_the_command_line_wants_the_question_quoted(tmp_path: Path) -> None:
+async def test_the_question_is_the_rest_of_the_command_line(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[forest.Forest()])
     commands = await h.client.commands()
-    parsed = parse('/search 3 "what is 2+2"', commands, {})
+    parsed = parse("/search 3 what is 2+2", commands, {})
     assert parsed.args == {"n": 3, "question": "what is 2+2"}
-    with pytest.raises(ValueError, match=r"/search takes 2 arguments"):
-        parse("/search 3 what is 2+2", commands, {})
     await h.close()

@@ -42,7 +42,7 @@ sys.path.remove(str(EXAMPLES))
 
 IDS = {"main": "main-1", "cheap": "tiny-1", "think": "reason-1", "coder": "code-1"}
 TABLE = {
-    "when": ["```", r"(?i)\b(prove|derive)\b", "^(?!.{25})", "(?s)."],
+    "when": ["```", r"(?i)\b(prove|derive)\b", "^.{0,24}$", "(?s)."],
     "use": ["coder", "think", "cheap", "main"],
 }
 
@@ -117,7 +117,7 @@ async def test_each_input_is_routed_by_its_text_and_a_node_is_written_only_on_a_
         'Core config {"model": "main"}',
         "System",
         'Extension config {"model": "cheap"}',
-        'custom route {"model": "cheap", "why": "/^(?!.{25})/"}',
+        'custom route {"model": "cheap", "why": "/^.{0,24}$/"}',
         "user 'hi'",
         "assistant",
         "user 'hello again'",
@@ -135,7 +135,7 @@ async def test_each_input_is_routed_by_its_text_and_a_node_is_written_only_on_a_
         "user 'now explain what that code does, in detail please'",
         "assistant",
         'Extension config {"model": "cheap"}',
-        'custom route {"model": "cheap", "why": "/^(?!.{25})/"}',
+        'custom route {"model": "cheap", "why": "/^.{0,24}$/"}',
         "user 'ok'",
         "assistant",
     ]
@@ -143,7 +143,7 @@ async def test_each_input_is_routed_by_its_text_and_a_node_is_written_only_on_a_
 
 
 @scenario
-async def test_the_typist_is_told_and_every_client_sees_the_nodes(tmp_path: Path) -> None:
+async def test_every_client_is_told_and_sees_the_nodes(tmp_path: Path) -> None:
     h, _ = await start(tmp_path, 1)
     watcher = await h.connect("watcher@phone:web", watching=[h.cursor])
     heard: list[Event] = []
@@ -151,28 +151,10 @@ async def test_the_typist_is_told_and_every_client_sees_the_nodes(tmp_path: Path
     await say_to(h, "prove it")
     await asyncio.sleep(0)
     assert h.notices() == ["router: think (/(?i)\\b(prove|derive)\\b/)"]
-    assert not [e for e in heard if isinstance(e, Notice)], "a notice is for the typist alone"
+    assert [e.text for e in heard if isinstance(e, Notice)] == h.notices(), "the watcher too"
     nodes = [n.body for e in heard if isinstance(e, Appended) for n in e.nodes]
     assert [type(b) for b in nodes[:4]] == [Body.Config, Body.Custom, Body.User, Body.Assistant]
     listener.cancel()
-    await h.close()
-
-
-@scenario
-async def test_the_first_input_has_no_previous_typist_to_tell(tmp_path: Path) -> None:
-    class Tells:
-        name = "tells"
-
-        async def pre_input(self, cursor: Any, subject: Any) -> str | None:
-            cursor.tell("hello")
-            return None
-
-    h = await Harness.create(tmp_path, provider=FakeProvider([]), extensions=[Tells()])
-    await say_to(h, "hi")
-    failure = (await h.view()).hook_error
-    assert failure is not None
-    assert (failure.extension, failure.point) == ("tells", "pre_input")
-    assert "no client typed anything" in failure.error
     await h.close()
 
 
@@ -350,6 +332,8 @@ async def test_a_chat_line_client_shows_the_notice_and_takes_the_command(tmp_pat
     await window.line("/")
     assert "/route <mode>  Turn the router's table on or off on this branch.\n" in "".join(screen)
     await window.line("/route off")
+    await window.finished()
+    await h.settle()
     await window.line("prove it")  # off: no notice
     await h.settle()
     await window.line("!think prove it")

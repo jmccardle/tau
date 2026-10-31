@@ -22,13 +22,14 @@ they may hold a `Model` and no other named type. `CursorId` also accepts `"new"`
 then opens the cursor, so a caller checks every value before converting any, and nothing is
 opened for a call that is refused.
 
-A `Field` is one named hint with a default or without: a function parameter or a dataclass
-field, through the same `field_of`. A `T | None` with no default may be left out, and is then
-`None`. The schema of a set of fields (`object_schema`) carries each default.
+A `list[T]` field's default may be a tuple (a dataclass refuses a list default); it is shown
+as an array. A `Field` is one named hint with a default or without: a function parameter or a
+dataclass field, through the same `field_of`. A `T | None` with no default may be left out, and
+is then `None`. The schema of a set of fields (`object_schema`) carries each default.
 """
 
 import types
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -157,7 +158,7 @@ def _scalar(type_name: str, accepts: tuple[str, ...], make: Convert = _identity)
 
 def _array(item: Kind) -> Kind:
     def check(value: object, context: Context | None, native: bool) -> str | None:
-        if not isinstance(value, list):
+        if not isinstance(value, list) and not (native and isinstance(value, tuple)):
             return f"must be array, not {json_type(value)}"
         for i, element in enumerate(cast("list[object]", value)):
             problem = item.test(element, context, native)
@@ -430,8 +431,8 @@ def plain(value: object) -> object:
     """A Python value of the language as JSON: a `Path` as its string."""
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, list):
-        return [plain(v) for v in cast("list[object]", value)]
+    if isinstance(value, list | tuple):
+        return [plain(v) for v in cast("Sequence[object]", value)]
     return value
 
 

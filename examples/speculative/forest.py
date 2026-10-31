@@ -1,6 +1,6 @@
 """forest: the session tree is the search tree.
 
-`/search 3 "question"` branches 3 cursors from the current node, one sample each, in parallel.
+`/search 3 question` branches 3 cursors from the current node, one sample each, in parallel.
 A judge branch (a cursor opened at each candidate, sent a judge persona) scores every candidate.
 The score is a `Custom` node under the candidate, so it is persisted, replayed and sent to every
 client as an `Appended`; nothing else is stored. Visits and backed-up means (MCTS) are computed
