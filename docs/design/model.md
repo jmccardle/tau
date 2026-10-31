@@ -370,8 +370,11 @@ stays pending (Q42). Commands and gates are `pre_input` hooks.
 
 ### Questions (the driver's; core has none)
 
-`await cursor.ask(target, question)` returns the response, or `None` if
-declined. A question is a hook awaiting a future the driver holds
+`await handle.ask(text, expect=str, *, to=None)` (on a cursor or a tool hook's
+node handle) returns the response checked against `expect`, a type hint of
+`tau_next.values`, and converted, or `None` if declined; a wrong response is
+refused to the responder and the question stays open (D16 §3). A question is a
+hook awaiting a future the driver holds
 (`Driver.ask`, `respond`, `questions`); core knows nothing of it. The hook's
 job stays out while it waits, so the cursor is **busy**, and core's rules
 for a busy cursor apply unchanged: input is accepted and waits for the next

@@ -9,6 +9,7 @@ without it the config's default_model is used.
 
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
 from common import close_all, rest, run
 
@@ -27,8 +28,8 @@ from tau_next import (
 PHRASE = "violet anchor 42"
 
 
-@tool(describe={"path": "path of the file to read"})
-def read_file(path: str) -> str:
+@tool
+def read_file(path: Annotated[str, "path of the file to read"]) -> str:
     """Read a text file and return its contents."""
     return Path(path).read_text()
 

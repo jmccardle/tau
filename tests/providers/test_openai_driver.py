@@ -4,6 +4,7 @@ and in the log. (A plain turn, a cancel, a failure: `test_connection.py`, `test_
 import json
 import os
 from pathlib import Path
+from typing import Annotated
 
 import pytest
 from harness import scenario
@@ -76,8 +77,8 @@ async def test_live_a_plain_turn(tmp_path: Path) -> None:
 
 
 def get_weather_tool() -> FunctionTool:
-    @tool(describe={"city": "city name"})
-    def get_weather(city: str) -> str:
+    @tool
+    def get_weather(city: Annotated[str, "city name"]) -> str:
         """Current weather in a city."""
         return f"sunny in {city}"
 
@@ -156,8 +157,8 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("the phrase is: violet-anchor-42\n")
 
-    @tool(describe={"path": "path of the file to read"})
-    def read_file(path: str) -> str:
+    @tool
+    def read_file(path: Annotated[str, "path of the file to read"]) -> str:
         """Read a text file and return its contents."""
         return Path(path).read_text()
 

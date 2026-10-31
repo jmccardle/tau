@@ -33,15 +33,23 @@ from tau_next.effects import CallRun, SampleRun, run_hooks
 from tau_next.events import CallKey, Event, EventStream, HookError, Live, LiveDelta, Saved
 from tau_next.handles import Changed, Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
+from tau_next.tools import assemble_tools
+from tau_next.values import Context, Json, Kind
 
 
 @dataclass
 class Question:
-    """An open question: who it is for, what it asks, and the future its response fills."""
+    """An open question: whom it is for (`to`, `None`: anyone), what it asks, the JSON Schema
+    of the answer it expects (`schema`, as a client reads it), and the future its answer fills.
+    `expect` checks and converts an answer; `new_cursor` opens the cursor a `CursorId`
+    answer of `"new"` means."""
 
-    target: str
+    to: str | None
     text: str
-    future: asyncio.Future[str | None]
+    schema: Json
+    future: asyncio.Future[object]
+    expect: Kind = field(repr=False)
+    new_cursor: Callable[[], int] = field(repr=False)
 
 
 class _Questions:
@@ -58,8 +66,16 @@ class _Questions:
     def count(self) -> int:
         return sum(len(self.open(c)) for c in self._by_cursor)
 
-    async def ask(self, cursor: int, target: str, text: str) -> str | None:
-        question = Question(target, text, asyncio.get_running_loop().create_future())
+    async def ask(
+        self,
+        cursor: int,
+        text: str,
+        expect: Kind,
+        to: str | None,
+        new_cursor: Callable[[], int],
+    ) -> object:
+        future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        question = Question(to, text, expect.schema, future, expect, new_cursor)
         asked = self._by_cursor.setdefault(cursor, [])
         asked.append(question)
         try:
@@ -69,11 +85,24 @@ class _Questions:
             if not asked:
                 del self._by_cursor[cursor]
 
-    def respond(self, cursor: int, response: str | None) -> None:
+    def respond(
+        self, cursor: int, response: object, context: Callable[[Question], Context]
+    ) -> None:
+        """Answer the cursor's oldest open question. `None` declines it. Any other response
+        is checked against what the question expects: a wrong one raises `ValueError` naming
+        the problem and the question stays open."""
         open_ = self.open(cursor)
         if not open_:
             raise LookupError(f"cursor {cursor} has no open question")
-        open_[0].future.set_result(response)
+        question = open_[0]
+        if response is None:
+            question.future.set_result(None)
+            return
+        where = context(question)
+        problem = question.expect.check(response, where)
+        if problem is not None:
+            raise ValueError(f"the answer {problem}")
+        question.future.set_result(question.expect.convert(response, where))
 
     def decline(self, cursor: int) -> None:
         for question in self.open(cursor):
@@ -212,9 +241,10 @@ class Driver:
         self._providers = dict(providers)
         self._streams = _Streams()
         self._catalog = catalog
-        self._tools: Mapping[str, Tool]
-        self._tools, self._progress_tools = check_tools(tools)
         self._extensions = check_extensions(extensions)
+        self._tools: Mapping[str, Tool]
+        listed, self._owners = assemble_tools(tools, self._extensions)
+        self._tools, self._progress_tools = check_tools(listed)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, _Outstanding] = {}
         self._questions = _Questions()
@@ -388,10 +418,17 @@ class Driver:
             self._questions.decline(cursor)
         return cancel
 
-    def respond(self, cursor: int, response: str | None) -> None:
-        """Respond to the cursor's oldest open question; `None` declines it."""
+    def respond(self, cursor: int, response: object) -> None:
+        """Respond to the cursor's oldest open question with a decoded JSON value; `None`
+        declines it. Any other value is checked against what the question expects and converted
+        (`Question.schema`): a wrong one raises `ValueError` naming the problem and the question
+        stays open."""
         _running(self._failure, self._stopped)
-        self._questions.respond(cursor, response)
+        self._questions.respond(
+            cursor,
+            response,
+            lambda q: Context(self.session, self._catalog, q.new_cursor),
+        )
 
     # The pump
 
@@ -468,7 +505,7 @@ class Driver:
                         session,
                         cursor,
                         ext.name,
-                        self._questions.ask,
+                        partial(self._questions.ask, cursor),
                         self.clock.now,
                         self._poke,
                         announce,
@@ -492,14 +529,27 @@ class Driver:
             case Job.RunCalls(node=node, calls=calls):
                 if not calls:
                     raise RuntimeError(f"cursor {cursor}: a batch with no calls at node {node}")
+                context = Context(
+                    session,
+                    self._catalog,
+                    partial(_open_for_tool, session, self.clock, self._streams, self._poke, node),
+                )
                 runs = [
                     CallRun(
                         c,
-                        lambda ext: NodeHandle(
-                            session, node, ext.name, self.clock.now, self._poke, announce
+                        lambda owner: NodeHandle(
+                            session,
+                            node,
+                            owner,
+                            partial(self._questions.ask, cursor),
+                            self.clock.now,
+                            self._poke,
+                            announce,
                         ),
                         self._tools,
                         self._extensions,
+                        context=context,
+                        owners=self._owners,
                         batch=node,
                         progress_tools=self._progress_tools,
                         on_progress=live,
@@ -569,6 +619,16 @@ def _answered(session: Session, since: int) -> tuple[CallKey, ...]:
         if isinstance(body := node.body, Body.Results)
         for call, _, _ in body.outcomes
     )
+
+
+def _open_for_tool(
+    session: Session, clock: Clock, streams: _Streams, poke: Callable[[], None], node: int
+) -> int:
+    """Open a cursor at `node` for a tool argument of `"new"`."""
+    cursor = session.open(node, Author.Tools(), clock.now())
+    streams.emit(Saved(cursor))
+    poke()
+    return cursor
 
 
 def _live(streams: _Streams, cursor: int, delta: LiveDelta) -> None:

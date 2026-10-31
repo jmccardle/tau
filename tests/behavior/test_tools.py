@@ -6,7 +6,7 @@ import json
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 import pytest
 from fakes import FAKE_CONFIG, FakeProvider, Reply, fake_catalog
@@ -75,9 +75,9 @@ def test_name_description_and_schema_come_from_the_function() -> None:
     )
 
 
-def test_describe_adds_parameter_descriptions_and_both_decorator_forms_work() -> None:
-    @tool(describe={"path": "file to read"})
-    def read(path: str, tail: int | None) -> str:
+def test_annotated_adds_parameter_descriptions() -> None:
+    @tool
+    def read(path: Annotated[str, "file to read"], tail: int | None) -> str:
         """Read."""
         return ""
 
@@ -137,13 +137,13 @@ def test_what_cannot_be_a_tool_fails_at_decoration_naming_function_and_parameter
         assert needle in str(raised.value)
 
 
-def test_describing_a_parameter_that_does_not_exist_fails_at_decoration() -> None:
-    def read(path: str) -> str:
+def test_an_annotated_with_anything_but_one_description_is_a_definition_error() -> None:
+    def read(path: Annotated[str, 3]) -> str:
         """Read."""
         return path
 
-    with pytest.raises(ToolDefinitionError, match=r"'read'.*\['file'\]"):
-        tool(describe={"file": "x"})(read)
+    with pytest.raises(ToolDefinitionError, match=r"'read'.*'path'.*one str"):
+        tool(read)
 
 
 # Calls
@@ -227,8 +227,8 @@ async def test_a_tool_round_trip_through_the_harness(tmp_path: Path) -> None:
     secret = tmp_path / "secret.txt"
     secret.write_text("violet-anchor-42")
 
-    @tool(describe={"path": "file to read"})
-    def read_file(path: str) -> str:
+    @tool
+    def read_file(path: Annotated[str, "file to read"]) -> str:
         """Read a text file."""
         return Path(path).read_text()
 

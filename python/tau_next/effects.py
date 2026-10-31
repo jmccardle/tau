@@ -40,7 +40,8 @@ from tau_next.protocols import (
     Tool,
     ToolHook,
 )
-from tau_next.tools import ToolError
+from tau_next.tools import FunctionTool, ToolError
+from tau_next.values import Context
 
 
 async def run_hooks(
@@ -343,10 +344,12 @@ class CallRun:
     def __init__(  # noqa: PLR0913 - what one call needs to run
         self,
         call: RunCall,
-        node: Callable[[Extension], NodeHandle],
+        node: Callable[[str], NodeHandle],
         tools: Mapping[str, Tool],
         extensions: Sequence[Extension],
         *,
+        context: Context,
+        owners: Mapping[str, str],
         batch: int,
         progress_tools: Collection[str],
         on_progress: Callable[[ToolProgress], None],
@@ -357,6 +360,8 @@ class CallRun:
         self._node = node
         self._tools = tools
         self._extensions = extensions
+        self._context = context
+        self._owners = owners
         self._batch = batch
         self._progress_tools = progress_tools
         self._on_progress = on_progress
@@ -410,7 +415,7 @@ class CallRun:
                 continue
             author = Author.Extension(ext.name)
             before = draft.outcome
-            handle = self._node(ext)
+            handle = self._node(ext.name)
             try:
                 with trace.span("hook", f"{name} {ext.name}"):
                     stop = await hook(handle, draft)
@@ -453,12 +458,29 @@ class CallRun:
 
     def _start(self, tool: Tool, args_raw: str) -> asyncio.Future[Outcome]:
         """Call the tool; raises if the call is not an awaitable (or raises itself)."""
-        if self._tool in self._progress_tools:
+        if isinstance(tool, FunctionTool):
+            self._showing = True
+            call = self._function_call(tool, args_raw)
+        elif self._tool in self._progress_tools:
             self._showing = True
             call = cast("ProgressTool", tool).call(args_raw, progress=self._progress())
         else:
             call = tool.call(args_raw)
         return asyncio.ensure_future(call)
+
+    async def _function_call(self, tool: FunctionTool, args_raw: str) -> Outcome:
+        """Call a tool made from a function: it is given the progress, the session `Context`,
+        and (if it takes one) a handle bound to the extension that lists it, retired when the
+        call is over."""
+        owner = self._owners.get(tool.name)
+        handle = self._node(owner) if tool.takes_handle and owner is not None else None
+        try:
+            return await tool.call(
+                args_raw, progress=self._progress(), context=self._context, handle=handle
+            )
+        finally:
+            if handle is not None:
+                handle.retire()
 
     async def _run(self, args_raw: str) -> Outcome:
         tool = self._tools.get(self._tool)

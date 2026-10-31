@@ -397,7 +397,7 @@ async def test_a_frontend_go_to_during_a_question_declines_it_then_moves(tmp_pat
 
     async def ask(cursor: Cursor, subject: Subject) -> str | None:
         if not responses:
-            responses.append(await cursor.ask("term", "ok?"))
+            responses.append(await cursor.ask("ok?"))
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_step=ask)])
@@ -418,7 +418,7 @@ async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
     responses: list[str | None] = []
 
     async def ask(cursor: Cursor, subject: Subject) -> str | None:
-        responses.append(await cursor.ask("term", "send it?"))
+        responses.append(await cursor.ask("send it?"))
         return None
 
     recorder = Recorder()
@@ -768,7 +768,7 @@ async def test_a_retired_handle_refuses_every_write_and_ask_but_still_reads(
             with pytest.raises(tau_next.NotInHook):
                 write()
     with pytest.raises(tau_next.NotInHook):
-        await kept[0].ask("term", "q?")
+        await kept[0].ask("q?")
     assert h.driver.state().open_questions == 0
     assert h.snapshot() == before
 

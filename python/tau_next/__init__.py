@@ -101,6 +101,7 @@ from tau_next.protocols import (
 from tau_next.providers import builtin_providers
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
+from tau_next.values import CursorId, HintError, LabelName, Model, NodeId
 
 __version__ = version("ffwf-tau-next")
 
@@ -123,6 +124,7 @@ __all__ = [
     "Corrupt",
     "Cursor",
     "CursorHook",
+    "CursorId",
     "CursorState",
     "Delta",
     "DotenvError",
@@ -139,15 +141,18 @@ __all__ = [
     "Finish",
     "FunctionTool",
     "GrepTool",
+    "HintError",
     "Hook",
     "HookError",
     "Item",
     "ItemData",
     "Job",
+    "LabelName",
     "Leased",
     "Live",
     "LiveDelta",
     "LoadedConfig",
+    "Model",
     "ModelCatalog",
     "ModelConfig",
     "Move",
@@ -158,6 +163,7 @@ __all__ = [
     "NoSuchNode",
     "Node",
     "NodeHandle",
+    "NodeId",
     "NotASession",
     "NotInHook",
     "NotPending",

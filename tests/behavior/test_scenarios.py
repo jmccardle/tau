@@ -482,7 +482,7 @@ async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path
             self.responses = []
 
         async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
-            self.responses.append(await cursor.ask("term", "send it?"))
+            self.responses.append(await cursor.ask("send it?"))
             return None
 
     asker = Asker()
@@ -517,7 +517,7 @@ async def test_abort_during_a_pre_tool_hook_lets_it_finish_and_the_call_is_inter
 ) -> None:
     """model.md Q34: abort never cancels a hook; the `pre_tool` that was running finishes,
     and when it answers nothing the call is `Interrupted` and the tool does not run. (The
-    approval question itself is not here: a tool hook's `NodeHandle` has no `ask`.)"""
+    approval question itself is `test_a_tool_hook_asks_on_its_batchs_cursor`.)"""
     gate = Gate()
     tool = FakeTool("ta", "A")
     provider = FakeProvider([calls("a"), text("never")])

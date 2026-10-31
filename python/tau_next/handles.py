@@ -2,6 +2,7 @@
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from tau_next._core import (
     Author,
@@ -18,6 +19,7 @@ from tau_next._core import (
     Session,
     Tree,
 )
+from tau_next.values import HintError, Kind, kind_of
 
 Poke = Callable[[], None]
 """Tells the driver's pump a handle call may have woken a cursor."""
@@ -29,8 +31,28 @@ for the handle's own cursor (the hook's, or the batch's) when `None`."""
 Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
-Asker = Callable[[int, str, str], Awaitable[str | None]]
-"""The driver's question call: `(cursor, target, question) -> response or None`."""
+Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
+"""The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
+converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
+
+
+async def _ask(
+    asker: Asker,
+    text: str,
+    expect: object,
+    to: str | None,
+    new_cursor: Callable[[], int],
+) -> Any:
+    """What `ask` does on either handle: read `expect` as a hint of `tau_next.values`
+    (`HintError` if it is not one) and wait for the answer."""
+    if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f"a question is a str, not {type(text).__name__}")
+    if to is not None and not isinstance(to, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f"`to` is a client id (str) or None, not {type(to).__name__}")
+    kind = kind_of(expect)
+    if kind is None:
+        raise HintError(f"cannot ask for {expect!r}: not a type of tau_next.values")
+    return await asker(text, kind, to, new_cursor)
 
 
 @dataclass
@@ -170,13 +192,22 @@ class TreeHandle:
 class NodeHandle(TreeHandle):
     """What a tool hook acts through: the batch's node, bound to its extension.
 
-    The tree handle, plus the batch's node. Has none of the cursor's own operations.
+    The tree handle, plus the batch's node and `ask`, which goes to the batch's cursor. Has
+    none of the cursor's own operations.
     """
 
     def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
-        self, session: Session, id: int, extension: str, now: Now, poke: Poke, changed: Changed
+        self,
+        session: Session,
+        id: int,
+        extension: str,
+        asker: Asker,
+        now: Now,
+        poke: Poke,
+        changed: Changed,
     ) -> None:
         super().__init__(session, extension, now, poke, changed)
+        self._asker = asker
         self.id = id
 
     @property
@@ -188,6 +219,15 @@ class NodeHandle(TreeHandle):
 
     def config(self) -> Config:
         return self.tree.config_at(self.id)
+
+    async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
+        """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
+        (any hint of `tau_next.values`; `str` by default). Returns the checked, converted
+        answer, or `None` if declined. `to` names the client asked (`None`: anyone). The
+        call stays out meanwhile, so the cursor is busy; an abort or go-to declines it. A
+        `CursorId` answer of `"new"` opens a cursor at the batch's node."""
+        self._check()
+        return await _ask(self._asker, text, expect, to, lambda: self.open(self.id))
 
 
 class Cursor(TreeHandle):
@@ -245,8 +285,11 @@ class Cursor(TreeHandle):
         self._session.hook_set_auto(self.id, on)
         self._changed(None)
 
-    async def ask(self, target: str, question: str) -> str | None:
-        """Wait for the response, or `None` if declined. The hook's job stays out
-        meanwhile, so the cursor is busy; an abort or go-to declines it."""
+    async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
+        """Ask the cursor's clients `text`, and wait for an answer of type `expect` (any hint
+        of `tau_next.values`; `str` by default). Returns the checked, converted answer, or
+        `None` if declined. `to` names the client asked (`None`: anyone). The hook's job stays
+        out meanwhile, so the cursor is busy; an abort or go-to declines it. A `CursorId`
+        answer of `"new"` opens a cursor at the cursor's `at`."""
         self._check()
-        return await self._asker(self.id, target, question)
+        return await _ask(self._asker, text, expect, to, lambda: self.open(self.cursor(self.id).at))

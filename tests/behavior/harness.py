@@ -163,7 +163,7 @@ class Harness:
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
         self.driver.set_auto(self._c(cursor), on)
 
-    async def respond(self, response: str | None, cursor: int | None = None) -> None:
+    async def respond(self, response: object, cursor: int | None = None) -> None:
         self.driver.respond(self._c(cursor), response)
 
     async def add_item(self, name: str, data: str, cursor: int | None = None) -> int:

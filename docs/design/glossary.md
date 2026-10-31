@@ -986,7 +986,7 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
 `remove_label`; the `Saved` of `remove_item`, `remove_label`, and a moving
 `set_label` is for the cursor whose items or labels changed, not the hook's.
-A cursor handle adds `node`, `walk`, `config` (at its `at`), `move(to)`,
+A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`, `config` (at its `at`), `move(to)`,
 `write(body, delivers)`, `set_auto(on)`, and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
 belong to no cursor pass the hook's cursor to core, so they skip their sync
@@ -1016,7 +1016,7 @@ Python aliases in `handles.py` · new
 `Poke = Callable[[], None]`: the driver's poke, which tells the pump a handle
 call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
 the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
-driver's question call (see **question**). `Changed = Callable[[int | None], None]` is the
+driver's question call for one cursor (see **question**): `(text, expect, to, new_cursor)`. `Changed = Callable[[int | None], None]` is the
 driver's `Saved` for a handle: `changed(cursor)` says `Saved(cursor)`, `changed(None)` says it
 for the handle's own cursor (the hook's, or the batch's).
 
@@ -1024,9 +1024,13 @@ for the handle's own cursor (the hook's, or the batch's).
 `Driver.respond`, `questions`, `Question` (driver memory; not core) ·
 retires `request_user_action`
 
-`await cursor.ask(target, question)` returns the response, or `None` if
-declined. The hook awaiting it keeps its job out, so the cursor is busy and
-core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
+`await handle.ask(text, expect=str, *, to=None)` on a cursor handle or a node handle (a tool
+hook asks on its batch's cursor) returns the response checked against `expect` and converted,
+or `None` if declined. `expect` is any hint of the type language (**values**); `to` names the
+client asked (`None`: anyone) and is kept on the `Question`, not yet used. `driver.respond`
+takes the decoded JSON value: a wrong one raises `ValueError` naming the problem to the
+responding client and the question stays open. The hook awaiting it keeps its job out, so the
+cursor is busy and core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
 decline the cursor's open questions. A question lives only while its `ask` waits: a hook
 that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it, so `respond` and
 `questions` see only live ones.
@@ -1303,33 +1307,33 @@ records them.
 ### tool (decorator), FunctionTool
 `tau_next.tool`, `tau_next.FunctionTool` (`tools.py`) · new
 
-`@tool` or `@tool(describe={...})` turns a sync or async function into a
-`FunctionTool`, a `Tool`. Name: the function's `__name__`. Description: its
-docstring, `inspect.cleandoc`'d. `parameters`: an object schema from the type
-hints (`str`, `int`, `float`, `bool`, `list[T]`, `Literal` of all `str` or all
-`int`, `T | None`); a parameter with a default is not `required`;
-`additionalProperties` is false. `call` parses `args_raw`, checks the top-level
-keys and each value's JSON type against the annotation, binds by keyword, runs
-the function, and requires a `str` back. A sync function runs in a worker
+`tool(fn)` turns a sync or async function into a `FunctionTool`, a `Tool`, for a driver's
+`tools=`; an extension lists plain functions in its `tools` attribute instead and the driver
+makes the `FunctionTool` when it is built (`assemble_tools`; D16 §2). Name: the function's
+`__name__`. Description: its docstring, `inspect.cleandoc`'d. `parameters`: an object schema
+from the type hints (the type language, **values**), as a model is shown it;
+`client_parameters` is the same with the named types' `"format"`. A parameter with a default
+is not `required`; `additionalProperties` is false. A parameter is described with
+`Annotated[T, "text"]`. `call(args_raw, *, progress=None, context=None, handle=None)`
+parses `args_raw`, checks the top-level keys and each value against the annotation, then
+converts them all (so a `CursorId` of `"new"` opens its cursor only for a call whose every
+argument passed), binds by keyword with the **injected parameters**, runs the function, and
+requires a `str` back. `context` is required if an argument is a named type and `handle` if
+the function takes one; a call without them is an `Err`, not a guess. The driver is the only
+caller that supplies them. A sync function runs in a worker
 thread, so it never blocks the loop; aborting the call stops waiting for it,
 not the thread, which finishes and is discarded. A function that `functools.wraps`
 an async one counts as async (`inspect.unwrap`). `FunctionTool.function` is the original function.
 
-### describe
-`tool(describe={"param": "text"})` · new
-
-Parameter descriptions for the schema (`"description"` on that property). It
-may cover some parameters or all; a name that is not a parameter is a
-`ToolDefinitionError`. Docstrings are not parsed for parameter docs.
-
 ### ToolDefinitionError, ToolError
 `tau_next.ToolDefinitionError` (a `ValueError`), `tau_next.ToolError` · new
 
-`ToolDefinitionError`, at decoration, naming the function and parameter: no
-docstring, a missing or unsupported annotation, `*args`/`**kwargs`,
-positional-only parameters, a bad `describe`, an annotation that cannot
-be resolved, and a default that does not fit its annotation (`s: str = None`
-says to annotate `str | None`). `ToolError` is how `FunctionTool`
+`ToolDefinitionError` (defined in `functions.py`), when a function is described, naming the
+function and parameter: no docstring, a missing or unsupported annotation, `*args`/`**kwargs`,
+positional-only parameters, an `Annotated` with other than one `str`, an annotation that cannot
+be resolved, a default that does not fit its annotation (`s: str = None`
+says to annotate `str | None`), and an injected parameter the function cannot have (a
+`Cursor` in a tool). `ToolError` is how `FunctionTool`
 fails a call (malformed JSON, missing, extra, or wrongly typed arguments, an
 exception from the function, a non-`str` return); `call` answers it as
 `Err(message)`, so the model reads it, and it does not escape `call`. A tool
@@ -1341,8 +1345,58 @@ exactly, with no type prefix (any other exception is `Err("Type: msg")`).
 
 Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
 missing or non-`str` `name` or `description`, `parameters` that is not a
-`Mapping`, a `call` that is not callable, or two tools with one name. `check_tools`
+`Mapping`, a `call` that is not callable, or two tools with one name (across the driver's
+`tools=` and every extension's `tools`); also a `FunctionTool` that takes a handle given as a
+driver tool, an extension whose `tools` is not a sequence, and an item of it that is neither a
+`Tool` nor a function. `check_tools`
 returns the tools by name and the names of those that take progress.
+
+### values, Kind, Context, Field, HintError
+`tau_next.values` (`values.py`), `Kind`, `Context`, `Field`, `HintError`, `kind_of`, `field_of` · D16 · new
+
+The one type language: a Python type hint becomes a `Kind` holding its `schema` (for a
+client, named types with `"format"`), its `model_schema` (without the format, which no
+provider API accepts), `check(value, context)` (the problem as words, or `None`) and
+`convert(value, context)` (what the function receives). A `Context` is what the named types
+are checked against: the session, the model catalog, and `new_cursor`, which opens the cursor a
+`CursorId` of `"new"` means. A `Kind` that `needs_session` cannot `check` without one
+(`ValueError`); `check_default` checks a Python default by shape only. A `Field` is a name,
+a `Kind`, and `required`; `field_of(name, hint, default, has_default=)` makes one, and
+`object_schema` / `check_object` / `convert_object` treat a tuple of them as an object: tool
+parameters now, a dataclass's fields when options come. `HintError` (a `TypeError`) is a hint
+outside the language, a default that does not fit it, or an `Annotated` carrying other than one
+`str`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
+`T | None`, `Annotated[T, "text"]` (the text is the schema's `"description"`),
+`pathlib.Path`, and the named types.
+
+### named type, Model, CursorId, LabelName, NodeId
+`tau_next.Model` (`str`), `CursorId` (`int`), `LabelName` (`str`), `NodeId` (`int`); `NewType`s · D16 · new
+
+A closed set of hints checked against the session: a `Model` is in the catalog (by qualified
+name), a `CursorId` is an open cursor or `"new"`, a `LabelName` is an existing label, a
+`NodeId` is an existing node. Each carries `"format"` `"model"`, `"cursor"`, `"label"`,
+`"node"` in the client schema; `pathlib.Path` carries `"path"` (a string, converted to a `Path`,
+not checked against the session). `"new"` is the only value with an effect: converting it opens a
+cursor at the asker's node (the batch's node for a tool, the cursor's `at` for a question).
+
+### injected parameter, Described, describe
+`tau_next.functions.describe(function, what=, refused=)`, `Described` (`functions.py`) · D16 · new
+
+A parameter of a tool function that the driver fills and the model is never shown, found by
+annotation: `Progress` (or the name `progress`), `TreeHandle` or `NodeHandle` (the batch's
+`NodeHandle`, bound to the extension that lists the function; only for tools listed on an
+extension), and `Cursor` (refused for a tool, `ToolDefinitionError`; for commands later).
+`describe` reads a function once into a `Described`: name, docstring, the `Field`s of its
+arguments, the injected parameters by name and kind, and whether it is async. Commands reuse
+it with their own `refused` set. (The `describe=` argument of `@tool` is gone: the text
+sits on the parameter, `Annotated[T, "text"]`.)
+
+### assemble_tools
+`tau_next.tools.assemble_tools(tools, extensions)` · D16 · new
+
+The driver's `tools=` followed by each extension's `tools` attribute (a sequence of plain
+functions, made `FunctionTool`s, and `Tool` objects), with the extension that lists each; the
+driver then runs `check_tools` over the whole.
 
 ### ExtensionContractError
 `tau_next.ExtensionContractError` (a `TypeError`), `check_extensions` (`protocols.py`) · new
@@ -1601,9 +1655,10 @@ What a tool is given to show partial output: `progress(text)`. A tool opts in by
 (`takes_progress`, once, in `check_tools`); a `progress` that cannot be passed by keyword
 is a `ToolContractError`.
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
-nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A `@tool`
-function takes it as a parameter named `progress`, which is not one of the tool's
-`parameters`; a `progress` annotated as anything but `Progress` or `Progress | None` is a `ToolDefinitionError`.
+nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A tool
+function takes it as a parameter annotated `Progress` (or named `progress`, unannotated or
+annotated `Progress | None`), an **injected parameter** that is not one of the tool's
+`parameters`; a parameter named `progress` annotated as anything else is a `ToolDefinitionError`.
 `bash` calls it with its output, at most once per 100 ms; the command never waits on it, the
 answer waits for a call already running and the final flush.
 
@@ -1760,8 +1815,10 @@ move time themselves.
 ### Question
 `tau_next.Question` · new
 
-An open question held by the driver: `{target, text, future}`. `respond` fills
-the oldest one for a cursor with the response; `None` declines.
+An open question held by the driver: `{to, text, schema, future}` (`schema` is the JSON Schema
+of the answer, as a client reads it, with the named types' `"format"`), and what checks and
+converts an answer. `respond` fills the oldest one for a cursor with the response; `None`
+declines.
 
 ### record
 *spike* `tree::Record` · new
@@ -1949,6 +2006,7 @@ installed because another global tracing subscriber is.
 | `annotate`, node-written hooks | event observers |
 | session write lock | lease |
 | handler policy | nothing (Q9) |
+| `@tool(describe={...})` | `Annotated[T, "text"]` on the parameter (D16) |
 
 Retired during design review: committed, uncommitted, boundary, cycle, base
 extension, `deliver`, `combine`, returned input, run, batch states,

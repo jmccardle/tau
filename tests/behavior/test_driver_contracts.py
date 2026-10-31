@@ -63,7 +63,7 @@ async def test_a_question_whose_asker_timed_out_is_gone(tmp_path: Path) -> None:
         async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
             try:
                 async with asyncio.timeout(0):
-                    await cursor.ask("term", "quick?")
+                    await cursor.ask("quick?")
             except TimeoutError:
                 timed_out.append(True)
             await gate.wait()  # the step is still running when the frontend acts
