@@ -7,7 +7,15 @@ import pytest
 from fakes import FAKE_CONFIG, fake_catalog
 
 from tau_next import CursorId, HintError, LabelName, Model, NodeId, Session
-from tau_next.values import Context, Field, check_object, field_of, kind_of, object_schema
+from tau_next.values import (
+    Context,
+    Field,
+    check_object,
+    convert_object,
+    field_of,
+    kind_of,
+    object_schema,
+)
 
 CURSOR_ANY = ({"type": "integer"}, {"type": "string", "enum": ["new"]})
 NewTypeOfMine = NewType("NewTypeOfMine", str)
@@ -150,3 +158,31 @@ def test_a_path_default_is_a_path_and_other_defaults_are_checked_by_shape() -> N
     assert not field_of("m", Model, "anything", has_default=True).required
     with pytest.raises(HintError, match=r"default None.*`str \| None`"):
         field_of("s", str, None, has_default=True)
+
+
+def test_a_json_integer_is_a_float_to_a_float_parameter() -> None:
+    converted = kind(float).convert(3, None)
+    assert converted == 3.0
+    assert type(converted) is float
+    assert kind(list[float]).convert([1, 2.5], None) == [1.0, 2.5]
+
+
+def test_an_optional_with_no_default_may_be_left_out_and_is_none() -> None:
+    fields = (
+        field_of("n", int | None, None, has_default=False),
+        field_of("note", Annotated[str | None, "text"], None, has_default=False),
+        field_of("m", int, 3, has_default=True),
+    )
+    assert [f.required for f in fields] == [False, False, False]
+    assert object_schema(fields, model=False).get("required") is None
+    assert check_object(fields, {}, None) is None
+    assert convert_object(fields, {}, None) == {"n": None, "note": None}
+    assert convert_object(fields, {"n": 2, "m": 4}, None) == {"n": 2, "note": None, "m": 4}
+
+
+def test_a_cursor_id_cannot_default_to_new() -> None:
+    with pytest.raises(HintError, match="default 'new'"):
+        field_of("to", CursorId, "new", has_default=True)
+    with pytest.raises(HintError, match="opens a cursor"):
+        field_of("to", list[CursorId], ["new"], has_default=True)
+    assert not field_of("to", CursorId, 0, has_default=True).required

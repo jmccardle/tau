@@ -9,7 +9,6 @@ stored options are read without one (an option that names a model is a `str`).
 """
 
 import dataclasses
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,6 +158,7 @@ class ExtensionOptions:
         raw = self._raw(extension, node)
         fields = self._fields[extension]
         value: Json = {f.name: _plain(f.default) for f in self._defaults(extension)}
+        value.update({f.name: None for f in fields if f.nullable})
         value.update(raw)
         return OptionsForm(extension, object_schema(fields, model=False), value)
 
@@ -169,22 +169,18 @@ class ExtensionOptions:
             if f.default is not dataclasses.MISSING
         ]
 
-    def check(self, extensions: Mapping[str, Mapping[str, object]]) -> None:
-        """`OptionsError` unless `extensions` (what a `Config` node would set) names only
-        extensions that have options, and options that fit them. A required option left out
-        is fine: it is the fold that must set every one."""
-        for name, raw in extensions.items():
-            if name not in self._types:
-                raise OptionsError(f"extension {name!r} has no options")
-            fields = tuple(dataclasses.replace(f, required=False) for f in self._fields[name])
-            problem = check_object(fields, raw, None, "option")
-            if problem is not None:
-                raise OptionsError(f"extension {name!r}: {problem}")
-
-    def configuration(self, extensions: Mapping[str, Mapping[str, object]]) -> str:
-        """The `Config` node data that sets `extensions`, checked (`check`)."""
-        self.check(extensions)
-        return json.dumps({"extensions": extensions})
+    def check_config(
+        self, at: int, model: str | None, extensions: Mapping[str, Mapping[str, object]]
+    ) -> None:
+        """Raise unless a `Config` node under `at` that sets `model` and `extensions` leaves
+        every extension's options valid: `ConfigError` for a model that is not in the catalog,
+        `OptionsError` for an extension without options or for what each named extension's
+        options would be at the node (the walk's, then these) and the type refuses."""
+        if model is not None:
+            self._catalog().resolve(model)
+        for name, new in extensions.items():
+            raw = {**self._raw(name, at), **new}
+            make_options(name, self._types[name], self._fields[name], raw)
 
 
 def check_options(catalog: ModelCatalog, extensions: Sequence[object]) -> tuple[ConfigProblem, ...]:

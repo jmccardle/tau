@@ -146,9 +146,13 @@ class Chat:
             self.out(f"[{e}]\n")
 
     async def answer(self, question: OpenQuestion, text: str) -> None:
-        schema = question.schema
-        value = text if schema.get("type") == "string" else json.loads(text)
-        await self.client.answer(question.id, value or None)
+        """An empty line declines, whatever the question asks for; otherwise the line is the
+        answer (text for a string, JSON for anything else)."""
+        if not text.strip():
+            await self.client.answer(question.id, None)
+            return
+        value = text if question.schema.get("type") == "string" else json.loads(text)
+        await self.client.answer(question.id, value)
 
     async def command(self, text: str) -> None:
         parsed = parse(text, self.commands)

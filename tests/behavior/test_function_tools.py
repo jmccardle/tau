@@ -2,13 +2,14 @@
 
 import asyncio
 import json
+import threading
 import types
 from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
 from fakes import FAKE_CONFIG, FakeProvider, Gate, Reply, fake_catalog
-from harness import Harness, scenario
+from harness import Harness, say, scenario
 
 from tau_next import (
     Author,
@@ -25,6 +26,7 @@ from tau_next import (
     Progress,
     Session,
     Stop,
+    Subject,
     ToolContractError,
     ToolDefinitionError,
     ToolProgress,
@@ -306,4 +308,37 @@ async def test_a_new_cursor_is_opened_at_the_batch_after_every_argument_is_check
         if isinstance(part, Part.Call)
     ]
     assert opened_calls[-1] == '{"to": "new", "note": "x"}', "opened at the batch's node"
+    await h.close()
+
+
+# A sync function runs in a worker thread; what it writes reaches clients from the loop.
+
+
+class Opener:
+    name = "opener"
+
+    def __init__(self) -> None:
+        self.woke = threading.Event()
+        self.tools = (self.open_and_wait,)
+
+    def open_and_wait(self, tree: TreeHandle) -> str:
+        """Open a cursor and wait for it to wake."""
+        tree.open(2)
+        return "woken" if self.woke.wait(3) else "stuck"
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+        if cursor.id != 0:
+            self.woke.set()
+
+
+@scenario
+async def test_a_sync_tools_writes_wake_the_driver_while_the_tool_still_runs(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider([call("open_and_wait"), say("done")])
+    h = await Harness.create(tmp_path, provider=provider, extensions=[Opener()])
+    await h.send("go")
+    await asyncio.wait_for(h.driver.rest(h.cursor), 10)
+    (outcome,) = cast("Body.Results", h.bodies()[-2]).outcomes
+    assert outcome[1] == Outcome.Ok("woken"), "the other cursor ran before the tool returned"
     await h.close()

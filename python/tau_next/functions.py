@@ -14,10 +14,11 @@ passes `refused`, injections it cannot supply. The model, or a person, is never 
 injected parameter and cannot pass it.
 """
 
+import asyncio
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Union, cast, get_args, get_origin, get_type_hints
 
 from tau_next.handles import Cursor, NodeHandle, TreeHandle
 from tau_next.protocols import Progress
@@ -150,3 +151,29 @@ def _field(param: inspect.Parameter, hints: Mapping[str, object], where: str) ->
         )
     except HintError as e:
         raise ToolDefinitionError(f"{where}: {e}") from e
+
+
+async def invoke(
+    function: Callable[..., object],
+    described: Described,
+    arguments: Mapping[str, object],
+    *,
+    progress: Progress,
+    handle: TreeHandle,
+) -> object:
+    """Call `function` with the checked, converted `arguments` and its injected parameters:
+    `progress` for a `Progress`, `handle` for a `TreeHandle`, `NodeHandle` or `Cursor`. An async
+    function is awaited on the loop; a sync one runs in a worker thread, so it never blocks the
+    loop (aborting stops waiting for it, not the thread). The one place a described function is
+    called, for a tool and for a command; what the handle tells the driver is routed back to the
+    loop's thread by the driver, whichever thread the function writes from."""
+    given: dict[str, object] = {
+        INJECT_PROGRESS: progress,
+        INJECT_TREE: handle,
+        INJECT_NODE: handle,
+        INJECT_CURSOR: handle,
+    }
+    kwargs = {**arguments, **{name: given[kind] for name, kind in described.injected.items()}}
+    if described.is_async:
+        return await cast("Awaitable[object]", function(**kwargs))
+    return await asyncio.to_thread(function, **kwargs)

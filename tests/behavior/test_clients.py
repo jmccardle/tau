@@ -60,9 +60,9 @@ async def test_a_client_connecting_mid_sample_is_told_where_everything_stands(
     await h.send("go")
     await h.settle()  # the sample is in flight
     late = await h.connect("late")
-    connected, labels, *views = await first(late, 4)
+    connected, *views, labels = await first(late, 4)
     assert connected == Connected(len(h.nodes()))
-    assert labels == Labels((("main", h.cursor),))
+    assert labels == Labels((("main", h.cursor),)), "after the cursors it names"
     assert [v.cursor for v in views if isinstance(v, CursorView)] == [h.cursor, other]
     mine = views[0]
     assert isinstance(mine, CursorView)
@@ -186,7 +186,7 @@ async def test_a_client_that_falls_behind_is_cut_off_and_reconnects_to_a_consist
     with pytest.raises(CutOff):
         await asyncio.wait_for(_read_all(slow), 1)
     again = await h.connect("slow", buffer=2)
-    connected, _labels, view = await first(again, 3)
+    connected, view, _labels = await first(again, 3)
     assert connected == Connected(len(h.nodes()))
     assert isinstance(view, CursorView)
     assert view.at == len(h.nodes()) - 1
@@ -539,3 +539,66 @@ async def test_a_notice_is_text(tmp_path: Path) -> None:
     await h.settle()
     assert len(tells.refused) == 1
     await h.close()
+
+
+@scenario
+async def test_watching_catches_up_on_calls_under_the_providers_own_index(tmp_path: Path) -> None:
+    gate = Gate()
+    script = [
+        TextDelta("t"),
+        Part.Text("t"),
+        CallNamed(1, "c1", "tool"),  # the provider numbers its blocks: the call is 1
+        CallArgs(1, "{}"),
+        Part.Call("c1", "tool", "{}"),
+        CallNamed(2, "c2", "other"),
+        CallArgs(2, '{"a'),
+    ]
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply(script, gate=gate, gate_after=len(script))])
+    )
+    await h.send("go")
+    await h.settle()
+    late = await h.connect("late")
+    await first(late, 3)
+    await late.watch([h.cursor])
+    caught = await first(late, 5)
+    assert caught == [
+        Live(h.cursor, TextDelta("t")),
+        Live(h.cursor, CallNamed(1, "c1", "tool")),
+        Live(h.cursor, CallArgs(1, "{}")),
+        Live(h.cursor, CallNamed(2, "c2", "other")),
+        Live(h.cursor, CallArgs(2, '{"a')),
+    ]
+    await late.close()
+    await h.close()
+
+
+@scenario
+async def test_every_call_raises_the_same_way_once_the_driver_has_stopped(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    c, at = h.client, h.cursor
+    await h.driver.stop()
+    calls = [
+        c.input(at, "x"),
+        c.send(at, "x"),
+        c.step(at),
+        c.go_to(at, 1),
+        c.set_auto(at, True),
+        c.abort(at),
+        c.open(1),
+        c.set_label("l", at),
+        c.remove_label("l"),
+        c.watch([at]),
+        c.answer(0, "x"),
+        c.commands(),
+        c.run(at, "nosuch", {}),
+        c.options(at, "nosuch"),
+        c.complete(at, "nope", ""),
+        c.node(99),
+        c.walk(99),
+        c.children(99),
+    ]
+    for call in calls:
+        with pytest.raises(RuntimeError, match="stopped"):
+            await call
+    h.session.close()

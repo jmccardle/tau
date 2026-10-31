@@ -43,12 +43,12 @@ Nothing else describes a value.
 
 | hint | JSON | the function gets | a frontend shows |
 |---|---|---|---|
-| `str`, `int`, `float`, `bool` | as JSON | as JSON | a field, a checkbox |
+| `str`, `int`, `float`, `bool` | as JSON | as JSON (a `float` gets an integer as a float) | a field, a checkbox |
 | `Literal["a", "b"]` (str or int) | the value | the value | a dropdown |
 | `list[T]` | array | `list` | a multi-select of `T` |
 | `T \| None`, or a default | may be absent or `null` | `None` or the default | an optional field, prefilled |
 | `Annotated[T, "text"]` | as `T` | as `T` | `T`, with the text as help |
-| `pathlib.Path` | string | `Path` | a file picker, completed on the driver's machine |
+| `pathlib.Path` | string | `Path`, a leading `~` expanded | a file picker, completed on the driver's machine |
 | `Model` | string | `str` | a searchable list of the configured models |
 | `CursorId` | integer, or `"new"` | `int` | a list of the open cursors, and "new" |
 | `LabelName` | string | `str` | a list of the labels |
@@ -118,8 +118,8 @@ is built.
   refused to the answering client (`ValueError` naming the problem) and the question stays
   open. The first good answer wins; a later one raises `LookupError`.
 - Abort and go-to decline the cursor's questions, as now. A question `to` one client stays
-  open across that client's disconnects; asking a client that is not connected declines at
-  once, so a cursor never waits on someone who is not there.
+  open across that client's disconnects; asking a client that is not connected, or anyone
+  when no client is, declines at once, so a cursor never waits on someone who is not there.
 
 ### 4. Options and config
 
@@ -163,12 +163,13 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
 | `Live(cursor, delta)` | clients watching the cursor | text, thinking, call and tool-progress deltas, as in D15 |
 | `Notice(text)` | one client | `cursor.tell`, a refused input, a command's result and progress |
 
-- **On connect** a client receives `Labels`, one `CursorState` per cursor, and the tree's
-  node count, before anything else; nodes below the count it reads with calls (`node`,
+- **On connect** a client receives the tree's node count, one `CursorState` per cursor and
+  `Labels` (after the cursors it names), before anything else; nodes below the count it reads with calls (`node`,
   `walk`, `children`), nodes from it on arrive as `Appended`. Subscribing and the snapshot
   are one act on the driver's loop, so nothing falls between them.
 - **Order.** One ordered stream per client. A change's `Appended` comes before the
-  `CursorState` that points at its nodes. A `CursorState` or `Labels` that replaces an
+  `CursorState` that points at its nodes, and a `Labels` after the `CursorState` of every
+  cursor it names. A `CursorState` or `Labels` that replaces an
   earlier copy removes it and goes to the end, so it never overtakes what it refers to.
 - **`watch(cursors)`** chooses which cursors' `Live` a client gets, starting with a
   catch-up taken in the same act: the parts of the sample in flight that are not in the
@@ -236,10 +237,10 @@ async def branch_from(cursor: Cursor, node: NodeId) -> None:
     cursor.move(node)
 
 
-# Handing work to another cursor, or a new one.
+# Handing work to another cursor, or a new one: its model is given the note.
 def hand_off(tree: TreeHandle, to: CursorId, note: str) -> str:
     """Send a note to another cursor."""
-    tree.add_item(to, note)
+    tree.send(to, note)
     return f"sent to cursor {to}"
 ```
 
@@ -297,6 +298,27 @@ Where the text above was silent, as built:
 - **`tau config check`** knows the built-in extensions only (`StepLimit`); it calls
   `check_options(catalog, extensions)`, which a program that loads others calls for them.
 - **`StepLimit()` takes its limit from its options** (default 50), so `StepLimit(n)` is gone.
+
+## Settled in review (fix pass A)
+
+- **A handle knows its client** (`handle.client`, or `None`): a command's is its runner; a hook's or
+  tool's is the client whose input the cursor's step delivered (the newest input pending when the
+  step began) or the runner of the command that began it. `cursor.tell(text, to=None)` goes to that
+  client and raises if there is none; `ask(to=None)` still means anyone. `TreeHandle.send(to, text)`
+  is `Client.send` for a handle: an input from that client, with auto-step on (raises if none).
+- **A sync function's writes reach the loop**: the driver routes what a handle tells it back to the
+  loop's thread, so a tool or a command may write from its worker thread.
+- **`configure` checks before it writes**: the model is in the catalog, and the options folded with
+  the walk's must build (a `__post_init__` that raises refuses). A required option must therefore
+  be set by the call that first makes the options whole.
+- **A `T | None` with no default may be left out** and is `None`; a `CursorId` default of `"new"` is
+  refused when the function is described.
+- **Catch-up replays a call under the provider's own index**; a call part that was never named in
+  the stream was never drawn, so it is not replayed.
+- **Every client call raises first** once the driver has failed or stopped.
+- **A question to anyone declines at once when no client is connected.**
+- **`handle.config()` is gone**: the nearest `Config` node is only what that node changes; options
+  and the model are read folded (`options()`, the sample's own resolution).
 
 ## Alternatives
 

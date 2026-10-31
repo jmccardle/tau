@@ -9,6 +9,7 @@ from harness import Harness, say, scenario
 
 from tau_next import CommandInfo, Cursor, CursorId, LabelName, Model, NodeId, TreeHandle
 from tau_next.commandline import UnknownCommand, completions, parse
+from tau_next.values import kind_of
 
 
 def configure(cursor: Cursor, mode: Literal["fast", "slow"], size: int, ratio: float = 1.0) -> None:
@@ -199,3 +200,16 @@ async def test_complete_refuses_what_it_does_not_know(tmp_path: Path) -> None:
         await h.client.complete(h.cursor, "colour", "")
     with pytest.raises(LookupError):
         await h.client.complete(99, "label", "")
+
+
+@scenario
+async def test_a_leading_tilde_is_the_home_directory_in_a_path_and_its_completion(
+    tmp_path: Path,
+) -> None:
+    home = Path.home()
+    visible = sorted(p.name for p in home.iterdir() if not p.name.startswith("."))
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    assert await h.client.complete(h.cursor, "path", "~") == ["~/"]
+    found = await h.client.complete(h.cursor, "path", "~/")
+    assert [f.removeprefix("~/").removesuffix("/") for f in found] == visible
+    assert kind_of(Path).convert("~/a.txt", None) == home / "a.txt"  # type: ignore[union-attr]

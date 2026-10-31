@@ -43,8 +43,11 @@ class OptionsReader(Protocol):
         """The extension's options instance at `node`."""
         ...
 
-    def check(self, extensions: Mapping[str, Mapping[str, object]]) -> None:
-        """Raise unless `extensions` names options an extension has, fitting its type."""
+    def check_config(
+        self, at: int, model: str | None, extensions: Mapping[str, Mapping[str, object]]
+    ) -> None:
+        """Raise unless a `Config` node under `at` setting `model` and `extensions` is valid:
+        a model in the catalog, options that fit their extension's type once folded."""
         ...
 
 
@@ -86,16 +89,21 @@ class TreeHandle:
     """What both handles share: reads of the whole session, and the writes that
     belong to no cursor, bound to an extension (which fills in `by`).
 
+    `client` is the client this work is for, or `None`: the runner of a command; for a hook or
+    a tool, the client whose input the cursor's step delivered, or the runner of the command
+    that started the step. A step woken by an extension's item, or by a load, has none.
+
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
         self,
         session: Session,
         extension: str,
         now: Now,
         poke: Poke,
         changed: Changed,
+        client: str | None = None,
     ) -> None:
         self._session = session
         self._now = now
@@ -106,6 +114,7 @@ class TreeHandle:
         self._writes = HandleWrites(session, None)
         self._live = True
         self.extension = extension
+        self.client = client
 
     @property
     def by(self) -> Author:
@@ -177,6 +186,26 @@ class TreeHandle:
         self._writes.remove_item(id)
         self._changed()
 
+    def send(self, to: int, text: str) -> int:
+        """Send `text` to cursor `to` as an input from `client`, and turn its auto-step on, as
+        `Client.send` does: `to` takes the text at its next step and answers. Returns the
+        item. `ValueError` if there is no `client`, since an input says who typed it."""
+        self._check()
+        item = self._session.input(to, self._need_client("send"), text)
+        self._session.set_auto(to, True)
+        self._changed()
+        self._poke()
+        return item
+
+    def _need_client(self, what: str) -> str:
+        """`client`, or `ValueError` saying `what` has nobody to act for."""
+        if self.client is None:
+            raise ValueError(
+                f"{what}: no client started this work (a step woken by an extension's item or "
+                "a load has none)"
+            )
+        return self.client
+
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
         self._check()
@@ -207,8 +236,9 @@ class NodeHandle(TreeHandle):
         poke: Poke,
         changed: Changed,
         options: OptionsReader,
+        client: str | None,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed)
+        super().__init__(session, extension, now, poke, changed, client)
         self._asker = asker
         self._options = options
         self.id = id
@@ -224,9 +254,6 @@ class NodeHandle(TreeHandle):
 
     def walk(self) -> list[Node]:
         return self.tree.walk(self.id)
-
-    def config(self) -> Config:
-        return self.tree.config_at(self.id)
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
@@ -258,8 +285,9 @@ class Cursor(TreeHandle):
         poke: Poke,
         changed: Changed,
         options: OptionsReader,
+        client: str | None,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed)
+        super().__init__(session, extension, now, poke, changed, client)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._options = options
@@ -270,9 +298,6 @@ class Cursor(TreeHandle):
 
     def walk(self) -> list[Node]:
         return self.tree.walk(self.cursor(self.id).at)
-
-    def config(self) -> Config:
-        return self.tree.config_at(self.cursor(self.id).at)
 
     def options(self) -> Any:
         """This extension's options at the cursor's `at` (its `options` dataclass); raises
@@ -288,11 +313,13 @@ class Cursor(TreeHandle):
         """Write a `Config` node under `at` holding just these fields and move onto it, as
         `write` does: the branch's `model` (a qualified name), and/or `extensions` options
         (`{"step_limit": {"limit": 10}}`), each option replacing the walk's earlier value.
-        `OptionsError` for an extension without options or an option that does not fit,
-        `ConfigError` if nothing is set. Returns the new node's id."""
-        if extensions:
-            self._options.check(extensions)
-        return self.write(Body.Config(config_node(model, extensions)))
+        `ConfigError` for a model that is not configured, or if nothing is set; `OptionsError`
+        for an extension without options, or options that, folded with the walk's, the
+        extension's type refuses (a `__post_init__` that raises). Nothing is written then.
+        Returns the new node's id."""
+        node = config_node(model, extensions)
+        self._options.check_config(self.cursor(self.id).at, model, extensions or {})
+        return self.write(Body.Config(node))
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
@@ -315,10 +342,13 @@ class Cursor(TreeHandle):
         self._session.hook_set_auto(self.id, on)
         self._changed()
 
-    def tell(self, text: str, *, to: str) -> None:
-        """Send `text` to client `to` as a `Notice`. Dropped if that client is not connected:
-        a notice is for someone who is there."""
+    def tell(self, text: str, *, to: str | None = None) -> None:
+        """Send `text` to client `to` as a `Notice`; by default the `client` this step is for
+        (`ValueError` if there is none). Dropped if that client is not connected: a notice is
+        for someone who is there."""
         self._check()
+        if to is None:
+            to = self._need_client("tell")
         if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"a notice is a str, not {type(text).__name__}")
         self._writes.notify(to, text)
@@ -337,7 +367,8 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the clock, `poke` and `changed`, and the options. One place that builds them."""
+    cursor), the clock, `poke` and `changed`, the options, and the client a cursor's step is
+    for (`client`). One place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -345,6 +376,7 @@ class Handles:
     poke: Poke
     changed: Changed
     options: OptionsReader
+    client: Callable[[int], str | None]
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
@@ -357,6 +389,7 @@ class Handles:
             self.poke,
             self.changed,
             self.options,
+            self.client(id),
         )
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:
@@ -370,8 +403,9 @@ class Handles:
             self.poke,
             self.changed,
             self.options,
+            self.client(cursor),
         )
 
-    def tree(self, extension: str) -> TreeHandle:
-        """A handle on no cursor or node, for `extension`."""
-        return TreeHandle(self.session, extension, self.now, self.poke, self.changed)
+    def tree(self, extension: str, client: str) -> TreeHandle:
+        """A handle on no cursor or node, for `extension`, working for `client`."""
+        return TreeHandle(self.session, extension, self.now, self.poke, self.changed, client)

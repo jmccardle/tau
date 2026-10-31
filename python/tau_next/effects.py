@@ -221,6 +221,7 @@ class SampleRun:
         self._tools = tools
         self._on_delta = on_delta
         self._open: _Run | None = None
+        self._indices: dict[str, int] = {}  # the provider's own index of each call it named
         self._parts: list[Part] = []
         self._task: asyncio.Future[Finish] | None = None
         self._cancelled = False
@@ -284,6 +285,7 @@ class SampleRun:
         if isinstance(delta, CallNamed):
             if self._open is not None:
                 raise SampleError("provider named a call before finishing the one streaming")
+            self._indices[delta.id] = delta.index
             self._open = _Run(kind)
             self._open.call = delta
         else:
@@ -299,23 +301,23 @@ class SampleRun:
     def catch_up(self) -> list[Delta]:
         """The deltas that draw what has streamed so far, for a client that starts watching
         mid-sample: each part not in the tree yet (the reply is saved when the sample ends),
-        its calls numbered in order, then the text of the part still open."""
+        its calls under the index the provider gave them (a call that was never named in the
+        stream was never drawn, so it is not replayed), then the text of the part still open."""
         deltas: list[Delta] = []
-        calls = 0
         for part in self._parts:
             match part:
                 case Part.Text(text=text) if text:
                     deltas.append(TextDelta(text))
                 case Part.Thinking(text=text) if text:
                     deltas.append(ThinkingDelta(text))
-                case Part.Call(id=cid, tool=tool, args_raw=args):
+                case Part.Call(id=cid, tool=tool, args_raw=args) if cid in self._indices:
+                    index = self._indices[cid]
                     deltas += [
-                        CallNamed(calls, cid, tool),
-                        *([CallArgs(calls, args)] if args else []),
+                        CallNamed(index, cid, tool),
+                        *([CallArgs(index, args)] if args else []),
                     ]
-                    calls += 1
                 case _:
-                    pass  # an empty text or thinking: nothing was drawn
+                    pass  # an empty text or thinking, or a call never streamed: nothing was drawn
         run = self._open
         if run is not None and run.text:
             if run.call is not None:

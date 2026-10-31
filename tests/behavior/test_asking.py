@@ -222,3 +222,21 @@ async def test_what_is_not_in_the_language_cannot_be_asked_for(tmp_path: Path) -
     assert "dict" in str(asks.refusals[0])
     assert (await h.view()).questions == ()
     await h.close()
+
+
+@scenario
+async def test_a_question_to_anyone_is_declined_at_once_when_no_client_is_connected(
+    tmp_path: Path,
+) -> None:
+    tool = FakeTool("ta", "ran")
+    provider = FakeProvider([calls("a"), Reply([Part.Text("done")])])
+    h = await Harness.create(tmp_path, provider=provider, tools=[tool], extensions=[Permissions()])
+    await h.client.close()  # headless: nobody can answer
+    await h.send("go")
+    await h.settle()
+    assert tool.calls == []
+    assert h.bodies()[-2] == Body.Results(
+        [("a", Outcome.Err("the user said no"), Author.Extension("permissions"))]
+    )
+    assert not h.session.cursor(h.cursor).busy
+    await h.close()

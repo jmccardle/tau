@@ -14,21 +14,20 @@ handle, bound to the extension that lists the function (so only a function liste
 extension may take one). A `Cursor` is refused: a tool does not run on a cursor.
 """
 
-import asyncio
 import inspect
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import cast
 
 from tau_next._core import Outcome
 from tau_next.functions import (
     INJECT_CURSOR,
     INJECT_NODE,
-    INJECT_PROGRESS,
     INJECT_TREE,
     Described,
     ToolDefinitionError,
     describe,
+    invoke,
 )
 from tau_next.handles import NodeHandle
 from tau_next.protocols import Progress, ToolContractError
@@ -99,36 +98,31 @@ class FunctionTool:
             raise ToolError(f"arguments must be a JSON object, not {json_type(value)}")
         return cast("dict[str, object]", value)
 
-    def _bind(
-        self,
-        args_raw: str,
-        progress: Progress | None,
-        context: Context | None,
-        handle: NodeHandle | None,
-    ) -> dict[str, object]:
-        """The keyword arguments of the call: the arguments, all checked and then converted,
-        and the injected parameters."""
+    def _arguments(self, args_raw: str, context: Context | None) -> dict[str, object]:
+        """The call's arguments, all checked and then converted."""
         if self.needs_session and context is None:
             raise ToolError(
                 f"{self.name} checks its arguments against a session; call it by a driver"
             )
-        if self.takes_handle and handle is None:
-            raise ToolError(f"{self.name} takes a handle; call it by a driver")
         args = self._parse(args_raw)
         problem = check_object(self._described.fields, args, context)
         if problem is not None:
             raise ToolError(problem)
-        bound = convert_object(self._described.fields, args, context)
-        for name, kind in self._described.injected.items():
-            bound[name] = (progress or _no_progress) if kind == INJECT_PROGRESS else handle
-        return bound
+        return convert_object(self._described.fields, args, context)
 
-    async def _run(self, bound: dict[str, object]) -> str:
+    async def _run(
+        self, arguments: dict[str, object], progress: Progress | None, handle: NodeHandle | None
+    ) -> str:
+        if handle is None and self.takes_handle:
+            raise ToolError(f"{self.name} takes a handle; call it by a driver")
         try:
-            if self._described.is_async:
-                result = await cast("Awaitable[object]", self.function(**bound))
-            else:
-                result = await asyncio.to_thread(self.function, **bound)
+            result = await invoke(
+                self.function,
+                self._described,
+                arguments,
+                progress=progress or _no_progress,
+                handle=cast("NodeHandle", handle),
+            )
         except ToolError:
             raise  # the function talking to the model: its message, exactly
         except Exception as e:
@@ -158,8 +152,8 @@ class FunctionTool:
         `functools.wraps`) around an async one counts as async.
         """
         try:
-            bound = self._bind(args_raw, progress, context, handle)
-            return Outcome.Ok(await self._run(bound))
+            arguments = self._arguments(args_raw, context)
+            return Outcome.Ok(await self._run(arguments, progress, handle))
         except ToolError as e:
             return Outcome.Err(str(e))
 

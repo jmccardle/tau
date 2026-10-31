@@ -20,8 +20,9 @@ The named types are checked against the session through a `Context` the driver s
 `CursorId` also accepts `"new"`; `convert` then opens the cursor, so a caller checks every
 value before converting any, and nothing is opened for a call that is refused.
 
-A `Field` is one named hint with a default or without: a function parameter now, a
-dataclass field when options come, through the same `field_of`.
+A `Field` is one named hint with a default or without: a function parameter or a dataclass
+field, through the same `field_of`. A `T | None` with no default may be left out, and is then
+`None`.
 """
 
 import types
@@ -143,13 +144,13 @@ def json_type(value: object) -> str:
     return "object"
 
 
-def _scalar(type_name: str, accepts: tuple[str, ...]) -> Kind:
+def _scalar(type_name: str, accepts: tuple[str, ...], make: Convert = _identity) -> Kind:
     def check(value: object, context: Context | None, native: bool) -> str | None:
         got = json_type(value)
         return None if got in accepts else f"must be {type_name}, not {got}"
 
     schema: Json = {"type": type_name}
-    return Kind(schema, schema, False, check, _identity)
+    return Kind(schema, schema, False, check, make)
 
 
 def _array(item: Kind) -> Kind:
@@ -213,10 +214,16 @@ def _path() -> Kind:
         if native:
             return None if isinstance(value, Path) else f"must be a Path, not {value!r}"
         got = json_type(value)
-        return None if got == "string" else f"must be string, not {got}"
+        if got != "string":
+            return f"must be string, not {got}"
+        try:
+            Path(cast("str", value)).expanduser()
+        except RuntimeError as e:  # `~name` of no user
+            return f"cannot be expanded: {e}"
+        return None
 
     def convert(value: object, context: Context | None) -> object:
-        return Path(cast("str", value))
+        return Path(cast("str", value)).expanduser()
 
     return Kind({"type": "string", "format": "path"}, {"type": "string"}, False, check, convert)
 
@@ -258,7 +265,9 @@ def _cursor() -> Kind:
 
     def test(value: object, context: Context | None, native: bool) -> str | None:
         if value == NEW:
-            return None
+            return (
+                f"opens a cursor, which only a caller may ask for with {NEW!r}" if native else None
+            )
         problem = integer.test(value, context, native)
         if problem is not None or context is None or value in context.session.cursors():
             return problem
@@ -278,7 +287,6 @@ _SCALARS: dict[object, tuple[str, tuple[str, ...]]] = {
     str: ("string", ("string",)),
     bool: ("boolean", ("boolean",)),
     int: ("integer", ("integer",)),
-    float: ("number", ("integer", "number")),
 }
 
 _NAMED: dict[object, Callable[[], Kind]] = {
@@ -317,11 +325,17 @@ def _generic(hint: object) -> Kind | None:
     return None
 
 
+def _float(value: object, context: Context | None) -> object:
+    return float(cast("float", value))  # a JSON integer is a number the function gets as float
+
+
 def kind_of(hint: object) -> Kind | None:
     """The `Kind` of a hint, or `None` if it is not in the language. An `Annotated` whose
     metadata is not a single `str` raises `HintError`."""
     if get_origin(hint) is Annotated:
         return _annotated(hint)
+    if hint is float:
+        return _scalar("number", ("integer", "number"), _float)
     if hint in _SCALARS:
         return _scalar(*_SCALARS[hint])
     if hint is Path:
@@ -333,11 +347,13 @@ def kind_of(hint: object) -> Kind | None:
 
 @dataclass(frozen=True)
 class Field:
-    """One named value of the language: its `kind`, and `required` unless it has a default."""
+    """One named value of the language: its `kind`, and `required` unless it has a default or
+    is `nullable`: a `T | None` with no default, which is `None` when absent."""
 
     name: str
     kind: Kind
     required: bool
+    nullable: bool = False
 
 
 def field_of(name: str, hint: object, default: object, *, has_default: bool) -> Field:
@@ -353,7 +369,15 @@ def field_of(name: str, hint: object, default: object, *, has_default: bool) -> 
             shown = getattr(hint, "__name__", repr(hint))
             advice = f"; annotate it as `{shown} | None`" if default is None else ""
             raise HintError(f"its default {default!r} {problem}{advice}")
-    return Field(name, kind, not has_default)
+    nullable = not has_default and _optional(hint)
+    return Field(name, kind, not has_default and not nullable, nullable)
+
+
+def _optional(hint: object) -> bool:
+    """Whether `hint` (under any `Annotated`) is `T | None`."""
+    while get_origin(hint) is Annotated:
+        hint = get_args(hint)[0]
+    return get_origin(hint) in (Union, types.UnionType) and type(None) in get_args(hint)
 
 
 def object_schema(fields: tuple[Field, ...], *, model: bool) -> Json:
@@ -393,6 +417,8 @@ def check_object(
 def convert_object(
     fields: tuple[Field, ...], values: Mapping[str, object], context: Context | None
 ) -> dict[str, object]:
-    """What the function receives for each of the checked `values`."""
+    """What the function receives for each of the checked `values`, and `None` for each
+    nullable field they leave out."""
     by_name = {f.name: f for f in fields}
-    return {key: by_name[key].kind.convert(value, context) for key, value in values.items()}
+    converted = {key: by_name[key].kind.convert(value, context) for key, value in values.items()}
+    return {**{f.name: None for f in fields if f.nullable and f.name not in values}, **converted}

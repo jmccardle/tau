@@ -20,6 +20,7 @@ rules about performing one effect:
 """
 
 import asyncio
+import threading
 from collections.abc import (
     Awaitable,
     Callable,
@@ -37,7 +38,7 @@ from tau_next import trace
 from tau_next._builtin import Tau
 from tau_next._commands import Commands, assemble_commands
 from tau_next._config_layers import ModelCatalog
-from tau_next._core import Answer, Author, Hook, ItemData, Job, Session
+from tau_next._core import Answer, Author, CursorState, Hook, ItemData, Job, Session
 from tau_next._hub import Feed, Hub
 from tau_next._options import ExtensionOptions
 from tau_next._questions import Questions
@@ -103,12 +104,18 @@ class DriverState:
     """What a harness reads to tell quiet from busy: the effects running (`units`), whether the
     pump has something to do (`queued`: a report or poke to take, or a busy cursor with no
     effect out; never once the driver has failed or stopped, when the session may be closed),
-    the questions open, and what the driver died of."""
+    the questions open, what the driver died of, and whether it was stopped. `check` raises
+    the failure or `RuntimeError` for a stopped driver, as every client call does first."""
 
     units: int
     queued: bool
     open_questions: int
     failure: Exception | None
+    stopped: bool
+
+    def check(self) -> None:
+        """Raise the failure the driver died of, or `RuntimeError` if it is stopped."""
+        _running(self.failure, self.stopped)
 
 
 class Driver:
@@ -163,8 +170,19 @@ class Driver:
         self._hub = Hub(session, self._questions.open)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
+        # A sync tool or command writes through its handle from a worker thread; what the
+        # handle tells the driver goes back to the loop's thread (`start` finds it).
+        on_loop = partial(_on_loop, lambda: self._home)
+        self._home: tuple[asyncio.AbstractEventLoop, int] | None = None  # the loop, its thread
+        self._started_by: dict[int, str | None] = {}  # per cursor, for its current step
         self._handles = Handles(
-            session, self._questions.ask, self.clock.now, self._poke, self._hub.sync, self._options
+            session,
+            self._questions.ask,
+            self.clock.now,
+            on_loop(self._poke),
+            on_loop(self._hub.sync),
+            self._options,
+            self._started_by.get,
         )
         self.commands = Commands(
             assemble_commands(self._extensions),
@@ -177,6 +195,7 @@ class Driver:
             frontend=self._frontend,
             at_rest=lambda c: not (session.cursor(c).busy or c in self._out),
             spawn=lambda coro: self._tasks.spawn(coro, effect=True),
+            on_loop=on_loop,
         )
         self._failure: Exception | None = None
         self._stopped = False
@@ -203,6 +222,7 @@ class Driver:
 
     def start(self) -> None:
         """Start the pump. Call inside the running loop."""
+        self._home = (asyncio.get_running_loop(), threading.get_ident())
         self._tasks.spawn(self._pump())
 
     async def stop(self) -> None:
@@ -238,6 +258,7 @@ class Driver:
             ),
             open_questions=self._questions.count(),
             failure=self._failure,
+            stopped=self._stopped,
         )
 
     async def rest(self, cursor: int) -> None:
@@ -416,6 +437,9 @@ class Driver:
 
                 if job.point == Hook.PreStep:
                     self._hub.began(cursor)
+                    self._started_by[cursor] = _starter(
+                        self.commands.runner(cursor), session.cursor(cursor)
+                    )
                 elif job.point == Hook.PostStep:
                     if job.ending is None:
                         raise RuntimeError(f"cursor {cursor}: a post_step job with no ending")
@@ -476,6 +500,31 @@ class Driver:
 # What the pump and the effects never take for a failure: the driver's own cancelling, and the
 # process being told to go.
 _PASSES = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+def _on_loop(
+    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None], call: Callable[[], None]
+) -> Callable[[], None]:
+    """`call`, made safe to call from any thread: off the loop's thread it is scheduled on the
+    loop (once the driver has started and `home` knows it; before, it is called as it is)."""
+
+    def safe() -> None:
+        where = home()
+        if where is None or threading.get_ident() == where[1]:
+            call()
+        else:
+            where[0].call_soon_threadsafe(call)
+
+    return safe
+
+
+def _starter(runner: str | None, state: CursorState) -> str | None:
+    """The client a step that begins on this cursor is for: the runner of the command that asked
+    for it, else the client of the newest input the step is about to deliver, else none."""
+    if runner is not None:
+        return runner
+    clients = [i.data.client for i in state.items if isinstance(i.data, ItemData.Input)]
+    return clients[-1] if clients else None
 
 
 def _as_failure(error: BaseException) -> Exception:

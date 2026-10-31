@@ -11,10 +11,9 @@ extension that lists the command).
 """
 
 import asyncio
-import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from typing import cast
 
@@ -24,13 +23,7 @@ from tau_next._core import Answer, Author, Busy, Session
 from tau_next._hub import Hub
 from tau_next._options import ExtensionOptions, OptionsForm
 from tau_next.effects import describe_failure
-from tau_next.functions import (
-    INJECT_CURSOR,
-    INJECT_NODE,
-    INJECT_PROGRESS,
-    Described,
-    describe,
-)
+from tau_next.functions import INJECT_CURSOR, INJECT_NODE, Described, describe, invoke
 from tau_next.handles import Handles, TreeHandle
 from tau_next.protocols import Clock, ExtensionContractError
 from tau_next.tools import FunctionTool
@@ -126,6 +119,7 @@ class Commands:
         frontend: Callable[[], AbstractContextManager[None]],
         at_rest: Callable[[int], bool],
         spawn: Callable[[Coroutine[object, object, None]], None],
+        on_loop: Callable[[Callable[[], None]], Callable[[], None]],
     ) -> None:
         self._commands = dict(commands)
         self._session = session
@@ -136,24 +130,10 @@ class Commands:
         self._frontend = frontend
         self._at_rest = at_rest
         self._spawn = spawn
-        # A sync command runs on a worker thread: what its handle and `progress` tell the
-        # driver go back to the loop's thread.
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread = 0
-        self._handles = replace(
-            handles, poke=self._on_loop(handles.poke), changed=self._on_loop(handles.changed)
-        )
+        self._handles = handles
+        self._on_loop = on_loop  # a sync command's `progress` is called off the loop's thread
         self._pending: dict[int, _Pending] = {}
         self._running: dict[int, asyncio.Future[str | None]] = {}
-
-    def _on_loop(self, call: Callable[[], None]) -> Callable[[], None]:
-        def safe() -> None:
-            if self._loop is None or threading.get_ident() == self._thread:
-                call()
-            else:
-                self._loop.call_soon_threadsafe(call)
-
-        return safe
 
     def infos(self) -> tuple[CommandInfo, ...]:
         """Each command's name, description and client schema."""
@@ -179,8 +159,6 @@ class Commands:
         if command is None:
             raise LookupError(f"no command {name!r}; the commands are {list(self._commands)}")
         with self._frontend():
-            self._loop = asyncio.get_running_loop()
-            self._thread = threading.get_ident()
             self._session.cursor(cursor)
             context = Context(
                 self._session, self._catalog(), partial(self._open, command.owner, cursor)
@@ -206,6 +184,11 @@ class Commands:
         return self._session.open(
             self._session.cursor(cursor).at, Author.Extension(owner), self._clock.now()
         )
+
+    def runner(self, cursor: int) -> str | None:
+        """The client of the command waiting for `cursor`'s step, if one is."""
+        pending = self._pending.get(cursor)
+        return None if pending is None else pending.client
 
     def stop(self, cursor: int) -> None:
         """The cursor's step is aborted or left: a command still waiting for its `pre_step`
@@ -255,7 +238,7 @@ class Commands:
         return effect
 
     async def _background(self, command: _Command, bound: dict[str, object], client: str) -> None:
-        handle = self._handles.tree(command.owner)
+        handle = self._handles.tree(command.owner, client)
         try:
             await self._call(command, bound, client, handle)
         finally:
@@ -266,13 +249,14 @@ class Commands:
     ) -> str | None:
         """Run the command with its injected parameters and tell `client` what came of it:
         the result, or the failure. Returns the failure (`"Type: msg"`), or `None`."""
-        for name, kind in command.described.injected.items():
-            bound[name] = self._say(client) if kind == INJECT_PROGRESS else handle
         try:
-            if command.described.is_async:
-                result = await cast("Awaitable[object]", command.function(**bound))
-            else:
-                result = await asyncio.to_thread(command.function, **bound)
+            result = await invoke(
+                command.function,
+                command.described,
+                bound,
+                progress=self._say(client),
+                handle=handle,
+            )
             if result is not None and not isinstance(result, str):
                 raise TypeError(f"{command.described.name} returned {result!r}, not a str or None")
         except Exception as e:

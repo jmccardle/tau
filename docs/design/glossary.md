@@ -998,11 +998,19 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`. Each write tells the driver (`Changed`), which publishes the difference to its
+`remove_label`, and `send(to, text)` (an input item for cursor `to` from the handle's `client`,
+with its auto-step turned on, as `Client.send` does: the other cursor's model is given the
+text). Each handle has a **client**: the client its work is for, or `None`. A command's is its
+runner; a hook's or a tool's is the client whose input the cursor's current step delivered (the
+newest `Input` item pending when the step began), or the runner of the command that began it; a
+step woken by an extension's item, a `step` call or a load has none. `send` and `tell` without
+`to` raise `ValueError` when there is none. Each write tells the driver (`Changed`), which publishes the difference to its
 clients. A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`,
-`config` (at its `at`), `options()` (also on a node handle, at its node), `configure(*, model,
-extensions)` (see *config*), `move(to)`, `write(body, delivers)`, `set_auto(on)`, `tell(text, *, to)`
-(a `Notice` to client `to`, dropped if it is not connected), and `ask`; its own `at`, `auto`,
+`options()` (also on a node handle, at its node), `configure(*, model,
+extensions)` (see *config*; the model must be in the catalog, and the options folded with the
+walk's must fit their type, or nothing is written), `move(to)`, `write(body, delivers)`,
+`set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default the handle's
+`client`; dropped if it is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
 belong to no cursor pass the hook's cursor to core, so they skip their sync
 only while a cursor hook job is out for it. They do it through a
@@ -1387,13 +1395,16 @@ provider API accepts), `check(value, context)` (the problem as words, or `None`)
 are checked against: the session, the model catalog, and `new_cursor`, which opens the cursor a
 `CursorId` of `"new"` means. A `Kind` that `needs_session` cannot `check` without one
 (`ValueError`); `check_default` checks a Python default by shape only. A `Field` is a name,
-a `Kind`, and `required`; `field_of(name, hint, default, has_default=)` makes one, and
+a `Kind`, `required`, and `nullable` (a `T | None` with no default: not required, `None` when
+left out); `field_of(name, hint, default, has_default=)` makes one, and
 `object_schema` / `check_object` / `convert_object` treat a tuple of them as an object: tool
 parameters now, a dataclass's fields when options come. `HintError` (a `TypeError`) is a hint
 outside the language, a default that does not fit it, or an `Annotated` carrying other than one
 `str`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
 `T | None`, `Annotated[T, "text"]` (the text is the schema's `"description"`),
-`pathlib.Path`, and the named types.
+`pathlib.Path` (a leading `~` is the home directory), and the named types. A JSON integer
+given to a `float` is converted to one. A `CursorId` default of `"new"` is a `HintError`: only a
+caller may ask for a new cursor.
 
 ### named type, Model, CursorId, LabelName, NodeId
 `tau_next.Model` (`str`), `CursorId` (`int`), `LabelName` (`str`), `NodeId` (`int`); `NewType`s · D16 · new
@@ -1414,7 +1425,11 @@ annotation: `Progress` (or the name `progress`), `TreeHandle` or `NodeHandle` (t
 extension), and `Cursor` (refused for a tool, `ToolDefinitionError`; for commands later).
 `describe` reads a function once into a `Described`: name, docstring, the `Field`s of its
 arguments, the injected parameters by name and kind, and whether it is async. Commands reuse
-it with their own `refused` set. (The `describe=` argument of `@tool` is gone: the text
+it with their own `refused` set. `invoke(function, described, arguments, progress=, handle=)`
+is the one place a described function is called, for a tool and for a command: it fills the
+injected parameters and awaits an async function or runs a sync one on a worker thread. What a
+handle tells the driver (`poke`, `changed`) is routed back to the loop's thread by the driver,
+so a sync function may write through its handle. (The `describe=` argument of `@tool` is gone: the text
 sits on the parameter, `Annotated[T, "text"]`.)
 
 ### command, CommandInfo
@@ -1424,7 +1439,8 @@ sits on the parameter, `Annotated[T, "text"]`.)
 A plain function an extension lists in its `commands` attribute (or a `FunctionTool`'s
 function), offered to a person as `/name`; the same function may be in `tools`. Described when
 the driver is built by `describe(fn, what="command")`: injected `Progress` (each call is a
-`Notice`), `TreeHandle`, and `Cursor`; `NodeHandle` is refused (`ToolDefinitionError`). Names
+`Notice`), `TreeHandle`, and `Cursor`; `NodeHandle` is refused (`ToolDefinitionError`). Its handle's
+`client` is the client that ran it. Names
 are unique across extensions, the built-in ones included (`ExtensionContractError`). The
 result, `str | None`, is a `Notice` to the client that ran it; an exception is a `Notice`
 `"Type: msg"` (and for a `Cursor` command also the step's ending, see *Cursor command*). A
@@ -1476,7 +1492,8 @@ built. A field's value at a node is the last one set: the layers' `extensions.<n
 setting only the fields it names (so a node can change `size` and leave `mode`); there is no
 way to unset a field back to its default. `handle.options()` returns the dataclass instance at
 the handle's node (`OptionsError` if it does not fit; the type's own `__post_init__` may
-refuse). The fold of a node is computed once and shared by its descendants that add no
+refuse). `configure` and `/config` check the same before writing: the options folded at the
+cursor's `at` with the new values must build. The fold of a node is computed once and shared by its descendants that add no
 `Config`. `Client.options(cursor, extension)` returns an `OptionsForm(extension, schema,
 value)`: the schema of the options object and every option's current value. `check_options(
 catalog, extensions)` is the check `tau config check` makes for the extensions it knows, and a
@@ -1486,14 +1503,14 @@ program that loads others can call for them.
 `tau_next.handles.Handles` · D16 · new
 
 What the driver wires into every handle it makes (session, question call, clock, `poke`,
-`changed`, options), with `cursor(id, extension)`, `node(cursor, id, extension)` and
-`tree(extension)`: one place that builds them, for hooks, tools and commands alike.
+`changed`, options, and `client`: who a cursor's step is for), with `cursor(id, extension)`,
+`node(cursor, id, extension)` and `tree(extension, client)`: one place that builds them, for hooks, tools and commands alike.
 
 ### complete, named type completion
 `Client.complete(cursor, named, prefix)` · D16 · new
 
 The values of a named type that start with `prefix`, as strings: `"path"` (the driver's
-machine, relative to its working directory; a directory ends with `/`; a hidden name only if
+machine, relative to its working directory, a leading `~` the home directory as typed; a directory ends with `/`; a hidden name only if
 the prefix starts with `.`; a missing or unreadable directory has none), `"model"` (qualified
 names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
 first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or
@@ -1756,8 +1773,8 @@ and goes to the end. Status (`cursor.show`) is not built.
 `tau_next.Connected(nodes)` (`events.py`) · D16 · new
 
 The first event of a stream: the tree holds `nodes` nodes (ids `0..nodes`). Those a client
-reads with `node`, `walk`, `children`; those from `nodes` on arrive as `Appended`. `Labels`
-and one `CursorView` per cursor follow, as they stood in the same act.
+reads with `node`, `walk`, `children`; those from `nodes` on arrive as `Appended`. One
+`CursorView` per cursor and then `Labels` follow, as they stood in the same act.
 
 ### CursorView
 `tau_next.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
@@ -1818,7 +1835,7 @@ the result arrives as `Appended`.
 
 The driver's clients. `Hub.sync` is the one place state events are made: it compares the
 session, the driver's questions, and the steps' endings with what it last published and sends
-the difference (new nodes, then `Labels`, then each changed `CursorView`, then notices). The
+the difference (new nodes, then each changed `CursorView`, then `Labels`, then notices). The
 driver calls it after each client call, each pump pass, each handle write, and each question
 opened or closed. `Hub.connect` publishes what is pending, then builds the snapshot from what
 was published, so subscribing and the snapshot are one act. A **Feed** is one client's stream:
@@ -1896,7 +1913,8 @@ files calls it); a sample already running keeps the model it resolved. Its clien
 (a timer extension, `tau serve` relaying a webhook): any `ItemData` but `Input`, which only
 `input` and `send` add (they say who typed it). `set_label(label, cursor)` and
 `remove_label(label)` are the labels a frontend writes.
-Once the driver has failed or stopped, every call raises (the failure, or `RuntimeError`),
+Once the driver has failed or stopped, every call raises (the failure, or `RuntimeError`;
+`DriverState.check()` raises it, and each `LocalClient` call starts with it),
 and a stream connected then ends at once (with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
 (**ExtensionContractError**); how `config_at` will name them is open.

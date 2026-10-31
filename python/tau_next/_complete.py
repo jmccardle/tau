@@ -17,11 +17,14 @@ NAMED = ("path", "model", "cursor", "label", "node")
 
 def _paths(prefix: str) -> list[str]:
     """The names in the directory `prefix` is in that start with the rest of it; a
-    directory ends with `/`. Unreadable or missing: none (there is nothing to complete)."""
+    directory ends with `/`. A leading `~` is the driver's user's home, as the path value will
+    be read, and stays as typed. Unreadable or missing: none (there is nothing to complete)."""
+    if prefix == "~":
+        return ["~/"]
     head, slash, tail = prefix.rpartition("/")
     shown = head + slash  # the directory as typed: "", "dir/", "/"
     try:
-        with os.scandir(shown or ".") as scan:
+        with os.scandir(os.path.expanduser(shown) or ".") as scan:
             names = sorted((e.name, e.is_dir()) for e in scan)
     except OSError:
         return []

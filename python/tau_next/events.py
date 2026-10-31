@@ -137,8 +137,8 @@ class Notice:
 @dataclass(frozen=True)
 class Connected:
     """The first event of a stream: the tree holds `nodes` nodes (ids `0..nodes`). Those a
-    client reads with calls; those from `nodes` on arrive as `Appended`. `Labels` and a
-    `CursorView` per cursor follow."""
+    client reads with calls; those from `nodes` on arrive as `Appended`. A `CursorView` per cursor
+    and then `Labels` follow."""
 
     nodes: int
 

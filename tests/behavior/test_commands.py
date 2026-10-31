@@ -19,8 +19,10 @@ from tau_next import (
     ModelCatalog,
     NodeHandle,
     NodeId,
+    Outcome,
     Part,
     Progress,
+    Stop,
     ToolDefinitionError,
     TreeHandle,
     read_models,
@@ -44,7 +46,7 @@ async def branch_from(cursor: Cursor, node: NodeId) -> None:
 
 def hand_off(tree: TreeHandle, to: CursorId, note: str) -> str:
     """Send a note to another cursor."""
-    tree.add_item(to, note)
+    tree.send(to, note)
     return f"sent to cursor {to}"
 
 
@@ -136,29 +138,44 @@ async def test_a_node_that_is_not_there_is_refused_and_nothing_runs(tmp_path: Pa
     assert h.snapshot() == before
 
 
+def told(h: Harness, cursor: int) -> list[Body]:
+    """The bodies of `cursor`'s walk from its `User` node on: what its model was given."""
+    bodies = h.bodies(cursor)
+    return bodies[next(i for i, b in enumerate(bodies) if isinstance(b, Body.User)) :]
+
+
 @scenario
-async def test_hand_off_to_a_cursor_by_id(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[Navigation()])
+async def test_hand_off_to_a_cursor_by_id_is_a_send_its_model_answers(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("noted")]), extensions=[Navigation()]
+    )
     other = await h.client.open(h.session.cursor(h.cursor).at)
     await h.settle()
     await h.run("hand_off", {"to": other, "note": "look at this"})
     await h.settle()
     assert h.notices() == [f"sent to cursor {other}"]
-    items = [i.data for i in h.session.cursor(other).items]
-    assert items == [ItemData.Extension("navigation", "look at this")]
+    assert told(h, other)[0] == Body.User("look at this")
+    (request,) = h.provider.requests
+    assert h.session.tree.node(request.walk[-1]).body == Body.User("look at this"), (
+        "the model got it"
+    )
+    assert h.session.cursor(other).items == []
 
 
 @scenario
 async def test_hand_off_to_new_opens_a_cursor_at_the_running_cursors_node(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[Navigation()])
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("started")]), extensions=[Navigation()]
+    )
+    at = h.session.cursor(h.cursor).at
     await h.run("hand_off", {"to": "new", "note": "start here"})
     await h.settle()
     (new,) = [c for c in h.session.cursors() if c != h.cursor]
-    assert h.session.cursor(new).at == h.session.cursor(h.cursor).at
     assert h.notices() == [f"sent to cursor {new}"]
-    assert [i.data for i in h.session.cursor(new).items] == [
-        ItemData.Extension("navigation", "start here")
-    ]
+    (request,) = h.provider.requests
+    sent = h.session.tree.node(request.walk[-1])
+    assert sent.body == Body.User("start here")
+    assert sent.parent == at, "the new cursor started where the running cursor was"
 
 
 @scenario
@@ -431,3 +448,127 @@ async def test_a_model_is_set_per_branch(tmp_path: Path) -> None:
     await h.send("on the other branch", cursor=other)
     await h.settle()
     assert sorted(r.model.model for r in h.provider.requests) == ["alt", FAKE_MODEL]
+
+
+# Who the work is for: a handle knows its client.
+
+
+class Knows:
+    """Records the client its handles know, and tells it."""
+
+    name = "knows"
+
+    def __init__(self) -> None:
+        self.step_clients: list[str | None] = []
+        self.refused: list[str] = []
+        self.commands = (self.runner, self.runner_tree)
+        self.tools = (self.tool_client,)
+
+    async def pre_step(self, cursor: Cursor, subject: object) -> None:
+        self.step_clients.append(cursor.client)
+        try:
+            cursor.tell("step started")
+        except ValueError as e:
+            self.refused.append(str(e))
+
+    async def runner(self, cursor: Cursor) -> str:
+        """The client a cursor command runs for."""
+        return f"{cursor.client}"
+
+    def runner_tree(self, tree: TreeHandle) -> str:
+        """The client a command that takes no cursor runs for."""
+        return f"{tree.client}"
+
+    def tool_client(self, node: NodeHandle) -> str:
+        """The client the batch's step was for."""
+        return f"{node.client}"
+
+
+@scenario
+async def test_a_commands_handle_knows_its_runner(tmp_path: Path) -> None:
+    knows = Knows()
+    h = await Harness.create(tmp_path, extensions=[knows])
+    await h.run("runner_tree")
+    await h.settle()
+    await h.run("runner")
+    await h.settle()
+    assert h.notices() == ["term", "term", "step started"], "and its step's hooks know it too"
+    assert knows.step_clients == ["term"]
+
+
+@scenario
+async def test_a_step_is_for_the_client_whose_input_it_delivers(tmp_path: Path) -> None:
+    knows = Knows()
+    call = Reply([Part.Call("c1", "tool_client", "{}")], Stop.Tools)
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([call, say("done"), say("again")]), extensions=[knows]
+    )
+    other = await h.connect("other")
+    await h.client.send(h.cursor, "from term")
+    await h.settle()
+    await other.send(h.cursor, "from other")
+    await h.settle()
+    assert knows.step_clients == ["term", None, "other"], "the step after the tools had no input"
+    (results,) = [b for b in h.bodies() if isinstance(b, Body.Results)]
+    assert results.outcomes[0][1] == Outcome.Ok("term"), "a tool's handle knows it as well"
+    assert len(knows.refused) == 1, "a tell with nobody to tell is refused"
+
+
+@scenario
+async def test_a_step_woken_by_an_extension_item_is_for_no_client(tmp_path: Path) -> None:
+    knows = Knows()
+    h = await Harness.create(tmp_path, extensions=[knows])
+    await h.add_item("knows", "tick")
+    await h.settle()
+    assert knows.step_clients == [None]
+    assert len(knows.refused) == 1
+    assert "no client started this work" in knows.refused[0]
+    assert h.notices() == [], "tell with nobody to tell is refused, not dropped"
+
+
+@scenario
+async def test_send_without_a_client_is_refused(tmp_path: Path) -> None:
+    refused: list[str] = []
+
+    class Sends:
+        name = "sends"
+
+        async def pre_step(self, cursor: Cursor, subject: object) -> None:
+            try:
+                cursor.send(cursor.id, "hi")
+            except ValueError as e:
+                refused.append(str(e))
+
+    h = await Harness.create(tmp_path, extensions=[Sends()])
+    await h.add_item("sends", "tick")
+    await h.settle()
+    assert len(refused) == 1
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [
+        ItemData.Extension("sends", "tick")
+    ]
+
+
+@scenario
+async def test_a_tool_hands_off_to_another_cursor_for_the_client_it_works_for(
+    tmp_path: Path,
+) -> None:
+    class Hands:
+        name = "hands"
+        tools = (hand_off,)
+
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(
+            [
+                Reply([Part.Call("c1", "hand_off", '{"to": 1, "note": "n"}')], Stop.Tools),
+                say("ok"),
+                say("ok"),
+            ]
+        ),
+        extensions=[Hands()],
+    )
+    other = await h.client.open(h.session.cursor(h.cursor).at)
+    assert other == 1
+    await h.send("go")
+    await h.settle()
+    assert Body.User("n") in h.bodies(other), "the other cursor's model was given the note"

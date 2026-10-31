@@ -19,10 +19,10 @@ from tau_next.events import Event
 
 
 class Client(AsyncIterator[Event], Protocol):
-    """What a frontend holds. Iterating it yields the events: `Connected`, `Labels` and a
-    `CursorView` per cursor first, then changes as they happen, until the driver stops (the
-    stream ends), fails (it raises the failure), or the client is `CutOff` for falling behind.
-    Every call raises once the driver has failed or stopped."""
+    """What a frontend holds. Iterating it yields the events: `Connected`, a `CursorView` per
+    cursor and `Labels` first, then changes as they happen, until the driver stops (the stream
+    ends), fails (it raises the failure), or the client is `CutOff` for falling behind. Every
+    call raises once the driver has failed or stopped."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -131,59 +131,65 @@ class LocalClient:
     async def close(self) -> None:
         await self._feed.close()
 
+    def _up(self) -> Driver:
+        """The driver, if it is running: every call starts here, so each one raises the same
+        way once the driver has failed or stopped."""
+        self._driver.state().check()
+        return self._driver
+
     async def input(self, cursor: int, text: str) -> int:
-        return self._driver.input(cursor, self.id, text)
+        return self._up().input(cursor, self.id, text)
 
     async def send(self, cursor: int, text: str) -> int:
-        return self._driver.send(cursor, self.id, text)
+        return self._up().send(cursor, self.id, text)
 
     async def step(self, cursor: int) -> None:
-        self._driver.step(cursor)
+        self._up().step(cursor)
 
     async def go_to(self, cursor: int, to: int) -> bool:
-        return self._driver.go_to(cursor, to, self.id)
+        return self._up().go_to(cursor, to, self.id)
 
     async def set_auto(self, cursor: int, on: bool) -> None:
-        self._driver.set_auto(cursor, on)
+        self._up().set_auto(cursor, on)
 
     async def abort(self, cursor: int) -> bool:
-        return self._driver.abort(cursor)
+        return self._up().abort(cursor)
 
     async def open(self, at: int) -> int:
-        return self._driver.open(at, self.id)
+        return self._up().open(at, self.id)
 
     async def set_label(self, label: str, cursor: int) -> None:
-        self._driver.set_label(label, cursor)
+        self._up().set_label(label, cursor)
 
     async def remove_label(self, label: str) -> None:
-        self._driver.remove_label(label)
+        self._up().remove_label(label)
 
     async def watch(self, cursors: Collection[int]) -> None:
-        self._driver.watch(self._feed, cursors)
+        self._up().watch(self._feed, cursors)
 
     async def answer(self, question: int, value: object) -> None:
-        self._driver.answer(self.id, question, value)
+        self._up().answer(self.id, question, value)
 
     async def commands(self) -> tuple[CommandInfo, ...]:
-        return self._driver.commands.infos()
+        return self._up().commands.infos()
 
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> None:
-        self._driver.commands.run(self.id, cursor, command, args)
+        self._up().commands.run(self.id, cursor, command, args)
 
     async def options(self, cursor: int, extension: str) -> OptionsForm:
-        return self._driver.commands.form(cursor, extension)
+        return self._up().commands.form(cursor, extension)
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
-        return await self._driver.commands.complete(cursor, named, prefix)
+        return await self._up().commands.complete(cursor, named, prefix)
 
     async def node(self, id: int) -> Node:
-        return self._driver.session.tree.node(id)
+        return self._up().session.tree.node(id)
 
     async def walk(self, id: int) -> list[Node]:
-        return self._driver.session.tree.walk(id)
+        return self._up().session.tree.walk(id)
 
     async def children(self, id: int) -> list[int]:
-        return self._driver.session.tree.children(id)
+        return self._up().session.tree.children(id)
 
     async def __aenter__(self) -> "LocalClient":
         return self

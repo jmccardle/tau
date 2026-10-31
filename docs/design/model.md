@@ -458,8 +458,8 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 | `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
 | `Notice` | one client | `cursor.tell`, an input a hook refused |
 
-- **On connect** the stream opens with `Connected(nodes)` (the tree's node count), `Labels`, and a
-  `CursorView` per cursor, taken in the same synchronous act as subscribing, so nothing falls
+- **On connect** the stream opens with `Connected(nodes)` (the tree's node count), a
+  `CursorView` per cursor, and `Labels`, taken in the same synchronous act as subscribing, so nothing falls
   between them. Nodes below the count a client reads with calls; nodes from it on arrive as
   `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it
   failed on, so a late client sees why a step stopped.
@@ -467,7 +467,8 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   hold with what was last published (after each client call, pump pass, handle write and
   question opened or closed), so nothing is announced by hand and nothing twice.
 - **Order.** One ordered stream per client. A change's `Appended` comes before the `CursorView`
-  that points at its nodes. A `CursorView` or `Labels` that replaces an earlier copy removes it
+  that points at its nodes, and a `Labels` after the `CursorView` of every cursor it names. A
+  `CursorView` or `Labels` that replaces an earlier copy removes it
   and goes to the end.
 - **`watch(cursors)`** chooses which cursors' `Live` a client hears (default: none), starting for
   each newly watched cursor with a catch-up taken in the same act: the parts of the sample in
@@ -481,7 +482,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
   or is not busy; drop a call's `ToolProgress` layer, keyed by `(node, call_id)`, when the
   `Results` node answering it arrives.
-- **Notices.** `cursor.tell(text, to=client)` and core's own (a `pre_input` hook refused an
+- **Notices.** `cursor.tell(text, to=client)` (by default the client the step is for) and core's own (a `pre_input` hook refused an
   input: the client that typed it is told why) reach the client they name, if it is connected.
   No cursor waits on a particular client; a cursor waits on a person only through a question.
 

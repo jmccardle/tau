@@ -308,3 +308,45 @@ def test_options_must_be_a_frozen_dataclass_of_the_values_language() -> None:
         Ext.options = options  # type: ignore[attr-defined]
         with pytest.raises(ExtensionContractError, match=message):
             build([Ext()])
+
+
+@scenario
+async def test_config_the_options_type_refuses_is_not_written_and_the_branch_still_steps(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("ok")]), extensions=[StepLimit()])
+    before = len(h.nodes())
+    await h.run("config", {"extension": "step_limit", "values": '{"limit": 0}'})
+    await h.settle()
+    (notice,) = h.notices()
+    assert notice.startswith("OptionsError: extension 'step_limit'")
+    assert "at least 1" in notice
+    assert len(h.nodes()) == before
+    await h.send("hi")
+    await h.settle()
+    assert (await h.view()).hook_error is None
+    assert len(h.provider.requests) == 1
+
+
+def pick(cursor: Cursor, name: str) -> None:
+    """Configure this branch's model by any name."""
+    cursor.configure(model=name)
+
+
+class Picker:
+    name = "picker"
+    commands = (pick,)
+
+
+@scenario
+async def test_configure_checks_the_model_against_the_catalog(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Picker()])
+    before = len(h.nodes())
+    await h.run("pick", {"name": "nope"})
+    await h.settle()
+    (notice,) = h.notices()
+    assert notice.startswith("ConfigError: model 'nope' is not in your config")
+    assert len(h.nodes()) == before
+    await h.run("pick", {"name": FAKE_MODEL})
+    await h.settle()
+    assert len(h.nodes()) == before + 1

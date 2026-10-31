@@ -85,7 +85,7 @@ def test_annotated_adds_parameter_descriptions() -> None:
         "path": {"type": "string", "description": "file to read"},
         "tail": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
     }
-    assert read.parameters["required"] == ["path", "tail"]
+    assert read.parameters["required"] == ["path"], "a T | None may be left out (D16 section 1)"
 
 
 def test_a_function_with_no_parameters_has_an_empty_object_schema() -> None:
@@ -206,7 +206,7 @@ async def test_literals_floats_and_nulls_are_checked() -> None:
         """Pick."""
         return f"{mode} {ratio} {note}"
 
-    assert await pick.call('{"mode": "a", "ratio": 2, "note": null}') == Outcome.Ok("a 2 None")
+    assert await pick.call('{"mode": "a", "ratio": 2, "note": null}') == Outcome.Ok("a 2.0 None")
     bad = await pick.call('{"mode": "c", "ratio": 1}')
     assert isinstance(bad, Outcome.Err)
     assert "must be one of ['a', 'b']" in bad.error

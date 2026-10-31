@@ -163,13 +163,14 @@ class Hub:
         self._labels = tuple(session.labels())
         self._views = {c: self._view(c) for c in session.cursors()}
 
-    def connected(self, client: str) -> bool:
-        """Whether `client` has a stream open."""
-        return any(feed.client == client for feed in self._feeds)
+    def connected(self, client: str | None) -> bool:
+        """Whether `client` has a stream open; with `None`, whether any client has."""
+        return any(client in (None, feed.client) for feed in self._feeds)
 
     def connect(self, client: str, capacity: int) -> Feed:
-        """A new stream for `client`, opening with the snapshot: `Connected`, `Labels`, and a
-        `CursorView` per cursor, as they stand. Publishing what is pending first and taking the
+        """A new stream for `client`, opening with the snapshot: `Connected`, a `CursorView`
+        per cursor, then `Labels` (which name cursors the client has by then been sent), as
+        they stand. Publishing what is pending first and taking the
         snapshot from what was published make it one act: nothing falls between the snapshot
         and what follows."""
         feed = Feed(client, capacity, self._feeds.discard)
@@ -177,7 +178,7 @@ class Hub:
             feed.end(self._ended[0])
             return feed
         self.sync()
-        for event in (Connected(self._nodes), Labels(self._labels), *self._views.values()):
+        for event in (Connected(self._nodes), *self._views.values(), Labels(self._labels)):
             feed.offer(event)
         self._feeds.add(feed)
         return feed
@@ -216,9 +217,10 @@ class Hub:
         self._steps[cursor] = (ending, HookFailure(extension, point, error))
 
     def sync(self) -> None:
-        """Send what changed since the last call: the new nodes, then `Labels`, then each
-        changed `CursorView` (so a view never points at nodes the client has not been sent),
-        then the session's notices to the clients they name."""
+        """Send what changed since the last call: the new nodes, then each changed `CursorView`
+        (so a view never points at nodes the client has not been sent), then `Labels` (so a
+        label never names a cursor the client has not been sent), then the session's notices to
+        the clients they name."""
         if self._ended is not None:
             return
         session = self._session
@@ -227,15 +229,15 @@ class Hub:
             nodes = tuple(session.tree.node(i) for i in range(self._nodes, count))
             self._nodes = count
             self._send(Appended(nodes))
-        labels = tuple(session.labels())
-        if labels != self._labels:
-            self._labels = labels
-            self._send(Labels(labels))
         for cursor in session.cursors():
             view = self._view(cursor)
             if self._views.get(cursor) != view:
                 self._views[cursor] = view
                 self._send(view)
+        labels = tuple(session.labels())
+        if labels != self._labels:
+            self._labels = labels
+            self._send(Labels(labels))
         for client, text in session.take_notices():
             self.notify(client, text)
 

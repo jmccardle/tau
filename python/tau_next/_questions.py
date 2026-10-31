@@ -27,9 +27,11 @@ class Questions:
     it stopped (an answer, a decline, a timeout, a cancel).
 
     `changed` tells the driver a question opened or closed; `connected` says whether a client
-    has a stream open."""
+    has a stream open (`None`: any client)."""
 
-    def __init__(self, changed: Callable[[], None], connected: Callable[[str], bool]) -> None:
+    def __init__(
+        self, changed: Callable[[], None], connected: Callable[[str | None], bool]
+    ) -> None:
         self._by_cursor: dict[int, list[Question]] = {}
         self._ids = itertools.count()
         self._changed = changed
@@ -54,8 +56,9 @@ class Questions:
         new_cursor: Callable[[], int],
     ) -> object:
         """Wait for the answer; `None` if declined. A question to a client that is not
-        connected is declined at once, so a cursor never waits on someone who is not there."""
-        if to is not None and not self._connected(to):
+        connected, or to anyone when no client is, is declined at once, so a cursor never waits
+        on someone who is not there."""
+        if not self._connected(to):
             return None
         future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
         view = OpenQuestion(next(self._ids), to, text, expect.schema)
