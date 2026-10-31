@@ -9,7 +9,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, Reply
 from harness import Harness, build, say, scenario
 
-from tau_next import CursorId, DefinitionError, LabelName, Model, NodeId, Part, Stop
+from tau import CursorId, DefinitionError, LabelName, Model, NodeId, Part, Stop
 
 NewTypeOfMine = NewType("NewTypeOfMine", str)
 ANYTHING = Model("anything")

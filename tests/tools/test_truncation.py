@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from calls import call, err, ok, parse_truncated
 
-from tau_next import BashTool, GrepTool, ReadTool, WriteTool
+from tau import BashTool, GrepTool, ReadTool, WriteTool
 
 LIMIT = 200
 
@@ -49,7 +49,7 @@ def test_read_writes_no_overflow_file(tmp_path: Path) -> None:
 
 READ_ONCE = """
 import asyncio, json, sys
-from tau_next import ReadTool
+from tau import ReadTool
 call = ReadTool(sys.argv[1], max_output=100).call(json.dumps({"path": "big.txt"}))
 print(asyncio.run(call).value)
 """
@@ -154,7 +154,7 @@ def test_one_line_longer_than_the_limit_is_cut_on_a_character(
 
 SPILL_ONCE = """
 import asyncio, json, sys
-from tau_next import GrepTool
+from tau import GrepTool
 text = asyncio.run(GrepTool(sys.argv[1]).call(json.dumps({"pattern": "0123"}))).value
 print(text.rsplit(" is in ", 1)[1].rstrip("]"))
 """
@@ -246,7 +246,7 @@ def test_the_write_tool_has_no_limit_to_exceed(tmp_path: Path) -> None:
 
 FILE_SIZE_LIMITED = """
 import asyncio, json, resource, sys
-from tau_next import BashTool, GrepTool
+from tau import BashTool, GrepTool
 
 _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
 resource.setrlimit(resource.RLIMIT_FSIZE, (50_000, hard))  # a disk that fills up

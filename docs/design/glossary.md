@@ -3,7 +3,7 @@
 Status: **accepted (Phase 1 closed 2026-10-27).** Rule 2: no type, field, or module-level
 concept exists without an entry here. One term, one meaning.
 
-Each entry gives the identifier (Rust in `tau_core`, Python in `tau_next`),
+Each entry gives the identifier (Rust in `tau_core`, Python in `tau`),
 the τ 0.15 terms it **retires**, and a short definition. Rust names marked
 *spike* exist in `crates/tau-core/src/{tree,step}.rs`; others are proposals.
 Behavior is specified in `model.md`; this file only says what words mean.
@@ -33,7 +33,7 @@ One piece of a reply in stream order: `Text`, `Thinking`, or
 A `Thinking` part may have no text when it has replay data (a redacted block).
 
 ### replay
-`tau_next.Replay(provider, data)` · D15 · new
+`tau.Replay(provider, data)` · D15 · new
 
 Data only the provider that wrote a part can send back: Anthropic's
 `thinking.signature` and `redacted_thinking` data, Gemini's `thoughtSignature` (on text and
@@ -48,7 +48,7 @@ driver's ordering rule (see **provider, model**) ignores it: a provider learns a
 only at the end of a block, so it is on the part and on none of its deltas.
 
 ### replay_for
-`tau_next.replay_for(part, provider)` (`protocols.py`) · D15 · new
+`tau.replay_for(part, provider)` (`protocols.py`) · D15 · new
 
 The replay data a provider may send back for a part, parsed: the JSON object in
 `part.replay.data` when the part's replay is tagged with `provider`, else `None`. String
@@ -58,7 +58,7 @@ treated as unsigned (`model.md` §10.4), so no provider repeats the tag check. D
 the provider's own name that this version cannot understand counts as unsigned too.
 
 ### turns (the walk module)
-`tau_next.providers._walk.turns(walk, ...)` · D15 · new
+`tau.providers._walk.turns(walk, ...)` · D15 · new
 
 The rules every provider shares (`model.md` §10.5 to §10.7), applied once to a walk:
 which nodes count (`Config` and `Custom` do not), which replies are runnable (a batch
@@ -177,7 +177,7 @@ time)` writes the root `Config` and a `System` node and opens the first
 cursor (Q5). The nodes live in its `Tree`.
 
 ### Tree
-*spike* `tree::Tree`, `Session::tree`; Python `tau_next.Tree` (`Session.tree`) · new
+*spike* `tree::Tree`, `Session::tree`; Python `tau.Tree` (`Session.tree`) · new
 
 The append-only forest of nodes and the reads over it: `node`, `walk`,
 `config_at`, `lca`, `children`, `node_count`, `deciding`, plus the private
@@ -394,7 +394,7 @@ now)` (a machine for a session just opened from a store: load is a wake, so
 every cursor starts a step), and the `Session::notices` the Python `take_notices` drains.
 
 ### Python session
-`tau_next.Session` (`tau-py`) · new
+`tau.Session` (`tau-py`) · new
 
 The machine plus its optional store behind one `Mutex`, so the class is
 `frozen` and free-threading safe. `Session.create(config, system, now,
@@ -415,7 +415,7 @@ and `take_notices()` (drains the notices). There is no whole-scratchpad read
 (`scratchpad()` repeated every cursor's `items`) and no `dropped()`.
 
 ### CursorState
-Python `tau_next.CursorState` (`Session.cursor(c)`) · new
+Python `tau.CursorState` (`Session.cursor(c)`) · new
 
 A frozen snapshot of one cursor, all read under one lock: `at`, `auto`,
 `busy`, `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
@@ -431,7 +431,7 @@ label counts, never the session behind it. Not the hook's `Cursor` handle,
 which acts; this only reads.
 
 ### close, Closed
-`Session.close`, `tau_next.Closed` · new
+`Session.close`, `tau.Closed` · new
 
 Drops the store and releases the lease without writing what is not yet
 synced, as a crash would. Every later call, a second `close` included,
@@ -439,7 +439,7 @@ raises `Closed`. A failed save leaves the session in the same state: the
 store is gone with its lease, and reopening from disk is the recovery.
 
 ### Poisoned
-`tau_next.Poisoned` · new
+`tau.Poisoned` · new
 
 A call panicked inside the session's lock; the session raises it from then on.
 Not core's: a binding-level guard so a core bug (a panic) is not followed by
@@ -512,7 +512,7 @@ subject is whichever of the three the point is about),
 `Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
 batch; the driver refuses an empty one), `Pending` (calls outstanding),
 `Rest`. Only waits are jobs; writes never are. `Job`, `Answer`, `SampleEnd`,
-`RunCall`, and `Hook` are exported from `tau_next`: `Session.next_job` and
+`RunCall`, and `Hook` are exported from `tau`: `Session.next_job` and
 `answer` are the job loop a driver runs, and a frontend of another kind can
 run it too.
 
@@ -618,7 +618,7 @@ cursor (the **rest rule**), and load. Any reader sees the change the same way:
 `Session.auto(cursor)`, `cursor.auto` in a hook.
 
 ### StepLimit
-`tau_next.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
+`tau.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
 and `Session::taken`
 
 `StepLimit()`: an extension that guards loops where the cursor does move
@@ -685,7 +685,7 @@ How a step runs. Its data is a JSON object with at most two keys: `"model"`, a q
 name, and `"extensions"`, `{"<extension>": {"<option>": value}}` (D16 §4). It names a model
 and holds nothing resolved from the config files (no URL, no key variable, no settings;
 D13). A node holds just what it changes: `Cursor.set_model(model)`, `Cursor.set_options(**changes)`
-and `model_config(model=None, extensions=None)` (`tau_next._config`, the one builder) build it, and `config_fields(config)` reads it back, raising `ConfigError` for any other shape (a
+and `model_config(model=None, extensions=None)` (`tau._config`, the one builder) build it, and `config_fields(config)` reads it back, raising `ConfigError` for any other shape (a
 key other than those two, a `model` that is not a non-empty string, `extensions` that are not
 an object of objects). `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
 node when it is added (`Session::configs`), so it costs the same at any depth; core reads
@@ -695,7 +695,7 @@ an option is the last one set on it (`ExtensionOptions`), each node adding to th
 it. The model resolves in the `ModelCatalog` at each sample.
 
 ### ModelConfig, ConfigError
-`tau_next.ModelConfig`, `tau_next.ConfigError` (module `tau_next._config`) · new
+`tau.ModelConfig`, `tau.ConfigError` (module `tau._config`) · new
 
 The **resolved model**, built by the driver at each sample from the
 `ModelCatalog` and the name in `config_at(at)`; no node holds it. Fields:
@@ -748,7 +748,7 @@ Names may not contain `:`. A `Config` node stores a qualified name; a bare
 name is only a search term.
 
 ### read_models, check_config, ModelCatalog, ResolvedModel, Origin, ConfigProblem
-module `tau_next._config_layers`; all but `Origin` exported · D13 · new
+module `tau._config_layers`; all but `Origin` exported · D13 · new
 
 `read_models` is the catalog without files or trust: how a program that embeds
 the driver builds a `ModelCatalog` from a mapping (`read_models(cli=...)`). A
@@ -795,7 +795,7 @@ are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
 ### safe_block, safe_text, user_config_path
-module `tau_next._trust`; only `safe_block` is exported · D13 · new
+module `tau._trust`; only `safe_block` is exported · D13 · new
 
 `safe_block` is exported for a frontend that prints an exception from config
 loading (the examples do): the exceptions carry file text unescaped. `safe_text(text)` (internal) writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
@@ -804,7 +804,7 @@ and group names may not contain control characters (the checker errors at that p
 `<home>/config.json` or `None`.
 
 ### tau_home, find_project, ProjectSearch, refuse_special, create_project, project_config_path, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
-module `tau_next._trust` (`LayerText`: `tau_next._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
+module `tau._trust` (`LayerText`: `tau._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
 
 Everything here but those three names is internal: the outside reaches it
 through `load_config` (finding, trusting, `.env`), `tau trust` (approval and the
@@ -867,7 +867,7 @@ opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` withou
 or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
 
 ### parse_dotenv, DotenvError
-module `tau_next._dotenv`; only `DotenvError` is exported · D13 · new
+module `tau._dotenv`; only `DotenvError` is exported · D13 · new
 
 Our own `.env` reader: `KEY=value` lines, optional `export `, `#` comments (a
 `#` starts one only at line start or after whitespace, so `K=#x` is `#x`),
@@ -877,11 +877,11 @@ ends a line, so a quoted value may hold `\x0b` or U+2028. A
 malformed line is a `DotenvError` naming the file and line, never the value.
 
 ### load_config, LoadedConfig
-module `tau_next._startup` · D13 · new
+module `tau._startup` · D13 · new
 
 What a frontend calls before its first sample. `load_config(cwd, environ, *, ask,
 cli=None)`: `tau_home(environ)`, the user config `<home>/config.json` (absent is
-fine; `user_config_path(home)`, in `tau_next._trust`, is that path or `None`), `find_project(cwd)`, and
+fine; `user_config_path(home)`, in `tau._trust`, is that path or `None`), `find_project(cwd)`, and
 for a project `ensure_trusted(root, home, ask=ask)` (no `ask`, no live terminal:
 `UntrustedProject`), then the catalog from the approved project text and the
 user file (`cli` overrides on top), and the environment from
@@ -891,7 +891,7 @@ trusted project's `.env`; the shell wins; pass it to the provider so keys come
 from it), `project` (the `Trusted`, or `None`), `home`.
 
 ### select_model, Pick, terminal_pick, Prompts, prompts
-module `tau_next._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
+module `tau._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
 
 `select_model(catalog, requested=None, *, pick)` returns one qualified name:
 `requested` (`--model`), else `catalog.default_model`, else a `ConfigError` that
@@ -905,7 +905,7 @@ names and reads a number or a name; anything else is a `ConfigError`.
 stdout)` returns both as `None` unless both streams are terminals.
 
 ### tau config check, tau trust
-`tau_next.cli` (`main`; the `tau` console script) · D13 · new
+`tau.cli` (`main`; the `tau` console script) · D13 · new
 
 `main(argv, *, stdin, stdout, stderr, environ, cwd)` is the `tau` command; each
 argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
@@ -951,7 +951,7 @@ A Python function an extension registers at one hook point. `None` carries
 on; a string stops. Hooks at a point run in `config_at(at)` order.
 
 ### hook point
-*spike* `Hook` (the seven cursor points, exported from `tau_next` as `Hook`) · new
+*spike* `Hook` (the seven cursor points, exported from `tau` as `Hook`) · new
 
 `pre_step`, `pre_input`, `pre_sample`, `pre_reply`, `post_reply`,
 `post_result`, `post_step` (cursor hooks, each a `Job::Hooks`), and
@@ -963,7 +963,7 @@ rule is on the name, not the kind: a dataclass field `pre_prompt` is refused too
 field for what it holds (`prompt_prefix`), not with those prefixes.
 
 ### cursor hook, CursorHook
-`async def hook(cursor, subject) -> str | None`; `tau_next.CursorHook` is its `Protocol` · new
+`async def hook(cursor, subject) -> str | None`; `tau.CursorHook` is its `Protocol` · new
 
 A string halts the later hooks of the point. An exception, or a return that is not a `str`
 or `None`, or a `subject.draft` left as something that is not a `Draft`, fails the step:
@@ -978,7 +978,7 @@ aborted leaves the cursor at rest: it wakes nothing.
 Core checks no more than the tree's own rules (no hook edit limits).
 
 ### tool hook, ToolHook
-`async def hook(node, call) -> str | None`; `tau_next.ToolHook` is its `Protocol` · new
+`async def hook(node, call) -> str | None`; `tau.ToolHook` is its `Protocol` · new
 
 Runs per call, in parallel. A string makes that call `Err(reason)` and halts the later
 hooks of the point. Every `pre_tool` hook runs, even after one has set an outcome (the later
@@ -1019,13 +1019,13 @@ only while a cursor hook job is out for it. They do it through a
 frontend cannot name a cursor and skip the sync.
 
 ### HandleWrites
-`tau_next._core.HandleWrites` (`HandleWrites(session, hook)`) · new
+`tau._core.HandleWrites` (`HandleWrites(session, hook)`) · new
 
 The same seven extension writes as `Session` (`open`, `add_item`,
 `remove_item`, `append`, `append_root`, `set_label`, `remove_label`), bound to
 the cursor whose hook makes them (`None` for a tool hook). While that cursor's
 hook job is out they ride the phase's sync instead of syncing. Only the
-handles hold one; it is not exported from `tau_next`, and it is a type apart
+handles hold one; it is not exported from `tau`, and it is a type apart
 so the public `Session` cannot be given a hook to skip a sync with. It stays constructible from
 Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its hook id; the
 only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
@@ -1044,7 +1044,7 @@ driver's question call for one cursor (see **question**): `(text, expect, to, ne
 driver's publish for a handle: a handle write calls it, and `Hub.sync` sends whatever changed.
 
 ### question
-`tau_next._questions.Questions`, `OpenQuestion` (driver memory; not core) · retires
+`tau._questions.Questions`, `OpenQuestion` (driver memory; not core) · retires
 `request_user_action`, `Driver.respond`, `Driver.questions`, `Question`
 
 `await handle.ask(text, expect=str, *, to=None)` on a cursor handle or a node handle (a tool
@@ -1069,7 +1069,7 @@ and core's busy rules apply (model.md §7). A question lives only while its `ask
 that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it.
 
 ### OpenQuestion
-`tau_next.OpenQuestion(id, to, text, schema)` (`events.py`) · D16 · new
+`tau.OpenQuestion(id, to, text, schema)` (`events.py`) · D16 · new
 
 What a client sees of an open question (see **question**): `schema` is the JSON Schema of the
 answer with the named types' `"format"`. A plain frozen value.
@@ -1083,7 +1083,7 @@ retires backend (config key), `ProviderSpec`, `Model` descriptor,
 
 The **provider** is the Python adapter for one API family; it converts walks
 to messages (`model.md` §10). It is long-lived (D15): the program that builds it
-closes it. Its contract (`tau_next.Provider`): `name` (what a model's `provider`
+closes it. Its contract (`tau.Provider`): `name` (what a model's `provider`
 calls it); `check(model) -> list[str]` (problems with the model's settings as this
 provider reads them, empty if fine; a model whose `provider` is not its own is
 one); `sample(walk, model, tools)` (an async stream of live deltas and whole parts,
@@ -1115,14 +1115,14 @@ provider that does is `examples/retry.py` (`RetryProvider`); it reads `SampleErr
 `retry_after` and the `httpx` error in `__cause__`.
 
 ### builtin_providers
-`tau_next.builtin_providers(environ)` (module `tau_next.providers`) · D15 · new
+`tau.builtin_providers(environ)` (module `tau.providers`) · D15 · new
 
 The built-in providers by name, `{"openai": OpenAIProvider, "anthropic": AnthropicProvider,
 "gemini": GeminiProvider, "mock": MockProvider}`: what the CLI and the examples give `Driver` and
 `check_config`. `environ` is where the hosted providers look up keys. The caller closes them.
 
 ### OpenAIProvider
-`tau_next.providers.openai.OpenAIProvider` · new
+`tau.providers.openai.OpenAIProvider` · new
 
 The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
 Is handed the resolved `ModelConfig` as `sample(walk, model, tools)`; it parses no node data. The request carries `model`,
@@ -1191,7 +1191,7 @@ end, so the connection returns to the pool. Constructor: `transport`
 `timeout`. The request is built inside `sample` and is not public.
 
 ### AnthropicProvider
-`tau_next.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new
+`tau.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new
 
 The provider for the Anthropic Messages API (`POST {base_url}/v1/messages`, SSE; `base_url`
 is the API root, `https://api.anthropic.com` when unset; one ending in `/v1` is a `check`
@@ -1231,7 +1231,7 @@ whose `status` is the response's, or for an event the status its `type` stands f
 `overloaded_error`), with `retry_after` from the header. Client handling is `Connection`'s.
 
 ### _anthropic_request (the Anthropic request module)
-`tau_next.providers._anthropic_request` · D15 · new
+`tau.providers._anthropic_request` · D15 · new
 
 The walk as an Anthropic request, split from `providers/anthropic.py` (which reads the
 response) to stay under the file-size ratchet: `conversation(walk, manual_thinking, has_tools)`
@@ -1240,7 +1240,7 @@ applies `turns` and holds every rule above that turns a walk into text instead o
 Private: the shapes may change with the next provider.
 
 ### _wire (the provider helpers module)
-`tau_next.providers._wire` · D15 · new
+`tau.providers._wire` · D15 · new
 
 What every hosted provider shares over HTTP: `retry_after` (a `Retry-After` header as
 seconds, `None` when not finite), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
@@ -1260,7 +1260,7 @@ and infinity are invalid; a lone surrogate is a `SampleError`); `SampleError`s f
 never quote the header; the `httpx` error is the `__cause__`. Private to the package.
 
 ### GeminiProvider
-`tau_next.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
+`tau.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
 
 The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
 `OpenAIProvider` (`Connection`: one client per loop, `ProviderClosed`, `status` and `retry_after`, the
@@ -1311,7 +1311,7 @@ are refused; its `generationConfig` merges into ours, and may not set `candidate
 A walk ending in a `model` turn fails the sample before any request.
 
 ### MockProvider
-`tau_next.providers.mock.MockProvider`, name `"mock"` · D15 · new
+`tau.providers.mock.MockProvider`, name `"mock"` · D15 · new
 
 Hits no network and needs no key. It streams a reply as `TextDelta`s, a word and the
 space after it each, with a delay before each; then yields the whole `Text` and a
@@ -1324,7 +1324,7 @@ holding exactly the text streamed. It fails the sample if the walk has no user t
 and there is no `reply`.
 
 ### tool, Tool
-`tau_next.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
+`tau.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
 
 The contract the driver and providers depend on: `name`, `description`,
 `parameters` (a JSON Schema object for the arguments), and
@@ -1344,7 +1344,7 @@ history's: each sample is handed the driver's tools, and no `Config` or node
 records them.
 
 ### function tool, ToolError, DefinitionError
-`tau_next.ToolError`, `tau_next.DefinitionError` (a `TypeError`); `FunctionTool`,
+`tau.ToolError`, `tau.DefinitionError` (a `TypeError`); `FunctionTool`,
 `assemble_tools` (`_tools.py`, private) · D16 · new
 
 The driver's `tools=` and an extension's `tools` attribute list plain sync or async functions as
@@ -1382,7 +1382,7 @@ that is not a sequence, an options type that is not a frozen dataclass of the la
 that take progress) and the extensions.
 
 ### values, Kind, Context, Field, Form
-`tau_next._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau_next.Form` · D16 · new
+`tau._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau.Form` · D16 · new
 
 The one type language: a Python type hint becomes a `Kind` holding its `schema` (for a
 client, named types with `"format"`), its `model_schema` (without the format, which no
@@ -1410,7 +1410,7 @@ given to a `float` is converted to one. A `CursorId` default of `"new"` is a `De
 caller may ask for a new cursor.
 
 ### named type, Model, CursorId, LabelName, NodeId
-`tau_next.Model` (`str`), `CursorId` (`int`), `LabelName` (`str`), `NodeId` (`int`); `NewType`s · D16 · new
+`tau.Model` (`str`), `CursorId` (`int`), `LabelName` (`str`), `NodeId` (`int`); `NewType`s · D16 · new
 
 A closed set of hints checked in a context: a `Model` is in the catalog (by qualified
 name; the only one an option may be, since it needs the catalog alone), a `CursorId` is an open cursor or `"new"`, a `LabelName` is an existing label, a
@@ -1435,7 +1435,7 @@ async function or runs a sync one on a worker thread. What a handle tells the dr
 its handle.
 
 ### command, CommandFailed
-`tau_next.CommandFailed` (a `RuntimeError`), `Client.commands()` (a tuple of `Form`),
+`tau.CommandFailed` (a `RuntimeError`), `Client.commands()` (a tuple of `Form`),
 `Client.run(cursor, command, args)` · D16 · new
 
 A plain function an extension lists in its `commands` attribute, offered to a person as `/name`;
@@ -1469,7 +1469,7 @@ extension that lists the command, and no hook runs after it; its `run` raises `C
 loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 
 ### tau (extension), /model, /config
-`tau_next._builtin.Tau` · D16 · new
+`tau._builtin.Tau` · D16 · new
 
 The built-in extension, always first in the driver's list (its name is taken: a user extension
 named `tau` is a `DefinitionError`). `/model <Model>` is a `Cursor` command that switches the
@@ -1486,7 +1486,7 @@ with `Client.options(cursor, extension)`: the `Form` whose defaults are the valu
 by it (see *commandline*). The user's file stays `tau config`'s to edit.
 
 ### options (extension)
-`tau_next._options` (`ExtensionOptions`); `ConfigError` · D16 · new
+`tau._options` (`ExtensionOptions`); `ConfigError` · D16 · new
 
 An extension's `options` attribute names a **frozen dataclass**; each field is a hint of the
 values language with a plain default (no `default_factory`; a `Model` is allowed and is checked
@@ -1507,7 +1507,7 @@ extensions=)` is the check `tau config check` makes for the extensions it knows,
 that loads others can pass them.
 
 ### Handles
-`tau_next.handles.Handles` · D16 · new
+`tau.handles.Handles` · D16 · new
 
 What the driver wires into every handle it makes (session, question call, clock, `poke`,
 `changed`, options), with `cursor(id, extension, runner=None)` (`runner`: the client of the
@@ -1525,7 +1525,7 @@ first). Any other name is a `ValueError`. No extension code runs, so completion 
 raise on an extension's account.
 
 ### commandline
-`tau_next.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
+`tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
 
 The pure parts every line-based frontend shares. `parse(line, commands, options)` reads a line
 that starts with `/` as shell words: `Parsed(command, args, missing, extension)`. A `name=value`
@@ -1551,7 +1551,7 @@ needed): command names after `/`, then `values` of the parameter (a `Literal`'s 
 driver's check stays the authority; this only spares a round trip.
 
 ### assemble_tools
-`tau_next._tools.assemble_tools(tools, extensions)` · D16 · new
+`tau._tools.assemble_tools(tools, extensions)` · D16 · new
 
 The driver's `tools=` followed by each extension's `tools` attribute (a sequence of plain
 functions, made `FunctionTool`s, and `Tool` objects), with the extension that lists each; the
@@ -1580,7 +1580,7 @@ object. `TypeError` for a non-`str`, `ValueError` for text that is not a JSON ob
 (`NaN` and `Infinity` are not JSON).
 
 ### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
-`tau_next.ReadTool` and the others, `tau_next.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
+`tau.ReadTool` and the others, `tau.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
 
 Four `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
 PyO3) and whose `call` runs it on a worker thread with the GIL released, so
@@ -1660,7 +1660,7 @@ long line cut short` follows `these`. Lines are counted as newlines plus one
 for a last line without a newline. Kept text that had bytes that are not UTF-8 shows them as U+FFFD and gets one more line, `[invalid UTF-8 in the output was replaced with U+FFFD]`, on the same side as the note.
 
 ### BashRun, kill
-`tau_next._core.BashRun` · new
+`tau._core.BashRun` · new
 
 A started `bash` command. `Bash.start(args_raw)` spawns it as a session leader
 (so its process group id is its pid) and never raises (a bad call is a
@@ -1718,14 +1718,14 @@ by `read` to word its continuation hint. A `Sink` also answers `is_over` (more t
 the limit pushed; `read` stops reading then) and `total` (bytes pushed).
 
 ### Cancel
-`tau_next._core.Cancel` · new
+`tau._core.Cancel` · new
 
 A flag. `Read.run` and `Grep.run` take one; `ReadTool.call` and `GrepTool.call`
 set it when they are cancelled, and the read loop and the grep walk (and its
 searches, per match) check it and stop with an `Err`.
 
 ### Read, Write, Grep, Bash (`_core`)
-`tau_next._core.Read` and the rest · new
+`tau._core.Read` and the rest · new
 
 The native engines under the base tools: `__new__(cwd, max_output, overflow_dir, max_overflow)`
 (`Read`: `cwd, max_output`; `Write`: `cwd` only; `Bash`: also `timeout_ms`, `max_timeout_ms`, `kill_grace_ms`); every argument is
@@ -1735,7 +1735,7 @@ constructor argument raises `ValueError`. Python code uses the `Tool` classes
 above instead.
 
 ### Finish
-`tau_next.Finish` (`protocols.py`) · new
+`tau.Finish` (`protocols.py`) · new
 
 What a provider yields last: `Finish(stop, reason, meta)`, the normalised `Stop`,
 the provider's own string (`None` if it has none), and the response `meta`
@@ -1751,7 +1751,7 @@ retires `ExtensionRunner`, `ExtensionState`, bucket
 
 A Python module registering hooks and tools. No special standing in core. It has a
 non-empty `name`, unique among a driver's extensions, and hooks that are methods named for
-their hook points (`tau_next.Extension` is the `Protocol`).
+their hook points (`tau.Extension` is the `Protocol`).
 
 ### frontend, client
 retires head, `Backend`, `RemoteBackend`
@@ -1760,7 +1760,7 @@ A program that drives sessions and shows events (`tau serve` first). A **client*
 program holds: a `Client`, with an id.
 
 ### Client, LocalClient
-`tau_next.Client` (a `Protocol`), `tau_next.LocalClient` (made by `Driver.client(id, *,
+`tau.Client` (a `Protocol`), `tau.LocalClient` (made by `Driver.client(id, *,
 buffer=256)`; `client.py`) · D16 · new
 
 A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
@@ -1787,7 +1787,7 @@ driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`
 `use_catalog`, `state`, `client` and `add_item`.
 
 ### Calls
-`tau_next._calls.Calls`, `frontend` (private) · D16 · new
+`tau._calls.Calls`, `frontend` (private) · D16 · new
 
 The driver's side of each call of the `Client` protocol: it holds the session, hub, questions and
 commands, and implements `connect`, `watch`, `input`, `send`, `step`, `go_to`, `abort`,
@@ -1798,7 +1798,7 @@ driver is running, change, publish what changed, wake the pump. It exists so tha
 call a frontend makes.
 
 ### event
-`tau_next.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
+`tau.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
 
 What a client hears: `Live | CursorView | Labels | Appended | Notice`. Small state
 is sent whole whenever it changes, to every client, for every cursor; `Live` goes to clients
@@ -1811,7 +1811,7 @@ ignores an `Appended` node it has already read). Events are compared by value; a
 holds schemas (dicts), so it is not hashable. Status (`cursor.show`) is not built.
 
 ### CursorView
-`tau_next.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
+`tau.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
 (`events.py`) · D16 · new (the event D16 calls `CursorState`; that name is the read type of
 `Session.cursor`)
 
@@ -1823,19 +1823,19 @@ the driver notes them from the `post_step` job and the failure. Not in the tree 
 replayed, but in every snapshot, so a late client sees why a step stopped.
 
 ### HookFailure
-`tau_next.HookFailure(extension, point, error)` (`events.py`) · D16 · new, retires `HookError`
+`tau.HookFailure(extension, point, error)` (`events.py`) · D16 · new, retires `HookError`
 
 A cursor hook of `extension` raised, or broke its contract, at hook `point`; `error` is
 `"Type: msg"`, the text a `post_step` hook sees as `Ending.Failed`. Never for a tool hook (that
 is the `Err` in `Results`).
 
 ### Labels
-`tau_next.Labels(labels)` (`events.py`) · D16 · new
+`tau.Labels(labels)` (`events.py`) · D16 · new
 
 Every label and its cursor, `((label, cursor), ...)` in label order.
 
 ### Appended
-`tau_next.Appended(nodes)` (`events.py`) · D16 · new, retires `Saved`
+`tau.Appended(nodes)` (`events.py`) · D16 · new, retires `Saved`
 
 Nodes added to the tree, in id order, bodies included. A client drops a call's `ToolProgress`
 layer when the `Results` node answering it arrives, and a cursor's reply layer (text, thinking
@@ -1843,13 +1843,13 @@ and call deltas) when its `CursorView` has a different `at` or is not busy. A ca
 before its batch is whole adds no node, so nothing is sent.
 
 ### Notice
-`tau_next.Notice(text)` (`events.py`) · D16 · new
+`tau.Notice(text)` (`events.py`) · D16 · new
 
 A message for one client, or for every client: `cursor.tell` (without `to`: all), an input a hook
 refused. Sent only to the clients with that id; dropped if there is none connected.
 
 ### CutOff
-`tau_next.CutOff` (`events.py`; a `ConnectionError`) · D16 · new
+`tau.CutOff` (`events.py`; a `ConnectionError`) · D16 · new
 
 What a client's stream ends with when its `Appended` and `Notice` backlog passed its buffer.
 Nothing buffered is delivered. The client is disconnected; it reconnects to a fresh snapshot.
@@ -1865,7 +1865,7 @@ order) and the text of the open part (`SampleRun.catch_up`). Tool progress has n
 the result arrives as `Appended`.
 
 ### hub, Feed
-`tau_next._hub.Hub`, `Feed` · D16 · new (private)
+`tau._hub.Hub`, `Feed` · D16 · new (private)
 
 The driver's clients. `Hub.sync` is the one place state events are made: it compares the
 session, the driver's questions, and the steps' endings with what it last published and sends
@@ -1879,7 +1879,7 @@ and an `Appended` or `Notice` that finds its share full cuts the client off. One
 second concurrent `anext` raises `RuntimeError`.
 
 ### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
-`tau_next.events` (exported) · D15 · new
+`tau.events` (exported) · D15 · new
 
 What a provider's `sample` yields while a part is still arriving, with no cursor
 (the provider does not know it): `TextDelta(text)`, `ThinkingDelta(text)`,
@@ -1887,7 +1887,7 @@ What a provider's `sample` yields while a part is still arriving, with no cursor
 of its `args_raw`). `Delta` is their union: what a provider may yield. Never saved.
 
 ### tool progress, ToolProgress
-`tau_next.ToolProgress(node, call_id, text)` (`events.py`) · D15 · new
+`tau.ToolProgress(node, call_id, text)` (`events.py`) · D15 · new
 
 What a running tool shows through its progress callback: `text` is the output that arrived
 since the previous `ToolProgress` of the same call, not the whole so far. The call is `node`
@@ -1898,12 +1898,12 @@ holds only the `Outcome` the tool returns. Obeys the buffer rules of any `Live` 
 buffer drops it).
 
 ### LiveDelta
-`tau_next.LiveDelta` (`events.py`) · D15 · new
+`tau.LiveDelta` (`events.py`) · D15 · new
 
 `Delta | ToolProgress`: what a `Live` carries. A provider's `sample` yields only `Delta`.
 
 ### progress callback, Progress
-`tau_next.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
+`tau.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
 
 What a tool is given to show partial output: `progress(text)`. A hand-written `Tool` opts in by
 giving `call` a parameter named `progress`, detected once when the driver is built
@@ -1918,7 +1918,7 @@ annotation is an ordinary argument.
 answer waits for a call already running and the final flush.
 
 ### live event, Live
-`tau_next.Live(cursor, delta)` · D15, D16 · new (the ADR's first draft said "draft event")
+`tau.Live(cursor, delta)` · D15, D16 · new (the ADR's first draft said "draft event")
 
 A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it. Never
 in the tree. Heard only by clients watching the cursor (**watch**); a client whose share of the
@@ -1929,7 +1929,7 @@ layer, keyed by `(node, call_id)`, when a `Results` node of that batch answering
 in an `Appended`.
 
 ### driver
-Python `tau_next.driver.Driver` · new
+Python `tau.driver.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
 place that awaits. `Driver(session, providers, catalog, *, tools, extensions, clock)`:
@@ -1971,7 +1971,7 @@ It reports `(cursor, Answer)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
 ### DriverState
-`tau_next.driver.DriverState` (not exported), from `Driver.state()` · new
+`tau.driver.DriverState` (not exported), from `Driver.state()` · new
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
@@ -1985,14 +1985,14 @@ needs the session open.
 A **poke** wakes the pump after a frontend call.
 
 ### Subject
-`tau_next.Subject` · new
+`tau.Subject` · new
 
 The mutable holder a cursor hook receives: `draft` (`pre_input`,
 `pre_sample`, `pre_reply`), `node` (`post_reply`, `post_result`), `ending`
 (`post_step`). The hook's edits to `draft` are what the hook answers with.
 
 ### CallDraft
-`tau_next.CallDraft` (`protocols.py`) · new
+`tau.CallDraft` (`protocols.py`) · new
 
 The call draft a tool hook receives: `{id, tool, args_raw, outcome?}`. `id` and `tool` are
 read-only (an edit would be ignored, so setting one raises `AttributeError`); `args_raw` and
@@ -2001,7 +2001,7 @@ hooks still run); in `pre_result` it edits the outcome. The hook that changed th
 its `by`.
 
 ### SampleError
-`tau_next.SampleError` · new
+`tau.SampleError` · new
 
 What a provider raises to fail a sample. Parts it yielded first are kept: the
 reply is committed with `stop: Error` and the error's `meta`. The driver
@@ -2015,7 +2015,7 @@ server asked to wait (`None` if it did not say). A retrying wrapper provider rea
 (D15); nothing in core or the driver does.
 
 ### ProviderClosed
-`tau_next.ProviderClosed` (a `SampleError`; `protocols.py`) · D15 · new
+`tau.ProviderClosed` (a `SampleError`; `protocols.py`) · D15 · new
 
 What a sample raises when its provider was closed (`aclose()`) before it started, or while
 it ran. Not transient: a retry cannot succeed, so a retrying wrapper provider passes it on
@@ -2029,7 +2029,7 @@ Re-raises what an effect or the pump died of. A cursor held by an open
 question or a gate does not rest. The pump wakes its waiters after each pass.
 
 ### Clock, SystemClock
-`tau_next.Clock`, `tau_next.SystemClock` · new
+`tau.Clock`, `tau.SystemClock` · new
 
 `now() -> int` (milliseconds). The driver reads time only through it, so tests
 move time themselves.
@@ -2073,7 +2073,7 @@ lease, as after a crash, and the session is opened again. **JMFTS** (Phase 7) is
 never the store of record.
 
 ### TooLarge
-`tau_next.TooLarge` (`tau_store::Error::TooLarge`, a `ValueError`) · new
+`tau.TooLarge` (`tau_store::Error::TooLarge`, a `ValueError`) · new
 
 A record whose encoding does not fit the log's `u32` length (4 GiB or more).
 It was a panic that poisoned the session; it is an ordinary failed save now.
@@ -2089,7 +2089,7 @@ session goes on from its last sync) and keeps the bytes as
 `dropped-<offset>` in the session directory; `dropped` is how many. Only a
 record that is short or fails its checksum is torn. A record whose length and
 checksum agree but whose JSON does not decode is intact, not torn: open fails
-with `Undecodable` (Python `tau_next.Undecodable`, a `ValueError`; names the
+with `Undecodable` (Python `tau.Undecodable`, a `ValueError`; names the
 log file, the record's position from 0, and its byte offset) and cuts nothing,
 wherever in the log it is. Rust only:
 the Python `Session.dropped` was removed, because nothing but a test asserting
@@ -2175,7 +2175,7 @@ static check and nothing else while no subscriber is installed. Names are
 and does no IO.
 
 ### trace
-`tau_next.trace` · new
+`tau.trace` · new
 
 One recording of spans, written as a Chrome trace file (Perfetto,
 chrome://tracing) by `tracing-chrome`. `trace.start(path)`, `trace.stop()`,
@@ -2185,15 +2185,15 @@ process. The driver's own spans, `trace.span(kind, name)` (`hook`, `sample`,
 track per asyncio task; they are no-ops when no trace runs.
 
 ### trace_to, stop_trace, trace_clock
-`tau_next._core` · new
+`tau._core` · new
 
 The native half of a trace: `trace_to(path)` installs the global subscriber
 the first time and starts recording, `stop_trace()` returns when the file is
 complete, `trace_clock()` is microseconds on the spans' own clock. Not for
-callers other than `tau_next.trace`.
+callers other than `tau.trace`.
 
 ### TraceError
-`tau_next.TraceError` (`tau_next._core.TraceError`, a `RuntimeError`) · new
+`tau.TraceError` (`tau._core.TraceError`, a `RuntimeError`) · new
 
 A trace started while one runs, stopped while none runs, or that cannot be
 installed because another global tracing subscriber is.

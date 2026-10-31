@@ -30,7 +30,7 @@ from wire import (
     sse_text,
 )
 
-from tau_next import (
+from tau import (
     Body,
     Delta,
     Finish,

@@ -10,7 +10,7 @@ import pytest
 from fakes import Fail, FakeProvider, Gate, Reply
 from harness import Harness, say, scenario
 
-from tau_next import (
+from tau import (
     Appended,
     Author,
     Body,

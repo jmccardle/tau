@@ -24,7 +24,7 @@ from wire import (
     sse,
 )
 
-from tau_next import (
+from tau import (
     CallArgs,
     CallNamed,
     Finish,
@@ -34,8 +34,8 @@ from tau_next import (
     TextDelta,
     ThinkingDelta,
 )
-from tau_next.protocols import Provider
-from tau_next.providers.openai import OpenAIProvider
+from tau.protocols import Provider
+from tau.providers.openai import OpenAIProvider
 
 
 def with_options(**options: object) -> ModelConfig:

@@ -1,8 +1,7 @@
-"""Free-threading: importing tau_next must not re-enable the GIL, and one
+"""Free-threading: importing tau must not re-enable the GIL, and one
 Session must be safe to call from many threads at once.
 
-τ 0.15 ships on free-threaded 3.14t/3.15t; the rewrite may not regress that.
-The same check with τ 0.15 imported alongside is in parity/.
+τ 0.15 shipped on free-threaded 3.14t/3.15t; the rewrite may not regress that.
 """
 
 import random
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tau_next import Answer, Author, Body, Busy, Config, ItemData, Job, Session, WrongAnswer
+from tau import Answer, Author, Body, Busy, Config, ItemData, Job, Session, WrongAnswer
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 THREADS = 16
@@ -63,7 +62,7 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
 
 EXIT_WHILE_STREAMING = """
 import asyncio, sys, threading, time
-from tau_next import BashTool
+from tau import BashTool
 
 seen = []
 tool = BashTool(".")
@@ -152,7 +151,7 @@ def test_threads_drive_one_cursor_without_deadlock_or_corruption(
 TRACE_WHILE_SPANNING = """
 import sys, tempfile, threading
 from pathlib import Path
-from tau_next import Config, Session, trace
+from tau import Config, Session, trace
 
 session = Session.create(Config("{}"), "sys", 0)
 

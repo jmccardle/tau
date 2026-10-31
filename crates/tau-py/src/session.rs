@@ -175,7 +175,7 @@ impl Shared {
 /// queued records to the store (when there is one) before it returns; Python
 /// never saves. `tree` is the read view of the nodes; `cursor` snapshots one
 /// cursor.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Session {
     shared: Arc<Shared>,
@@ -444,7 +444,7 @@ impl Session {
 /// cursor, they ride its phase's sync while its hook job is out. Only the
 /// handles hold one (`HandleWrites(session, hook)`), so a frontend cannot name a
 /// cursor and skip a sync.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct HandleWrites {
     shared: Arc<Shared>,

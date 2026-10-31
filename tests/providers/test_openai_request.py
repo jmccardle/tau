@@ -7,7 +7,7 @@ from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 from wire import OPENAI, OPENAI_BARE, OPENAI_MODEL, OPENAI_URL, posted, sent, walk_of
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Draft,

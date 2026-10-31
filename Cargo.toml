@@ -9,7 +9,7 @@ version = "0.16.0-dev.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
-repository = "https://dev.ffwf.net/john/trusty"
+repository = "https://dev.ffwf.net/john/tau"
 
 [workspace.dependencies]
 tau-core = { path = "crates/tau-core" }

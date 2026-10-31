@@ -9,7 +9,7 @@ only; nothing here was optimized. Method and capture API are Phase 3d's
 `scripts/trace_turn.py --out docs/as-built/phase4/traces --runs 30`
 (unchanged). The turn: user message, one `read` tool call (the Rust base tool),
 its result, a final reply; `FakeProvider` (scripted samples, no network), every
-hook point on, through the tests' `Harness` and `tau_next.Driver`. Run once with
+hook point on, through the tests' `Harness` and `tau.Driver`. Run once with
 the session in memory (`turn.json`) and once on disk (`turn-stored.json`).
 The real provider modules (`providers/anthropic`, `openai`, `gemini`, `mock`) are
 not in this turn; no API was called. View a trace at <https://ui.perfetto.dev>.

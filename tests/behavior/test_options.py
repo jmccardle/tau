@@ -9,7 +9,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, build, say, scenario
 
-from tau_next import (
+from tau import (
     Body,
     CommandFailed,
     ConfigError,
@@ -25,7 +25,7 @@ from tau_next import (
     check_config,
     read_models,
 )
-from tau_next.commandline import completions, parse
+from tau.commandline import completions, parse
 
 DEFAULT_MODEL = Model(FAKE_MODEL)
 

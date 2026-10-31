@@ -1,6 +1,6 @@
 [package]
 name = "tau-py"
-description = "PyO3 bindings: exposes tau-core to Python as tau_next._core."
+description = "PyO3 bindings: exposes tau-core to Python as tau._core."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

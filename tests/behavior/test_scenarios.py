@@ -18,8 +18,8 @@ from fakes import (
 )
 from harness import Harness, scenario
 
-import tau_next
-from tau_next import (
+import tau
+from tau import (
     Author,
     Body,
     CallDraft,
@@ -493,7 +493,7 @@ async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path
     await h.settle()
     assert [q.text for q in (await h.view()).questions] == ["send it?"]
     assert h.session.cursor(h.cursor).busy
-    with pytest.raises(tau_next.Busy):
+    with pytest.raises(tau.Busy):
         await h.step()
     await h.input("more")
     await h.respond("yes")

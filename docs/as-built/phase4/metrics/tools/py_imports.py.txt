@@ -1,23 +1,23 @@
-"""Import graph of python/tau_next via grimp. Run from the repo root with PYTHONPATH=python. grimp cannot see the native tau_next._core, so edges to it are rebuilt from a text scan; writes phase4/metrics/data/imports.{json,dot} and import-edges.txt."""
+"""Import graph of python/tau via grimp. Run from the repo root with PYTHONPATH=python. grimp cannot see the native tau._core, so edges to it are rebuilt from a text scan; writes phase4/metrics/data/imports.{json,dot} and import-edges.txt."""
 import grimp,json,sys,collections
-g=grimp.build_graph("tau_next",include_external_packages=True)
-mods=sorted(m for m in g.modules if m.startswith("tau_next"))
+g=grimp.build_graph("tau",include_external_packages=True)
+mods=sorted(m for m in g.modules if m.startswith("tau"))
 edges=[];ext=collections.defaultdict(set)
 for m in mods:
     for i in sorted(g.find_modules_directly_imported_by(m)):
-        if i.startswith("tau_next"):edges.append((m,i))
+        if i.startswith("tau"):edges.append((m,i))
 for m in mods:
     for i in sorted(g.find_modules_directly_imported_by(m)):
-        if not i.startswith("tau_next"):ext[m].add(i)
+        if not i.startswith("tau"):ext[m].add(i)
 import re,pathlib
 core=set()
-for f in pathlib.Path("python/tau_next").rglob("*.py"):
+for f in pathlib.Path("python/tau").rglob("*.py"):
     t=f.read_text()
-    if re.search(r"^\s*(from tau_next\._core import|from tau_next import _core|import tau_next\._core)",t,re.M):
+    if re.search(r"^\s*(from tau\._core import|from tau import _core|import tau\._core)",t,re.M):
         core.add(str(f.with_suffix("")).removeprefix("python/").replace("/",".").removesuffix(".__init__"))
-edges=[(a,b) for a,b in edges if b!="tau_next" or a=="tau_next" and False]
-edges+= [(a,"tau_next._core") for a in sorted(core)]
-mods=mods+["tau_next._core"]
+edges=[(a,b) for a,b in edges if b!="tau" or a=="tau" and False]
+edges+= [(a,"tau._core") for a in sorted(core)]
+mods=mods+["tau._core"]
 # cycles via SCC
 import itertools
 adj=collections.defaultdict(set)
@@ -43,16 +43,16 @@ ex={m:sorted(v) for m,v in ext.items()}
 json.dump({"modules":mods,"edges":edges,"cycles":cyc,"external":ex},open("docs/as-built/phase4/metrics/data/imports.json","w"),indent=1)
 print(len(mods),"modules",len(edges),"edges; cycles:",cyc)
 indeg=collections.Counter(b for a,b in edges);outdeg=collections.Counter(a for a,b in edges)
-print("core importers:",[m for m in mods if "tau_next._core" in g.find_modules_directly_imported_by(m)] if "tau_next._core" in g.modules else "n/a")
+print("core importers:",[m for m in mods if "tau._core" in g.find_modules_directly_imported_by(m)] if "tau._core" in g.modules else "n/a")
 for m in mods:print(m,"out",outdeg[m],"in",indeg[m])
 allext=collections.Counter(i.split(".")[0] for v in ext.values() for i in v);print(allext)
 for m,v in ex.items():
     print(m,[x for x in v if not x.split(".")[0] in sys.stdlib_module_names])
 # dot
 with open("docs/as-built/phase4/metrics/data/imports.dot","w") as f:
-    f.write('digraph tau_next {\n rankdir=LR; node [shape=box,fontsize=10];\n')
+    f.write('digraph tau {\n rankdir=LR; node [shape=box,fontsize=10];\n')
     for m in mods:
         c="lightblue" if ".providers" in m else "white"
-        f.write(f' "{m.removeprefix("tau_next.")}" [style=filled,fillcolor={c}];\n' if m!="tau_next" else ' "tau_next" [style=filled,fillcolor=lightgrey];\n')
-    for a,b in edges:f.write(f' "{a.removeprefix("tau_next.")}" -> "{b.removeprefix("tau_next.")}";\n')
+        f.write(f' "{m.removeprefix("tau.")}" [style=filled,fillcolor={c}];\n' if m!="tau" else ' "tau" [style=filled,fillcolor=lightgrey];\n')
+    for a,b in edges:f.write(f' "{a.removeprefix("tau.")}" -> "{b.removeprefix("tau.")}";\n')
     f.write("}\n")

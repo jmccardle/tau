@@ -8,7 +8,7 @@ import pytest
 from fakes import FakeProvider, Reply
 from harness import Harness, scenario
 
-from tau_next import (
+from tau import (
     Body,
     Delta,
     Finish,

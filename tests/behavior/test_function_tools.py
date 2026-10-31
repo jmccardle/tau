@@ -12,7 +12,7 @@ from fakes import FakeProvider, Gate, Reply
 from harness import Harness, build, say, scenario
 from words import word_count
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Cursor,

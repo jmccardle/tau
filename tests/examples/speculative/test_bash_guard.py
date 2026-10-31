@@ -12,7 +12,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 
-from tau_next import (
+from tau import (
     BashTool,
     Body,
     ConfigError,
@@ -23,7 +23,7 @@ from tau_next import (
     Stop,
     read_models,
 )
-from tau_next.commandline import parse
+from tau.commandline import parse
 
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
 

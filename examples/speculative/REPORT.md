@@ -3,7 +3,7 @@
 Seven exploratory extensions, written against the public API at `ab490dd`, to
 stretch the extension and frontend contracts. Each has a module here, a friction
 log (`<name>.md`), and tests in `tests/examples/speculative/` (87, all through the
-public API, the Harness or `LocalClient`). Nothing under `python/tau_next` was
+public API, the Harness or `LocalClient`). Nothing under `python/tau` was
 changed: where the API had no word for something, the code says `WISH:` and the
 log records the gap. An independent review checked every load-bearing claim
 against the code; the corrections are folded in below.

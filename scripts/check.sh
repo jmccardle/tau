@@ -2,8 +2,7 @@
 # The whole gate, in the order CI runs it. Local and CI run this same file.
 #
 # Requires the in-repo venv (.venv) with the dev group installed; see
-# CLAUDE.md "Commands". Does not need τ 0.15: parity is scripts/parity.sh. Uses
-# no tool from PATH except cargo and rust-code-analysis-cli (the ratchet; both
+# CLAUDE.md "Commands". Uses no tool from PATH except cargo and rust-code-analysis-cli (the ratchet; both
 # in ~/.cargo/bin, installed by scripts/ci-toolchain.sh).
 set -euo pipefail
 
@@ -30,7 +29,7 @@ step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop
 step "rules";        "$PY" scripts/check_rules.py
 step "ratchet";      "$PY" scripts/ratchet.py          # rule 7, Rust and Python; needs rust-code-analysis-cli, radon
 step "core is IO-free"; "$PY" scripts/check_core_io.py
-step "stubtest";     "$PY" -m mypy.stubtest tau_next._core
+step "stubtest";     "$PY" -m mypy.stubtest tau._core
 step "ruff";         "$BIN/ruff" check .
 "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"

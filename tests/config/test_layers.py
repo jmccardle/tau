@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from world import PROVIDERS, URL, World, tau, trust
 
-from tau_next import (
+from tau import (
     ConfigError,
     ConfigProblem,
     ModelCatalog,

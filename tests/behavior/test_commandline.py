@@ -7,8 +7,8 @@ import pytest
 from fakes import FakeProvider
 from harness import Harness, say, scenario
 
-from tau_next import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
-from tau_next.commandline import UnknownCommand, completions, parse, value, values
+from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
+from tau.commandline import UnknownCommand, completions, parse, value, values
 
 
 def configure(cursor: Cursor, mode: Literal["fast", "slow"], size: int, ratio: float = 1.0) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from calls import call, err
 
-from tau_next import Outcome, WriteTool
+from tau import Outcome, WriteTool
 
 
 def test_writes_creating_parents_and_counts_lines_and_bytes(tmp_path: Path) -> None:

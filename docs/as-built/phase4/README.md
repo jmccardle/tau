@@ -32,7 +32,7 @@ for a change to model.md. **What blocks sign-off:**
 
 ## 2. Numbers
 
-| | `python/tau_next` | `crates/*/src` (3d) | τ 0.15 `src` |
+| | `python/tau` | `crates/*/src` (3d) | τ 0.15 `src` |
 |---|---:|---:|---:|
 | lines | 7,184 | ~7,100 | ~99,000 |
 | functions over CC 10 | 25 (5.5%) | 5.4% | 6.7% |
@@ -100,7 +100,7 @@ The reviewers found about as much to delete as to fix. The main items:
 - **tools:** defaults written in three places (Rust, PyO3 signatures, Python); the PyO3 ones
   are never used.
 - **glossary (rule 2):** `CursorHook`, `ToolHook`, `CallKey`, `ProgressTool`, `check_meta`
-  and four `Driver` reads have no entry; the glossary names a `tau_next.Hook` that is not
+  and four `Driver` reads have no entry; the glossary names a `tau.Hook` that is not
   exported.
 
 ## 5. Rulings
@@ -158,12 +158,12 @@ The work, all on master:
 | step | what |
 |---|---|
 | wave 1 | four packages (trust/config/CLI, driver/events, tools, boundary): bugs 1-13, the risks, R1-R7, the defaults, the subtraction in §4 |
-| R8 | `scripts/ratchet.py` measures `python/tau_next` (radon): 0 violations, empty allowlist |
+| R8 | `scripts/ratchet.py` measures `python/tau` (radon): 0 violations, empty allowlist |
 | re-review | two Opus reviewers re-ran every repro: wave 1 landed; they found a second layer (more permission tracebacks, a second signal orphaning `bash`, full-disk overflow, a parent `.tau` blocking `tau trust`, streams hanging after a stop, a plain-`def` tool killing the driver, a leaked `CancelledError` stranding a cursor, `hook=` bypassable through `TreeHandle`) |
 | wave 2 | two packages fixing all of those, plus `HookError` |
 | final check | an Opus reviewer verified each wave-2 claim by script; one left (a double Ctrl-C still orphaned `bash`), fixed in `f594a6b` with a test that failed before |
 
-Numbers after the waves: `python/tau_next` 7,457 lines; highest function CC 15; largest
+Numbers after the waves: `python/tau` 7,457 lines; highest function CC 15; largest
 file 683 lines; `Driver` 25 methods (the limit: its next method needs a split); 831 tests
 pass, 4 skip; `scripts/check.sh` green including both ratchets.
 

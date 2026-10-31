@@ -37,7 +37,7 @@ screen, the design is wrong, not the example.
 ### 1. One type language
 
 Tool parameters, command parameters, a question's answer and an extension's options are
-written as Python type hints, and one private module (`tau_next._values`) turns a hint into a
+written as Python type hints, and one private module (`tau._values`) turns a hint into a
 schema, checks a JSON value against it, and converts it to what the function receives.
 Nothing else describes a value.
 
@@ -220,7 +220,7 @@ nothing.
 **Completion** has two sources and no callbacks: the values in the schema (`Literal`), and
 `complete` for the named types, answered by the driver from the session and the config
 (paths on the driver's machine, which matters when the client is remote). No extension code
-runs per keystroke, so completion cannot hang or raise. `tau_next.commandline` holds the
+runs per keystroke, so completion cannot hang or raise. `tau.commandline` holds the
 pure parts every line-based frontend shares: `parse(line, commands, options)` (shell words;
 positional values fill parameters in order, `name=value` any; the last parameter, when a plain
 `str` or `str | None`, takes the rest of the line as typed; a list takes comma-separated values,
@@ -414,7 +414,7 @@ Where the text above was silent, as built:
 ## Consequences
 
 - Code (Phase 5, in this order):
-  1. `tau_next._values` and functions as tools and commands (§1, §2's descriptions and
+  1. `tau._values` and functions as tools and commands (§1, §2's descriptions and
      injection, `describe=` replaced by `Annotated`); `ask(text, expect)` (§3) on both
      handles;
   2. (built) `Client`, `LocalClient`, the §5 events and snapshot, questions with ids and targets;

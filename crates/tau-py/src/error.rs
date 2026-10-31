@@ -17,7 +17,7 @@ use tau_store as store;
 /// `CLASSES` under its own name, which [`add_all`] registers.
 macro_rules! exceptions {
     ($($name:ident: $base:ty = $doc:literal;)*) => {
-        $(create_exception!(tau_next._core, $name, $base, $doc);)*
+        $(create_exception!(tau._core, $name, $base, $doc);)*
 
         /// Python name and class of every exception created above.
         const CLASSES: &[(&str, fn(Python<'_>) -> Bound<'_, PyType>)] =

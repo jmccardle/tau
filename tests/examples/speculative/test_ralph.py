@@ -11,7 +11,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, say, scenario
 
-from tau_next import (
+from tau import (
     Appended,
     Author,
     Body,
@@ -27,7 +27,7 @@ from tau_next import (
     WriteTool,
     model_config,
 )
-from tau_next.commandline import parse
+from tau.commandline import parse
 
 
 def load(name: str) -> ModuleType:

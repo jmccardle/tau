@@ -5,7 +5,7 @@ from pathlib import Path
 
 from calls import call, err
 
-from tau_next import Outcome, ReadTool
+from tau import Outcome, ReadTool
 
 
 def test_reads_a_file_verbatim_relative_to_the_working_directory(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from wire import (
     sse,
 )
 
-from tau_next import Finish, Part, SampleError, Stop, TextDelta, ThinkingDelta
+from tau import Finish, Part, SampleError, Stop, TextDelta, ThinkingDelta
 
 
 def meta_of(item: object) -> object:

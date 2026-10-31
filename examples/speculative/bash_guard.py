@@ -16,7 +16,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau_next import CallDraft, Cursor, NodeHandle, Outcome, Subject
+from tau import CallDraft, Cursor, NodeHandle, Outcome, Subject
 
 TAIL = 200
 BOUNDED = re.compile(r"\|\s*(?:head|tail|wc)\b")  # already piped to something short

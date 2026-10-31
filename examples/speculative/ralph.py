@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
-from tau_next import Body, Cursor, Ending, Next, NodeId, Subject
+from tau import Body, Cursor, Ending, Next, NodeId, Subject
 
 
 @dataclass(frozen=True)

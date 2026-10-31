@@ -7,7 +7,7 @@ import pytest
 from fakes import FakeProvider, Recorder, Reply
 from harness import Harness, scenario
 
-from tau_next import Part, TraceError, trace
+from tau import Part, TraceError, trace
 
 
 def names(path: Path) -> set[str]:

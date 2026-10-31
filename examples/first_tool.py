@@ -13,7 +13,7 @@ from typing import Annotated
 
 from common import close_all, rest, run
 
-from tau_next import (
+from tau import (
     Body,
     Driver,
     LoadedConfig,

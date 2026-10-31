@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from calls import call, err, ok
 
-from tau_next import BashTool, GrepTool, Outcome
+from tau import BashTool, GrepTool, Outcome
 
 # Starts `sleep 13` in a session of its own, and goes on once it is there (a bare
 # `setsid ... &` races with the end of the command), saving its pid.
@@ -76,7 +76,7 @@ def test_each_call_has_its_own_thread(tmp_path: Path) -> None:
 
 MEASURE = """
 import asyncio, json, resource, sys
-from tau_next import ReadTool
+from tau import ReadTool
 tool = ReadTool(sys.argv[1])
 before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 out = asyncio.run(tool.call(json.dumps({"path": "one.txt"})))

@@ -12,7 +12,7 @@ from types import ModuleType
 import httpx
 import pytest
 
-from tau_next import (
+from tau import (
     Delta,
     Finish,
     ModelConfig,

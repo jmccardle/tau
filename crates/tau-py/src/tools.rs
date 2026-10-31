@@ -1,7 +1,7 @@
 //! The base tools of `tau-tools`, as Python classes. Conversion only: each
 //! `run`/`wait` releases the GIL for the whole of the work and answers an
 //! `Outcome`. The `Tool` protocol's `async call` is Python's, in
-//! `tau_next.base_tools`, which runs these off the event loop.
+//! `tau.base_tools`, which runs these off the event loop.
 
 // Properties are methods in Python, whether or not they read `self`.
 #![allow(clippy::unused_self)]
@@ -57,7 +57,7 @@ fn parameters_json(schema: &serde_json::Value) -> String {
 }
 
 /// A flag that stops a running `read` or `grep`.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Cancel {
     flag: Flag,
@@ -77,7 +77,7 @@ impl Cancel {
 }
 
 /// The `read` tool.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Read {
     inner: ReadTool,
@@ -114,7 +114,7 @@ impl Read {
 }
 
 /// The `write` tool.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Write {
     inner: WriteTool,
@@ -151,7 +151,7 @@ impl Write {
 }
 
 /// The `grep` tool.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Grep {
     inner: GrepTool,
@@ -194,7 +194,7 @@ impl Grep {
 }
 
 /// The `bash` tool.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Bash {
     inner: BashTool,
@@ -246,7 +246,7 @@ impl Bash {
 }
 
 /// A started command, killable from any thread.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct BashRun {
     inner: Run,

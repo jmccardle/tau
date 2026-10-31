@@ -3,8 +3,9 @@
 Used for the tau 0.15 baseline in docs/as-built/metrics (radon is not a
 dependency of this repo; run it from a throwaway venv):
 
+    git worktree add /tmp/tau-0.15 v0.15.0
     python3 -m venv /tmp/radonvenv && /tmp/radonvenv/bin/pip install radon==6.0.1
-    /tmp/radonvenv/bin/python scripts/py_baseline.py ~/Development/tau \
+    /tmp/radonvenv/bin/python scripts/py_baseline.py /tmp/tau-0.15 \
         --src tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src \
         --tests tau-llm/tests tau-agent-core/tests tau-coding-agent/tests tau-jmfts/tests
 

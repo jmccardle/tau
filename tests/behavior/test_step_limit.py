@@ -5,7 +5,7 @@ from pathlib import Path
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 
-from tau_next import Body, Config, Cursor, Part, StepLimit, Stop, Subject, model_config
+from tau import Body, Config, Cursor, Part, StepLimit, Stop, Subject, model_config
 
 
 def text(t: str) -> Reply:

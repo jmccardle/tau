@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import pytest
 
-from tau_next import (
+from tau import (
     Body,
     CallDraft,
     Cursor,

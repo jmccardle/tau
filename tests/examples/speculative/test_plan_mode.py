@@ -15,7 +15,7 @@ from typing import Any, cast
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     CursorView,

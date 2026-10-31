@@ -32,7 +32,7 @@ from wire import (
     thinking,
 )
 
-from tau_next import (
+from tau import (
     Body,
     CallArgs,
     CallNamed,

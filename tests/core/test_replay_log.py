@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import tau_next
-from tau_next import Author, Body, Config, Part, Replay, Session, Stop
+import tau
+from tau import Author, Body, Config, Part, Replay, Session, Stop
 
 SIGNED = Replay("anthropic", '{ "signature" : "ab\\u00e9==\\n" }')  # spacing and escapes kept
 
@@ -66,18 +66,18 @@ BAD_DATA = {
 
 @pytest.mark.parametrize("data", BAD_DATA.values(), ids=BAD_DATA.keys())
 def test_bad_replay_data_is_refused_at_construction(data: str) -> None:
-    with pytest.raises(tau_next.BadReplay, match="JSON object"):
+    with pytest.raises(tau.BadReplay, match="JSON object"):
         Replay("anthropic", data)
 
 
 def test_a_duplicate_key_says_so() -> None:
-    with pytest.raises(tau_next.BadReplay, match="repeated key"):
+    with pytest.raises(tau.BadReplay, match="repeated key"):
         Replay("anthropic", '{"a":1,"a":2}')
 
 
 @pytest.mark.parametrize("name", ["", " ", "\t\n", "a\0b", "a\nb"], ids=repr)
 def test_a_replay_with_no_visible_provider_is_refused(name: str) -> None:
-    with pytest.raises(tau_next.BadReplay, match="provider"):
+    with pytest.raises(tau.BadReplay, match="provider"):
         Replay(name, "{}")
 
 
@@ -86,7 +86,7 @@ def test_a_replays_repr_is_python_not_rust() -> None:
 
 
 def test_bad_replay_is_a_value_error() -> None:
-    assert issubclass(tau_next.BadReplay, ValueError)
+    assert issubclass(tau.BadReplay, ValueError)
 
 
 def test_parts_with_replay_round_trip_through_the_log(tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ def test_a_log_holding_bad_replay_data_does_not_load(tmp_path: Path) -> None:
         b'"stop":"End","finish_reason":null,"meta":null}},"delivers":[]},"mv":null}}'
     )
     append_record(tmp_path / "s", bad)
-    with pytest.raises(tau_next.Undecodable, match="JSON object"):
+    with pytest.raises(tau.Undecodable, match="JSON object"):
         Session.load(tmp_path / "s")
 
 
@@ -165,7 +165,7 @@ def test_a_null_replay_in_the_log_is_refused_for_every_kind_of_part(
     session, _ = new(tmp_path / "s")
     session.close()
     append_record(tmp_path / "s", _log_with(part))
-    with pytest.raises(tau_next.Undecodable, match="replay"):
+    with pytest.raises(tau.Undecodable, match="replay"):
         Session.load(tmp_path / "s")
 
 
@@ -174,5 +174,5 @@ def test_a_duplicate_key_in_logged_replay_data_says_so(tmp_path: Path) -> None:
     session.close()
     part = b'{"Text":{"text":"hi","replay":{"provider":"p","data":"{\\"a\\":1,\\"a\\":2}"}}}'
     append_record(tmp_path / "s", _log_with(part))
-    with pytest.raises(tau_next.Undecodable, match="repeated key"):
+    with pytest.raises(tau.Undecodable, match="repeated key"):
         Session.load(tmp_path / "s")

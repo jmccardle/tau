@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from tau_next import (
+from tau import (
     CallDraft,
     Cursor,
     Delta,

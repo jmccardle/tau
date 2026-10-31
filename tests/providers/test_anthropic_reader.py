@@ -19,7 +19,7 @@ from wire import (
     walk_of,
 )
 
-from tau_next import Body, Finish, Part, Replay, Stop
+from tau import Body, Finish, Part, Replay, Stop
 
 
 @scenario

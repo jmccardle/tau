@@ -7,7 +7,7 @@ use tau_core::step;
 use crate::values::{Author, Body, Outcome, Part, Stop, debug_repr};
 
 /// Python view of [`step::Hook`]: the seven cursor hook points.
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hook {
     PreStep,
@@ -53,7 +53,7 @@ impl From<step::Hook> for Hook {
 }
 
 /// Python view of [`step::Ending`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ending {
     Done {},
@@ -74,7 +74,7 @@ impl From<step::Ending> for Ending {
 }
 
 /// Python view of [`step::Draft`].
-#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Draft {
     body: Body,
@@ -117,7 +117,7 @@ impl From<Draft> for step::Draft {
 }
 
 /// Python view of [`step::RunCall`].
-#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RunCall {
     id: String,
@@ -136,7 +136,7 @@ impl From<step::RunCall> for RunCall {
 }
 
 /// Python view of [`step::Job`].
-#[pyclass(frozen, eq, hash, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Job {
     Hooks {
@@ -180,7 +180,7 @@ impl From<step::Job> for Job {
 }
 
 /// Python view of [`step::SampleEnd`]: how a sample ended.
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SampleEnd {
     #[pyo3(constructor = (stop, reason = None, meta = None))]
@@ -212,7 +212,7 @@ impl From<SampleEnd> for step::SampleEnd {
 }
 
 /// Python view of [`step::Answer`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Answer {
     #[pyo3(constructor = (stop = None, draft = None))]

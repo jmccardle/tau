@@ -13,7 +13,7 @@ import pytest
 from fakes import FAKE_CONFIG, FakeProvider, Reply, fake_catalog
 from harness import Harness, build, called, offered, scenario
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     DefinitionError,

@@ -1,13 +1,18 @@
-# τ next — "Trusty"
+# τ (tau)
 
-**T**au, **Rust**, and you can still see the tail of **Py** sticking out.
+An agent harness. A sans-IO Rust core holds the session tree and the step
+algorithm. Python drives it, and Python is where providers, tools, hooks,
+extensions and frontends live.
 
-A ground-up rewrite of the [τ](https://dev.ffwf.net/john/tau) agent harness: a
-sans-IO Rust core holding the session tree and the step algorithm, driven from
-Python, where providers, tools, hooks, extensions, and frontends live. It will
-ship as τ 0.16.0.
+τ 0.16 is codename **Trusty**: **T**au, **Rust**, and you can still see the tail
+of **Py** sticking out. It is a ground-up rewrite of 0.15, which is tag
+`v0.15.0` and is maintained on the `0.15.x` branch.
 
-Status: **Phase 3, Rust core in progress.** Nothing here runs an agent
-yet. See [`docs/design/`](docs/design/) for the model and invariants,
-[`docs/plan.md`](docs/plan.md) for the phases and status;
-[`CLAUDE.md`](CLAUDE.md) for the rules and commands.
+Status: **0.16 in development.** The library runs agents: see `examples/`, for
+example `examples/chat.py`. The `tau` command currently offers only
+`config check` and `trust`. The frontends (the TUI, `tau serve`) are not built
+yet.
+
+- [`docs/design/`](docs/design/): the model, its invariants and the decisions behind them.
+- [`docs/plan.md`](docs/plan.md): the phases and where we are.
+- [`CLAUDE.md`](CLAUDE.md): the rules and commands.

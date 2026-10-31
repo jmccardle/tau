@@ -23,7 +23,7 @@ macro_rules! debug_repr {
 pub(crate) use debug_repr;
 
 /// Python view of [`tree::Replay`]. Construction validates, so a `Part` never holds a bad one.
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Replay {
     inner: tree::Replay,
@@ -59,7 +59,7 @@ impl Replay {
 }
 
 /// Python view of [`tree::Part`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     #[pyo3(constructor = (text, replay = None))]
@@ -136,7 +136,7 @@ impl From<Part> for tree::Part {
 }
 
 /// Python view of [`tree::Stop`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stop {
     End,
@@ -171,7 +171,7 @@ impl From<Stop> for tree::Stop {
 }
 
 /// Python view of [`tree::Outcome`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Outcome {
     Ok { value: String },
@@ -200,7 +200,7 @@ impl From<Outcome> for tree::Outcome {
 }
 
 /// Python view of [`tree::Author`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Author {
     Frontend { client: String },
@@ -235,7 +235,7 @@ impl From<Author> for tree::Author {
 }
 
 /// Python view of [`tree::Config`].
-#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Config {
     data: String,
@@ -266,7 +266,7 @@ impl From<Config> for tree::Config {
 }
 
 /// Python view of [`tree::Body`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Body {
     System {
@@ -353,7 +353,7 @@ impl From<Body> for tree::Body {
 }
 
 /// Python view of [`tree::Node`].
-#[pyclass(frozen, eq, hash, get_all, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
     id: u64,
@@ -378,7 +378,7 @@ impl From<tree::Node> for Node {
 }
 
 /// Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`.
-#[pyclass(frozen, eq, hash, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
     #[pyo3(get)]
@@ -406,7 +406,7 @@ impl From<tree::Move> for Move {
 }
 
 /// Python view of [`tree::ItemData`].
-#[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemData {
     Input { client: String, text: String },
@@ -432,7 +432,7 @@ impl From<ItemData> for tree::ItemData {
 }
 
 /// Python view of [`tree::Item`].
-#[pyclass(frozen, eq, hash, get_all, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Item {
     id: u64,
@@ -451,7 +451,7 @@ impl From<tree::Item> for Item {
 }
 
 /// Python view of [`tree::Next`].
-#[pyclass(frozen, eq, hash, module = "tau_next._core")]
+#[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Next {
     Wait,

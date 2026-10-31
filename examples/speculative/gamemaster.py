@@ -16,7 +16,7 @@ import random
 import re
 from typing import Annotated
 
-from tau_next import (
+from tau import (
     Body,
     Cursor,
     Ending,

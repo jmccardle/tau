@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-import tau_next
-from tau_next import (
+import tau
+from tau import (
     Author,
     Body,
     Config,
@@ -66,7 +66,7 @@ def test_create_in_a_directory_is_loadable_at_once(tmp_path: Path) -> None:
 def test_create_refuses_a_directory_that_holds_a_session(tmp_path: Path) -> None:
     session, _ = new(tmp_path / "s")
     session.close()
-    with pytest.raises(tau_next.Exists):
+    with pytest.raises(tau.Exists):
         new(tmp_path / "s")
 
 
@@ -81,7 +81,7 @@ def test_a_cursor_snapshot_does_not_see_a_move_made_after_it() -> None:
     assert before.at != 0
     assert len(after.moves) == len(moves) + 1
     session.close()
-    with pytest.raises(tau_next.Closed):
+    with pytest.raises(tau.Closed):
         _ = before.moves
 
 
@@ -90,35 +90,35 @@ def test_a_cursor_snapshot_does_not_see_a_move_made_after_it() -> None:
 
 def test_unknown_ids_raise_lookup_errors() -> None:
     session, cursor = new()
-    with pytest.raises(tau_next.NoSuchNode):
+    with pytest.raises(tau.NoSuchNode):
         session.tree.node(99)
-    with pytest.raises(tau_next.NoSuchNode):
+    with pytest.raises(tau.NoSuchNode):
         session.go_to(cursor, 99, "term", 0)
-    with pytest.raises(tau_next.NoSuchCursor):
+    with pytest.raises(tau.NoSuchCursor):
         session.cursor(7)
-    with pytest.raises(tau_next.NoSuchCursor):
+    with pytest.raises(tau.NoSuchCursor):
         session.input(7, "term", "hi")
-    with pytest.raises(tau_next.NoSuchCursor):
+    with pytest.raises(tau.NoSuchCursor):
         session.abort(7)
-    with pytest.raises(tau_next.NoSuchLabel):
+    with pytest.raises(tau.NoSuchLabel):
         session.label("nope")
-    with pytest.raises(tau_next.NoSuchLabel):
+    with pytest.raises(tau.NoSuchLabel):
         session.remove_label("nope")
-    assert issubclass(tau_next.NoSuchNode, LookupError)
+    assert issubclass(tau.NoSuchNode, LookupError)
 
 
 def test_a_step_on_a_busy_cursor_is_busy() -> None:
     session, cursor = new()
     session.input(cursor, "term", "hi")
     session.set_auto(cursor, True)
-    with pytest.raises(tau_next.Busy):
+    with pytest.raises(tau.Busy):
         session.step(cursor)
 
 
 def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
     session, cursor = new()
     before = state(session)
-    with pytest.raises(tau_next.NoSuchCursor):
+    with pytest.raises(tau.NoSuchCursor):
         session.abort(999)
     assert session.cursors() == [cursor]
     assert state(session) == before
@@ -127,11 +127,11 @@ def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
 def test_a_closed_session_raises_closed() -> None:
     session, cursor = new()
     session.close()
-    with pytest.raises(tau_next.Closed):
+    with pytest.raises(tau.Closed):
         session.cursor(cursor)
-    with pytest.raises(tau_next.Closed):
+    with pytest.raises(tau.Closed):
         session.input(cursor, "term", "hi")
-    with pytest.raises(tau_next.Closed):
+    with pytest.raises(tau.Closed):
         session.close()
 
 
@@ -140,7 +140,7 @@ def test_a_closed_session_raises_closed() -> None:
 
 def test_a_second_open_of_a_session_is_leased(tmp_path: Path) -> None:
     session, _ = new(tmp_path / "s")
-    with pytest.raises(tau_next.Leased):
+    with pytest.raises(tau.Leased):
         Session.load(tmp_path / "s")
     session.close()
     Session.load(tmp_path / "s")
@@ -153,7 +153,7 @@ def test_a_missing_session_is_an_os_error(tmp_path: Path) -> None:
 
 def test_files_that_are_not_a_session_are_refused(tmp_path: Path) -> None:
     (tmp_path / "log").write_bytes(b"not a tau log at all")
-    with pytest.raises(tau_next.NotASession):
+    with pytest.raises(tau.NotASession):
         Session.load(tmp_path)
 
 
@@ -164,7 +164,7 @@ def test_a_future_file_version_is_refused(tmp_path: Path) -> None:
     data = bytearray(log.read_bytes())
     data[8:12] = (99).to_bytes(4, "little")
     log.write_bytes(data)
-    with pytest.raises(tau_next.Version):
+    with pytest.raises(tau.Version):
         Session.load(tmp_path)
 
 
@@ -172,7 +172,7 @@ def test_a_damaged_scratchpad_file_is_corrupt(tmp_path: Path) -> None:
     session, _ = new(tmp_path)
     session.close()
     (tmp_path / "scratchpad").write_bytes(b"tau-pad\0" + (1).to_bytes(4, "little") + b"junk")
-    with pytest.raises(tau_next.Corrupt):
+    with pytest.raises(tau.Corrupt):
         Session.load(tmp_path)
 
 
@@ -184,7 +184,7 @@ def test_an_intact_log_record_that_does_not_decode_is_an_error_not_a_cut(tmp_pat
     crc = zlib.crc32(length + payload).to_bytes(4, "little")
     with (tmp_path / "log").open("ab") as log:
         log.write(length + crc + payload)
-    with pytest.raises(tau_next.Undecodable, match=r"record \d+ .*log"):
+    with pytest.raises(tau.Undecodable, match=r"record \d+ .*log"):
         Session.load(tmp_path)
 
 
@@ -206,7 +206,7 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
         lambda: session.next_job(cursor),
         session.close,
     ):
-        with pytest.raises(tau_next.Closed):
+        with pytest.raises(tau.Closed):
             call_()
     block.rmdir()
     loaded = Session.load(tmp_path / "s")  # the lease was released
@@ -292,11 +292,11 @@ def test_a_cursor_state_repr_names_the_snapshot_not_the_session() -> None:
 
 
 def test_enums_are_not_integers() -> None:
-    assert tau_next.Stop.Tools != 1
-    assert tau_next.Stop.Tools not in {1}
-    assert tau_next.Next.Sample != 1
-    assert tau_next.Hook.PreStep != 0
-    assert tau_next.Hook.PreStep.name == "pre_step"
+    assert tau.Stop.Tools != 1
+    assert tau.Stop.Tools not in {1}
+    assert tau.Next.Sample != 1
+    assert tau.Hook.PreStep != 0
+    assert tau.Hook.PreStep.name == "pre_step"
 
 
 def test_a_config_states_its_data_and_a_draft_follows_its_fields() -> None:
@@ -328,21 +328,21 @@ def test_a_directory_that_cannot_be_made_names_itself(tmp_path: Path) -> None:
 
 def test_the_job_loop_is_public_and_refuses_an_answer_to_no_job() -> None:
     session, cursor = new()
-    assert session.next_job(cursor) == tau_next.Job.Rest()
+    assert session.next_job(cursor) == tau.Job.Rest()
     before = state(session)
-    with pytest.raises(tau_next.WrongAnswer):
-        session.answer(cursor, tau_next.Answer.HookFailed("nothing asked"), 1)
+    with pytest.raises(tau.WrongAnswer):
+        session.answer(cursor, tau.Answer.HookFailed("nothing asked"), 1)
     session.input(cursor, "term", "go")
     job = session.next_job(cursor)
-    assert isinstance(job, tau_next.Job.Hooks)
-    assert job.point == tau_next.Hook.PreStep
-    with pytest.raises(tau_next.WrongAnswer):
-        session.answer(cursor, tau_next.Answer.CallDone("c", Outcome.Ok("x"), Author.Core()), 2)
+    assert isinstance(job, tau.Job.Hooks)
+    assert job.point == tau.Hook.PreStep
+    with pytest.raises(tau.WrongAnswer):
+        session.answer(cursor, tau.Answer.CallDone("c", Outcome.Ok("x"), Author.Core()), 2)
     assert before["at"] == state(session)["at"], "a refused answer changed nothing"
-    session.answer(cursor, tau_next.Answer.Hooks(None, None), 3)
+    session.answer(cursor, tau.Answer.Hooks(None, None), 3)
     ended = session.next_job(cursor)
-    assert isinstance(ended, tau_next.Job.Hooks)
-    assert (ended.point, ended.ending) == (tau_next.Hook.PostStep, Ending.Done())
+    assert isinstance(ended, tau.Job.Hooks)
+    assert (ended.point, ended.ending) == (tau.Hook.PostStep, Ending.Done())
 
 
 def test_a_log_record_that_cannot_replay_is_a_bad_record(tmp_path: Path) -> None:
@@ -357,7 +357,7 @@ def test_a_log_record_that_cannot_replay_is_a_bad_record(tmp_path: Path) -> None
             length = len(payload).to_bytes(4, "little")
             crc = zlib.crc32(length + payload).to_bytes(4, "little")
             log.write(length + crc + payload)
-    with pytest.raises(tau_next.BadRecord):
+    with pytest.raises(tau.BadRecord):
         Session.load(tmp_path)
 
 

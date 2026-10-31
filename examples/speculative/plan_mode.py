@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau_next import Body, CallDraft, Cursor, NodeHandle, Stop, Subject
+from tau import Body, CallDraft, Cursor, NodeHandle, Stop, Subject
 
 BRIEF = (
     "PLAN MODE. Research with the read-only tools, then reply with a step-by-step plan and "

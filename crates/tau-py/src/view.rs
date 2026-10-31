@@ -13,7 +13,7 @@ use crate::values::{Config, Item, Move, Next, Node};
 /// The session's nodes: `Session.tree`. It shares the session's lock, so a
 /// read is as current as the call that made it, and a closed session raises
 /// `Closed` here too.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Tree {
     pub(crate) shared: Arc<Shared>,
@@ -81,7 +81,7 @@ impl Tree {
 /// a move list is append-only, so the snapshot keeps where it ended and reads
 /// `moves` (under the lock, raising `Closed` if the session is closed) when
 /// asked. A move made after the snapshot is not in it.
-#[pyclass(frozen, module = "tau_next._core")]
+#[pyclass(frozen, module = "tau._core")]
 #[derive(Clone)]
 pub struct CursorState {
     shared: Arc<Shared>,

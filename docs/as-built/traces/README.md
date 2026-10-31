@@ -6,13 +6,13 @@ was optimized.
 ## Capture
 
 ```python
-from tau_next import trace
+from tau import trace
 
 with trace.capture("turn.json"):  # or trace.start(path) ... trace.stop()
     ...  # drive a session / Driver as usual
 ```
 
-`trace.start` makes `tau_next._core` record its `tracing` spans (`core.*`,
+`trace.start` makes `tau._core` record its `tracing` spans (`core.*`,
 `store.*`, `py.*`) with `tracing-chrome`; the driver's spans (`hook`, `sample`,
 `tool`, `driver`) are timed on the native clock (`_core.trace_clock`) and merged
 into the same file by `trace.stop`. Python spans get one track per asyncio task

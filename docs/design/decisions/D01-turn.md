@@ -20,7 +20,7 @@ keeps writing "continue" (Q20).
   Nothing spins in place, so no extension is needed for that case.
 - **Runaway loops where the cursor does move are an extension's** (leave it to
   an extension). Core keeps no count and has no `max_steps`. `StepLimit(n)`
-  (`tau_next.StepLimit`) keeps its own per-cursor count: `pre_input` sets it to
+  (`tau.StepLimit`) keeps its own per-cursor count: `pre_input` sets it to
   1, `pre_step` adds one (auto-step on), and `post_step` turns auto-step off at
   `n` and starts over, so whoever resumes gets another `n`.
 - `next` stays a pure function of the walk; no limit changes it.

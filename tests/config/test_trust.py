@@ -21,7 +21,7 @@ from world import (
     yes,
 )
 
-from tau_next import TrustError, UntrustedProject, load_config
+from tau import TrustError, UntrustedProject, load_config
 
 LITERAL_KEY = "sk-literal-secret-9f3"
 SHELL_KEY = "sk-from-the-shell-77c"

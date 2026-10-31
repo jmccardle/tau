@@ -1,6 +1,6 @@
 [
  {
-  "module": "tau_next/__init__.py",
+  "module": "tau/__init__.py",
   "lines": 198,
   "code_lines": 194,
   "functions": 0,
@@ -9,7 +9,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/_config.py",
+  "module": "tau/_config.py",
   "lines": 156,
   "code_lines": 131,
   "functions": 8,
@@ -18,7 +18,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/_config_layers.py",
+  "module": "tau/_config_layers.py",
   "lines": 713,
   "code_lines": 605,
   "functions": 44,
@@ -27,7 +27,7 @@
   "over_10": 4
  },
  {
-  "module": "tau_next/_dotenv.py",
+  "module": "tau/_dotenv.py",
   "lines": 67,
   "code_lines": 57,
   "functions": 2,
@@ -36,7 +36,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/_startup.py",
+  "module": "tau/_startup.py",
   "lines": 142,
   "code_lines": 118,
   "functions": 5,
@@ -45,7 +45,7 @@
   "over_10": 1
  },
  {
-  "module": "tau_next/_trust.py",
+  "module": "tau/_trust.py",
   "lines": 640,
   "code_lines": 506,
   "functions": 48,
@@ -54,7 +54,7 @@
   "over_10": 1
  },
  {
-  "module": "tau_next/base_tools.py",
+  "module": "tau/base_tools.py",
   "lines": 245,
   "code_lines": 200,
   "functions": 18,
@@ -63,7 +63,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/cli.py",
+  "module": "tau/cli.py",
   "lines": 254,
   "code_lines": 224,
   "functions": 11,
@@ -72,7 +72,7 @@
   "over_10": 2
  },
  {
-  "module": "tau_next/clock.py",
+  "module": "tau/clock.py",
   "lines": 8,
   "code_lines": 5,
   "functions": 1,
@@ -81,7 +81,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/driver.py",
+  "module": "tau/driver.py",
   "lines": 435,
   "code_lines": 367,
   "functions": 42,
@@ -90,7 +90,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/effects.py",
+  "module": "tau/effects.py",
   "lines": 428,
   "code_lines": 383,
   "functions": 21,
@@ -99,7 +99,7 @@
   "over_10": 2
  },
  {
-  "module": "tau_next/events.py",
+  "module": "tau/events.py",
   "lines": 205,
   "code_lines": 163,
   "functions": 10,
@@ -108,7 +108,7 @@
   "over_10": 1
  },
  {
-  "module": "tau_next/handles.py",
+  "module": "tau/handles.py",
   "lines": 293,
   "code_lines": 227,
   "functions": 39,
@@ -117,7 +117,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/protocols.py",
+  "module": "tau/protocols.py",
   "lines": 246,
   "code_lines": 192,
   "functions": 20,
@@ -126,7 +126,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/providers/__init__.py",
+  "module": "tau/providers/__init__.py",
   "lines": 22,
   "code_lines": 18,
   "functions": 1,
@@ -135,7 +135,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/providers/_anthropic_request.py",
+  "module": "tau/providers/_anthropic_request.py",
   "lines": 209,
   "code_lines": 183,
   "functions": 10,
@@ -144,7 +144,7 @@
   "over_10": 2
  },
  {
-  "module": "tau_next/providers/_walk.py",
+  "module": "tau/providers/_walk.py",
   "lines": 253,
   "code_lines": 194,
   "functions": 19,
@@ -153,7 +153,7 @@
   "over_10": 1
  },
  {
-  "module": "tau_next/providers/_wire.py",
+  "module": "tau/providers/_wire.py",
   "lines": 467,
   "code_lines": 400,
   "functions": 33,
@@ -162,7 +162,7 @@
   "over_10": 1
  },
  {
-  "module": "tau_next/providers/anthropic.py",
+  "module": "tau/providers/anthropic.py",
   "lines": 514,
   "code_lines": 454,
   "functions": 26,
@@ -171,7 +171,7 @@
   "over_10": 2
  },
  {
-  "module": "tau_next/providers/gemini.py",
+  "module": "tau/providers/gemini.py",
   "lines": 638,
   "code_lines": 557,
   "functions": 34,
@@ -180,7 +180,7 @@
   "over_10": 3
  },
  {
-  "module": "tau_next/providers/mock.py",
+  "module": "tau/providers/mock.py",
   "lines": 77,
   "code_lines": 66,
   "functions": 5,
@@ -189,7 +189,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/providers/openai.py",
+  "module": "tau/providers/openai.py",
   "lines": 439,
   "code_lines": 387,
   "functions": 24,
@@ -198,7 +198,7 @@
   "over_10": 2
  },
  {
-  "module": "tau_next/step_limit.py",
+  "module": "tau/step_limit.py",
   "lines": 55,
   "code_lines": 42,
   "functions": 4,
@@ -207,7 +207,7 @@
   "over_10": 0
  },
  {
-  "module": "tau_next/tools.py",
+  "module": "tau/tools.py",
   "lines": 331,
   "code_lines": 275,
   "functions": 20,
@@ -216,7 +216,7 @@
   "over_10": 3
  },
  {
-  "module": "tau_next/trace.py",
+  "module": "tau/trace.py",
   "lines": 149,
   "code_lines": 119,
   "functions": 10,

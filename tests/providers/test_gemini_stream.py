@@ -22,7 +22,7 @@ from wire import (
     walk_of,
 )
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     CallArgs,

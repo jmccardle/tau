@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau_next import Author, Body, ConfigError, Cursor, Draft, Model, Node, Stop, Subject
+from tau import Author, Body, ConfigError, Cursor, Draft, Model, Node, Stop, Subject
 
 PREFIX = re.compile(r"!(\S+)\s+")
 ROUTER = Author.Extension("router")

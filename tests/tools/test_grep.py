@@ -4,7 +4,7 @@ from pathlib import Path
 
 from calls import call, err, ok
 
-from tau_next import GrepTool, Outcome
+from tau import GrepTool, Outcome
 
 
 def test_matches_are_path_line_text_sorted_by_path(tmp_path: Path) -> None:

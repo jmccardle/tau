@@ -1,6 +1,6 @@
-digraph tau_next {
+digraph tau {
  rankdir=LR; node [shape=box,fontsize=10];
- "tau_next" [style=filled,fillcolor=lightgrey];
+ "tau" [style=filled,fillcolor=lightgrey];
  "_config" [style=filled,fillcolor=white];
  "_config_layers" [style=filled,fillcolor=white];
  "_dotenv" [style=filled,fillcolor=white];
@@ -26,20 +26,20 @@ digraph tau_next {
  "tools" [style=filled,fillcolor=white];
  "trace" [style=filled,fillcolor=white];
  "_core" [style=filled,fillcolor=white];
- "tau_next" -> "_config";
- "tau_next" -> "_config_layers";
- "tau_next" -> "_dotenv";
- "tau_next" -> "_startup";
- "tau_next" -> "_trust";
- "tau_next" -> "base_tools";
- "tau_next" -> "clock";
- "tau_next" -> "driver";
- "tau_next" -> "events";
- "tau_next" -> "handles";
- "tau_next" -> "protocols";
- "tau_next" -> "providers";
- "tau_next" -> "step_limit";
- "tau_next" -> "tools";
+ "tau" -> "_config";
+ "tau" -> "_config_layers";
+ "tau" -> "_dotenv";
+ "tau" -> "_startup";
+ "tau" -> "_trust";
+ "tau" -> "base_tools";
+ "tau" -> "clock";
+ "tau" -> "driver";
+ "tau" -> "events";
+ "tau" -> "handles";
+ "tau" -> "protocols";
+ "tau" -> "providers";
+ "tau" -> "step_limit";
+ "tau" -> "tools";
  "_config_layers" -> "_config";
  "_config_layers" -> "protocols";
  "_startup" -> "_config";
@@ -107,7 +107,7 @@ digraph tau_next {
  "providers.openai" -> "providers._wire";
  "step_limit" -> "handles";
  "tools" -> "protocols";
- "tau_next" -> "_core";
+ "tau" -> "_core";
  "_config" -> "_core";
  "base_tools" -> "_core";
  "driver" -> "_core";

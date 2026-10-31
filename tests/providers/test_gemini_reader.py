@@ -7,7 +7,7 @@ import pytest
 from harness import scenario
 from wire import GEMINI, collect, gemini_chunk, hello_walk
 
-from tau_next import Finish, Part, Stop
+from tau import Finish, Part, Stop
 
 
 def sse(chunk: Mapping[str, object]) -> str:

@@ -1,10 +1,10 @@
 """A pytest plugin for the diagram build: names each test as the scenario the
-core's transition log (`tau_next._core`, built with the `transitions` feature)
+core's transition log (`tau._core`, built with the `transitions` feature)
 attributes the following position changes to."""
 
 import pytest
 
-from tau_next import _core
+from tau import _core
 
 
 @pytest.hookimpl(tryfirst=True)

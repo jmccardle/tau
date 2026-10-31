@@ -1,4 +1,4 @@
-# CI for τ next on forge.goblincorps.com. Fail early: no continue-on-error,
+# CI for τ on forge.goblincorps.com. Fail early: no continue-on-error,
 # no `|| true`.
 #
 # One runner, Linux x86_64. Nothing here builds or tests aarch64 or macOS,
@@ -7,8 +7,7 @@
 # `gate` runs scripts/check.sh, the same file developers run locally, with
 # only the dev group installed: the test suite must pass without τ 0.15.
 # `wheels` builds portable manylinux2014 wheels (zig as the linker; no
-# docker), tests each installed in a clean venv, then adds ffwf-tau 0.15 to
-# the same venv and runs parity/ (see parity/README.md).
+# docker) and tests each installed in a clean venv.
 
 name: CI
 
@@ -86,12 +85,6 @@ jobs:
           /tmp/clean/bin/pip install pytest dist/*.whl
           cd /tmp
           /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
-      - name: parity/ with ffwf-tau 0.15 added to the same venv
-        run: |
-          set -euo pipefail
-          /tmp/clean/bin/pip install "ffwf-tau==0.15.0"
-          cd /tmp
-          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/parity"
       # No artifact upload. Job containers on this runner cannot reach the
       # forge's public URL, which is where Forgejo points the artifact
       # service (ECONNREFUSED on forge.goblincorps.com:443), and nothing

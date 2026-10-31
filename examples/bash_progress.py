@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
-from tau_next import (
+from tau import (
     Appended,
     Body,
     Delta,

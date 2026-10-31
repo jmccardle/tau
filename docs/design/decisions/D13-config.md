@@ -115,7 +115,7 @@ wrong types. `--show <model>` prints each resolved value and the layer and
 group it came from. τ 0.15's `backend` key is rejected with "`backend` is now
 `provider`".
 
-The parser, trust check, and CLI are Python (`tau_next.config`, the `tau`
+The parser, trust check, and CLI are Python (`tau.config`, the `tau`
 command). `tau-core` never reads config: `Config.data` stays opaque to it.
 
 **Trust follows content.** `trusted.json` records each directory with a hash

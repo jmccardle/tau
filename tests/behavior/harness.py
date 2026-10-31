@@ -14,7 +14,7 @@ from typing import Any
 
 from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, Reply, fake_catalog
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Config,

@@ -1,7 +1,7 @@
 """Which calls a cursor accepts or refuses in each state, found by making them.
 
 For every (call, state) pair this builds a fresh session through the public
-Python API (`tau_next`), brings one cursor to the state, makes the call once,
+Python API (`tau`), brings one cursor to the state, makes the call once,
 and writes down what came back: `ok`, or the typed exception it raised. Nothing
 here is a hand-written expectation. Prints the result as JSON on stdout; the
 Markdown and the SVG are made from that JSON by `render.py`.
@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Config,
@@ -24,7 +24,7 @@ from tau_next import (
     Session,
     Stop,
 )
-from tau_next._core import Answer, Hook, Job, SampleEnd
+from tau._core import Answer, Hook, Job, SampleEnd
 
 NOW = 10
 

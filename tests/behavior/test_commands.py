@@ -8,7 +8,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, Gate, Recorder, Reply
 from harness import Harness, build, say, scenario
 
-from tau_next import (
+from tau import (
     Body,
     Busy,
     Client,

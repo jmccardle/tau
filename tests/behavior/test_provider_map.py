@@ -14,7 +14,7 @@ from fakes import (
 )
 from harness import Harness, scenario
 
-from tau_next import Body, Driver, Part, Session, read_models
+from tau import Body, Driver, Part, Session, read_models
 
 
 @scenario

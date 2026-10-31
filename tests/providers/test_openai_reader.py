@@ -6,8 +6,8 @@ import json
 from harness import scenario
 from wire import DONE_LINE, OPENAI, chunk, collect, fresh_walk
 
-from tau_next import Finish, ModelConfig, Part, Stop
-from tau_next.providers.openai import OpenAIProvider
+from tau import Finish, ModelConfig, Part, Stop
+from tau.providers.openai import OpenAIProvider
 
 
 @scenario

@@ -1,8 +1,8 @@
 """Mechanical enforcement of CLAUDE.md rules 3 and 4.
 
 Rule 3: banned 0.15 vocabulary in identifiers, comments, and docstrings.
-Rule 4: tests (tests/ and parity/) reach code only through the public API. This script catches
-imports of private tau_next names; ruff SLF001 catches private attribute
+Rule 4: tests (tests/) reach code only through the public API. This script catches
+imports of private tau names; ruff SLF001 catches private attribute
 access, ruff banned-api catches `unittest.mock`, and tests/conftest.py
 refuses the `monkeypatch` fixture.
 
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-SCANNED = ["crates", "python", "tests", "parity", "scripts", "examples"]
+SCANNED = ["crates", "python", "tests", "scripts", "examples"]
 SUFFIXES = {".rs", ".py", ".pyi", ".toml"}
 SELF = Path(__file__).resolve()
 BUILD_DIR = ROOT / "target"
@@ -77,11 +77,11 @@ def private_imports(source: str) -> list[int]:
     lines: list[int] = []
     for node in ast.walk(ast.parse(source)):
         match node:
-            case ast.ImportFrom(module=str(mod)) if mod.split(".")[0] == "tau_next":
+            case ast.ImportFrom(module=str(mod)) if mod.split(".")[0] == "tau":
                 if is_private(mod) or any(is_private(a.name) for a in node.names):
                     lines.append(node.lineno)
             case ast.Import(names=names):
-                if any(a.name.startswith("tau_next") and is_private(a.name) for a in names):
+                if any(a.name.startswith("tau") and is_private(a.name) for a in names):
                     lines.append(node.lineno)
             case _:
                 pass
@@ -96,10 +96,8 @@ def violations(path: Path) -> list[str]:
         for n, line in enumerate(source.splitlines(), 1)
         for term in banned_terms(line)
     ]
-    if rel.parts[0] in {"tests", "parity"} and path.suffix == ".py":
-        found += [
-            f"{rel}:{n}: test imports a private tau_next name" for n in private_imports(source)
-        ]
+    if rel.parts[0] == "tests" and path.suffix == ".py":
+        found += [f"{rel}:{n}: test imports a private tau name" for n in private_imports(source)]
     return found
 
 

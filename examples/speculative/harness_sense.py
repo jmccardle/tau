@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     CallDraft,
@@ -44,7 +44,7 @@ from tau_next import (
     model_config,
     read_models,
 )
-from tau_next.protocols import CURSOR_POINTS, TOOL_POINTS
+from tau.protocols import CURSOR_POINTS, TOOL_POINTS
 
 NOTE = "harness_sense.note"
 STOPPED = "harness_sense.stopped"

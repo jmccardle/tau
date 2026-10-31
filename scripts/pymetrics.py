@@ -1,4 +1,4 @@
-"""Python source metrics for python/tau_next (src only), for scripts/ratchet.py.
+"""Python source metrics for python/tau (src only), for scripts/ratchet.py.
 
 Measured with radon (`cc_visit`, the same tool and counting as py_baseline.py):
 
@@ -8,8 +8,8 @@ Measured with radon (`cc_visit`, the same tool and counting as py_baseline.py):
 * Methods per class: the functions defined directly in the class body.
 * File lines: physical lines of every .py file.
 
-Keys are repo-relative: `python/tau_next/x.py::Class.method`,
-`python/tau_next/x.py::Class`, `python/tau_next/x.py`.
+Keys are repo-relative: `python/tau/x.py::Class.method`,
+`python/tau/x.py::Class`, `python/tau/x.py`.
 """
 
 from pathlib import Path
@@ -18,7 +18,7 @@ from radon.complexity import cc_visit
 from radon.visitors import Class, Function
 
 ROOT = Path(__file__).parents[1]
-PKG = ROOT / "python" / "tau_next"
+PKG = ROOT / "python" / "tau"
 
 
 def _folded(fn: Function) -> int:
@@ -26,7 +26,7 @@ def _folded(fn: Function) -> int:
 
 
 def analyze() -> dict[str, dict[str, int]]:
-    """{'function_cc', 'type_methods', 'file_lines'} for python/tau_next/**.py."""
+    """{'function_cc', 'type_methods', 'file_lines'} for python/tau/**.py."""
     cc: dict[str, int] = {}
     methods: dict[str, int] = {}
     lines: dict[str, int] = {}

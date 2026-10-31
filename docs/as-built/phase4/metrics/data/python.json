@@ -46,7 +46,7 @@
   },
   "top_cc": [
    {
-    "file": "python/tau_next/_config_layers.py",
+    "file": "python/tau/_config_layers.py",
     "name": "_merge_models",
     "line": 287,
     "cc": 21,
@@ -54,7 +54,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/events.py",
+    "file": "python/tau/events.py",
     "name": "offer",
     "line": 127,
     "cc": 16,
@@ -62,7 +62,7 @@
     "class": "EventStream"
    },
    {
-    "file": "python/tau_next/tools.py",
+    "file": "python/tau/tools.py",
     "name": "_params",
     "line": 159,
     "cc": 15,
@@ -70,7 +70,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/providers/anthropic.py",
+    "file": "python/tau/providers/anthropic.py",
     "name": "_thinking_problems",
     "line": 331,
     "cc": 15,
@@ -78,7 +78,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/providers/gemini.py",
+    "file": "python/tau/providers/gemini.py",
     "name": "_thinking_problems",
     "line": 464,
     "cc": 15,
@@ -86,7 +86,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/providers/openai.py",
+    "file": "python/tau/providers/openai.py",
     "name": "_call",
     "line": 226,
     "cc": 14,
@@ -94,7 +94,7 @@
     "class": "_Stream"
    },
    {
-    "file": "python/tau_next/providers/openai.py",
+    "file": "python/tau/providers/openai.py",
     "name": "_read",
     "line": 261,
     "cc": 14,
@@ -102,7 +102,7 @@
     "class": "_Stream"
    },
    {
-    "file": "python/tau_next/effects.py",
+    "file": "python/tau/effects.py",
     "name": "_delta",
     "line": 219,
     "cc": 13,
@@ -110,7 +110,7 @@
     "class": "SampleRun"
    },
    {
-    "file": "python/tau_next/cli.py",
+    "file": "python/tau/cli.py",
     "name": "main",
     "line": 219,
     "cc": 13,
@@ -118,7 +118,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/tools.py",
+    "file": "python/tau/tools.py",
     "name": "_kind",
     "line": 120,
     "cc": 13,
@@ -126,7 +126,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/_config_layers.py",
+    "file": "python/tau/_config_layers.py",
     "name": "model",
     "line": 512,
     "cc": 13,
@@ -134,7 +134,7 @@
     "class": "_Resolver"
    },
    {
-    "file": "python/tau_next/providers/anthropic.py",
+    "file": "python/tau/providers/anthropic.py",
     "name": "_delta",
     "line": 215,
     "cc": 13,
@@ -142,7 +142,7 @@
     "class": "_Stream"
    },
    {
-    "file": "python/tau_next/providers/_anthropic_request.py",
+    "file": "python/tau/providers/_anthropic_request.py",
     "name": "_thinkless_loop",
     "line": 105,
     "cc": 13,
@@ -150,7 +150,7 @@
     "class": null
    },
    {
-    "file": "python/tau_next/providers/_wire.py",
+    "file": "python/tau/providers/_wire.py",
     "name": "sample",
     "line": 393,
     "cc": 13,
@@ -158,7 +158,7 @@
     "class": "Connection"
    },
    {
-    "file": "python/tau_next/providers/gemini.py",
+    "file": "python/tau/providers/gemini.py",
     "name": "_text",
     "line": 301,
     "cc": 13,
@@ -168,103 +168,103 @@
   ],
   "top_files": [
    {
-    "file": "python/tau_next/_config_layers.py",
+    "file": "python/tau/_config_layers.py",
     "lines": 713
    },
    {
-    "file": "python/tau_next/_trust.py",
+    "file": "python/tau/_trust.py",
     "lines": 640
    },
    {
-    "file": "python/tau_next/providers/gemini.py",
+    "file": "python/tau/providers/gemini.py",
     "lines": 638
    },
    {
-    "file": "python/tau_next/providers/anthropic.py",
+    "file": "python/tau/providers/anthropic.py",
     "lines": 514
    },
    {
-    "file": "python/tau_next/providers/_wire.py",
+    "file": "python/tau/providers/_wire.py",
     "lines": 467
    },
    {
-    "file": "python/tau_next/providers/openai.py",
+    "file": "python/tau/providers/openai.py",
     "lines": 439
    },
    {
-    "file": "python/tau_next/driver.py",
+    "file": "python/tau/driver.py",
     "lines": 435
    },
    {
-    "file": "python/tau_next/effects.py",
+    "file": "python/tau/effects.py",
     "lines": 428
    },
    {
-    "file": "python/tau_next/tools.py",
+    "file": "python/tau/tools.py",
     "lines": 331
    },
    {
-    "file": "python/tau_next/handles.py",
+    "file": "python/tau/handles.py",
     "lines": 293
    }
   ],
   "top_classes": [
    {
-    "file": "python/tau_next/driver.py",
+    "file": "python/tau/driver.py",
     "name": "Driver",
     "line": 51,
     "methods": 42
    },
    {
-    "file": "python/tau_next/handles.py",
+    "file": "python/tau/handles.py",
     "name": "TreeHandle",
     "line": 64,
     "methods": 22
    },
    {
-    "file": "python/tau_next/handles.py",
+    "file": "python/tau/handles.py",
     "name": "Cursor",
     "line": 214,
     "methods": 13
    },
    {
-    "file": "python/tau_next/_config_layers.py",
+    "file": "python/tau/_config_layers.py",
     "name": "_Resolver",
     "line": 396,
     "methods": 11
    },
    {
-    "file": "python/tau_next/providers/anthropic.py",
+    "file": "python/tau/providers/anthropic.py",
     "name": "_Stream",
     "line": 142,
     "methods": 11
    },
    {
-    "file": "python/tau_next/events.py",
+    "file": "python/tau/events.py",
     "name": "EventStream",
     "line": 95,
     "methods": 10
    },
    {
-    "file": "python/tau_next/providers/gemini.py",
+    "file": "python/tau/providers/gemini.py",
     "name": "_Stream",
     "line": 260,
     "methods": 10
    },
    {
-    "file": "python/tau_next/providers/openai.py",
+    "file": "python/tau/providers/openai.py",
     "name": "_Stream",
     "line": 163,
     "methods": 10
    },
    {
-    "file": "python/tau_next/tools.py",
+    "file": "python/tau/tools.py",
     "name": "FunctionTool",
     "line": 213,
     "methods": 8
    },
    {
-    "file": "python/tau_next/effects.py",
+    "file": "python/tau/effects.py",
     "name": "CallRun",
     "line": 288,
     "methods": 7

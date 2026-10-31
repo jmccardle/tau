@@ -28,7 +28,7 @@ from wire import (
     walk_of,
 )
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     ModelConfig,
@@ -38,7 +38,7 @@ from tau_next import (
     SampleError,
     Stop,
 )
-from tau_next.providers.gemini import GeminiProvider
+from tau.providers.gemini import GeminiProvider
 
 DEFAULT_URL = "https://generativelanguage.googleapis.com/v1beta"
 

@@ -1,8 +1,8 @@
-# As-built metrics, Phase 4 (`python/tau_next`)
+# As-built metrics, Phase 4 (`python/tau`)
 
 Measured 2026-10-30 on master at `58260e0` (working tree clean apart from this
 directory). The same methods as Phase 3d (`docs/as-built/metrics/README.md`),
-pointed at `python/tau_next`. It measures; it judges nothing. Verdicts are in the
+pointed at `python/tau`. It measures; it judges nothing. Verdicts are in the
 reviewers' documents, not here.
 
 ## Tools
@@ -21,12 +21,12 @@ radon, coverage.py and grimp live in a throwaway venv, not in `pyproject.toml`.
 Counting rules are those of `py_baseline.py`: methods are counted once as
 functions, nested functions fold into their parent, "lines" are physical lines.
 
-## Size and complexity: `python/tau_next` against τ 0.15 and `crates/`
+## Size and complexity: `python/tau` against τ 0.15 and `crates/`
 
 Raw data: `data/python.json` (src and tests, same fields as 3d's
 `tau015-python.json`), `data/python-modules.json`, `data/modules-table.md`.
 
-| | trusty `python/tau_next` | trusty `crates/*/src` (3d) | τ 0.15 `src` |
+| | trusty `python/tau` | trusty `crates/*/src` (3d) | τ 0.15 `src` |
 |---|---:|---:|---:|
 | files | 25 | 18 | 176 |
 | lines | 7,184 | 7,119 | 99,233 |
@@ -120,10 +120,10 @@ run on this tree (`data/ratchet.txt`):
 ratchet ok: 0 allowed violation(s) remain (0 function_cc, 0 type_methods, 0 file_lines)
 ```
 
-Since ruling R8 the ratchet also measures `python/tau_next` (src, not tests)
+Since ruling R8 the ratchet also measures `python/tau` (src, not tests)
 through `scripts/pymetrics.py`, which uses radon 6.0.1 (now in the `dev`
 dependency group, so CI and `check.sh` have it). Same limits, same allowlist
-and `[justified]` mechanism, Python keys are `python/tau_next/x.py::Class.fn`,
+and `[justified]` mechanism, Python keys are `python/tau/x.py::Class.fn`,
 `...::Class`, `...x.py`. Differences from `py_baseline.py`: a nested function's
 extra complexity is added to its enclosing function (as for Rust closures), and
 files are counted from the source on disk. The table below is the hand
@@ -143,12 +143,12 @@ Functions at exactly CC 15: `tools._params`, `anthropic._thinking_problems`,
 
 ## Coverage
 
-`coverage.py`, branch on, `source = tau_next`, over `pytest tests` (736 passed,
+`coverage.py`, branch on, `source = tau`, over `pytest tests` (736 passed,
 4 skipped, 13 s). Reported, not gated. Data: `data/coverage-py.{txt,json}`,
 `data/coverage-table.md`. "cover" is coverage.py's combined statement-and-branch
 percentage, the same as τ 0.15's "line + branch" figure.
 
-| | trusty `python/tau_next` | τ 0.15 |
+| | trusty `python/tau` | τ 0.15 |
 |---|---:|---:|
 | statements | 3,990 (186 missed) | 34,343 |
 | statements covered | 95.3% | 92.1% |
@@ -191,14 +191,14 @@ Not comparable with 3d's Rust numbers: those are LLVM line coverage of
 
 Graph: `svg/imports.svg` (providers shaded blue); edges `data/import-edges.txt`
 (97 lines); machine-readable `data/imports.json`; dot source `data/imports.dot`.
-grimp resolves `tau_next._core` (a native extension) to nothing, so the 16 edges
-to `_core` come from a text scan of `from tau_next._core import` /
-`from tau_next import _core` and are included in the 97.
+grimp resolves `tau._core` (a native extension) to nothing, so the 16 edges
+to `_core` come from a text scan of `from tau._core import` /
+`from tau import _core` and are included in the 97.
 
 - **Modules:** 25 plus `_core`. **Edges:** 97 (81 among Python modules, 16 to `_core`).
 - **Cycles:** none. (grimp's raw output shows one 21-module cycle through
-  the package `tau_next`, because `from tau_next._core import ...` is read as
-  an import of `tau_next`. With the `_core` edges re-attached to `_core`, the
+  the package `tau`, because `from tau._core import ...` is read as
+  an import of `tau`. With the `_core` edges re-attached to `_core`, the
   strongly connected components are all single modules.)
 - **Native `_core` importers (16):** `__init__`, `_config`, `base_tools`,
   `driver`, `effects`, `handles`, `protocols`, `tools`, `trace`,
@@ -234,10 +234,10 @@ T=$(mktemp -d); export TAU_HOME=$T/tauhome; mkdir -p $TAU_HOME   # never the rea
 python3.12 -m venv $T/v && $T/v/bin/pip install radon==6.0.1 coverage grimp
 
 # size and complexity
-$T/v/bin/python scripts/py_baseline.py . --src python/tau_next --tests tests \
+$T/v/bin/python scripts/py_baseline.py . --src python/tau --tests tests \
     > docs/as-built/phase4/metrics/data/python.json
 PATH=$T/v/bin:$PATH python docs/as-built/phase4/metrics/tools/py_modules.py.txt
-$T/v/bin/radon cc -s python/tau_next | sort by CC           # ranks 16 to 20
+$T/v/bin/radon cc -s python/tau | sort by CC           # ranks 16 to 20
 
 # coverage (the repo's .venv runs the tests; coverage comes in on PYTHONPATH)
 PYTHONPATH=$T/v/lib/python3.12/site-packages .venv/bin/python -m coverage run \
@@ -257,7 +257,7 @@ dot -Tsvg docs/as-built/phase4/metrics/data/imports.dot > docs/as-built/phase4/m
 
 | path | what |
 |---|---|
-| `data/python.json` | `py_baseline.py` output: src (`python/tau_next`) and tests |
+| `data/python.json` | `py_baseline.py` output: src (`python/tau`) and tests |
 | `data/python-modules.json`, `data/modules-table.md` | per-module LOC, functions, CC |
 | `data/python-top20.txt` | top 20 functions by CC |
 | `data/coverage-py.{txt,json}`, `data/coverage-table.md` | coverage.py reports |

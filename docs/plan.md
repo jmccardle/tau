@@ -1,16 +1,17 @@
-# τ next — plan
+# τ 0.16 — plan
 
-τ's agent harness rewritten as a sans-IO Rust core under a Python driver.
-It ships as **τ 0.16.0, codename Trusty**: the τ repository absorbs this one,
-`tests/` replaces the 0.15 suite, and `parity/` is deleted. Development
-distribution: `ffwf-tau-next`, import `tau_next` (D10).
+τ's agent harness rewritten as a sans-IO Rust core under a Python driver,
+shipping as **τ 0.16.0, codename Trusty**. The τ repository absorbed
+Trusty's repository on 2026-10-31 (merge commit `rewrite Tau in Rust`):
+`tests/` replaces the 0.15 suite, and `parity/` is deleted. Distribution
+`ffwf-tau`, import `tau` (D10).
 
 The design lives in `docs/design/` (`model.md`, `glossary.md`, `decisions/`).
 This file holds only the phases and where we are. The original hand-off plan,
 with its model sketch (§1) and decisions table (§4), is in git history
 (`b07efb9` and earlier).
 
-## Status (2026-10-30)
+## Status (2026-10-31)
 
 | phase | state |
 |---|---|
@@ -19,8 +20,9 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
-| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 6. Next: `plan-phase5-fixes.md` (proposed 2026-10-31), the fix list from the speculative extensions. |
-| 6–7 | not started. |
+| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 6. Fix list `plan-phase5-fixes.md`: stage A built and signed off 2026-10-31; B–D next, in this repository (B and C1 wait on ADR D17). |
+| 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
+| 7–9 | not started; see Phases. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
 - writes happen inside the Rust call; persistence is not a job (D11);
@@ -71,7 +73,7 @@ directly, so:
 | 6 | first call | done (`examples/first_call.py`): a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
 | 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
 | 8 | cursor and tree bindings | done (2026-10-29): a cursor hook's `move`, `write`, `set_auto` (checked by the hook job's serial); `append`, `open`, `add_item`, `remove_item`, labels from both handles, and `add_item`, `set_label`, `remove_label` from the driver; reads through `tree` (`node`, `walk`, `children`, `config_at`), `cursor`, `cursors`, `label` on both handles and `driver.session`; `tests/behavior/test_tree.py`. **Deferred:** update-an-item (an in-place update must not bump `changes`, as only an added item does); `show`/`tell` wait for the events of model.md §9; `opened_by` on `open` is not spiked |
-| 9 | base tools | done: `read`, `write`, `grep`, `bash` in Rust (`crates/tau-tools`), as `Tool`s (`tau_next.base_tools`); output limit with overflow file; `bash` kills its process group on cancel and timeout (`tests/tools/`, `tests/behavior/test_base_tools.py`). Bound by `tau-py` rather than shipped as a separate wheel (Phase 4 says otherwise): one wheel for now; revisit if the tools grow heavy dependencies |
+| 9 | base tools | done: `read`, `write`, `grep`, `bash` in Rust (`crates/tau-tools`), as `Tool`s (`tau.base_tools`); output limit with overflow file; `bash` kills its process group on cancel and timeout (`tests/tools/`, `tests/behavior/test_base_tools.py`). Bound by `tau-py` rather than shipped as a separate wheel (Phase 4 says otherwise): one wheel for now; revisit if the tools grow heavy dependencies |
 
 **Deferred (2026-10-29):**
 - Overflow-file pruning: a user config or an option of the base tools
@@ -86,7 +88,7 @@ directly, so:
    (`group:name`), not unique file-wide; a `Config` node names its model
    instead of storing a snapshot; no schema version before 1.0.
    Build (2026-10-29; `tau` and `~/.tau` are ours now, shadowing 0.15):
-   - wave 1: **A** `tau_next.config` (layers, groups, qualified names,
+   - wave 1: **A** `tau.config` (layers, groups, qualified names,
      merge, lookup, resolve with sources, problems); **B** `meta` on
      `Assistant` (opaque to core; the provider records what a response
      carries: model, id, fingerprint, usage);
@@ -233,12 +235,73 @@ keeping batch outcomes across a crash (D4). The provider gains
 `cache_state(walk)`. **Exit:** each has behavior tests and needed no core
 change; if one did, stop and write an ADR.
 
-### Phase 6: frontends
-`tau serve` first (many clients, sessions and cursors multiplexed, questions
-and scratchpads replayed on connect), then print/json, REPL, RPC, TUI, each a
-client of the same model. One event projector per wire.
+**Re-scoped 2026-10-31:** Phase 5 closes with `plan-phase5-fixes.md` (stages
+A–D). The extensions listed above are not built yet. They become Phase 8's
+standard-extension work, built next to the frontends that need them. The
+speculative extensions (`examples/speculative/`) are their prototypes: bash_guard
+for permissions, forest and gamemaster for sub-agents.
 
-### Phase 7: release
-JMFTS replica; docs (no
-0.15 session converter: D9 superseded); absorption into the τ repository as
-0.16.0.
+### Phase 6: absorption — done (2026-10-31)
+The τ repository merged Trusty's history with `--no-ff` (merge commit `rewrite Tau
+in Rust`), taking Trusty's tree whole. Then: renamed to `tau` / `ffwf-tau`
+(D10), deleted `parity/`, rewrote `CLAUDE.md` for τ (rule 1 allows code from
+0.15 to be carried over selectively, never harness code), and created branch
+`0.15.x` from 0.15's last commit for its hotfixes.
+
+### Phase 7: the wire and the API
+- **`tau serve` and `RemoteClient`** (D16 stage 4). The wire is the `Client`
+  contract serialized: JSON-RPC over WebSocket, so that a remote client and a
+  local one see the same behavior. From day one it has:
+  - `tau serve --schema`, so clients can generate their types (tau-code does);
+  - a protocol version checked at `hello`;
+  - daemon discovery with `serve -d --json`.
+
+  The server parses and completes a typed command line, so a client outside
+  Python does not reimplement `commandline`.
+- **A session catalog** (ADR): where sessions live and how a frontend lists
+  them, opens them and names them. Every frontend needs this.
+  `examples/chat.py` hard-codes one session.
+- **The API documentation:**
+  - **Surface manifest.** A generated, checked-in list of every public name
+    and signature, compared in CI the way the diagrams are, so any API change
+    is a readable diff in review. The first pass decides what is public.
+    `effects`, `events`, `handles`, `protocols` and `clock` are public by name
+    but internal in practice; `commandline` and the provider classes are not
+    exported.
+  - **Reference.** Generated from docstrings, with a ratchet check that every
+    public name has one. The native types' docs live in Rust, so `help()`
+    works at runtime, and the stub is checked against them. Today 2 of 224
+    stub entries have docstrings.
+  - **Guides**, user-facing and separate from `docs/design/`: quickstart; the
+    model in ten minutes; writing an extension; writing a frontend;
+    configuration; the wire protocol, generated from the schema.
+- **Exit:** a remote client passes the same behavior tests as a local one;
+  the manifest and reference are checked in CI.
+
+### Phase 8: frontends and standard extensions
+Each frontend is a client of the same model:
+- `tau` launches the Textual TUI. It reuses 0.15's core widgets (message,
+  tool and reasoning boxes, the stream strip, themes and `tau.tcss`, dialogs,
+  the session picker), with the app around them written against `Client`.
+- `tau -p`, with text or JSON output.
+- A ratatui example TUI, a Rust client of `tau serve` in `examples/ratatui/`
+  (its own Cargo package, outside the workspace and the ratchet). It is the
+  first client outside Python, and proof that the schema is enough.
+- The tau-code port, done in tau-code's repository. Its protocol package is
+  regenerated from `--schema`. The 0.15 commands that have no counterpart
+  here (elide, commit-branch, paste-subtree, compare, steer and enqueue)
+  become commands or extensions, or are dropped.
+
+The standard extensions are built beside the frontends: compaction,
+permissions, sub-agent and prune (Phase 5's list).
+
+### Phase 9: release 0.16.0
+- Wheels beyond Linux x86_64. aarch64 and macOS need runners; the base tools
+  are Linux-only.
+- The PyPI publish workflow on GitHub. It is rewritten for maturin but keeps
+  `publish.yml` as its name, because the trusted publisher is bound to that
+  name.
+- The docs site and release notes. There is no 0.15 session converter (D9
+  superseded).
+- Open: move the JMFTS replica past 0.16.0, since nothing feeds it and no
+  frontend needs it.

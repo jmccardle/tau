@@ -19,7 +19,7 @@ from typing import cast
 import httpx
 import pytest
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Delta,
@@ -37,9 +37,9 @@ from tau_next import (
     model_config,
     read_models,
 )
-from tau_next.providers.anthropic import AnthropicProvider
-from tau_next.providers.gemini import GeminiProvider
-from tau_next.providers.openai import OpenAIProvider
+from tau.providers.anthropic import AnthropicProvider
+from tau.providers.gemini import GeminiProvider
+from tau.providers.openai import OpenAIProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SSE = {"content-type": "text/event-stream"}

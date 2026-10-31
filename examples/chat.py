@@ -26,7 +26,7 @@ from typing import Literal
 
 from common import close_all, run
 
-from tau_next import (
+from tau import (
     Appended,
     Body,
     Busy,
@@ -51,7 +51,7 @@ from tau_next import (
     builtin_providers,
     model_config,
 )
-from tau_next.commandline import Parsed, UnknownCommand, completions, parse, value, values
+from tau.commandline import Parsed, UnknownCommand, completions, parse, value, values
 
 SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
 

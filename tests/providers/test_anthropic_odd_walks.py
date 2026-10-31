@@ -18,7 +18,7 @@ from wire import (
     walk_of,
 )
 
-from tau_next import Author, Body, ModelConfig, Node, Outcome, Part, Replay, Stop
+from tau import Author, Body, ModelConfig, Node, Outcome, Part, Replay, Stop
 
 RESOLVED = ANTHROPIC.model(None)
 API_ID = re.compile(r"[a-zA-Z0-9_-]+")  # what the Messages API accepts as a tool_use id

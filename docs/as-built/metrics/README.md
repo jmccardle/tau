@@ -269,7 +269,7 @@ scripts/ratchet.py          # alone, via .venv/bin/python
 scripts/ratchet.py --tighten  # after fixing a violation: lower or drop allowlist lines
 scripts/metrics.sh          # rewrites data/ and svg/ (not coverage)
 scripts/coverage.sh         # rewrites data/coverage-*; ~1.5 min; swaps in and out an
-                            # instrumented python/tau_next/_core*.so, restores the release build
+                            # instrumented python/tau/_core*.so, restores the release build
 
 # the τ 0.15 baseline (radon 6.0.1 in a throwaway venv, not the repo's)
 python3 -m venv /tmp/radonvenv && /tmp/radonvenv/bin/pip install radon==6.0.1

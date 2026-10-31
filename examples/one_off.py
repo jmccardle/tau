@@ -21,7 +21,7 @@ import sys
 
 from common import choose_model, close_all
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     Finish,

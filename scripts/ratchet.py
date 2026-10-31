@@ -1,4 +1,4 @@
-"""Rule 7 ratchet over crates/*/src and python/tau_next (CLAUDE.md; src only, not tests).
+"""Rule 7 ratchet over crates/*/src and python/tau (CLAUDE.md; src only, not tests).
 
 Checks:
   * function CC <= 15
@@ -198,9 +198,11 @@ def base_revision() -> str:
 
 
 def guard_allow(allow: dict[str, dict[str, int]], base: str) -> list[str]:
-    """Lines added to, or raised in, the allowlist since `base`."""
+    """Lines added to, or raised in, the allowlist since `base`. A base without the
+    file (τ 0.15, the merge's first parent) allowed nothing."""
     rel = ALLOW.relative_to(ROOT).as_posix()
-    old = tomllib.loads(git("show", f"{base}:{rel}"))
+    exists = git("ls-tree", base, "--", rel)
+    old = tomllib.loads(git("show", f"{base}:{rel}")) if exists else {}
     fails: list[str] = []
     for sec in SECTIONS:
         before = old.get(sec, {})

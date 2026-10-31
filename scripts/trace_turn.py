@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "tests" / "behavior"))
 from fakes import FAKE_CONFIG, FakeClock, FakeProvider, Recorder, Reply, fake_catalog  # noqa: E402
 from harness import Harness  # noqa: E402
 
-from tau_next import Part, Session, Stop, base_tools, trace  # noqa: E402
+from tau import Part, Session, Stop, base_tools, trace  # noqa: E402
 
 TEXT = "violet-anchor-42\n"
 KINDS = ("core", "store", "py", "hook", "sample", "tool", "driver")

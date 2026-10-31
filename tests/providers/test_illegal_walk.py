@@ -6,7 +6,7 @@ from pathlib import Path
 from harness import scenario
 from wire import EACH, Dialect, Server, bodies, collect, running, sse_text, walk_of
 
-from tau_next import Author, Body, Outcome, Part, SampleError, Stop
+from tau import Author, Body, Outcome, Part, SampleError, Stop
 
 BATCH = Body.Assistant([Part.Call("a", "ta", "{}")], Stop.Tools, None)
 WRONG_IDS = Body.Results([("zz", Outcome.Ok("v"), Author.Tools())])

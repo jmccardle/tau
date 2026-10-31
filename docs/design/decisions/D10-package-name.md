@@ -29,3 +29,18 @@ and optionally `tau_jmfts`; it has no `tau` package.
 - Both packages import in one venv.
 - Cost: every doc says `tau_next` until absorption; a grep fixes it.
 - Enforced by Phase 0's install test and `tests/scaffold`.
+
+## At absorption (2026-10-31)
+
+The τ repository merged Trusty's history (`rewrite Tau in Rust`), and the
+grep was run. The names are now:
+
+- Python package `tau`, native module `tau._core`.
+- Distribution `ffwf-tau`, one wheel. Installing 0.16 upgrades the 0.15
+  metapackage of the same name in place.
+- 0.15's four sub-distributions (`ffwf-tau-llm`, `ffwf-tau-agent-core`,
+  `ffwf-tau-coding-agent`, `ffwf-tau-jmfts`) end at 0.15. If they are left
+  installed beside 0.16 they do no harm, because their import names
+  (`tau_llm`, `tau_agent_core`, ...) do not collide with `tau`.
+- `parity/` is deleted. 0.15 stays reachable at tag `v0.15.0` and on branch
+  `0.15.x`, which takes its hotfixes.

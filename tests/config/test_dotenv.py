@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from world import World, models, tau, trust, yes
 
-from tau_next import TrustError, UntrustedProject, load_config
+from tau import TrustError, UntrustedProject, load_config
 
 SECRET = "sk-secret-123"
 

@@ -7,7 +7,7 @@ import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 
-from tau_next import (
+from tau import (
     Author,
     Body,
     CallDraft,

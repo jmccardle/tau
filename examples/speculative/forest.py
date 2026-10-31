@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau_next import Body, Cursor, Ending, NodeId, Part, Progress, Stop, Subject, Tree, TreeHandle
+from tau import Body, Cursor, Ending, NodeId, Part, Progress, Stop, Subject, Tree, TreeHandle
 
 SCORE = "forest/score"
 JUDGE = (

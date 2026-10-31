@@ -19,7 +19,7 @@ from wire import (
     sse_sequence,
 )
 
-from tau_next import (
+from tau import (
     Body,
     Driver,
     Part,
@@ -29,7 +29,7 @@ from tau_next import (
     SystemClock,
     model_config,
 )
-from tau_next.providers.openai import OpenAIProvider
+from tau.providers.openai import OpenAIProvider
 
 # What the recorded `plain` stream says about itself; it carried no usage.
 PLAIN_META = json.dumps(

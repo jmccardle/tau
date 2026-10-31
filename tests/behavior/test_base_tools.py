@@ -8,7 +8,7 @@ from fakes import FakeProvider, Reply
 from harness import Harness, scenario
 from world import World, models, trust
 
-from tau_next import Author, Body, Outcome, Part, Stop, base_tools, load_config
+from tau import Author, Body, Outcome, Part, Stop, base_tools, load_config
 
 
 @scenario

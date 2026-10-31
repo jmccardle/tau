@@ -10,7 +10,7 @@
 # Inline `#[cfg(test)]` modules in src/ are part of their files and count; files
 # under tests/ and benches/ are excluded.
 #
-# This overwrites python/tau_next/_core*.so with the instrumented debug build;
+# This overwrites python/tau/_core*.so with the instrumented debug build;
 # the script puts back the release build check.sh uses before it exits.
 # Needs cargo-llvm-cov, rustup component llvm-tools-preview, and the dev venv.
 set -euo pipefail

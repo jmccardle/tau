@@ -9,7 +9,7 @@
 # them (graphviz `dot`, needed to regenerate, not to check).
 #
 # Needs the in-repo venv (.venv, see CLAUDE.md Commands) with the dev group and
-# a build of tau_next (`maturin develop`), and cargo. It builds the core with its
+# a build of tau (`maturin develop`), and cargo. It builds the core with its
 # `transitions` feature into target/diagrams, apart from the normal build.
 set -euo pipefail
 
@@ -77,9 +77,9 @@ cargo build -q --release --locked -p tau-py --features "$FEATURES"
 PKG="$CARGO_TARGET_DIR/pkg"
 rm -rf "$PKG"
 mkdir -p "$PKG"
-cp -r python/tau_next "$PKG/tau_next"
-rm -f "$PKG"/tau_next/_core*.so  # only the transitions build may be found
-cp "$CARGO_TARGET_DIR/release/lib_core.so" "$PKG/tau_next/_core$SUFFIX"
+cp -r python/tau "$PKG/tau"
+rm -f "$PKG"/tau/_core*.so  # only the transitions build may be found
+cp "$CARGO_TARGET_DIR/release/lib_core.so" "$PKG/tau/_core$SUFFIX"
 PYTHONPATH="$PKG:$ROOT/$D" "$PY" -m pytest -q -s -p no:cacheprovider -p pytest_scenario \
     tests/behavior tests/core >/dev/null 2>"$TMP/logs/python.log"
 "$PY" -I "$D/positions.py" "$TMP/types.json" "$GEN" "$TMP"/logs/*.log

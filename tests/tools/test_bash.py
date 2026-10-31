@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from calls import call, err, ok
 
-from tau_next import BashTool, Outcome, base_tools
+from tau import BashTool, Outcome, base_tools
 
 
 def test_the_tool_describes_itself() -> None:
@@ -163,7 +163,7 @@ DIES_WITH_THE_SIGNAL = """
 import asyncio, json, sys
 sys.path.insert(0, sys.argv[1])
 from common import run_until_signalled
-from tau_next import BashTool
+from tau import BashTool
 
 async def main():
     command = json.dumps({"command": sys.argv[4] + "sleep " + sys.argv[2], "timeout": 600_000})
@@ -175,7 +175,7 @@ run_until_signalled(main())
 
 DIES_WITH_ASYNCIO_RUN = """
 import asyncio, json, sys
-from tau_next import BashTool
+from tau import BashTool
 
 async def main():
     command = json.dumps({"command": sys.argv[4] + "sleep " + sys.argv[2], "timeout": 600_000})

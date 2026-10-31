@@ -12,7 +12,7 @@ import sys
 from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
 
-from tau_next import (
+from tau import (
     Body,
     ConfigError,
     DotenvError,

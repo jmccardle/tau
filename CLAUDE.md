@@ -1,26 +1,30 @@
 # CLAUDE.md
 
-τ next, codename **Trusty**: τ's agent harness rewritten as a sans-IO Rust core
-(`crates/`) under a Python driver, hooks, providers, tools, and frontends
-(`python/tau_next/`). The τ repository absorbs this one as τ 0.16.0: `tests/`
-replaces the 0.15 suite, `parity/` is deleted.
+τ (tau) is an agent harness: a sans-IO Rust core (`crates/`) under a Python
+driver, hooks, providers, tools, and frontends (`python/tau/`). This is τ 0.16,
+codename **Trusty**, a rewrite of 0.15. The merge commit `rewrite Tau in Rust`
+joined Trusty's history to this repository's.
 
 The design is `docs/design/` (`model.md`, `glossary.md`, `decisions/`).
 `docs/plan.md` holds the phases and current status. Read both before changing
 anything structural.
 
-τ 0.15 lives at `~/Development/tau` (tag `v0.15.0`). Read it to learn
-behavior. Never copy from it.
+τ 0.15 is tag `v0.15.0`, and branch `0.15.x` takes its hotfixes (read it with
+`git show v0.15.0:<path>`, or in a worktree). 0.16 was designed fresh. Code from
+0.15 may be carried over selectively where it is presentation or plumbing that
+fits the new model as-is: TUI widgets, themes, release and docs scripts. Never
+carry harness code or concepts from it. Each carried piece names its 0.15 source
+in its commit message, and it meets every rule below.
 
 ## Rules
 
-1. Copy no code from τ 0.15. Read it only to learn behavior, then write the behavior as a test.
+1. 0.15 code comes in only as described above, never as harness behavior. Learn 0.15 behavior by reading it, then write the behavior as a test.
 2. No new type, field, or module-level concept without a glossary entry; anything not in the glossary is suspect.
 3. Banned identifiers and docstring words (lint in CI): `lane`, `suspension`, `suspend`, `responder`, `side_entry`, `incomplete`, `default_leaf`, `acting_cursor`, `head` (as a frontend), `frame`, `entry` (use `node`), `backend` (use `provider` or `frontend`), `fork` for anything in-session (use `branch`).
-4. Tests go through the `Harness` protocol, the public Python API (`tau_next`'s exports and `tau_next.cli.main`), or the files and wire formats those read. Underscore modules (`_trust`, `_dotenv`, `_config_layers`, ...) are private. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
+4. Tests go through the `Harness` protocol, the public Python API (`tau`'s exports and `tau.cli.main`), or the files and wire formats those read. Underscore modules (`_trust`, `_dotenv`, `_config_layers`, ...) are private. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
 5. Each phase ends with a stop for review. Do not start the next phase without sign-off.
 6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
-7. Ratchet in CI from Phase 3, over `crates/*/src` and `python/tau_next` (src, not
+7. Ratchet in CI from Phase 3, over `crates/*/src` and `python/tau` (src, not
    tests; Python measured with radon): max function CC ≤ 15, no file over 800 lines,
    banned-term count 0, I7 property test green. A type past 25 methods either
    splits along concept lines or carries a one-line justification naming the
@@ -34,7 +38,7 @@ An unrelated use of a banned word is allowed only with a reason on the same line
 `scripts/check_rules.py` (private imports), ruff SLF001 (private attributes),
 ruff banned-api (`unittest.mock`), and `tests/conftest.py` (`monkeypatch`).
 
-`python/tau_next/_core.pyi` is hand-written; `mypy.stubtest` (in `check.sh`)
+`python/tau/_core.pyi` is hand-written; `mypy.stubtest` (in `check.sh`)
 holds it to the built module.
 
 ## Layout
@@ -44,23 +48,21 @@ holds it to the built module.
 | `crates/tau-core` | Pure Rust. No IO, no async runtime, no PyO3. Behavior lives here. |
 | `crates/tau-store` | The only Rust crate that touches the filesystem for sessions (logs, scratchpads). |
 | `crates/tau-tools` | The base tools (`read`, `write`, `grep`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
-| `crates/tau-py` | PyO3 bindings, built as `tau_next._core`. Conversion and error mapping only. |
-| `python/tau_next` | Python package. `_core.pyi` is the hand-written stub for the native module. |
-| `tests/behavior` | Phase 2: behavior suite through the `Harness` protocol. Carried into τ 0.16 as its test suite. |
+| `crates/tau-py` | PyO3 bindings, built as `tau._core`. Conversion and error mapping only. |
+| `python/tau` | Python package. `_core.pyi` is the hand-written stub for the native module. |
+| `tests/behavior` | The behavior suite through the `Harness` protocol. |
 | `tests/core` | The native module through the public Python API: a hand-run job loop, errors, persistence, threads. |
-| `parity/` | The API diff against τ 0.15 (the oracle). Migration tooling: deleted when τ absorbs this repo. See `parity/README.md`. |
-| `scripts/` | Gates: `check.sh` (everything except parity, in CI order), `parity.sh`. |
+| `scripts/` | Gates: `check.sh` (everything, in CI order). |
 
 ## Commands
 
 ```bash
 source ~/.cargo/env                       # cargo is not on the default PATH here
-# venv: Python 3.12 is the floor (matches τ 0.15, which parity/ imports alongside)
+# venv: Python 3.12 is the floor
 ~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv .venv
-.venv/bin/pip install --group dev --group parity      # pip >= 25.1; parity is optional
+.venv/bin/pip install --group dev        # pip >= 25.1
 VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release   # rebuild after any Rust change
-scripts/check.sh                          # the gate; passes without τ 0.15
-scripts/parity.sh                         # the API diff; needs --group parity
+scripts/check.sh                          # the gate
 ```
 
 ## Remotes and CI
@@ -73,6 +75,10 @@ scripts/parity.sh                         # the API diff; needs --group parity
 - Forgejo, not GitHub: `runs-on` is a single string. Job containers cannot
   reach the forge's public URL, so anything that calls back to it (artifact
   upload, cache) fails with ECONNREFUSED; checkout works.
+- PyPI publishing for 0.15 ran from GitHub (`.github/workflows/publish.yml`,
+  trusted publishing, removed by the merge; see `git show v0.15.0:.github/workflows/publish.yml`).
+  A trusted publisher is bound to the workflow's file name, so its maturin
+  replacement keeps that name.
 
 ## Python versions and wheels
 
@@ -82,9 +88,8 @@ scripts/parity.sh                         # the API diff; needs --group parity
   same config.
 - `gil_used = false` is PyO3 0.30's default; the module states it anyway, as a
   claim the tests hold it to. `tests/core/test_threads.py` fails on a
-  free-threaded build if importing us (alone or beside τ 0.15) turns the GIL
-  back on. Every `#[pyclass]` is `frozen` unless a glossary entry and an ADR
-  argue otherwise.
+  free-threaded build if importing us turns the GIL back on. Every `#[pyclass]`
+  is `frozen` unless a glossary entry and an ADR argue otherwise.
 
 ## Writing code here
 

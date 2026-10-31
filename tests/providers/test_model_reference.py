@@ -8,7 +8,7 @@ import pytest
 from harness import scenario
 from wire import ALIAS, OPENAI, OPENAI_MODEL, OPENAI_URL, catalog, running, sse, sse_sequence
 
-from tau_next import (
+from tau import (
     Body,
     Config,
     ConfigError,

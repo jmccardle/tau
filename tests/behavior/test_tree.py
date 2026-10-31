@@ -10,8 +10,8 @@ import pytest
 from fakes import FAKE_CONFIG, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
-import tau_next
-from tau_next import (
+import tau
+from tau import (
     Author,
     Body,
     CallDraft,
@@ -54,7 +54,7 @@ def text(t: str) -> Reply:
 async def test_a_pre_reply_move_chooses_where_the_reply_lands(tmp_path: Path) -> None:
     """A hook's move applies at once (section 5); the commit goes under `at`, so the
     reply branches off the system node and the user node becomes a side node."""
-    seen: list[list[tau_next.Move]] = []
+    seen: list[list[tau.Move]] = []
 
     async def nav(cursor: Cursor, subject: Subject) -> str | None:
         cursor.move(SYS)
@@ -91,7 +91,7 @@ async def test_a_hook_moves_to_a_node_that_does_not_exist_and_fails_the_step(
     async def bad(cursor: Cursor, subject: Subject) -> str | None:
         try:
             cursor.move(999)
-        except tau_next.NoSuchNode as e:
+        except tau.NoSuchNode as e:
             raised.append(e)
             raise
         return None
@@ -127,7 +127,7 @@ async def test_an_extension_writes_a_custom_node_that_delivers_its_item(tmp_path
     assert node.by == Author.Extension("notes")
     assert node.delivers == [item]
     assert h.session.cursor(h.cursor).items == []
-    assert h.session.cursor(h.cursor).next == tau_next.Next.Wait
+    assert h.session.cursor(h.cursor).next == tau.Next.Wait
     assert provider.requests == [], "a Custom node never reaches the model, and starts no sample"
     assert h.session.cursor(h.cursor).at == node.id
 
@@ -195,7 +195,7 @@ async def test_a_hook_opens_a_cursor_and_labels_it_and_the_label_survives_a_relo
     assert ran.points.count("pre_step") == 2, "the opened cursor woke and ran its own step"
     await h.crash()
     assert h.session.label("worker") == other
-    with pytest.raises(tau_next.NoSuchLabel):
+    with pytest.raises(tau.NoSuchLabel):
         h.session.label("nobody")
 
 
@@ -210,7 +210,7 @@ async def test_a_hook_removes_an_item_without_waking_anything(tmp_path: Path) ->
             cursor.remove_item(item.id)
             try:
                 cursor.remove_item(item.id)
-            except tau_next.NoSuchItem as e:
+            except tau.NoSuchItem as e:
                 refused.append(e)
         return None
 
@@ -269,11 +269,11 @@ async def test_a_handle_used_after_its_hook_returned_is_refused(tmp_path: Path) 
     await h.settle()
     before = h.snapshot()
     stale = kept[0]
-    with pytest.raises(tau_next.NotInHook):
+    with pytest.raises(tau.NotInHook):
         stale.move(0)
-    with pytest.raises(tau_next.NotInHook):
+    with pytest.raises(tau.NotInHook):
         stale.write(Body.Custom("late", ""))
-    with pytest.raises(tau_next.NotInHook):
+    with pytest.raises(tau.NotInHook):
         stale.set_auto(True)
     assert h.snapshot() == before
 
@@ -306,11 +306,11 @@ async def test_core_refusals_surface_as_typed_exceptions_in_the_hook(tmp_path: P
     await h.step()
     await h.settle()
     assert errors == [
-        tau_next.DuplicateCall,
-        tau_next.DuplicateCall,
-        tau_next.NoSuchNode,
-        tau_next.NoSuchNode,
-        tau_next.NoSuchCursor,
+        tau.DuplicateCall,
+        tau.DuplicateCall,
+        tau.NoSuchNode,
+        tau.NoSuchNode,
+        tau.NoSuchCursor,
     ]
     assert h.snapshot() == before, "a refusal changes nothing"
 
@@ -443,7 +443,7 @@ async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     await h.client.set_label(other, "main")
     assert h.session.label("main") == other
     await h.client.remove_label("main")
-    with pytest.raises(tau_next.NoSuchLabel):
+    with pytest.raises(tau.NoSuchLabel):
         await h.client.remove_label("main")
     await h.settle()
 
@@ -505,7 +505,7 @@ async def test_a_handle_from_an_earlier_hook_is_refused_in_a_later_one(tmp_path:
     await h.step()
     await h.settle()
     assert gate.held == 1, "the second step's hook is running"
-    with pytest.raises(tau_next.NotInHook):
+    with pytest.raises(tau.NotInHook):
         kept[0].move(0)
     assert h.session.cursor(h.cursor).at == SYS
     gate.release()
@@ -539,7 +539,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
             for item in cursor.cursor(victim).items:
                 try:
                     cursor.write(Body.Custom("stolen", ""), delivers=[item.id])
-                except tau_next.NotPending as e:
+                except tau.NotPending as e:
                     refused.append(type(e))
         return None
 
@@ -549,7 +549,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
     await h.settle()
     await h.step()
     await h.settle()
-    assert refused == [tau_next.NotPending]
+    assert refused == [tau.NotPending]
     assert len(h.session.cursor(victim).items) == 1
     assert h.bodies() == SYSTEM
 
@@ -618,7 +618,7 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
         seen["children"] = cursor.tree.children(SYS)
         seen["count"] = len(cursor.tree)
         seen["labels"] = cursor.cursor(cursor.id).labels
-        with pytest.raises(tau_next.NoSuchNode):
+        with pytest.raises(tau.NoSuchNode):
             cursor.tree.children(999)
         return None
 
@@ -633,10 +633,10 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
     assert dict(h.driver.session.labels()) == {"main": h.cursor}
 
 
-def stale_delivery(draft: tau_next.Draft | None) -> tau_next.Draft:
+def stale_delivery(draft: tau.Draft | None) -> tau.Draft:
     """A reply draft that delivers an item that is not pending anywhere."""
     body = draft.body if draft is not None else Body.Assistant([Part.Text("x")], Stop.End)
-    return tau_next.Draft(body, [999], Author.Provider())
+    return tau.Draft(body, [999], Author.Provider())
 
 
 @scenario
@@ -699,7 +699,7 @@ async def test_an_input_draft_delivering_a_foreign_item_fails_the_step_and_does_
 
     async def redirect(cursor: Cursor, subject: Subject) -> str | None:
         foreign = cursor.cursor(other).items[0].id
-        subject.draft = tau_next.Draft(Body.User("hijack"), [foreign], Author.Frontend("term"))
+        subject.draft = tau.Draft(Body.User("hijack"), [foreign], Author.Frontend("term"))
         return None
 
     recorder = Recorder("rec")
@@ -765,9 +765,9 @@ async def test_a_retired_handle_refuses_every_write_and_ask_but_still_reads(
             lambda hd=handle: hd.remove_label("late"),
         )
         for write in writes:
-            with pytest.raises(tau_next.NotInHook):
+            with pytest.raises(tau.NotInHook):
                 write()
-    with pytest.raises(tau_next.NotInHook):
+    with pytest.raises(tau.NotInHook):
         await kept[0].ask("q?")
     assert h.driver.state().open_questions == 0
     assert h.snapshot() == before
@@ -885,15 +885,15 @@ async def test_a_change_to_another_cursor_is_heard_by_a_client(tmp_path: Path, c
     await h.settle()
     await h.close()
     heard = [e async for e in watcher]
-    views = [e for e in heard if isinstance(e, tau_next.CursorView) and e.cursor == other]
-    labels = [e for e in heard if isinstance(e, tau_next.Labels)]
+    views = [e for e in heard if isinstance(e, tau.CursorView) and e.cursor == other]
+    labels = [e for e in heard if isinstance(e, tau.Labels)]
     match change:
         case "remove_item":
             assert views[-1].items == ()
         case "remove_label":
-            assert labels[-1] == tau_next.Labels(())
+            assert labels[-1] == tau.Labels(())
         case _:
-            assert labels[-1] == tau_next.Labels((("theirs", h.cursor),))
+            assert labels[-1] == tau.Labels((("theirs", h.cursor),))
 
 
 @scenario
@@ -913,7 +913,7 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
     await h.step()
     await h.settle()  # the cursor's pre_step hook is out
     with pytest.raises(TypeError):
-        tau_next.TreeHandle(
+        tau.TreeHandle(
             h.session,
             "frontend",
             h.clock.now,
@@ -921,7 +921,7 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
             lambda: None,
             hook=h.cursor,  # pyright: ignore[reportCallIssue]
         )
-    handle = tau_next.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda: None)
+    handle = tau.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda: None)
     node = handle.append(SYS, Body.Custom("note", ""))
     await h.crash()
     assert len(h.session.tree) > node, "the write was synced"

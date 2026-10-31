@@ -15,7 +15,7 @@ from pathlib import Path
 
 from common import close_all, rest, run
 
-from tau_next import (
+from tau import (
     Appended,
     Body,
     Driver,

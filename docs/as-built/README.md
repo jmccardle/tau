@@ -112,7 +112,7 @@ to `PreSample`), `sample_job`, and `tools_job`. Each returns "a job" or
 
 ### 3.2 `tau-py Session`: 47 methods, the Python face of the core
 
-**What it is.** It is the one Python class (`tau_next.Session`) through which
+**What it is.** It is the one Python class (`tau.Session`) through which
 Python reaches the core. Each method is a 3–10 line pass-through: take the
 lock, call the core, save, and convert the result. Its size is the API's
 size: 4 lifecycle calls, 6 frontend calls, 4 extension calls, 3 hook calls,
@@ -412,7 +412,7 @@ that matter:
   test prints or compares. Low risk. Tests come with Phase 4.
 - **`bash.rs` 90.6% and `limit.rs` 92.2%**: error paths (poll failure, an
   overflow file that cannot be written). Acceptable for now.
-- **Not measured:** the Python package (`python/tau_next`, ~2,000 lines).
+- **Not measured:** the Python package (`python/tau`, ~2,000 lines).
   That is Phase 4's job by the plan.
 
 ## 7. Process gaps

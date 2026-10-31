@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from harness import scenario
 
-from tau_next import (
+from tau import (
     Appended,
     Body,
     Client,

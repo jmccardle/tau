@@ -5,7 +5,7 @@ import io
 import pytest
 from world import EOF, World, models, terminal
 
-from tau_next import (
+from tau import (
     ConfigError,
     ModelCatalog,
     UntrustedProject,

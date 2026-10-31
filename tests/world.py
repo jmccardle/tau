@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from tau_next import LoadedConfig, UntrustedProject, builtin_providers, load_config, prompts
-from tau_next.cli import main
+from tau import LoadedConfig, UntrustedProject, builtin_providers, load_config, prompts
+from tau.cli import main
 
 Ask = Callable[[str], bool]
 Pick = Callable[[tuple[str, ...]], str]

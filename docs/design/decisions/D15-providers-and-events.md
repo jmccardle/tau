@@ -181,7 +181,7 @@ whose `provider` is not its own.
    Review: every exception from `check` or `sample` fails one sample, and the separate
    `BadReplay` branch is gone). A part's `replay` is
    `None` by default; a part without one is logged in the old spelling, and one with it as
-   `{"Text": {"text", "replay"}}`, so old logs load. `tau_next.replay_for(part, provider)`
+   `{"Text": {"text", "replay"}}`, so old logs load. `tau.replay_for(part, provider)`
    returns the parsed data only for the part's own provider; the exact text is
    `part.replay.data` (parsing keeps string values but not necessarily number or escape
    spelling). The ordering rule already
@@ -284,7 +284,7 @@ whose `provider` is not its own.
 19. **Tool progress (built).** A tool opts in by giving `call` a parameter named
    `progress`, detected once when the driver is built (`takes_progress`); the driver then
    passes a `Progress` (`Callable[[str], None]`) by keyword. A tool without it is called with
-   `args_raw` alone. Chosen over a context-local `tau_next.progress(text)` because it is
+   `args_raw` alone. Chosen over a context-local `tau.progress(text)` because it is
    explicit in the signature (a bad `progress` fails when the driver is built), needs no
    hidden state that a Rust thread or another language's tool cannot see, and "any object
    with these attributes works" stays true: the attribute is the parameter. `progress` is

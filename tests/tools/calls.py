@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from tau_next import Outcome, Tool
+from tau import Outcome, Tool
 
 
 def call(tool: Tool, **args: object) -> Outcome:

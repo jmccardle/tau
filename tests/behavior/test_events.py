@@ -12,7 +12,7 @@ import pytest
 from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
-from tau_next import (
+from tau import (
     Appended,
     Body,
     CallArgs,

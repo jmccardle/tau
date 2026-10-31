@@ -1,6 +1,6 @@
 # Phase 5 fix plan: the extension and frontend contracts
 
-Status: **Stage A built 2026-10-31, stopped for review**; B–D proposed (B and C1 wait on ADR D17). Sources: `examples/speculative/REPORT.md`
+Status: **Stage A built and signed off 2026-10-31**; B–D proposed (B and C1 wait on ADR D17). Sources: `examples/speculative/REPORT.md`
 (seven extensions written against D16's surface), John's review of it (rulings
 below), and a read of the code behind each item. Sizes are rough estimates of
 lines changed, tests excluded unless noted.

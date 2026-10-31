@@ -9,7 +9,7 @@ import pytest
 from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 
-from tau_next import (
+from tau import (
     Appended,
     Author,
     Body,

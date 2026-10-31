@@ -198,7 +198,7 @@ Smallest first.
    `use_catalog`. Without it, the honest answer is "restart the driver", with `check_extension`
    to find the mistakes first.
 9. **An extension loader that registers the module and records the path** (needed by trust, by
-   `reload`, and by `whereami`'s source file). Not core: a function in `tau_next`, used by the
+   `reload`, and by `whereami`'s source file). Not core: a function in `tau`, used by the
    program that builds the driver.
 10. **A way to write the model's instructions**: a model learns these tools exist only from their
     names and docstrings; `whereami`'s "Call this first" is the only onboarding channel. An

@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from world import PROVIDERS, URL, Result, World, loaded, models, tau, trust
 
-from tau_next import TrustError, check_config, load_config
-from tau_next.cli import main
+from tau import TrustError, check_config, load_config
+from tau.cli import main
 
 LITERAL = "sk-literal-secret-9f3"
 REPO = Path(__file__).resolve().parents[2]

@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 from harness import called, offered, scenario
 
-from tau_next import Outcome
+from tau import Outcome
 
 
 def search(
