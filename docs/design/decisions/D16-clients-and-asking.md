@@ -83,7 +83,7 @@ Parameters the driver fills, by annotation alone (a name says nothing), are not 
 | annotation | as a tool | as a command |
 |---|---|---|
 | `Progress` | the call's `ToolProgress` | a `Notice` to the client |
-| `TreeHandle` | the batch's `NodeHandle` | a handle bound to the extension, with no cursor of its own: it reads and writes the tree, opens cursors, sets labels, adds items; no `walk`, `move`, `ask`. It runs at once, whatever the cursors are doing. With a `Cursor` parameter too, the same object as the `Cursor` |
+| `TreeHandle` | the batch's `NodeHandle` | a handle bound to the extension, with no cursor of its own: it reads and writes the tree, opens cursors, sets labels, adds items, `send`s text to a cursor (authored by the extension), `await rest(cursor)`s for a cursor to rest and `abort`s one; no `walk`, `move`, `ask`. It runs at once, whatever the cursors are doing. With a `Cursor` parameter too, the same object as the `Cursor` |
 | `NodeHandle` | the batch's `NodeHandle` | refused when the driver is built |
 | `Cursor` | refused when the driver is built | the cursor it runs on |
 
@@ -335,8 +335,9 @@ Where the text above was silent, as built:
 
 - **A handle knew its client** (`handle.client`, or `None`); fix pass B made it stateless and
   Phase 5 stage A removed it from every handle (below). `TreeHandle.send(to, text)` is
-  `Client.send` for a handle: an input from the client who typed, with auto-step on (raises if
-  none); stage B makes it authored by the extension instead.
+  `Client.send` for a handle: an input with auto-step on. Phase 5 stage B (D17) authors it by the
+  extension, `Extension(name)`, so it needs no client; a frontend's `input` and `send` are
+  `Frontend(client)`.
 - **A sync function's writes reach the loop**: the driver routes what a handle tells it back to the
   loop's thread, so a tool or a command may write from its worker thread.
 - **Setting the model or options checks before it writes**: the model is in the catalog, and the options
@@ -357,10 +358,23 @@ Where the text above was silent, as built:
 - **Cursors are oblivious to clients.** `Cursor` and `NodeHandle` have no `client`: a cursor runs
   the same whether anyone is watching or not, and client matching exists to route a question.
   `cursor.tell(text, to=None)` sends the `Notice` to every connected client; `to=` names one.
-  Only a command's `TreeHandle` has a `client`, its runner. `TreeHandle.send` still writes as the
-  nearest client who typed (internal, until stage B).
+  No handle has a `client`, and (stage B) `TreeHandle.send` writes as the extension.
 - **A tool knows its cursor**: `NodeHandle.cursor_id` is the cursor whose batch it runs in.
   (`TreeHandle.cursor(id)` already reads a cursor's state, so the attribute is `cursor_id`.)
+
+## Settled in Phase 5 (stage B)
+
+- **Input is authored** (D17 §1). `ItemData.Input` carries `by: Author`, `Session.input(cursor, by,
+  text)`; a client's `input` and `send` pass `Frontend(client)`, `TreeHandle.send` passes its own
+  `Extension(name)`. A `pre_input` halt notifies a `Frontend` author only. `CursorView.items`
+  carries `by` with each pending input.
+- **A handle waits on and stops another cursor** (D17 §3). `await tree.rest(cursor) -> Ending |
+  None` returns the ending of the cursor's last step once it rests with no effect out (`None`: not
+  known, not stepped since a reload), and `tree.abort(cursor)` is `Client.abort` in handle form,
+  blocking a sync tool's worker thread only until the loop has done it. Both raise `ValueError` for
+  the handle's own cursor (a `Cursor`'s `id`, a `NodeHandle`'s `cursor_id`); a plain `TreeHandle`
+  refuses none. `rest` is async only. No cycle detection. The ending comes from the hub, which
+  already keeps it for `CursorView.ending`.
 
 ## Settled in review (fix pass B: interface reshape)
 

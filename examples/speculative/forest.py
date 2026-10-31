@@ -14,30 +14,25 @@ best-scoring reply and the result is the explored tree.
 
 The judge may be searched: `judge_depth=1` rates each verdict with a smaller fan of judges.
 
-WISH: the three things this module does by hand, written as it should read.
-
-    verdicts = await tree.fan(at, JUDGE, n)    # open n cursors at `at`, send each `text`, wait
-    for v in verdicts: v.reply                 #   until all rest; each with .reply and .ending
-    tree.abort(*kids)                          # abort cursors other than your own
-    tree.close(*kids)                          # a search should not leave 12 cursors behind
+A fan is `open`, `send` to each branch, `await rest` on each. Aborting the search aborts the
+branches in flight, so it stops spending.
 """
 
 import asyncio
 import json
 import math
 import re
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from tau import Body, Cursor, Ending, NodeId, Part, Progress, Stop, Subject, Tree, TreeHandle
+from tau import Body, Cursor, Ending, NodeId, Part, Progress, Stop, Tree, TreeHandle
 
 SCORE = "forest/score"
 JUDGE = (
     "You are a strict judge. Rate the assistant's last message from 0 to 1 for correctness. "
     "Reply with exactly `SCORE: <number>`."
 )
-POLL = 0.01
 
 
 @dataclass(frozen=True)
@@ -62,6 +57,17 @@ class Scored:
     value: float
     came_from: int | None  # the candidate this one refines; None: a first-round sample
     verdicts: tuple[int, ...]  # the judge replies (side branches of `reply`)
+
+
+async def together[T](*calls: Coroutine[Any, Any, T]) -> list[T]:
+    """Run `calls` at once. If one raises, the rest are cancelled (their `finally` clauses abort
+    the branches they started, while the command is still live) and that error is raised."""
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(c) for c in calls]
+    except BaseExceptionGroup as failed:
+        raise failed.exceptions[0] from failed
+    return [t.result() for t in tasks]
 
 
 def below(tree: Tree, root: int) -> Iterator[int]:
@@ -162,13 +168,7 @@ class Forest:
     options = Options
 
     def __init__(self) -> None:
-        self._ended: dict[int, Ending | None] = {}  # the cursors a fan waits on -> last ending
         self.commands = (self.search, forest_tree)
-
-    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        if cursor.id in self._ended:  # a handle cannot read another cursor's ending, a hook can
-            self._ended[cursor.id] = subject.ending
-        return None
 
     async def search(
         self,
@@ -194,7 +194,7 @@ class Forest:
             ]
             if not replies:
                 raise RuntimeError(f"round {rounds}: every sample was aborted")
-            await asyncio.gather(*(self._record(cursor, r, point, opt) for r in replies))
+            await together(*(self._record(cursor, r, point, opt) for r in replies))
             scored = scores(tree, start)
             marks = [round(scored[r].value, 2) for r in replies]
             used = spent(tree, start)[0] - used0
@@ -232,33 +232,28 @@ class Forest:
         marks = [mark(text_of(cursor.tree, v)) for v in verdicts]
         if depth:
             half = max(1, width // 2)
-            weights = await asyncio.gather(
-                *(self._rate(cursor, v, half, depth - 1) for v in verdicts)
-            )
+            weights = await together(*(self._rate(cursor, v, half, depth - 1) for v in verdicts))
             marks = [marks[max(range(len(marks)), key=lambda i: weights[i][0])]]
         return sum(marks) / len(marks), verdicts
 
     async def _fan(self, cursor: Cursor, at: int, say: str, n: int) -> list[int | None]:
         """Branch `n` cursors from `at`, send each `say`, wait until all rest. Each one's reply
-        node; `None` for a sample a client aborted. Opening wakes, and `send` turns auto-step on
-        before the pump runs, so the first step is the sample."""
+        node; `None` for a sample a client aborted. If this is cancelled, so are the branches."""
         kids = [cursor.open(at) for _ in range(n)]
-        for k in kids:
-            self._ended[k] = None
-            cursor.send(k, say)
         try:
-            while any(cursor.cursor(k).busy or self._ended[k] is None for k in kids):
-                await asyncio.sleep(POLL)  # WISH: `await tree.rest(kids)`; a handle cannot wait
             for k in kids:
-                if not isinstance(self._ended[k], Ending.Done | Ending.Aborted):
-                    raise RuntimeError(f"cursor {k} ended {self._ended[k]}")
-            return [
-                None if isinstance(self._ended[k], Ending.Aborted) else cursor.cursor(k).at
-                for k in kids
-            ]
-        finally:
+                cursor.send(k, say)
+            endings = await together(*(cursor.rest(k) for k in kids))
+        finally:  # an abort of the search stops the samples it started
             for k in kids:
-                del self._ended[k]
+                cursor.abort(k)
+        for k, ending in zip(kids, endings, strict=True):
+            if not isinstance(ending, Ending.Done | Ending.Aborted):  # `None`: not known
+                raise RuntimeError(f"cursor {k} ended {ending}")
+        return [
+            None if isinstance(e, Ending.Aborted) else cursor.cursor(k).at
+            for k, e in zip(kids, endings, strict=True)
+        ]
 
 
 def mark(verdict: str) -> float:

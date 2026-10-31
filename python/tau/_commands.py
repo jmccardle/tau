@@ -296,7 +296,7 @@ class Commands:
 
         async def effect() -> Answer:
             owner = pending.command.owner
-            handle = self._handles.cursor(cursor, owner, pending.client)
+            handle = self._handles.cursor(cursor, owner)
             running = asyncio.ensure_future(
                 self._call(pending.command, pending.bound, pending.client, handle)
             )
@@ -330,7 +330,7 @@ class Commands:
         client: str,
         future: "asyncio.Future[str | None]",
     ) -> None:
-        handle = self._handles.tree(command.owner, client)
+        handle = self._handles.tree(command.owner)
         try:
             _settle(future, await self._call(command, bound, client, handle))
         except asyncio.CancelledError:

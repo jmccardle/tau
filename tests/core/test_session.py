@@ -97,7 +97,7 @@ def test_unknown_ids_raise_lookup_errors() -> None:
     with pytest.raises(tau.NoSuchCursor):
         session.cursor(7)
     with pytest.raises(tau.NoSuchCursor):
-        session.input(7, "term", "hi")
+        session.input(7, Author.Frontend("term"), "hi")
     with pytest.raises(tau.NoSuchCursor):
         session.abort(7)
     with pytest.raises(tau.NoSuchLabel):
@@ -109,7 +109,7 @@ def test_unknown_ids_raise_lookup_errors() -> None:
 
 def test_a_step_on_a_busy_cursor_is_busy() -> None:
     session, cursor = new()
-    session.input(cursor, "term", "hi")
+    session.input(cursor, Author.Frontend("term"), "hi")
     session.set_auto(cursor, True)
     with pytest.raises(tau.Busy):
         session.step(cursor)
@@ -130,7 +130,7 @@ def test_a_closed_session_raises_closed() -> None:
     with pytest.raises(tau.Closed):
         session.cursor(cursor)
     with pytest.raises(tau.Closed):
-        session.input(cursor, "term", "hi")
+        session.input(cursor, Author.Frontend("term"), "hi")
     with pytest.raises(tau.Closed):
         session.close()
 
@@ -197,7 +197,7 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
     block = tmp_path / "s" / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
     with pytest.raises(IsADirectoryError):
-        session.input(cursor, "term", "hi")
+        session.input(cursor, Author.Frontend("term"), "hi")
     # Closed, as `close` leaves it: every call raises `Closed`, reads included.
     for call_ in (
         lambda: session.cursor(cursor).at,
@@ -219,7 +219,7 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
 
 def test_reopening_a_session_gives_the_state_before(tmp_path: Path) -> None:
     session, first = new(tmp_path / "s")
-    session.input(first, "term", "hi")
+    session.input(first, Author.Frontend("term"), "hi")
     other = session.open(session.cursor(first).at, Author.Extension("ext"), 3)
     session.add_item(other, ItemData.Extension("timer", "tick"))
     session.go_to(first, 0, "term", 4)
@@ -238,11 +238,13 @@ def test_a_send_is_durable_on_return_and_a_loaded_cursor_is_woken_with_auto_off(
     tmp_path: Path,
 ) -> None:
     session, cursor = new(tmp_path / "s")
-    session.input(cursor, "term", "hi")
+    session.input(cursor, Author.Frontend("term"), "hi")
     session.set_auto(cursor, True)  # a send
     session.close()  # before the step ran
     loaded = Session.load(tmp_path / "s")
-    assert [i.data for i in loaded.cursor(cursor).items] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in loaded.cursor(cursor).items] == [
+        ItemData.Input(Author.Frontend("term"), "hi")
+    ]
     assert not loaded.cursor(cursor).auto
     assert loaded.cursor(cursor).busy, "load wakes every cursor"
 
@@ -269,7 +271,7 @@ def test_a_draft_must_state_what_it_delivers() -> None:
 
 def test_values_have_a_readable_repr() -> None:
     session, cursor = new()
-    session.input(cursor, "term", "hi")
+    session.input(cursor, Author.Frontend("term"), "hi")
     assert repr(Body.User("hello")) == 'User { text: "hello" }'
     assert "hi" in repr(session.cursor(cursor).items[0])
     assert "System" in repr(session.tree.walk(session.cursor(cursor).at)[-1])
@@ -280,7 +282,7 @@ def test_values_have_a_readable_repr() -> None:
 
 def test_a_cursor_state_repr_names_the_snapshot_not_the_session() -> None:
     session, cursor = new()
-    session.input(cursor, "term", "a secret scratchpad line")
+    session.input(cursor, Author.Frontend("term"), "a secret scratchpad line")
     state = session.cursor(cursor)
     shown = repr(state)
     assert f"cursor: {cursor}" in shown
@@ -332,7 +334,7 @@ def test_the_job_loop_is_public_and_refuses_an_answer_to_no_job() -> None:
     before = state(session)
     with pytest.raises(tau.WrongAnswer):
         session.answer(cursor, tau.Answer.HookFailed("nothing asked"), 1)
-    session.input(cursor, "term", "go")
+    session.input(cursor, Author.Frontend("term"), "go")
     job = session.next_job(cursor)
     assert isinstance(job, tau.Job.Hooks)
     assert job.point == tau.Hook.PreStep

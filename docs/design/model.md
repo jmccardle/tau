@@ -79,7 +79,7 @@ by      = Frontend(client) | Provider | Tools | Core | Extension(name)
 
 Move   { cursor, from?, to, by, time, opened_by* }
 Label  { label, cursor? }                    no cursor: the label is removed
-Item   { id, to, data }   data = Input { client, text } | Extension { name, data }
+Item   { id, to, data }   data = Input { by, text } | Extension { name, data }
 ```
 
 `*` marks what is **not yet spiked**. `x?` is optional.
@@ -96,7 +96,7 @@ Item   { id, to, data }   data = Input { client, text } | Extension { name, data
 - A **label** maps a unique string to one cursor; a cursor may have several.
   Label records set, move, and remove them; load replays them.
 - An **item** is addressed to one cursor (`to`). Input items come from a
-  frontend client; every other item belongs to the extensions. No item
+  frontend or, by `send`, an extension (`by` says which); every other item belongs to the extensions. No item
   reaches the model (I1).
 - Every root is a `Config` node, so `config_at` is always defined: a root is
   made only by `append_root`, which takes a `Config` (no refusal to have).
@@ -204,7 +204,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 
 | phase | applies when | jobs, in order | commits |
 |---|---|---|---|
-| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)`; an item a hook already delivered is skipped, and a hook that delivers the offered one itself must also leave the draft `None` (below): otherwise the commit's `delivers` names an item that is gone, `write` refuses it (`NotPending`), and the step fails |
+| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by the input's `by` (`Frontend(client)` for a frontend's line, `Extension(name)` for an extension's `send`); an item a hook already delivered is skipped, and a hook that delivers the offered one itself must also leave the draft `None` (below): otherwise the commit's `delivers` names an item that is gone, `write` refuses it (`NotPending`), and the step fails |
 | sample | `next == Sample` | `Hooks(PreSample)`, `Sample`, `Hooks(PreReply, draft)`, `Hooks(PostReply)` | one `Assistant` |
 | tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Tools`; each outcome has its own `by` |
 
@@ -328,8 +328,9 @@ first string, if any, and the final draft).
 
 **A string from a cursor hook** halts: later hooks at that point don't run,
 the draft is discarded, auto-step goes off, `post_step` gets
-`Halted(reason)`. From `pre_input`, the item is also removed and its client
-gets a notice with the string (`Session::notices`): a refusal, or a
+`Halted(reason)`. From `pre_input`, the item is also removed and, if its author is a
+`Frontend`, that client gets a notice with the string (an extension's input notifies no one; it reads
+the reason from `rest`'s ending) (`Session::notices`): a refusal, or a
 command's reply (`pre_input_string_refuses_with_a_notice`). Inputs already
 committed stay.
 
@@ -350,7 +351,9 @@ driver writes itself (`Interrupted`, a failed hook's `Err`) skip `pre_result`.
 
 **Handles.** A cursor handle may read the tree, cursors, labels, and move
 records; append anywhere; add, update, or remove any item; open cursors; set
-labels; ask and tell (§9). *Not built (Phase 5, not yet):* `show` (Stage D), `sample` a walk
+labels; `send` text to a cursor (authored by its extension); `await rest(cursor)` (the ending of a
+cursor's last step, or `None` if not known) and `abort(cursor)`, each refusing the handle's own cursor
+(waiting on itself deadlocks; aborting itself cancels itself); ask and tell (§9). *Not built (Phase 5, not yet):* `show` (Stage D), `sample` a walk
 and run a tool outside any step. On its own cursor, and only while its hook job is out, it may `move`, `write(body, delivers)`, and set
 `auto_step`. A node handle (tool hooks) is the same minus anything on the
 cursor. Every handle call goes into Rust at once (§11). An extension reads
@@ -364,8 +367,9 @@ retired handle is the driver's. The exact surface is Phase 4's.
 
 ### Input
 
-`Session.input(cursor, text)` adds an input item and wakes the cursor (the
-spike's `Session::add_item`). A **send** is input, then auto-step on: two calls, which the driver's `send` makes. On a
+`Session.input(cursor, by, text)` adds an input item authored `by` and wakes the cursor (the
+spike's `Session::add_item`). A client's `input` and `send` pass `Frontend(client)`; a tree handle's
+`send` passes its extension's `Extension(name)` and needs no client (D17 §1). A **send** is input, then auto-step on: two calls, which the driver's `send` makes. On a
 busy cursor the item waits for the next step's input phase. After an abort it
 stays pending (Q42). Gates are `pre_input` hooks.
 
@@ -398,8 +402,14 @@ anyone may answer) and stays there if the client returns.
 
 An extension adds an item to another cursor's scratchpad; that cursor wakes,
 and its own `pre_step` acts on it, typically with `cursor.write(…,
-delivers=[item])`. A **sub-agent** (Phase 5) is a tool that opens a cursor,
-adds the task as an item, and waits until the cursor rests at `Wait`.
+delivers=[item])`. A **sub-agent** is a tool that opens a cursor, `send`s it the task (a `User`
+message authored by the tool's extension, which passes the cursor's `pre_input` gates like a typed
+line), and `await rest(cursor)`s for the ending of the step the send caused. That holds only if the
+cursor was at rest when sent to: mid-step, the input waits and `rest` returns the earlier step's
+ending with the input still pending, so a tool that may meet a busy cursor `rest`s before it
+`send`s. On failure or its own abort it `abort`s the cursors it started. A cycle (A waits on B while B waits on A) is not
+detected: the user's abort is the way out. An item the receiving extension turns into something else
+(a task description, a timer tick, a relayed webhook) is still an `add_item`.
 
 ## 8. Abort, failure, crash
 

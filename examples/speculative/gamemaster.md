@@ -1,5 +1,12 @@
 # gamemaster: friction log
 
+> **B1–B2 resolved (Stage B, 2026-10-31).** `send` now writes `User` by `Extension(name)` with no
+> client, and every handle has `await rest(cursor) -> Ending | None` and `abort(cursor)`. The
+> gamemaster is rewritten on them: 175 lines to 137, no item or `pre_step`/`post_step` hooks, no
+> `waiting` dict, and the test-side `Waits` stand-in is gone. Fought (a)1-2 and (d)1, (d)3 are
+> resolved: an aborted `ask_characters` aborts its characters in a `finally`. The log below is
+> the history of the first version and its line numbers no longer match.
+
 Files: `examples/speculative/gamemaster.py` (175 lines, about 55 of them cross-cursor plumbing),
 `tests/examples/speculative/test_gamemaster.py` (9 tests, through `Harness`). Line numbers below
 are the extension's unless a test is named.

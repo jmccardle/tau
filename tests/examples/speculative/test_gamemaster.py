@@ -4,7 +4,6 @@ import importlib.util
 import random
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fakes import Fail, FakeProvider, Gate, Reply
@@ -17,6 +16,7 @@ from tau import (
     CommandFailed,
     CursorView,
     Delta,
+    Ending,
     Finish,
     Labels,
     Live,
@@ -66,19 +66,6 @@ class ByModel(FakeProvider):
         return len(self.by_model[model].requests)
 
 
-class Waits(Gate):
-    """Tells `settle` that a tool call parked on another cursor's reply is waiting on something
-    no test controls: the Harness only knows its own gates and open questions."""
-
-    def __init__(self, gm: Any) -> None:
-        super().__init__()
-        self.gm = gm
-
-    @property
-    def held(self) -> int:
-        return int(any(not reply.done() for _, reply in self.gm.waiting.values()))
-
-
 def calls(*calls: tuple[str, str, str]) -> Reply:
     return Reply([Part.Call(c, tool, args) for c, tool, args in calls], Stop.Tools)
 
@@ -93,7 +80,6 @@ async def stage(
     gm = gamemaster.Gamemaster(random.Random(seed))
     h = await Harness.create(
         tmp_path,
-        gates=[Waits(gm)],
         config=model_config("gm"),
         system=gamemaster.GM_SYSTEM,
         provider=provider,
@@ -209,6 +195,9 @@ async def test_a_scene_asks_only_those_present_and_they_answer_in_parallel(tmp_p
     # Who was sampled: the cost, countable from the provider and visible in the tree.
     assert [provider.asked(m) for m in MODELS] == [2, 1, 1, 0]
     assert len(spoken(h, cursor_of(h, "Cass"))) == 1, "Cass heard nothing and was never sampled"
+    assert not any(h.session.cursor(cursor_of(h, n)).busy for n in ("Mira", "Borin")), (
+        "the GM leaves the characters at rest: success aborts no one"
+    )
 
     # In Mira's cursor the GM is the user and she is the assistant.
     assert spoken(h, cursor_of(h, "Mira"))[1:] == [
@@ -295,7 +284,7 @@ async def test_the_player_can_watch_a_character_think_and_talk_to_it_directly(
 
 
 @scenario
-async def test_aborting_the_gm_mid_scene_does_not_stop_the_characters(tmp_path: Path) -> None:
+async def test_aborting_the_gm_mid_scene_aborts_the_characters_it_asked(tmp_path: Path) -> None:
     mira = Gate()
     h, provider = await stage(
         tmp_path,
@@ -307,15 +296,19 @@ async def test_aborting_the_gm_mid_scene_does_not_stop_the_characters(tmp_path: 
     )
     await h.send("Borin enters.")
     await h.settle()
+    assert mira.held == 1, "Mira is mid-sample"
     assert h.session.cursor(cursor_of(h, "Borin")).busy is False
     await h.abort()
     await h.settle()
     assert [type(o) for o in outcomes(h).values()] == [Outcome.Ok, Outcome.Interrupted]
-    assert h.session.cursor(cursor_of(h, "Mira")).busy, "Mira's sample is still in flight"
+    assert (await h.view(cursor_of(h, "Mira"))).ending == Ending.Aborted()
+    assert not h.session.cursor(cursor_of(h, "Mira")).busy, "her sample was cancelled"
+    assert not h.session.cursor(cursor_of(h, "Mira")).auto
+    assert mira.held == 0
     mira.release()
     await h.settle()
-    assert spoken(h, cursor_of(h, "Mira"))[-1] == ("assistant", "Get out.")
-    assert provider.asked("gm") == 1, "no summary: the GM stopped, the cast went on"
+    assert ("assistant", "Get out.") not in spoken(h, cursor_of(h, "Mira")), "she never answered"
+    assert [provider.asked(m) for m in MODELS] == [1, 1, 1, 0], "no more samples ran, no summary"
 
 
 @scenario
@@ -342,3 +335,47 @@ async def test_naming_someone_who_is_not_in_the_story_asks_no_one(tmp_path: Path
     await h.settle()
     assert outcomes(h)["a"] == Outcome.Err("ValueError: not in the story: Ghost")
     assert [provider.asked(m) for m in MODELS] == [2, 0, 0, 0]
+
+
+@scenario
+async def test_a_character_cannot_ask_itself_and_nobody_is_asked(tmp_path: Path) -> None:
+    mira = calls(("a", "ask_characters", '{"who": ["Borin", "Mira"], "message": "boo"}'))
+    h, provider = await stage(tmp_path, {"mira": [mira, say("Oh.")]})
+    await h.send("Wake up.", cursor_of(h, "Mira"))
+    await h.settle()
+    (result,) = [
+        o
+        for b in h.bodies(cursor_of(h, "Mira"))
+        if isinstance(b, Body.Results)
+        for _, o, _ in b.outcomes
+    ]
+    assert result == Outcome.Err("Mira: a character cannot ask itself")
+    assert [provider.asked(m) for m in MODELS] == [0, 2, 0, 0], "Borin was never sent anything"
+    assert len(spoken(h, cursor_of(h, "Borin"))) == 1, "Borin heard nothing"
+
+
+@scenario
+async def test_a_character_busy_with_something_else_answers_the_gms_message(
+    tmp_path: Path,
+) -> None:
+    """The GM waits out the step in progress, so the ending it reads is its own message's."""
+    gate = Gate()
+    ask = calls(("a", "ask_characters", '{"who": ["Mira"], "message": "Borin enters."}'))
+    h, _ = await stage(
+        tmp_path,
+        {
+            "gm": [ask, say("She nods.")],
+            "mira": [Reply([Part.Text("lost")], gate=gate), say("Fine.")],
+        },
+    )
+    mira = cursor_of(h, "Mira")
+    await h.send("Psst.", mira)
+    await h.settle()
+    assert gate.held == 1
+    await h.send("Borin enters.")
+    await h.settle()
+    assert h.session.cursor(h.cursor).busy, "the GM waits for Mira, who is busy with the player"
+    await h.abort(mira)  # the player's step ends Aborted: not an answer to the GM
+    await h.settle()
+    assert outcomes(h)["a"] == Outcome.Ok("Mira: Fine.\n(not asked: Borin, Cass)")
+    assert spoken(h)[-1] == ("assistant", "She nods.")

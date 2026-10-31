@@ -14,8 +14,8 @@ use tau_core::tree::{
 
 #[derive(Clone, Debug)]
 enum Op {
-    Send(usize),
-    Input(usize),
+    Send(usize, usize),
+    Input(usize, usize),
     Step(usize),
     Go(usize, usize),
     Auto(usize, bool),
@@ -28,8 +28,8 @@ enum Op {
 fn op() -> impl Strategy<Value = Op> {
     let n = 0..64usize;
     prop_oneof![
-        1 => n.clone().prop_map(Op::Send),
-        1 => n.clone().prop_map(Op::Input),
+        1 => (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Send(c, a)),
+        1 => (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
         1 => n.clone().prop_map(Op::Step),
         1 => (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         1 => (n.clone(), any::<bool>()).prop_map(|(c, on)| Op::Auto(c, on)),
@@ -37,6 +37,16 @@ fn op() -> impl Strategy<Value = Op> {
         1 => n.clone().prop_map(Op::Open),
         16 => (n.clone(), 0..256usize).prop_map(|(c, k)| Op::Drive(c, k)),
     ]
+}
+
+/// Who wrote an input: a frontend, an extension, or any other author (core records them all).
+fn author(k: usize) -> Author {
+    match k % 4 {
+        0 => Author::Frontend("t".into()),
+        1 => Author::Extension("ext".into()),
+        2 => Author::Tools,
+        _ => Author::Core,
+    }
 }
 
 fn nodes(s: &Session) -> Vec<Node> {
@@ -267,11 +277,11 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     let node = |i: usize| i as NodeId % (nn + 2);
     let term = || "term".to_string();
     match *op {
-        Op::Send(i) => {
-            m.input(cursor(i), term(), "hello").unwrap();
+        Op::Send(i, a) => {
+            m.input(cursor(i), author(a), "hello").unwrap();
             m.set_auto(cursor(i), true).unwrap();
         }
-        Op::Input(i) => drop(m.input(cursor(i), term(), "more").unwrap()),
+        Op::Input(i, a) => drop(m.input(cursor(i), author(a), "more").unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));
             let stepped = m.step(cursor(i));

@@ -9,6 +9,7 @@ from fakes import FAKE_MODEL, FakeProvider, Gate, Recorder, Reply
 from harness import Harness, build, say, scenario
 
 from tau import (
+    Author,
     Body,
     Busy,
     Client,
@@ -16,6 +17,7 @@ from tau import (
     Cursor,
     CursorId,
     DefinitionError,
+    Ending,
     Form,
     ItemData,
     ModelCatalog,
@@ -26,6 +28,7 @@ from tau import (
     Part,
     Progress,
     Stop,
+    Subject,
     TreeHandle,
     read_models,
 )
@@ -540,30 +543,111 @@ async def test_a_tool_knows_its_cursor(tmp_path: Path) -> None:
     assert results.outcomes[0][1] == Outcome.Ok(str(other))
 
 
+class Nudges:
+    """An extension that sends to another cursor from a command, a tool and a hook."""
+
+    name = "nudges"
+
+    def __init__(self, target: int | None = None) -> None:
+        self.target = target
+        self.seen: list[Ending | None] = []
+        self.commands = (self.nudge, self.nudge_and_wait)
+        self.tools = (self.nudge_from_tool,)
+
+    def nudge(self, tree: TreeHandle, to: CursorId, text: str) -> None:
+        """Send `text` to a cursor."""
+        tree.send(to, text)
+
+    async def nudge_and_wait(self, tree: TreeHandle, to: CursorId, text: str) -> None:
+        """Send `text` to a cursor, and keep how the step it caused ended."""
+        tree.send(to, text)
+        self.seen.append(await tree.rest(to))
+
+    def nudge_from_tool(self, node: NodeHandle, to: CursorId, text: str) -> str:
+        """Send `text` to a cursor."""
+        node.send(to, text)
+        return "sent"
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+        if self.target is not None and cursor.id == 0:
+            cursor.send(self.target, "from a hook")
+
+
+def users(h: Harness, cursor: int) -> list[tuple[Author, str]]:
+    """The `User` nodes of a cursor's walk, with their authors."""
+    walk = h.session.tree.walk(h.session.cursor(cursor).at)
+    return [(n.by, n.body.text) for n in walk if isinstance(n.body, Body.User)]
+
+
 @scenario
-async def test_send_without_a_client_is_refused(tmp_path: Path) -> None:
-    refused: list[str] = []
-
-    class Sends:
-        name = "sends"
-
-        async def pre_step(self, cursor: Cursor, subject: object) -> None:
-            try:
-                cursor.send(cursor.id, "hi")
-            except ValueError as e:
-                refused.append(str(e))
-
-    h = await Harness.create(tmp_path, extensions=[Sends()])
-    await h.add_item("sends", "tick")
+async def test_a_command_can_send_to_a_cursor_nobody_has_typed_on(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("heard")]), extensions=[Nudges()])
+    other = await h.client.open(h.session.cursor(h.cursor).at)
     await h.settle()
-    assert len(refused) == 1
-    assert [i.data for i in h.session.cursor(h.cursor).items] == [
-        ItemData.Extension("sends", "tick")
-    ]
+    await h.run("nudge", {"to": other, "text": "psst"})
+    await h.settle()
+    assert users(h, other) == [(Author.Extension("nudges"), "psst")]
+    assert users(h, h.cursor) == []
+    assert h.bodies(other)[-1] == Body.Assistant([Part.Text("heard")], Stop.End), "it answered"
+    await h.close()
 
 
 @scenario
-async def test_a_tool_hands_off_to_another_cursor_for_the_client_it_works_for(
+async def test_a_hook_can_send_to_a_cursor_nobody_has_typed_on(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("heard")]), extensions=[Nudges(target=1)]
+    )
+    other = await h.client.open(h.session.cursor(h.cursor).at)
+    assert other == 1
+    await h.settle()
+    await h.step()  # cursor 0's pre_step sends
+    await h.settle()
+    assert users(h, other) == [(Author.Extension("nudges"), "from a hook")]
+    await h.close()
+
+
+@scenario
+async def test_an_extensions_halted_input_notifies_no_one_and_ends_halted(tmp_path: Path) -> None:
+    recorder = Recorder(says={"pre_input": "not today"})
+    nudges = Nudges()
+    h = await Harness.create(tmp_path, extensions=[nudges, recorder])
+    other = await h.client.open(h.session.cursor(h.cursor).at)
+    await h.settle()
+    await h.run("nudge", {"to": other, "text": "psst"})
+    await h.settle()
+    assert h.notices() == [], "an extension has no stream to notify"
+    await h.run("nudge_and_wait", {"to": other, "text": "again"})
+    assert nudges.seen == [Ending.Halted("not today")], "the sender reads the reason from rest"
+    assert (await h.view(other)).ending == Ending.Halted("not today")
+    assert (await h.view(other)).items == (), "the halted input is gone"
+    assert users(h, other) == []
+    await h.send("typed", cursor=other)  # a frontend's halted input is told to its client
+    await h.settle()
+    assert h.notices() == ["not today"]
+    await h.close()
+
+
+@scenario
+async def test_an_extensions_pending_input_survives_a_crash_with_its_author(tmp_path: Path) -> None:
+    gate = Gate()
+    h = await Harness.create(
+        tmp_path,
+        extensions=[Nudges(), Recorder(gates={"pre_step": gate})],
+        gates=[gate],
+    )
+    await h.step()
+    await h.settle()  # the step waits at pre_step, before the input phase
+    await h.run("nudge", {"to": h.cursor, "text": "psst"})
+    pending = ItemData.Input(Author.Extension("nudges"), "psst")
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [pending]
+    assert [i.data for i in (await h.view()).items] == [pending], "a client sees who wrote it"
+    await h.crash()
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [pending]
+    await h.close()
+
+
+@scenario
+async def test_a_tool_hands_off_to_another_cursor_as_its_extension(
     tmp_path: Path,
 ) -> None:
     class Hands:
@@ -586,3 +670,4 @@ async def test_a_tool_hands_off_to_another_cursor_for_the_client_it_works_for(
     await h.send("go")
     await h.settle()
     assert Body.User("n") in h.bodies(other), "the other cursor's model was given the note"
+    assert users(h, other) == [(Author.Extension("hands"), "n")]

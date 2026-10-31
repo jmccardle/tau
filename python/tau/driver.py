@@ -21,7 +21,10 @@ rules about performing one effect:
 """
 
 import asyncio
+import concurrent.futures
+import contextvars
 import threading
+from collections import Counter
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -31,7 +34,7 @@ from tau._builtin import Tau
 from tau._calls import Calls, frontend
 from tau._commands import Commands, assemble_commands
 from tau._config_layers import ModelCatalog
-from tau._core import Answer, Author, Hook, ItemData, Job, Session
+from tau._core import Answer, Author, Ending, Hook, ItemData, Job, Session
 from tau._hub import Hub
 from tau._options import ExtensionOptions
 from tau._questions import Questions
@@ -79,6 +82,12 @@ class _Outstanding:
             call.abort()
 
 
+_EFFECT: contextvars.ContextVar[asyncio.Task[None] | None] = contextvars.ContextVar(
+    "effect", default=None
+)
+"""The effect task the running code belongs to, tasks it starts included."""
+
+
 class _Tasks:
     """Every task the driver runs: the pump and the effects (`effects`, the ones that answer)."""
 
@@ -87,7 +96,10 @@ class _Tasks:
         self.effects: set[asyncio.Task[None]] = set()
 
     def spawn(self, coro: Coroutine[object, object, None], *, effect: bool = False) -> None:
-        task = asyncio.ensure_future(coro)
+        context = contextvars.copy_context()
+        task = asyncio.create_task(coro, context=context)
+        if effect:
+            context.run(_EFFECT.set, task)
         for held in (self.all, self.effects) if effect else (self.all,):
             held.add(task)
             task.add_done_callback(held.discard)
@@ -98,12 +110,15 @@ class DriverState:
     """What a harness reads to tell quiet from busy: the effects running (`units`), whether the
     pump has something to do (`queued`: a report or poke to take, or a busy cursor with no
     effect out; never once the driver has failed or stopped, when the session may be closed),
-    the questions open, what the driver died of, and whether it was stopped. `check` raises
-    the failure or `RuntimeError` for a stopped driver, as every client call does first."""
+    the questions open, the effects waiting in a handle's `rest` (`waiting`: an effect with a
+    `rest` out is parked until that cursor rests, however many it waits on at once), what the
+    driver died of, and whether it was stopped. `check` raises the failure or `RuntimeError` for
+    a stopped driver, as every client call does first."""
 
     units: int
     queued: bool
     open_questions: int
+    waiting: int
     failure: Exception | None
     stopped: bool
 
@@ -176,6 +191,8 @@ class Driver:
             on_loop(self._poke),
             on_loop(self._hub.sync),
             self._options,
+            self._ending_at_rest,
+            lambda cursor: _on_loop_wait(lambda: self._home, self._calls.abort, cursor),
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(
@@ -204,6 +221,7 @@ class Driver:
             catch_up=partial(_catch_up, self._out),
         )
         self._rested = _Waiters()
+        self._waiting: Counter[asyncio.Task[None] | None] = Counter()  # effect -> `rest` calls out
 
     def _check(self) -> None:
         """Raise the failure the driver died of, or that it is stopped."""
@@ -266,6 +284,7 @@ class Driver:
                 )
             ),
             open_questions=self._questions.count(),
+            waiting=len(self._waiting),
             failure=self._failure,
             stopped=self._stopped,
         )
@@ -279,6 +298,19 @@ class Driver:
             if not (self.session.cursor(cursor).busy or cursor in self._out):
                 return
             await self._rested.wait()
+
+    async def _ending_at_rest(self, cursor: int) -> Ending | None:
+        """`rest`, then how the cursor's last step ended (`None` if not known): what a handle's
+        `rest` returns."""
+        effect = _EFFECT.get()
+        self._waiting[effect] += 1
+        try:
+            await self.rest(cursor)
+        finally:
+            self._waiting[effect] -= 1
+            if not self._waiting[effect]:
+                del self._waiting[effect]
+        return self._hub.ending(cursor)
 
     # What a frontend uses
 
@@ -441,6 +473,29 @@ def _on_loop(
             where[0].call_soon_threadsafe(call)
 
     return safe
+
+
+def _on_loop_wait[T](
+    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None],
+    call: Callable[[int], T],
+    arg: int,
+) -> T:
+    """`call(arg)` on the loop's thread, whichever thread asks, and its result (or what it
+    raises) returned to the asker, who waits for it. Unlike `_on_loop` this is for a call whose
+    effect the asker's next step depends on: an abort made before a `send` must come first."""
+    where = home()
+    if where is None or threading.get_ident() == where[1]:
+        return call(arg)
+    done: concurrent.futures.Future[T] = concurrent.futures.Future()
+
+    def run() -> None:
+        try:
+            done.set_result(call(arg))
+        except BaseException as e:
+            done.set_exception(e)
+
+    where[0].call_soon_threadsafe(run)
+    return done.result()
 
 
 def _as_failure(error: BaseException) -> Exception:

@@ -258,9 +258,9 @@ impl Session {
 
     // Frontend calls.
 
-    fn input(&self, py: Python<'_>, cursor: u64, client: String, text: &str) -> PyResult<u64> {
+    fn input(&self, py: Python<'_>, cursor: u64, by: Author, text: &str) -> PyResult<u64> {
         self.shared.write(py, tracing::info_span!("py.input"), |m| {
-            Ok(m.input(cursor, client, text)?)
+            Ok(m.input(cursor, by.into(), text)?)
         })
     }
 

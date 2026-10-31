@@ -1,6 +1,6 @@
 # Phase 5 fix plan: the extension and frontend contracts
 
-Status: **Stage A built and signed off 2026-10-31**; B–D next; D17 accepted 2026-10-31. Sources: `examples/speculative/REPORT.md`
+Status: **Stage A built and signed off 2026-10-31**; **Stage B built 2026-10-31, stopped for review**; C–D after; D17 accepted 2026-10-31. Sources: `examples/speculative/REPORT.md`
 (seven extensions written against D16's surface), John's review of it (rulings
 below), and a read of the code behind each item. Sizes are rough estimates of
 lines changed, tests excluded unless noted.
@@ -70,7 +70,7 @@ except A3.
 | A9 | `NodeHandle.cursor`: a tool knows its cursor id. | ~3 | harness_sense's `attach` for its own id |
 | A10 | Doc bugs. In D16 §2's table, a command's `TreeHandle` is not "the cursor's handle". In model.md §7, mark `handle.sample` and "run a tool outside any step" as not built, or strike them. `show` waits for D4. | docs | the wrong path gamemaster took |
 
-`send` keeps needing a client until B1. Stage A does not touch it.
+`send` needed a client until B1; it is authored by the extension now.
 
 ## Stage B: the sub-agent primitive (the one blocker)
 
@@ -80,9 +80,9 @@ assumes.
 
 | # | fix | size |
 |---|---|---|
-| B1 | **Input is authored.** `ItemData.Input { client, text }` becomes `Input { by: Author, text }`. `send` uses the handle's `by`, so text sent from an extension is written as `User` by `Extension(name)` and needs no client. The scratchpad file's version does not change (D17: versions mark released formats); there is no migration. The log is unchanged: `Author.Extension` already exists and is already recorded. A `pre_input` halt notifies only a `Frontend` author, as now. Add a glossary entry under **input**. | ~60–100, core + `tau-py` + Python, ~15 test sites |
-| B2 | **`await tree.rest(cursor) -> Ending \| None`** (`None`: not known, e.g. not stepped since a reload) and **`tree.abort(cursor)`** on `TreeHandle`, so every handle has them: tool, hook and command alike. Both refuse the handle's own cursor (waiting on it deadlocks; aborting it cancels yourself). Add a hub accessor for the last ending. `abort` is safe from a tool's worker thread. | ~50–70 |
-| B3 | **Acceptance:** rewrite gamemaster and forest on B1–B2. The gamemaster becomes `send`, `rest`, read the reply. An aborted gamemaster tool is cancelled, and in a `finally` it aborts its characters; forest does the same with its fan, so abort stops spending. That is extension code, not a core rule. Expect about −40 lines across the two, and the test-side `Waits` stand-in deleted. | examples |
+| B1 | **built.** **Input is authored.** `ItemData.Input { client, text }` becomes `Input { by: Author, text }`. `send` uses the handle's `by`, so text sent from an extension is written as `User` by `Extension(name)` and needs no client. The scratchpad file's version does not change (D17: versions mark released formats); there is no migration. The log is unchanged: `Author.Extension` already exists and is already recorded. A `pre_input` halt notifies only a `Frontend` author, as now. Add a glossary entry under **input**. | ~60–100, core + `tau-py` + Python, ~15 test sites |
+| B2 | **built.** **`await tree.rest(cursor) -> Ending \| None`** (`None`: not known, e.g. not stepped since a reload) and **`tree.abort(cursor)`** on `TreeHandle`, so every handle has them: tool, hook and command alike. Both refuse the handle's own cursor (waiting on it deadlocks; aborting it cancels yourself). Add a hub accessor for the last ending. `abort` is safe from a tool's worker thread. | ~50–70 |
+| B3 | **built.** **Acceptance:** rewrite gamemaster and forest on B1–B2. The gamemaster becomes `send`, `rest`, read the reply. An aborted gamemaster tool is cancelled, and in a `finally` it aborts its characters; forest does the same with its fan, so abort stops spending. That is extension code, not a core rule. Expect about −40 lines across the two, and the test-side `Waits` stand-in deleted. | examples |
 
 **Hazard, left open on purpose:** a cycle where A's tool waits for B while B
 waits for A is not detected. The user's abort is the way out, and B3 shows

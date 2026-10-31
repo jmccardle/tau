@@ -37,7 +37,7 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
 
     def calls(cursor: int) -> None:
         for n in range(CALLS):
-            session.input(cursor, "term", f"hi {n}")
+            session.input(cursor, Author.Frontend("term"), f"hi {n}")
             session.add_item(cursor, ItemData.Extension("timer", f"tick {n}"))
             session.set_label(f"cursor {cursor}", cursor)
             session.cursors()
@@ -51,7 +51,7 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
             data
             for n in range(CALLS)
             for data in (
-                ItemData.Input("term", f"hi {n}"),
+                ItemData.Input(Author.Frontend("term"), f"hi {n}"),
                 ItemData.Extension("timer", f"tick {n}"),
             )
         ]
@@ -112,7 +112,7 @@ def test_threads_drive_one_cursor_without_deadlock_or_corruption(
             try:
                 match rng.randrange(5):
                     case 0:
-                        session.input(cursor, "term", f"hi {n}")
+                        session.input(cursor, Author.Frontend("term"), f"hi {n}")
                     case 1:
                         if isinstance(session.next_job(cursor), Job.Hooks):
                             session.answer(cursor, Answer.Hooks(None, None), n)

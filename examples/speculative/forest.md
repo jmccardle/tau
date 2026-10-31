@@ -1,5 +1,11 @@
 # forest: friction log
 
+> **B1–B2 resolved (Stage B, 2026-10-31).** Fought (a)1 (polling `busy` and a `post_step` hook
+> to learn each child's ending) is gone: `_fan` is `open`, `send`, `await rest` on each, and a
+> `finally` aborts the branches, so aborting the search stops the samples and the judges in
+> flight. 268 lines to 254. The log below is the history of the first version and its line
+> numbers no longer match.
+
 Files: `examples/speculative/forest.py` (266 lines; about 100 are the search maths, `scores`,
 `backed_up`, `select`, `render`; the API-facing part is `Forest`, lines 160-262),
 `tests/examples/speculative/test_forest.py` (12 tests, all green).

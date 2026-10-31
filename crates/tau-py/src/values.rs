@@ -409,14 +409,17 @@ impl From<tree::Move> for Move {
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemData {
-    Input { client: String, text: String },
+    Input { by: Author, text: String },
     Extension { name: String, data: String },
 }
 
 impl From<tree::ItemData> for ItemData {
     fn from(d: tree::ItemData) -> Self {
         match d {
-            tree::ItemData::Input { client, text } => Self::Input { client, text },
+            tree::ItemData::Input { by, text } => Self::Input {
+                by: by.into(),
+                text,
+            },
             tree::ItemData::Extension { name, data } => Self::Extension { name, data },
         }
     }
@@ -425,7 +428,10 @@ impl From<tree::ItemData> for ItemData {
 impl From<ItemData> for tree::ItemData {
     fn from(d: ItemData) -> Self {
         match d {
-            ItemData::Input { client, text } => Self::Input { client, text },
+            ItemData::Input { by, text } => Self::Input {
+                by: by.into(),
+                text,
+            },
             ItemData::Extension { name, data } => Self::Extension { name, data },
         }
     }

@@ -90,7 +90,8 @@ input and stays in plan mode; reject leaves plan mode and stops. The mode is an 
    one dialog: three buttons and a text box).
 9. **Who answered?** → `ask` returns the value, not the client. The revise feedback is sent with
    `cursor.send`, which authors it as the *typist* (`_typist` of the walk), not the answerer;
-   with two clients attached those can differ. Approve is authored by the extension. → Chose `send`
+   with two clients attached those can differ. (Before B1: `send` now authors the text as the
+   calling extension, `Extension(name)`, not the typist.) Approve is authored by the extension. → Chose `send`
    for the person's words and `write` for the extension's words (test
    `revise_sends_the_feedback...` asserts both authors). **Severity: awkward**: `write` can never
    say `Frontend`, `send` can only say "the last typist", and neither says "the person who clicked".

@@ -14,6 +14,7 @@ from harness import Harness, scenario
 
 from tau import (
     Appended,
+    Author,
     Body,
     CallArgs,
     CallNamed,
@@ -184,7 +185,7 @@ async def test_a_call_that_changes_a_cursor_is_heard_by_another_client(tmp_path:
     await h.input("hello")
     view = await asyncio.wait_for(anext(client), 1)
     assert isinstance(view, CursorView)
-    assert [i.data for i in view.items] == [ItemData.Input("term", "hello")]
+    assert [i.data for i in view.items] == [ItemData.Input(Author.Frontend("term"), "hello")]
     opened = await h.client.open(SYS)
     assert (await next_view(client, opened)).at == SYS
     await h.client.go_to(opened, 0)
@@ -676,7 +677,7 @@ async def test_an_item_added_from_outside_wakes_the_cursor_and_is_announced(
     assert isinstance(view, CursorView)
     assert [i.id for i in view.items] == [item]
     with pytest.raises(TypeError, match="input"):
-        h.driver.add_item(h.cursor, ItemData.Input("term", "typed"))
+        h.driver.add_item(h.cursor, ItemData.Input(Author.Frontend("term"), "typed"))
     await client.close()
     await h.close()
 

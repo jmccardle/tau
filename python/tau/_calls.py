@@ -75,11 +75,11 @@ class Calls:
 
     def input(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "input"), self._changing():
-            return self.session.input(cursor, client, text)
+            return self.session.input(cursor, Author.Frontend(client), text)
 
     def send(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "send"), self._changing():
-            item = self.session.input(cursor, client, text)
+            item = self.session.input(cursor, Author.Frontend(client), text)
             self.session.set_auto(cursor, True)
             return item
 

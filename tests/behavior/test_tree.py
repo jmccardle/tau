@@ -384,9 +384,9 @@ async def test_a_frontend_go_to_while_a_cursor_hook_runs_aborts_and_moves_after_
     assert h.session.cursor(h.cursor).at == 0
     assert h.session.cursor(h.cursor).moves[-1].by == Author.Frontend("term")
     assert not h.session.cursor(h.cursor).auto
-    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")], (
-        "the input stays pending"
-    )
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [
+        ItemData.Input(Author.Frontend("term"), "hi")
+    ], "the input stays pending"
 
 
 @scenario
@@ -909,6 +909,12 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
             await gate.wait()
             return None
 
+    async def rest(cursor: int) -> tau.Ending | None:
+        return None
+
+    def abort(cursor: int) -> None:
+        pass
+
     h = await Harness.create(tmp_path, extensions=[Wait()], gates=[gate])
     await h.step()
     await h.settle()  # the cursor's pre_step hook is out
@@ -919,9 +925,13 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
             h.clock.now,
             lambda: None,
             lambda: None,
+            rest,
+            abort,
             hook=h.cursor,  # pyright: ignore[reportCallIssue]
         )
-    handle = tau.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda: None)
+    handle = tau.TreeHandle(
+        h.session, "frontend", h.clock.now, lambda: None, lambda: None, rest, abort
+    )
     node = handle.append(SYS, Body.Custom("note", ""))
     await h.crash()
     assert len(h.session.tree) > node, "the write was synced"

@@ -27,6 +27,7 @@ from tau import (
     Stop,
     TextDelta,
     Tool,
+    TreeHandle,
     model_config,
     read_models,
 )
@@ -402,6 +403,66 @@ def test_every_open_question_is_shown_and_a_line_answers_the_first(tmp_path: Pat
         await window.line("d")  # at once: the second line answers the second question
         await asyncio.wait_for(window.finished(), 5)
         assert "[ad]" in screen.text
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+class Nudger:
+    """A command that sends text to a cursor, as this extension."""
+
+    name = "nudger"
+
+    def __init__(self) -> None:
+        self.commands = (self.nudge,)
+
+    def nudge(self, tree: TreeHandle, cursor: CursorId, text: str) -> None:
+        """Send `text` to a cursor."""
+        tree.send(cursor, text)
+
+
+def test_a_message_another_author_wrote_is_shown_with_their_name(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = Scripted(
+            ([TextDelta("noted"), Part.Text("noted")], Stop.End),
+            ([TextDelta("ok"), Part.Text("ok")], Stop.End),
+            ([TextDelta("hm"), Part.Text("hm")], Stop.End),
+        )
+        window, driver, session, screen = await start(tmp_path, provider, Typed(), Nudger())
+        await window.line("hi")
+        await until(lambda: "noted" in screen.text)
+        assert "hi" not in screen.text, "what this client sent is not echoed"
+        await window.line('/nudge cursor=0 text="mind the gap"')
+        await window.finished()
+        await until(lambda: "ok" in screen.text)
+        assert "[nudger] mind the gap" in screen.text
+        elsewhere = driver.client("john:tui")
+        await elsewhere.send(window.cursor, "from the other terminal")
+        await until(lambda: "[john:tui] from the other terminal" in screen.text)
+        await elsewhere.close()
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_message_written_to_another_cursor_is_not_shown(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = Scripted(
+            ([Part.Text("aside")], Stop.End),
+            ([TextDelta("main"), Part.Text("main")], Stop.End),
+        )
+        window, driver, session, screen = await start(tmp_path, provider, Typed())
+        elsewhere = driver.client("john:tui")
+        other = await elsewhere.open(session.cursor(window.cursor).at)
+        await elsewhere.send(other, "a private aside")
+        await driver.rest(other)
+        await elsewhere.send(window.cursor, "for the chat")
+        await until(lambda: "main" in screen.text)
+        assert "[john:tui] for the chat" in screen.text, "the watched cursor's messages are shown"
+        assert "private aside" not in screen.text
+        await elsewhere.close()
         await driver.stop()
         session.close()
 

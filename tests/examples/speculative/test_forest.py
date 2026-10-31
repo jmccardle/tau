@@ -21,6 +21,7 @@ from tau import (
     CommandFailed,
     Config,
     CursorView,
+    Ending,
     Live,
     Notice,
     Part,
@@ -204,7 +205,7 @@ async def test_scores_survive_a_restart_and_any_client_can_read_them_back(tmp_pa
 
 
 @scenario
-async def test_abort_stops_the_search_but_not_the_samples_already_in_flight(
+async def test_abort_reaches_the_candidates_mid_sample_and_no_more_samples_run(
     tmp_path: Path,
 ) -> None:
     gate = Gate()
@@ -212,16 +213,45 @@ async def test_abort_stops_the_search_but_not_the_samples_already_in_flight(
     running = asyncio.ensure_future(h.run("search", {"n": 3, "question": "q"}))
     await until(lambda: gate.held == 3)
     await h.abort()
-    await h.settle()  # the main cursor is parked; its three branches are at the gate
+    await h.settle()
     with pytest.raises(CommandFailed, match="Aborted"):
         await running
     assert not h.session.cursor(h.cursor).busy
-    assert [h.session.cursor(c).busy for c in (1, 2, 3)] == [True] * 3, "a handle cannot abort them"
+    assert [(await h.view(c)).ending for c in (1, 2, 3)] == [Ending.Aborted()] * 3
+    assert [h.session.cursor(c).busy for c in (1, 2, 3)] == [False] * 3
+    assert gate.held == 0, "their samples were cancelled at the gate"
     gate.release()
     await h.settle()
-    assert len(h.provider.requests) == 3, "no judge ran: the search is gone"
+    assert len(h.provider.requests) == 3, "no judge ran, and nothing resumed"
     assert h.session.cursor(h.cursor).at == START
-    assert texts(h) == {}, "the three replies are in the tree, unscored"
+    assert texts(h) == {}
+    await h.close()
+
+
+@scenario
+async def test_abort_reaches_the_judges_mid_sample_and_no_more_samples_run(tmp_path: Path) -> None:
+    gate = Gate()
+    judging = [Reply([Part.Text("SCORE: 0.5")], gate=gate)] * 2
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("ans A"), say("ans B"), *judging, say("never")]),
+        extensions=[forest.Forest()],
+        config=options(max_samples=8),
+    )
+    running = asyncio.ensure_future(h.run("search", {"n": 2, "question": "q"}))
+    await until(lambda: gate.held == 2)
+    await h.abort()
+    await h.settle()
+    with pytest.raises(CommandFailed, match="Aborted"):
+        await running
+    judges = [c for c in h.session.cursors() if c > 2]
+    assert len(judges) == 2
+    assert [(await h.view(c)).ending for c in judges] == [Ending.Aborted()] * 2
+    assert not any(h.session.cursor(c).busy for c in h.session.cursors())
+    gate.release()
+    await h.settle()
+    assert len(h.provider.requests) == 4, "two candidates, two judges, no refinement"
+    assert texts(h) == {}, "no score was written"
     await h.close()
 
 
@@ -341,4 +371,32 @@ async def test_the_question_is_the_rest_of_the_command_line(tmp_path: Path) -> N
     commands = await h.client.commands()
     parsed = parse("/search 3 what is 2+2", commands, {})
     assert parsed.args == {"n": 3, "question": "what is 2+2"}
+    await h.close()
+
+
+@scenario
+async def test_a_failed_judge_stops_the_branches_still_sampling(tmp_path: Path) -> None:
+    gate = Gate()
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(
+            [
+                say("ans A"),
+                say("ans B"),
+                say("I like it"),
+                Reply([Part.Text("SCORE: 1")], gate=gate),
+            ]
+        ),
+        extensions=[forest.Forest()],
+        config=options(max_samples=8),
+    )
+    with pytest.raises(CommandFailed, match="the judge gave no score"):
+        await h.run("search", {"n": 2, "question": "q"})
+    await h.settle()
+    assert not any(h.session.cursor(c).busy for c in h.session.cursors())
+    assert (await h.view(4)).ending == Ending.Aborted(), "B's judge was held, and is stopped"
+    gate.release()
+    await h.settle()
+    assert len(h.provider.requests) == 4, "nothing sampled after the failure"
+    assert texts(h) == {}
     await h.close()

@@ -179,7 +179,9 @@ impl Agent {
                 self.turns -= 1;
                 self.rounds = rig.payloads.shape.rounds;
                 let start = Instant::now();
-                rig.m.input(c, "bench".into(), &rig.payloads.user).unwrap();
+                rig.m
+                    .input(c, Author::Frontend("bench".into()), &rig.payloads.user)
+                    .unwrap();
                 rig.m.set_auto(c, true).unwrap();
                 rig.stats.core += start.elapsed();
                 vec![]

@@ -6,8 +6,8 @@ use tau_core::step::{Answer, Draft, Ending, Hook, Job, SampleEnd};
 use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Session, Stop};
 
 /// Input, then auto-step on: what a frontend does to send.
-fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
-    let item = m.input(cursor, client, text).unwrap();
+fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
+    let item = m.input(cursor, by, text).unwrap();
     m.set_auto(cursor, true).unwrap();
     item
 }
@@ -102,7 +102,7 @@ fn machine() -> (Machine, u64) {
 #[test]
 fn a_send_wakes_the_cursor_and_runs_a_turn() {
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     assert!(m.busy(c));
     run(&mut m, c, plain);
     assert!(!m.busy(c));
@@ -117,7 +117,7 @@ fn a_send_wakes_the_cursor_and_runs_a_turn() {
 fn a_go_to_at_rest_moves_turns_auto_off_and_wakes_with_no_phase() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     run(&mut m, c, plain);
     let user = m
         .session
@@ -139,7 +139,7 @@ fn a_go_to_at_rest_moves_turns_auto_off_and_wakes_with_no_phase() {
 #[test]
 fn a_go_to_while_a_hook_runs_aborts_lets_the_hook_finish_then_moves() {
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -165,7 +165,7 @@ fn a_go_to_while_a_hook_runs_aborts_lets_the_hook_finish_then_moves() {
 fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let mut cancelled = None;
     let jobs = run(&mut m, c, |job, m| match job {
         Job::Sample if cancelled.is_none() => {
@@ -196,7 +196,7 @@ fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
 #[test]
 fn a_frontend_step_is_refused_on_a_busy_cursor_and_runs_once_at_rest() {
     let (mut m, c) = machine();
-    m.input(c, term(), "hi").unwrap(); // input, auto-step off
+    m.input(c, Author::Frontend(term()), "hi").unwrap(); // input, auto-step off
     assert_eq!(m.step(c), Err(Error::Busy(c)));
     let jobs = run(&mut m, c, plain);
     assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
@@ -263,7 +263,7 @@ fn opening_a_cursor_wakes_it_and_an_item_for_it_wakes_it_again() {
 fn frontend_calls_sync_on_return() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.input(c, term(), "hi").unwrap();
+    m.input(c, Author::Frontend(term()), "hi").unwrap();
     assert!(m.session.synced());
     run(&mut m, c, plain);
     m.session.set_label("main", c).unwrap();
@@ -275,7 +275,7 @@ fn frontend_calls_sync_on_return() {
 fn moves_since_step_are_the_running_steps() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -300,7 +300,7 @@ fn a_feed_that_answers_nothing_is_refused_and_changes_nothing() {
     let (mut m, c) = machine();
     // No step yet.
     assert_eq!(m.answer(c, ok(), 0), Err(Error::WrongAnswer(c)));
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -390,8 +390,8 @@ fn one_step(m: &mut Machine, c: u64) -> Vec<Job> {
 #[test]
 fn a_hook_that_delivers_nothing_gets_each_pending_input_once_per_step() {
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "one");
-    send(&mut m, c, term(), "two");
+    send(&mut m, c, Author::Frontend(term()), "one");
+    send(&mut m, c, Author::Frontend(term()), "two");
     let jobs = one_step(&mut m, c);
     let p = points(&jobs);
     assert_eq!(p.iter().filter(|h| **h == Hook::PreInput).count(), 2);
@@ -405,7 +405,7 @@ fn a_left_input_steps_and_samples_each_time_without_spinning() {
     // The hook's choice, predictable: every step makes progress (one User,
     // one sample); nothing but the hook ends it.
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     for n in 1..=5 {
         let jobs = one_step(&mut m, c);
         let p = points(&jobs);
@@ -434,7 +434,7 @@ fn a_cursor_that_is_not_open_is_refused_by_every_call_and_nothing_is_recorded() 
 fn add_item_and_open_inside_a_pre_hook_ride_the_phases_sync() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.input(c, term(), "hi").unwrap();
+    m.input(c, Author::Frontend(term()), "hi").unwrap();
     assert!(m.session.synced());
     let Job::Hooks {
         point: Hook::PreStep,
@@ -571,7 +571,7 @@ fn a_write_delivers_only_what_is_pending_for_its_own_cursor() {
 #[test]
 fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
     let (mut m, c) = machine();
-    let item = send(&mut m, c, term(), "hi");
+    let item = send(&mut m, c, Author::Frontend(term()), "hi");
     let by = Author::Extension("x".into());
     let mut writes = 0;
     run(&mut m, c, |job, m| match job {
@@ -593,7 +593,7 @@ fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
 #[test]
 fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
     let (mut m, c) = machine();
-    let item = send(&mut m, c, term(), "hi");
+    let item = send(&mut m, c, Author::Frontend(term()), "hi");
     let by = Author::Extension("x".into());
     let jobs = run(&mut m, c, |job, m| match job {
         Job::Hooks {
@@ -720,7 +720,7 @@ fn sampled(d: Draft) -> Answer {
 #[test]
 fn a_cursor_is_busy_while_a_go_to_waits_on_its_aborted_step() {
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let _ = m.next_job(c).unwrap(); // pre_step is out
     assert_eq!(m.go_to(c, 0, term(), 0), Ok(false));
     m.answer(c, ok(), 0).unwrap();
@@ -745,7 +745,7 @@ fn a_cursor_is_busy_while_a_go_to_waits_on_its_aborted_step() {
 #[test]
 fn a_reply_naming_a_call_id_twice_is_refused_with_nothing_changed() {
     let (mut m, c) = machine();
-    send(&mut m, c, term(), "hi");
+    send(&mut m, c, Author::Frontend(term()), "hi");
     let twice = Answer::Sampled {
         parts: vec![call("a"), call("a")],
         end: SampleEnd::Finished {

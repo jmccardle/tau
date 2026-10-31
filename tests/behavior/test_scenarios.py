@@ -176,7 +176,9 @@ async def test_a_crash_during_a_sample_redelivers_the_input_once(tmp_path: Path)
     await h.crash()
     await h.settle()
     assert h.bodies() == SYSTEM, "the unsynced input node is gone"
-    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [
+        ItemData.Input(Author.Frontend("term"), "hi")
+    ]
     await h.step()
     await h.settle()
     assert h.bodies() == [
@@ -422,7 +424,9 @@ async def test_a_hook_that_declines_every_input_runs_one_step_and_auto_step_goes
     assert not h.session.cursor(h.cursor).auto
     assert not h.session.cursor(h.cursor).busy
     assert h.bodies() == SYSTEM
-    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [
+        ItemData.Input(Author.Frontend("term"), "hi")
+    ]
     assert provider.requests == []
 
 

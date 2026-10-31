@@ -98,7 +98,7 @@ pub struct Move {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemData {
-    Input { client: String, text: String },
+    Input { by: Author, text: String },
     Extension { name: String, data: String },
 }
 

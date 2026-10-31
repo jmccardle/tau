@@ -101,7 +101,7 @@ async def test_approve_leaves_plan_mode_and_the_model_carries_the_plan_out(tmp_p
     by = {n.body: n.by for n in h.nodes() if isinstance(n.body, Body.User)}
     assert by[APPROVED] == Author.Extension("plan_mode")
     assert by[BRIEF] == Author.Extension("plan_mode")
-    assert by[Body.User("add retry")] == Author.Frontend("term")
+    assert by[Body.User("add retry")] == Author.Extension("plan_mode"), "`/plan` sent it"
     assert len(h.provider.requests) == 2, "auto-step went on to a second sample by itself"
     assert (await h.view()).ending == Ending.Done()
     await h.close()
@@ -121,11 +121,11 @@ async def test_revise_sends_the_feedback_as_the_next_input_and_stays_in_plan_mod
     await h.settle()
     assert asked(await h.view()) == ["Approve this plan?"], "the second plan is asked about too"
     assert await shown(h) == "plan"
-    # the feedback is the person's: `by` is the client that typed, and the model was briefed once
+    # the task and the feedback are sent by the extension, and the model was briefed once
     assert users(h) == [
-        (Author.Frontend("term"), "add retry"),
+        (Author.Extension("plan_mode"), "add retry"),
         (Author.Extension("plan_mode"), plan_mode.BRIEF),
-        (Author.Frontend("term"), "use z, not y"),
+        (Author.Extension("plan_mode"), "use z, not y"),
     ]
     assert len(h.provider.requests) == 2
     await h.respond("approve")
@@ -321,13 +321,16 @@ async def test_a_line_client_lists_plan_asks_inline_and_never_says_it_is_in_plan
     assert "[plan mode on: read-only tools; you will be asked to approve the plan]" in "".join(
         screen
     )
-    assert (Author.Frontend("chat:test"), "add retry") in users(h)
+    assert (Author.Extension("plan_mode"), "add retry") in users(h)
     await window.line("approve")
     await h.settle()
     assert h.bodies()[-2] == APPROVED
-    # after the command's own reply, nothing on screen says which mode the branch is in
+    # after the command's own reply, the client itself says nothing of the mode the branch is in;
+    # the messages the extension wrote are shown, under its name, as any author's are
     later = "".join(screen).split("approve the plan]\n", 1)[1].replace("Approve this plan?", "")
-    assert "plan" not in later
+    own = [line for line in later.splitlines() if not line.startswith("[plan_mode] ")]
+    assert "plan" not in "\n".join(own)
+    assert "[plan_mode] add retry" in later
     listener.cancel()
     await client.close()
     await h.close()

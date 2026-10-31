@@ -233,6 +233,11 @@ class Hub:
         """The step of `cursor` ends with `ending`."""
         self._steps[cursor] = (ending, self._steps.get(cursor, (None, None))[1])
 
+    def ending(self, cursor: int) -> Ending | None:
+        """How the last step of `cursor` ended; `None` while one runs, and if it has not stepped
+        since the session was loaded."""
+        return self._steps.get(cursor, (None, None))[0]
+
     def hook_failed(self, cursor: int, point: str, extension: str, error: str) -> None:
         """A cursor hook failed in the step of `cursor`."""
         ending = self._steps.get(cursor, (None, None))[0]

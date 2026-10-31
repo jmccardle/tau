@@ -92,7 +92,7 @@ def fresh(directory: Path | None = None) -> Ctx:
 
 
 def started(ctx: Ctx) -> None:
-    ctx.session.input(ctx.cursor, "term", "hi")
+    ctx.session.input(ctx.cursor, Author.Frontend("term"), "hi")
     ctx.session.set_auto(ctx.cursor, True)
 
 
@@ -171,7 +171,7 @@ def s_store_failed(ctx: Ctx, directory: Path) -> None:
     block = directory / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
     try:
-        ctx.session.input(ctx.cursor, "term", "x")
+        ctx.session.input(ctx.cursor, Author.Frontend("term"), "x")
     except OSError:
         pass
     else:
@@ -185,7 +185,7 @@ Call = Callable[[Ctx], object]
 
 # (group, name, call). A call returns what the API returned.
 CALLS: list[tuple[str, str, Call]] = [
-    ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi")),
+    ("frontend", "input", lambda c: c.session.input(c.cursor, Author.Frontend("term"), "hi")),
     ("frontend", "step", lambda c: c.session.step(c.cursor)),
     ("frontend", "go_to (an ancestor)", lambda c: c.session.go_to(c.cursor, 0, "term", NOW)),
     ("frontend", "go_to (not a node)", lambda c: c.session.go_to(c.cursor, 999, "term", NOW)),

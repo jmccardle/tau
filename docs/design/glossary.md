@@ -265,14 +265,19 @@ may add, update, or remove any item; adding one wakes its cursor.
 ### item
 *spike* `Item`, `ItemId`, `ItemData` · new
 
-`{id, to, data}`. `data` is `Input { client, text }` or
+`{id, to, data}`. `data` is `Input { by, text }` (`by` an *author*) or
 `Extension { name, data }`. Ids are never reused (`next_item`).
 
 ### input
 *spike* `ItemData::Input` · new
 
-What a frontend gives a cursor: the one item kind core knows. The input
-phase commits it as a `User` node that delivers it.
+What gives a cursor a `User` message: a frontend's line (`by` is `Frontend(client)`), or an
+extension's `send` (`by` is `Extension(name)`, needing no client). The one item kind core knows.
+The input phase commits it as a `User` node that delivers it, `by` the input's author, and
+`pre_input` hooks see that author in `Draft.by`. Core does not check it: authors are recorded only
+(Q7), and the handle fills in its own, so an extension cannot claim to be a frontend. A `pre_input`
+halt removes the input and notifies only a `Frontend` author; an extension reads the reason from
+the step's ending (`await tree.rest(cursor)` returns `Halted(reason)`). D17 §1.
 
 ### pending input
 a view · new
@@ -998,12 +1003,21 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`, and `send(to, text)` (an input item for cursor `to` from the client who typed
-the nearest `User` node on the handle's walk, with its auto-step turned on, as `Client.send` does:
-the other cursor's model is given the text; `ValueError` when no client typed one; this goes in
-stage B, when an input is authored). A cursor is oblivious to its clients: no handle has a **client**
-(`TreeHandle.send` keeps a private one until stage B authors an input). Each write tells the driver (`Changed`), which publishes the difference to its
-clients. A node handle adds `ask` (to its batch's cursor) and `cursor_id`, the id of the cursor
+`remove_label`, and `send(to, text)` (an *input* for cursor `to` authored by this extension,
+`Extension(name)`, with `to`'s auto-step turned on, as `Client.send` does: the other cursor's
+model is given the text as a `User` message; it needs no client). A cursor is oblivious to its
+clients: no handle has a **client**. Each write tells the driver (`Changed`), which publishes the difference to its
+clients. The tree handle also waits on and stops another cursor (D17 §3): `await rest(cursor)`
+returns the *ending* of the cursor's last step once it is at rest with no effect out (after a
+`send` to a cursor at rest, the step the send caused; to a cursor mid-step, the input waits and
+`rest` may return that earlier step's ending with the input still pending, so `rest` before
+`send` to be sure), or `None` if that is not known (it has not stepped since the session was loaded; endings are not
+persisted), and `abort(cursor)` aborts its step as a client's `abort` does (cancels the sample
+or calls, stops a command, declines open questions), safe from a sync tool's worker thread. `rest` is async only, so a sync
+tool cannot call it. Both refuse (`ValueError`) the handle's own cursor (a cursor handle's `id`,
+a node handle's `cursor_id`): waiting on itself would never end, and aborting itself would cancel
+the call; a tree handle with no cursor of its own refuses none. A cycle (A's tool waits on B
+while B waits on A) is not detected: the user's abort is the way out. A node handle adds `ask` (to its batch's cursor) and `cursor_id`, the id of the cursor
 whose batch it is (`id` is the batch's node; `TreeHandle.cursor(c)` already reads a cursor's
 state, so the attribute is not `cursor`). A cursor handle adds `node`, `walk`,
 `options()` (also on a node handle, at its node), `set_model(model)` (the model must be in the
@@ -1944,7 +1958,7 @@ files calls it); a sample already running keeps the model it resolved. Its publi
 (`_calls.py`), documented on `Client`: they run on the loop thread, call the session, publish what
 changed (`Hub.sync`), then poke the pump. `add_item(to, data)` is for whoever has something to
 tell a resting cursor from outside a hook (a timer extension, `tau serve` relaying a webhook): any
-`ItemData` but `Input`, which only `input` and `send` add (they say who typed it).
+`ItemData` but `Input`, which only `input` and `send` add (they say who wrote it).
 Once the driver has failed or stopped, every client call raises (the failure, or `RuntimeError`),
 and a stream connected then ends at once (with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
@@ -1975,8 +1989,9 @@ A cancelled unit reports nothing.
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
-`open_questions`, and `failure` (what the pump or an
-effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
+`open_questions`, `waiting` (effects with a handle `rest` out: such an effect is parked until
+that cursor rests, however many cursors it waits on at once, so a harness counts it beside a held
+gate), and `failure` (what the pump or an effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
 needs the session open.
 
 ### poke

@@ -6,7 +6,9 @@ the model plays the character. The GM model decides who is in the scene (`ask_ch
 rolls dice (`roll`), and narrates what came back as its next reply on the main cursor. A
 character who is not named is not sampled and its history does not grow. A character is
 nothing but a cursor labelled `char:<name>`, so the cast survives a reload with no state of
-ours; the only in-memory state is the replies a tool is waiting for.
+ours. Asking is `await rest` (let it finish what it was doing), `send` to the character's cursor,
+`await rest` again (the step the message caused), and reading the reply off the tree; if asking
+fails or the GM is aborted, the characters it asked are aborted.
 
 The player talks to a character directly by sending to that cursor from the frontend.
 """
@@ -20,12 +22,11 @@ from tau import (
     Body,
     Cursor,
     Ending,
-    ItemData,
     Model,
     NodeHandle,
     Part,
     Progress,
-    Subject,
+    ToolError,
     TreeHandle,
     model_config,
 )
@@ -90,7 +91,6 @@ class Gamemaster:
 
     def __init__(self, rng: random.Random | None = None) -> None:
         self.rng = rng or random.Random()
-        self.waiting: dict[int, tuple[int, asyncio.Future[str]]] = {}  # character -> (item, reply)
         self.tools = (self.roll, self.introduce, self.ask_characters, present)
         self.commands = (self.roll, self.character, present)
 
@@ -127,49 +127,29 @@ class Gamemaster:
         asked = list(dict.fromkeys(who))
         if missing := [n for n in asked if n not in everyone]:
             raise ValueError(f"not in the story: {', '.join(missing)}")
-        for name in asked:
-            cursor = everyone[name]
-            # WISH: `node.say(cursor, message)`, a User node authored by Extension("gamemaster"),
-            # which wakes the cursor and returns its reply. `node.send` would author the
-            # message as the human at the keyboard, and returns an item, not a reply.
-            item = node.add_item(cursor, message)
-            self.waiting[cursor] = (item, asyncio.get_running_loop().create_future())
+        if own := [n for n in asked if everyone[n] == node.cursor_id]:
+            raise ToolError(f"{', '.join(own)}: a character cannot ask itself")
 
-        async def reply(name: str) -> str:
-            said = await self.waiting[everyone[name]][1]
-            progress(f"{name} has answered")
-            return f"{name}: {said}"
+        async def answer(name: str) -> Ending | None:
+            cursor = everyone[name]
+            await node.rest(cursor)  # whatever it is doing now is not ours: wait it out first
+            node.send(cursor, message)
+            ending = await node.rest(cursor)  # the step our message caused
+            if isinstance(ending, Ending.Done):
+                progress(f"{name} has answered")
+            return ending
 
         try:
-            lines = await asyncio.gather(*(reply(n) for n in asked))
-        finally:  # abort cancels this call; the characters' own steps run on regardless
+            async with asyncio.TaskGroup() as group:  # one failing stops the others sending
+                tasks = [group.create_task(answer(n)) for n in asked]
+            endings = [t.result() for t in tasks]
+            for name, ending in zip(asked, endings, strict=True):
+                if ending != Ending.Done():  # `None`: not known; it cannot be after our own send
+                    raise RuntimeError(f"{name} did not answer: {ending}")
+        except BaseException:  # failed or aborted: the characters it asked stop spending too
             for name in asked:
-                self.waiting.pop(everyone[name], None)
+                node.abort(everyone[name])
+            raise
+        lines = [f"{n}: {text_of(node.tree.node(node.cursor(everyone[n]).at).body)}" for n in asked]
         silent = [n for n in everyone if n not in asked]
         return "\n".join([*lines, f"(not asked: {', '.join(silent) or 'no one'})"])
-
-    # Hooks: a character's wake delivers the GM's message, and its end answers the tool.
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        items = [
-            i
-            for i in cursor.cursor(cursor.id).items
-            if isinstance(i.data, ItemData.Extension) and i.data.name == self.name
-        ]
-        if items:
-            texts = [i.data.data for i in items if isinstance(i.data, ItemData.Extension)]
-            cursor.write(Body.User("\n\n".join(texts)), delivers=[i.id for i in items])
-            cursor.set_auto(True)  # a wake with auto-step off would stop before the sample
-        return None
-
-    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        item, reply = self.waiting.get(cursor.id, (0, None))
-        if reply is None or reply.done():
-            return None
-        if any(i.id == item for i in cursor.cursor(cursor.id).items):
-            return None  # an earlier step of this cursor ended; the message is not delivered yet
-        if isinstance(subject.ending, Ending.Done):
-            reply.set_result(text_of(cursor.node().body))
-        else:
-            reply.set_exception(RuntimeError(f"the character did not answer: {subject.ending}"))
-        return None

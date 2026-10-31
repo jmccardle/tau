@@ -45,10 +45,11 @@ A frontend that wants to look at a batch without re-running it goes to its
  └ d1 User "summarise…" ─ d2 Assistant       its Config records which model did it
 
  scratchpad (off the tree, never sent to the model)
-   item 4  to A   Input { client: laptop, text: "also check b.rs" }
-   item 7  to B   Extension { name: subagent, data: task }
+   item 4  to A   Input { by: Frontend(laptop), text: "also check b.rs" }
+   item 7  to B   Extension { name: timer, data: tick }
 ```
 
 Any node may be gone to, side nodes and detached roots included. A sub-agent
-(Phase 5) opens cursor B on a detached root and adds item 7; B wakes, and
-its `pre_step` writes the task with `cursor.write(…, delivers=[7])`.
+opens cursor B on a detached root, `send`s it the task (an input authored by the sub-agent's
+extension), and `await rest(B)`s for the ending of the step that caused. An item like 7 (a
+timer tick) wakes B, and its `pre_step` acts on it with `cursor.write(…, delivers=[7])`.

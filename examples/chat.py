@@ -13,7 +13,9 @@ extension's options on this branch, and a bare `/config step_limit` shows them. 
 `word_count` tool asks permission first, and the question is answered inline, completed with
 Tab like an argument (an empty answer declines). A command runs in the background once its
 arguments are in, so a question it asks is answered at the prompt like any other; every open
-question is shown, and a line answers the first. Ctrl-D leaves.
+question is shown, and a line answers the first. A message someone else wrote to the cursor
+being watched (an extension that sent to it, another client) is shown under their name:
+`[gamemaster] text`; what is written to other cursors is not. Ctrl-D leaves.
 """
 
 import asyncio
@@ -28,6 +30,7 @@ from common import close_all, run
 
 from tau import (
     Appended,
+    Author,
     Body,
     Busy,
     CallDraft,
@@ -40,6 +43,7 @@ from tau import (
     Form,
     Live,
     LoadedConfig,
+    Node,
     NodeHandle,
     NodeId,
     Notice,
@@ -94,6 +98,7 @@ class Chat:
         self.questions: tuple[OpenQuestion, ...] = ()
         self.busy = False
         self.error: object = None
+        self.unplaced: list[Node] = []  # `User` nodes by others, not yet known to be on our branch
         self.running: set[asyncio.Task[None]] = set()  # commands started and not yet finished
         self.failure: BaseException | None = None  # what ended a command task unexpectedly
 
@@ -121,12 +126,38 @@ class Chat:
                     self.out(f"\n[{t}]\n")
                 case Appended(nodes=nodes):
                     for n in nodes:
-                        if isinstance(n.body, Body.Custom) and n.body.kind == "sample_error":
-                            self.out(f"\n[sample failed: {n.body.data}]\n")
+                        self.show_node(n)
                 case CursorView(cursor=c) if c == self.cursor:
+                    await self.place(event.at)
                     self.show(event)
                 case _:
                     pass
+
+    def show_node(self, node: Node) -> None:
+        """A failed sample is shown; a message somebody else wrote waits in `unplaced` until the
+        cursor's next view says whether it is on our branch. What this client sent is not echoed."""
+        body = node.body
+        if isinstance(body, Body.Custom) and body.kind == "sample_error":
+            self.out(f"\n[sample failed: {body.data}]\n")
+        elif isinstance(body, Body.User) and node.by != Author.Frontend(self.client.id):
+            self.unplaced.append(node)
+
+    async def place(self, at: int) -> None:
+        """Show the unplaced messages on the walk to `at`, labelled with who wrote them: an
+        extension (`[gamemaster] ...`) or another client. A node is sent before the view of the
+        cursor that took it, so by this view each has been placed or is on another cursor."""
+        if not self.unplaced:
+            return
+        on_branch = {n.id for n in await self.client.walk(at)}
+        found, self.unplaced = self.unplaced, []
+        for node in found:
+            if node.id in on_branch and isinstance(node.body, Body.User):
+                match node.by:
+                    case Author.Extension(name=who) | Author.Frontend(client=who):
+                        pass
+                    case other:
+                        who = repr(other)
+                self.out(f"\n[{who}] {node.body.text}\n")
 
     def show(self, view: CursorView) -> None:
         if view.hook_error != self.error:

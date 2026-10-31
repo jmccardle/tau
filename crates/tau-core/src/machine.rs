@@ -52,10 +52,10 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn input(&mut self, cursor: CursorId, client: String, text: &str) -> Result<ItemId, Error> {
+    pub fn input(&mut self, cursor: CursorId, by: Author, text: &str) -> Result<ItemId, Error> {
         self.session.at(cursor)?;
         let data = ItemData::Input {
-            client,
+            by,
             text: text.into(),
         };
         let id = self.add_item(cursor, data, None)?;

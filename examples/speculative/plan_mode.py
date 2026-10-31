@@ -58,9 +58,10 @@ async def pre_sample(cursor: Cursor, subject: Subject) -> str | None:
     `/config`, a config file, going back to a node on a plan-mode branch)."""
     if cursor.options().mode != "plan":
         return None
-    ours = [n for n in cursor.walk() if n.by == cursor.by and isinstance(n.body, Body.User)]
-    if not ours or ours[-1].body != Body.User(BRIEF):
-        cursor.write(Body.User(BRIEF))
+    marks = [Body.User(BRIEF), Body.User(APPROVED)]  # what we wrote; text we `send` is ours too
+    last = [n.body for n in cursor.walk() if n.by == cursor.by and n.body in marks]
+    if not last or last[-1] != marks[0]:
+        cursor.write(marks[0])
     return None
 
 
@@ -80,7 +81,7 @@ async def post_reply(cursor: Cursor, subject: Subject) -> str | None:
         feedback = await cursor.ask("What should change?", str)
         if feedback is None:
             return "plan neither approved nor revised"
-        cursor.send(cursor.id, feedback)  # the person's words, `by` the client who typed last
+        cursor.send(cursor.id, feedback)  # the person's words, sent by this extension
     elif verdict == "reject":
         cursor.set_options(mode="act")
         cursor.tell("plan rejected: plan mode off")

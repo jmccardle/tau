@@ -10,8 +10,8 @@ use tau_core::tree::{
 };
 
 /// Input, then auto-step on: what a frontend does to send.
-fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
-    let item = m.input(cursor, client, text).unwrap();
+fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
+    let item = m.input(cursor, by, text).unwrap();
     m.set_auto(cursor, true).unwrap();
     item
 }
@@ -62,7 +62,7 @@ enum Op {
     Go(usize, usize),
     Label(usize, usize),
     Unlabel(usize),
-    Input(usize),
+    Input(usize, usize),
     Deliver(usize),
     Drop(usize),
     Sync,
@@ -79,11 +79,21 @@ fn op() -> impl Strategy<Value = Op> {
         (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         (0..3usize, n.clone()).prop_map(|(l, c)| Op::Label(l, c)),
         (0..3usize).prop_map(Op::Unlabel),
-        n.clone().prop_map(Op::Input),
+        (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
         n.clone().prop_map(Op::Deliver),
         n.clone().prop_map(Op::Drop),
         Just(Op::Sync),
     ]
+}
+
+/// Who wrote an input: a frontend, an extension, or any other author (core records them all).
+fn author(k: usize) -> Author {
+    match k % 4 {
+        0 => Author::Frontend("t".into()),
+        1 => Author::Extension("ext".into()),
+        2 => Author::Tools,
+        _ => Author::Core,
+    }
 }
 
 fn cursors(s: &Session) -> u64 {
@@ -150,9 +160,9 @@ fn apply(s: &mut Session, op: &Op) {
         Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
         Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
         Op::Unlabel(l) => drop(s.remove_label(&format!("l{l}"))),
-        Op::Input(i) => {
+        Op::Input(i, a) => {
             let data = ItemData::Input {
-                client: "t".into(),
+                by: author(a),
                 text: "in".into(),
             };
             s.add_item(cursor(i), data);
@@ -314,13 +324,13 @@ fn until(
 fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    send(&mut m, c, "term".into(), "hi");
+    send(&mut m, c, Author::Frontend("term".into()), "hi");
     until(&mut m, c, |j| *j == Job::Sample, |j| vec![echo(j)]);
     // The input was committed but not yet synced; its item was.
     let mut m = Machine::new(crash(&m.session));
     assert_eq!(m.session.next(c), tau_core::tree::Next::Wait);
     assert_eq!(m.session.items(c).count(), 1, "the input is pending again");
-    send(&mut m, c, "term".into(), "");
+    send(&mut m, c, Author::Frontend("term".into()), "");
     let mut sampled = 0;
     until(
         &mut m,
@@ -349,7 +359,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
 fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    send(&mut m, c, "term".into(), "look");
+    send(&mut m, c, Author::Frontend("term".into()), "look");
     let call = |id: &str| Part::Call {
         id: id.into(),
         tool: "ls".into(),

@@ -35,6 +35,14 @@ Notify = Callable[[str | None, str], None]
 """Sends a `Notice` to a client, or to every client when `None`; dropped if that client is not
 connected."""
 
+Rest = Callable[[int], Awaitable[Ending | None]]
+"""The driver's wait for a cursor to come to rest: returns how its last step ended, or `None`
+if that is not known."""
+
+Abort = Callable[[int], None]
+"""The driver's abort of a cursor's step. Safe to call from any thread: it returns once the
+loop has done it."""
+
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
@@ -70,17 +78,6 @@ async def _ask(
     return await asker(text, kind, to, new_cursor)
 
 
-def _typist(tree: Tree, start: int) -> str | None:
-    """The client of the nearest `User` node authored by a frontend, from `start` up the walk;
-    `None` if there is none."""
-    node: Node | None = tree.node(start)
-    while node is not None:
-        if isinstance(node.body, Body.User) and isinstance(node.by, Author.Frontend):
-            return node.by.client
-        node = None if node.parent is None else tree.node(node.parent)
-    return None
-
-
 @dataclass
 class Subject:
     """The mutable thing a cursor hook works on, by hook point.
@@ -100,9 +97,7 @@ class TreeHandle:
     """What both handles share: reads of the whole session, and the writes that
     belong to no cursor, bound to an extension (which fills in `by`).
 
-    A handle has no client: work on a cursor does not depend on who is watching it. (Until
-    input is authored by the extension, `send` writes as the runner of the command that holds a
-    tree-only handle; no other handle has one.)
+    A handle has no client: work on a cursor does not depend on who is watching it.
 
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
@@ -114,18 +109,22 @@ class TreeHandle:
         now: Now,
         poke: Poke,
         changed: Changed,
-        client: str | None = None,
+        rest: Rest,
+        abort: Abort,
+        own: int | None = None,
     ) -> None:
         self._session = session
         self._now = now
         self._poke = poke
         self._changed = changed
+        self._rest = rest
+        self._abort = abort
+        self._own = own  # the cursor this handle works for, if it has one
         # A tree handle's writes sync at once. Only `Cursor` rebinds them to a hook: nothing
         # public takes a hook id, and `HandleWrites` is in the private `_core`.
         self._writes = HandleWrites(session, None)
         self._live = True
         self.extension = extension
-        self._client = client
 
     @property
     def by(self) -> Author:
@@ -198,26 +197,43 @@ class TreeHandle:
         self._changed()
 
     def send(self, to: int, text: str) -> int:
-        """Send `text` to cursor `to` as an input from the client whose typing this work
-        continues, and turn its auto-step on, as `Client.send` does: `to` takes the text at its
-        next step and answers. Returns the item. `ValueError` if no client typed anything on
-        this branch, since an input says who typed it."""
+        """Send `text` to cursor `to` as a `User` message authored by this extension, and turn
+        its auto-step on: `to` takes the text at its next step (through its `pre_input` hooks)
+        and answers. Needs no client. Returns the item."""
         self._check()
-        item = self._session.input(to, self._sender(), text)
+        item = self._session.input(to, self.by, text)
         self._session.set_auto(to, True)
         self._changed()
         self._poke()
         return item
 
-    def _typing(self) -> str | None:
-        """The client `send` writes as, if there is one."""
-        return self._client
+    async def rest(self, cursor: int) -> Ending | None:
+        """Wait until `cursor` is at rest with no effect out, and return how its last step
+        ended; `None` if that is not known (it has not stepped since the session was loaded).
+        After a `send` to a cursor that was at rest, this is the ending of the step the send
+        caused. If the cursor was mid-step, the input waits for that step to end and this may
+        return that earlier step's ending with the input still pending: to wait for the step a
+        send causes, `rest` first, then `send`, then `rest` again. A cursor held by an open
+        question or a gate does not rest, so this waits as long as the cursor is held. Async
+        only: a sync tool, which runs on a worker thread, cannot call it. `ValueError` for this
+        handle's own cursor: waiting for itself would never end. No cycle between two cursors
+        is detected; the user's abort is the way out."""
+        self._check()
+        self._refuse_own(cursor, "rest", "waiting for itself would never end")
+        return await self._rest(cursor)
 
-    def _sender(self) -> str:
-        client = self._typing()
-        if client is None:
-            raise ValueError("send: no client typed anything on this branch")
-        return client
+    def abort(self, cursor: int) -> None:
+        """Abort `cursor`'s step as a client's `abort` does: cancel its sample or calls, stop
+        its command, decline its open questions, and turn its auto-step off. Safe from a sync
+        tool's worker thread: it returns once the event loop has done it. `ValueError` for this
+        handle's own cursor: aborting it would cancel this very call."""
+        self._check()
+        self._refuse_own(cursor, "abort", "aborting itself would cancel this very call")
+        self._abort(cursor)
+
+    def _refuse_own(self, cursor: int, call: str, why: str) -> None:
+        if cursor == self._own:
+            raise ValueError(f"{call}: cursor {cursor} is this handle's own; {why}")
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
@@ -249,16 +265,15 @@ class NodeHandle(TreeHandle):
         now: Now,
         poke: Poke,
         changed: Changed,
+        rest: Rest,
+        abort: Abort,
         options: OptionsReader,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, None)
+        super().__init__(session, extension, now, poke, changed, rest, abort, cursor)
         self._asker = asker
         self._options = options
         self.id = id
         self.cursor_id = cursor
-
-    def _typing(self) -> str | None:
-        return _typist(self.tree, self.id)
 
     @property
     def node(self) -> Node:
@@ -303,21 +318,16 @@ class Cursor(TreeHandle):
         now: Now,
         poke: Poke,
         changed: Changed,
+        rest: Rest,
+        abort: Abort,
         options: OptionsReader,
-        runner: str | None,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, None)
+        super().__init__(session, extension, now, poke, changed, rest, abort, id)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
         self._options = options
-        self._runner = runner
         self.id = id
-
-    def _typing(self) -> str | None:
-        if self._runner is not None:
-            return self._runner
-        return _typist(self.tree, self.cursor(self.id).at)
 
     def node(self, id: int | None = None) -> Node:
         return self.tree.node(self.cursor(self.id).at if id is None else id)
@@ -399,10 +409,11 @@ class Handles:
     poke: Poke
     changed: Changed
     options: OptionsReader
+    rest: Rest
+    abort: Abort
 
-    def cursor(self, id: int, extension: str, runner: str | None = None) -> Cursor:
-        """The handle of cursor `id` for `extension`; `runner` is the client of the command
-        it runs, if it runs one."""
+    def cursor(self, id: int, extension: str) -> Cursor:
+        """The handle of cursor `id` for `extension`."""
         return Cursor(
             self.session,
             id,
@@ -412,8 +423,9 @@ class Handles:
             self.now,
             self.poke,
             self.changed,
+            self.rest,
+            self.abort,
             self.options,
-            runner,
         )
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:
@@ -427,9 +439,13 @@ class Handles:
             self.now,
             self.poke,
             self.changed,
+            self.rest,
+            self.abort,
             self.options,
         )
 
-    def tree(self, extension: str, client: str) -> TreeHandle:
-        """A handle on no cursor or node, for `extension`, working for `client`."""
-        return TreeHandle(self.session, extension, self.now, self.poke, self.changed, client)
+    def tree(self, extension: str) -> TreeHandle:
+        """A handle on no cursor or node, for `extension`."""
+        return TreeHandle(
+            self.session, extension, self.now, self.poke, self.changed, self.rest, self.abort
+        )

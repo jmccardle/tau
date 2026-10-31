@@ -11,8 +11,8 @@ use tau_core::tree::{Author, Body, ItemData, Part, Session, Stop};
 use tau_store::{Error, HEADER, Store, VERSION};
 
 /// Input, then auto-step on: what a frontend does to send.
-fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
-    let item = m.input(cursor, client, text).unwrap();
+fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
+    let item = m.input(cursor, by, text).unwrap();
     m.set_auto(cursor, true).unwrap();
     item
 }
@@ -39,9 +39,19 @@ enum Op {
     Reply(usize, bool),
     Go(usize, usize),
     Label(usize, usize),
-    Input(usize),
+    Input(usize, usize),
     Deliver(usize),
     Sync,
+}
+
+/// Who wrote an input: a frontend, an extension, or any other author (core records them all).
+fn author(k: usize) -> Author {
+    match k % 4 {
+        0 => Author::Frontend("t".into()),
+        1 => Author::Extension("ext".into()),
+        2 => Author::Tools,
+        _ => Author::Core,
+    }
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -52,7 +62,7 @@ fn op() -> impl Strategy<Value = Op> {
         (n.clone(), any::<bool>()).prop_map(|(c, m)| Op::Reply(c, m)),
         (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         (0..3usize, n.clone()).prop_map(|(l, c)| Op::Label(l, c)),
-        n.clone().prop_map(Op::Input),
+        (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
         n.clone().prop_map(Op::Deliver),
         Just(Op::Sync),
     ]
@@ -86,9 +96,9 @@ fn apply(s: &mut Session, op: &Op) {
         }
         Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
         Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
-        Op::Input(i) => {
+        Op::Input(i, a) => {
             let data = ItemData::Input {
-                client: "t".into(),
+                by: author(a),
                 text: "in".into(),
             };
             s.add_item(cursor(i), data);
@@ -180,7 +190,7 @@ fn a_session_reopens_as_it_was_synced() {
     let mut store = Store::create(d.path(), &mut s).unwrap();
     s.set_label("main", c).unwrap();
     let data = ItemData::Input {
-        client: "term".into(),
+        by: Author::Frontend("term".into()),
         text: "pending".into(),
     };
     s.add_item(c, data);
@@ -212,7 +222,7 @@ fn one_save_over_many_syncs_reopens_as_the_last() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let input = |text: &str| ItemData::Input {
-        client: "term".into(),
+        by: Author::Frontend("term".into()),
         text: text.into(),
     };
     let first = s.add_item(c, input("first"));
@@ -241,7 +251,7 @@ fn the_log_never_holds_items() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let store = Store::create(d.path(), &mut s).unwrap();
     let data = ItemData::Input {
-        client: "term".into(),
+        by: Author::Frontend("term".into()),
         text: "in the scratchpad only".into(),
     };
     s.add_item(c, data);
@@ -336,7 +346,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    send(&mut m, c, "term".into(), "hi");
+    send(&mut m, c, Author::Frontend("term".into()), "hi");
     store = store.save(&mut m.session).unwrap();
     loop {
         let job = m.next_job(c).unwrap();
@@ -425,7 +435,7 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    send(&mut m, c, "term".into(), "hi");
+    send(&mut m, c, Author::Frontend("term".into()), "hi");
     store = store.save(&mut m.session).unwrap();
     drop(m);
     drop(store); // closed before the step ran
@@ -471,7 +481,7 @@ fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     let block = d.path().join("scratchpad.new");
     fs::create_dir(&block).unwrap();
     let mut m = Machine::new(s);
-    m.input(c, "term".into(), "hi").unwrap();
+    m.input(c, Author::Frontend("term".into()), "hi").unwrap();
     assert!(matches!(store.save(&mut m.session), Err(Error::Io(_))));
     // The store is gone with its lease, as after a crash: the session opens again.
     fs::remove_dir(&block).unwrap();

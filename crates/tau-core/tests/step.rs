@@ -107,7 +107,7 @@ fn send(s: &mut Session, cursor: u64, t: &str) {
     s.add_item(
         cursor,
         ItemData::Input {
-            client: "term".into(),
+            by: Author::Frontend("term".into()),
             text: t.into(),
         },
     );
@@ -464,6 +464,69 @@ fn a_cursor_hook_string_halts_the_step() {
     assert_eq!(ending(&jobs), Ending::Halted("over budget".into()));
     assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
     assert!(!s.auto[&c]);
+}
+
+/// Sends `text` as `by`, halts it at `pre_input`, and returns the session and the step's jobs.
+fn halted_input(by: Author) -> (Session, u64, Vec<Job>) {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    s.add_item(
+        c,
+        ItemData::Input {
+            by,
+            text: "hi".into(),
+        },
+    );
+    s.auto.insert(c, true);
+    let mut step = Step::wake(&s, c, false);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            ..
+        } => vec![halting("no thanks")],
+        _ => vec![echo(job)],
+    });
+    (s, c, jobs)
+}
+
+#[test]
+fn an_inputs_author_is_the_user_nodes_author() {
+    for by in [
+        Author::Frontend("term".into()),
+        Author::Extension("gm".into()),
+    ] {
+        let (mut s, c) = Session::create("{}", "sys", 0);
+        s.add_item(
+            c,
+            ItemData::Input {
+                by: by.clone(),
+                text: "hi".into(),
+            },
+        );
+        s.auto.insert(c, true);
+        let mut step = Step::wake(&s, c, false);
+        drive(&mut s, &mut step, |job, _| match job {
+            Job::Sample => vec![sampled(reply(vec![text("ok")], Stop::End))],
+            _ => vec![echo(job)],
+        });
+        let user = s.tree.node(s.at(c).unwrap() - 1).unwrap();
+        assert_eq!(user.body, Body::User("hi".into()));
+        assert_eq!(user.by, by);
+    }
+}
+
+#[test]
+fn a_halted_input_notifies_a_frontend_but_not_an_extension() {
+    let (s, _, jobs) = halted_input(Author::Frontend("term".into()));
+    assert_eq!(ending(&jobs), Ending::Halted("no thanks".into()));
+    assert_eq!(
+        s.notices,
+        vec![("term".to_string(), "no thanks".to_string())]
+    );
+
+    let (s, c, jobs) = halted_input(Author::Extension("gm".into()));
+    assert_eq!(ending(&jobs), Ending::Halted("no thanks".into()));
+    assert_eq!(s.notices.len(), 0);
+    assert_eq!(s.items(c).count(), 0, "the halted input is removed");
 }
 
 #[test]
