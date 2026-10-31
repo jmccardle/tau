@@ -32,7 +32,9 @@ input's text twice.
 - Writes happen inside the Rust call (D11). The lease (`flock`) is on the log.
 - **JMFTS (Phase 7) is a replica** fed from the local log outside any step;
   replay into it is idempotent by record position.
-- **Encoding:** each file starts with an 8-byte magic and a `u32` version. A
+- **Encoding:** each file starts with an 8-byte magic and a `u32` version. The
+  version marks a released format: it changes between tagged releases, never
+  per commit (2026-10-31). A build refuses any other version with `Version`. A
   record is its length, a CRC-32 of length and payload, and the payload as
   JSON. A new session is written under a private name and hard-linked into
   place, so a log always holds its first `Sync` and `create` never replaces

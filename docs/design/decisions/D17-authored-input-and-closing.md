@@ -1,13 +1,13 @@
 # D17: Input says who wrote it; cursors close
 
-Status: proposed (2026-10-31). Phase 5 fix plan items B1 and C1
+Status: accepted (2026-10-31). Phase 5 fix plan items B1 and C1
 (`docs/plan-phase5-fixes.md`), under rulings 3 and 7. Reverses `model.md` Q12.
 Amends D2 (input), D6 (what a cursor is), D12 (file version) and D16 §5 (client
 events).
 
 Phase 5's exit rule is that a core change needs an ADR. Both changes here touch the
-session files: B1 changes the scratchpad file, and C1 adds a log record. They are
-decided together so that the files change once.
+session files: B1 changes the scratchpad file, and C1 adds a log record. Neither
+changes `VERSION` (see Files).
 
 ## Context
 
@@ -99,10 +99,10 @@ first (Decision 2 of the plan).
   part of B3.
 - **Files.** The log records are unchanged: `Author::Extension` is already
   recorded on nodes and moves, and items never reach the log. The scratchpad file
-  stores `Input` items, so its format changes. The file version goes **1 → 2**.
-  Because one `VERSION` covers both files, the log's header changes with it. No
-  migration, since we're before 1.0 (and `~/.tau` was started fresh on 2026-10-29).
-  A version-1 session is refused with `Version`.
+  stores `Input` items, so its format changes. `VERSION` stays 1 (D12: the
+  version marks a released format, and 0.16.0 is the first). A development
+  session whose scratchpad holds an old-format `Input` fails to load as
+  `Corrupt`. There is no migration.
 
 **Why not a new body kind** (`Body::Message { from, text }` or similar): every
 provider would have to convert it to the user role anyway. Q11 (wire legality),
@@ -146,8 +146,9 @@ The Python `Session.cursor(c)` raises for it (see the error below). The new read
 each closed cursor, in id order.
 
 **Restarting** is `open(at=last node)`, then `set_label(label, new)` for each label
-to keep. A new id with the old name: the label moves. There is no reopen call in
-core; see Open.
+to keep. A new id with the old name: the label moves. **`reopen(cursor) -> int`**
+does exactly that, moving every label, on tree handles and `Client` (decided; see
+Open). It is composed in the driver, not core.
 
 **Every other call on a closed cursor fails early** with a new core error,
 `Error::Closed(cursor)` ("cursor 3 is closed"). In Python it is **`CursorClosed`**,
@@ -225,11 +226,10 @@ addressed to a closed cursor. That covers a crash after the log sync that made
 delivered item, and the same fix, so it adds no heuristic. `model.md` I7 becomes:
 "state is a pure function of nodes, moves, labels, closes, and items".
 
-**Close and the file version.** `Close` is a new record kind, so it changes what a
-build writes. The rule: every change to what a build writes bumps `VERSION`, and
-before 1.0 there is no migration. If B1's and C1's format changes land in one commit,
-both take `VERSION` to 2. If B1 lands on `master` first, C1 takes it to 3. Sessions
-made between the two would then be refused (see Open).
+**Close and the file version.** `Close` is a new record kind. It is additive: an
+older log has no `Close` record and still loads. A build without C1 would fail on a
+`Close` record as `Undecodable`. `VERSION` does not change (D12: versions mark
+released formats only).
 
 **An empty session is allowed.** Closing the last open cursor is allowed, with no
 guard. A frontend that opens a session with no open cursor restarts one, or opens
@@ -238,7 +238,7 @@ this.
 
 ### 3. B2, related but not decided here
 
-B2 adds **`await tree.rest(cursor) -> Ending`** and **`tree.abort(cursor)`** to
+B2 adds **`await tree.rest(cursor) -> Ending | None`** and **`tree.abort(cursor)`** to
 `TreeHandle`, so tools, hooks and commands all have them. Both refuse the handle's
 own cursor. `rest` reads the ending of the last step from a new hub accessor.
 `abort` is safe to call from a tool's worker thread. Cycles (A's tool waits on B
@@ -279,8 +279,7 @@ gamemaster and forest) needs B1, B2 and C1 together:
   - `Session::at` refuses closed cursors; the open-cursor read and `loaded` skip
     them; `Machine::close`; `closed()`.
   - Replay and `reconcile` follow the rules above.
-- **Store**: `VERSION` bump(s), nothing else. A `Close` record is encoded like any
-  other.
+- **Store**: nothing. A `Close` record is encoded like any other.
 - **`tau-py`**:
   - `Session.input(cursor, by, text)`, `ItemData.Input(by, text)`.
   - `Session.close_cursor`, `Session.closed()`.
@@ -343,17 +342,17 @@ gamemaster and forest) needs B1, B2 and C1 together:
 
 ## Open
 
-- **One version bump or two.** Land the format halves of B1 and C1 in one commit to
-  spend one bump? Otherwise sessions made on `master` between them become
-  unreadable.
-- **A reopen call.** Restart is open plus moving each label, about four lines. If
-  frontends and extensions all write the same four lines, a driver-level
-  `reopen(cursor) -> int` (open at the last node, move every label) would earn its
-  place. Not added until a second user appears.
-- **B2's `rest` after a reload.** The hub keeps no ending across a reload, so `rest`
-  on a cursor that hasn't stepped since then has no `Ending` to return. This is
-  B2's to settle (`Ending | None`, or `Done`). It is noted here only because C1's
-  close waits through the same path.
+- ~~One version bump or two~~ **Decided 2026-10-31: none.** Between tagged
+  releases the format changes freely. 0.16.0 ships as version 1. B1 and C1 land
+  separately.
+- ~~A reopen call~~ **Decided 2026-10-31: yes.** `reopen(cursor) -> int` opens a
+  new cursor at the closed one's last node and moves every label to it. A
+  sub-agent is closed when it completes and reopened for an unexpected
+  follow-up, so reopening is that pattern's normal path, not an edge case. It
+  is on tree handles and `Client`.
+- ~~B2's `rest` after a reload~~ **Decided 2026-10-31: `Ending | None`.** `None`
+  means the ending is unknown: the cursor has not stepped since the session was
+  loaded, or since something else. Endings are not persisted (YAGNI).
 
 **Not verified, inferred:**
 

@@ -20,7 +20,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
-| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 6. Fix list `plan-phase5-fixes.md`: stage A built and signed off 2026-10-31; B–D next, in this repository (B and C1 wait on ADR D17). |
+| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stage A built and signed off 2026-10-31; B–D next, in this repository (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
 | 7–9 | not started; see Phases. |
 
@@ -277,10 +277,8 @@ Every frontend needs these before it can start a session.
   - the ADR decides whether this is a startup step of `tau` or a standard
     extension.
 - **`tau serve` and `RemoteClient`** (D16 stage 4). The wire is the `Client`
-  contract serialized: JSON-RPC over WebSocket, plus the same protocol over
-  stdio for consumers that run `tau` as a subprocess (0.15's `--mode rpc`;
-  Tectum). A remote client and a local one see the same behavior. From day
-  one it has:
+  contract serialized: JSON-RPC over WebSocket. A remote client and a local
+  one see the same behavior. From day one it has:
   - `tau serve --schema`, so clients can generate their types (tau-code does);
   - a protocol version checked at `hello`;
   - daemon discovery with `serve -d --json`.
@@ -356,7 +354,10 @@ Every frontend needs these before it can start a session.
 - **tau-search:** a small port. Its `tau_agent_core` imports
   (`tool_from_function`, `ToolError`) become a plain function and `tau`'s
   `ToolError`, and its dependency becomes `ffwf-tau`.
-- **JMFTS replica.**
+- **JMFTS replica and Tectum**, in one pass (decided 2026-10-31: very
+  important, but no rush). Tectum needs the same protocol over stdio, for
+  programs that run `tau` as a subprocess (0.15's `--mode rpc`), and its
+  `--no-tools` contract.
 - **Later, each extension-shaped or tooling:** image input, constrained
   decoding, a models.dev catalog generator (`tau config` subcommand),
   background tools, code mode, the NATS bus, HTML export, the llama.cpp
