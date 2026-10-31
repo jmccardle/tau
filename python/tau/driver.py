@@ -47,6 +47,7 @@ from tau._hub import Hub
 from tau._options import ExtensionOptions
 from tau._questions import Questions
 from tau._tools import assemble_tools
+from tau._user_config import UserConfig
 from tau._values import Context, Kind
 from tau.client import LocalClient
 from tau.clock import SystemClock
@@ -142,6 +143,8 @@ class Driver:
     `providers` maps each provider name to the provider a model with that `provider` is
     sampled by; each must be named by its own `name`. The program that built them closes
     them. `catalog` is where a `Config` node's model name is resolved, at each sample.
+    `user_config` (`LoadedConfig.user`) is what lets an extension save its options to the user's
+    file (`Cursor.save_options`, `/config --save`); without it they raise `ConfigError`.
 
     A frontend never calls the driver: it holds a `Client` (`client(id)` makes one, naming
     itself), whose calls run on the loop thread, publish what they changed, and poke the pump.
@@ -162,6 +165,7 @@ class Driver:
         tools: Sequence[Tool | Callable[..., object]] = (),
         extensions: Sequence[Extension] = (),
         clock: Clock | None = None,
+        user_config: UserConfig | None = None,
     ) -> None:
         self.session = session
         self.clock: Clock = clock if clock is not None else SystemClock()
@@ -173,7 +177,9 @@ class Driver:
         self._providers = dict(providers)
         self._catalog = catalog
         checked = check_extensions(extensions)
-        self._options = ExtensionOptions(checked, session, lambda: self._catalog)
+        self._options = ExtensionOptions(
+            checked, session, lambda: self._catalog, user_config, self.use_catalog
+        )
         self._extensions = check_extensions([Tau(), *checked])
         self._tools: Mapping[str, Tool]
         listed, self._owners = assemble_tools(tools, self._extensions)

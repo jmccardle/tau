@@ -12,7 +12,7 @@ docker logs; a command already piped to head, tail or wc is left alone). On a ma
 frontend `reject | allow | always | truncate`. `truncate` asks a second question for a grep pattern
 and rewrites the pending call's `command` to `{ cmd } 2>&1 | grep -e PAT | tail -n 200`. A reject is
 the call's `Err`, worded so the model can narrow the command. `always` lands in `Options.allow`
-(a `Config` node), so it holds on the branch and after a reload. With nobody to answer, the
+in the user's config file (`NodeHandle.save_options`), so it holds in every session. With nobody to answer, the
 `unattended` option (default `reject`) decides; a connected client that never answers is given up
 on after `wait` seconds. Note the base `bash` tool already keeps only the last 10 kB of output,
 so the guard is about time and tokens spent, not about the final result size.
@@ -29,9 +29,9 @@ so the guard is about time and tokens spent, not about the final result size.
   `/config bash_guard patterns=(` fail at configure time (`ConfigError`, nothing written).
 - 78-84: `asyncio.timeout` around `ask` works as Q9 says; a timed-out question vanishes from the
   cursor state on its own.
-- 143: `cursor.set_options(allow=...)` is branch-aware, persisted and shown by `/config`
-  (`test_always_sticks_in_the_options_and_survives_a_reload`, with a brand-new `BashGuard()`
-  instance, so only the tree remembers).
+- 143: `node.save_options(allow=...)` writes the user's file, is read by the running driver at once
+  and shown by `/config` (`test_always_is_saved_to_the_users_file_for_every_session`, with a
+  brand-new `BashGuard()` instance, so only the file remembers).
 - A batch needs no code: three calls are three concurrent hooks, three questions (oldest first),
   results joined in call order; the first answer wins and a second client gets `LookupError`
   (`test_a_batch_asks_all_its_questions_at_once_and_clients_race_to_answer`).
@@ -92,7 +92,7 @@ so the guard is about time and tokens spent, not about the final result size.
 
 ### (d) Timing and concurrency
 
-1. **"Always" cannot be written from a tool hook.** `set_options` is on `Cursor`; a `NodeHandle` has
+1. **(Fixed by D1: `NodeHandle.save_options`; `always` is saved to the user's file from `pre_tool`, and `post_result` and `self.always` are gone.) "Always" could not be written from a tool hook.** `set_options` is on `Cursor`; a `NodeHandle` has
    no cursor operations, which is right (a `Config` written under the batch node would not be on
    the walk of the `Results`). Did: `pre_tool` records the pattern per batch (104-107), `post_result`
    (a cursor hook, 138-144) writes it with `set_options` once the join is done. Three pieces and

@@ -25,6 +25,7 @@ from tau._trust import (
     terminal_ask,
     user_config_path,
 )
+from tau._user_config import UserConfig
 
 Ask = Callable[[str], bool]
 Pick = Callable[[tuple[str, ...]], str]
@@ -34,12 +35,14 @@ Pick = Callable[[tuple[str, ...]], str]
 class LoadedConfig:
     """The result of `load_config`: the `catalog` of models, `environ` (the shell
     environment over a trusted project's `.env`; where keys are read from), the trusted
-    `project` (`None`: there is none), and `home` (`TAU_HOME`)."""
+    `project` (`None`: there is none), `home` (`TAU_HOME`), and the `user` config: the
+    layers read again after τ writes the user's file (`Driver(user_config=)`)."""
 
     catalog: ModelCatalog
     environ: Mapping[str, str]
     project: Trusted | None
     home: Path
+    user: UserConfig
 
 
 def load_config(
@@ -61,7 +64,8 @@ def load_config(
     root = find_project(cwd, environ).root
     project = None if root is None else ensure_trusted(root, home, ask=ask)
     catalog = project.read_models(user, cli) if project else read_models(user, cli=cli)
-    return LoadedConfig(catalog, project_environment(project, environ), project, home)
+    user_layers = UserConfig(home, None if project is None else project.layer(), cli)
+    return LoadedConfig(catalog, project_environment(project, environ), project, home, user_layers)
 
 
 def _close(catalog: ModelCatalog, name: str) -> list[str]:

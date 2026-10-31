@@ -9,7 +9,8 @@ the config and the session, `chat-session/`, which is reopened on the next run).
 Type a message to send it. `/` alone lists the commands; Tab completes a command name and its
 arguments (models, cursors, nodes, paths ...); a command missing arguments asks for each; an
 unknown `/name` is sent to the model as text. `/config step_limit limit=10` changes an
-extension's options on this branch, and a bare `/config step_limit` shows them. The model's
+extension's options on this branch (add `--save` to write them to your config file for every
+session), and a bare `/config step_limit` shows them. The model's
 `word_count` tool asks permission first, and the question is answered inline, completed with
 Tab like an argument (an empty answer declines). A command runs in the background once its
 arguments are in, so a question it asks is answered at the prompt like any other; every open
@@ -252,7 +253,7 @@ class Chat:
             f"  {name}={schema.get('default', '?')}  {schema.get('description', '')}\n"  # type: ignore[attr-defined]
             for name, schema in form.schema["properties"].items()  # type: ignore[attr-defined]
         )
-        return f"/config {form.name} name=value ...\n{shown}"
+        return f"/config {form.name} name=value ... [--save]\n{shown}"
 
     def describe(self, command: Form) -> str:
         required = command.schema.get("required", [])
@@ -289,7 +290,13 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         session = Session.load(where)
     else:
         session = Session.create(model_config(name), SYSTEM, clock.now(), where)
-    driver = Driver(session, providers, loaded.catalog, extensions=[Demo(), StepLimit()])
+    driver = Driver(
+        session,
+        providers,
+        loaded.catalog,
+        extensions=[Demo(), StepLimit()],
+        user_config=loaded.user,
+    )
     driver.start()
     client = driver.client("chat:line")
     # Every cursor may have been closed (D17): restart the first, which keeps its labels.

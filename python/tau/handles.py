@@ -66,6 +66,11 @@ class OptionsReader(Protocol):
         is valid: a model in the catalog, options that fit their extension's type once folded."""
         ...
 
+    def save(self, extension: str, changes: Mapping[str, object]) -> None:
+        """Set the extension's options in the user's config file; `ConfigError` if they do not
+        fit, or there is no file to write."""
+        ...
+
 
 def reopened(
     session: Session,
@@ -331,6 +336,11 @@ class NodeHandle(TreeHandle):
         `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.id)
 
+    def save_options(self, **changes: object) -> None:
+        """`Cursor.save_options`, from a tool hook."""
+        self._check()
+        self._options.save(self.extension, changes)
+
     def walk(self) -> list[Node]:
         return self.tree.walk(self.id)
 
@@ -404,6 +414,16 @@ class Cursor(TreeHandle):
         extensions = {self.extension: changes}
         self._options.check_config(self.cursor(self.id).at, None, extensions)
         return self.write(Body.Config(model_config(extensions=extensions)))
+
+    def save_options(self, **changes: object) -> None:
+        """Write these options of this extension (JSON values) into the user's config file,
+        `extensions.<name>` in `<TAU_HOME>/config.json`, and have the driver read it at once. The
+        file is every session's and every branch's; `set_options` is this branch's, a node. No node
+        is written and nothing moves. The project's config is never written. `ConfigError` if the
+        extension has no options, the options that result (the layers, with these) do not fit its
+        options type, or the driver was given no user config; nothing is written then."""
+        self._check()
+        self._options.save(self.extension, changes)
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""

@@ -21,6 +21,7 @@ from tau import (
     Outcome,
     Part,
     Stop,
+    UserConfig,
     read_models,
 )
 from tau.commandline import parse
@@ -45,9 +46,14 @@ guard = load(EXAMPLES / "speculative" / "bash_guard.py", "bash_guard")
 chat = load(EXAMPLES / "chat.py", "chat")
 
 
-def configured(**options: object) -> object:
+def layers(**options: object) -> dict[str, object]:
+    """The `cli` layer: one fake model and bash_guard's options."""
     models = {FAKE_MODEL: {"model": FAKE_MODEL, "provider": "fake"}}
-    return read_models(cli={"models": models, "extensions": {"bash_guard": options}})
+    return {"models": models, "extensions": {"bash_guard": options}}
+
+
+def configured(**options: object) -> object:
+    return read_models(cli=layers(**options))
 
 
 def run(*commands: str) -> Reply:
@@ -68,6 +74,7 @@ async def start(
         tools=[tool or fake],  # pyright: ignore[reportArgumentType]
         extensions=[guard.BashGuard()],
         catalog=configured(**options),  # pyright: ignore[reportArgumentType]
+        user_config=UserConfig(tmp_path / "tau-home", cli=layers(**options)),
     )
     await h.send("go")
     await h.settle()
@@ -287,12 +294,17 @@ async def test_a_client_that_never_answers_is_given_up_on(tmp_path: Path) -> Non
 
 
 @scenario
-async def test_always_sticks_in_the_options_and_survives_a_reload(tmp_path: Path) -> None:
+async def test_always_is_saved_to_the_users_file_for_every_session(tmp_path: Path) -> None:
     script = [run("find /"), run("find /home"), say("ok")]
     h, tool = await start(tmp_path, script)
     await h.respond("always")
     await h.settle()
-    assert h.session.tree.node(h.session.cursor(h.cursor).at).body == h.bodies()[-1]
+    saved = tmp_path / "tau-home" / "config.json"
+    assert json.loads(saved.read_text(encoding="utf-8")) == {
+        "extensions": {"bash_guard": {"allow": [r"\bfind\s+/(?:\s|$)"]}}
+    }
+    configs = [b.config.data for b in h.bodies() if isinstance(b, Body.Config)]
+    assert not any("bash_guard" in data for data in configs), "no node: the file is global"
     options = await h.client.options(h.cursor, "bash_guard")
     allowed = options.schema["properties"]["allow"]["default"]  # type: ignore[index]
     assert allowed == [r"\bfind\s+/(?:\s|$)"]
@@ -302,11 +314,12 @@ async def test_always_sticks_in_the_options_and_survives_a_reload(tmp_path: Path
     await h.close()
 
     again = FakeTool("bash", "output")
-    h = await Harness.load(
+    h = await Harness.load(  # a new instance and a new driver: only the file remembers
         tmp_path,
         provider=FakeProvider([run("find / -name y"), say("ok")]),
         tools=[again],
-        extensions=[guard.BashGuard()],  # a new instance: only the tree remembers
+        extensions=[guard.BashGuard()],
+        catalog=read_models(saved, cli=layers()),
     )
     await h.send("and now?")
     await h.settle()

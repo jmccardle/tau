@@ -169,9 +169,9 @@ class Calls:
         return self._commands.run(client, cursor, name, args)
 
     def configure(
-        self, client: str, cursor: int, extension: str, values: Mapping[str, object]
+        self, client: str, cursor: int, extension: str, values: Mapping[str, object], save: bool
     ) -> "asyncio.Future[str | None]":
-        return self._commands.configure(client, cursor, extension, values)
+        return self._commands.configure(client, cursor, extension, values, save)
 
     def options(self, cursor: int, extension: str) -> Form:
         return self._commands.options(cursor, extension)

@@ -18,7 +18,9 @@ cursor that is open) is the driver's check, not this module's: it only spares a 
 
 `/config <extension> name=value ...` is the one line that is not a command's: the words after
 the extension are read by that extension's options form (`Client.options`), which a frontend
-passes as `options`, by extension name, for the extensions the `config` form lists.
+passes as `options`, by extension name, for the extensions the `config` form lists. The flag
+`--save`, anywhere after the extension, also writes the values into the user's config file, for
+every session (`Client.configure(save=True)`); without it they change only the branch.
 """
 
 import json
@@ -33,6 +35,8 @@ from tau._values import Form, Json
 from tau.client import Client
 
 NO_OPTIONS: Mapping[str, Form] = MappingProxyType({})
+SAVE = "--save"
+"""The flag of `/config <extension> name=value --save`: write to the user's file too."""
 
 
 class UnknownCommand(LookupError):
@@ -49,19 +53,20 @@ class Parsed:
     required parameters, in order, which a frontend asks for. For `/config <extension>` the
     `command` is the extension's options form, `args` the options to change and `extension`
     its name; with no `args` the line asks for the form, which a frontend shows from
-    `Client.options`. `run` makes the call."""
+    `Client.options`. `save` is whether `--save` was typed. `run` makes the call."""
 
     command: Form
     args: dict[str, object]
     missing: tuple[str, ...]
     extension: str | None = None
+    save: bool = False
 
     async def run(self, client: Client, cursor: int) -> str | None:
         """`client.run` the command, or `client.configure` the extension's options; returns the
         command's result."""
         if self.extension is None:
             return await client.run(cursor, self.command.name, self.args)
-        await client.configure(cursor, self.extension, self.args)
+        await client.configure(cursor, self.extension, self.args, save=self.save)
         return None
 
 
@@ -168,7 +173,11 @@ def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_
     form = options.get(extension)
     if form is None:
         raise ValueError(f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)}")
-    return replace(_read(form, words[1:]), extension=extension)
+    save = SAVE in words[1:]
+    parsed = _read(form, [w for w in words[1:] if w != SAVE])
+    if save and not parsed.args:
+        raise ValueError(f"/{CONFIG}: {SAVE} needs a name=value to save")
+    return replace(parsed, extension=extension, save=save)
 
 
 def _takes_rest(schema: Json) -> bool:
@@ -304,8 +313,9 @@ async def completions(
 ) -> list[str]:
     """What could finish the word being typed at the end of `line`, each a whole word to
     replace it with (quoted if it needs to be): command names after `/`, then for each
-    parameter its `values`; after `/config <extension>`, the extension's options. Nothing for a
-    line that is not a command line, an unknown command, or a word past the last parameter."""
+    parameter its `values`; after `/config <extension>`, the extension's options (`--save` is
+    typed, not completed). Nothing for a line that is not a command line, an unknown command, or
+    a word past the last parameter."""
     if not line.startswith("/"):
         return []
     words, current = _typing(line)
@@ -320,7 +330,7 @@ async def completions(
         chosen = options.get(_extension(rest[0]))
         if chosen is None:
             return []
-        form, rest = chosen, rest[1:]
+        form, rest = chosen, [w for w in rest[1:] if w != SAVE]
     wanted = _wanted(form, rest, current)
     if wanted is None:
         return []

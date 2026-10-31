@@ -1,9 +1,11 @@
-"""The `tau` command: `tau config check [--show MODEL]` and `tau trust [DIR]` (D13).
+"""The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
+...` and `tau trust [DIR]` (D13, D1).
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
 (printed as one message on stderr, never a traceback), 2 a usage error, 130 interrupted.
-Everything printed from config data goes through `safe_text`.
+Everything printed from config data goes through `safe_text`. `config set` writes the user's
+`<TAU_HOME>/config.json` and never the project's `.tau/config.json`.
 """
 
 import argparse
@@ -16,11 +18,12 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, check_config
 from tau._dotenv import DotenvError
+from tau._options import option_fields, save_options
 from tau._startup import load_config, prompts, select_model
 from tau._trust import (
     TAU_DIR,
@@ -36,6 +39,9 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
+from tau._user_config import UserConfig
+from tau._values import Field, Json, object_schema
+from tau.commandline import value
 from tau.protocols import Provider
 from tau.providers import builtin_providers
 from tau.step_limit import StepLimit
@@ -43,6 +49,8 @@ from tau.step_limit import StepLimit
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
 _UNTRUSTED = " [untrusted project: not used until `tau trust`]"
+_EXTENSIONS = (StepLimit(),)
+"""The extensions whose options `tau config` knows; a project's own are checked where they load."""
 
 
 @dataclass(frozen=True)
@@ -53,13 +61,32 @@ class _Run:
     cwd: Path
 
 
+def _assignment(text: str) -> tuple[str, str, str]:
+    """`EXTENSION.FIELD=VALUE` as its three parts."""
+    target, equals, given = text.partition("=")
+    extension, dot, name = target.partition(".")
+    if not (equals and dot and extension and name):
+        raise argparse.ArgumentTypeError(f"{text!r} is not EXTENSION.FIELD=VALUE")
+    return extension, name, given
+
+
 def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(prog="tau", description="τ next (Trusty).")
     sub = parser.add_subparsers(dest="command")
     config = sub.add_parser("config", help="inspect configuration")
-    config_sub = config.add_subparsers(dest="config_command", metavar="{check}")
+    config_sub = config.add_subparsers(dest="config_command", metavar="{check,set}")
     check = config_sub.add_parser("check", help="report every problem in the config files")
     check.add_argument("--show", metavar="MODEL", help="print MODEL's resolved values and sources")
+    saved = config_sub.add_parser(
+        "set", help="write extension options into your config file (every session)"
+    )
+    saved.add_argument(
+        "assignments",
+        nargs="+",
+        type=_assignment,
+        metavar="EXTENSION.FIELD=VALUE",
+        help="a value is read as `/config` reads it",
+    )
     trust = sub.add_parser("trust", help="approve a project directory's .tau/")
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
@@ -118,7 +145,7 @@ def _check(run: _Run, show: str | None) -> int:
             layer,
             environ=environ,
             providers=providers,
-            extensions=(StepLimit(),),
+            extensions=_EXTENSIONS,
         )
     finally:  # a check opens no connection; closing is the builder's duty all the same
         asyncio.run(_close(providers))
@@ -133,6 +160,36 @@ def _check(run: _Run, show: str | None) -> int:
     if show is not None:
         name = select_model(loaded.catalog, show, pick=prompts(run.stdin, run.stdout).pick)
         _show(loaded.catalog, name, run.stdout)
+    return 0
+
+
+def _set(run: _Run, assignments: Sequence[tuple[str, str, str]]) -> int:
+    """Set each `extension.field` in the user's file, all or none: every extension's options
+    are built from the file as it would be before it is written. The project's config takes no
+    part: a project's own extensions are not known here, and it is never written."""
+    known = {cast("str", getattr(e, "name")): e for e in _EXTENSIONS}  # noqa: B009
+    saving: dict[str, tuple[type, tuple[Field, ...], Json]] = {}
+    for extension, name, given in assignments:
+        options = getattr(known.get(extension), "options", None)
+        if options is None:
+            raise ConfigError(
+                f"extension {extension!r} has no options; those that do: {list(known)}"
+            )
+        fields = option_fields(extension, options)
+        properties = cast("Json", object_schema(fields, model=False)["properties"])
+        if name not in properties:
+            raise ConfigError(
+                f"extension {extension!r} has no option {name!r}; its options: {list(properties)}"
+            )
+        try:
+            decoded = value(given, cast("Json", properties[name]))
+        except ValueError as e:
+            raise ConfigError(f"{extension}.{name}: {e}") from None
+        saving.setdefault(extension, (options, fields, {}))[2][name] = decoded
+    home = tau_home(run.environ)
+    save_options(UserConfig(home), saving)
+    shown = " ".join(f"{e}.{n}={g}" for e, n, g in assignments)
+    run.stdout.write(safe_text(f"set {shown} in {home / 'config.json'}") + "\n")
     return 0
 
 
@@ -197,6 +254,14 @@ def _fail(err: TextIO, message: str) -> int:
     return 1
 
 
+def _dispatch(run: _Run, args: argparse.Namespace) -> int:
+    if args.command == "trust":
+        return _trust(run, args.dir)
+    if args.config_command == "set":
+        return _set(run, args.assignments)
+    return _check(run, args.show)
+
+
 def main(  # noqa: PLR0913 - the process, injected so a test can supply real ones
     argv: Sequence[str] | None = None,
     *,
@@ -225,9 +290,7 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         config.print_help(err)
         return _USAGE_ERROR
     try:
-        if args.command == "trust":
-            return _trust(run, args.dir)
-        return _check(run, args.show)
+        return _dispatch(run, args)
     except (ConfigError, TrustError, DotenvError) as e:
         return _fail(err, str(e))
     except KeyboardInterrupt:

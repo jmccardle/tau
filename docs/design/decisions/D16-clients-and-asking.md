@@ -155,7 +155,14 @@ extension, values)`: a step of the cursor writes the extension's options, the on
 extensions, which stays private to it. A frontend reads an extension's options with
 `Client.options(cursor, extension)`, a `Form` whose schema carries each default as the value now;
 `commandline.parse` reads `/config step_limit limit=10` by that schema, and a bare `/config
-step_limit` is the frontend showing the form. The user's file stays `tau config`'s to edit.
+step_limit` is the frontend showing the form. A `Config` node is this branch; the user's file
+(`<TAU_HOME>/config.json`) is every session, and τ writes it (D1): `cursor.save_options(**changes)`
+(also on a tool hook's `NodeHandle`) sets the calling extension's `extensions.<name>.<field>`,
+`/config <extension> name=value --save` (`Client.configure(..., save=True)`) does the branch's
+change and the file's, and `tau config set <extension>.<field>=<value>` the file's alone. Each checks the options
+type with the layers' result before anything is written, writes atomically, and has the running driver
+read the file at once (`Driver(user_config=LoadedConfig.user)`; `ConfigError` without one). The
+project's `.tau/config.json` is never written: an edit would have to re-record the trust hash.
 
 ### 5. A frontend holds a `Client`, local or remote
 

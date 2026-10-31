@@ -30,6 +30,7 @@ from tau._values import (
 
 if TYPE_CHECKING:  # _config_layers checks options, so it imports us
     from tau._config_layers import ModelCatalog
+    from tau._user_config import UserConfig
 
 
 def option_fields(extension: str, options: object) -> tuple[Field, ...]:
@@ -78,6 +79,23 @@ def make_options(
         raise ConfigError(f"extension {extension!r}: {e}") from e
 
 
+def save_options(
+    user: "UserConfig",
+    saving: Mapping[str, tuple[type, tuple[Field, ...], Json]],
+) -> "ModelCatalog":
+    """Write `changes` into the user's file: `saving` maps each extension to its options type,
+    its `Field`s and the JSON values to set. Every extension's options, as the layers hold them
+    with the change, are built before anything is written (`ConfigError`); returns the catalog
+    the layers make now."""
+
+    def fits(catalog: "ModelCatalog") -> None:
+        for name, (options, fields, _) in saving.items():
+            raw = dict(catalog.extensions.get(name, {}))
+            make_options(name, options, fields, raw, Context(catalog))
+
+    return user.save_options({name: changes for name, (_, _, changes) in saving.items()}, fits)
+
+
 def _description(options: type) -> str:
     """The options type's docstring; a dataclass without one has its signature there, which
     describes nothing."""
@@ -94,9 +112,13 @@ class ExtensionOptions:
         extensions: Sequence[object],
         session: Session,
         catalog: Callable[[], "ModelCatalog"],
+        user: "UserConfig | None" = None,
+        use_catalog: Callable[["ModelCatalog"], None] | None = None,
     ) -> None:
         self._session = session
         self._catalog = catalog
+        self._user = user
+        self._use_catalog = use_catalog
         self._types: dict[str, type] = {}
         self._fields: dict[str, tuple[Field, ...]] = {}
         # Per node, the options its walk's Config nodes set. A node never changes, so each is
@@ -159,6 +181,18 @@ class ExtensionOptions:
         options = self._types[extension]
         schema = object_schema(self._fields[extension], model=False, current=raw)
         return Form(extension, _description(options), schema)
+
+    def save(self, extension: str, changes: Mapping[str, object]) -> None:
+        """Set `changes` (JSON values) of `extension`'s options in the user's file, for every
+        session, and have the driver read the layers again. `ConfigError` if the extension has no
+        options, the driver was given no user config, or the options that result do not fit;
+        nothing is written then."""
+        if extension not in self._types:
+            raise ConfigError(f"extension {extension!r} has no options")
+        if self._user is None or self._use_catalog is None:
+            raise ConfigError("this driver has no user config to write")
+        saving = {extension: (self._types[extension], self._fields[extension], dict(changes))}
+        self._use_catalog(save_options(self._user, saving))
 
     def check_config(
         self, at: int, model: str | None, extensions: Mapping[str, Mapping[str, object]]

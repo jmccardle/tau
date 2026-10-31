@@ -33,6 +33,7 @@ from tau import (
     Session,
     Stop,
     Tool,
+    UserConfig,
 )
 
 CLIENT = "term"
@@ -72,8 +73,10 @@ class Harness:
         extensions: Sequence[Extension],
         clock: FakeClock,
         gates: Sequence[Gate],
+        user_config: UserConfig | None = None,
     ) -> None:
         self.directory = directory
+        self.user_config = user_config
         self.session = session
         self.provider = provider
         self.catalog = catalog
@@ -94,6 +97,7 @@ class Harness:
             tools=self.tools,
             extensions=self.extensions,
             clock=self.clock,
+            user_config=self.user_config,
         )
         driver.start()
         self.client = driver.client(CLIENT)
@@ -122,9 +126,10 @@ class Harness:
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
+        user_config: UserConfig | None = None,
     ) -> "Harness":
         """A new session in `tmp_path`. `gates` are any beyond the fakes' own that
-        extensions wait at."""
+        extensions wait at; `user_config` is the file the extensions may save options to."""
         clock = clock or FakeClock()
         directory = tmp_path / "session"
         session = Session.create(config or FAKE_CONFIG, system, clock.now(), directory)
@@ -137,6 +142,7 @@ class Harness:
             extensions,
             clock,
             gates,
+            user_config,
         )
 
     @classmethod
@@ -192,9 +198,14 @@ class Harness:
         return await self.client.run(self._c(cursor), command, args or {})
 
     async def configure(
-        self, extension: str, values: Mapping[str, object], cursor: int | None = None
+        self,
+        extension: str,
+        values: Mapping[str, object],
+        cursor: int | None = None,
+        *,
+        save: bool = False,
     ) -> None:
-        await self.client.configure(self._c(cursor), extension, values)
+        await self.client.configure(self._c(cursor), extension, values, save=save)
 
     async def respond(self, value: object, cursor: int | None = None) -> None:
         """Answer the cursor's oldest open question."""

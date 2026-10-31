@@ -958,7 +958,30 @@ user file (`cli` overrides on top), and the environment from
 `project_environment`. Any `ConfigError` or `TrustError` propagates. It returns a
 frozen **`LoadedConfig`**: `catalog`, `environ` (the shell environment over the
 trusted project's `.env`; the shell wins; pass it to the provider so keys come
-from it), `project` (the `Trusted`, or `None`), `home`.
+from it), `project` (the `Trusted`, or `None`), `home`, and `user`, the **`UserConfig`**
+for `Driver(user_config=)` (see *UserConfig*).
+
+### UserConfig
+`tau._user_config` (exported) · D1 · new
+
+The one config file τ writes: the user's `<TAU_HOME>/config.json` (decision 4: τ owns it, D13).
+A frozen record of the layers a frontend loaded (`home`, the approved `project` layer as a
+`LayerText` or `None`, the `cli` overrides), so that after a write it can read them again.
+Its one operation, `save_options(changes, check)`, sets `extensions.<name>.<field>` for each
+field of `changes` (extension, then field, to JSON value) in the user's file: it reads the file
+(`ConfigError`, in the loader's words, if the loader would refuse it; an absent file is `{}`),
+sets the fields, merges the layers (`read_models`), calls `check(catalog)` (which raises
+`ConfigError` for options the extension's options type refuses), and only then writes
+atomically (`tau._trust.write_atomically`, shared with `trusted.json`: a scratch file in the
+same directory, flushed, renamed over the file; a new file and `TAU_HOME` are private, `600`
+and `700`). It returns the new catalog. Any failure before the rename leaves the file as it
+was. The file is re-serialised as JSON with two-space indent: every key other than the ones
+written is kept with its value and order, whitespace is not. The project layer has no write:
+its path is not a parameter of anything, and an edit τ made would have to re-record the
+trust hash, which waits for a trust rule. A `Config` node means this branch; the file means
+every session (a node's value still wins on its branch). `UserConfig` is the whole of how τ
+reaches the file; the three ways in are `tau config set`, `/config <extension> ... --save`
+and `Cursor.save_options` (see *tau config set*, *commandline*, *Handles*).
 
 ### select_model, Pick, terminal_pick, Prompts, prompts
 module `tau._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
@@ -974,7 +997,7 @@ names and reads a number or a name; anything else is a `ConfigError`.
 **`Prompts`** (`ask`, `pick`) is what a person can be asked; `prompts(stdin,
 stdout)` returns both as `None` unless both streams are terminals.
 
-### tau config check, tau trust
+### tau config check, tau config set, tau trust
 `tau.cli` (`main`; the `tau` console script) · D13 · new
 
 `main(argv, *, stdin, stdout, stderr, environ, cwd)` is the `tau` command; each
@@ -982,6 +1005,14 @@ argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
 (`tau` alone prints help to stderr, `tau config` alone the help for `config`), 130 Ctrl-C
 (no traceback). Anything printed from config data is escaped with `safe_text`. A `ConfigError`, `TrustError`, or
 `DotenvError` is one `tau: message` line on stderr and exit 1, no traceback.
+
+`tau config set EXTENSION.FIELD=VALUE ...` writes each into the user's file through
+`UserConfig.save_options`, all or none: a value is read as `/config` reads it (`commandline.value`
+by the option's schema), an unknown extension or field is a `ConfigError`, and every
+extension's options are built with the changes before the file is written. It knows the
+extensions `tau config check` knows (`StepLimit`), and checks the user layer by itself (a
+project is neither read nor written, so it works from any directory, trusted project or not).
+It prints `set <assignments> in <path>`, exit 0.
 
 `tau config check` runs `check_config` (with `builtin_providers`) over the user config
 and the project config and prints each problem as `file:line:col: severity: message` (the
@@ -1090,7 +1121,10 @@ whose batch it is (`id` is the batch's node; `TreeHandle.cursor(c)` already read
 state, so the attribute is not `cursor`). A cursor handle adds `node`, `walk`,
 `options()` (also on a node handle, at its node), `set_model(model)` (the model must be in the
 catalog) and `set_options(**changes)` (the calling extension's own options, which folded with the
-walk's must fit their type; see *config*; nothing is written otherwise), `move(to)`, `write(body, delivers)`,
+walk's must fit their type; see *config*; nothing is written otherwise),
+`save_options(**changes)` (the same options written into the user's config file for every session
+and read by the running driver at once, no node; also on a node handle, so a tool hook can save;
+see *UserConfig*), `move(to)`, `write(body, delivers)`,
 `set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default to every
 connected client; dropped if `to` is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
@@ -1562,10 +1596,13 @@ the extension, a `Literal` of those that have options; absent if none has any) s
 learns of it, and `Client.configure(cursor, extension, values)` is the call: it checks the values
 against the extension's options folded at the cursor's `at` (`ConfigError`, nothing written), then
 writes a `Config` node as a step of the cursor, like a `Cursor` command (`Busy` unless at rest).
+With `save=True` it first writes the values into the user's file too (`ExtensionOptions.save`;
+see *UserConfig*), after the same checks, so a refusal writes neither the node nor the file.
 `Client.run(cursor, "config", ...)` is a `ValueError`. A frontend reads the options of an extension
 with `Client.options(cursor, extension)`: the `Form` whose defaults are the values now; a bare
 `/config <extension>` shows it, and `commandline.parse` reads `/config <extension> limit=10`
-by it (see *commandline*). The user's file stays `tau config`'s to edit.
+by it (see *commandline*). The user's file is written by `save` (see *UserConfig*), never by a
+`Config` node.
 
 ### options (extension)
 `tau._options` (`ExtensionOptions`); `ConfigError` · D16 · new
@@ -1580,7 +1617,10 @@ layers' `extensions.<name>` (`ModelCatalog.extensions`), then the `Config` nodes
 walk, root to node, each setting only the fields it names (so a node can change `size` and leave
 `mode`); there is no way to unset a field back to its default. `handle.options()` returns the
 dataclass instance at the handle's node (`ConfigError` if it does not fit; the type's own
-`__post_init__` may refuse). `set_model`, `set_options`, and `configure` check the same before
+`__post_init__` may refuse). `ExtensionOptions.save(extension, changes)` writes `changes` into
+the user's file (`save_options`, which builds every extension's options from the layers with the
+change) and gives the driver the catalog read again (`use_catalog`); `ConfigError` if the
+extension has no options or the driver was given no `UserConfig`. `set_model`, `set_options`, and `configure` check the same before
 writing: the options folded at the cursor's `at` with the new values must build. The fold of a
 node is computed once and shared by its descendants that add no `Config`. `Client.options(cursor,
 extension)` returns a `Form(extension, description, schema)`: the schema of the options object,
@@ -1610,7 +1650,7 @@ raise on an extension's account.
 `tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
 
 The pure parts every line-based frontend shares. `parse(line, commands, options)` reads a line
-that starts with `/` as shell words: `Parsed(command, args, missing, extension)`. A `name=value`
+that starts with `/` as shell words: `Parsed(command, args, missing, extension, save)`. A `name=value`
 word sets the parameter of that name; the other words fill the remaining parameters in order,
 except that the last parameter, when it is a plain `str` or a `str | None` (not a `Literal` or a
 named type), takes the rest of the line from the word that would fill it, as typed, quotes
@@ -1622,7 +1662,10 @@ lists the required parameters not given, for the frontend to ask. `UnknownComman
 not a command's: the words after the extension are read by that extension's options `Form`, which
 the frontend passes as `options` (by extension name; the `config` form lists the names, and
 `Client.options` gives each). Then `command` is the options form, `args` the options to change,
-and `extension` its name; with no `args` the line asks for the form. `Parsed.run(client, cursor)`
+and `extension` its name; with no `args` the line asks for the form. The flag `--save`, anywhere
+after the extension, sets `save`: the call is `Client.configure(..., save=True)`, which writes the
+values into the user's config file for every session as well as the branch (`--save` with nothing to
+save is a `ValueError`; it is typed, not completed). `Parsed.run(client, cursor)`
 makes the call, `Client.run` or `Client.configure`, and returns the result.
 `value(text, schema)` reads one value of any schema, and `async values(schema, prefix, client,
 cursor)` says what could finish it; both serve a command's argument and a question's answer

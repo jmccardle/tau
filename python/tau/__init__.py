@@ -67,6 +67,7 @@ from tau._startup import (
 )
 from tau._tools import ToolError
 from tau._trust import Trusted, TrustError, UntrustedProject, safe_block
+from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, LabelName, Model, NodeId
 from tau.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau.client import Client, LocalClient
@@ -213,6 +214,7 @@ __all__ = [
     "Trusted",
     "Undecodable",
     "UntrustedProject",
+    "UserConfig",
     "Version",
     "WriteTool",
     "WrongAnswer",

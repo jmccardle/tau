@@ -415,10 +415,16 @@ def _record(home: Path, seen: _Seen) -> None:
         },
         indent=2,
     )
-    final = _trusted_path(home)
-    scratch = final.with_name(f"trusted.json.{os.getpid()}.tmp")
+    write_atomically(_trusted_path(home), body)
+
+
+def write_atomically(final: Path, body: str) -> None:
+    """Write `body` to `final` (private to the user, its directory created private if absent)
+    as a scratch file in the same directory, flushed to disk, then renamed over `final`: a
+    reader sees the old file or the new, never half. `TrustError` if the disk refuses."""
+    scratch = final.with_name(f"{final.name}.{os.getpid()}.tmp")
     with _unless_io_fails(final, "written"):
-        home.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
+        final.parent.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
         fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as out:

@@ -113,11 +113,15 @@ class Client(AsyncIterator[Event], Protocol):
         option, each default the value now. `ConfigError` if it has no options."""
         ...
 
-    async def configure(self, cursor: int, extension: str, values: Mapping[str, object]) -> None:
+    async def configure(
+        self, cursor: int, extension: str, values: Mapping[str, object], *, save: bool = False
+    ) -> None:
         """Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s
-        branch: a step of the cursor writes a `Config` node. `ConfigError` for an extension
-        without options, or values its options type refuses, `Busy` unless the cursor is at
-        rest; nothing is written then."""
+        branch: a step of the cursor writes a `Config` node. With `save`, also write them into
+        the user's config file (`extensions.<name>`), which every session reads. `ConfigError`
+        for an extension without options, or values its options type refuses (or, with `save`,
+        a driver with no user config), `Busy` unless the cursor is at rest; nothing is written
+        then, neither node nor file."""
         ...
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
@@ -223,8 +227,10 @@ class LocalClient(_Stream):
     async def options(self, cursor: int, extension: str) -> Form:
         return self._up().options(cursor, extension)
 
-    async def configure(self, cursor: int, extension: str, values: Mapping[str, object]) -> None:
-        await self._finished(self._up().configure(self.id, cursor, extension, values))
+    async def configure(
+        self, cursor: int, extension: str, values: Mapping[str, object], *, save: bool = False
+    ) -> None:
+        await self._finished(self._up().configure(self.id, cursor, extension, values, save))
 
     async def _finished(self, outcome: "asyncio.Future[str | None]") -> str | None:
         """What a command came to. A command the driver gave up on, because it failed or was

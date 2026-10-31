@@ -3,8 +3,8 @@
 A `pre_tool` hook matches the command against `Options.patterns`. On a match it asks the
 frontend `reject | allow | always | truncate`. `truncate` asks again for a grep pattern and
 rewrites the call's `command` to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. A reject is the
-call's `Err`, written so the model can narrow the command. `always` is remembered in the
-options (`allow`), so it sticks on this branch, survives a reload, and shows in
+call's `Err`, written so the model can narrow the command. `always` is saved to the user's
+config file (`NodeHandle.save_options(allow=...)`), so it holds in every session and shows in
 `/config bash_guard`. When nobody answers within `wait` seconds (a question waits even with
 no client connected) `unattended` decides.
 """
@@ -16,7 +16,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau import CallDraft, Cursor, NodeHandle, Outcome, Subject
+from tau import CallDraft, NodeHandle, Outcome
 
 TAIL = 200
 BOUNDED = re.compile(r"\|\s*(?:head|tail|wc)\b")  # already piped to something short
@@ -66,7 +66,6 @@ class BashGuard:
     options = Options
 
     def __init__(self) -> None:
-        self.always: dict[int, set[str]] = {}  # batch node -> patterns, until post_result
         self.ran: dict[tuple[int, str], str] = {}  # (batch node, call id) -> what really ran
 
     async def ask(self, node: NodeHandle, text: str, expect: object) -> object:
@@ -96,9 +95,9 @@ class BashGuard:
         )
         verdict = answer or options.unattended
         if verdict == "always":
-            # WISH: node.set_options(allow=[..., pattern]). Only Cursor has set_options, so this
-            # waits for post_result below.
-            self.always.setdefault(node.id, set()).add(pattern)
+            node.save_options(
+                allow=sorted({*node.options().allow, pattern})
+            )  # read now: siblings save too
         if verdict in ("allow", "always"):
             return None
         if verdict == "truncate":
@@ -127,12 +126,4 @@ class BashGuard:
                 call.outcome = Outcome.Ok(note + value)
             case Outcome.Err(error=error) if ran:
                 call.outcome = Outcome.Err(note + error)
-        return None
-
-    async def post_result(self, cursor: Cursor, subject: Subject) -> str | None:
-        assert subject.node is not None
-        assert subject.node.parent is not None
-        granted = self.always.pop(subject.node.parent, set())
-        if granted:
-            cursor.set_options(allow=sorted({*cursor.options().allow, *granted}))
         return None
