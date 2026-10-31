@@ -2,7 +2,8 @@
 
 Rule 6: these are generated from code, never drawn. `scripts/diagrams.sh`
 rewrites them; `scripts/diagrams.sh --check` fails if a committed `.dot` or
-generated `.md` differs from what the code and tests produce now. The `.svg`
+generated `.md` differs from what the code and tests produce now; `scripts/check.sh` runs
+the check on every interpreter of the gate. The `.svg`
 files are rendered from the `.dot` files (graphviz `dot`) and are not compared.
 
 | file | what it shows | made from |

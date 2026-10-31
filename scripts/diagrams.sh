@@ -64,12 +64,22 @@ for t in crates/tau-core/tests/*.rs; do
 done
 
 step "step positions: behavior suite through the bindings"
-cargo build -q --release --locked -p tau-py --features abi3,transitions
+# A free-threaded interpreter has no stable ABI before 3.15 (crates/tau-py/Cargo.toml), so
+# build for this interpreter as maturin would: abi3 under the GIL, version-specific without.
+if [ "$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("Py_GIL_DISABLED") or 0)')" = 1 ]; then
+    FEATURES=transitions
+    SUFFIX="$("$PY" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+else
+    FEATURES=abi3,transitions
+    SUFFIX=.abi3.so
+fi
+cargo build -q --release --locked -p tau-py --features "$FEATURES"
 PKG="$CARGO_TARGET_DIR/pkg"
 rm -rf "$PKG"
 mkdir -p "$PKG"
 cp -r python/tau_next "$PKG/tau_next"
-cp "$CARGO_TARGET_DIR/release/lib_core.so" "$PKG/tau_next/_core.abi3.so"
+rm -f "$PKG"/tau_next/_core*.so  # only the transitions build may be found
+cp "$CARGO_TARGET_DIR/release/lib_core.so" "$PKG/tau_next/_core$SUFFIX"
 PYTHONPATH="$PKG:$ROOT/$D" "$PY" -m pytest -q -s -p no:cacheprovider -p pytest_scenario \
     tests/behavior tests/core >/dev/null 2>"$TMP/logs/python.log"
 "$PY" -I "$D/positions.py" "$TMP/types.json" "$GEN" "$TMP"/logs/*.log

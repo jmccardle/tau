@@ -35,3 +35,4 @@ step "ruff";         "$BIN/ruff" check .
 "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q tests
+step "diagrams";     scripts/diagrams.sh --check   # rule 6; builds a feature-enabled core apart
