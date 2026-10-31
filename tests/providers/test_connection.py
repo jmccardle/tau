@@ -35,6 +35,7 @@ from tau_next import (
     Delta,
     Finish,
     Live,
+    LocalClient,
     ModelConfig,
     Part,
     Provider,
@@ -299,15 +300,16 @@ async def test_a_cancel_mid_thinking_leaves_an_interrupted_reply_holding_unsigne
 ) -> None:
     server, _ = gated(dialect.thinking_head)
     async with running(tmp_path / "s", dialect.over(server)) as (session, driver, cursor):
-        seen = driver.events(cursor)
-        driver.send(cursor, "test", "hi")
-        async for item in seen:
+        client = LocalClient(driver, "test")
+        await client.watch([cursor])
+        await client.send(cursor, "hi")
+        async for item in client:
             if isinstance(item, Live) and item.delta == ThinkingDelta("think"):
                 break
-        driver.abort(cursor)
+        await client.abort(cursor)
         await driver.rest(cursor)
         reply = bodies(session, cursor)[-1]
-        await seen.aclose()
+        await client.close()
     assert isinstance(reply, Body.Assistant)
     assert reply.stop == Stop.Interrupted
     assert reply.parts == [Part.Thinking("let me think")], "what arrived, with no replay data"
@@ -324,7 +326,7 @@ async def test_a_plain_turn_logs_the_model_name_and_neither_the_key_nor_the_url(
     server = sse_text(dialect.reply("hi"))
     directory = tmp_path / "s"
     async with running(directory, dialect.over(server)) as (session, driver, cursor):
-        driver.send(cursor, "test", "hello")
+        await LocalClient(driver, "test").send(cursor, "hello")
         await driver.rest(cursor)
         walk = bodies(session, cursor)
         assert walk[0] == Body.Config(model_config(ALIAS))

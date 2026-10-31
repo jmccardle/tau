@@ -22,6 +22,7 @@ from tau_next import (
     Body,
     Driver,
     LoadedConfig,
+    LocalClient,
     Session,
     StepLimit,
     SystemClock,
@@ -47,7 +48,7 @@ def print_walk(session: Session, at: int) -> None:
 
 
 async def ask(driver: Driver, session: Session, cursor: int, text: str) -> None:
-    driver.send(cursor, "tour", text)
+    await LocalClient(driver, "tour").send(cursor, text)
     await rest(driver, session, cursor)
 
 
@@ -88,7 +89,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             first_branch = session.cursor(cursor).at
 
             print(f"\n== 2. go back to node {before} and ask something else")
-            driver.go_to(cursor, before, "tour")
+            await LocalClient(driver, "tour").go_to(cursor, before)
             await ask(
                 driver,
                 session,

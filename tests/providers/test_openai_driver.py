@@ -23,6 +23,7 @@ from tau_next import (
     Body,
     Driver,
     FunctionTool,
+    LocalClient,
     Part,
     Session,
     StepLimit,
@@ -47,12 +48,12 @@ PLAIN_META = json.dumps(
 async def test_reasoning_is_kept_in_the_reply_and_not_sent_back(tmp_path: Path) -> None:
     server = sse("reasoning")
     async with running(tmp_path / "s", OPENAI.over(server)) as (s, driver, c):
-        driver.send(c, "test", "17 * 3?")
+        await LocalClient(driver, "test").send(c, "17 * 3?")
         await driver.rest(c)
         reply = bodies(s, c)[-1]
         assert isinstance(reply, Body.Assistant)
         assert [type(p) for p in reply.parts] == [Part.Thinking, Part.Text]
-        driver.send(c, "test", "again?")
+        await LocalClient(driver, "test").send(c, "again?")
         await driver.rest(c)
     roles = [m["role"] for m in server.bodies[1]["messages"]]  # type: ignore[index]
     assert roles == ["system", "user", "assistant", "user"]
@@ -67,7 +68,7 @@ async def test_live_a_plain_turn(tmp_path: Path) -> None:
     assert model, "TAU_LIVE_MODEL must name the model when TAU_LIVE_BASE_URL is set"
     live = catalog(ALIAS, model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
     async with running(tmp_path / "s", OpenAIProvider(), live) as (s, driver, c):
-        driver.send(c, "test", "Say hello in five words or fewer.")
+        await LocalClient(driver, "test").send(c, "Say hello in five words or fewer.")
         await driver.rest(c)
         reply = bodies(s, c)[-1]
         assert isinstance(reply, Body.Assistant)
@@ -97,7 +98,7 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
         driver,
         c,
     ):
-        driver.send(c, "test", "weather in Paris?")
+        await LocalClient(driver, "test").send(c, "weather in Paris?")
         await driver.rest(c)
         first, second = server.bodies
         expected_tools = [
@@ -177,7 +178,7 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
     driver.start()
     c = session.cursors()[0]
     try:
-        driver.send(c, "test", f"Read {secret} and tell me the phrase in it.")
+        await LocalClient(driver, "test").send(c, f"Read {secret} and tell me the phrase in it.")
         await driver.rest(c)
         walk = bodies(session, c)
         assert any(isinstance(b, Body.Results) for b in walk)

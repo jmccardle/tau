@@ -13,10 +13,10 @@ from tau_next import (
     Author,
     Body,
     CallDraft,
+    Client,
     Cursor,
     Ending,
     Event,
-    EventStream,
     ExtensionContractError,
     NodeHandle,
     Outcome,
@@ -75,7 +75,7 @@ async def test_a_question_whose_asker_timed_out_is_gone(tmp_path: Path) -> None:
     await h.settle()
     assert timed_out == [True]
     assert h.driver.state().open_questions == 0
-    assert h.driver.questions(h.cursor) == []
+    assert (await h.view()).questions == ()
     with pytest.raises(LookupError):
         await h.respond("late")
     await h.abort()  # nothing stale to decline: core's abort and the driver agree
@@ -525,7 +525,7 @@ async def test_stopping_the_driver_cancels_a_running_hook_without_failing_it(
 # The driver dies of its root cause, however it is raised
 
 
-async def read_all(stream: EventStream) -> list[Event]:
+async def read_all(stream: Client) -> list[Event]:
     return [event async for event in stream]
 
 
@@ -552,7 +552,7 @@ async def test_a_panic_in_the_pump_fails_the_driver_and_ends_the_streams(tmp_pat
     h = await Harness.create(
         tmp_path, provider=FakeProvider([Reply([Part.Text("hi")], Stop.End)]), clock=clock
     )
-    stream = h.driver.events()
+    stream = await h.connect("watcher")
     await h.send("go")
     clock.error = Panic("core panicked")  # the answer to the sample asks the clock
     with pytest.raises(RuntimeError, match="Panic: core panicked"):
@@ -560,7 +560,7 @@ async def test_a_panic_in_the_pump_fails_the_driver_and_ends_the_streams(tmp_pat
     with pytest.raises(RuntimeError, match="Panic: core panicked"):
         await asyncio.wait_for(read_all(stream), 1)  # what was buffered, then the failure
     with pytest.raises(RuntimeError, match="Panic"):
-        h.driver.step(h.cursor)
+        await h.step()
     await h.driver.stop()
     h.session.close()
 

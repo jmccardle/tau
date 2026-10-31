@@ -366,23 +366,29 @@ retired handle is the driver's. The exact surface is Phase 4's.
 `Session.input(cursor, text)` adds an input item and wakes the cursor (the
 spike's `Session::add_item`). A **send** is input, then auto-step on: two calls, which the driver's `send` makes. On a
 busy cursor the item waits for the next step's input phase. After an abort it
-stays pending (Q42). Commands and gates are `pre_input` hooks.
+stays pending (Q42). Gates are `pre_input` hooks.
 
 ### Questions (the driver's; core has none)
 
 `await handle.ask(text, expect=str, *, to=None)` (on a cursor or a tool hook's
-node handle) returns the response checked against `expect`, a type hint of
-`tau_next.values`, and converted, or `None` if declined; a wrong response is
-refused to the responder and the question stays open (D16 §3). A question is a
-hook awaiting a future the driver holds
-(`Driver.ask`, `respond`, `questions`); core knows nothing of it. The hook's
-job stays out while it waits, so the cursor is **busy**, and core's rules
-for a busy cursor apply unchanged: input is accepted and waits for the next
-step's input phase, `Session.step` is `Busy`, auto-step on or off only sets
-the flag (no second step starts under the question). Abort and go-to take
-the abort path: the step is aborted, the driver declines the cursor's open
-questions, and the hook finishes with `None`. A question for one client is
-declined if it detaches (not built).
+node handle) returns the answer checked against `expect`, a type hint of
+`tau_next.values`, and converted, or `None` if declined (D16 §3). A question is
+a hook awaiting a future the driver holds; core knows nothing of it. It has an
+id, its cursor, `to` (`None`: anyone; or a client id), its text and the schema
+of the answer, and every client sees it in the cursor's state until it closes.
+`Client.answer(question, value)` answers it: a wrong value is refused to the
+answering client (`ValueError`) and the question stays open, the first good
+answer wins (a later one is a `LookupError`), and an answer from a client the
+question is not `to` is a `PermissionError`. The hook's job stays out while it
+waits, so the cursor is **busy**, and core's rules for a busy cursor apply
+unchanged: input is accepted and waits for the next step's input phase,
+`Session.step` is `Busy`, auto-step on or off only sets the flag (no second
+step starts under the question). Abort and go-to take the abort path: the step
+is aborted, the driver declines the cursor's open questions, and the hook
+finishes with `None`. A question `to` one client stays open across that
+client's disconnects (the client that reconnects is told of it); asking a client
+that is not connected declines at once, so a cursor never waits on someone who
+is not there.
 
 ### Between cursors
 
@@ -431,27 +437,53 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   leaves it: every later call raises `Closed`. Continuing is reopening from
   disk, which is the crash recovery above; nothing in memory is trusted.
 
-## 9. Events and frontends (partly built: D15)
+## 9. Events and clients (built: D16)
 
-Built: three kinds, each tagged with a cursor. `Saved` means "the tree changed for this cursor,
-look at it" (it carries `calls`, the calls whose results it saved, and `reply`, true when a
-sample's answer was saved); `Live` carries what is never saved: a provider's `TextDelta`,
-`ThinkingDelta`, `CallNamed`, `CallArgs`, or a tool's `ToolProgress`. Frontend rules (D15): live
-events are advisory until the next `Saved`; ignore a `CallArgs` whose `CallNamed` you never saw;
-drop a reply's streamed layer at `Saved(reply=True)`; drop a call's progress when `Saved.calls`
-names it. `HookError(cursor, point, extension, error)` is a failed cursor hook, live only (not saved, not
-replayed, never dropped by a full buffer); it is how a frontend shows why a step stopped. The finer kinds below are not spiked.
+A frontend holds a **client** (`Client`; `LocalClient` in process, a remote one in Phase 6),
+never the driver or the session: async calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+`abort`, `open`, `set_label`, `remove_label`, `watch`, `answer`), reads of the tree (`node`,
+`walk`, `children`), and one event stream, which is the client itself. Every client has an id,
+stable across reconnects, and its actions are `by: Frontend(client)`; a connection is not a
+client. Every argument and event is a plain frozen value, so a remote client serializes them
+generically.
 
-One `Event` type, tagged with a cursor: `node_appended`, `cursor_moved`,
-`label_changed`, `item_changed`, `question`, `status`
-(`cursor.show`), `notice` (`cursor.tell`, or a refused input). Observers
-cannot block or change anything. A `notice` goes only to its client; the rest
-go to every subscriber.
+Small state is sent whole whenever it changes, never as a delta, and every client receives it for
+every cursor, so a frontend can show "cursor 3 is waiting on you" while it watches cursor 1.
 
-Every client has an id, and its actions are `by: Frontend(client)`. `tau
-serve` comes first and shapes the `Harness`. No cursor waits on a particular
-client; a cursor waits on a person only through a question. On connect,
-serve sends every cursor's status, the open questions, and the scratchpads.
+| event | to | carries |
+|---|---|---|
+| `CursorView` | all clients | per cursor: `at`, `busy`, `auto`, open questions, pending items, how the last step ended and the failed hook, if any |
+| `Labels` | all clients | every label and its cursor |
+| `Appended` | all clients | the new nodes, bodies included |
+| `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
+| `Notice` | one client | `cursor.tell`, an input a hook refused |
+
+- **On connect** the stream opens with `Connected(nodes)` (the tree's node count), `Labels`, and a
+  `CursorView` per cursor, taken in the same synchronous act as subscribing, so nothing falls
+  between them. Nodes below the count a client reads with calls; nodes from it on arrive as
+  `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it
+  failed on, so a late client sees why a step stopped.
+- **One writer.** Events are made in one place, by comparing what the session and the driver
+  hold with what was last published (after each client call, pump pass, handle write and
+  question opened or closed), so nothing is announced by hand and nothing twice.
+- **Order.** One ordered stream per client. A change's `Appended` comes before the `CursorView`
+  that points at its nodes. A `CursorView` or `Labels` that replaces an earlier copy removes it
+  and goes to the end.
+- **`watch(cursors)`** chooses which cursors' `Live` a client hears (default: none), starting for
+  each newly watched cursor with a catch-up taken in the same act: the parts of the sample in
+  flight that are not in the tree yet and the text of the open part. Tool progress has no
+  catch-up; its result arrives as `Appended`.
+- **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped) and `buffer` of
+  `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff` and it
+  reconnects to a snapshot), plus one `CursorView` per cursor and one `Labels`. The pump never
+  waits on a client.
+- **Client rules for `Live`** (D15, restated): ignore a `CallArgs` whose `CallNamed` you never
+  saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
+  or is not busy; drop a call's `ToolProgress` layer, keyed by `(node, call_id)`, when the
+  `Results` node answering it arrives.
+- **Notices.** `cursor.tell(text, to=client)` and core's own (a `pre_input` hook refused an
+  input: the client that typed it is told why) reach the client they name, if it is connected.
+  No cursor waits on a particular client; a cursor waits on a person only through a question.
 
 ## 10. Provider requirements (built: OpenAI-compatible, Anthropic, Gemini, mock; D15)
 

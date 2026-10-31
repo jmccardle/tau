@@ -14,7 +14,6 @@ from tau_next._core import (
     HandleWrites,
     ItemData,
     Node,
-    NoSuchLabel,
     NotInHook,
     Session,
     Tree,
@@ -24,9 +23,8 @@ from tau_next.values import HintError, Kind, kind_of
 Poke = Callable[[], None]
 """Tells the driver's pump a handle call may have woken a cursor."""
 
-Changed = Callable[[int | None], None]
-"""Tells the driver a handle call changed the tree or a cursor: `Saved` for that cursor, or
-for the handle's own cursor (the hook's, or the batch's) when `None`."""
+Changed = Callable[[], None]
+"""Tells the driver a handle call changed the session: it publishes the difference."""
 
 Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
@@ -132,7 +130,7 @@ class TreeHandle:
         """Append a node under `parent` without moving any cursor. Returns its id."""
         self._check()
         node = self._writes.append(parent, body, self.by, self._now())
-        self._changed(None)
+        self._changed()
         return node
 
     def append_root(self, config: Config) -> int:
@@ -140,14 +138,14 @@ class TreeHandle:
         cursor. Returns its id."""
         self._check()
         node = self._writes.append_root(config, self.by, self._now())
-        self._changed(None)
+        self._changed()
         return node
 
     def open(self, at: int) -> int:
         """Open a cursor at `at`; it wakes. Returns its id."""
         self._check()
         cursor = self._writes.open(at, self.by, self._now())
-        self._changed(cursor)
+        self._changed()
         self._poke()
         return cursor
 
@@ -155,38 +153,27 @@ class TreeHandle:
         """Add this extension's item to a cursor's scratchpad; the cursor wakes."""
         self._check()
         item = self._writes.add_item(to, ItemData.Extension(self.extension, data))
-        self._changed(to)
+        self._changed()
         self._poke()
         return item
 
     def remove_item(self, id: int) -> None:
         """Remove any item; raises `NoSuchItem`. Wakes nothing."""
         self._check()
-        owner = next(
-            (c for c in self._session.cursors() if any(i.id == id for i in self.cursor(c).items)),
-            None,
-        )
         self._writes.remove_item(id)
-        self._changed(owner)
+        self._changed()
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
         self._check()
-        try:
-            was = self._session.label(label)
-        except NoSuchLabel:
-            was = None
         self._writes.set_label(label, cursor)
-        self._changed(cursor)
-        if was is not None and was != cursor:
-            self._changed(was)
+        self._changed()
 
     def remove_label(self, label: str) -> None:
         """Remove `label`; raises `NoSuchLabel`."""
         self._check()
-        was = self._session.label(label)
         self._writes.remove_label(label)
-        self._changed(was)
+        self._changed()
 
 
 class NodeHandle(TreeHandle):
@@ -268,14 +255,14 @@ class Cursor(TreeHandle):
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
         self._check()
         self._session.hook_move(self.id, to, self.by, self._now())
-        self._changed(None)
+        self._changed()
 
     def write(self, body: Body, delivers: Sequence[int] = ()) -> int:
         """Append `body` under `at` and move onto it, as one record; the
         `delivers` items are removed. Returns the new node's id."""
         self._check()
         node = self._session.hook_write(self.id, body, list(delivers), self.by, self._now())
-        self._changed(None)
+        self._changed()
         return node
 
     def set_auto(self, on: bool) -> None:
@@ -283,7 +270,16 @@ class Cursor(TreeHandle):
         Turning it on inside a step that is aborted leaves the cursor at rest."""
         self._check()
         self._session.hook_set_auto(self.id, on)
-        self._changed(None)
+        self._changed()
+
+    def tell(self, text: str, *, to: str) -> None:
+        """Send `text` to client `to` as a `Notice`. Dropped if that client is not connected:
+        a notice is for someone who is there."""
+        self._check()
+        if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"a notice is a str, not {type(text).__name__}")
+        self._writes.notify(to, text)
+        self._changed()
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the cursor's clients `text`, and wait for an answer of type `expect` (any hint

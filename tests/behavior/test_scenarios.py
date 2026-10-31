@@ -298,7 +298,7 @@ async def test_a_pre_input_string_refuses_with_a_notice(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=provider, extensions=[recorder])
     await h.send("/model fast")
     await h.settle()
-    assert h.notices() == [("term", "model: fast")]
+    assert h.notices() == ["model: fast"]
     assert h.session.cursor(h.cursor).items == []
     assert not h.session.cursor(h.cursor).auto
     assert h.bodies() == SYSTEM
@@ -491,7 +491,7 @@ async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path
     )
     await h.send("hi")
     await h.settle()
-    assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
+    assert [q.text for q in (await h.view()).questions] == ["send it?"]
     assert h.session.cursor(h.cursor).busy
     with pytest.raises(tau_next.Busy):
         await h.step()
@@ -499,7 +499,7 @@ async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path
     await h.respond("yes")
     await h.settle()
     assert asker.responses == ["yes"]
-    assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"], "the next step's"
+    assert [q.text for q in (await h.view()).questions] == ["send it?"], "the next step's"
     await h.respond(None)
     await h.settle()
     assert asker.responses == ["yes", None]

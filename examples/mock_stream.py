@@ -1,4 +1,4 @@
-"""Live events: a reply streams in delta by delta, then the saved reply is read from the tree.
+"""Live events: a reply streams in delta by delta, then arrives whole as an appended node.
 
 python examples/mock_stream.py [--model NAME]
 
@@ -16,11 +16,12 @@ from pathlib import Path
 from common import close_all, rest, run
 
 from tau_next import (
+    Appended,
     Body,
     Driver,
     Live,
     LoadedConfig,
-    Saved,
+    LocalClient,
     Session,
     SystemClock,
     TextDelta,
@@ -41,10 +42,11 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             driver = Driver(session, providers, loaded.catalog, clock=clock)
             driver.start()
             cursor = session.cursors()[0]
-            events = driver.events(cursor)
+            client = LocalClient(driver, "example")
+            await client.watch([cursor])
 
             async def show() -> None:
-                async for event in events:
+                async for event in client:
                     match event:
                         case Live(delta=TextDelta(text=text)):
                             print(f"live  text      {text!r}")
@@ -52,11 +54,11 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                             print(f"live  thinking  {text!r}")
                         case Live(delta=delta):
                             print(f"live  {delta}")
-                        case Saved():
-                            print("saved (the tree changed)")
+                        case Appended(nodes=nodes):
+                            print(f"appended {[type(n.body).__name__ for n in nodes]}")
 
             shown = asyncio.ensure_future(show())
-            driver.send(cursor, "example", "What is 17 times 3? Answer briefly.")
+            await client.send(cursor, "What is 17 times 3? Answer briefly.")
             await rest(driver, session, cursor)
             reply = session.tree.node(session.cursor(cursor).at).body
             await driver.stop()  # ends the event stream after what it holds

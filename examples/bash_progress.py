@@ -18,15 +18,16 @@ from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from tau_next import (
+    Appended,
     Body,
     Delta,
     Driver,
     Finish,
     Live,
+    LocalClient,
     ModelConfig,
     Node,
     Part,
-    Saved,
     Session,
     Stop,
     SystemClock,
@@ -78,21 +79,21 @@ async def main() -> None:
         driver = Driver(session, {"scripted": provider}, catalog, tools=tools, clock=clock)
         driver.start()
         cursor = session.cursors()[0]
-        events = driver.events(cursor)
+        client = LocalClient(driver, "example")
+        await client.watch([cursor])
         start = time.monotonic()
 
         async def show() -> None:
-            async for event in events:
+            async for event in client:
                 at = f"{time.monotonic() - start:4.1f}s"
                 match event:
                     case Live(delta=ToolProgress(call_id=call_id, text=text)):
                         print(f"{at}  live   {call_id}  {text!r}")
-                    case Saved():
-                        body = session.tree.node(session.cursor(cursor).at).body
-                        print(f"{at}  saved  the tree now ends in {type(body).__name__}")
+                    case Appended(nodes=nodes):
+                        print(f"{at}  saved  appended {[type(n.body).__name__ for n in nodes]}")
 
         shown = asyncio.ensure_future(show())
-        driver.send(cursor, "example", "run it")
+        await client.send(cursor, "run it")
         await driver.rest(cursor)
         for node in session.tree.walk(session.cursor(cursor).at):
             if isinstance(node.body, Body.Results):

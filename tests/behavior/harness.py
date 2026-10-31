@@ -6,7 +6,7 @@ and every effect in flight is parked at something a test controls.
 
 import asyncio
 import functools
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Collection, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,12 +17,16 @@ from tau_next import (
     Author,
     Body,
     Config,
+    CursorView,
     Driver,
+    Event,
     Extension,
     Item,
     ItemData,
+    LocalClient,
     ModelCatalog,
     Node,
+    Notice,
     Session,
     Tool,
 )
@@ -47,10 +51,13 @@ class Snapshot:
 
     tree: tuple[tuple[int, int | None, Author, Body], ...]
     cursors: dict[int, CursorSeen]
-    notices: tuple[tuple[str, str], ...]
+    notices: tuple[str, ...]
 
 
 class Harness:
+    """A session, its driver, and `client` (id `term`): the calls below are its calls, and
+    `heard` is every event it has been sent. Tests that need another client `connect` one."""
+
     def __init__(  # noqa: PLR0913, PLR0917 - one parameter per thing the Harness holds
         self,
         directory: Path,
@@ -71,7 +78,8 @@ class Harness:
         self.clock = clock
         self.gates = tuple(gates)
         self.cursor = session.cursors()[0]
-        self._notices: list[tuple[str, str]] = []
+        self.heard: list[Event] = []
+        self.failure: Exception | None = None
         self.driver = self._driver()
 
     def _driver(self) -> Driver:
@@ -84,7 +92,18 @@ class Harness:
             clock=self.clock,
         )
         driver.start()
+        self.client = LocalClient(driver, CLIENT)
+        self._listener = asyncio.ensure_future(self._listen(self.client))
         return driver
+
+    async def _listen(self, client: LocalClient) -> None:
+        """Keep what the client is sent. A stream that ends with the driver's failure ends the
+        listening, and `dies` reports the failure."""
+        try:
+            async for event in client:
+                self.heard.append(event)
+        except Exception as e:
+            self.failure = e
 
     @classmethod
     async def create(  # noqa: PLR0913 - the Harness's whole setup
@@ -143,33 +162,62 @@ class Harness:
             gates,
         )
 
-    # A client's calls (client "term")
+    # The client's calls (client "term")
 
     async def input(self, text: str, cursor: int | None = None) -> int:
-        return self.driver.input(self._c(cursor), CLIENT, text)
+        return await self.client.input(self._c(cursor), text)
 
     async def send(self, text: str, cursor: int | None = None) -> int:
-        return self.driver.send(self._c(cursor), CLIENT, text)
+        return await self.client.send(self._c(cursor), text)
 
     async def step(self, cursor: int | None = None) -> None:
-        self.driver.step(self._c(cursor))
+        await self.client.step(self._c(cursor))
 
     async def abort(self, cursor: int | None = None) -> bool:
-        return self.driver.abort(self._c(cursor))
+        return await self.client.abort(self._c(cursor))
 
     async def go_to(self, to: int, cursor: int | None = None) -> bool:
-        return self.driver.go_to(self._c(cursor), to, CLIENT)
+        return await self.client.go_to(self._c(cursor), to)
 
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
-        self.driver.set_auto(self._c(cursor), on)
+        await self.client.set_auto(self._c(cursor), on)
 
-    async def respond(self, response: object, cursor: int | None = None) -> None:
-        self.driver.respond(self._c(cursor), response)
+    async def respond(self, value: object, cursor: int | None = None) -> None:
+        """Answer the cursor's oldest open question."""
+        questions = (await self.view(cursor)).questions
+        if not questions:
+            raise LookupError(f"cursor {self._c(cursor)} has no open question")
+        await self.client.answer(questions[0].id, value)
 
     async def add_item(self, name: str, data: str, cursor: int | None = None) -> int:
         """An extension's item for the cursor: wakes it. A real extension adds items from
         inside a hook; this stands in for one whose timer fired while the cursor rests."""
         return self.driver.add_item(self._c(cursor), ItemData.Extension(name, data))
+
+    async def dies(self) -> Exception:
+        """Wait until the driver fails (the client's stream ends with the failure); returns it."""
+        await asyncio.wait_for(asyncio.shield(self._listener), 1)
+        if self.failure is None:
+            raise AssertionError("the client's stream ended without a failure")
+        return self.failure
+
+    async def connect(
+        self, client: str, *, buffer: int = 256, watching: Collection[int] = ()
+    ) -> LocalClient:
+        """Another client, connected now and watching `watching`. Close it to disconnect."""
+        connected = LocalClient(self.driver, client, buffer=buffer)
+        if watching:
+            await connected.watch(watching)
+        return connected
+
+    async def view(self, cursor: int | None = None) -> CursorView:
+        """The cursor as a client connecting now is told of it."""
+        target = self._c(cursor)
+        async with LocalClient(self.driver, f"{CLIENT}:view") as late:
+            async for event in late:
+                if isinstance(event, CursorView) and event.cursor == target:
+                    return event
+        raise AssertionError(f"cursor {target}: no state in the snapshot")
 
     def _c(self, cursor: int | None) -> int:
         return self.cursor if cursor is None else cursor
@@ -211,12 +259,14 @@ class Harness:
     async def crash(self) -> None:
         """Drop memory, keep disk: cancel every task without answering, close the
         session unsynced, reopen it, and start a new driver on the same fakes."""
+        self._listener.cancel()
         await self.driver.stop()
         self.session.close()
         self.session = Session.load(self.directory)
         self.driver = self._driver()
 
     async def close(self) -> None:
+        self._listener.cancel()
         await self.driver.stop()
         self.session.close()
 
@@ -229,10 +279,9 @@ class Harness:
         c = self._c(cursor)
         return [n.body for n in self.session.tree.walk(self.session.cursor(c).at)]
 
-    def notices(self) -> list[tuple[str, str]]:
-        """Every notice so far, oldest first."""
-        self._notices += self.session.take_notices()
-        return list(self._notices)
+    def notices(self) -> list[str]:
+        """Every notice the client was sent so far, oldest first."""
+        return [event.text for event in self.heard if isinstance(event, Notice)]
 
     def _seen(self, cursor: int) -> CursorSeen:
         state = self.session.cursor(cursor)

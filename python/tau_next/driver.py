@@ -13,136 +13,38 @@ rules about performing one effect:
   `Err("unknown tool: ...")`.
 - An interrupted call skips `pre_result`.
 - A question open when its cursor is aborted or sent elsewhere is declined.
+- Every change a client could see is published by one comparison (`Hub.sync`), after each
+  call, each pump pass, and each handle write; nothing is announced by hand.
 - A failure of the driver cancels every effect in flight; `stop()` cancels
   everything.
 """
 
 import asyncio
-import weakref
-from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Generator,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from typing import cast
 
 from tau_next import trace
 from tau_next._config_layers import ModelCatalog
-from tau_next._core import Answer, Author, Body, ItemData, Job, Session
+from tau_next._core import Answer, Author, Hook, ItemData, Job, Session
+from tau_next._hub import Feed, Hub
+from tau_next._questions import Questions
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
-from tau_next.events import CallKey, Event, EventStream, HookError, Live, LiveDelta, Saved
-from tau_next.handles import Changed, Cursor, NodeHandle, Subject
+from tau_next.events import LiveDelta
+from tau_next.handles import Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
 from tau_next.tools import assemble_tools
-from tau_next.values import Context, Json, Kind
-
-
-@dataclass
-class Question:
-    """An open question: whom it is for (`to`, `None`: anyone), what it asks, the JSON Schema
-    of the answer it expects (`schema`, as a client reads it), and the future its answer fills.
-    `expect` checks and converts an answer; `new_cursor` opens the cursor a `CursorId`
-    answer of `"new"` means."""
-
-    to: str | None
-    text: str
-    schema: Json
-    future: asyncio.Future[object]
-    expect: Kind = field(repr=False)
-    new_cursor: Callable[[], int] = field(repr=False)
-
-
-class _Questions:
-    """The open questions of every cursor. Only a live question (its future not done) can be
-    responded to or declined; the `ask` that waits on one removes it when it stops waiting,
-    however it stopped (a response, a decline, a timeout, a cancel)."""
-
-    def __init__(self) -> None:
-        self._by_cursor: dict[int, list[Question]] = {}
-
-    def open(self, cursor: int) -> list[Question]:
-        return [q for q in self._by_cursor.get(cursor, []) if not q.future.done()]
-
-    def count(self) -> int:
-        return sum(len(self.open(c)) for c in self._by_cursor)
-
-    async def ask(
-        self,
-        cursor: int,
-        text: str,
-        expect: Kind,
-        to: str | None,
-        new_cursor: Callable[[], int],
-    ) -> object:
-        future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
-        question = Question(to, text, expect.schema, future, expect, new_cursor)
-        asked = self._by_cursor.setdefault(cursor, [])
-        asked.append(question)
-        try:
-            return await question.future
-        finally:
-            asked.remove(question)
-            if not asked:
-                del self._by_cursor[cursor]
-
-    def respond(
-        self, cursor: int, response: object, context: Callable[[Question], Context]
-    ) -> None:
-        """Answer the cursor's oldest open question. `None` declines it. Any other response
-        is checked against what the question expects: a wrong one raises `ValueError` naming
-        the problem and the question stays open."""
-        open_ = self.open(cursor)
-        if not open_:
-            raise LookupError(f"cursor {cursor} has no open question")
-        question = open_[0]
-        if response is None:
-            question.future.set_result(None)
-            return
-        where = context(question)
-        problem = question.expect.check(response, where)
-        if problem is not None:
-            raise ValueError(f"the answer {problem}")
-        question.future.set_result(question.expect.convert(response, where))
-
-    def decline(self, cursor: int) -> None:
-        for question in self.open(cursor):
-            question.future.set_result(None)
-
-    def clear(self) -> None:
-        self._by_cursor.clear()
-
-
-class _Streams:
-    """The event streams open now. Held weakly: a stream abandoned without `aclose()` is
-    collected."""
-
-    def __init__(self) -> None:
-        self._open: weakref.WeakSet[EventStream] = weakref.WeakSet()
-        self._ended: tuple[Exception | None] | None = None
-
-    def __len__(self) -> int:
-        return len(self._open)
-
-    def subscribe(self, cursor: int | None, buffer: int) -> EventStream:
-        stream = EventStream(cursor, buffer, self._open.discard)
-        if self._ended is not None:  # too late for anything: it ends as the others did
-            stream.end(self._ended[0])
-        else:
-            self._open.add(stream)
-        return stream
-
-    def emit(self, event: Event) -> None:
-        for stream in tuple(self._open):
-            stream.offer(event)
-
-    def end(self, failure: Exception | None = None) -> None:
-        """End every stream (with `failure`, if any) and forget them. Streams subscribed later
-        end the same way; a stop after a failure does not turn it into a clean end."""
-        if self._ended is None:
-            self._ended = (failure,)
-        for stream in tuple(self._open):
-            stream.end(self._ended[0])
-        self._open.clear()
+from tau_next.values import Context
 
 
 class _Waiters:
@@ -198,12 +100,11 @@ class DriverState:
     """What a harness reads to tell quiet from busy: the effects running (`units`), whether the
     pump has something to do (`queued`: a report or poke to take, or a busy cursor with no
     effect out; never once the driver has failed or stopped, when the session may be closed),
-    the questions open, the event streams open, and what the driver died of."""
+    the questions open, and what the driver died of."""
 
     units: int
     queued: bool
     open_questions: int
-    subscribers: int
     failure: Exception | None
 
 
@@ -214,13 +115,13 @@ class Driver:
     sampled by; each must be named by its own `name`. The program that built them closes
     them. `catalog` is where a `Config` node's model name is resolved, at each sample.
 
-    Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `add_item`,
-    `set_label`, `remove_label`, `respond`) run on the loop thread and then poke the pump;
-    each says `Saved` only if something a frontend could see changed. Once the driver has
-    failed or stopped they raise (the failure, or `RuntimeError`), as `rest` does; an event
-    stream subscribed then ends at once. Extensions are listed in the constructor, in
-    hook order, and checked there like tools (`ExtensionContractError`); `model.md` does
-    not yet say how `config_at` names them.
+    Client calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `add_item`,
+    `set_label`, `remove_label`, `watch`, `answer`) run on the loop thread, publish what they
+    changed, and poke the pump. A frontend makes them through a `Client`, which names itself;
+    `connect` opens its stream. Once the driver has failed or stopped they raise (the failure,
+    or `RuntimeError`), as `rest` does; a stream connected then ends at once.
+    Extensions are listed in the constructor, in hook order, and checked there like tools
+    (`ExtensionContractError`); `model.md` does not yet say how `config_at` names them.
     """
 
     def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
@@ -239,7 +140,6 @@ class Driver:
             if provider.name != name:
                 raise ValueError(f"provider {provider.name!r} is given as {name!r}")
         self._providers = dict(providers)
-        self._streams = _Streams()
         self._catalog = catalog
         self._extensions = check_extensions(extensions)
         self._tools: Mapping[str, Tool]
@@ -247,23 +147,21 @@ class Driver:
         self._tools, self._progress_tools = check_tools(listed)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, _Outstanding] = {}
-        self._questions = _Questions()
+        # The hub is built from the questions, so these reach it late.
+        self._questions = Questions(
+            lambda: self._hub.sync(),  # noqa: PLW0108
+            lambda client: self._hub.connected(client),  # noqa: PLW0108
+        )
+        self._hub = Hub(session, self._questions.open)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
         self._failure: Exception | None = None
         self._stopped = False
         self._rested = _Waiters()
 
-    def events(self, cursor: int | None = None, *, buffer: int = 256) -> EventStream:
-        """Subscribe, now, to the events of `cursor` (default: every cursor): each `Live`
-        delta the providers stream and one `Saved` after each answer applied to core. The
-        stream has its own `buffer` of events; a full buffer drops `Live` events, never
-        `Saved`. Subscribers never slow the pump. `aclose()` unsubscribes."""
-        return self._streams.subscribe(cursor, buffer)
-
     def _fail(self, failure: Exception) -> None:
         """Record what the pump or an effect died of, cancel the other effects (they would run
-        on, billing, until `stop`), and end every event stream with it. The first failure is
+        on, billing, until `stop`), and end every client's stream with it. The first failure is
         the root cause: a later one changes nothing."""
         if self._failure is not None:
             return
@@ -272,7 +170,7 @@ class Driver:
         for effect in tuple(self._tasks.effects):
             if effect is not current:
                 effect.cancel()
-        self._streams.end(failure)
+        self._hub.end(failure)
 
     def use_catalog(self, catalog: ModelCatalog) -> None:
         """Resolve model names in `catalog` from the next sample dispatched on."""
@@ -286,13 +184,13 @@ class Driver:
 
     async def stop(self) -> None:
         """Cancel everything without answering, as a crash would. `rest` and every frontend
-        call raise from now on; event streams end, later ones at once."""
+        call raise from now on; client streams end, later ones at once."""
         self._stopped = True
         tasks = list(self._tasks.all)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        self._streams.end()
+        self._hub.end()
         self._out.clear()
         self._questions.clear()
         while not self._queue.empty():
@@ -315,7 +213,6 @@ class Driver:
                 )
             ),
             open_questions=self._questions.count(),
-            subscribers=len(self._streams),
             failure=self._failure,
         )
 
@@ -329,43 +226,47 @@ class Driver:
                 return
             await self._rested.wait()
 
-    def questions(self, cursor: int) -> list[Question]:
-        """The cursor's open questions, oldest first."""
-        return self._questions.open(cursor)
-
-    # Frontend calls
+    # Client calls
 
     @contextmanager
-    def _frontend(self, cursor: int) -> Generator[None]:
-        """A frontend call that changes `cursor`: say `Saved` if what a frontend could see
-        changed, and wake the pump either way. Raises once the driver has failed or stopped:
-        nothing is left to run what the call would start."""
+    def _frontend(self) -> Generator[None]:
+        """A call that changes the session: publish what changed and wake the pump. Raises
+        once the driver has failed or stopped: nothing is left to run what the call would
+        start."""
         _running(self._failure, self._stopped)
-        before = _seen(self.session, cursor)
         yield
-        if _seen(self.session, cursor) != before:
-            self._streams.emit(Saved(cursor))
+        self._hub.sync()
         self._poke()
 
+    def connect(self, client: str, buffer: int) -> Feed:
+        """Open `client`'s stream, now, with its snapshot (`Hub.connect`)."""
+        return self._hub.connect(client, buffer)
+
+    def watch(self, feed: Feed, cursors: Collection[int]) -> None:
+        """`feed` hears the `Live` of `cursors` and nothing else's, starting with what each
+        sample in flight has streamed that is not in the tree yet."""
+        _running(self._failure, self._stopped)
+        self._hub.watch(feed, cursors, partial(_catch_up, self._out))
+
     def input(self, cursor: int, client: str, text: str) -> int:
-        with trace.span("driver", "input"), self._frontend(cursor):
+        with trace.span("driver", "input"), self._frontend():
             return self.session.input(cursor, client, text)
 
     def send(self, cursor: int, client: str, text: str) -> int:
         """Input with auto-step on."""
-        with trace.span("driver", "send"), self._frontend(cursor):
+        with trace.span("driver", "send"), self._frontend():
             item = self.session.input(cursor, client, text)
             self.session.set_auto(cursor, True)
             return item
 
     def step(self, cursor: int) -> None:
-        with self._frontend(cursor):
+        with self._frontend():
             self.session.step(cursor)
 
     def go_to(self, cursor: int, to: int, client: str) -> bool:
         """Move, aborting a busy step first (which declines its open questions). True if
         core had an effect in flight to cancel."""
-        with self._frontend(cursor):
+        with self._frontend():
             cancel = self.session.go_to(cursor, to, client, self.clock.now())
             if cancel:
                 _cancel(self._out, cursor)
@@ -373,16 +274,13 @@ class Driver:
         return cancel
 
     def set_auto(self, cursor: int, on: bool) -> None:
-        with self._frontend(cursor):
+        with self._frontend():
             self.session.set_auto(cursor, on)
 
     def open(self, at: int, client: str) -> int:
         """Open a cursor at `at` for `client`; it wakes."""
-        _running(self._failure, self._stopped)
-        cursor = self.session.open(at, Author.Frontend(client), self.clock.now())
-        self._streams.emit(Saved(cursor))
-        self._poke()
-        return cursor
+        with self._frontend():
+            return self.session.open(at, Author.Frontend(client), self.clock.now())
 
     def add_item(self, to: int, data: ItemData) -> int:
         """Add an item to a cursor's scratchpad; the cursor wakes. For whoever has something
@@ -391,42 +289,39 @@ class Driver:
         it is refused here. A hook adds its extension's item with its handle's `add_item`."""
         if isinstance(data, ItemData.Input):
             raise TypeError("an input item is added with `input` or `send`, not `add_item`")
-        with self._frontend(to):
+        with self._frontend():
             return self.session.add_item(to, data)
 
     def set_label(self, label: str, cursor: int) -> None:
-        """Put `label` on `cursor`; a label set elsewhere moves (both cursors are `Saved`)."""
-        with self._frontend(cursor):
-            holder = dict(self.session.labels()).get(label)
+        """Put `label` on `cursor`; a label set elsewhere moves."""
+        with self._frontend():
             self.session.set_label(label, cursor)
-        if holder is not None and holder != cursor:
-            self._streams.emit(Saved(holder))
 
     def remove_label(self, label: str) -> None:
         """Remove `label`; raises `NoSuchLabel`."""
-        _running(self._failure, self._stopped)
-        with self._frontend(self.session.label(label)):
+        with self._frontend():
             self.session.remove_label(label)
 
     def abort(self, cursor: int) -> bool:
         """Abort the cursor's step and decline its open questions. True if core had
         effects in flight to cancel."""
-        with self._frontend(cursor):
+        with self._frontend():
             cancel = self.session.abort(cursor)
             if cancel:
                 _cancel(self._out, cursor)
             self._questions.decline(cursor)
         return cancel
 
-    def respond(self, cursor: int, response: object) -> None:
-        """Respond to the cursor's oldest open question with a decoded JSON value; `None`
-        declines it. Any other value is checked against what the question expects and converted
-        (`Question.schema`): a wrong one raises `ValueError` naming the problem and the question
-        stays open."""
+    def answer(self, client: str, question: int, value: object) -> None:
+        """`client` answers `question` with a decoded JSON value; `None` declines it. The
+        value is checked against what the question expects and converted: a wrong one raises
+        `ValueError` naming the problem and the question stays open; an unknown or closed
+        question is a `LookupError`, one for another client a `PermissionError`."""
         _running(self._failure, self._stopped)
-        self._questions.respond(
-            cursor,
-            response,
+        self._questions.answer(
+            client,
+            question,
+            value,
             lambda q: Context(self.session, self._catalog, q.new_cursor),
         )
 
@@ -440,6 +335,7 @@ class Driver:
                         with trace.span("driver", "next_job"):
                             job = self.session.next_job(cursor)
                         self._dispatch(cursor, job)
+                self._hub.sync()
                 self._rested.wake()
                 item = await self._queue.get()
                 if self._failure is not None:  # a result after the failure is not delivered
@@ -457,15 +353,8 @@ class Driver:
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
-        before = len(self.session.tree)
-        seen = _seen(self.session, cursor)
         with trace.span("driver", "answer"):
             self.session.answer(cursor, answer, self.clock.now())
-        # An answer that changed nothing a frontend sees (a call answered before its batch is
-        # whole, a hook that wrote nothing) has nothing to announce.
-        reply = isinstance(answer, Answer.Sampled)
-        if reply or _seen(self.session, cursor) != seen:
-            self._streams.emit(Saved(cursor, _answered(self.session, before), reply))
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             return
@@ -491,8 +380,8 @@ class Driver:
 
     def _dispatch(self, cursor: int, job: Job) -> None:
         session = self.session
-        live = partial(_live, self._streams, cursor)
-        announce = _announcer(self._streams, cursor)
+        live = partial(self._hub.live, cursor)
+        announce = self._hub.sync
         match job:
             case Job.Rest():
                 return
@@ -511,7 +400,13 @@ class Driver:
                         announce,
                     )
 
-                failed = partial(_hook_error, self._streams, cursor)
+                if job.point == Hook.PreStep:
+                    self._hub.began(cursor)
+                elif job.point == Hook.PostStep:
+                    if job.ending is None:
+                        raise RuntimeError(f"cursor {cursor}: a post_step job with no ending")
+                    self._hub.ended(cursor, job.ending)
+                failed = partial(_hook_failed, self._hub, cursor)
                 effect = partial(run_hooks, job, subject, self._extensions, cursor_for, failed)
                 self._out[cursor] = _Outstanding()
                 self._unit(cursor, effect)
@@ -532,7 +427,7 @@ class Driver:
                 context = Context(
                     session,
                     self._catalog,
-                    partial(_open_for_tool, session, self.clock, self._streams, self._poke, node),
+                    partial(_open_for_tool, session, self.clock, self._hub, self._poke, node),
                 )
                 runs = [
                     CallRun(
@@ -586,6 +481,12 @@ def _running(failure: Exception | None, stopped: bool) -> None:
         raise RuntimeError("the driver is stopped")
 
 
+def _catch_up(outs: dict[int, _Outstanding], cursor: int) -> Sequence[LiveDelta]:
+    """What the sample in flight for `cursor` has streamed that is not in the tree yet."""
+    out = outs.get(cursor)
+    return [] if out is None or out.sample is None else out.sample.catch_up()
+
+
 def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
     """Core said abort cancels the effect out for `cursor`."""
     out = outs.get(cursor)
@@ -594,53 +495,16 @@ def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
     out.cancel()
 
 
-def _seen(session: Session, cursor: int) -> tuple[object, ...]:
-    """What a frontend could see change: the tree's size, the labels, and the cursor's
-    place, state, labels and items."""
-    state = session.cursor(cursor)
-    return (
-        len(session.tree),
-        session.labels(),
-        state.at,
-        state.auto,
-        state.busy,
-        state.labels,
-        state.items,
-    )
-
-
-def _answered(session: Session, since: int) -> tuple[CallKey, ...]:
-    """The calls answered by the `Results` nodes added since node count `since`, each as
-    `(node of its batch, call id)`."""
-    nodes = (session.tree.node(i) for i in range(since, len(session.tree)))
-    return tuple(
-        (cast("int", node.parent), call)
-        for node in nodes
-        if isinstance(body := node.body, Body.Results)
-        for call, _, _ in body.outcomes
-    )
-
-
 def _open_for_tool(
-    session: Session, clock: Clock, streams: _Streams, poke: Callable[[], None], node: int
+    session: Session, clock: Clock, hub: Hub, poke: Callable[[], None], node: int
 ) -> int:
     """Open a cursor at `node` for a tool argument of `"new"`."""
     cursor = session.open(node, Author.Tools(), clock.now())
-    streams.emit(Saved(cursor))
+    hub.sync()
     poke()
     return cursor
 
 
-def _live(streams: _Streams, cursor: int, delta: LiveDelta) -> None:
-    """A provider's delta or a tool's progress, as the `Live` of the cursor it serves."""
-    streams.emit(Live(cursor, delta))
-
-
-def _hook_error(streams: _Streams, cursor: int, point: str, extension: str, error: str) -> None:
-    """A cursor hook's failure, as the `HookError` of the cursor it ran for."""
-    streams.emit(HookError(cursor, point, extension, error))
-
-
-def _announcer(streams: _Streams, own: int) -> Changed:
-    """The `changed` of a handle working for `own`: a `Saved` for the cursor it changed."""
-    return lambda changed: streams.emit(Saved(own if changed is None else changed))
+def _hook_failed(hub: Hub, cursor: int, point: str, extension: str, error: str) -> None:
+    """A cursor hook's failure, as the `hook_error` of the cursor it ran for."""
+    hub.hook_failed(cursor, point, extension, error)

@@ -300,7 +300,7 @@ question; it moves to Phase 5's trust work.
   1. `tau_next.values` and functions as tools and commands (§1, §2's descriptions and
      injection, `describe=` replaced by `Annotated`); `ask(text, expect)` (§3) on both
      handles;
-  2. `Client`, `LocalClient`, the §5 events and snapshot, questions with ids and targets;
+  2. (built) `Client`, `LocalClient`, the §5 events and snapshot, questions with ids and targets;
      the `Harness` and the tests move to them, and `Saved`, `HookError`, `questions()` and
      `respond` go;
   3. `run`, `complete`, `commandline`, options, `configure`, `/model`, `/config`; the

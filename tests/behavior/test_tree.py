@@ -425,11 +425,11 @@ async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_input=ask), recorder])
     await h.send("hi")
     await h.settle()
-    assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
+    assert [q.text for q in (await h.view()).questions] == ["send it?"]
     assert not await h.abort(), "nothing to cancel: the hook finishes"
     await h.settle()
     assert responses == [None]
-    assert h.driver.questions(h.cursor) == []
+    assert (await h.view()).questions == ()
     assert recorder.endings == [Ending.Aborted()]
     assert not h.session.cursor(h.cursor).busy
 
@@ -438,13 +438,13 @@ async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
 async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     """Labels (section 1): set moves a label, remove drops it, unknown is `NoSuchLabel`."""
     h = await Harness.create(tmp_path)
-    other = h.driver.open(SYS, "term")
-    h.driver.set_label("main", h.cursor)
-    h.driver.set_label("main", other)
+    other = await h.client.open(SYS)
+    await h.client.set_label("main", h.cursor)
+    await h.client.set_label("main", other)
     assert h.session.label("main") == other
-    h.driver.remove_label("main")
+    await h.client.remove_label("main")
     with pytest.raises(tau_next.NoSuchLabel):
-        h.driver.remove_label("main")
+        await h.client.remove_label("main")
     await h.settle()
 
 
@@ -523,7 +523,7 @@ async def test_a_frontends_label_during_a_hook_is_durable(tmp_path: Path) -> Non
     await h.step()
     await h.settle()
     assert gate.held == 1
-    h.driver.set_label("main", h.cursor)
+    await h.client.set_label("main", h.cursor)
     await h.crash()
     assert h.session.label("main") == h.cursor
 
@@ -544,7 +544,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("s", pre_step=steal)])
-    victim = h.driver.open(SYS, "term")
+    victim = await h.client.open(SYS)
     await h.add_item("x", "for-victim", cursor=victim)
     await h.settle()
     await h.step()
@@ -623,7 +623,7 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("look", pre_step=look)])
-    h.driver.set_label("main", h.cursor)
+    await h.client.set_label("main", h.cursor)
     await h.step()
     await h.settle()
     assert seen == {"children": [2, 3], "count": 4, "labels": ["main"]}
@@ -708,7 +708,7 @@ async def test_an_input_draft_delivering_a_foreign_item_fails_the_step_and_does_
         provider=FakeProvider([]),
         extensions=[Scripted("r", pre_input=redirect), recorder],
     )
-    other = h.driver.open(SYS, "term")
+    other = await h.client.open(SYS)
     await h.add_item("x", "for-other", cursor=other)
     await h.settle()
     await h.send("hi")
@@ -858,10 +858,9 @@ async def test_an_assistant_nodes_meta_survives_a_reload(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("change", ["remove_item", "remove_label", "move_label"])
 @scenario
-async def test_a_change_to_another_cursor_is_saved_for_that_cursor(
-    tmp_path: Path, change: str
-) -> None:
-    """The `Saved` goes to the cursor whose items or labels changed, not the hook's own."""
+async def test_a_change_to_another_cursor_is_heard_by_a_client(tmp_path: Path, change: str) -> None:
+    """What a hook changes on another cursor reaches a connected client: that cursor's state
+    for an item, `Labels` for a label."""
     item = 0
 
     async def meddle(cursor: Cursor, subject: Subject) -> str | None:
@@ -877,15 +876,24 @@ async def test_a_change_to_another_cursor_is_saved_for_that_cursor(
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("meddle", pre_step=meddle)])
-    other = h.driver.open(SYS, "term")
+    other = await h.client.open(SYS)
     item = await h.add_item("x", "for-other", cursor=other)
-    h.driver.set_label("theirs", other)
+    await h.client.set_label("theirs", other)
     await h.settle()
-    theirs = h.driver.events(other)
+    watcher = await h.connect("watcher")
     await h.step()
     await h.settle()
     await h.close()
-    assert [e async for e in theirs] == [tau_next.Saved(other)]
+    heard = [e async for e in watcher]
+    views = [e for e in heard if isinstance(e, tau_next.CursorView) and e.cursor == other]
+    labels = [e for e in heard if isinstance(e, tau_next.Labels)]
+    match change:
+        case "remove_item":
+            assert views[-1].items == ()
+        case "remove_label":
+            assert labels[-1] == tau_next.Labels(())
+        case _:
+            assert labels[-1] == tau_next.Labels((("theirs", h.cursor),))
 
 
 @scenario
@@ -910,10 +918,10 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
             "frontend",
             h.clock.now,
             lambda: None,
-            lambda c: None,
+            lambda: None,
             hook=h.cursor,  # pyright: ignore[reportCallIssue]
         )
-    handle = tau_next.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda c: None)
+    handle = tau_next.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda: None)
     node = handle.append(SYS, Body.Custom("note", ""))
     await h.crash()
     assert len(h.session.tree) > node, "the write was synced"

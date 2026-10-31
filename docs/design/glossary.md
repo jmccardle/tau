@@ -291,7 +291,8 @@ was added to the scratchpad.
 *spike* `Session::notices` · new
 
 A message to one client: `(client, text)`. Core adds one when `pre_input`
-refuses an input; extensions send them with `cursor.tell`.
+refuses an input; `cursor.tell` adds one (`HandleWrites.notify`). The driver drains them after
+every change and sends each as a **Notice** to the client it names.
 
 ## Position
 
@@ -984,10 +985,10 @@ no flat copies of what those two already give. Writes that belong to no cursor: 
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`
 (`Machine::remove_item`: any item, wakes nothing), `set_label`,
-`remove_label`; the `Saved` of `remove_item`, `remove_label`, and a moving
-`set_label` is for the cursor whose items or labels changed, not the hook's.
-A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`, `config` (at its `at`), `move(to)`,
-`write(body, delivers)`, `set_auto(on)`, and `ask`; its own `at`, `auto`,
+`remove_label`. Each write tells the driver (`Changed`), which publishes the difference to its
+clients. A node handle adds `ask` (to its batch's cursor). A cursor handle adds `node`, `walk`,
+`config` (at its `at`), `move(to)`, `write(body, delivers)`, `set_auto(on)`, `tell(text, *, to)`
+(a `Notice` to client `to`, dropped if it is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
 belong to no cursor pass the hook's cursor to core, so they skip their sync
 only while a cursor hook job is out for it. They do it through a
@@ -999,7 +1000,8 @@ frontend cannot name a cursor and skip the sync.
 `tau_next._core.HandleWrites` (`HandleWrites(session, hook)`) · new
 
 The same seven extension writes as `Session` (`open`, `add_item`,
-`remove_item`, `append`, `append_root`, `set_label`, `remove_label`), bound to
+`remove_item`, `append`, `append_root`, `set_label`, `remove_label`), and `notify(client, text)`
+(queue a notice; `cursor.tell` calls it), bound to
 the cursor whose hook makes them (`None` for a tool hook). While that cursor's
 hook job is out they ride the phase's sync instead of syncing. Only the
 handles hold one; it is not exported from `tau_next`, and it is a type apart
@@ -1008,7 +1010,7 @@ Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its
 only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
 `hook` parameter and always binds `None`, which syncs, and `_core` is a private module (rule 4
 keeps tests out of it). Not built: updating an item
-in place, `show`, `tell` (`docs/plan.md`, roadmap row 8).
+in place, `show` (`docs/plan.md`, roadmap row 8).
 
 ### Poke, Now, Changed
 Python aliases in `handles.py` · new
@@ -1016,24 +1018,34 @@ Python aliases in `handles.py` · new
 `Poke = Callable[[], None]`: the driver's poke, which tells the pump a handle
 call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
 the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
-driver's question call for one cursor (see **question**): `(text, expect, to, new_cursor)`. `Changed = Callable[[int | None], None]` is the
-driver's `Saved` for a handle: `changed(cursor)` says `Saved(cursor)`, `changed(None)` says it
-for the handle's own cursor (the hook's, or the batch's).
+driver's question call for one cursor (see **question**): `(text, expect, to, new_cursor)`. `Changed = Callable[[], None]` is the
+driver's publish for a handle: a handle write calls it, and `Hub.sync` sends whatever changed.
 
 ### question
-`Driver.respond`, `questions`, `Question` (driver memory; not core) ·
-retires `request_user_action`
+`tau_next._questions.Questions`, `OpenQuestion` (driver memory; not core) · retires
+`request_user_action`, `Driver.respond`, `Driver.questions`, `Question`
 
 `await handle.ask(text, expect=str, *, to=None)` on a cursor handle or a node handle (a tool
-hook asks on its batch's cursor) returns the response checked against `expect` and converted,
-or `None` if declined. `expect` is any hint of the type language (**values**); `to` names the
-client asked (`None`: anyone) and is kept on the `Question`, not yet used. `driver.respond`
-takes the decoded JSON value: a wrong one raises `ValueError` naming the problem to the
-responding client and the question stays open. The hook awaiting it keeps its job out, so the
-cursor is busy and core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
-decline the cursor's open questions. A question lives only while its `ask` waits: a hook
-that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it, so `respond` and
-`questions` see only live ones.
+hook asks on its batch's cursor) returns the answer checked against `expect` and converted,
+or `None` if declined. `expect` is any hint of the type language (**values**). A question has
+an **id** (an integer, unique in the driver's life, never reused), its cursor, `to` (`None`:
+anyone; or a client id), its text and the JSON Schema of its answer; clients see it as an
+`OpenQuestion` in the cursor's `CursorView` until it closes. `Client.answer(question, value)`
+answers it: the driver checks the value (a wrong one is a `ValueError` naming the problem to
+the answering client, and the question stays open), the first good answer wins (a later one,
+or an unknown id, is a `LookupError`), and a question `to` another client is a
+`PermissionError`. `None` declines. Abort and go-to decline the cursor's open questions. A
+question `to` a client stays open across that client's disconnects (the reconnect's snapshot
+has it); asking a client that is not **connected** declines at once, so a cursor never waits on
+someone who is not there. The hook awaiting a question keeps its job out, so the cursor is busy
+and core's busy rules apply (model.md §7). A question lives only while its `ask` waits: a hook
+that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it.
+
+### OpenQuestion
+`tau_next.OpenQuestion(id, to, text, schema)` (`events.py`) · D16 · new
+
+What a client sees of an open question (see **question**): `schema` is the JSON Schema of the
+answer with the named types' `"format"`. A plain frozen value.
 
 
 ## Effects and edges
@@ -1405,12 +1417,6 @@ Raised by `Driver.__init__` for an object that is not an `Extension`, naming it:
 non-`str` or empty `name`, two extensions with one name, or any attribute (method, field,
 class attribute) named `pre_*` or `post_*` that is not a hook point or is not callable.
 
-### CallKey
-`events.CallKey` = `tuple[int, str]` · D15 · new
-
-A call in a `Saved`: `(node, call_id)`, the batch's node and the call's id, as
-`ToolProgress` names it.
-
 ### ProgressTool
 `protocols.ProgressTool` · D15 · new
 
@@ -1602,26 +1608,112 @@ their hook points (`tau_next.Extension` is the `Protocol`).
 ### frontend, client
 retires head, `Backend`, `RemoteBackend`
 
-A program that drives sessions and shows events (`tau serve` first). A
-**client** is one connection to it, with an id.
+A program that drives sessions and shows events (`tau serve` first). A **client** is what such a
+program holds: a `Client`, with an id.
 
-### event, status
-not yet spiked · retires `AgentEvent`, `WireEvent`
+### Client, LocalClient
+`tau_next.Client` (a `Protocol`), `tau_next.LocalClient(driver, id, *, buffer=256)`
+(`client.py`) · D16 · new
 
-One type in eight kinds (`model.md` §9); observers cannot change anything. Built so
-far (D15): the three kinds `Live`, `Saved`, and `HookError`. **Status** is the state an extension
-shows every frontend (`cursor.show`), driver memory.
+A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
+act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `set_label`,
+`remove_label`, each with the client's id as `by: Frontend(id)` where the driver takes one),
+`watch`, `answer`, the reads `node`, `walk`, `children`, `close`, and one event stream: the
+client itself is an async iterator of `Event`. `id` is stable across reconnects
+(`john@laptop:tui`); a connection is not a client. Every argument and event is a plain frozen
+value, so a remote client serializes each generically (Phase 6). `LocalClient` is the
+in-process implementation: creating one connects, taking the snapshot and subscribing in one
+synchronous act on the loop. A client is **connected** while it has a stream open; `close()`,
+a cut-off, or dropping the `LocalClient` (the hub holds streams weakly) disconnects it.
+Every call raises once the driver has failed or stopped; the stream ends then (cleanly after a
+stop, raising the failure after one), and a client connecting then gets a stream that is
+already ended. Reconnecting is a new `LocalClient`: the log is the truth, so there is no
+resume.
 
-### hook error, HookError
-`tau_next.HookError(cursor, point, extension, error)` (`events.py`) · D15 · new
+### event
+`tau_next.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
 
-A cursor hook of `extension` raised, or broke its contract, at hook `point` while running for
-`cursor`; `error` is `"Type: msg"`, the text a `post_step` hook sees as `Ending.Failed`. A live
-event: not saved, not replayed on reload, so only subscribers at the time hear it. Emitted for
-every cursor-hook failure (`post_step` included), never for a tool hook (that is the `Err` in
-`Results`). Unlike a `Live`, a full buffer never drops it; a newer `HookError` of the same cursor
-replaces an older one still buffered, and no `Saved` removes it. It is the answer to "why did the
-step stop".
+What a client hears: `Live | CursorView | Labels | Appended | Notice | Connected`. Small state
+is sent whole whenever it changes, to every client, for every cursor; `Live` goes to clients
+watching the cursor and `Notice` to one client. Observers cannot change anything. One ordered
+stream per client: a change's `Appended` comes before the `CursorView` that points at its
+nodes, and a `CursorView`, `Labels` or `Connected` that replaces an earlier copy removes it
+and goes to the end. Status (`cursor.show`) is not built.
+
+### Connected
+`tau_next.Connected(nodes)` (`events.py`) · D16 · new
+
+The first event of a stream: the tree holds `nodes` nodes (ids `0..nodes`). Those a client
+reads with `node`, `walk`, `children`; those from `nodes` on arrive as `Appended`. `Labels`
+and one `CursorView` per cursor follow, as they stood in the same act.
+
+### CursorView
+`tau_next.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
+(`events.py`) · D16 · new (the event D16 calls `CursorState`; that name is the read type of
+`Session.cursor`)
+
+One cursor as a client sees it, whole: `at`, `busy`, `auto`, its open `questions`
+(`OpenQuestion`, oldest first), its pending `items` (whole), how its last step ended (`ending`,
+an `Ending`) and the `hook_error` (`HookFailure`) of a cursor hook that failed in it. The two
+are `None` from the start of a step until it ends, and after a reload: core keeps neither,
+the driver notes them from the `post_step` job and the failure. Not in the tree and not
+replayed, but in every snapshot, so a late client sees why a step stopped.
+
+### HookFailure
+`tau_next.HookFailure(extension, point, error)` (`events.py`) · D16 · new, retires `HookError`
+
+A cursor hook of `extension` raised, or broke its contract, at hook `point`; `error` is
+`"Type: msg"`, the text a `post_step` hook sees as `Ending.Failed`. Never for a tool hook (that
+is the `Err` in `Results`).
+
+### Labels
+`tau_next.Labels(labels)` (`events.py`) · D16 · new
+
+Every label and its cursor, `((label, cursor), ...)` in label order.
+
+### Appended
+`tau_next.Appended(nodes)` (`events.py`) · D16 · new, retires `Saved`
+
+Nodes added to the tree, in id order, bodies included. A client drops a call's `ToolProgress`
+layer when the `Results` node answering it arrives, and a cursor's reply layer (text, thinking
+and call deltas) when its `CursorView` has a different `at` or is not busy. A call answered
+before its batch is whole adds no node, so nothing is sent.
+
+### Notice
+`tau_next.Notice(text)` (`events.py`) · D16 · new
+
+A message for one client: `cursor.tell`, an input a hook refused. Sent only to the clients with
+that id; dropped if there is none connected.
+
+### CutOff
+`tau_next.CutOff` (`events.py`; a `RuntimeError`) · D16 · new
+
+What a client's stream ends with when its `Appended` and `Notice` backlog passed its buffer.
+Nothing buffered is delivered. The client is disconnected; it reconnects to a fresh snapshot.
+
+### watch
+`Client.watch(cursors)` · D16 · new
+
+Choose which cursors' `Live` the client hears: exactly `cursors`, replacing the last call
+(`NoSuchCursor` for one that is not open). For each cursor newly watched the stream starts with a
+catch-up taken in the same act: the parts of the sample in flight that are not in the tree
+yet (as `TextDelta`, `ThinkingDelta`, and `CallNamed` with `CallArgs`, calls numbered in
+order) and the text of the open part (`SampleRun.catch_up`). Tool progress has no catch-up;
+the result arrives as `Appended`.
+
+### hub, Feed
+`tau_next._hub.Hub`, `Feed` · D16 · new (private)
+
+The driver's clients. `Hub.sync` is the one place state events are made: it compares the
+session, the driver's questions, and the steps' endings with what it last published and sends
+the difference (new nodes, then `Labels`, then each changed `CursorView`, then notices). The
+driver calls it after each client call, each pump pass, each handle write, and each question
+opened or closed. `Hub.connect` publishes what is pending, then builds the snapshot from what
+was published, so subscribing and the snapshot are one act. A **Feed** is one client's stream:
+its buffer holds at most `buffer` `Live` and `buffer` of `Appended` and `Notice`, plus one state
+event per cursor and one `Labels` and `Connected`; a `Live` that finds its share full is dropped,
+and an `Appended` or `Notice` that finds its share full cuts the client off. One consumer: a
+second concurrent `anext` raises `RuntimeError`.
 
 ### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
 `tau_next.events` (exported) · D15 · new
@@ -1640,7 +1732,7 @@ since the previous `ToolProgress` of the same call, not the whole so far. The ca
 across batches, so the id alone is ambiguous. Not a `Delta`: a provider cannot yield one. The
 driver wraps it as `Live(cursor, ToolProgress(...))` while the call runs. Never saved: `Results`
 holds only the `Outcome` the tool returns. Obeys the buffer rules of any `Live` (a full
-buffer drops it), except that a `Saved` clears it only for the calls the `Saved` names.
+buffer drops it).
 
 ### LiveDelta
 `tau_next.LiveDelta` (`events.py`) · D15 · new
@@ -1663,47 +1755,15 @@ annotated `Progress | None`), an **injected parameter** that is not one of the t
 answer waits for a call already running and the final flush.
 
 ### live event, Live
-`tau_next.Live(cursor, delta)` · D15 · new (the ADR's first draft said "draft event")
+`tau_next.Live(cursor, delta)` · D15, D16 · new (the ADR's first draft said "draft event")
 
-A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it, as `driver.events()` yields it.
-Never saved. A slow subscriber's buffer drops it, with no mark: live events are advisory until the
-next `Saved`. Frontend rules: ignore a `CallArgs` whose `CallNamed` you never saw; draw the stream as
-a layer over the cursor and drop it at `Saved(reply=True)` (no other `Saved` clears it); drop a call's
-`ToolProgress` layer, keyed by `(node, call_id)`, when a `Saved.calls` names it.
-
-### saved event, Saved
-`tau_next.Saved(cursor, calls=(), reply=False)` · D15 · new
-
-The tree changed for this cursor: look at it. `calls` are the calls, as `(node, call_id)`,
-whose results the save put in the tree (the batch's `Results` node answers them), else empty;
-a frontend drops those calls' `ToolProgress` layers now. `reply` is true only when the answer
-saved was a sample's (`Answer.Sampled`). A call answered before its batch
-is whole adds no node, so it emits no `Saved`. Emitted after the driver applies each
-answer (hooks, sample, call) to core, and by the frontend calls (`input`, `send`, `step`,
-`go_to`, `set_auto`, `abort`) only when they changed what a frontend could see (an `abort`
-on a resting cursor says nothing), and by `open`, so a second frontend hears of them, and by each write a hook makes through its
-handle (`append`, `set_label`, `add_item`, a cursor hook's `write`, ...), when it is made. A hook's answer that left the tree, the labels, and the cursor's place,
-state and items as they were emits none. Never dropped from a subscriber's buffer; it removes
-that cursor's earlier `Saved` (their `calls` move to it, their `reply` is ORed in) and, only
-if `reply`, that cursor's buffered provider deltas. It never removes buffered `ToolProgress`,
-except for the calls in its `calls`. Finer kinds are a later slice.
-
-### EventStream
-`tau_next.EventStream` · D15 · new
-
-One subscriber's async iterator of `Event` (`Live | Saved`) from `driver.events()`:
-an optional cursor filter and a bounded buffer of its own, for one consumer (a second
-concurrent `anext` raises `RuntimeError`). `offer` never waits, so a subscriber cannot
-slow the pump. A buffer holding `capacity` events drops further `Live` events, tool progress
-included. A `Saved(c)` is never dropped: it first removes any earlier `Saved(c)`, the buffered
-provider deltas for `c` if it has `reply` (the frontend drops that cursor's live layer then), and the buffered `ToolProgress` of the calls in its `calls`; buffered progress of
-other calls survives it. Then it joins the end. So the bound holds with progress: the buffer
-never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
-(and may be called twice); `async with` closes it; the driver holds streams weakly, so one
-abandoned without `aclose()` is collected. The driver's `stop()` ends it after what it
-holds; if the driver fails (the pump or an effect died), `anext` raises that failure after
-what it holds. A stream ends once: ending it again (a `stop()` after the failure) changes
-nothing, so the frontend still learns the driver died.
+A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it. Never
+in the tree. Heard only by clients watching the cursor (**watch**); a client whose share of the
+buffer is full loses it with no mark: live events are advisory. Client rules: ignore a
+`CallArgs` whose `CallNamed` you never saw; draw the stream as a layer over the cursor and drop it
+when the cursor's `CursorView` has another `at` or is not busy; drop a call's `ToolProgress`
+layer, keyed by `(node, call_id)`, when a `Results` node of that batch answering the call arrives
+in an `Appended`.
 
 ### driver
 Python `tau_next.driver.Driver` · new
@@ -1715,20 +1775,21 @@ built from a session, a mapping of provider name to provider (each keyed by its 
 known names in the `sample_error`), a `ModelCatalog` (where it resolves the model name in
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
-files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `add_item`, `set_label`, `remove_label`, `respond`) run on the loop thread, call the
-session, then poke the pump; `open(at, client)` names the client like `input` and `go_to`.
+files calls it); a sample already running keeps the model it resolved. Its client calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+`abort`, `open`, `add_item`, `set_label`, `remove_label`, `watch`, `answer`) are what a
+`LocalClient` calls; they run on the loop thread, call the session, publish what changed
+(`Hub.sync`), then poke the pump; `open(at, client)` names the client like `input` and `go_to`.
+`connect(client, buffer)` opens a client's stream.
 `add_item(to, data)` is for whoever has something to tell a resting cursor from outside a hook
 (a timer extension, `tau serve` relaying a webhook): any `ItemData` but `Input`, which only
 `input` and `send` add (they say who typed it). `set_label(label, cursor)` and
-`remove_label(label)` are the labels a frontend writes; a moved label is `Saved` for both cursors.
-Once the driver has failed or stopped, every frontend call raises (the failure, or `RuntimeError`),
-and an `events()` subscription ends at once (with the failure, or cleanly after a plain stop).
+`remove_label(label)` are the labels a frontend writes.
+Once the driver has failed or stopped, every call raises (the failure, or `RuntimeError`),
+and a stream connected then ends at once (with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
 (**ExtensionContractError**); how `config_at` will name them is open.
-`events(cursor=None, *, buffer=256)` subscribes at once and returns an `EventStream`;
-`stop()` ends them. A failure of the pump or an effect cancels the effects still running,
-ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
+`stop()` ends the clients' streams. A failure of the pump or an effect cancels the effects
+still running, ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
 `RuntimeError`, also for a caller already waiting. A hook adds its extension's item through
 its handle. `state()` is the one read a harness needs (**DriverState**).
 
@@ -1753,7 +1814,7 @@ A cancelled unit reports nothing.
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
-`open_questions`, `subscribers` (event streams open), and `failure` (what the pump or an
+`open_questions`, and `failure` (what the pump or an
 effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
 needs the session open.
 
@@ -1811,14 +1872,6 @@ question or a gate does not rest. The pump wakes its waiters after each pass.
 
 `now() -> int` (milliseconds). The driver reads time only through it, so tests
 move time themselves.
-
-### Question
-`tau_next.Question` · new
-
-An open question held by the driver: `{to, text, schema, future}` (`schema` is the JSON Schema
-of the answer, as a client reads it, with the named types' `"format"`), and what checks and
-converts an answer. `respond` fills the oldest one for a cursor with the response; `None`
-declines.
 
 ### record
 *spike* `tree::Record` · new
@@ -1893,10 +1946,12 @@ writes and runs steps; a second open is `Error::Leased`.
 `tests/behavior/harness.py`
 
 What every behavior test drives, shaped like `tau serve`: a session in a
-directory with a `Driver` over the fakes. `Harness.create`/`load`; a client's
-calls (`input`, `send`, `step`, `abort`, `go_to`, `set_auto`, `respond`, as
-client `term`); `settle`; `crash`; snapshots (`snapshot`, `bodies`, `nodes`,
-`notices`).
+directory with a `Driver` over the fakes, and a `LocalClient` for client `term`.
+`Harness.create`/`load`; the client's calls (`input`, `send`, `step`, `abort`, `go_to`,
+`set_auto`, `respond`: answer the cursor's oldest open question); `connect(id)` for another
+client and `view(cursor)` for a cursor as a client connecting now is told of it; `settle`;
+`crash`; `dies` (wait for the driver's failure); snapshots (`snapshot`, `bodies`, `nodes`,
+`notices`: those the `term` client was sent).
 
 ### settle
 `Harness.settle` · new
@@ -2007,6 +2062,11 @@ installed because another global tracing subscriber is.
 | session write lock | lease |
 | handler policy | nothing (Q9) |
 | `@tool(describe={...})` | `Annotated[T, "text"]` on the parameter (D16) |
+| `Saved` | `Appended`, and the `CursorView` that points at its nodes (D16) |
+| `HookError` (event) | `CursorView.hook_error`, a `HookFailure` (D16) |
+| `EventStream`, `Driver.events` | the `Client`, which is its own stream (D16) |
+| `Driver.questions`, `Driver.respond`, `Question` | `CursorView.questions`, `Client.answer`, `OpenQuestion` (D16) |
+| `CallKey` | nothing: a `Results` node in `Appended` names the calls it answers |
 
 Retired during design review: committed, uncommitted, boundary, cycle, base
 extension, `deliver`, `combine`, returned input, run, batch states,

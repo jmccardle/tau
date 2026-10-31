@@ -1,10 +1,11 @@
-"""`driver.events()` (D15): live deltas from the provider, a saved event after each answer."""
+"""What a client hears (D15, D16): live deltas, state sent whole, and what becomes of its stream
+when the driver fails or stops."""
 
 import asyncio
-import gc
 import json
 import math
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -12,27 +13,27 @@ from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 from tau_next import (
+    Appended,
     Body,
     CallArgs,
     CallNamed,
+    Client,
     Closed,
-    Cursor,
+    CursorView,
     Delta,
     Ending,
     Event,
-    EventStream,
     Finish,
-    HookError,
     ItemData,
+    Labels,
     Live,
+    LocalClient,
     ModelConfig,
     Node,
     Outcome,
     Part,
     SampleError,
-    Saved,
     Stop,
-    Subject,
     TextDelta,
     ThinkingDelta,
     Tool,
@@ -55,84 +56,92 @@ async def failing_harness(tmp_path: Path) -> tuple[Harness, Gate]:
     return h, gate
 
 
-async def died(h: Harness) -> None:
-    """Wait until the driver has recorded what it died of (a stream subscribed first sees it)."""
-    with pytest.raises(Closed):
-        await asyncio.wait_for(read_all(h.driver.events()), 1)
-
-
 def held(gate: Gate) -> Reply:
     """A reply that streams SCRIPT and waits at `gate` before its `Finish`."""
     return Reply(SCRIPT, gate=gate, gate_after=len(SCRIPT))
 
 
-async def drain(h: Harness, *streams: EventStream) -> list[list[Event]]:
-    """Everything each stream will deliver: the driver stops, which ends the streams."""
+async def drain(h: Harness, *clients: Client) -> list[list[Event]]:
+    """Everything each client will hear: the driver stops, which ends the streams."""
     await h.close()
-    return [[event async for event in stream] for stream in streams]
+    return [[event async for event in client] for client in clients]
 
 
-async def read_all(stream: EventStream) -> list[Event]:
-    return [event async for event in stream]
+async def read_all(client: Client) -> list[Event]:
+    return [event async for event in client]
+
+
+async def snapshot(client: Client, cursors: int = 1) -> list[Event]:
+    """The snapshot a client opens with: `Connected`, `Labels`, and a state per cursor."""
+    return [await asyncio.wait_for(anext(client), 1) for _ in range(2 + cursors)]
+
+
+async def next_view(client: Client, cursor: int) -> CursorView:
+    """The next state of `cursor` the client is sent."""
+    async with asyncio.timeout(1):
+        async for event in client:
+            if isinstance(event, CursorView) and event.cursor == cursor:
+                return event
+    raise AssertionError("the stream ended")
 
 
 def lives(events: list[Event]) -> list[Live]:
     return [e for e in events if isinstance(e, Live)]
 
 
+def appended(events: list[Event]) -> list[Node]:
+    return [n for e in events if isinstance(e, Appended) for n in e.nodes]
+
+
 @scenario
-async def test_live_deltas_are_read_as_they_arrive_and_the_saved_event_follows(
+async def test_live_deltas_are_heard_as_they_arrive_and_the_reply_is_appended_after(
     tmp_path: Path,
 ) -> None:
     gate = Gate()
     h = await Harness.create(tmp_path, provider=FakeProvider([held(gate)]))
-    stream = h.driver.events()
+    client = await h.connect("watcher", watching=[h.cursor])
     await h.send("hi")
     await h.settle()  # parked at the gate with every delta streamed
     arrived: list[Event] = []
     while len(lives(arrived)) < len(DELTAS):
-        arrived.append(await anext(stream))
+        arrived.append(await asyncio.wait_for(anext(client), 1))
     assert [e.delta for e in lives(arrived)] == DELTAS
     gate.release()
     await h.settle()
-    saved = await anext(stream)
-    assert saved == Saved(h.cursor, reply=True)
-    assert isinstance(h.bodies()[-1], Body.Assistant), "Saved: the reply is in the tree"
-    await stream.aclose()
-    await h.close()
+    (rest,) = await drain(h, client)
+    reply = appended(rest)[-1]
+    assert isinstance(reply.body, Body.Assistant)
+    assert [type(e) for e in rest[-2:]] == [Appended, CursorView], "the state follows its nodes"
+    assert isinstance(rest[-1], CursorView)
+    assert rest[-1].at == reply.id
 
 
 @scenario
-async def test_a_saved_event_clears_that_cursors_live_layer_and_earlier_saved(
+async def test_a_client_hears_the_live_deltas_of_the_cursors_it_watches_only(
     tmp_path: Path,
 ) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([Reply(SCRIPT)]))
-    stream = h.driver.events()
-    await h.send("hi")
-    await h.settle()
-    (events,) = await drain(h, stream)
-    assert events == [Saved(h.cursor, reply=True)], "nothing read: one saved event says it all"
-
-
-@scenario
-async def test_a_cursor_filter_hears_only_that_cursor(tmp_path: Path) -> None:
     gate = Gate()
     h = await Harness.create(tmp_path, provider=FakeProvider([held(gate)]))
-    other = h.driver.open(SYS, "term")
-    mine, theirs, everyone = (h.driver.events(c) for c in (h.cursor, other, None))
+    other = await h.client.open(SYS)
+    mine = await h.connect("mine", watching=[h.cursor])
+    theirs = await h.connect("theirs", watching=[other])
+    neither = await h.connect("neither")
+    both = await h.connect("both", watching=[h.cursor, other])
     await h.send("hi")
     await h.settle()
-    mine_seen, theirs_seen, everyone_seen = await drain(h, mine, theirs, everyone)
-    assert {e.cursor for e in mine_seen} == {h.cursor}
-    assert lives(mine_seen) == lives(everyone_seen) != []
+    mine_seen, theirs_seen, neither_seen, both_seen = await drain(h, mine, theirs, neither, both)
+    assert [e.delta for e in lives(mine_seen)] == DELTAS
+    assert lives(both_seen) == lives(mine_seen)
     assert not lives(theirs_seen), "the other cursor sampled nothing"
-    assert {e.cursor for e in theirs_seen} == {other}
+    assert not lives(neither_seen)
+    for seen in (mine_seen, theirs_seen, neither_seen):
+        assert {e.cursor for e in seen if isinstance(e, CursorView)} == {h.cursor, other}, (
+            "every client hears every cursor's state"
+        )
 
 
 @scenario
-async def test_a_slow_subscriber_loses_live_events_and_never_slows_the_pump(
-    tmp_path: Path,
-) -> None:
+async def test_a_slow_client_loses_live_events_and_never_slows_the_pump(tmp_path: Path) -> None:
     gate = Gate()
     calls = [CallNamed(0, "c1", "read"), CallArgs(0, '{"p'), CallArgs(0, 'ath"}')]
     batch = Reply(
@@ -142,131 +151,115 @@ async def test_a_slow_subscriber_loses_live_events_and_never_slows_the_pump(
         gate_after=len(SCRIPT) + 4,
     )
     h = await Harness.create(tmp_path, provider=FakeProvider([batch, Reply([Part.Text("done")])]))
-    slow, fast = h.driver.events(buffer=2), h.driver.events()
+    slow = await h.connect("slow", buffer=2, watching=[h.cursor])
+    fast = await h.connect("fast", watching=[h.cursor])
     await h.send("hi")
     await h.settle()  # parked at the gate: the pump ran with nobody reading
     slow_seen, fast_seen = await drain(h, slow, fast)
     assert len(lives(fast_seen)) == len(DELTAS) + len(calls)
-    assert len(slow_seen) == 2, "the buffer held its capacity and no more"
-    assert len(lives(slow_seen)) < len(lives(fast_seen))
+    assert len(lives(slow_seen)) == 2, "the buffer held its capacity and no more"
 
 
 @scenario
-async def test_buffers_are_bounded_by_capacity_plus_one_saved_per_cursor(tmp_path: Path) -> None:
-    replies = [Reply([Part.Text(f"r{i}")]) for i in range(6)]
-    h = await Harness.create(tmp_path, provider=FakeProvider(replies))
-    second = h.driver.open(SYS, "term")
-    stream = h.driver.events(buffer=4)
-    for _ in range(3):
-        await h.send("a")
-        await h.send("b", second)
-        await h.settle()
-    (seen,) = await drain(h, stream)
-    assert len(seen) <= 4 + 2
-    assert sorted(e.cursor for e in seen if isinstance(e, Saved)) == sorted([h.cursor, second])
-
-
-@scenario
-async def test_a_failed_sample_still_emits_saved(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([Fail("boom", [DELTAS[1]])]))
-    stream = h.driver.events()
-    await h.send("hi")
-    await h.settle()
-    (events,) = await drain(h, stream)
-    assert events == [Saved(h.cursor, reply=True)]
-
-
-@scenario
-async def test_a_frontend_call_that_changes_a_cursor_is_heard_by_another_frontend(
+async def test_a_failed_sample_is_appended_and_the_state_says_how_it_ended(
     tmp_path: Path,
 ) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([Fail("boom", [DELTAS[1]])]))
+    client = await h.connect("watcher")
+    await h.send("hi")
+    await h.settle()
+    (events,) = await drain(h, client)
+    reply = appended(events)[-1]
+    assert isinstance(reply.body, Body.Assistant)
+    assert reply.body.stop == Stop.Error
+    last = [e for e in events if isinstance(e, CursorView)][-1]
+    assert (last.at, last.busy) == (reply.id, False)
+    assert isinstance(last.ending, Ending.Failed)
+
+
+@scenario
+async def test_a_call_that_changes_a_cursor_is_heard_by_another_client(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([]))
-    stream = h.driver.events()
+    client = await h.connect("watcher")
+    await snapshot(client)
     await h.input("hello")
-    assert await anext(stream) == Saved(h.cursor)
-    opened = h.driver.open(SYS, "term")
-    assert await anext(stream) == Saved(opened)
-    mine = h.driver.events(opened)  # the cursor's own steps are not the subject here
-    h.driver.go_to(opened, 0, "term")
-    assert await anext(mine) == Saved(opened)
-    await mine.aclose()
-    await stream.aclose()
+    view = await asyncio.wait_for(anext(client), 1)
+    assert isinstance(view, CursorView)
+    assert [i.data for i in view.items] == [ItemData.Input("term", "hello")]
+    opened = await h.client.open(SYS)
+    assert (await next_view(client, opened)).at == SYS
+    await h.client.go_to(opened, 0)
+    while (view := await next_view(client, opened)).at != 0:  # the busy step is aborted first
+        assert view.busy
+    await client.close()
     await h.close()
 
 
 @scenario
-async def test_a_frontend_call_that_changes_nothing_is_not_announced(tmp_path: Path) -> None:
-    """An abort on a resting cursor, a `set_auto` to the value it has: nothing a frontend could
-    see changed, so no `Saved`."""
+async def test_a_call_that_changes_nothing_is_not_announced(tmp_path: Path) -> None:
+    """An abort on a resting cursor, a `set_auto` to the value it has: nothing a client could
+    see changed, so nothing is sent."""
     h = await Harness.create(tmp_path, provider=FakeProvider([]))
-    stream = h.driver.events()
-    waiting = asyncio.ensure_future(anext(stream))
+    client = await h.connect("watcher")
+    await snapshot(client)
+    waiting = asyncio.ensure_future(anext(client))
     assert not await h.abort()
     await h.set_auto(False)
     await h.settle()
     assert not waiting.done()
     await h.set_auto(True)  # this does change the cursor
-    assert await waiting == Saved(h.cursor)
-    await stream.aclose()
+    event = await waiting
+    assert isinstance(event, CursorView)
+    assert event.auto
+    await client.close()
     await h.close()
 
 
 @scenario
-async def test_closing_the_stream_unsubscribes(tmp_path: Path) -> None:
+async def test_closing_a_client_ends_its_stream_and_closing_twice_is_fine(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([Reply(SCRIPT)]))
-    assert h.driver.state().subscribers == 0
-    stream = h.driver.events()
-    async with h.driver.events() as other:
-        assert h.driver.state().subscribers == 2
-        assert other is not stream
-    assert h.driver.state().subscribers == 1
-    await stream.aclose()
-    await stream.aclose()  # closing twice is fine
-    assert h.driver.state().subscribers == 0
-    assert [e async for e in stream] == []
+    async with await h.connect("one") as one:
+        assert one.id == "one"
+    client = await h.connect("two")
+    await client.close()
+    await client.close()
+    assert [e async for e in client] == []
     await h.send("hi")
     await h.settle()
-    await h.close()
-
-
-@scenario
-async def test_an_abandoned_stream_is_collected(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([]))
-    stream = h.driver.events()
-    await h.input("x")
-    async for _ in stream:
-        break  # never closed
-    del stream
-    gc.collect()
-    assert h.driver.state().subscribers == 0
     await h.close()
 
 
 @scenario
 async def test_a_second_consumer_of_one_stream_is_refused(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([]))
-    stream = h.driver.events()
-    first = asyncio.ensure_future(anext(stream))
+    client = await h.connect("watcher")
+    await snapshot(client)
+    first = asyncio.ensure_future(anext(client))
     await asyncio.sleep(0)
     with pytest.raises(RuntimeError, match="one consumer"):
-        await anext(stream)
+        await anext(client)
     await h.input("x")
-    assert await first == Saved(h.cursor)
+    assert isinstance(await first, CursorView)
     await h.close()
 
 
 @scenario
 async def test_a_driver_that_fails_ends_every_stream_with_the_failure(tmp_path: Path) -> None:
     h, gate = await failing_harness(tmp_path)
-    stream = h.driver.events()
+    client = await h.connect("watcher")
     await h.send("hi")
     await h.settle()
     h.session.close()  # the next answer meets a closed session: the pump dies of it
     gate.release()
-    # buffered events are delivered first, then the failure
-    assert await anext(stream) == Saved(h.cursor, reply=True)
-    with pytest.raises(Closed):
-        await anext(stream)
+    heard: list[Event] = []
+
+    async def read() -> None:
+        async for event in client:
+            heard.append(event)
+
+    with pytest.raises(Closed):  # buffered events are delivered first, then the failure
+        await asyncio.wait_for(read(), 1)
+    assert heard, "what was buffered came first"
     await h.driver.stop()
 
 
@@ -275,16 +268,16 @@ async def test_stopping_a_failed_driver_does_not_turn_the_failure_into_a_clean_e
     tmp_path: Path,
 ) -> None:
     h, gate = await failing_harness(tmp_path)
-    stream = h.driver.events()
+    client = await h.connect("watcher")
     await h.send("hi")
     await h.settle()
     h.session.close()
     gate.release()
     with pytest.raises(Closed):
-        await read_all(stream)
+        await read_all(client)
     await h.driver.stop()  # the natural cleanup
     with pytest.raises(Closed):
-        await read_all(stream)  # the frontend still learns the driver died
+        await read_all(client)  # the client still learns the driver died
 
 
 @scenario
@@ -314,13 +307,13 @@ async def test_a_driver_failure_cancels_the_effects_still_running(tmp_path: Path
         tools=[FakeTool("fast", "ok", gate), Slow()],
         gates=[never],
     )
-    stream = h.driver.events()
+    client = await h.connect("watcher")
     await h.send("go")
     await h.settle()
     h.session.close()
     gate.release()  # the fast call answers into a closed session
     with pytest.raises(Closed):
-        await read_all(stream)
+        await read_all(client)
     for _ in range(5):
         await asyncio.sleep(0)
     assert cancelled == ["slow"], "cancelled by the failure, not left for `stop`"
@@ -575,39 +568,16 @@ async def test_a_failed_reply_is_strict_json_and_keeps_the_providers_own_error(
 
 
 @scenario
-async def test_typing_ahead_mid_stream_keeps_the_unread_deltas(tmp_path: Path) -> None:
-    gate = Gate()
-    script = [CallNamed(0, "c", "t"), CallArgs(0, "{}"), Part.Call("c", "t", "{}")]
-    h = await Harness.create(
-        tmp_path,
-        provider=FakeProvider([Reply(script, Stop.Tools, gate=gate, gate_after=len(script))]),
-    )
-    stream = h.driver.events()
-    await h.send("hi")
-    await h.settle()  # streamed, parked at the gate
-    await h.send("and also")  # a Saved that is not the reply
-    events: list[Event] = []
-    async with asyncio.timeout(1):
-        while len(events) < 3:
-            events.append(await anext(stream))
-    assert [e.delta for e in lives(events)] == script[:2]
-    assert events[2] == Saved(h.cursor), "the unread CallNamed and CallArgs are still there"
-    await stream.aclose()
-    gate.release()
-    await h.close()
-
-
-@scenario
 async def test_a_hook_answer_that_changed_nothing_is_not_announced(tmp_path: Path) -> None:
     rec = Recorder("rec")
     h = await Harness.create(
         tmp_path, provider=FakeProvider([Reply([Part.Text("x")])]), extensions=[rec]
     )
-    stream = h.driver.events()
+    client = await h.connect("watcher")
     seen: list[Event] = []
 
     async def read() -> None:
-        async for event in stream:
+        async for event in client:
             seen.append(event)
 
     reader = asyncio.ensure_future(read())
@@ -616,13 +586,12 @@ async def test_a_hook_answer_that_changed_nothing_is_not_announced(tmp_path: Pat
     await h.close()
     await reader
     assert len(rec.points) == 6, "six hooks answered"
-    saved = [e for e in seen if isinstance(e, Saved)]
-    assert [s.reply for s in saved].count(True) == 1
-    assert len(saved) == 5, "the send, the input node, the reply, and two moves; not each hook"
+    views = [e for e in seen if isinstance(e, CursorView)]
+    assert all(a != b for a, b in pairwise(views)), "nothing said twice"
 
 
 @scenario
-async def test_a_stream_subscribed_after_the_driver_failed_ends_with_the_failure(
+async def test_a_client_connected_after_the_driver_failed_ends_with_the_failure(
     tmp_path: Path,
 ) -> None:
     h, gate = await failing_harness(tmp_path)
@@ -630,206 +599,97 @@ async def test_a_stream_subscribed_after_the_driver_failed_ends_with_the_failure
     await h.settle()
     h.session.close()
     gate.release()
-    await died(h)
-    late = h.driver.events()
+    await h.dies()
+    late = LocalClient(h.driver, "late")
     with pytest.raises(Closed):
         await asyncio.wait_for(anext(late), 1)
-    assert h.driver.state().subscribers == 0
     await h.driver.stop()
     with pytest.raises(Closed):  # stopping does not turn it into a clean end
-        await asyncio.wait_for(anext(h.driver.events()), 1)
+        await asyncio.wait_for(anext(LocalClient(h.driver, "later")), 1)
 
 
 @scenario
-async def test_a_stream_subscribed_after_a_stop_ends_cleanly(tmp_path: Path) -> None:
+async def test_a_client_connected_after_a_stop_ends_cleanly(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     await h.driver.stop()
-    assert [e async for e in h.driver.events()] == []
-    assert h.driver.state().subscribers == 0
+    assert [e async for e in LocalClient(h.driver, "late")] == []
     h.session.close()
 
 
 @scenario
-async def test_frontend_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_path: Path) -> None:
+async def test_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     await h.driver.stop()
     before = h.snapshot()
-    calls: list[Callable[[], object]] = [
-        lambda: h.driver.send(h.cursor, "term", "anyone?"),
-        lambda: h.driver.input(h.cursor, "term", "anyone?"),
-        lambda: h.driver.step(h.cursor),
-        lambda: h.driver.go_to(h.cursor, SYS, "term"),
-        lambda: h.driver.set_auto(h.cursor, True),
-        lambda: h.driver.abort(h.cursor),
-        lambda: h.driver.open(SYS, "term"),
-        lambda: h.driver.add_item(h.cursor, ItemData.Extension("x", "y")),
-        lambda: h.driver.set_label("main", h.cursor),
-        lambda: h.driver.remove_label("no-such-label"),
-        lambda: h.driver.respond(h.cursor, "yes"),
+    c, client = h.cursor, h.client
+    calls: list[Callable[[], Awaitable[object]]] = [
+        lambda: client.send(c, "anyone?"),
+        lambda: client.input(c, "anyone?"),
+        lambda: client.step(c),
+        lambda: client.go_to(c, SYS),
+        lambda: client.set_auto(c, True),
+        lambda: client.abort(c),
+        lambda: client.open(SYS),
+        lambda: client.set_label("main", c),
+        lambda: client.remove_label("no-such-label"),
+        lambda: client.watch([c]),
+        lambda: client.answer(0, "yes"),
     ]
     for call in calls:
         with pytest.raises(RuntimeError, match="stopped"):
-            call()
+            await call()
+    with pytest.raises(RuntimeError, match="stopped"):
+        h.driver.add_item(c, ItemData.Extension("x", "y"))
     assert h.snapshot() == before, "no cursor was left busy with nothing to run it"
     h.session.close()
 
 
 @scenario
-async def test_frontend_calls_on_a_failed_driver_raise_the_failure(tmp_path: Path) -> None:
+async def test_calls_on_a_failed_driver_raise_the_failure(tmp_path: Path) -> None:
     h, gate = await failing_harness(tmp_path)
     await h.send("hi")
     await h.settle()
     h.session.close()
     gate.release()
-    await died(h)
+    await h.dies()
     with pytest.raises(Closed):
-        h.driver.send(h.cursor, "term", "again")
+        await h.client.send(h.cursor, "again")
     with pytest.raises(Closed):
         h.driver.add_item(h.cursor, ItemData.Extension("x", "y"))
     with pytest.raises(Closed):
-        h.driver.respond(h.cursor, "yes")
+        await h.client.answer(0, "yes")
     with pytest.raises(Closed):
-        h.driver.remove_label("no-such-label")
+        await h.client.remove_label("no-such-label")
     await h.driver.stop()
 
 
 @scenario
-async def test_a_frontend_adds_an_item_and_the_cursor_wakes_and_is_announced(
+async def test_an_item_added_from_outside_wakes_the_cursor_and_is_announced(
     tmp_path: Path,
 ) -> None:
     h = await Harness.create(tmp_path, provider=FakeProvider([Reply([Part.Text("hi")])]))
-    stream = h.driver.events()
+    client = await h.connect("watcher")
+    await snapshot(client)
     item = h.driver.add_item(h.cursor, ItemData.Extension("timer", "tick"))
-    assert await asyncio.wait_for(anext(stream), 1) == Saved(h.cursor)
-    assert [i.id for i in h.session.cursor(h.cursor).items] == [item]
+    view = await asyncio.wait_for(anext(client), 1)
+    assert isinstance(view, CursorView)
+    assert [i.id for i in view.items] == [item]
     with pytest.raises(TypeError, match="input"):
         h.driver.add_item(h.cursor, ItemData.Input("term", "typed"))
-    await stream.aclose()
+    await client.close()
     await h.close()
 
 
 @scenario
-async def test_labels_a_frontend_writes_are_announced_for_each_cursor_they_change(
-    tmp_path: Path,
-) -> None:
+async def test_labels_a_client_writes_are_sent_whole(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
-    other = h.driver.open(SYS, "term")
-    h.driver.set_label("main", h.cursor)
-    stream = h.driver.events()
-    h.driver.set_label("main", other)  # moves from h.cursor to other
-    assert {await anext(stream), await anext(stream)} == {Saved(h.cursor), Saved(other)}
-    h.driver.remove_label("main")
-    assert await anext(stream) == Saved(other)
-    await stream.aclose()
+    other = await h.client.open(SYS)
+    await h.client.set_label("main", h.cursor)
+    client = await h.connect("watcher")
+    await snapshot(client, cursors=2)
+    await h.client.set_label("main", other)  # moves from h.cursor to other
+    assert await asyncio.wait_for(anext(client), 1) == Labels((("main", other),))
+    await h.client.remove_label("main")
+    assert await asyncio.wait_for(anext(client), 1) == Labels(())
+    await client.close()
     await h.close()
-
-
-# A failed cursor hook is a live HookError, never saved (D15, amendment 21)
-
-
-class Breaks:
-    """An extension named `breaks` whose `pre_step` and `post_step` raise when told to."""
-
-    name = "breaks"
-
-    def __init__(self, *, pre: bool = False, post: bool = False) -> None:
-        self.pre, self.post = pre, post
-        self.only: int | None = None  # fail only for this cursor
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        if self.pre and self.only in (None, cursor.id):
-            raise KeyError("x")
-        return None
-
-    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        if self.post:
-            raise ValueError("late")
-        return None
-
-
-def hook_errors(events: list[Event]) -> list[HookError]:
-    return [e for e in events if isinstance(e, HookError)]
-
-
-@scenario
-async def test_a_failing_pre_step_hook_is_heard_as_a_hook_error_and_the_step_ends(
-    tmp_path: Path,
-) -> None:
-    recorder = Recorder()
-    h = await Harness.create(tmp_path, extensions=[Breaks(pre=True), recorder])
-    stream = h.driver.events()
-    await h.step()
-    await h.settle()
-    assert recorder.endings == [Ending.Failed("KeyError: 'x'")]
-    (seen,) = await drain(h, stream)
-    assert hook_errors(seen) == [HookError(h.cursor, "pre_step", "breaks", "KeyError: 'x'")]
-
-
-@scenario
-async def test_a_failing_post_step_hook_is_heard_too(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[Breaks(post=True)])
-    stream = h.driver.events()
-    await h.step()
-    await h.settle()
-    (seen,) = await drain(h, stream)
-    assert hook_errors(seen) == [HookError(h.cursor, "post_step", "breaks", "ValueError: late")]
-
-
-@scenario
-async def test_a_hook_error_goes_only_to_the_cursor_filter_that_matches(tmp_path: Path) -> None:
-    breaks = Breaks(pre=True)
-    h = await Harness.create(tmp_path, extensions=[breaks])
-    breaks.only = h.cursor  # the other cursor's steps pass
-    other = h.driver.open(SYS, "term")
-    mine, theirs, everyone = h.driver.events(h.cursor), h.driver.events(other), h.driver.events()
-    await h.step()
-    await h.settle()
-    mine_seen, theirs_seen, all_seen = await drain(h, mine, theirs, everyone)
-    assert len(hook_errors(mine_seen)) == 1
-    assert hook_errors(theirs_seen) == []
-    assert len(hook_errors(all_seen)) == 1
-
-
-@scenario
-async def test_a_hook_error_writes_nothing_to_the_session(tmp_path: Path) -> None:
-    passing = await Harness.create(tmp_path / "ok", extensions=[Breaks()])
-    await passing.step()
-    await passing.settle()
-    failing = await Harness.create(tmp_path / "bad", extensions=[Breaks(pre=True)])
-    await failing.step()
-    await failing.settle()
-    assert len(failing.nodes()) == len(passing.nodes())
-    await passing.close()
-    await failing.close()
-
-
-@scenario
-async def test_a_hook_error_is_not_replayed_on_a_new_subscription(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[Breaks(pre=True)])
-    await h.step()
-    await h.settle()
-    late = h.driver.events()
-    (seen,) = await drain(h, late)
-    assert seen == []
-
-
-@scenario
-async def test_a_hook_error_survives_a_full_buffer_and_a_newer_one_replaces_it(
-    tmp_path: Path,
-) -> None:
-    gate = Gate()
-    breaks = Breaks(pre=True)
-    h = await Harness.create(tmp_path, provider=FakeProvider([held(gate)]), extensions=[breaks])
-    breaking = h.driver.open(SYS, "term")
-    breaks.only = breaking
-    stream = h.driver.events(buffer=1)
-    await h.send("hi")  # this cursor's reply streams into the one-event buffer
-    await h.settle()
-    await h.step(breaking)  # the buffer is full of Live: the HookError still arrives
-    await h.settle()
-    await h.step(breaking)  # a newer failure of the same cursor replaces it
-    await h.settle()
-    gate.release()
-    (seen,) = await drain(h, stream)
-    assert len(hook_errors(seen)) == 1
-    assert len(lives(seen)) <= 1

@@ -13,6 +13,7 @@ from tau_next import (
     Config,
     ConfigError,
     Driver,
+    LocalClient,
     ModelCatalog,
     ModelConfig,
     Session,
@@ -79,7 +80,7 @@ async def test_a_name_missing_from_the_catalog_fails_the_sample_naming_it(
     server = sse("plain")
     renamed = catalog("other", model="m", base_url=OPENAI_URL)
     async with running(tmp_path / "s", OPENAI.over(server), renamed) as (s, driver, c):
-        driver.send(c, "test", "hello")
+        await LocalClient(driver, "test").send(c, "hello")
         await driver.rest(c)
         assert not s.cursor(c).auto
         (error,) = sample_errors(s)
@@ -97,10 +98,10 @@ async def test_a_catalog_change_takes_effect_at_the_next_sample(tmp_path: Path) 
     before = at("http://before.test/v1")
     after = at("http://after.test/v1")
     async with running(tmp_path / "s", OPENAI.over(server), before) as (s, driver, c):
-        driver.send(c, "test", "one")
+        await LocalClient(driver, "test").send(c, "one")
         await driver.rest(c)
         driver.use_catalog(after)
-        driver.send(c, "test", "two")
+        await LocalClient(driver, "test").send(c, "two")
         await driver.rest(c)
         assert sample_errors(s) == []
     assert [r.url.host for r in server.requests] == ["before.test", "after.test"]
@@ -137,7 +138,7 @@ async def test_the_same_bare_name_in_two_groups_is_told_apart_by_the_node(tmp_pa
         driver.start()
         c = session.cursors()[0]
         try:
-            driver.send(c, "test", "hello")
+            await LocalClient(driver, "test").send(c, "hello")
             await driver.rest(c)
         finally:
             await driver.stop()
@@ -163,7 +164,7 @@ async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path:
         driver.start()
         c = session.cursors()[0]
         try:
-            driver.send(c, "test", "hello")
+            await LocalClient(driver, "test").send(c, "hello")
             await driver.rest(c)
             (error,) = sample_errors(session)
             assert error

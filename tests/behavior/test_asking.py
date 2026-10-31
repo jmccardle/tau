@@ -58,7 +58,7 @@ async def permissions_harness(tmp_path: Path, script: list[Reply]) -> tuple[Harn
 @scenario
 async def test_a_tool_hook_asks_on_its_batchs_cursor(tmp_path: Path) -> None:
     h, tool = await permissions_harness(tmp_path, [calls("a"), Reply([Part.Text("done")])])
-    (question,) = h.driver.questions(h.cursor)
+    (question,) = (await h.view()).questions
     assert question.text == "ta {}"
     assert question.to is None
     assert question.schema == {"type": "string", "enum": ["allow", "deny", "always"]}
@@ -89,7 +89,7 @@ async def test_always_is_asked_once_per_tool(tmp_path: Path) -> None:
     )
     await h.respond("always")
     await h.settle()
-    assert h.driver.questions(h.cursor) == [], "the second call is not asked"
+    assert (await h.view()).questions == (), "the second call is not asked"
     assert tool.calls == [{}, {}]
     await h.close()
 
@@ -101,7 +101,7 @@ async def test_a_wrong_answer_is_refused_and_the_question_stays_open(tmp_path: P
         await h.respond("maybe")
     with pytest.raises(ValueError, match=r"must be one of .*, not 3"):
         await h.respond(3)
-    assert [q.text for q in h.driver.questions(h.cursor)] == ["ta {}"]
+    assert [q.text for q in (await h.view()).questions] == ["ta {}"]
     assert tool.calls == []
     await h.respond("allow")
     await h.settle()
@@ -169,11 +169,16 @@ async def test_an_integer_answer_is_checked_and_returned(tmp_path: Path) -> None
 @scenario
 async def test_a_path_answer_arrives_as_a_path_and_to_is_kept(tmp_path: Path) -> None:
     asks = Asks("which file?", list[Path], to="alice@laptop:tui")
-    h = await asked(tmp_path, asks)
-    (question,) = h.driver.questions(h.cursor)
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])]), extensions=[asks]
+    )
+    alice = await h.connect("alice@laptop:tui")
+    await h.send("hi")
+    await h.settle()
+    (question,) = (await h.view()).questions
     assert question.to == "alice@laptop:tui"
     assert question.schema == {"type": "array", "items": {"type": "string", "format": "path"}}
-    await h.respond(["a.txt", "dir/b.txt"])
+    await alice.answer(question.id, ["a.txt", "dir/b.txt"])
     await h.settle()
     assert asks.answers == [[Path("a.txt"), Path("dir/b.txt")]]
     await h.close()
@@ -215,5 +220,5 @@ async def test_what_is_not_in_the_language_cannot_be_asked_for(tmp_path: Path) -
     h = await asked(tmp_path, asks)
     assert len(asks.refusals) == 1
     assert "dict" in str(asks.refusals[0])
-    assert h.driver.questions(h.cursor) == []
+    assert (await h.view()).questions == ()
     await h.close()

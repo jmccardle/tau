@@ -297,6 +297,38 @@ class SampleRun:
         open_ = self._open.part() if self._open is not None else None
         return self._parts if open_ is None else [*self._parts, open_]
 
+    def catch_up(self) -> list[Delta]:
+        """The deltas that draw what has streamed so far, for a client that starts watching
+        mid-sample: each part not in the tree yet (the reply is saved when the sample ends),
+        its calls numbered in order, then the text of the part still open."""
+        deltas: list[Delta] = []
+        calls = 0
+        for part in self._parts:
+            match part:
+                case Part.Text(text=text) if text:
+                    deltas.append(TextDelta(text))
+                case Part.Thinking(text=text) if text:
+                    deltas.append(ThinkingDelta(text))
+                case Part.Call(id=cid, tool=tool, args_raw=args):
+                    deltas += [
+                        CallNamed(calls, cid, tool),
+                        *([CallArgs(calls, args)] if args else []),
+                    ]
+                    calls += 1
+                case _:
+                    pass  # an empty text or thinking: nothing was drawn
+        run = self._open
+        if run is not None and run.text:
+            if run.call is not None:
+                deltas += [run.call, CallArgs(run.call.index, run.text)]
+            else:
+                deltas.append(
+                    TextDelta(run.text) if run.kind == "text" else ThinkingDelta(run.text)
+                )
+        elif run is not None and run.call is not None:
+            deltas.append(run.call)
+        return deltas
+
     async def run(self) -> Answer:
         """What happened, for core to record: the parts so far and how the sample ended."""
         self._task = asyncio.ensure_future(self._stream())

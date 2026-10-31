@@ -7,6 +7,8 @@ provider (16); failed replies that say why (17); one HTTP module and one walk fo
 three hosted providers (18); tool progress (19, 20). A layered review of the providers
 (2026-10-30) amended items 1, 4, 9, 14, 17, 18 and 20 and settled most of what was Open;
 see "Review 2026-10-30". Amends `model.md` §9 and §10.
+Its frontend rules for events (1-5, below) and the `Saved`, `HookError` and `EventStream` they
+describe are superseded by D16 §5 (built in D16 stage 2); `Live` and the deltas stand.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -488,6 +490,9 @@ prompt, turns 2-4:
 - OpenAI proper is not exercised (no key or credits).
 
 ### Frontend rules for events
+
+**Superseded by D16 §5** (`Saved`, `HookError` and `EventStream` are gone; see `model.md` §9 and
+the glossary for the client rules). Kept as history.
 
 1. Live events are advisory until the next `Saved`. A subscriber that fell behind lost
    some; read the tree.

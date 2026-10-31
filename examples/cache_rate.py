@@ -22,6 +22,7 @@ from tau_next import (
     Body,
     Driver,
     LoadedConfig,
+    LocalClient,
     Part,
     Session,
     SystemClock,
@@ -56,7 +57,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
             cursor = session.cursors()[0]
             print(f"{'turn':<5} {'input':>7} {'cached':>7} {'hit':>5}  reply")
             for turn, question in enumerate(QUESTIONS, 1):
-                driver.send(cursor, "example", question)
+                await LocalClient(driver, "example").send(cursor, question)
                 await rest(driver, session, cursor)
                 reply = session.tree.node(session.cursor(cursor).at).body
                 assert isinstance(reply, Body.Assistant)

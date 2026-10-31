@@ -10,17 +10,20 @@ from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 
 from tau_next import (
+    Appended,
     Author,
     Body,
     CallDraft,
+    Client,
+    CursorView,
     Event,
-    EventStream,
+    Labels,
     Live,
+    Node,
     NodeHandle,
     Outcome,
     Part,
     Progress,
-    Saved,
     Stop,
     ToolDefinitionError,
     ToolProgress,
@@ -36,12 +39,23 @@ def calling(*tool_calls: Part) -> FakeProvider:
     return FakeProvider([Reply(list(tool_calls), Stop.Tools), Reply([Part.Text("done")], Stop.End)])
 
 
-async def next_progress(stream: EventStream) -> ToolProgress:
+async def next_progress(stream: Client) -> ToolProgress:
     """The next `ToolProgress` the stream delivers, within a few seconds."""
     async with asyncio.timeout(5):
         async for event in stream:
             if isinstance(event, Live) and isinstance(event.delta, ToolProgress):
                 return event.delta
+    raise AssertionError("the stream ended")
+
+
+async def next_results(stream: Client) -> Node:
+    """The next appended `Results` node the stream delivers, within a few seconds."""
+    async with asyncio.timeout(5):
+        async for event in stream:
+            if isinstance(event, Appended):
+                for node in event.nodes:
+                    if isinstance(node.body, Body.Results):
+                        return node
     raise AssertionError("the stream ended")
 
 
@@ -52,7 +66,7 @@ async def test_progress_arrives_live_tagged_with_the_call_before_its_result_is_s
     gate = Gate()
     work = FakeTool("work", "finished", gate, shows=["one", "two"])
     h = await Harness.create(tmp_path, provider=calling(CALL), tools=[work])
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     await h.send("go")
     await h.settle()  # the tool has shown both and waits at its gate
     assert await next_progress(stream) == ToolProgress(BATCH, "c1", "one")
@@ -61,8 +75,10 @@ async def test_progress_arrives_live_tagged_with_the_call_before_its_result_is_s
     gate.release()
     await h.settle()
     assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("finished"), Author.Tools())])
-    assert await anext(stream) == Saved(h.cursor, ((BATCH, "c1"),), reply=True)
-    await stream.aclose()
+    results = await next_results(stream)
+    assert results.body == Body.Results([("c1", Outcome.Ok("finished"), Author.Tools())])
+    assert results.parent == BATCH, "the Results node is how a client learns the layer is over"
+    await stream.close()
     await h.close()
 
 
@@ -124,7 +140,7 @@ def test_progress_may_be_spelled_as_the_tool_protocol_spells_it() -> None:
 async def test_a_tool_function_takes_progress_without_the_model_knowing(tmp_path: Path) -> None:
     provider = calling(Part.Call("c1", "counting", json.dumps({"n": 3})))
     h = await Harness.create(tmp_path, provider=provider, tools=[counting])
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     await h.send("go")
     seen = ""
     while seen.count(" ") < 3:
@@ -133,7 +149,7 @@ async def test_a_tool_function_takes_progress_without_the_model_knowing(tmp_path
     await h.settle()
     assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("counted"), Author.Tools())])
     assert "progress" not in provider.requests[0].tools[0].parameters["properties"]  # type: ignore[index]
-    await stream.aclose()
+    await stream.close()
     await h.close()
 
 
@@ -143,7 +159,7 @@ async def test_progress_after_the_call_is_over_does_nothing(tmp_path: Path, how:
     gate = Gate()
     work = FakeTool("work", "finished", gate)
     h = await Harness.create(tmp_path, provider=calling(CALL), tools=[work])
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     await h.send("go")
     await h.settle()
     assert work.progress is not None
@@ -154,12 +170,12 @@ async def test_progress_after_the_call_is_over_does_nothing(tmp_path: Path, how:
     else:
         await h.abort()
     await h.settle()
-    while not isinstance(await anext(stream), Saved):
+    while not isinstance(await anext(stream), Appended):
         pass
     work.progress("late")  # no error
     await h.settle()
     await h.close()
-    assert [e async for e in stream] == [], "nothing after the end of the call"
+    assert not [e async for e in stream if isinstance(e, Live)], "nothing live after the call"
 
 
 @scenario
@@ -169,14 +185,14 @@ async def test_bash_shows_its_output_as_it_arrives(tmp_path: Path) -> None:
     h = await Harness.create(
         tmp_path, provider=provider, tools=base_tools(tmp_path, overflow_dir=tmp_path / "o")
     )
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     await h.send("go")
     assert await next_progress(stream) == ToolProgress(BATCH, "c1", "a\n")
     assert not any(isinstance(b, Body.Results) for b in h.bodies()), "b is not out yet"
     assert await next_progress(stream) == ToolProgress(BATCH, "c1", "b\n")
     await h.settle()
     assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("a\nb\n"), Author.Tools())])
-    await stream.aclose()
+    await stream.close()
     await h.close()
 
 
@@ -191,12 +207,12 @@ def two_calls() -> tuple[FakeProvider, FakeTool, FakeTool, Gate, Gate]:
 
 
 @scenario
-async def test_a_call_answered_before_its_batch_is_whole_saves_nothing_to_look_at(
+async def test_a_call_answered_before_its_batch_is_whole_changes_nothing_to_hear(
     tmp_path: Path,
 ) -> None:
     provider, slow, fast, slow_gate, fast_gate = two_calls()
     h = await Harness.create(tmp_path, provider=provider, tools=[slow, fast])
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     seen: list[Event] = []
 
     async def collect() -> None:
@@ -212,64 +228,40 @@ async def test_a_call_answered_before_its_batch_is_whole_saves_nothing_to_look_a
     fast_gate.release()
     await h.settle()
     await asyncio.sleep(0)
-    assert seen == before, "the fast call's answer changed no node, so no Saved"
+    assert seen == before, "the fast call's answer changed no node, so there is nothing to say"
     slow_gate.release()
     await h.settle()
-    saved = [e for e in seen[len(before) :] if isinstance(e, Saved)]
-    assert saved[0] == Saved(h.cursor, ((BATCH, "c1"), (BATCH, "c2"))), (
-        "the Results node answers both calls"
-    )
+    appended = [n for e in seen[len(before) :] if isinstance(e, Appended) for n in e.nodes]
+    assert next(n.body for n in appended) == Body.Results(
+        [
+            ("c1", Outcome.Ok("slow done"), Author.Tools()),
+            ("c2", Outcome.Ok("fast done"), Author.Tools()),
+        ]
+    ), "the Results node answers both calls"
     await h.close()
     await collecting
 
 
 @scenario
-async def test_buffered_progress_survives_a_save_until_its_results_are_saved(
-    tmp_path: Path,
-) -> None:
-    provider, slow, fast, slow_gate, fast_gate = two_calls()
-    h = await Harness.create(tmp_path, provider=provider, tools=[slow, fast])
-    stream = h.driver.events()  # nobody reads it until the batch is running
-    await h.send("go")
-    fast_gate.release()
-    await h.settle()  # the fast call is answered; the slow one shows two and waits
-    await h.set_auto(False)  # a Saved while the batch still runs
-    async with asyncio.timeout(1):
-        assert [await anext(stream) for _ in range(3)] == [
-            Live(h.cursor, ToolProgress(BATCH, "c1", "slow-1")),
-            Live(h.cursor, ToolProgress(BATCH, "c1", "slow-2")),
-            Saved(h.cursor, reply=True),
-        ]
-    assert slow.progress is not None
-    slow.progress("slow-3")  # buffered again, then a save names no call
-    await h.set_auto(False)
-    slow_gate.release()
-    await h.settle()
-    await h.close()
-    left = [e async for e in stream]
-    assert not [e for e in left if isinstance(e, Live)], "Results saved: progress cleared"
-
-
-@scenario
-async def test_progress_flooding_a_full_buffer_is_dropped_and_saves_do_not_grow_it(
+async def test_progress_flooding_a_full_buffer_is_dropped_and_state_does_not_grow_it(
     tmp_path: Path,
 ) -> None:
     gate = Gate()
     flood = FakeTool("work", "done", gate, shows=[f"line {i}" for i in range(50)])
     h = await Harness.create(tmp_path, provider=calling(CALL), tools=[flood])
-    stream = h.driver.events(buffer=4)
+    stream = await h.connect("watcher", buffer=4, watching=[h.cursor])
     await h.send("go")
     await h.settle()
     for _ in range(3):
-        await h.set_auto(False)  # saves while the buffer holds progress
+        await h.set_auto(False)  # state changes while the buffer holds progress
     await h.close()
     left = [e async for e in stream]
     lives = [e for e in left if isinstance(e, Live)]
     first = [Live(h.cursor, ToolProgress(BATCH, "c1", f"line {i}")) for i in range(50)]
     assert lives, "some progress is kept"
     assert lives == first[: len(lives)], "the oldest are kept, the later ones dropped"
-    assert len(left) <= 4 + 1, "capacity, plus the Saved that is never dropped"
-    assert len([e for e in left if isinstance(e, Saved)]) == 1
+    assert len(lives) <= 4
+    assert len([e for e in left if isinstance(e, CursorView)]) == 1, "state replaces itself"
 
 
 class Writer:
@@ -301,7 +293,7 @@ async def test_a_hooks_write_mid_batch_is_announced_when_it_happens(
     h = await Harness.create(
         tmp_path, provider=provider, tools=[slow, fast], extensions=[Writer(write)]
     )
-    stream = h.driver.events()
+    stream = await h.connect("watcher")
     seen: list[Event] = []
 
     async def collect() -> None:
@@ -318,7 +310,8 @@ async def test_a_hooks_write_mid_batch_is_announced_when_it_happens(
     await h.settle()
     for _ in range(3):
         await asyncio.sleep(0)
-    assert seen[before:] == [Saved(h.cursor)], "announced at once, not when the batch ends"
+    heard = {"append": Appended, "label": Labels, "item": CursorView}[write]
+    assert [type(e) for e in seen[before:]] == [heard], "announced at once, not when the batch ends"
     slow_gate.release()
     await h.close()
     await collecting
@@ -349,15 +342,3 @@ async def test_a_provider_cannot_yield_tool_progress(tmp_path: Path) -> None:
     assert errors, "the sample failed"
     assert "ToolProgress" in errors[0].data
     await h.close()
-
-
-@scenario
-async def test_a_saved_names_a_call_by_batch_and_id_so_a_reused_id_keeps_its_progress() -> None:
-    """Servers may reuse ids across batches; one batch's save must not clear another's progress."""
-    stream = EventStream(None, 8, lambda _: None)
-    early, late = ToolProgress(3, "0", "early"), ToolProgress(9, "0", "late")
-    stream.offer(Live(0, early))
-    stream.offer(Live(0, late))
-    stream.offer(Saved(0, ((3, "0"),)))  # the early batch's results are in the tree
-    stream.end()
-    assert [e async for e in stream] == [Live(0, late), Saved(0, ((3, "0"),))]

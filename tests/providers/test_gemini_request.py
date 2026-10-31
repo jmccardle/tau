@@ -28,7 +28,17 @@ from wire import (
     walk_of,
 )
 
-from tau_next import Author, Body, ModelConfig, Outcome, Part, Replay, SampleError, Stop
+from tau_next import (
+    Author,
+    Body,
+    LocalClient,
+    ModelConfig,
+    Outcome,
+    Part,
+    Replay,
+    SampleError,
+    Stop,
+)
 from tau_next.providers.gemini import GeminiProvider
 
 DEFAULT_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -96,7 +106,7 @@ async def test_a_signature_on_a_call_round_trips_byte_identical(tmp_path: Path) 
         driver,
         cursor,
     ):
-        driver.send(cursor, "test", "read it")
+        await LocalClient(driver, "test").send(cursor, "read it")
         await driver.rest(cursor)
     recorded_part = next(
         part
@@ -128,10 +138,10 @@ async def test_a_signature_on_text_round_trips_and_unsigned_thinking_is_not_sent
 ) -> None:
     server = sse_texts(recorded("gemini_text_thinking"), gemini_chunk([{"text": "ok"}], "STOP"))
     async with running(tmp_path / "s", GEMINI.over(server)) as (session, driver, cursor):
-        driver.send(cursor, "test", "tide pools")
+        await LocalClient(driver, "test").send(cursor, "tide pools")
         await driver.rest(cursor)
         saved = session.tree.node(session.cursor(cursor).at).body
-        driver.send(cursor, "test", "more")
+        await LocalClient(driver, "test").send(cursor, "more")
         await driver.rest(cursor)
     assert isinstance(saved, Body.Assistant)
     thinking_part, text_part = saved.parts

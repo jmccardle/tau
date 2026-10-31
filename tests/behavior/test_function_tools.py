@@ -241,7 +241,7 @@ class Workers:
 async def test_progress_is_injected_by_annotation(tmp_path: Path) -> None:
     provider = FakeProvider([call("working"), Reply([Part.Text("ok")])])
     h = await Harness.create(tmp_path, provider=provider, extensions=[Workers()], gates=[STOP])
-    stream = h.driver.events()
+    stream = await h.connect("watcher", watching=[h.cursor])
     await h.send("go")
     await h.settle()  # the function shows its progress and waits at the gate
     async with asyncio.timeout(5):
@@ -252,7 +252,7 @@ async def test_progress_is_injected_by_annotation(tmp_path: Path) -> None:
     assert offered_parameters(provider) == {}, "the callback is not an argument"
     STOP.release()
     await h.settle()
-    await stream.aclose()
+    await stream.close()
     await h.close()
 
 

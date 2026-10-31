@@ -8,13 +8,15 @@ from contextlib import asynccontextmanager
 from harness import scenario
 
 from tau_next import (
+    Appended,
     Body,
+    Client,
+    CursorView,
     Driver,
     Event,
-    EventStream,
     Live,
+    LocalClient,
     Part,
-    Saved,
     Session,
     Stop,
     SystemClock,
@@ -52,9 +54,8 @@ def replies(session: Session) -> list[Body.Assistant]:
     ]
 
 
-async def listen(stream: EventStream, seen: list[Event], heard: asyncio.Event, n: int) -> None:
-    """Collect the stream; set `heard` at the `n`th live event. A reader that keeps up sees
-    every live event: a `Saved` clears the ones it has not read."""
+async def listen(stream: Client, seen: list[Event], heard: asyncio.Event, n: int) -> None:
+    """Collect the stream; set `heard` at the `n`th live event."""
     async for event in stream:
         seen.append(event)
         if sum(isinstance(e, Live) for e in seen) == n:
@@ -65,8 +66,10 @@ async def listen(stream: EventStream, seen: list[Event], heard: asyncio.Event, n
 async def test_the_reply_streams_as_several_deltas_then_is_saved_whole() -> None:
     async with mock_session(options={"delay_ms": 1}) as (session, driver, cursor):
         seen: list[Event] = []
-        listener = asyncio.ensure_future(listen(driver.events(cursor), seen, asyncio.Event(), 0))
-        driver.send(cursor, "term", "hello brave new world")
+        client = LocalClient(driver, "term")
+        await client.watch([cursor])
+        listener = asyncio.ensure_future(listen(client, seen, asyncio.Event(), 0))
+        await client.send(cursor, "hello brave new world")
         await driver.rest(cursor)
         (reply,) = replies(session)
         await driver.stop()  # ends the stream after what it holds
@@ -75,8 +78,9 @@ async def test_the_reply_streams_as_several_deltas_then_is_saved_whole() -> None
     assert len(deltas) == 5
     assert "".join(deltas) == "mock: hello brave new world"
     assert reply.parts == [Part.Text("mock: hello brave new world")]
-    assert seen.index(Saved(cursor)) < len(seen), "a Saved follows"
-    assert isinstance(seen[-1], Saved)
+    nodes = [n for e in seen if isinstance(e, Appended) for n in e.nodes]
+    assert nodes[-1].body == reply, "the reply is appended"
+    assert isinstance(seen[-1], CursorView), "and the state that points at it follows"
 
 
 @scenario
@@ -86,7 +90,7 @@ async def test_the_saved_reply_is_the_text_streamed_with_usage_and_a_normal_stop
         driver,
         cursor,
     ):
-        driver.send(cursor, "term", "a b c")
+        await LocalClient(driver, "term").send(cursor, "a b c")
         await driver.rest(cursor)
         (reply,) = replies(session)
         assert (reply.parts, reply.stop, reply.finish_reason) == (
@@ -101,7 +105,7 @@ async def test_the_saved_reply_is_the_text_streamed_with_usage_and_a_normal_stop
 async def test_max_tokens_caps_the_words_and_ends_with_the_length_stop() -> None:
     settings = {"max_tokens": 2, "options": {"delay_ms": 0, "reply": "one two three four"}}
     async with mock_session(**settings) as (session, driver, cursor):
-        driver.send(cursor, "term", "go")
+        await LocalClient(driver, "term").send(cursor, "go")
         await driver.rest(cursor)
         (reply,) = replies(session)
         assert (reply.parts, reply.stop) == ([Part.Text("one two ")], Stop.Length)
@@ -112,10 +116,12 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_st
     async with mock_session(options={"delay_ms": 1, "reply": WORDS}) as (session, driver, cursor):
         seen: list[Event] = []
         heard_two = asyncio.Event()
-        listener = asyncio.ensure_future(listen(driver.events(cursor), seen, heard_two, 2))
-        driver.send(cursor, "term", "go")
+        client = LocalClient(driver, "term")
+        await client.watch([cursor])
+        listener = asyncio.ensure_future(listen(client, seen, heard_two, 2))
+        await client.send(cursor, "go")
         await heard_two.wait()
-        driver.abort(cursor)
+        await client.abort(cursor)
         await driver.rest(cursor)
         (reply,) = replies(session)
         await driver.stop()
@@ -126,8 +132,8 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_st
     assert reply.stop == Stop.Interrupted
     (part,) = reply.parts
     assert isinstance(part, Part.Text)
-    # Everything seen is in the reply (a delta not yet read is cleared by the Saved, but
-    # the reply holds it), and the reply ends on a word the mock had streamed.
+    # Everything seen is in the reply (the reply holds the deltas not yet read), and the reply
+    # ends on a word the mock had streamed.
     assert part.text.startswith(seen_text)
     assert seen_text
     assert WORDS.startswith(part.text)

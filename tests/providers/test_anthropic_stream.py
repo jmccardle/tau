@@ -37,6 +37,7 @@ from tau_next import (
     CallArgs,
     CallNamed,
     Finish,
+    LocalClient,
     Part,
     Replay,
     Stop,
@@ -258,7 +259,7 @@ async def test_a_tool_loop_sends_the_signed_thinking_the_tool_use_and_each_resul
     server = stream(first, message(text(0, ["done"])))
     tools = [FakeTool("ta", "A"), FakeTool("tb", RuntimeError("boom"))]
     async with running(tmp_path / "s", provider(server), tools=tools) as (_, driver, cursor):
-        driver.send(cursor, "test", "go")
+        await LocalClient(driver, "test").send(cursor, "go")
         await driver.rest(cursor)
     second = server.bodies[1]
     assert second["messages"][1:] == [  # type: ignore[index]
@@ -301,12 +302,12 @@ async def test_signed_thinking_comes_back_byte_identical_on_the_next_request(
         message(thinking(0, [THINKING]), text(1, ["Hello"])), message(text(0, ["again"]))
     )
     async with running(tmp_path / "s", provider(server)) as (session, driver, cursor):
-        driver.send(cursor, "test", "hi")
+        await LocalClient(driver, "test").send(cursor, "hi")
         await driver.rest(cursor)
         saved = bodies(session, cursor)[-1]
         assert isinstance(saved, Body.Assistant)
         assert saved.parts[0] == SIGNED
-        driver.send(cursor, "test", "more")
+        await LocalClient(driver, "test").send(cursor, "more")
         await driver.rest(cursor)
     sent = server.bodies[1]["messages"]
     assert sent[1] == {  # type: ignore[index]
@@ -328,9 +329,9 @@ async def test_redacted_thinking_comes_back_on_the_next_request(tmp_path: Path) 
         message(text(0, ["x"])),
     )
     async with running(tmp_path / "s", provider(server)) as (_, driver, cursor):
-        driver.send(cursor, "test", "hi")
+        await LocalClient(driver, "test").send(cursor, "hi")
         await driver.rest(cursor)
-        driver.send(cursor, "test", "more")
+        await LocalClient(driver, "test").send(cursor, "more")
         await driver.rest(cursor)
     sent = server.bodies[1]["messages"]
     assert sent[1]["content"][0] == {  # type: ignore[index]
