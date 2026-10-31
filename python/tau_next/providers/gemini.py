@@ -61,16 +61,16 @@ _PART_KEYS = {*_DATA_KEYS, "thought", "thoughtSignature", *_METADATA_KEYS}
 STOPS: dict[str, Stop] = {
     "STOP": Stop.End,
     "MAX_TOKENS": Stop.Length,
-    "SAFETY": Stop.Refused,
-    "RECITATION": Stop.Refused,
-    "LANGUAGE": Stop.Refused,
-    "BLOCKLIST": Stop.Refused,
-    "PROHIBITED_CONTENT": Stop.Refused,
-    "SPII": Stop.Refused,
-    "IMAGE_SAFETY": Stop.Refused,
-    "IMAGE_PROHIBITED_CONTENT": Stop.Refused,
-    "IMAGE_RECITATION": Stop.Refused,
-    "ESCALATION": Stop.Refused,
+    "SAFETY": Stop.End,
+    "RECITATION": Stop.End,
+    "LANGUAGE": Stop.End,
+    "BLOCKLIST": Stop.End,
+    "PROHIBITED_CONTENT": Stop.End,
+    "SPII": Stop.End,
+    "IMAGE_SAFETY": Stop.End,
+    "IMAGE_PROHIBITED_CONTENT": Stop.End,
+    "IMAGE_RECITATION": Stop.End,
+    "ESCALATION": Stop.End,
     "CONTINUATION": Stop.Length,
 }
 
@@ -408,7 +408,7 @@ class _Stream:
 
     def stop(self) -> Finish:
         if self.blocked is not None:
-            return Finish(Stop.Refused, self.blocked, meta_text(self.meta))
+            return Finish(Stop.End, self.blocked, meta_text(self.meta))
         done = finish(self.finish, STOPS, "finishReason", self.meta)
         return replace(done, stop=Stop.Tools) if done.stop == Stop.End and self.calls else done
 
@@ -618,7 +618,7 @@ class GeminiProvider:
         stream had finished or begun; it carries the meta that had arrived. Once `finishReason`
         has arrived the reply is done: the stream is still read for `usageMetadata`, and a failure
         after it costs only the meta not yet received. A prompt the API blocked (`promptFeedback`
-        with a `blockReason`) ends as `Refused`, the reason in `finish_reason` and the block in
+        with a `blockReason`) ends as `End`, the reason in `finish_reason` and the block in
         `meta`."""
         url, headers, body = self._request(walk, model, tools)
         async for item in self._connection.sample(url, headers, body, _Stream()):

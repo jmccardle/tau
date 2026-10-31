@@ -311,11 +311,9 @@ class Connection:
 
     The client serves every sample (httpx pools connections per host): made on the first,
     closed by `aclose()`, after which a sample fails with `ProviderClosed`. A client belongs to
-    the event loop that made it: a sample on another loop drops it unawaited (that loop is gone
-    and cannot be awaited here) and makes a new one, so a program may call `asyncio.run` once per
-    command. The dropped client is not closed: its keep-alive sockets are freed when it is
-    garbage collected (D10), so a program with one loop per command holds one idle socket per
-    finished loop until then. `transport` replaces the network (a test's `httpx.MockTransport`).
+    the event loop that made it, and a sample on another loop fails with `SampleError`: build
+    one provider per event loop (D10). `transport` replaces the network (a test's
+    `httpx.MockTransport`).
 
     An error body's `type` leads its message (`error_text`), and a wait missing from the
     `Retry-After` header is read from the body (Google sends `RetryInfo` there). `meta_headers`
@@ -347,7 +345,10 @@ class Connection:
             raise ProviderClosed("this provider was closed; build a new one to sample again")
         loop = asyncio.get_running_loop()
         if self._http is not None and self._loop is not loop:
-            self._http = None  # its loop is gone (a REPL runs `asyncio.run` per command)
+            raise SampleError(
+                "this provider's HTTP client belongs to another event loop; "
+                "build one provider per event loop"
+            )
         if self._http is None:
             self._http = httpx.AsyncClient(transport=self._transport, timeout=self._timeout)
             self._loop = loop

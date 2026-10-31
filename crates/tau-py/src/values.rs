@@ -142,7 +142,6 @@ pub enum Stop {
     End,
     Tools,
     Length,
-    Refused,
     Interrupted,
     Error,
 }
@@ -153,7 +152,6 @@ impl From<tree::Stop> for Stop {
             tree::Stop::End => Self::End,
             tree::Stop::Tools => Self::Tools,
             tree::Stop::Length => Self::Length,
-            tree::Stop::Refused => Self::Refused,
             tree::Stop::Interrupted => Self::Interrupted,
             tree::Stop::Error => Self::Error,
         }
@@ -166,7 +164,6 @@ impl From<Stop> for tree::Stop {
             Stop::End => Self::End,
             Stop::Tools => Self::Tools,
             Stop::Length => Self::Length,
-            Stop::Refused => Self::Refused,
             Stop::Interrupted => Self::Interrupted,
             Stop::Error => Self::Error,
         }

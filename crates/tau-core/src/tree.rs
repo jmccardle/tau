@@ -20,7 +20,6 @@ pub enum Stop {
     End,
     Tools,
     Length,
-    Refused,
     Interrupted,
     Error,
 }

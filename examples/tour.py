@@ -81,7 +81,8 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 driver,
                 session,
                 cursor,
-                "Run `seq 1 5000` with bash and tell me the last number you see.",
+                "Run exactly `seq 1 5000` with bash, with no pipes, "
+                "and tell me the last number you see.",
             )
             print_walk(session, session.cursor(cursor).at)
             first_branch = session.cursor(cursor).at

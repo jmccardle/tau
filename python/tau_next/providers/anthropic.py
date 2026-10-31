@@ -57,7 +57,7 @@ STOPS: dict[str, Stop] = {
     "max_tokens": Stop.Length,
     "model_context_window_exceeded": Stop.Length,
     "pause_turn": Stop.Length,  # a server-tool loop paused: the reply is not finished
-    "refusal": Stop.Refused,
+    "refusal": Stop.End,
 }
 
 # The HTTP status an `error` event's `type` stands for (api/errors): a stream error comes after a

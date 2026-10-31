@@ -100,15 +100,23 @@ async def test_a_sample_after_aclose_fails_as_closed_not_as_a_transient_error(
 
 
 @EACH
-def test_a_program_that_runs_one_event_loop_per_command_keeps_working(dialect: Dialect) -> None:
+def test_a_sample_on_a_second_event_loop_fails_and_one_provider_per_loop_works(
+    dialect: Dialect,
+) -> None:
     server = KeepAliveServer(dialect.reply("hi"))
     with server.running() as root:
-        provider = dialect.make(None, ENVIRON)
-        for _ in range(2):
-            items, error = asyncio.run(sample_all(provider, dialect.model(root)))
-            assert error is None
-            assert Part.Text("hi") in items
-        asyncio.run(provider.aclose())
+        first = dialect.make(None, ENVIRON)
+        items, error = asyncio.run(sample_all(first, dialect.model(root)))
+        assert error is None
+        assert Part.Text("hi") in items
+        items, error = asyncio.run(sample_all(first, dialect.model(root)))
+        assert isinstance(error, SampleError)
+        assert "one provider per event loop" in str(error)
+        assert items == []
+        second = dialect.make(None, ENVIRON)
+        items, error = asyncio.run(sample_all(second, dialect.model(root)))
+        assert error is None
+        assert Part.Text("hi") in items
 
 
 @EACH

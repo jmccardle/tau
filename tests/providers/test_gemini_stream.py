@@ -176,9 +176,9 @@ async def test_a_signature_ends_the_text_part_it_sits_on_and_each_part_goes_back
 @pytest.mark.parametrize(
     ("reason", "stop"),
     [
-        ("SAFETY", Stop.Refused),
+        ("SAFETY", Stop.End),
         ("CONTINUATION", Stop.Length),
-        ("ESCALATION", Stop.Refused),
+        ("ESCALATION", Stop.End),
     ],
 )
 @scenario
@@ -208,7 +208,7 @@ async def test_a_blocked_prompt_is_refused_with_the_block_in_the_meta() -> None:
     assert error is None
     finish = items[-1]
     assert isinstance(finish, Finish)
-    assert (finish.stop, finish.reason) == (Stop.Refused, "PROHIBITED_CONTENT")
+    assert (finish.stop, finish.reason) == (Stop.End, "PROHIBITED_CONTENT")
     assert finish.meta is not None
     assert json.loads(finish.meta)["promptFeedback"] == block["promptFeedback"]
 

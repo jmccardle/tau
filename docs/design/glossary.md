@@ -86,8 +86,8 @@ the next provider.
 ### stop
 *spike* `Stop` · retires `stopReason`, `AgentEndReason`
 
-Why a reply ended: `End`, `Tools`, `Length`, `Refused`, `Interrupted`,
-`Error`. Only `Tools` makes calls runnable. The provider's own string is
+Why a reply ended: `End`, `Tools`, `Length`, `Interrupted`,
+`Error`. A refusal is an `End` with the provider's raw reason kept. Only `Tools` makes calls runnable. The provider's own string is
 `finish_reason`. Python's `Stop`, `Next`, and `Hook` are not integers:
 `Stop.Tools != 1`, because equal-to-an-int with a different hash breaks sets.
 
@@ -1105,11 +1105,10 @@ first are held until then; before that a repeated id or name replaces the earlie
 after it a repeat of the same is ignored and a different one is an error, which is what a
 server that omits `index` or splits a name causes), `CallArgs`, and a `Call`. A choice with
 `index` other than 0 is an error, and a chunk with more than one choice is refused: one choice is
-read. A `delta.refusal` is text, and the reply ends `Refused` (when `finish_reason` is also `length`,
-`Refused` wins; whether it should is open). Each delta is yielded as it
+read. A `delta.refusal` is text. Each delta is yielded as it
 arrives; each part is yielded before the first delta of the next kind of part, or
 when the stream finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
-`length` to `Length`, `content_filter` to `Refused`; any other is an error. The
+`length` to `Length`, `content_filter` to `End`; any other is an error. The
 raw string is kept as `finish_reason` (via `Finish`). The request sets
 `stream_options.include_usage` unless the option says not to, and the stream is read to
 its end (usage comes after the finish) to fill `meta` with `model`, `id`,
@@ -1142,9 +1141,8 @@ which keeps the read alive past the 300 s between-bytes timeout. For OpenAI prop
 models refuse `max_tokens`, leave `max_tokens` unset and set `extra_body: {"max_completion_tokens": N}`.
 The `[system note: ...]` form is used for every `System` node after the first non-`System` turn. One `httpx.AsyncClient` serves every sample,
 made on the first and closed by `aclose()`; a sample after `aclose()`, or one it cuts off,
-fails with `ProviderClosed`. A client belongs to the event loop that made it: on another
-loop the provider drops it unawaited (the old loop is gone, so it cannot be closed) and makes a new
-one; a REPL that starts a loop per command leaks a client each time (D15 Open). The response body is read to its
+fails with `ProviderClosed`. A client belongs to the event loop that made it: a sample
+on another loop fails with a `SampleError`: build one provider per event loop (D15 D10). The response body is read to its
 end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
 `timeout`. The request is built inside `sample` and is not public.
@@ -1180,7 +1178,7 @@ part (text is the block's `thinking`), `{"type": "redacted_thinking", "data": d}
 `Thinking("")`. Response: `thinking_delta`, `text_delta` as deltas; `tool_use` as `CallNamed`
 then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_sequence` to
 `End`, `tool_use` to `Tools`, `max_tokens`, `model_context_window_exceeded` and `pause_turn` to
-`Length`, `refusal` to `Refused`; any other fails the sample. `meta`: `id`, `model`, `usage`
+`Length`, `refusal` to `End`; any other fails the sample. `meta`: `id`, `model`, `usage`
 `{"input", "output", "cached"}` (`input` is `input_tokens` plus cache reads plus
 `cache_creation_input_tokens`, `cached` the reads alone), `usage_raw` (the cumulative usage
 as sent), `stop_details` when sent, and the `request-id` response header as `request_id` (on
@@ -1206,7 +1204,7 @@ seconds, `None` when not finite), `sse_data` and `events` (the SSE events as JSO
 end), `error_text` (`HTTP <status>: <message>` from an `error` object, `typed` for
 `<type>: <message>`), and the JSON and number checks `plain`, `non_finite`, `is_number`,
 `is_count`, `count`. `Connection` holds the one `httpx.AsyncClient` a provider keeps (made on the
-first sample, one per event loop, dropped when its loop is gone, closed by `aclose()`, after
+first sample, bound to the event loop that made it (a sample on another loop is a `SampleError`), closed by `aclose()`, after
 which a sample raises `ProviderClosed`) and runs the sample loop: it POSTs, reads each event
 into a `ReplyReader`, maps an `httpx` error or a bad status to a `SampleError` with `status` and
 `retry_after`, and yields the parts left at a failure. A provider gives it only how its error
@@ -1253,8 +1251,8 @@ replay is `{"synthesized_id": true}`: a made-up id is never sent. A signature is
 only on the part it came from and only when `replay_for(part, "gemini")` returns data.
 Replay that core cannot hold fails the sample. `finishReason`: `STOP` is `End` (`Tools` when
 calls were made), `MAX_TOKENS` and `CONTINUATION` `Length`; `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`,
-`PROHIBITED_CONTENT`, `SPII`, `ESCALATION` and the image refusals `Refused`; any other fails the sample. A
-`promptFeedback.blockReason` ends as `Refused` with the reason as `finish_reason` and the
+`PROHIBITED_CONTENT`, `SPII`, `ESCALATION` and the image refusals `End`; any other fails the sample. A
+`promptFeedback.blockReason` ends as `End` with the reason as `finish_reason` and the
 block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`responseId`),
 `finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
 `output` is `candidatesTokenCount` plus `thoughtsTokenCount` (thinking is billed as output),

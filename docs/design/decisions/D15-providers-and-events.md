@@ -395,15 +395,15 @@ it is merged except what is Open below. Decisions, with the reason in a line:
 - **D5. `request()` is private** (`_request`), without its re-check: the driver runs
   `check` first, and `Provider.sample` assumes it passed. A one-off call needs no new API;
   the recipe is in the glossary (`examples/one_off.py`).
-- **D6. A `Refused` reply's parts are still replayed.** Dropping them would change the
-  history the user saw; kept by default.
+- **D6. Superseded (2026-10-30):** `Refused` was removed; see the amendment below.
 - **D7. No timeout option yet.** The defaults stand (10 s to connect, 300 s between bytes).
-  `return_progress` is documented below. A configurable timeout is Open.
+  `return_progress` is documented below. Closed (2026-10-30): whoever hits the defaults adds
+  a provider option.
 - **D8. No flag for dropped live events.** A slow subscriber's drops are not marked; the
   frontend rules below make that safe, and the tree is the truth.
-- **D10. The client on a loop change is dropped (unawaited) and documented.** The old loop
-  is gone, so the client cannot be closed; a new one is made. The leak matters only to a
-  REPL that starts a new loop per command (Open).
+- **D10. A client belongs to the event loop that made it.** A sample on another loop fails
+  with a `SampleError` saying to build one provider per event loop (amended 2026-10-30; it
+  used to drop the client and make a new one, which leaked a socket per loop).
 - **D11. `[system note: ...]` everywhere** after the first non-`System` turn, OpenAI
   included. Leading `System` nodes stay `role: system`. One rule for every provider.
 - **D12. An empty send is allowed.** Gemini renders blank turns as nothing (they are
@@ -435,12 +435,15 @@ provider's one source of request keys and `extra_body` conflicts; Gemini refuses
 `parts`, parts with more than one data key, a non-bool `thought` and a `models/` prefix on
 the model name, ignores chunks after a `blockReason` and metadata part keys, quotes the
 model in the URL, and drops blank turns; OpenAI refuses a chunk with more than one choice
-and a `base_url` ending in `/chat/completions`, and turns `delta.refusal` into text and
-`Refused`; Anthropic refuses `extra_body.thinking`, checks the block index, skips null
+and a `base_url` ending in `/chat/completions`, and turns `delta.refusal` into text; Anthropic refuses `extra_body.thinking`, checks the block index, skips null
 usage values, and gives a non-object error event status 500; the config loader bounds JSON
 integers to 64 bits; `tau config check` turns a raising provider check into a problem
 line, and a bad literal key is an error while a bad key inside a variable is a warning
 (the variable is read at sample time).
+
+Amended 2026-10-30: `Refused` was removed from `Stop`; refusals end as `End` with the raw
+reason kept in `Finish.reason` (a `refusal` delta is still text). A call forming at a cancel
+is saved as it arrived, the same rule as text.
 
 **Declined:**
 
@@ -512,25 +515,16 @@ prompt, turns 2-4:
 
 ## Open
 
-- Whether `Refused` should override `Length` for OpenAI when both apply (a `refusal` delta,
-  then `finish_reason: length`). It does now; the spec is open.
-- A configurable timeout (D7).
-- The REPL client leak (D10): a REPL that starts a new event loop per command drops one
-  unclosed client each time.
-
-- Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from
   a group or another layer.
-- `tau config check` and `tau trust` know only the built-in providers, so a third-party
-  provider cannot be checked from the CLI yet.
-- A call forming at a cancel (item 1): is a partial `Call` part with partial
-  `args_raw` right, given `partial_calls`?
+- Moved to D16 (clients and asking).
 
-- Whether frontends subscribe per driver or per cursor. Cursors can use
-  different providers; that affects replay data, not events, which are the
-  same shared types from every provider. The cursor filter leaves both open.
+## Deferred until something needs them
+
 - Normalized `usage` fields beyond input, output, cached.
 - Images (not needed for a text-only port).
+- `tau config check` and `tau trust` know only the built-in providers, so a third-party
+  provider cannot be checked from the CLI yet.
 
 ## Alternatives
 
@@ -549,7 +543,7 @@ prompt, turns 2-4:
 - Rust: `replay` on `Text`, `Thinking`, `Call` (serde default; old logs load).
 - `config_layers` loses its fixed provider list; `check_config` takes the
   provider map.
-- The OpenAI provider keeps one client per provider per event loop and maps `reasoning` /
+- The OpenAI provider keeps one client per provider, bound to the event loop that made it, and maps `reasoning` /
   `reasoning_content` to `Thinking`.
 - Tests: a part's replay data round-trips through the log; another provider's
   replay data is never sent; a misspelt option fails `tau config check`; a

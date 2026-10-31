@@ -7,7 +7,7 @@ request carries what the walk, the tools, and `ModelConfig` say: `model`, `messa
 
 import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import cast
 
 import httpx
@@ -46,7 +46,7 @@ STOPS: dict[str, Stop] = {
     "tool_calls": Stop.Tools,
     "function_call": Stop.Tools,
     "length": Stop.Length,
-    "content_filter": Stop.Refused,
+    "content_filter": Stop.End,
 }
 
 
@@ -167,7 +167,6 @@ class _Stream:
     open: _Open | None = None
     held: list[Part | Delta] = field(default_factory=lambda: [])
     finish: str | None = None
-    refused: bool = False  # a `refusal` delta arrived
     calls_done: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - typed for pyright
     meta: Json = field(default_factory=lambda: Json())  # noqa: PLW0108 - typed for pyright
 
@@ -280,7 +279,6 @@ class _Stream:
         self._run("text", delta.get("content"))
         refusal = delta.get("refusal")
         if isinstance(refusal, str) and refusal:
-            self.refused = True
             self._run("text", refusal)
         raw_calls = delta.get("tool_calls")
         for raw in cast("list[object]", raw_calls) if isinstance(raw_calls, list) else []:
@@ -291,8 +289,7 @@ class _Stream:
             self.finish = finish
 
     def stop(self) -> Finish:
-        done = finish(self.finish, STOPS, "finish_reason", self.meta)
-        return replace(done, stop=Stop.Refused) if self.refused else done
+        return finish(self.finish, STOPS, "finish_reason", self.meta)
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -432,8 +429,7 @@ class OpenAIProvider:
         reply is done: the stream is
         still read for `usage`, but content and tool-call deltas after it are ignored, and an
         error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
-        meta not yet received, never the reply. A `refusal` delta is text, and the reply ends
-        `Refused`."""
+        meta not yet received, never the reply. A `refusal` delta is text."""
         url, headers, body = self._request(walk, model, tools)
         async for item in self._connection.sample(url, headers, body, _Stream(), end="[DONE]"):
             yield item

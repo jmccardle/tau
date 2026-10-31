@@ -100,7 +100,6 @@ class Stop:
     End: ClassVar[Stop]
     Tools: ClassVar[Stop]
     Length: ClassVar[Stop]
-    Refused: ClassVar[Stop]
     Interrupted: ClassVar[Stop]
     Error: ClassVar[Stop]
     def __int__(self) -> int: ...
