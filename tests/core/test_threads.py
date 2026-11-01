@@ -93,6 +93,37 @@ def test_exiting_while_bash_streams_progress_ends_cleanly() -> None:
         assert (done.returncode, done.stderr) == (0, "")
 
 
+def rest(session: Session, cursor: int) -> None:
+    """Drive the cursor until it rests: hooks answered, any sample or tool run aborted."""
+    for _ in range(1000):
+        match session.next_job(cursor):
+            case Job.Rest():
+                return
+            case Job.Hooks():
+                session.answer(cursor, Answer.Hooks(None, None), 0)
+            case _:
+                session.abort(cursor)
+    raise AssertionError("the cursor never came to rest")
+
+
+def make_each_ending(session: Session, cursor: int) -> None:
+    """Which step endings the hammer reaches depends on how its threads interleave.
+    The step-position diagram counts the scenarios that make each ending
+    (scripts/diagrams.sh), so make each one here, alone, before the threads start:
+    then the count is the same on every run."""
+    term = Author.Frontend("term")
+    session.input(cursor, term, "done")
+    rest(session, cursor)  # a step that ends Done with nothing new
+    session.input(cursor, term, "first")
+    assert isinstance(session.next_job(cursor), Job.Hooks)
+    session.input(cursor, term, "while it runs")
+    rest(session, cursor)  # a step that ends Done after news arrived: the next step follows
+    session.input(cursor, term, "aborted")
+    assert isinstance(session.next_job(cursor), Job.Hooks)
+    session.abort(cursor)
+    rest(session, cursor)  # a step that ends Aborted
+
+
 @pytest.mark.parametrize("on_disk", [False, True], ids=["memory", "directory"])
 def test_threads_drive_one_cursor_without_deadlock_or_corruption(
     tmp_path: Path, on_disk: bool
@@ -105,6 +136,8 @@ def test_threads_drive_one_cursor_without_deadlock_or_corruption(
     cursor = session.cursors()[0]
     root = session.cursor(cursor).at
     lost_race = (Busy, WrongAnswer)
+
+    make_each_ending(session, cursor)
 
     def hammer(seed: int) -> None:
         rng = random.Random(seed)
@@ -128,14 +161,7 @@ def test_threads_drive_one_cursor_without_deadlock_or_corruption(
     with ThreadPoolExecutor(max_workers=THREADS) as pool:
         for done in [pool.submit(hammer, seed) for seed in range(THREADS)]:
             done.result(timeout=120)
-    for _ in range(1000):  # settle: hooks answered, any sample or tool run aborted
-        match session.next_job(cursor):
-            case Job.Rest():
-                break
-            case Job.Hooks():
-                session.answer(cursor, Answer.Hooks(None, None), 0)
-            case _:
-                session.abort(cursor)
+    rest(session, cursor)
     assert not session.cursor(cursor).busy
     nodes = len(session.tree)
     assert all(session.tree.walk(i)[-1].id == i for i in range(nodes))

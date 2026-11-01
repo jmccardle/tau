@@ -80,8 +80,12 @@ mkdir -p "$PKG"
 cp -r python/tau "$PKG/tau"
 rm -f "$PKG"/tau/_core*.so  # only the transitions build may be found
 cp "$CARGO_TARGET_DIR/release/lib_core.so" "$PKG/tau/_core$SUFFIX"
-PYTHONPATH="$PKG:$ROOT/$D" "$PY" -m pytest -q -s -p no:cacheprovider -p pytest_scenario \
-    tests/behavior tests/core >/dev/null 2>"$TMP/logs/python.log"
+if ! PYTHONPATH="$PKG:$ROOT/$D" "$PY" -m pytest -q -s -p no:cacheprovider -p pytest_scenario \
+    tests/behavior tests/core >"$TMP/pytest.out" 2>"$TMP/logs/python.log"; then
+    tail -40 "$TMP/pytest.out" >&2
+    echo "diagrams.sh: the behavior suite failed while recording (output above)" >&2
+    exit 1
+fi
 "$PY" -I "$D/positions.py" "$TMP/types.json" "$GEN" "$TMP"/logs/*.log
 
 if [ "$MODE" = "--check" ]; then
