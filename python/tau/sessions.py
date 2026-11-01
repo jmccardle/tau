@@ -8,16 +8,14 @@ created in (`cwd`, never changed), an optional `name`, and an optional `forked_f
 store never read it. `info.json` is replaced whole and atomically.
 
 Listing is a scan, with no index: `list_sessions` returns a `SessionInfo` per directory, a row
-with an `error` for one that is not a readable session. `find_session` resolves a ref (`parse_ref`):
-a path, an id, an exact unique name, or a unique id prefix. `choose_session` turns the session
-flags into the one thing a start does (`SessionChoice`): a new session, an existing one, or a
-fork. `first_cursor` and `first_cursor_node` are the rule for which cursor a frontend shows. Which
+with an `error` for one that is not a readable session. `find_session` resolves a ref: a path, an
+id, an exact unique name, or a unique id prefix. `SessionFlags` are the session flags, checked.
+`first_cursor` and `first_cursor_node` are the rule for which cursor a frontend shows. Which
 session a program opens, and how it starts, is `tau.session_start`.
 """
 
 import json
 import os
-import re
 import secrets
 import shutil
 import tempfile
@@ -25,10 +23,11 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 
 from tau._config import ConfigError
-from tau._core import Exists, NotASession, Session, first_message
+from tau._core import Exists, Session, first_message
+from tau._refs import absolute_ref
 
 if TYPE_CHECKING:
     from tau.client import Client
@@ -39,7 +38,6 @@ _LOG = "log"
 _PRIVATE = 0o700
 _TITLE_WIDTH = 80
 _NO_MESSAGES = "(no messages)"
-_NODE = re.compile(r"^(?P<session>.*):(?P<node>\d+)$", re.DOTALL)
 
 
 class UnknownSession(LookupError):
@@ -103,10 +101,24 @@ def _make_private(path: Path) -> None:
         missing.mkdir(mode=_PRIVATE, exist_ok=True)
 
 
+def _name(name: str) -> str:
+    """`name` stripped, as it is stored; `ConfigError` if nothing is left or it could not be
+    used as a ref: `/` makes a ref a path and `:NODE` picks a node."""
+    stripped = name.strip()
+    if not stripped:
+        raise ConfigError("a session name is empty; remove a name with `tau sessions name REF ''`")
+    if "/" in stripped or ":" in stripped:
+        raise ConfigError(
+            f"the session name {stripped!r} has a '/' or ':' in it, which a ref reads as a path "
+            "or as SESSION:NODE, so the name could not be used to open the session"
+        )
+    return stripped
+
+
 def _info_data(cwd: str, name: str | None, forked_from: ForkedFrom | None) -> dict[str, object]:
     data: dict[str, object] = {"cwd": cwd}
-    if name:
-        data["name"] = name
+    if name is not None:
+        data["name"] = _name(name)
     if forked_from is not None:
         data["forked_from"] = {"session": forked_from.session, "node": forked_from.node}
     return data
@@ -242,15 +254,6 @@ def list_sessions(sessions: Path, *, cwd: Path | None = None) -> list[SessionInf
 # -- refs
 
 
-def parse_ref(text: str) -> tuple[str, int | None]:
-    """`SESSION` and the node of `SESSION:NODE`: `:NODE` is read only when the ref ends in `:`
-    and decimal digits."""
-    found = _NODE.match(text)
-    if found is None:
-        return text, None
-    return found["session"], int(found["node"])
-
-
 def _age(updated: float | None, now: float) -> str:
     if updated is None:
         return "-"
@@ -312,11 +315,12 @@ def read_name(path: Path) -> str | None:
 
 
 def rename_session(path: Path, name: str) -> None:
-    """Give the session in `path` the name `name`; an empty `name` removes it. No lease is taken:
-    the file is replaced whole, and the last of two renames wins. `ValueError` if `info.json` is
-    not readable."""
+    """Give the session in `path` the name `name` (stripped); an empty `name` removes it. No lease
+    is taken: the file is replaced whole, and the last of two renames wins. `ConfigError` for a
+    name with a `/` or a `:` in it (a ref could not name the session by it), `ValueError` if
+    `info.json` is not readable."""
     cwd, _, forked_from = _read_info(path)
-    _write_info(path, _info_data(cwd, name.strip() or None, forked_from))
+    _write_info(path, _info_data(cwd, name if name.strip() else None, forked_from))
 
 
 # -- the first cursor
@@ -351,23 +355,14 @@ async def first_cursor(session: Session, client: "Client") -> int:
 # -- the session flags, resolved
 
 
-def absolute_ref(ref: str, cwd: Path) -> str:
-    """`ref` with its path made absolute against `cwd` if it is a path (its session part has a
-    `/`), keeping a `:NODE`; a name, an id or a prefix is left as it is."""
-    session, node = parse_ref(ref)
-    if "/" not in session:
-        return ref
-    path = os.path.abspath(cwd / session)
-    return path if node is None else f"{path}:{node}"
-
-
 @dataclass(frozen=True)
 class SessionFlags:
     """What the session flags say, as `tau.cli.session_flags` parses them: `directory`
     (`--session-dir`), `continue_last` (`-c`), `resume` (`-r`), `session` and `fork` (REFs),
     `no_session` and `name` (`-n`), and the prompt flags (D20): `system_prompt`
     (`--system-prompt`), `append_system_prompt` (`--append-system-prompt`, in order) and
-    `no_context_files` (`-nc`). At most one of the first five choices; `no_session` takes none of
+    `no_context_files` (`-nc`). A name (`-n`) is stripped and cannot be empty or hold a `/` or a
+    `:`. At most one of the first five choices; `no_session` takes none of
     the others; a session that already has its prompt (`-c`, `-r`, `--session`, `--fork`) takes
     neither `--system-prompt` nor `--append-system-prompt`. `ConfigError` otherwise."""
 
@@ -395,6 +390,8 @@ class SessionFlags:
             raise ConfigError(f"{' and '.join(given)} cannot be combined: each chooses the session")
         if self.no_session and (self.directory is not None or self.name is not None):
             raise ConfigError("--no-session keeps nothing, so it takes no --session-dir or -n")
+        if self.name is not None:
+            _name(self.name)
         if given and given != ["--no-session"]:
             self._refuse_prompt(given[0])
 
@@ -444,85 +441,6 @@ class SessionFlags:
         )
 
 
-@dataclass(frozen=True)
-class SessionChoice:
-    """What the session flags resolved to, with nothing written: a `new` session, an `existing`
-    one (`source`) or a `fork` of `source` at `node` (`None`: the first cursor's); `sessions` is
-    the sessions directory (`None` for `--no-session`: in memory); `cwd` is the working
-    directory the program changes into; `name` is `-n`."""
-
-    kind: Literal["new", "existing", "fork"]
-    sessions: Path | None
-    cwd: Path
-    source: SessionInfo | None = None
-    node: int | None = None
-    name: str | None = None
-
-
 PickSession = Callable[[Sequence[SessionInfo], Sequence[SessionInfo]], SessionInfo]
 """What `-r` asks of a frontend: given the rows of the working directory and all rows (newest
 first), the one to open."""
-
-
-def _openable(info: SessionInfo) -> SessionInfo:
-    if info.error is not None:
-        raise NotASession(f"{info.path}: {info.error}")
-    cwd = Path(cast("str", info.cwd))
-    if not cwd.is_dir():
-        raise FileNotFoundError(
-            f"session {info.id}'s working directory {cwd} no longer exists; "
-            f"`tau export {info.id}` still reads it"
-        )
-    return info
-
-
-def _resumed(sessions: Path, here: Path, pick: PickSession | None) -> SessionInfo:
-    if pick is None:
-        raise ConfigError("-r needs a terminal to choose from; name the session: --session REF")
-    everywhere = list_sessions(sessions)
-    nearby = [r for r in everywhere if r.cwd == str(here) or r.error]
-    if not everywhere:
-        raise UnknownSession(f"no session in {sessions} to resume")
-    return pick(nearby, everywhere)
-
-
-def choose_session(
-    flags: SessionFlags, *, home: Path, cwd: Path, pick: PickSession | None = None
-) -> SessionChoice:
-    """Resolve `flags` for a program started in `cwd` (the directory the user typed the flags
-    in) with `TAU_HOME` `home`. Reads the sessions directory and writes nothing. `-r` needs
-    `pick`. `UnknownSession`, `NotASession` for a session whose `info.json` is unreadable,
-    `FileNotFoundError` for one whose working directory is gone, `ConfigError` for `--session`
-    with a `:NODE`."""
-    here = cwd.resolve()
-    if flags.no_session:
-        return SessionChoice("new", None, here)
-    sessions = sessions_directory(home, flags.directory)
-    if flags.continue_last:
-        rows = [r for r in list_sessions(sessions, cwd=here) if not r.error]
-        if not rows:
-            raise UnknownSession(f"no session for {here} in {sessions} to continue")
-        return SessionChoice(
-            "existing", sessions, Path(cast("str", rows[0].cwd)), rows[0], name=flags.name
-        )
-    if flags.resume:
-        info = _openable(_resumed(sessions, here, pick))
-        return SessionChoice(
-            "existing", sessions, Path(cast("str", info.cwd)), info, name=flags.name
-        )
-    if flags.session is not None:
-        session, node = parse_ref(flags.session)
-        if node is not None:
-            raise ConfigError(
-                f"--session takes no node; to start from node {node}, copy it: "
-                f"--fork {session}:{node}"
-            )
-        info = _openable(find_session(sessions, session))
-        return SessionChoice(
-            "existing", sessions, Path(cast("str", info.cwd)), info, name=flags.name
-        )
-    if flags.fork is not None:
-        session, node = parse_ref(flags.fork)
-        info = _openable(find_session(sessions, session))
-        return SessionChoice("fork", sessions, Path(cast("str", info.cwd)), info, node, flags.name)
-    return SessionChoice("new", sessions, here, name=flags.name)

@@ -6,7 +6,8 @@ lives in `_trust.py`, not `_project_code.py`, which holds only the import finder
 reader it needs is `_trust`'s; the built-in `step_limit` is the only built-in and has no "default
 off" switch yet, which waits for Phase 8's first off-by-default built-in; the `tau` row of `tau ext
 list` lists `/model` and not `/config`; `tau ext list` shows a `load` key that names no source as a
-row of kind `load`). Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
+row of kind `load`; names starting with `.` under `.tau/extensions/` are not pinned; only
+imported modules come from the approved bytes, not data files read at run time). Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
 (trust's hash scope; a new top-level key; a second user-file write), D16 §2 (command names),
 and fix plan C3 (`examples/chat.py`'s loader becomes the library's). Points marked "(review,
 2026-10-31)" were decided in review; they stay proposals until the owner accepts the ADR.
@@ -124,8 +125,9 @@ and `.tau/SYSTEM.md` along with `config.json` and `.env`** (review, 2026-10-31; 
 D20's file, if the owner accepts D20 Open 2).
 
 - The pinned extension files are every regular file under `.tau/extensions/` except
-  `__pycache__/`, as (relative path, sha256). The digest of that list is `extensions_sha256`
-  in `trusted.json`, with the per-file map beside it for diffs. `SYSTEM.md` gets
+  `__pycache__/` and names starting with `.` (an editor's swap file: the importer serves only
+  approved files, so an unpinned dot-file can never be imported), as (relative path, sha256).
+  The digest of that list is `extensions_sha256` in `trusted.json`, with the per-file map beside it for diffs. `SYSTEM.md` gets
   `system_sha256`, like `env_sha256`. A missing directory or file has its own marker, so adding
   the first file untrusts the project, as adding a `.env` does.
 - Symlinks, FIFOs and oversize files are refused with the reader `_trust` uses, `SYSTEM.md`
@@ -133,12 +135,13 @@ D20's file, if the owner accepts D20 Open 2).
 - The trust report lists the files with sizes, and "Changes since approval" says which were
   added, removed or changed; it prints no code. A record without `extensions_sha256` or
   `system_sha256` is not approved (the `env_sha256` precedent): the project is asked once more.
-- **What is used is what was approved.** The loader serves each module's source from the bytes
+- **What is imported is what was approved.** The loader serves each module's source from the bytes
   it hashed, through a finder for the source's private module name, and never opens the files
   again. A file changed between the check and the import can't slip in, relative imports still
   work, and nothing writes `__pycache__` into the project. D20 reads `SYSTEM.md` the same way,
-  from the approved bytes. Data files an extension reads at run time are pinned at start, not
-  re-checked on every read.
+  from the approved bytes. Only imported modules come from the approved bytes: a data file an
+  extension reads at run time (`__file__`, `importlib.resources`) comes from the disk as it is
+  then, though a change to it after approval untrusts the project at the next start.
 - This code goes in its own module (`tau._project_code`); `_trust.py` is near the 800-line
   limit. User drop-ins and packages are not hashed: `TAU_HOME` and the Python environment are
   already the user's own authority (D13).
@@ -159,7 +162,7 @@ The loader imports every source that is on and runs the driver's definition chec
 (`check_extensions`, tool and command description, the options type), so every failure can be
 pinned to its source; then the checks across sources (names, tools, `load` keys). It reports
 **every** failure, and `tau` exits 1 before it opens or creates a session (D18). Nothing is
-left on disk. For example:
+left on disk, except the trust approval the user gave. For example:
 
 ```
 tau: extension "search" failed to load; tau did not start.

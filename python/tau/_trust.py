@@ -342,9 +342,10 @@ def _decode(raw: bytes | None, path: Path) -> str | None:
 
 
 def _read_extensions(root: Path) -> dict[str, bytes] | None:
-    """Every file under `.tau/extensions/` but `__pycache__/` (path relative to it, with `/`, to
-    bytes); `None` if there is no such directory. A symlink, a FIFO or any file the reader
-    refuses is a `TrustError`."""
+    """Every file under `.tau/extensions/` but `__pycache__/` and names starting with `.` (an
+    editor's swap file; the importer serves only what is listed here, so such a file can never
+    be imported). Path relative to it, with `/`, to bytes; `None` if there is no such directory.
+    A symlink, a FIFO or any file the reader refuses is a `TrustError`."""
     base = root / TAU_DIR / EXTENSIONS_DIR
     try:
         info = base.lstat()
@@ -359,7 +360,7 @@ def _read_extensions(root: Path) -> dict[str, bytes] | None:
             found = sorted(listing, key=lambda e: e.name)
         for item in found:
             path = directory / item.name
-            if item.name == "__pycache__":
+            if item.name == "__pycache__" or item.name.startswith("."):
                 continue
             if item.is_dir(follow_symlinks=False):
                 walk(path, f"{prefix}{item.name}/")

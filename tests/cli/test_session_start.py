@@ -12,11 +12,13 @@ from collections.abc import Coroutine, Iterator, Sequence
 from pathlib import Path
 
 import pytest
-from world import World, trust
+from world import World, tau, trust
 
 from tau import (
     Author,
     Body,
+    CommandFailed,
+    Config,
     ConfigError,
     ExtensionLoadError,
     Leased,
@@ -740,3 +742,144 @@ def test_model_is_refused_for_a_continued_or_forked_session_naming_slash_model(
                 )
             )
     assert sessions_of(configured) == [OLD], "nothing was created"
+
+
+# -- a failure after the session exists leaves nothing: no directory, no lease
+
+
+def predating_d13(world: World) -> Path:
+    """OLD, whose `Config` node names no model (a session from before D13)."""
+    path = world.tau / "sessions" / OLD
+    path.mkdir(parents=True, mode=0o700)
+    (path / "info.json").write_text(json.dumps({"cwd": str(world.home)}), encoding="utf-8")
+    session = Session.create(Config('{"note": "pre-D13"}'), "sys", 0, path)
+    session.append(session.cursor(0).at, Body.User("hello"), Author.Frontend("t"), 0)
+    session.go_to(0, 2, "t", 0)
+    session.close()
+    return path
+
+
+def test_a_fork_whose_source_records_no_model_is_refused_before_a_directory_is_made(
+    configured: World,
+) -> None:
+    predating_d13(configured)
+    with pytest.raises(ConfigError):
+        start(configured, "--fork", OLD)
+    assert sessions_of(configured) == [OLD]
+
+
+def test_an_opened_session_whose_config_cannot_be_read_gives_its_lease_back(
+    configured: World,
+) -> None:
+    path = predating_d13(configured)
+    with pytest.raises(ConfigError):
+        start(configured, "--session", OLD)
+    Session.load(path).close()  # Leased if the failed start kept it
+
+
+def test_a_session_is_leased_before_any_extension_is_imported(configured: World) -> None:
+    marker = configured.home / "imported"
+    drop_ins = configured.tau / "extensions"
+    drop_ins.mkdir(mode=0o700)
+    (drop_ins / "side.py").write_text(
+        f"open({str(marker)!r}, 'a').write('x')\nname = 'side'\n", encoding="utf-8"
+    )
+    (drop_ins / "side.py").chmod(0o600)
+    holder = Session.load(used(configured, OLD, cwd=configured.home))
+    try:
+        with pytest.raises(Leased):
+            start(configured, "-c")
+    finally:
+        holder.close()
+    assert not marker.exists(), "the drop-in's import side effects ran before Leased was said"
+
+
+def test_a_start_that_fails_after_the_lease_gives_it_back_and_does_not_rename(
+    configured: World,
+) -> None:
+    path = used(configured, OLD, cwd=configured.home)
+    with pytest.raises(ExtensionLoadError):
+        start(configured, "--session", OLD, "-n", "never", "-e", "missing.py")
+    Session.load(path).close()
+    assert [r.name for r in rows(configured)] == [None]
+
+
+# -- a program's own system text and the prompt flags
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [["--system-prompt", "x"], ["--append-system-prompt", "x"], ["-nc"]],
+)
+def test_a_program_with_its_own_system_text_refuses_the_flags_that_shape_the_assembly(
+    configured: World, flags: list[str]
+) -> None:
+    with pytest.raises(ConfigError, match="its own system"):
+        start(configured, *flags)
+    assert sessions_of(configured) == []
+
+
+# -- names
+
+
+def test_a_new_sessions_and_a_forks_name_is_stored_stripped(configured: World) -> None:
+    source_with_branches(configured, configured.home)
+    fresh = start(configured, "-n", "  foo  ")
+    forked = start(configured, "--fork", OLD, "-n", "  bar  ")
+    try:
+        assert sorted(r.name or "" for r in rows(configured)) == ["", "bar", "foo"]
+    finally:
+        stop(fresh, forked)
+
+
+@pytest.mark.parametrize("flags", [["-n", "  "], ["--fork", OLD, "-n", ""]])
+def test_an_empty_name_is_refused_for_a_new_session_and_a_fork(
+    configured: World, flags: list[str]
+) -> None:
+    source_with_branches(configured, configured.home)
+    with pytest.raises(ConfigError, match="empty"):
+        start(configured, *flags)
+    assert sessions_of(configured) == [OLD]
+
+
+@pytest.mark.parametrize("name", ["a/b", "v:2"])
+def test_a_name_that_cannot_be_a_ref_is_refused_everywhere_a_name_is_set(
+    configured: World, name: str
+) -> None:
+    used(configured, OLD, cwd=configured.home)
+    with pytest.raises(ConfigError, match=r"path|:NODE"):
+        start(configured, "-n", name)
+    with pytest.raises(ConfigError, match=r"path|:NODE"):
+        start(configured, "--session", OLD, "-n", name)
+    assert sessions_of(configured) == [OLD]
+    started = start(configured)
+    client = started.driver.client("t")
+
+    async def rename() -> None:
+        try:
+            await client.run(0, "name", {"name": name})
+        finally:
+            await client.close()
+
+    try:
+        with pytest.raises(CommandFailed, match=r"path|:NODE"):
+            run(rename())
+    finally:
+        stop(started)
+    result = tau(configured, "sessions", "name", OLD, name)
+    assert result.code == 1
+    assert "path" in result.err
+    assert [r.name for r in rows(configured)] == [None]
+
+
+def test_a_session_named_while_it_runs_is_not_deleted_as_unused(configured: World) -> None:
+    started = start(configured)
+    client = started.driver.client("t")
+
+    async def name() -> None:
+        await client.run(0, "name", {"name": "keep me"})
+        await client.close()
+
+    run(name())
+    stop(started)
+    assert [r.name for r in rows(configured)] == ["keep me"]

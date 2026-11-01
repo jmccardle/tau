@@ -4,18 +4,22 @@ message, so they agree.
 `start_session` takes the parsed flags (`tau.cli.session_flags` and `extension_flags` as parents)
 and:
 
-0. resolves the session flags to a new session, an existing one or a fork (`choose_session`),
-   writing nothing, with every relative path in the flags made absolute against `cwd`;
+0. resolves the session flags to a new session, an existing one or a fork, writing nothing, with
+   every relative path in the flags made absolute against `cwd`;
 1. changes the process's working directory (`os.chdir`) to the session's `cwd`, so the base tools,
-   the project search, trust, extensions and path completion all answer "where am I" alike;
+   the project search, trust, extensions and path completion all answer "where am I" alike, and
+   for an existing session takes its lease at once (`Leased` is said before a trust question or
+   an extension's import);
 2. loads the config, loads the extensions, adds the built-in `session_name`, and for a new session
    selects the model (an existing session or a fork already records its model in its `Config` node,
    so `--model` is refused for them: `/model` switches a running session);
 3. asks `system` for the text of the `System` node, for a new session only: by default
    `tau.system_prompt` (D20) with the prompt flags (`--append-system-prompt`, `-nc`;
    `--system-prompt` is a layer of the config, given to `load_config`), so an unreadable context
-   file stops the start before a session exists; a program with its own prompt passes `system`;
-4. creates, opens or forks the session, builds the providers and starts the `Driver`.
+   file stops the start before a session exists; a program with its own prompt passes `system`,
+   and then the prompt flags are refused: they would be ignored;
+4. creates or forks the session, names an opened one (`-n`), builds the providers and starts the
+   `Driver`.
 
 The result is a `Started`; `stop` ends it, and removes a session that was never used. A session
 another process holds is `Leased`, never replaced by another one.
@@ -28,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tau._builtin import SessionName
+from tau._choice import SessionChoice, choose_session
 from tau._config import ConfigError, config_fields, model_config
 from tau._core import Leased, Session
 from tau._extensions import absolute_explicit, load_extensions
@@ -41,11 +46,10 @@ from tau.providers import builtin_providers
 from tau.sessions import (
     ForkedFrom,
     PickSession,
-    SessionChoice,
     SessionFlags,
-    choose_session,
     first_cursor_node,
     make_session_directory,
+    read_name,
     rename_session,
 )
 
@@ -74,7 +78,7 @@ class Started:
     closes through `stop`, the `loaded` config and the `model` (selected for a new session, else
     the one recorded at the first cursor), the session's working directory `cwd` (the process is
     in it), the session's `directory` (`None`: in memory) and whether this run `created` it (a new
-    session or a fork)."""
+    session or a fork). A session named during the run counts as used."""
 
     session: Session
     driver: Driver
@@ -85,12 +89,15 @@ class Started:
     directory: Path | None
     created: bool
     _nodes: int
+    _name: str | None
 
     @property
     def never_used(self) -> bool:
-        """This run created the session and it still has only the nodes it was created with and
-        no pending item."""
+        """This run created the session and it still has only the nodes it was created with, no
+        pending item and the name it was created with."""
         if not self.created or self.directory is None or len(self.session.tree) != self._nodes:
+            return False
+        if read_name(self.directory) != self._name:
             return False
         return not any(self.session.cursor(c).items for c in self.session.cursors())
 
@@ -127,36 +134,33 @@ def _create(
         raise
 
 
-def _recorded_model(session: Session) -> str:
-    """The model the first cursor's `Config` names (a session's root always names one)."""
-    recorded = config_fields(session.tree.config_at(first_cursor_node(session))).model
+def _recorded_model(session: Session, node: int) -> str:
+    """The model the `Config` in force at `node` names (a session's root always names one)."""
+    recorded = config_fields(session.tree.config_at(node)).model
     if recorded is None:
         raise ConfigError("the session's Config names no model")
     return recorded
 
 
-def _open(choice: SessionChoice) -> tuple[Session, Path]:
-    """The existing session, its lease taken; `Leased` names the session and the way to a copy."""
+def _lease(choice: SessionChoice) -> Session | None:
+    """The existing session, its lease taken (`None` unless the choice is an existing session);
+    `Leased` names the session and the way to a copy."""
+    if choice.kind != "existing":
+        return None
     assert choice.source is not None
     source = choice.source
     try:
-        session = Session.load(source.path)
+        return Session.load(source.path)
     except Leased as e:
         raise Leased(
             f"session {source.id} is in use by another process; to work on a copy of it: "
             f"tau --fork {source.id}"
         ) from e
-    if choice.name is not None:
-        try:
-            rename_session(source.path, choice.name)
-        except BaseException:
-            session.close()
-            raise
-    return session, source.path
 
 
-def _fork(choice: SessionChoice, now: int) -> tuple[Session, Path]:
-    """A new session copying one walk of the source, which is read without its lease."""
+def _fork(choice: SessionChoice, now: int) -> tuple[Session, Path, str]:
+    """A new session copying one walk of the source, which is read without its lease, and the
+    model it records. Everything that can fail on the source fails before the directory is made."""
     assert choice.source is not None
     assert choice.sessions is not None
     source = choice.source
@@ -164,10 +168,11 @@ def _fork(choice: SessionChoice, now: int) -> tuple[Session, Path]:
     try:
         node = first_cursor_node(copy) if choice.node is None else choice.node
         copy.tree.node(node)  # NoSuchNode, before anything is written
+        model = _recorded_model(copy, node)
         origin = ForkedFrom(source.id, node)
         directory = make_session_directory(choice.sessions, now, choice.cwd, choice.name, origin)
         try:
-            return copy.fork(node, now, directory), directory
+            return copy.fork(node, now, directory), directory, model
         except BaseException:
             shutil.rmtree(directory, ignore_errors=True)
             raise
@@ -192,6 +197,53 @@ def _driver(
     )
     driver.start()
     return driver
+
+
+def _session(  # noqa: PLR0913 - the pieces of one start
+    choice: SessionChoice,
+    held: Session | None,
+    loaded: LoadedConfig,
+    system: SystemText,
+    *,
+    selected: str | None,
+    now: int,
+) -> tuple[Session, Path | None, str]:
+    """The session the choice is, with its directory and model: created (with the `selected`
+    model), forked, or the `held` one, named if `-n` says so. What this creates is removed if it
+    fails."""
+    match choice.kind:
+        case "new":
+            assert selected is not None
+            session, directory = _create(choice, loaded, selected, system, now)
+            return session, directory, selected
+        case "fork":
+            return _fork(choice, now)
+        case "existing":
+            assert held is not None
+            assert choice.source is not None
+            selected = _recorded_model(held, first_cursor_node(held))
+            if choice.name is not None:
+                rename_session(choice.source.path, choice.name)
+            return held, choice.source.path, selected
+
+
+def _refuse_ignored_prompt_flags(flags: SessionFlags, system: SystemText | None) -> None:
+    """A program with its own `system` text would silently drop the flags that shape D20's."""
+    if system is not None and (
+        flags.system_prompt is not None or flags.append_system_prompt or flags.no_context_files
+    ):
+        raise ConfigError(
+            "--system-prompt, --append-system-prompt and -nc shape the assembled system prompt, "
+            "and this program supplies its own system text, so they would be ignored"
+        )
+
+
+def _refuse_model(choice: SessionChoice, model: str | None) -> None:
+    if choice.kind != "new" and model is not None:
+        raise ConfigError(
+            "--model names the model of a new session; this session records its own: "
+            "switch a running session with /model"
+        )
 
 
 async def start_session(  # noqa: PLR0913 - one start, every input it has
@@ -219,31 +271,28 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     clock = clock or SystemClock()
     prompts = prompts or Prompts(None, None)
     flags = SessionFlags.of(args, cwd)
+    _refuse_ignored_prompt_flags(flags, system)
     explicit = absolute_explicit(getattr(args, "extension"), cwd)  # noqa: B009
     discover = not getattr(args, "no_extensions")  # noqa: B009
     choice = choose_session(flags, home=tau_home(environ), cwd=cwd, pick=pick_session)
-    if choice.kind != "new" and model is not None:
-        raise ConfigError(
-            "--model names the model of a new session; this session records its own: "
-            "switch a running session with /model"
-        )
+    _refuse_model(choice, model)
     os.chdir(choice.cwd)
-    cli = None if flags.system_prompt is None else {"system_prompt": flags.system_prompt}
-    loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
-    added = load_extensions(loaded, explicit=explicit, discover=discover)
+    new = choice.kind == "new"
+    held = _lease(choice)
+    try:
+        cli = None if flags.system_prompt is None else {"system_prompt": flags.system_prompt}
+        loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
+        added = load_extensions(loaded, explicit=explicit, discover=discover)
+        text = system if system is not None else _assembled(flags)
+        selected = select_model(loaded.catalog, model, pick=prompts.pick) if new else None
+        session, directory, selected = _session(
+            choice, held, loaded, text, selected=selected, now=clock.now()
+        )
+    except BaseException:
+        if held is not None:
+            held.close()
+        raise
     created = choice.kind != "existing"
-    now = clock.now()
-    match choice.kind:
-        case "new":
-            selected = select_model(loaded.catalog, model, pick=prompts.pick)
-            text = system or _assembled(flags)
-            session, directory = _create(choice, loaded, selected, text, now)
-        case "fork":
-            session, directory = _fork(choice, now)
-            selected = _recorded_model(session)
-        case "existing":
-            session, directory = _open(choice)
-            selected = _recorded_model(session)
     extensions = [*own, *added] + ([SessionName(directory)] if directory else [])
     providers: Mapping[str, Provider] = {}
     try:
@@ -265,4 +314,5 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
         directory,
         created,
         len(session.tree),
+        None if directory is None else read_name(directory),
     )

@@ -22,7 +22,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
 | 5 extensions | **done** (2026-10-31): D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage and signed off 2026-10-31 (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
-| 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) building: D19, D18 and D20 built 2026-11-01; then 7B (D21, the wire), 7C (API docs). |
+| 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built and reviewed 2026-11-01, stopped for review; then 7B (D21, the wire), 7C (API docs). |
 | 8–9 | not started; see Phases. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -319,7 +319,7 @@ Every frontend needs these before it can start a session.
   (its own Cargo package, outside the workspace and the ratchet). It is the
   first client outside Python, and proof that the schema is enough.
 
-**Base tools:** `edit` (search and replace, reporting a diff; in Rust beside
+**Base tools:** decide first how the shared start (`tau.start_session`, D18 §5) gets them: today it hands the driver no tools, so a `tau` built on it has none unless an extension supplies them (a built-in base-tools extension, D19 Open "whether the base tools become a built-in", or a `tools` parameter). Then `edit` (search and replace, reporting a diff; in Rust beside
 `write`), and `find` (glob).
 
 **Standard extensions**, shipped built in:

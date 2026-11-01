@@ -57,13 +57,11 @@ from tau._core import (
     Undecodable,
     Version,
     WrongAnswer,
-    first_message,
 )
 from tau._dotenv import DotenvError
 from tau._extensions import (
     ExtensionLoadError,
     ExtensionSource,
-    absolute_explicit,
     list_extensions,
     load_extensions,
 )
@@ -103,7 +101,7 @@ from tau.events import (
     ToolProgress,
 )
 from tau.handles import Cursor, NodeHandle, Subject, TreeHandle
-from tau.markdown import export_markdown, to_markdown
+from tau.markdown import to_markdown
 from tau.protocols import (
     CallDraft,
     Clock,
@@ -123,16 +121,13 @@ from tau.session_start import Started, SystemText, start_session
 from tau.sessions import (
     ForkedFrom,
     PickSession,
-    SessionChoice,
     SessionFlags,
     SessionInfo,
     UnknownSession,
-    choose_session,
     find_session,
     first_cursor,
     first_cursor_node,
     list_sessions,
-    parse_ref,
     rename_session,
 )
 from tau.step_limit import StepLimit
@@ -230,7 +225,6 @@ __all__ = [
     "SampleEnd",
     "SampleError",
     "Session",
-    "SessionChoice",
     "SessionFlags",
     "SessionInfo",
     "Started",
@@ -260,22 +254,17 @@ __all__ = [
     "WriteTool",
     "WrongAnswer",
     "__version__",
-    "absolute_explicit",
     "base_tools",
     "builtin_providers",
     "check_config",
-    "choose_session",
-    "export_markdown",
     "find_session",
     "first_cursor",
     "first_cursor_node",
-    "first_message",
     "list_extensions",
     "list_sessions",
     "load_config",
     "load_extensions",
     "model_config",
-    "parse_ref",
     "prompts",
     "read_models",
     "rename_session",

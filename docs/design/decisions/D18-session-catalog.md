@@ -5,12 +5,21 @@ Status: accepted (2026-11-01), every Open question as recommended; proposed 2026
 `tau/session_start.py` and the catalog `tau/sessions.py`, so the catalog has no `Driver`
 dependency; the start takes the D20 seam as a `system(cwd, loaded)` callable and `-r`'s picker as
 `pick_session`; `list_sessions(sessions, *, cwd=None)` lists a row with an `error` in every
-listing, since such a row has no `cwd` to match; the prefix read is `first_message(directory)`;
+listing, since such a row has no `cwd` to match; the prefix read is `first_message(directory)`, in the
+native module and not exported by `tau`;
 flag combinations the ADR forbids are a `ConfigError` from `SessionFlags`, not an `argparse`
-error; a name is stored stripped; `tau sessions name REF` with no name prints nothing and exits 1;
+error; a name is stored stripped, at every place a name is set (a new session and a fork too), and is
+refused when empty or when it holds a `/` or `:` (a ref would read it as a path or a `:NODE`);
+a session named during the run (`/name`) counts as used, so `stop` does not delete it;
+`tau sessions name REF` with no name prints nothing and exits 1;
 `select_model` runs for a new session only: a continued or forked session's `Config` node
 already names its model (D13), so `-c` needs no `default_model`, and `--model` on one is a
-`ConfigError` naming `/model`; the `tau` and `tau -p` programs that call the start are Phase 8's). Phase 7, "Session
+`ConfigError` naming `/model`; for an existing session the start takes the lease right after the
+`chdir`, before the config, trust and extensions, and gives it back if any later step fails; a
+fork reads the model from its copy before it makes the directory; a program that passes its own
+`system` text with a prompt flag gets a `ConfigError`; `parse_ref`, `choose_session`,
+`SessionChoice` and `export_markdown` are not public (`to_markdown(nodes, of=info)` writes the
+export header); the `tau` and `tau -p` programs that call the start are Phase 8's). Phase 7, "Session
 catalog" (`docs/plan.md`). Amends D9, D12
 and D17 (see Amends). Answers D20's Open 4 and D21's Opens 1 and 2. Points marked
 "(review, 2026-10-31)" were decided in review; they stay proposals until the owner accepts
@@ -105,8 +114,9 @@ and that goes stale. It is not built.
 
 ### 3. Names
 
-- A name is optional free text in `info.json`, not necessarily unique; an empty string
-  removes it. No model sees it.
+- A name is optional text in `info.json`, not necessarily unique, stored stripped; it cannot
+  be empty or hold a `/` or `:` (a ref would read those as a path or `:NODE`), except that an
+  empty string removes a name. No model sees it.
 - It is set by `-n NAME` (names a new or forked session, renames an opened one), by `tau
   sessions name REF [NAME]` (without NAME it prints the name), and by **`/name [NAME]`**, the
   one command of the built-in extension **`session_name`**. **The startup adds `session_name`
@@ -161,11 +171,14 @@ NODE    = a node id, in decimal
      process's own cwd, symlinks resolved. For an existing session or a fork it is the
      session's recorded `cwd`.
   2. Run D19's steps (`load_config`, `load_extensions`, `select_model`), then add
-     `session_name` (§3).
+     `session_name` (§3). For an existing session the lease is taken between steps 1 and 2:
+     `Leased` is said before a trust question or an extension's import side effects, and the
+     lease is given back if any later step fails.
   3. Assemble the prompt for *new* only (D20 refuses the prompt flags on the other two).
   4. Create, load or fork (D19's step 4), then start the `Driver`.
 - **A session that was never used is removed.** At exit, if the program created the session
-  in this run and it has only the nodes it was created with and no pending item, the program
+  in this run and it has only the nodes it was created with, no pending item and the name it
+  was created with (naming it during the run, `/name`, counts as using it), the program
   deletes the directory while still holding the lease, then closes the session. Starting `tau`
   and quitting leaves nothing behind, and `-c` does not land on an empty session. A crash can
   leave one; it is listed as `(no messages)` and removed with `rm -r`.
@@ -208,7 +221,8 @@ NODE    = a node id, in decimal
 
 - `tau export REF [-o FILE] [--thinking]` writes one walk (REF's `:NODE`, else the first
   cursor's) as Markdown, to stdout by default. The library function is **`to_markdown(nodes,
-  *, thinking=False) -> str`**, pure over the nodes, so a server or a test calls it with no
+  *, thinking=False, of=None) -> str`**, pure over the nodes (with `of`, the session's row, it
+  also writes the header), so a server or a test calls it with no
   session.
 - **Deterministic**, so it can be diffed: no export time or node times. The header holds the
   title (§2), the id, `cwd`, the exported node and `forked_from` if any.

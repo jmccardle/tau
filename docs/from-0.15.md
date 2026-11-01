@@ -112,7 +112,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Model compare (N cursors, one prompt, keep one) | `compare.py`, `compare_view.py`, `/compare` | **planned** (unspecified) | Phase 8 tau-code sentence (above) lists "compare"; ADR D17 mentions it; no design |
 | Seeded branches / spawn (`spawn_branch`, `seed`) | `seed.py`, `docs/SEEDED-BRANCHES.md` | **planned** | Stage B1-B3 (sub-agent primitive: authored input, `tree.rest`, `tree.abort`), sub-agent extension Phase 8 |
 | Session listing (`list_sessions`) | `session_catalog.py` | **built** (changed) | D18: `tau.list_sessions`, `tau sessions [--all] [--json]`: a scan of `$TAU_HOME/sessions`, no index; message count and last message are **dropped** (they need a full read of the log), the title is the name, else the first message |
-| Session picker (`--resume`) | `session_picker.py` | **planned** | `-r` is in `session_flags` and `choose_session` takes the picker as a callable; the widget is Phase 8 |
+| Session picker (`--resume`) | `session_picker.py` | **planned** | `-r` is in `session_flags` and the start takes the picker as a callable (`pick_session`); the widget is Phase 8 |
 | Session naming (`--name`, `/name`) | `session_log.py` | **built** | D18: `-n NAME`, `tau sessions name`, `/name` from the built-in `session_name`; the name is in `info.json`. Auto-naming (`examples/42_session_autoname.py`) is **dropped**: the fallback title is the first message |
 | Session export: Markdown (`export.py`) | `export.py` | **built** (changed) | D18: `tau export REF [-o FILE] [--thinking]`, `tau.to_markdown`; deterministic, one walk (`REF:NODE`), thinking only on request |
 | Session export: HTML (`--export-html`) | `export.py`, `docs/HTML-EXPORT.md` | **post-0.16** | D18: not built |
@@ -221,7 +221,7 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `--prompt-template PATH`, `--no-prompt-templates` | **REGRESSION** | see 2.5 |
 | `--skill PATH`, `--no-skills` | **REGRESSION** | see 2.5 |
 | `-c`, `--continue` | **built** | D18: the newest session of the working directory, with any frontend (the `tau` program is Phase 8) |
-| `-r`, `--resume` | **planned** | D18: parsed and resolved (`choose_session`); the picker is Phase 8 |
+| `-r`, `--resume` | **planned** | D18: parsed and resolved by the start; the picker is Phase 8 |
 | `--session REF` | **built** | D18: a path, an id, a name or a unique id prefix, searched over the whole sessions directory |
 | `--fork REF` | **built** (changed) | D18: `REF[:NODE]`; see 2.3 |
 | `-n`, `--name` | **built** | D18 |

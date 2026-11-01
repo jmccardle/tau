@@ -909,7 +909,7 @@ report), and `tau config check`. Tests do the same.
   absent file differs from an empty one), which decide, and a redacted copy of the config
   (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs. D19 §4 adds
   `extensions_sha256` (the digest of the (path, sha256) list of every regular file under
-  `.tau/extensions/` except `__pycache__/`, with the marker for a missing directory), `extensions`
+  `.tau/extensions/` except `__pycache__/` and names starting with `.`, with the marker for a missing directory), `extensions`
   (the per-file map, for diffs) and `system_sha256` (`.tau/SYSTEM.md`, with the marker).
 - `ensure_trusted(root, home, *, ask)` returns a frozen **`Trusted`** (`root`,
   `config_text`, `env_text`, `extension_files` (the approved files under `.tau/extensions/`,
@@ -1099,8 +1099,7 @@ every frontend calls after `load_config` and before opening a session: the built
 leaves on and, with `discover`, the packages and drop-ins it leaves on (the project's only if
 trusted), then `explicit` (`-e` values: a path if it has a `/` or ends in `.py`, else the key of
 a discovered source, which loads whatever `load` says; naming one is the consent and needs no
-trust). `absolute_explicit(values, cwd)` makes the paths absolute against `cwd` (a program that
-changes directory calls it first). Each source is imported and given the driver's definition
+trust). A program that changes directory makes the paths absolute first; `start_session` does. Each source is imported and given the driver's definition
 checks (extension names, tools, commands, options types) so a failure names its source; then the
 checks across sources (one extension name, one tool name) and the `load` keys. **Every** failure
 is reported, as one **`ExtensionLoadError`** (an `ImportError`; `sources` the failed
@@ -1129,8 +1128,7 @@ fields). Exit 1 if any source failed. `tau ext enable KEY` / `tau ext disable KE
 `ConfigError` listing the keys and writes nothing; a project layer that sets the key the other way
 is said to win, and its file is never written. **`-e VALUE`** (also `--extension`, repeatable) and
 **`--no-extensions`** are `extension_flags()`, a parser a program passes as `parents=` and reads as
-`load_extensions(loaded, explicit=absolute_explicit(args.extension, cwd), discover=not
-args.no_extensions)`: `-e` names a file, a package directory or a discovered key and loads it even
+`start_session` reads them from the parsed args: `-e` names a file, a package directory or a discovered key and loads it even
 if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages and drop-ins but
 not built-ins; `-e x.pyc` is refused.
 
@@ -1157,7 +1155,7 @@ sessions` and `tau export` still work. **`--no-session`** keeps the session in m
 
 **`SessionInfo`** is a listing row: `id`, `path`, `cwd`, `name`, `forked_from` (**`ForkedFrom`**:
 `session`, `node`), `updated` (the log's mtime in seconds, which every synced write moves), `first`
-(the text of the first `User` node, `first_message(directory)`, read from the start of the log only
+(the text of the first `User` node, read from the start of the log only
 as far as that node, for a row with no `name` and only when asked for) and `error` (a directory
 that is not a readable session is a row with an `error`, never skipped). `title` is the name, else
 `first` on one line (cut to 80 characters), else `(no messages)`. `list_sessions(sessions, *,
@@ -1165,12 +1163,13 @@ cwd=None)` scans the directory every time (no index, which would be a second sou
 newest `updated` first, keeping the rows whose `cwd` equals the resolved `cwd` exactly (error rows
 always); `session_info(path)` is one row. Dropped from 0.15: message count and last message.
 
-A **session name** is optional free text in `info.json` (not unique; an empty name removes it; no
-model sees it), set by `-n NAME`, `tau sessions name REF [NAME]`, `rename_session(path, name)` and
+A **session name** is optional text in `info.json` (not unique; stored stripped, never empty
+and with no `/` or `:`, which a ref reads as a path or as `:NODE`: `ConfigError` says so; only
+`rename_session`, `tau sessions name REF ''` and `/name ''` remove one; no model sees it), set by `-n NAME`, `tau sessions name REF [NAME]`, `rename_session(path, name)` and
 `/name [NAME]` (see *session_name*). A rename replaces `info.json` whole and takes no lease; the
 last of two wins; no event announces it. Auto-naming is dropped.
 
-A **ref** is `SESSION` or `SESSION:NODE` (`parse_ref`): `SESSION` is a path (it contains `/`), an
+A **ref** is `SESSION` or `SESSION:NODE`: `SESSION` is a path (it contains `/`), an
 id, an exact name or a unique id prefix, tried in that order, over the whole sessions directory
 (`find_session`); `:NODE` is read only when the ref ends in `:` and digits. A name or prefix of
 several sessions, or of none, is **`UnknownSession`** (a `LookupError`), listing the candidates with
@@ -1183,7 +1182,7 @@ REF [-o FILE] [--thinking]`** writes the walk of the REF's node, else the first 
 Markdown (see *to_markdown*). Both take `--session-dir`.
 
 Helpers in the module: `make_session_directory(sessions, now, cwd, name, forked_from)` (the exclusive
-`mkdir` and the first `info.json`), `read_name(path)`, `absolute_ref(ref, cwd)` and `age_of(row)`
+`mkdir` and the first `info.json`), `read_name(path)` and `age_of(row)`
 (`now`, `5m`, `3h`, `2d`: the age `tau sessions` prints).
 
 ### first cursor, first_cursor, first_cursor_node
@@ -1203,9 +1202,8 @@ The one start `tau`, `tau -p` and `tau serve` all call, so they agree. `session_
 `-r/--resume`, `--session REF`, `--fork REF`, `--no-session` (at most one of the five; `ConfigError`
 otherwise), `-n/--name NAME`, `--session-dir DIR` and the prompt flags (see *system prompt*); **`SessionFlags.of(args, cwd)`** reads them,
 making `--session-dir` and a path REF absolute against `cwd`, the directory they were typed in.
-`choose_session(flags, *, home, cwd, pick)` resolves them, writing nothing, to a **`SessionChoice`**
-(`new`, `existing` or `fork`; the sessions directory; the working directory to change into; the
-source and node): `-c` is the newest session whose `cwd` is this directory
+The start resolves them, writing nothing, to a new session, an existing one or a fork (with the
+sessions directory, the working directory to change into, and the source and node): `-c` is the newest session whose `cwd` is this directory
 (`UnknownSession` naming the directory and the sessions directory if none); `-r` asks `pick(here,
 everywhere)`, a **`PickSession`** (Phase 8's picker; without one, `ConfigError`); `--session`
 opens a REF. A leased session is an error, never a stand-in: `Leased`, naming the session and
@@ -1213,21 +1211,23 @@ suggesting `--fork ID`.
 
 **`start_session(args, *, environ, cwd, system=None, prompts=None, pick_session=None, own=(),
 model=None, clock=None)`** (async) does, in this order: (0) the above, with `-e` paths made
-absolute (`absolute_explicit`); (1) `os.chdir` into the session's working directory (a new
-session's is the resolved `cwd`), before anything reads the config or `cwd`; (2) `load_config`,
+absolute; (1) `os.chdir` into the session's working directory (a new
+session's is the resolved `cwd`), before anything reads the config or `cwd`, and for an existing
+session take its lease, so `Leased` comes before a trust question or an extension's import; (2) `load_config`,
 `load_extensions` (`-e`, `--no-extensions`), the `session_name` extension (added after the loaded
 ones, for a session with a directory) and `select_model` (a new session only: another records its model in its `Config` node, so `--model` on
 it is a `ConfigError` naming `/model`); (3) for a **new**
 session only, `system(cwd, loaded)` (**`SystemText`**) is the text of its `System` node; by
 default `tau.system_prompt` with the prompt flags (see *system prompt*), and a program with its own
-prompt passes `system`; (4) create the session (`Session.create` in a new session directory
-with its `info.json`), load it (taking the lease), or fork it (`Session.read` of the source, no
+prompt passes `system` (the prompt flags are then a `ConfigError`: they would be ignored); (4) create the session (`Session.create` in a new session directory
+with its `info.json`), use the one leased in (1) (`-n` names it), or fork it (`Session.read` of the source, no
 lease, written with one sync, `forked_from` recorded once; `-n` names it), build the providers and
 start the `Driver`. A failure before step 4 creates nothing; a session this call created is removed
-if a later step fails. It returns **`Started`**: `session`, `driver`, `providers`, `loaded`,
+and the lease given back if a later step fails. It returns **`Started`**: `session`, `driver`, `providers`, `loaded`,
 `model`, `cwd`, `directory`, `created`, and `never_used`. `Started.stop()` stops the driver, deletes
 a **never-used session** (created by this run, still only its created nodes and no pending item)
-while the lease is held, then closes the session and the providers; a crash can leave one, listed
+while the lease is held, then closes the session and the providers; a session named during the
+run (`/name`) counts as used; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
 
 ### system prompt, base text, context file, system_prompt
@@ -1283,10 +1283,10 @@ not a D19 source: it has no key, `load` does not govern it, `--no-extensions` do
 a loaded extension named `session_name` is a name clash, and `tau ext list` shows it as `always`.
 Over the wire `/name` is an ordinary command.
 
-### to_markdown, export_markdown
+### to_markdown
 `tau.markdown` · D18 §8 · new
 
-`to_markdown(nodes, *, thinking=False) -> str` is pure over a walk's nodes and deterministic (no
+`to_markdown(nodes, *, thinking=False, of=None) -> str` is pure over a walk's nodes and deterministic (no
 export time or node times). `System` is under `## System` inside `<details>`, in a fence; `User`
 is `## User` (`## User (by gamemaster)` when an extension wrote it); `Assistant` has its text parts
 as written, each call as a line (`**Call:** tool (id)`) and a fenced block of its `args_raw`, and a
@@ -1295,8 +1295,8 @@ stop other than `End` or `Tools` as an italic line; `Results` is one fenced bloc
 for a call no earlier `Assistant` node made); `Config` is one italic line; `Custom` nodes are left
 out (they never reach a model). Thinking is a blockquote and only with `thinking=True`. Each
 fence is one backtick longer than the longest run of backticks in its content (three at least).
-`export_markdown(info, node, nodes, *, thinking=False)` adds the header `tau export` writes: the
-title, the id, `cwd`, the node and `forked_from`. The tree is not exported (Markdown is linear:
+With `of` (a `SessionInfo`) it starts with the header `tau export` writes: the title, the id,
+`cwd`, the node (the walk's last) and `forked_from`. The tree is not exported (Markdown is linear:
 export each branch by `REF:NODE`).
 
 ### read copy, Session.read
@@ -1314,9 +1314,10 @@ module `tau._project_code` (private) · D19 · new
 
 `ApprovedFiles` is the import finder of one project source: it serves the module's source from the
 bytes `Trusted.extension_files` holds (compiled under the file's real path, so a traceback names it)
-and refuses a module not among them, even if a file by that name has appeared. A file changed after
-approval cannot slip in; relative imports work; nothing writes `__pycache__` into the project. Data
-files an extension reads at run time are pinned at start, not re-checked on each read.
+and refuses a module not among them, even if a file by that name has appeared. A module changed
+after approval cannot slip in; relative imports work; nothing writes `__pycache__` into the
+project. Only imported modules come from the approved bytes: a data file an extension reads at run
+time (`__file__`, `importlib.resources`) comes from the disk as it is then.
 
 ## Hooks
 

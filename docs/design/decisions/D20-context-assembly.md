@@ -9,7 +9,8 @@ nothing is read for either; a `Config` node holding `system_prompt` was already 
 existing "only `model` and `extensions`" rule, so only a test was added; the worktree rule reads
 git's `.git` file and `commondir` itself, with no `git` process, and a git file it cannot read is a
 `ContextFileError` too; `tau context` asks to trust an untrusted project on a terminal, as a start
-does; the built-in base text is `python/tau/prompts/base.md`, from `BASE_SYSTEM_PROMPT` in
+does; the built-in base text is `python/tau/prompts/base.md` (it fills one field, `{{cwd}}`, with the
+session's resolved working directory; the ADR said the base text is literal), from `BASE_SYSTEM_PROMPT` in
 `tau-agent-core/src/tau_agent_core/sdk.py` at `v0.15.0`, with its `{{model}}` sentence, `{{tools}}`
 and `{{project_context}}` removed and "preferrable" spelled "preferable"). Phase 7, "Context
 assembly" (`docs/plan.md`). Amends D13

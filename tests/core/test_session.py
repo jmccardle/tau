@@ -460,10 +460,14 @@ def test_read_refuses_a_directory_that_is_not_a_session(tmp_path: Path) -> None:
         Session.read(tmp_path)
 
 
-def test_first_message_is_the_first_user_nodes_text_without_the_lease(tmp_path: Path) -> None:
+def test_a_listing_reads_the_first_user_message_without_the_lease(tmp_path: Path) -> None:
     session, _, _ = with_messages(tmp_path / "s")
-    assert tau.first_message(tmp_path / "s") == "hello"
     empty, _ = new(tmp_path / "empty")
-    assert tau.first_message(tmp_path / "empty") is None
+    for directory in ("s", "empty"):
+        (tmp_path / directory / "info.json").write_text(
+            f'{{"cwd": "{tmp_path}"}}', encoding="utf-8"
+        )
+    first = {row.id: row.first for row in tau.list_sessions(tmp_path)}  # both are held
+    assert first == {"s": "hello", "empty": None}
     empty.close()
     session.close()

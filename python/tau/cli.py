@@ -58,6 +58,7 @@ from tau._extensions import (
     switch_source,
 )
 from tau._options import option_fields, save_options
+from tau._refs import absolute_ref, parse_ref
 from tau._startup import LoadedConfig, load_config, prompts, select_model
 from tau._trust import (
     TAU_DIR,
@@ -77,17 +78,15 @@ from tau._user_config import UserConfig
 from tau._values import Field, Json, object_schema
 from tau.commandline import value
 from tau.context import system_prompt
-from tau.markdown import export_markdown
+from tau.markdown import to_markdown
 from tau.protocols import Extension, Provider
 from tau.providers import builtin_providers
 from tau.sessions import (
     UnknownSession,
-    absolute_ref,
     age_of,
     find_session,
     first_cursor_node,
     list_sessions,
-    parse_ref,
     read_name,
     rename_session,
     sessions_directory,
@@ -118,8 +117,7 @@ def _assignment(text: str) -> tuple[str, str, str]:
 def extension_flags() -> argparse.ArgumentParser:
     """A parser (`add_help=False`, for `parents=`) with the flags that choose extensions:
     `-e VALUE` (repeatable; a path, or the key of a discovered source) and `--no-extensions`.
-    Pass `absolute_explicit(args.extension, cwd)` and `discover=not args.no_extensions` to
-    `load_extensions`."""
+    `tau.start_session` reads them from the parsed args."""
     flags = argparse.ArgumentParser(add_help=False)
     flags.add_argument(
         "-e",
@@ -586,7 +584,7 @@ def _export(run: _Run, args: argparse.Namespace) -> int:
     try:
         at = first_cursor_node(copy) if node is None else node
         copy.tree.node(at)
-        text = export_markdown(info, at, copy.tree.walk(at), thinking=args.thinking)
+        text = to_markdown(copy.tree.walk(at), thinking=args.thinking, of=info)
     finally:
         copy.close()
     if args.output is None:

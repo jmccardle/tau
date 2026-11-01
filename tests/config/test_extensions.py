@@ -17,7 +17,6 @@ from tau import (
     ExtensionLoadError,
     LoadedConfig,
     UserConfig,
-    absolute_explicit,
     list_extensions,
     load_extensions,
 )
@@ -435,10 +434,6 @@ def test_a_relative_e_path_is_taken_against_the_directory_the_user_typed_it_in(
     write(world.home / "work" / "mine.py", MODULE.format(name="mine", extra=""))
     result = tau(world, "ext", "list", "--json", "-e", "./mine.py", cwd=world.home / "work")
     assert json.loads(result.out.splitlines()[-1])["origin"] == f"-e {world.home / 'work/mine.py'}"
-    assert absolute_explicit(["./mine.py", "search"], world.home / "work") == (
-        str(world.home / "work" / "mine.py"),
-        "search",
-    )
 
 
 # -- tau ext enable / disable
@@ -532,6 +527,15 @@ def test_a_pycache_in_the_extensions_directory_does_not_change_trust(world: Worl
     trust(world, root)
     write(root / ".tau" / "extensions" / "__pycache__" / "x.pyc", "junk")
     assert rows(world, cwd=root)["plan_mode"]["state"] == "on"
+
+
+def test_a_dot_file_in_the_extensions_directory_does_not_change_trust(world: World) -> None:
+    root = world.project()
+    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    trust(world, root)
+    write(root / ".tau" / "extensions" / ".plan_mode.py.swp", "editor junk")
+    assert rows(world, cwd=root)["plan_mode"]["state"] == "on"
+    assert "swp" not in tau(world, "trust", cwd=root).out
 
 
 def test_what_runs_is_what_was_approved_not_what_the_file_says_now(world: World) -> None:

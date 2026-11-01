@@ -1,8 +1,9 @@
 """Export a walk as Markdown (D18 section 8).
 
-`to_markdown(nodes, thinking=False)` is pure over the nodes: no session, no clock. The output is
-deterministic, so two exports can be diffed. `export_markdown` adds the header a `tau export`
-writes: the title, the session's id and `cwd`, the node exported and `forked_from`.
+`to_markdown(nodes, thinking=False, of=None)` is pure over the nodes: no session, no clock. The
+output is deterministic, so two exports can be diffed. With `of` (the session's `SessionInfo`) it
+adds the header a `tau export` writes: the title, the session's id and `cwd`, the node exported and
+`forked_from`.
 
 The layout, node by node: `System` under `## System` inside `<details>`; `User` as `## User`
 (`## User (by gamemaster)` when an extension wrote it); `Assistant` with its text parts as written,
@@ -15,7 +16,7 @@ output cannot end its own block.
 """
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
 from tau.sessions import SessionInfo
@@ -99,22 +100,19 @@ def _node(node: Node, thinking: bool, tools: dict[str, str]) -> list[str]:
             return []
 
 
-def to_markdown(nodes: Iterable[Node], *, thinking: bool = False) -> str:
-    """`nodes` (a walk, root first) as Markdown. `LookupError` for a `Results` node whose call no
-    earlier `Assistant` node in `nodes` made."""
-    tools: dict[str, str] = {}
-    blocks = [block for node in nodes for block in _node(node, thinking, tools)]
-    return "\n\n".join(blocks) + "\n"
-
-
-def export_markdown(
-    info: SessionInfo, node: int, nodes: Sequence[Node], *, thinking: bool = False
+def to_markdown(
+    nodes: Iterable[Node], *, thinking: bool = False, of: SessionInfo | None = None
 ) -> str:
-    """The document `tau export` writes: a header (the title, `info`'s id and `cwd`, the `node`
-    exported and `forked_from`) and `to_markdown(nodes)`."""
-    header = [f"# {info.title}", f"- id: {info.id}", f"- cwd: {info.cwd}", f"- node: {node}"]
-    if info.forked_from is not None:
-        header.append(f"- forked from: {info.forked_from.session} at node {info.forked_from.node}")
-    return (
-        header[0] + "\n\n" + "\n".join(header[1:]) + "\n\n" + to_markdown(nodes, thinking=thinking)
-    )
+    """`nodes` (a walk, root first) as Markdown. With `of`, the session's row, the document
+    starts with the header `tau export` writes: the title, `of`'s id and `cwd`, the node exported
+    (the walk's last) and `forked_from`. `LookupError` for a `Results` node whose call no earlier
+    `Assistant` node in `nodes` made."""
+    walk = list(nodes)
+    tools: dict[str, str] = {}
+    body = "\n\n".join(block for node in walk for block in _node(node, thinking, tools)) + "\n"
+    if of is None:
+        return body
+    header = [f"# {of.title}", f"- id: {of.id}", f"- cwd: {of.cwd}", f"- node: {walk[-1].id}"]
+    if of.forked_from is not None:
+        header.append(f"- forked from: {of.forked_from.session} at node {of.forked_from.node}")
+    return header[0] + "\n\n" + "\n".join(header[1:]) + "\n\n" + body
