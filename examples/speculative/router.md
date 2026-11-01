@@ -123,6 +123,13 @@ treat `Custom` nodes of kind `route` as inline dividers by convention. It also n
 (`test_the_typist_is_told_and_every_client_sees_the_nodes`), and `Client.options(cursor, "router")`
 for the table and `enabled`.
 
+## Since stage D
+
+`cursor.model()` and `cursor.models()` exist, and `CursorView.model` carries the folded model to every
+client. `switch` asks `cursor.models()` instead of trying `set_model` and catching `ConfigError`, and
+compares with `cursor.model()` instead of folding the walk. `model_on` stays for the one thing the
+handle cannot say: the model the walk had before the router's own `Config` nodes.
+
 ## Wish
 
 Smallest first.

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau import Author, Body, ConfigError, Cursor, Draft, Model, Node, Stop, Subject
+from tau import Author, Body, Cursor, Draft, Model, Node, Stop, Subject
 
 PREFIX = re.compile(r"!(\S+)\s+")
 ROUTER = Author.Extension("router")
@@ -51,8 +51,7 @@ class Options:
 
 
 def model_on(walk: list[Node], skip: Author | None = None) -> str | None:
-    """The model the walk's `Config` nodes set last, ignoring those authored by `skip`.
-    # WISH: cursor.model(): the folded model, as the sample resolves it."""
+    """The model the walk's `Config` nodes set last, ignoring those authored by `skip`."""
     models = (
         json.loads(n.body.config.data).get("model")
         for n in reversed(walk)
@@ -74,12 +73,11 @@ class Router:
 
     def switch(self, cursor: Cursor, model: str, why: str) -> bool:
         """Put the branch on `model` (writes nothing if it is on it); False if it is not a
-        configured model. # WISH: cursor.models(), so a prefix can be looked up, not tried."""
-        if model_on(cursor.walk()) != model:
-            try:
-                cursor.set_model(Model(model))
-            except ConfigError:
-                return False
+        configured model."""
+        if model not in cursor.models():
+            return False
+        if cursor.model() != model:
+            cursor.set_model(Model(model))
             cursor.write(Body.Custom("route", json.dumps({"model": model, "why": why})))
             cursor.tell(f"router: {model} ({why})")
         return True
@@ -102,6 +100,6 @@ class Router:
             return None
         if reply.body.stop != Stop.Tools:  # a tool batch is still the same turn
             home = model_on(cursor.walk(), skip=ROUTER)
-            if home and home != model_on(cursor.walk()):
+            if home and home != cursor.model():
                 cursor.set_model(Model(home))
         return None

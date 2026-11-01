@@ -1124,7 +1124,10 @@ catalog) and `set_options(**changes)` (the calling extension's own options, whic
 walk's must fit their type; see *config*; nothing is written otherwise),
 `save_options(**changes)` (the same options written into the user's config file for every session
 and read by the running driver at once, no node; also on a node handle, so a tool hook can save;
-see *UserConfig*), `move(to)`, `write(body, delivers)`,
+see *UserConfig*), `model()` (the qualified name of the model the cursor's branch is on, as its
+next sample resolves it; `ConfigError` if no `Config` on the walk names one or one is
+malformed), `models()` (the catalog's qualified names, in file order, a tuple: what `set_model`
+accepts), `show(text)` (see **show**), `move(to)`, `write(body, delivers)`,
 `set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default to every
 connected client; dropped if `to` is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
@@ -1147,7 +1150,7 @@ Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its
 only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
 `hook` parameter and always binds `None`, which syncs, and `_core` is a private module (rule 4
 keeps tests out of it). Not built: updating an item
-in place, `show` (`docs/plan.md`, roadmap row 8; Phase 5 stage D), and a handle's `sample` of a
+in place, and a handle's `sample` of a
 walk and running a tool outside any step (model.md §7).
 
 ### Poke, Now, Changed
@@ -1564,7 +1567,7 @@ has finished, and raises `CommandFailed`, whose message is the failure as `"Type
 the command raises (see *Cursor command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
 worker thread, as a tool does. A `Form` (**values**) is what a client knows of one: name,
 docstring, and the JSON Schema of its arguments with the named types' `"format"` and each
-default; fixed for the driver's life. `run` checks `args` as values of the language (with the
+default; fixed until the driver reloads. `run` checks `args` as values of the language (with the
 session; `"new"` after the rest) and raises `LookupError` (unknown command), `ValueError`
 (arguments), or `Busy`; nothing is opened or started for a refused call. Not the same as the
 `pre_input` refusal of a `/…` input: a client that does not know a command sends the line as text.
@@ -1622,7 +1625,10 @@ the user's file (`save_options`, which builds every extension's options from the
 change) and gives the driver the catalog read again (`use_catalog`); `ConfigError` if the
 extension has no options or the driver was given no `UserConfig`. `set_model`, `set_options`, and `configure` check the same before
 writing: the options folded at the cursor's `at` with the new values must build. The fold of a
-node is computed once and shared by its descendants that add no `Config`. `Client.options(cursor,
+node (its `Config` nodes' last model and options) is computed once and shared by its descendants
+that add no `Config`; `ExtensionOptions.model(node)` reads the model from it, for `Cursor.model()`
+and `CursorView.model`. `ExtensionOptions.reload(extensions)` reads other extensions' options
+types and forgets every fold (see **driver**). `Client.options(cursor,
 extension)` returns a `Form(extension, description, schema)`: the schema of the options object,
 each default the value now (a required option nobody set has none). `check_config(...,
 extensions=)` is the check `tau config check` makes for the extensions it knows, and a program
@@ -1909,7 +1915,7 @@ after either gets a stream already ended. A frontend's one rule is `except Conne
 then reconnect: a new client with the same id, since the log is the truth and there is no
 resume. Its constructor is the driver's: `LocalClient` takes a private `Calls`, which holds the
 driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`, `stop`, `rest`,
-`use_catalog`, `state`, `client` and `add_item`.
+`use_catalog`, `reload`, `state`, `client` and `add_item`.
 
 ### Calls
 `tau._calls.Calls`, `frontend` (private) · D16 · new
@@ -1933,10 +1939,10 @@ nodes, and a `CursorView` or `Labels` that replaces an earlier copy removes it
 and goes to the end. A stream opens with a `CursorView` per open cursor, a `CursorGone` per closed one, and `Labels`; the nodes are
 not in it (a node never changes, so a client reads the ones it needs by id with `walk`, and
 ignores an `Appended` node it has already read). Events are compared by value; a `CursorView`
-holds schemas (dicts), so it is not hashable. Status (`cursor.show`) is not built.
+holds schemas (dicts), so it is not hashable. What an extension shows (`cursor.show`) rides in the `CursorView`.
 
 ### CursorView
-`tau.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error)`
+`tau.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error, model, shown)`
 (`events.py`) · D16 · new (the event D16 calls `CursorState`; that name is the read type of
 `Session.cursor`)
 
@@ -1945,7 +1951,28 @@ One cursor as a client sees it, whole: `at`, `busy`, `auto`, its open `questions
 an `Ending`) and the `hook_error` (`HookFailure`) of a cursor hook that failed in it. The two
 are `None` from the start of a step until it ends, and after a reload: core keeps neither,
 the driver notes them from the `post_step` job and the failure. Not in the tree and not
-replayed, but in every snapshot, so a late client sees why a step stopped.
+replayed, but in every snapshot, so a late client sees why a step stopped. `model` is the
+qualified name of the model the cursor's branch is on (the last one a `Config` on the walk to
+`at` names: what its next sample uses), read from the options' fold of that walk, so it costs
+nothing per event; `None` if no `Config` on the walk names one or one is unreadable (a sample
+fails with why; the view never raises). `shown` is what each extension shows on the cursor
+(see **show**), as `(extension, text)` pairs in extension-name order.
+
+### show
+`Cursor.show(text)`; `CursorView.shown`; `Hub.show` · Phase 5 stage D · new
+
+**show** is one line of text per extension per cursor that every client is sent, for what the
+person cannot otherwise see of an extension's state: plan mode's mode, a loop's iteration, a
+search's round. `cursor.show(text)` (on a cursor handle, so from a cursor hook or a command that
+takes a `Cursor`; a retired handle raises `NotInHook`) sets this extension's line on the handle's
+own cursor and replaces what it showed; `cursor.show(None)` shows nothing. `TypeError` for
+anything else. It is the driver's memory, like a step's ending: not in the log or the
+scratchpad, so it is gone when the session is reloaded (a hook shows it again), and it is
+dropped when the cursor closes (`reopen` starts with none). Each change is sent whole, as a
+`CursorView`, which a client that has not read the last one never sees (the stream keeps one
+`CursorView` per cursor): `show` is state, not a message; use `tell` for a message. A line client
+prints a change as `[extension: text]` and a removal as `[extension: cleared]`. A tool hook's
+handle has no `show` yet.
 
 ### HookFailure
 `tau.HookFailure(extension, point, error)` (`events.py`) · D16 · new, retires `HookError`
@@ -2064,8 +2091,18 @@ built from a session, a mapping of provider name to provider (each keyed by its 
 known names in the `sample_error`), a `ModelCatalog` (where it resolves the model name in
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
-files calls it); a sample already running keeps the model it resolved. Its public surface is
-`start`, `stop`, `rest`, `use_catalog`, `state`, `client(id)` (how a frontend gets a
+files calls it); a sample already running keeps the model it resolved. `reload(extensions)`
+runs other extensions in place of the driver's (the driver's own `tools` stay) from the next job
+it dispatches: it rebuilds the options, the tools and their owners, and the commands, and forgets
+every folded `Config`, all or nothing (`DefinitionError`, nothing changed, as at construction). It
+is refused with `Busy`, naming the cursors that have an effect out, while any effect is out, because
+every job holds the set it was dispatched with (a tool call is an effect, so a tool cannot reload
+the driver it runs in); a failed or stopped driver raises as every call does. The tree is not
+rewritten: a `Config` node that sets options of an extension no longer there, or that no longer fit
+its options type, fails when read (`ConfigError` from `options()`), not at the reload. Like
+`use_catalog` it tells no client anything: a client asks `commands()` and `options()` again, so
+what those return changes from the call after the reload. Its public surface is
+`start`, `stop`, `rest`, `use_catalog`, `reload`, `state`, `client(id)` (how a frontend gets a
 `LocalClient`) and `add_item`; the calls a client makes are implemented by a private `Calls`
 (`_calls.py`), documented on `Client`: they run on the loop thread, call the session, publish what
 changed (`Hub.sync`), then poke the pump. `add_item(to, data)` is for whoever has something to
@@ -2117,6 +2154,17 @@ A **poke** wakes the pump after a frontend call.
 The mutable holder a cursor hook receives: `draft` (`pre_input`,
 `pre_sample`, `pre_reply`), `node` (`post_reply`, `post_result`), `ending`
 (`post_step`). The hook's edits to `draft` are what the hook answers with.
+
+`tools` is for `pre_sample` alone: the names of the tools the sample about to be asked is
+offered, or `None` (every hook starts with it) for all of them. What the hooks leave there when
+the point is done is the offer; the sample is given the driver's tools of those names, in the
+driver's order, and the next sample starts at `None` again. `[]` offers none. A name that is not
+one of the driver's tools (extensions' included) fails the step as a hook that breaks its
+contract does, `ValueError` naming the unknown names and the tools there are; so does a `str`
+(`TypeError`) or `tools` set at any other point (`ValueError`: nothing else uses it). An offer is
+not a wall: a model may call a tool it was not offered, and the call runs unless a `pre_tool`
+hook refuses it. An extension cannot read the driver's tool names, so one that names tools of its
+own choosing (plan mode's `read`, `grep`, `bash`) fails the step on a driver that lacks them.
 
 ### CallDraft
 `tau.CallDraft` (`protocols.py`) · new

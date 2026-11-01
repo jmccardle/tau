@@ -1,6 +1,6 @@
 """A line chat over a `LocalClient`: the hands-on demo of commands, questions and completion.
 
-python examples/chat.py [--model NAME]
+python examples/chat.py [--model NAME] [--extension FILE ...]
 
 Setup as for the other examples (examples/config.json; TAU_HOME names the directory holding
 the config and the session, `chat-session/`, which is reopened on the next run). Try
@@ -16,13 +16,27 @@ Tab like an argument (an empty answer declines). A command runs in the backgroun
 arguments are in, so a question it asks is answered at the prompt like any other; every open
 question is shown, and a line answers the first. A message someone else wrote to the cursor
 being watched (an extension that sent to it, another client) is shown under their name:
-`[gamemaster] text`; what is written to other cursors is not. Ctrl-D leaves.
+`[gamemaster] text`; what is written to other cursors is not. What an extension shows on the
+cursor (`cursor.show`: plan mode's mode, ralph's iteration) is printed as `[extension: text]`
+when it changes, and `[extension: cleared]` when it goes. Ctrl-D leaves.
+
+`--extension FILE` (repeatable) adds the extensions a Python file defines, after the demo's
+and `step_limit`, in the order named. Naming the file is the consent: it is imported and run
+with your authority, with no trust check (a config file is trusted by its hash; this is not
+that). A file defines an extension either as the module itself (it has a `name`, as
+examples/speculative/plan_mode.py does) or as classes with a `name` that are defined in the
+file and made with no arguments (`Ralph()`); every such class is added. `load_extensions`
+refuses a file that defines none. Try
+`--extension examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
 """
 
+import argparse
 import asyncio
+import importlib.util
 import readline
 import shlex
-from collections.abc import Awaitable, Callable
+import sys
+from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -38,9 +52,11 @@ from tau import (
     CallNamed,
     Client,
     CommandFailed,
+    ConfigError,
     Cursor,
     CursorView,
     Driver,
+    Extension,
     Form,
     Live,
     LoadedConfig,
@@ -71,6 +87,52 @@ async def branch_from(cursor: Cursor, node: NodeId) -> None:
     cursor.move(node)
 
 
+def load_extensions(path: Path) -> list[Extension]:
+    """The extensions the Python file `path` defines (the module docstring says how): the module
+    itself if it has a `name`, else one instance of each class defined in it that has one.
+    `ConfigError` if there is no such file or it defines none. The file runs as it is imported;
+    whatever it raises is raised."""
+    if not path.is_file():
+        raise ConfigError(f"--extension {path}: no such file")
+    name = f"chat_extension_{path.stem}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ConfigError(f"--extension {path}: not a Python file")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # a dataclass or a type hint looks its module up here
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    if isinstance(getattr(module, "name", None), str):
+        return [module]  # type: ignore[list-item]
+    found = [
+        thing()
+        for thing in vars(module).values()
+        if isinstance(thing, type)
+        and thing.__module__ == name
+        and isinstance(getattr(thing, "name", None), str)
+    ]
+    if not found:
+        raise ConfigError(
+            f"--extension {path} defines no extension: it needs a module-level `name`, or a "
+            "class defined in it with a `name`"
+        )
+    return found
+
+
+EXTENSION_FILES = argparse.ArgumentParser(add_help=False)
+EXTENSION_FILES.add_argument(
+    "--extension",
+    action="append",
+    default=[],
+    type=Path,
+    metavar="FILE",
+    help="a Python file defining extensions to add (repeatable); naming it is the consent",
+)
+
+
 class Demo:
     """Two commands, one of them also a tool, and a permission question before any tool."""
 
@@ -98,6 +160,7 @@ class Chat:
         self.options: dict[str, Form] = {}
         self.questions: tuple[OpenQuestion, ...] = ()
         self.busy = False
+        self.shown: dict[str, str] = {}  # what extensions show on the cursor, as last told
         self.error: object = None
         self.unplaced: list[Node] = []  # `User` nodes by others, not yet known to be on our branch
         self.running: set[asyncio.Task[None]] = set()  # commands started and not yet finished
@@ -168,6 +231,13 @@ class Chat:
                     f"\n[{view.hook_error.point} of {view.hook_error.extension} failed: "
                     f"{view.hook_error.error}]\n"
                 )
+        shown = dict(view.shown)
+        for who, text in shown.items():
+            if self.shown.get(who) != text:
+                self.out(f"\n[{who}: {text}]\n")
+        for who in self.shown.keys() - shown.keys():
+            self.out(f"\n[{who}: cleared]\n")
+        self.shown = shown
         if self.busy and not view.busy:
             self.out("\n")
         self.busy = view.busy
@@ -281,8 +351,9 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
     readline.parse_and_bind("tab: complete")
 
 
-async def main(name: str, loaded: LoadedConfig) -> None:
+async def main(name: str, loaded: LoadedConfig, files: Sequence[Path] = ()) -> None:
     clock = SystemClock()
+    added = [e for file in files for e in load_extensions(file)]
     providers = builtin_providers(loaded.environ)
     where = loaded.home / "chat-session"
     where.parent.mkdir(parents=True, exist_ok=True)
@@ -294,7 +365,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         session,
         providers,
         loaded.catalog,
-        extensions=[Demo(), StepLimit()],
+        extensions=[Demo(), StepLimit(), *added],
         user_config=loaded.user,
     )
     driver.start()
@@ -330,4 +401,5 @@ async def prompt(text: str) -> str:
 
 
 if __name__ == "__main__":
-    run(main)
+    files = EXTENSION_FILES.parse_known_args(sys.argv[1:])[0].extension
+    run(partial(main, files=files), [EXTENSION_FILES])

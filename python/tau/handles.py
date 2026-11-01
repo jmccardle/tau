@@ -47,6 +47,9 @@ loop has done it."""
 Close = Callable[[int], Awaitable[None]]
 """The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
 
+Show = Callable[[int, str, str | None], None]
+"""The driver's show of text on a cursor: `(cursor, extension, text or None)`."""
+
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
@@ -64,6 +67,14 @@ class OptionsReader(Protocol):
     ) -> None:
         """Raise `ConfigError` unless a `Config` node under `at` setting `model` and `extensions`
         is valid: a model in the catalog, options that fit their extension's type once folded."""
+        ...
+
+    def model(self, node: int) -> str:
+        """The qualified name of the model the branch at `node` is on; `ConfigError` if none."""
+        ...
+
+    def models(self) -> tuple[str, ...]:
+        """The qualified names of the models the catalog defines."""
         ...
 
     def save(self, extension: str, changes: Mapping[str, object]) -> None:
@@ -114,11 +125,17 @@ class Subject:
     from `pre_sample` it is a reply that answers the sample). `node` for
     `post_reply` and `post_result`. `ending` for `post_step`. `pre_step` has
     none.
+
+    `tools` is for `pre_sample` alone: the names of the tools this one sample is offered, or
+    `None` (the start) for all of them. What the hooks leave in it is the offer; the next sample
+    starts at `None` again. A name that is not one of the driver's tools, or any `tools` set at
+    another point, fails the step as a hook that breaks its contract does.
     """
 
     draft: Draft | None = None
     node: Node | None = None
     ending: Ending | None = None
+    tools: Sequence[str] | None = None
 
 
 class TreeHandle:
@@ -379,11 +396,13 @@ class Cursor(TreeHandle):
         abort: Abort,
         close: Close,
         options: OptionsReader,
+        show: Show,
     ) -> None:
         super().__init__(session, extension, now, poke, changed, rest, abort, close, id)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
+        self._show = show
         self._options = options
         self.id = id
 
@@ -397,6 +416,28 @@ class Cursor(TreeHandle):
         """This extension's options at the cursor's `at` (its `options` dataclass); raises
         `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.cursor(self.id).at)
+
+    def model(self) -> str:
+        """The qualified name of the model this cursor's branch is on: the last one a `Config` on
+        the walk to `at` names, which its next sample uses. `ConfigError` if none names one, or
+        a `Config` on the walk is malformed."""
+        return self._options.model(self.cursor(self.id).at)
+
+    def models(self) -> tuple[str, ...]:
+        """The qualified names of the models the catalog defines, in file order: what
+        `set_model` accepts."""
+        return self._options.models()
+
+    def show(self, text: str | None) -> None:
+        """Show `text` on this cursor to every client, as this extension's one line
+        (`CursorView.shown`); a later call replaces it, and `None` shows nothing. It is not in the
+        log or the scratchpad: it is gone when the session is reloaded, and dropped when the
+        cursor closes. `TypeError` for anything else."""
+        self._check()
+        if text is not None and not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"show takes a str or None, not {type(text).__name__}")
+        self._show(self.id, self.extension, text)
+        self._changed()
 
     def set_model(self, model: Model) -> int:
         """Write a `Config` node under `at` that sets the branch's `model` (a qualified name)
@@ -467,8 +508,8 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the `Notice` call, the clock, `poke` and `changed`, and the options. One place that
-    builds them."""
+    cursor), the `Notice` call, the clock, `poke` and `changed`, the options, and `show`. One
+    place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -480,6 +521,7 @@ class Handles:
     rest: Rest
     abort: Abort
     close: Close
+    show: Show
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
@@ -496,6 +538,7 @@ class Handles:
             self.abort,
             self.close,
             self.options,
+            self.show,
         )
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:

@@ -220,10 +220,10 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
 `set_auto`, `abort`, `open`, `set_label(cursor, label)`, `remove_label`, and D17's `close_cursor`
 and `reopen`), with the client filled
 in, plus `watch`, `answer`, `commands()` (each command's `Form`: name, description and schema;
-fixed for the driver's life), `run` (returns the command's result), `options(cursor,
+fixed until the driver reloads), `run` (returns the command's result), `options(cursor,
 extension)`, `configure(cursor, extension, values)` and `complete(cursor, type, prefix)`. They
 are implemented in a private `Calls`; `Driver` makes a client (`driver.client(id)`) and keeps
-only `start`, `stop`, `rest`, `use_catalog`, `state` and `add_item`. `go_to` and `abort` return
+only `start`, `stop`, `rest`, `use_catalog`, `reload`, `state` and `add_item`. `go_to` and `abort` return
 nothing.
 
 **Completion** has two sources and no callbacks: the values in the schema (`Literal`), and
@@ -413,7 +413,7 @@ Where the text above was silent, as built:
 - **Private modules:** `_values`, `_functions`, `_tools`; the exports are `Model`, `CursorId`,
   `LabelName`, `NodeId`, `Form`, `DefinitionError`, `CommandFailed` and the rest of the extension
   author's and frontend's surface.
-- **`Driver` keeps `start`, `stop`, `rest`, `use_catalog`, `state`, `client` and `add_item`**; the
+- **`Driver` keeps `start`, `stop`, `rest`, `use_catalog`, `reload`, `state`, `client` and `add_item`**; the
   client calls live in a private `Calls`.
 
 ## Alternatives

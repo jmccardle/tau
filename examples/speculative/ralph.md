@@ -141,6 +141,13 @@ found as the parent of the walk's first `Extension("ralph")` `User` node); a tre
 only channel is a `Notice` to the client that started it, so a second client (a phone, say) sees
 the tree grow and nothing else.
 
+## Since stage D
+
+**Wish 3, a status per cursor:** built as `cursor.show(text)`. The loop shows `iteration N of M` on
+its cursor and clears it when it stops, so a second client sees the count in `CursorView.shown`
+without counting nodes. The `Notice` per iteration is gone; the stop reason is still a `Notice`
+(it is a message, not a state). The line client prints `[ralph: iteration 2 of 25]`.
+
 ## Wish
 
 1. **Nothing in core for the loop.** It is 25 lines of extension on `post_step`, `move`, `write`

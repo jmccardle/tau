@@ -14,6 +14,7 @@ rules about performing one effect:
 - An interrupted call skips `pre_result`.
 - A question open when its cursor is aborted or sent elsewhere is declined, and so is one asked
   later in that step; a question never waits on a client being there (D16 section 3).
+- A sample is offered the tools its `pre_sample` hooks left in `subject.tools` (all if none did).
 - Every change a client could see is published by one comparison (`Hub.sync`), after each
   call, each pump pass, and each handle write; nothing is announced by hand.
 - A failure of the driver cancels every effect in flight; `stop()` cancels
@@ -41,8 +42,9 @@ from tau import trace
 from tau._builtin import Tau
 from tau._calls import Calls, frontend
 from tau._commands import Commands, assemble_commands
+from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
-from tau._core import Answer, Author, Ending, Hook, ItemData, Job, Session
+from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
 from tau._hub import Hub
 from tau._options import ExtensionOptions
 from tau._questions import Questions
@@ -153,7 +155,8 @@ class Driver:
     built-in extension `tau` first) run for clients; a command that takes a `Cursor` runs ahead
     of the `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels
     it. Extensions are listed in the constructor, in hook order, and checked there like tools
-    (`DefinitionError`); `model.md` does not yet say how `config_at` names them.
+    (`DefinitionError`); `model.md` does not yet say how `config_at` names them. `reload` swaps
+    them for others while no effect is out.
     """
 
     def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
@@ -176,14 +179,11 @@ class Driver:
                 raise ValueError(f"provider {provider.name!r} is given as {name!r}")
         self._providers = dict(providers)
         self._catalog = catalog
-        checked = check_extensions(extensions)
+        self._given = tuple(tools)
+        self._offered: dict[int, tuple[str, ...]] = {}  # cursor -> the offer of its pre_sample
         self._options = ExtensionOptions(
-            checked, session, lambda: self._catalog, user_config, self.use_catalog
+            (), session, lambda: self._catalog, user_config, self.use_catalog
         )
-        self._extensions = check_extensions([Tau(), *checked])
-        self._tools: Mapping[str, Tool]
-        listed, self._owners = assemble_tools(tools, self._extensions)
-        self._tools, self._progress_tools = check_tools(listed)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, _Outstanding] = {}
         # The hub is built from the questions, so these reach it late.
@@ -191,7 +191,7 @@ class Driver:
             lambda: self._hub.sync(),  # noqa: PLW0108
             lambda client: self._hub.connected(client),  # noqa: PLW0108
         )
-        self._hub = Hub(session, self._questions.open, self._questions.pool)
+        self._hub = Hub(session, self._questions.open, self._questions.pool, self._model_at)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
         # A sync tool or command writes through its handle from a worker thread; what the
@@ -209,10 +209,11 @@ class Driver:
             self._ending_at_rest,
             lambda cursor: _on_loop_wait(lambda: self._home, self._calls.abort, cursor),
             self._close_cursor,
+            self._hub.show,
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(
-            assemble_commands(self._extensions),
+            {},
             session=session,
             catalog=lambda: self._catalog,
             options=self._options,
@@ -241,6 +242,28 @@ class Driver:
         self._waits: Counter[asyncio.Task[None]] = (
             Counter()
         )  # effect -> waits on cursors it has out
+        self._adopt(extensions)
+
+    def _adopt(self, extensions: Sequence[Extension]) -> None:
+        """Make `extensions` (and the driver's own `tools`) what the driver runs from the next
+        job it dispatches. `DefinitionError`, with nothing changed, as at construction."""
+        checked = check_extensions(extensions)
+        every = check_extensions([Tau(), *checked])
+        listed, owners = assemble_tools(self._given, every)
+        tools, progress_tools = check_tools(listed)
+        commands = assemble_commands(every)
+        self._options.reload(checked)
+        self._commands.use(commands)
+        self._extensions, self._tools, self._owners = every, tools, owners
+        self._progress_tools = progress_tools
+
+    def _model_at(self, node: int) -> str | None:
+        """The model the branch at `node` is on, for a `CursorView`: `None` if no `Config` on it
+        names one or one is unreadable (a sample fails with why)."""
+        try:
+            return self._options.model(node)
+        except ConfigError:
+            return None
 
     def _check(self) -> None:
         """Raise the failure the driver died of, or that it is stopped."""
@@ -263,6 +286,23 @@ class Driver:
     def use_catalog(self, catalog: ModelCatalog) -> None:
         """Resolve model names in `catalog` from the next sample dispatched on."""
         self._catalog = catalog
+
+    def reload(self, extensions: Sequence[Extension]) -> None:
+        """Run `extensions` (listed in hook order, as at construction) instead of the ones the
+        driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
+        and forget every folded `Config`. Only when no effect is out (`Busy` naming the cursors
+        that have one), since every job holds the set it was dispatched with; the next job
+        dispatched uses the new one. `DefinitionError` (nothing changes) as at construction. The
+        tree is not rewritten: a `Config` node that sets options of an extension no longer here
+        (or no longer fitting its type) fails when it is read (`ConfigError`), not now. Clients
+        are told nothing, as after `use_catalog`: they ask `commands()` and `options()` again."""
+        self._check()
+        if self._out or self._tasks.effects:
+            raise Busy(
+                f"cannot reload with effects out: cursors {sorted(self._out)}, "
+                f"{len(self._tasks.effects)} effects running"
+            )
+        self._adopt(extensions)
 
     # Lifecycle
 
@@ -436,6 +476,51 @@ class Driver:
 
         self._tasks.spawn(unit(), effect=True)
 
+    def _offering(
+        self, cursor: int, subject: Subject, hooks: Callable[[], Awaitable[Answer]]
+    ) -> Callable[[], Awaitable[Answer]]:
+        """The effect of a `pre_sample` job: `hooks`, then what they left in `subject.tools` is
+        the offer of the sample that follows (a failed hook leaves none)."""
+
+        async def effect() -> Answer:
+            answer = await hooks()
+            if isinstance(answer, Answer.Hooks) and subject.tools is not None:
+                self._offered[cursor] = tuple(subject.tools)
+            return answer
+
+        return effect
+
+    def _hooks(self, cursor: int, job: Job.Hooks) -> Callable[[], Awaitable[Answer]]:
+        """The effect of a hooks job: the extensions' hooks for its point, with what the point
+        needs of the driver around them (a step's ending, the offer of a sample, a command)."""
+        at = None if job.node is None else self.session.tree.node(job.node)
+        subject = Subject(draft=job.draft, node=at, ending=job.ending)
+        if job.point == Hook.PreStep:
+            self._hub.began(cursor)
+        elif job.point == Hook.PostStep:
+            if job.ending is None:
+                raise RuntimeError(f"cursor {cursor}: a post_step job with no ending")
+            self._hub.ended(cursor, job.ending)
+        effect = partial(
+            run_hooks,
+            job,
+            subject,
+            self._extensions,
+            lambda ext: self._handles.cursor(cursor, ext.name),
+            partial(_hook_failed, self._hub, cursor),
+            self._tools,
+        )
+        if job.point == Hook.PreSample:
+            return self._offering(cursor, subject, effect)
+        if job.point == Hook.PreStep:
+            return self._commands.before(cursor, effect)
+        return effect
+
+    def _offered_tools(self, cursor: int) -> tuple[Tool, ...]:
+        """The tools a sample of `cursor` is offered: its `pre_sample` hooks' choice, once."""
+        offered = self._offered.pop(cursor, None)
+        return tuple(t for n, t in self._tools.items() if offered is None or n in offered)
+
     def _dispatch(self, cursor: int, job: Job) -> None:
         session = self.session
         live = partial(self._hub.live, cursor)
@@ -443,35 +528,15 @@ class Driver:
             case Job.Rest():
                 return
             case Job.Hooks():
-                at = None if job.node is None else session.tree.node(job.node)
-                subject = Subject(draft=job.draft, node=at, ending=job.ending)
-
-                if job.point == Hook.PreStep:
-                    self._hub.began(cursor)
-                elif job.point == Hook.PostStep:
-                    if job.ending is None:
-                        raise RuntimeError(f"cursor {cursor}: a post_step job with no ending")
-                    self._hub.ended(cursor, job.ending)
-                failed = partial(_hook_failed, self._hub, cursor)
-                effect = partial(
-                    run_hooks,
-                    job,
-                    subject,
-                    self._extensions,
-                    lambda ext: self._handles.cursor(cursor, ext.name),
-                    failed,
-                )
-                if job.point == Hook.PreStep:
-                    effect = self._commands.before(cursor, effect)
                 self._out[cursor] = _Outstanding()
-                self._unit(cursor, effect)
+                self._unit(cursor, self._hooks(cursor, job))
             case Job.Sample():
                 sample = SampleRun(
                     self._providers,
                     self._catalog,
                     session,
                     cursor,
-                    tuple(self._tools.values()),
+                    self._offered_tools(cursor),
                     live,
                 )
                 self._out[cursor] = _Outstanding(sample=sample)

@@ -13,6 +13,7 @@ import pytest
 from tau import (
     Body,
     CallDraft,
+    ConfigError,
     Cursor,
     CursorId,
     Delta,
@@ -467,3 +468,91 @@ def test_a_message_written_to_another_cursor_is_not_shown(tmp_path: Path) -> Non
         session.close()
 
     asyncio.run(scenario())
+
+
+# `--extension FILE`: extensions loaded from a Python file named on the command line.
+
+SPECULATIVE = EXAMPLES / "speculative"
+
+
+def written(tmp_path: Path, name: str, source: str) -> Path:
+    path = tmp_path / name
+    path.write_text(source)
+    return path
+
+
+def test_extension_is_repeatable_and_keeps_the_order_named() -> None:
+    args = chat.EXTENSION_FILES.parse_known_args(
+        ["--model", "m", "--extension", "a.py", "--extension", "b.py"]
+    )
+    assert args[0].extension == [Path("a.py"), Path("b.py")]
+    assert chat.EXTENSION_FILES.parse_known_args([])[0].extension == []
+
+
+@pytest.mark.parametrize("path", sorted(SPECULATIVE.glob("*.py")), ids=lambda p: p.stem)
+def test_every_speculative_example_loads_unchanged_and_builds_a_driver(
+    tmp_path: Path, path: Path
+) -> None:
+    loaded = chat.load_extensions(path)
+    assert [e.name for e in loaded] == [path.stem]
+    session = Session.create(model_config("scripted"), "sys", 0, tmp_path / "s")
+    models = read_models(
+        cli={"models": {"scripted": {"model": "scripted", "provider": "scripted"}}}
+    )
+    Driver(session, {"scripted": Scripted()}, models, extensions=[chat.Demo(), *loaded])  # type: ignore[arg-type]
+    session.close()
+
+
+def test_a_loaded_class_is_a_working_extension_in_the_chat(tmp_path: Path) -> None:
+    file = written(
+        tmp_path,
+        "shout.py",
+        "from tau import TreeHandle\n\n\n"
+        "async def shout(tree: TreeHandle, text: str) -> str:\n"
+        '    """Say it loud."""\n'
+        "    return text.upper()\n\n\n"
+        "class Shouter:\n"
+        '    name = "shouter"\n'
+        "    commands = (shout,)\n",
+    )
+
+    async def scenario() -> None:
+        extras = chat.load_extensions(file)
+        window, driver, session, screen = await start(tmp_path, Scripted(), Typed(), *extras)
+        await window.line("/shout hello")
+        await window.finished()
+        assert "[HELLO]" in screen.text
+        await driver.stop()
+        session.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_module_with_a_name_is_the_extension_itself_and_a_file_can_hold_several_classes(
+    tmp_path: Path,
+) -> None:
+    module = written(tmp_path, "mod.py", 'name = "modular"\n')
+    two = written(
+        tmp_path,
+        "two.py",
+        "from tau import StepLimit\n\n\n"  # imported, so not this file's
+        'class Second:\n    name = "second"\n\n\n'
+        'class First:\n    name = "first"\n\n\n'
+        "class Helper:\n    pass\n",
+    )
+    assert [e.name for e in chat.load_extensions(module)] == ["modular"]
+    assert [e.name for e in chat.load_extensions(two)] == ["second", "first"]
+
+
+def test_a_file_that_is_not_there_or_defines_no_extension_is_refused(tmp_path: Path) -> None:
+    empty = written(tmp_path, "empty.py", "class Helper:\n    pass\n")
+    with pytest.raises(ConfigError, match="no such file"):
+        chat.load_extensions(tmp_path / "missing.py")
+    with pytest.raises(ConfigError, match="defines no extension"):
+        chat.load_extensions(empty)
+
+
+def test_what_a_file_raises_when_imported_is_raised(tmp_path: Path) -> None:
+    broken = written(tmp_path, "broken.py", "raise RuntimeError('boom')\n")
+    with pytest.raises(RuntimeError, match="boom"):
+        chat.load_extensions(broken)

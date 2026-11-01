@@ -156,8 +156,7 @@ class HarnessSense:
         siblings = (
             [c for c in node.tree.children(here.parent) if c != here.id] if here.parent else []
         )
-        configs = [json.loads(n.body.config.data) for n in walk if isinstance(n.body, Body.Config)]
-        model = next((c["model"] for c in reversed(configs) if "model" in c), "?")
+        model = views[node.cursor_id].model or "?"
         called_by = {c: [n for n, at in labels.items() if at == c] for c in views}
         lines = [
             f"cursor {mine} at node {here.id}, depth {len(walk) - 1}, labels "
@@ -368,10 +367,6 @@ class HarnessSense:
 
     # WISH: `reload`, the tool that closes the loop (edit a file, then watch it work).
     #
-    #     async def reload(self, node: NodeHandle, extension: str) -> str:
-    #         """Re-import an extension's file and swap it into the running harness."""
-    #         return node.harness.replace_extension(extension, load(path_of(extension)))
-    #
-    # `Driver` fixes its extensions, tools and commands when it is built; nothing swaps one.
-    # Wanted: `Driver.replace_extension(name, new)`, taking effect at the next hook job, refused
-    # while a hook of the old one is out, `DefinitionError` (nothing swapped) as at build.
+    # `Driver.reload(extensions)` exists now, but it is refused while any effect is out, and a tool
+    # call is an effect: a tool cannot reload the driver it runs in. The app that owns the driver
+    # reloads between steps (`rest`, then `reload`); this tool can only `check_extension`.

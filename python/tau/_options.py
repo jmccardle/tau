@@ -12,6 +12,7 @@ options: stored options are read without one. A `Model` is checked against the c
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from tau._config import ConfigError, config_fields
@@ -31,6 +32,15 @@ from tau._values import (
 if TYPE_CHECKING:  # _config_layers checks options, so it imports us
     from tau._config_layers import ModelCatalog
     from tau._user_config import UserConfig
+
+
+@dataclass(frozen=True)
+class _Fold:
+    """What the `Config` nodes on one node's walk set, folded: the last `model` named, and per
+    extension the options set (each option's last value)."""
+
+    model: str | None = None
+    extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
 
 
 def option_fields(extension: str, options: object) -> tuple[Field, ...]:
@@ -104,8 +114,9 @@ def _description(options: type) -> str:
 
 
 class ExtensionOptions:
-    """The options of a driver's extensions, read at a node. `extensions` are checked here
-    (`DefinitionError`); `catalog` says where the layers' options are now."""
+    """The options of a driver's extensions, read at a node, and the model a node's branch is on
+    (the same fold of its `Config` nodes). `extensions` are checked here (`DefinitionError`);
+    `catalog` says where the layers' options are now."""
 
     def __init__(
         self,
@@ -119,32 +130,55 @@ class ExtensionOptions:
         self._catalog = catalog
         self._user = user
         self._use_catalog = use_catalog
-        self._types: dict[str, type] = {}
-        self._fields: dict[str, tuple[Field, ...]] = {}
+        self._types: dict[str, type]
+        self._fields: dict[str, tuple[Field, ...]]
         # Per node, the options its walk's Config nodes set. A node never changes, so each is
         # folded once, from its parent's; a node that is no Config shares its parent's.
-        self._folds: dict[int, Mapping[str, Mapping[str, object]]] = {}
+        self._folds: dict[int, _Fold] = {}
+        self.reload(extensions)
+
+    def reload(self, extensions: Sequence[object]) -> None:
+        """Read `extensions` as the driver's from now on (`DefinitionError`; nothing changes
+        then), and forget every fold. A `Config` node holds options of an extension that is no
+        longer here, or no longer fits its type: that fails when it is read, never here."""
+        types: dict[str, type] = {}
+        fields: dict[str, tuple[Field, ...]] = {}
         for ext in extensions:
             options = getattr(ext, "options", None)
             if options is not None:
                 name = cast("str", getattr(ext, "name"))  # noqa: B009
-                self._fields[name] = option_fields(name, options)
-                self._types[name] = cast("type", options)
+                fields[name] = option_fields(name, options)
+                types[name] = cast("type", options)
+        self._types, self._fields = types, fields
+        self._folds.clear()
 
     def names(self) -> tuple[str, ...]:
         """The extensions that have options."""
         return tuple(self._types)
 
+    def model(self, node: int) -> str:
+        """The qualified name of the last model a `Config` on `node`'s walk names: the model the
+        next sample from there uses. `ConfigError` if none names one, or a `Config` on the walk
+        is malformed."""
+        name = self._fold(node).model
+        if name is None:
+            raise ConfigError("config is missing 'model'")
+        return name
+
+    def models(self) -> tuple[str, ...]:
+        """The qualified names of the models the catalog defines, in file order."""
+        return self._catalog().names()
+
     def _raw(self, extension: str, node: int) -> Json:
         if extension not in self._types:
             raise ConfigError(f"extension {extension!r} has no options")
         layered = self._catalog().extensions.get(extension, {})
-        return {**layered, **self._fold(node).get(extension, {})}
+        return {**layered, **self._fold(node).extensions.get(extension, {})}
 
-    def _fold(self, node: int) -> Mapping[str, Mapping[str, object]]:
+    def _fold(self, node: int) -> _Fold:
         tree = self._session.tree
         chain: list[Node] = []
-        base: Mapping[str, Mapping[str, object]] = {}
+        base = _Fold()
         current: int | None = node
         while current is not None:
             if current in self._folds:
@@ -155,8 +189,15 @@ class ExtensionOptions:
             current = here.parent
         for here in reversed(chain):
             if isinstance(here.body, Body.Config):
-                over = config_fields(here.body.config).extensions
-                base = {**base, **{k: {**base.get(k, {}), **v} for k, v in over.items()}}
+                set_here = config_fields(here.body.config)
+                over = set_here.extensions
+                base = _Fold(
+                    base.model if set_here.model is None else set_here.model,
+                    {
+                        **base.extensions,
+                        **{k: {**base.extensions.get(k, {}), **v} for k, v in over.items()},
+                    },
+                )
             self._folds[here.id] = base
         return base
 

@@ -19,6 +19,7 @@ from tau import (
     Config,
     CursorView,
     Ending,
+    Event,
     Next,
     Notice,
     Part,
@@ -77,6 +78,17 @@ def users(h: Harness) -> list[str]:
     ]
 
 
+def shown(events: list[Event]) -> list[str]:
+    """Each line ralph showed, in order, from the views a client was sent (a repeat is one)."""
+    lines: list[str] = []
+    for e in events:
+        if isinstance(e, CursorView):
+            for who, text in e.shown:
+                if who == "ralph" and text not in lines[-1:]:
+                    lines.append(text)
+    return lines
+
+
 @scenario
 async def test_it_loops_fresh_contexts_until_the_model_writes_done(tmp_path: Path) -> None:
     prompt = prompt_file(tmp_path)
@@ -100,12 +112,9 @@ async def test_it_loops_fresh_contexts_until_the_model_writes_done(tmp_path: Pat
     assert users(h) == ["task 1", "task 2", "task 2"], "the file is read again each iteration"
     assert not h.session.cursor(h.cursor).auto
     assert h.session.cursor(h.cursor).next == Next.Wait
-    assert h.notices() == [
-        "ralph: iteration 1 finished",
-        "ralph: iteration 2 finished",
-        "ralph: iteration 3 finished",
-        "ralph: stopped after 3 iterations: DONE exists",
-    ]
+    assert shown(h.heard) == [f"iteration {i} of 25" for i in (1, 2, 3)]
+    assert (await h.view()).shown == (), "the line is cleared when the loop stops"
+    assert h.notices() == ["ralph: stopped after 3 iterations: DONE exists"]
     await h.close()
 
 
@@ -142,7 +151,7 @@ async def test_the_cursor_never_spins_because_every_iteration_moves_it(tmp_path:
 
 @scenario
 async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_path: Path) -> None:
-    """The count is a Notice for every client; a client also has the nodes."""
+    """The count is shown to every client; a client also has the nodes."""
     prompt = prompt_file(tmp_path)
     h = await Harness.create(
         tmp_path / "s",
@@ -151,7 +160,7 @@ async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_pa
         config=config(ralph={"max_iterations": 3}),
     )
     tui = await h.connect("tui")
-    seen: list[object] = []
+    seen: list[Event] = []
 
     async def listen() -> None:
         async for event in tui:
@@ -165,8 +174,9 @@ async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_pa
     nodes = [n for e in seen if isinstance(e, Appended) for n in e.nodes]
     mine = Author.Extension("ralph")
     assert sum(n.by == mine and isinstance(n.body, Body.User) for n in nodes) == 3
-    assert len(h.notices()) == 4
-    assert [e.text for e in seen if isinstance(e, Notice)] == h.notices(), "the tui is told too"
+    assert shown(seen) == [f"iteration {i} of 3" for i in (1, 2, 3)], "the tui is told too"
+    assert [e.text for e in seen if isinstance(e, Notice)] == h.notices()
+    assert h.notices() == ["ralph: stopped after 3 iterations: max_iterations 3"]
     await h.close()
 
 

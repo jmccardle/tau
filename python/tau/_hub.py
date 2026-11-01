@@ -155,19 +155,23 @@ class Hub:
     """The feeds open now, and what was last published to them.
 
     `questions` says a cursor's open questions, and `lost(client)` is told, once, that a client
-    that had a stream open has none now (closed, cut off, or abandoned and collected). A step's
-    ending and a hook's failure are told to the hub (`began`, `ended`, `hook_failed`) because
-    core keeps neither."""
+    that had a stream open has none now (closed, cut off, or abandoned and collected). `model`
+    says the model a node's branch is on, or `None`. A step's ending, a hook's failure and the
+    text an extension shows are told to the hub (`began`, `ended`, `hook_failed`, `show`) because
+    core keeps none of them."""
 
     def __init__(
         self,
         session: Session,
         questions: Callable[[int], tuple[OpenQuestion, ...]],
         lost: Callable[[str], None],
+        model: Callable[[int], str | None],
     ) -> None:
         self._session = session
         self._questions = questions
         self._lost = lost
+        self._model = model
+        self._shown: dict[int, dict[str, str]] = {}  # cursor -> extension -> its text
         self._feeds: weakref.WeakSet[Feed] = weakref.WeakSet()
         self._clients: set[str] = set()  # who had a stream open at the last sync
         self._syncing = False
@@ -247,6 +251,15 @@ class Hub:
         ending = self._steps.get(cursor, (None, None))[0]
         self._steps[cursor] = (ending, HookFailure(extension, point, error))
 
+    def show(self, cursor: int, extension: str, text: str | None) -> None:
+        """`extension` shows `text` on `cursor`, replacing what it showed; `None` shows nothing.
+        Not sent until the next `sync`. `NoSuchCursor` if `cursor` is not open."""
+        self._session.cursor(cursor)
+        if text is None:
+            self._shown.get(cursor, {}).pop(extension, None)
+        else:
+            self._shown.setdefault(cursor, {})[extension] = text
+
     def sync(self) -> None:
         """Send what changed since the last call: the new nodes, then each changed `CursorView`
         (so a view never points at nodes the client has not been sent), then a `CursorGone` for
@@ -284,6 +297,7 @@ class Hub:
             if cursor not in self._gone:  # the driver's memory of the cursor goes with its view
                 self._gone[cursor] = gone = CursorGone(cursor, at)
                 self._views.pop(cursor, None)  # a cursor closed before any sync has none
+                self._shown.pop(cursor, None)
                 self._steps.pop(cursor, None)
                 self._send(gone)
         labels = tuple(session.labels())
@@ -325,4 +339,6 @@ class Hub:
             tuple(state.items),
             ending,
             hook_error,
+            self._model(state.at),
+            tuple(sorted(self._shown.get(cursor, {}).items())),
         )

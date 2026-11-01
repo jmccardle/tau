@@ -6,6 +6,8 @@ finishes (a reply that asks for no tools), `post_step` moves the cursor back to 
 the file again, re-read, so the model may rewrite its own prompt. Every iteration is a new branch
 from `root` with a fresh context; all state that matters is in files the model edits.
 
+While it loops, the cursor shows "iteration N of M" (`cursor.show`), cleared when it stops.
+
 It stops when a file `DONE` exists beside the prompt, or after `max_iterations`, or when
 auto-step is turned off by anything else: an abort, a failed step, `StepLimit`. The loop's state
 (root, prompt, who asked) is this object's memory; auto-step is off after a reload, so a reloaded
@@ -54,8 +56,12 @@ class Ralph:
         loop = Loop(at if root is None else root, prompt)
         self._restart(cursor, loop)
         self._loops[cursor.id] = loop
+        self._show(cursor, loop)
         cursor.set_auto(True)
         return f"ralph: {prompt} from node {loop.root}"
+
+    def _show(self, cursor: Cursor, loop: Loop) -> None:
+        cursor.show(f"iteration {loop.iterations} of {cursor.options().max_iterations}")
 
     def _restart(self, cursor: Cursor, loop: Loop) -> None:
         text = loop.prompt.read_text()  # before moving: a failure leaves the cursor where it is
@@ -76,7 +82,6 @@ class Ralph:
         if state.next != Next.Wait:
             self._loops[cursor.id] = loop
             return None  # mid-iteration: tools to run, or results to answer
-        cursor.tell(f"ralph: iteration {loop.iterations} finished")
         options = cursor.options()
         if (loop.prompt.parent / options.done).exists():
             self._stop(cursor, loop, f"{options.done} exists")
@@ -85,9 +90,11 @@ class Ralph:
         else:
             loop.iterations += 1
             self._restart(cursor, loop)
+            self._show(cursor, loop)
             self._loops[cursor.id] = loop
         return None
 
     def _stop(self, cursor: Cursor, loop: Loop, why: str) -> None:
         cursor.set_auto(False)
+        cursor.show(None)
         cursor.tell(f"ralph: stopped after {loop.iterations} iterations: {why}")

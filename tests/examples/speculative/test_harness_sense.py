@@ -95,7 +95,7 @@ async def test_whereami_says_where_the_cursor_is_and_what_the_harness_offers(
     batch = h.session.cursor(h.cursor).at - 2
     assert f"cursor [0] at node {batch}, depth 3, labels ['main'], model fake" in answer
     assert "extension plan_mode (" in answer
-    assert "plan_mode.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_sample'" in answer
+    assert "plan_mode.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_step'" in answer
     assert "extension harness_sense (" in answer
     assert "harness_sense.py)" in answer
     assert "tools offered: read, whereami, tree, context_budget" in answer
@@ -196,7 +196,8 @@ async def test_hook_errors_remembers_what_the_next_step_erases_from_the_view(
 @scenario
 async def test_hook_errors_lists_the_calls_an_extension_refused(tmp_path: Path) -> None:
     script = [use("write", path="x"), use("hook_errors"), say("ok")]
-    h, _ = await sensed(tmp_path, script, tools=[FakeTool("write", "wrote")], extras=[plan_mode])
+    tools = [FakeTool(n, "ran") for n in ("read", "write", "grep", "bash")]
+    h, _ = await sensed(tmp_path, script, tools=tools, extras=[plan_mode])
     await h.run("plan")
     await h.settle()  # `run` came back before its step ended: /config now would be Busy
     # "read-only" is not a property of a tool: plan mode knows `read` and `grep` by name, so

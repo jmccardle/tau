@@ -14,6 +14,9 @@ best-scoring reply and the result is the explored tree.
 
 The judge may be searched: `judge_depth=1` rates each verdict with a smaller fan of judges.
 
+While a search runs, its cursor shows the round (`cursor.show`): every client sees it, and it is
+gone when the search ends.
+
 A fan is `open`, `send` to each branch, `await rest` on each, `close_cursor` each once its reply
 is read. Aborting the search aborts the branches in flight, so it stops spending.
 """
@@ -26,7 +29,7 @@ from collections.abc import Coroutine, Iterator
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
-from tau import Body, Cursor, Ending, NodeId, Part, Progress, Stop, Tree, TreeHandle
+from tau import Body, Cursor, Ending, NodeId, Part, Stop, Tree, TreeHandle
 
 SCORE = "forest/score"
 JUDGE = (
@@ -171,22 +174,27 @@ class Forest:
         self.commands = (self.search, forest_tree)
 
     async def search(
-        self,
-        cursor: Cursor,
-        progress: Progress,
-        n: Annotated[int, "candidates per round"],
-        question: str,
+        self, cursor: Cursor, n: Annotated[int, "candidates per round"], question: str
     ) -> str:
         """Tree-search an answer: n samples per round, a judge scores each, the best is expanded."""
+        try:
+            return await self._search(cursor, n, question)
+        finally:
+            cursor.show(None)
+
+    async def _search(self, cursor: Cursor, n: int, question: str) -> str:
         opt, tree = cursor.options(), cursor.tree
         start = cursor.cursor(cursor.id).at
         used0 = spent(tree, start)[0]
         cost = n * (1 + judge_cost(opt.judges, opt.judge_depth))
         if cost > opt.max_samples:
             raise ValueError(f"one round costs {cost} samples, max_samples is {opt.max_samples}")
-        point, say, rounds = None, question, 0
+        point, say, rounds, previous = None, question, 0, ""
         while spent(tree, start)[0] - used0 + cost <= opt.max_samples:
             rounds += 1
+            cursor.show(
+                f"round {rounds}: sampling" + (f" (previous: {previous})" if previous else "")
+            )
             replies = [
                 r
                 for r in await self._fan(cursor, start if point is None else point, say, n)
@@ -199,7 +207,7 @@ class Forest:
             marks = [round(scored[r].value, 2) for r in replies]
             used = spent(tree, start)[0] - used0
             line = f"round {rounds}: {marks}, {used}/{opt.max_samples} samples"
-            progress(line)
+            previous = line
             point, say = select(scored, opt.explore), opt.refine
             if (
                 opt.steer

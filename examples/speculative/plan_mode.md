@@ -145,6 +145,23 @@ it (the line client draws no history).
 - which tools were refused: `Results` nodes with `Err` by `Extension("plan_mode")`, rendered
   differently from tool errors (needs the `by` of each outcome, which `Appended` carries).
 
+## Since stage D
+
+Two of the wishes below are built and the extension uses them.
+
+- **Wish 2, the tool filter:** `pre_sample` sets `subject.tools` to `allow_tools` plus `bash` (when
+  `allow_bash` is not empty), so the model is no longer shown `write`. The `# WISH` is gone and the
+  test asserts `["read", "grep", "bash"]`. What it cost to find: an offer is not a wall (the driver
+  still runs a call to a tool the model was not offered, so `pre_tool` keeps refusing it), and the
+  extension cannot read the driver's tool names, so a driver without `read`, `grep` or `bash` fails
+  the step with `ValueError ... unknown names`. `examples/chat.py` has none of the three: plan mode
+  there fails at the first sample and says why.
+- **Wish 5 and Fought 6, the mode on screen:** `pre_step` and `post_step` call `cursor.show("plan
+  mode")` while the option says plan, `show(None)` otherwise, so every client has the badge in
+  `CursorView.shown` and the line client prints `[plan_mode: plan mode]` and `[plan_mode: cleared]`.
+  It is level-triggered at step boundaries: going back to a node by hand shows nothing until the next
+  step.
+
 ## Wish
 
 Smallest first.

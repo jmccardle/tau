@@ -320,7 +320,7 @@ and `pre_step` and turns auto-step off in `post_step`. Core keeps no count.
 |---|---|---|---|
 | `pre_step` | cursor | `Hooks(PreStep)` | none |
 | `pre_input` | cursor | `Hooks(PreInput, draft)`, per item | the input draft |
-| `pre_sample` | cursor | `Hooks(PreSample)` | the sample draft; a reply answers it |
+| `pre_sample` | cursor | `Hooks(PreSample)` | the sample draft; a reply answers it; `subject.tools` names the tools this sample is offered (the driver filters, core never sees it) |
 | `pre_reply` | cursor | `Hooks(PreReply, draft)` | the reply draft |
 | `post_reply` | cursor | `Hooks(PostReply)` | the `Assistant` node |
 | `pre_tool` | tool | inside `RunCalls` | the call draft; setting an outcome answers it (later `pre_tool` hooks still run and may change it) |
@@ -359,7 +359,7 @@ driver writes itself (`Interrupted`, a failed hook's `Err`) skip `pre_result`.
 records; append anywhere; add, update, or remove any item; open cursors; set
 labels; `send` text to a cursor (authored by its extension); `await rest(cursor)` (the ending of a
 cursor's last step, or `None` if not known) and `abort(cursor)`, each refusing the handle's own cursor
-(waiting on itself deadlocks; aborting itself cancels itself); ask and tell (§9). *Not built (Phase 5, not yet):* `show` (Stage D), `sample` a walk
+(waiting on itself deadlocks; aborting itself cancels itself); ask and tell (§9); read its branch's `model()` and the catalog's `models()`; `show(text)` (§9). *Not built (Phase 5, not yet):* `sample` a walk
 and run a tool outside any step. On its own cursor, and only while its hook job is out, it may `move`, `write(body, delivers)`, and set
 `auto_step`. A node handle (tool hooks) is the same minus anything on the
 cursor. Every handle call goes into Rust at once (§11). An extension reads
@@ -476,7 +476,7 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 
 | event | to | carries |
 |---|---|---|
-| `CursorView` | all clients | per open cursor: `at`, `busy`, `auto`, open questions, pending items, how the last step ended and the failed hook, if any |
+| `CursorView` | all clients | per open cursor: `at`, `busy`, `auto`, open questions, pending items, how the last step ended and the failed hook, if any, the model its branch is on, and the line each extension shows (`show`, not persisted) |
 | `CursorGone` | all clients | a cursor closed (D17): its last node, `at`, for restarting; replaces that cursor's `CursorView` |
 | `Labels` | all clients | every label and its cursor |
 | `Appended` | all clients | the new nodes, bodies included |
@@ -585,7 +585,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q22 | Approve one call, deny another | `cursor.ask` from `pre_tool`; declined returns a reason |
 | Q23 | Lifecycle hooks | none until Phase 5 needs one |
 | Q24 | Record a rewritten call? | not by core |
-| Q25 | `pre_sample` changes the request only through the tree? | yes, by moving the cursor |
+| Q25 | `pre_sample` changes the request only through the tree? | yes, by moving the cursor; and, in the driver alone, the tools it offers (`subject.tools`) |
 | Q26 | Revert a one-off `Config`? | no |
 | Q27 | A never-run call on resend | `partial_calls: text` (markup pinned in Phase 4) |
 | Q28 | Moves record `by` | yes |

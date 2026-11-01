@@ -173,6 +173,11 @@ class Commands:
             _builtin.NAME,
         )
 
+    def use(self, commands: Mapping[str, _Command]) -> None:
+        """Run `commands` (`assemble_commands`) from now on; one already waiting for its step
+        runs as it was."""
+        self._commands = dict(commands)
+
     def forms(self) -> tuple[Form, ...]:
         """Each command's form, and `/config`'s if some extension has options: its one
         parameter is the extension, and `options` has the rest."""

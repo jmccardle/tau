@@ -649,6 +649,7 @@ def test_the_drivers_public_surface_is_small() -> None:
         "stop",
         "rest",
         "use_catalog",
+        "reload",
         "state",
         "client",
         "add_item",

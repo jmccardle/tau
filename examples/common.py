@@ -9,7 +9,7 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
 
 from tau import (
@@ -34,10 +34,13 @@ class SampleFailed(Exception):
     """A sample failed: the session holds a `sample_error` node saying why."""
 
 
-def choose_model(argv: list[str]) -> tuple[str, LoadedConfig]:
+def choose_model(
+    argv: list[str], parents: Sequence[argparse.ArgumentParser] = ()
+) -> tuple[str, LoadedConfig]:
     """`--model NAME` (qualified or bare; default: the config's `default_model`) and the
-    loaded config. Asks a live terminal to trust a project or to pick among matches."""
-    parser = argparse.ArgumentParser()
+    loaded config. Asks a live terminal to trust a project or to pick among matches. `parents`
+    are parsers (`add_help=False`) whose options the program reads for itself."""
+    parser = argparse.ArgumentParser(parents=parents)
     parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
     args = parser.parse_args(argv)
     ask = prompts(sys.stdin, sys.stdout)
@@ -91,10 +94,14 @@ def run_until_signalled(main: Coroutine[object, object, None]) -> None:
         sys.exit(128 + caught[0])
 
 
-def run(main: Callable[[str, LoadedConfig], Coroutine[object, object, None]]) -> None:
-    """Choose a model, run `main(name, loaded)`; on a failure print one line and exit 1."""
+def run(
+    main: Callable[[str, LoadedConfig], Coroutine[object, object, None]],
+    parents: Sequence[argparse.ArgumentParser] = (),
+) -> None:
+    """Choose a model, run `main(name, loaded)`; on a failure print one line and exit 1.
+    `parents` are as for `choose_model`."""
     try:
-        name, loaded = choose_model(sys.argv[1:])
+        name, loaded = choose_model(sys.argv[1:], parents)
         run_until_signalled(main(name, loaded))
     except (ConfigError, TrustError, DotenvError, SampleFailed) as e:
         sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")

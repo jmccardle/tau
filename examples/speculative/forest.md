@@ -160,6 +160,13 @@ a tree view; the parent links, read with `node`/`children` (one call per node); 
 `forest/score` means; and its own rule for hiding judge branches from the tree (the score's
 `verdicts`). Joining mid-search is fine: the snapshot has the busy children, the nodes are readable.
 
+## Since stage D
+
+**(b) Progress** is now `cursor.show`: the search shows `round N: sampling (previous: <scores>)` on
+its cursor for every client and clears it when the command ends (a `finally`). The `Progress`
+parameter and its `Notice` to the client that ran the command are gone. A `show` replaced before a
+client reads it is never seen, so each round makes one `show`, at its start.
+
 ## Wish
 
 Smallest first; each says what it deletes or enables.

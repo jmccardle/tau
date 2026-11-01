@@ -105,7 +105,11 @@ class CursorView:
     (`busy`), `auto`-step, its open `questions` (oldest first), its pending `items` (an
     `ItemData.Input` says who wrote it: its `by`), and how its last step ended (`ending`) with the
     `hook_error` that ended it, if a cursor hook failed in
-    it. Both are `None` from the start of a step until it ends, and after a reload."""
+    it. Both are `None` from the start of a step until it ends, and after a reload. `model` is the
+    qualified name of the model the cursor's branch is on (what its next sample uses), `None` if
+    no `Config` on the branch names one or one is unreadable (a sample says which). `shown` is
+    what each extension shows on the cursor (`Cursor.show`), as `(extension, text)` pairs in
+    extension-name order; it is not in the log, so it is empty after a reload."""
 
     cursor: int
     at: int
@@ -115,6 +119,8 @@ class CursorView:
     items: tuple[Item, ...]
     ending: Ending | None
     hook_error: HookFailure | None
+    model: str | None
+    shown: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)

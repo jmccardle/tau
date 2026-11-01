@@ -91,7 +91,7 @@ class Client(AsyncIterator[Event], Protocol):
 
     async def commands(self) -> tuple[Form, ...]:
         """Each command's form: its name, description and argument schema (named types with
-        their `"format"`, each default), fixed for the driver's life. If some extension has
+        their `"format"`, each default), fixed until the driver reloads. If some extension has
         options there is one more, `config`, whose one argument is the extension; it is
         changed with `configure`, not `run`."""
         ...

@@ -44,16 +44,18 @@ from tau.protocols import (
 )
 
 
-async def run_hooks(
+async def run_hooks(  # noqa: PLR0913, PLR0917 - a hook job and all it is run with
     job: Job.Hooks,
     subject: Subject,
     extensions: Sequence[Extension],
     cursor_for: Callable[[Extension], Cursor],
     failed: Callable[[str, str, str], None],
+    tools: Collection[str] = (),
 ) -> Answer:
     """Every extension's hook for the point, in order. The first string halts; an exception, or
     a hook that breaks its contract (returns what is not a `str` or `None`, leaves a `draft`
-    that is not a `Draft`), fails the step with `"Type: msg"` and its traceback on stderr;
+    that is not a `Draft`, sets `subject.tools` anywhere but `pre_sample` or to what is not
+    names among `tools`), fails the step with `"Type: msg"` and its traceback on stderr;
     otherwise the subject's draft comes back. A failure is also reported as
     `failed(point, extension name, "Type: msg")`, once, before the answer."""
     name = job.point.name
@@ -65,7 +67,7 @@ async def run_hooks(
         try:
             with trace.span("hook", f"{name} {ext.name}"):
                 stop = await hook(cursor, subject)
-            _check_cursor_hook(name, ext, stop, subject)
+            _check_cursor_hook(name, ext, stop, subject, tools)
         except (Exception, asyncio.CancelledError) as e:
             if not _hook_failed(e):
                 raise
@@ -96,12 +98,33 @@ def describe_failure(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
 
 
-def _check_cursor_hook(point: str, ext: Extension, stop: object, subject: Subject) -> None:
+def _check_cursor_hook(
+    point: str, ext: Extension, stop: object, subject: Subject, tools: Collection[str]
+) -> None:
+    _check_offer(point, ext, subject.tools, tools)
     if stop is not None and not isinstance(stop, str):
         raise TypeError(f"{point} of extension {ext.name!r} returned {stop!r}, not a str or None")
     if subject.draft is not None and not isinstance(subject.draft, Draft):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise TypeError(
             f"{point} of extension {ext.name!r} left {subject.draft!r} as the draft, not a Draft"
+        )
+
+
+def _check_offer(
+    point: str, ext: Extension, offered: Sequence[str] | None, tools: Collection[str]
+) -> None:
+    """`subject.tools` is `None`, or at `pre_sample` a list of the names of `tools`."""
+    if offered is None:
+        return
+    where = f"{point} of extension {ext.name!r}"
+    if point != "pre_sample":
+        raise ValueError(f"{where} set tools: only pre_sample says which tools a sample is offered")
+    if isinstance(offered, str) or not all(isinstance(n, str) for n in offered):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f"{where} set tools to {offered!r}, not a sequence of tool names")
+    unknown = sorted(set(offered) - set(tools))
+    if unknown:
+        raise ValueError(
+            f"{where} set tools to unknown names {unknown}; the tools are {sorted(tools)}"
         )
 
 

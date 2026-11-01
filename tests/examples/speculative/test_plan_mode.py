@@ -1,8 +1,8 @@
 """examples/speculative/plan_mode.py, driven the way a frontend would drive it.
 
 Each test is one flow: what the person does (`/plan`, answers), what the model is offered and
-told, what the tree records, and what the client is sent. `shown` is what a frontend must do to
-show the mode: ask the client for the options, because no event carries it.
+told, what the tree records, and what the client is sent. The mode is the option `shown` reads,
+and the line "plan mode" every client is sent in `CursorView.shown` while it holds.
 """
 
 import asyncio
@@ -44,12 +44,23 @@ APPROVED = Body.User(plan_mode.APPROVED)
 BRIEF = Body.User(plan_mode.BRIEF)
 
 
+def base_tools() -> list[FakeTool]:
+    """The tools plan mode names: it fails the step if the driver lacks one."""
+    return [FakeTool(n, "ran") for n in ("read", "write", "grep", "bash")]
+
+
 async def started(
     tmp_path: Path, script: list[Reply], tools: list[FakeTool] | None = None
 ) -> Harness:
     return await Harness.create(
-        tmp_path, provider=FakeProvider(script), tools=tools or [], extensions=[plan_mode]
+        tmp_path,
+        provider=FakeProvider(script),
+        tools=base_tools() if tools is None else tools,
+        extensions=[plan_mode],
     )
+
+
+MODE = (("plan_mode", "plan mode"),)
 
 
 async def shown(h: Harness, cursor: int | None = None) -> str:
@@ -84,6 +95,7 @@ async def test_plan_with_a_task_briefs_the_model_and_asks_when_the_reply_ends(
     assert asked(view) == ["Approve this plan?"]
     assert view.questions[0].schema["enum"] == ["approve", "revise", "reject"]
     assert view.busy, "the step is held open by the question"
+    assert view.shown == MODE
     assert len(h.provider.requests) == 1
     await h.close()
 
@@ -96,6 +108,7 @@ async def test_approve_leaves_plan_mode_and_the_model_carries_the_plan_out(tmp_p
     await h.respond("approve")
     await h.settle()
     assert await shown(h) == "act"
+    assert (await h.view()).shown == (), "leaving plan mode clears the line"
     assert h.bodies()[-2:] == [APPROVED, Body.Assistant([Part.Text("done")], Stop.End)]
     # who said "carry out the plan"? the extension: the person only clicked
     by = {n.body: n.by for n in h.nodes() if isinstance(n.body, Body.User)}
@@ -177,11 +190,11 @@ async def test_abort_declines_the_question_like_any_other(tmp_path: Path) -> Non
 
 
 @scenario
-async def test_the_model_is_offered_every_tool_and_refused_what_is_not_read_only(
+async def test_the_model_is_offered_only_read_only_tools_and_a_call_to_another_is_refused(
     tmp_path: Path,
 ) -> None:
-    tools = [FakeTool(n, "ran") for n in ("read", "write", "bash")]
-    read, write, bash = tools
+    tools = base_tools()
+    read, write, _, bash = tools
     calls = [
         Part.Call("a", "write", "{}"),
         Part.Call("b", "read", "{}"),
@@ -193,8 +206,8 @@ async def test_the_model_is_offered_every_tool_and_refused_what_is_not_read_only
     await h.run("plan")
     await h.send("look around")
     await h.settle()
-    # WISH: this is `["read", "grep"]` plus the allowed bash. Today the model sees every tool.
-    assert h.provider.requests[0].tool_names == ["read", "write", "bash"]
+    # `write` is not offered; a model may still call it, and plan mode refuses
+    assert h.provider.requests[0].tool_names == ["read", "grep", "bash"]
     results = h.bodies()[-2]
     assert isinstance(results, Body.Results)
     assert [(i, type(o).__name__) for i, o, _ in results.outcomes] == [
@@ -243,7 +256,7 @@ async def test_plan_mode_belongs_to_the_branch_not_the_cursor(tmp_path: Path) ->
 
 
 @scenario
-async def test_every_client_sees_the_question_and_none_is_told_the_mode(tmp_path: Path) -> None:
+async def test_every_client_sees_the_question_and_the_mode(tmp_path: Path) -> None:
     h = await started(tmp_path, [say(PLAN)])
     await h.run("plan", {"task": "add retry"})
     await h.settle()
@@ -251,8 +264,7 @@ async def test_every_client_sees_the_question_and_none_is_told_the_mode(tmp_path
     snapshot = [e async for e in _snapshot(late)]
     views = [e for e in snapshot if isinstance(e, CursorView)]
     assert asked(views[0]) == ["Approve this plan?"]
-    # nothing in a CursorView says "plan mode": a client has to ask `options` itself
-    assert not any("plan" in repr(v).replace("Approve this plan?", "") for v in views)
+    assert views[0].shown == MODE
     await late.answer(views[0].questions[0].id, "reject")
     await h.settle()
     assert await shown(h) == "act"
@@ -296,7 +308,7 @@ async def until(condition: Callable[[], bool]) -> None:
 
 
 @scenario
-async def test_a_line_client_lists_plan_asks_inline_and_never_says_it_is_in_plan_mode(
+async def test_a_line_client_lists_plan_asks_inline_and_says_it_is_in_plan_mode(
     tmp_path: Path,
 ) -> None:
     chat = load_chat()
@@ -325,12 +337,11 @@ async def test_a_line_client_lists_plan_asks_inline_and_never_says_it_is_in_plan
     await window.line("approve")
     await h.settle()
     assert h.bodies()[-2] == APPROVED
-    # after the command's own reply, the client itself says nothing of the mode the branch is in;
-    # the messages the extension wrote are shown, under its name, as any author's are
-    later = "".join(screen).split("approve the plan]\n", 1)[1].replace("Approve this plan?", "")
-    own = [line for line in later.splitlines() if not line.startswith("[plan_mode] ")]
-    assert "plan" not in "\n".join(own)
-    assert "[plan_mode] add retry" in later
+    # the mode is shown when it begins and when it ends
+    assert "[plan_mode: plan mode]" in "".join(screen)
+    assert "".join(screen).count("[plan_mode: plan mode]") == 1
+    await until(lambda: "[plan_mode: cleared]" in "".join(screen))
+    assert "[plan_mode] add retry" in "".join(screen), "an extension's message is shown by name"
     listener.cancel()
     await client.close()
     await h.close()

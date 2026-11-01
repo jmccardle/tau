@@ -163,6 +163,13 @@ What it cannot render today: the extensions with their files and tools offered, 
 options of every extension. The client protocol has `commands()` and `options(cursor, ext)` but
 no read for the tools or the extensions. It reconstructs nothing else.
 
+## Since stage D
+
+`whereami` reads the model from the cursor's `CursorView` (`CursorView.model`) instead of folding
+the `Config` nodes itself. `Driver.reload` exists, but only when no effect is out and a tool call is
+an effect, so the `reload` tool in the last WISH still cannot be written inside the driver it would
+reload; the app that owns the driver reloads between steps.
+
 ## Wish
 
 Smallest first.

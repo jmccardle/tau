@@ -1,9 +1,12 @@
 """Speculative: plan mode, as an extension (a clone of the Claude Code / pi idea).
 
 `/plan [task]` puts the branch in plan mode: the model is briefed to research and propose a plan,
-and may only use read-only tools. When its reply ends, the person is asked to approve, revise or
-reject the plan. Approve leaves plan mode and tells the model to carry the plan out; revise
-sends the person's feedback and stays in plan mode; reject leaves plan mode and does nothing.
+and is offered only the read-only tools (`pre_sample` sets `subject.tools`; `allow_tools` and
+`bash` must be tools of the driver, or the step fails and says which are not). While the branch is
+in plan mode the line "plan mode" is shown on its cursor (`cursor.show`). When its reply ends,
+the person is asked to approve, revise or reject the plan. Approve leaves plan mode and tells the
+model to carry the plan out; revise sends the person's feedback and stays in plan mode; reject
+leaves plan mode and does nothing.
 
 The mode is an option (`extensions.plan_mode.mode`), so it is a `Config` node on the branch: it
 survives a reload, follows `go_to`, differs between cursors, and `/config plan_mode mode=act`
@@ -53,11 +56,26 @@ async def plan(cursor: Cursor, task: str | None = None) -> str:
     return "plan mode on: read-only tools; you will be asked to approve the plan"
 
 
+async def badge(cursor: Cursor, subject: Subject) -> str | None:
+    """Show the mode while the branch is in plan mode, however it was entered. Level-triggered at
+    both ends of a step; going back to a node by hand shows nothing until the next step."""
+    cursor.show("plan mode" if cursor.options().mode == "plan" else None)
+    return None
+
+
+pre_step = post_step = badge
+
+
 async def pre_sample(cursor: Cursor, subject: Subject) -> str | None:
-    """Brief the model once per stay in plan mode, however plan mode was entered (`/plan`,
-    `/config`, a config file, going back to a node on a plan-mode branch)."""
-    if cursor.options().mode != "plan":
+    """Offer the read-only tools, and brief the model once per stay in plan mode, however plan
+    mode was entered (`/plan`, `/config`, a config file, going back to a node on a plan-mode
+    branch)."""
+    options = cursor.options()
+    if options.mode != "plan":
         return None
+    subject.tools = list(
+        dict.fromkeys([*options.allow_tools, *(["bash"] * bool(options.allow_bash))])
+    )
     marks = [Body.User(BRIEF), Body.User(APPROVED)]  # what we wrote; text we `send` is ours too
     last = [n.body for n in cursor.walk() if n.by == cursor.by and n.body in marks]
     if not last or last[-1] != marks[0]:
@@ -91,9 +109,8 @@ async def post_reply(cursor: Cursor, subject: Subject) -> str | None:
 
 
 async def pre_tool(node: NodeHandle, call: CallDraft) -> str | None:
-    """Refuse what the model may not do in plan mode."""
-    # WISH: a per-branch tool list, so `write` and `bash` are not even offered in plan mode.
-    # Here the model is shown every tool and finds out by being refused.
+    """Refuse what the model may not do in plan mode. The model is only offered the read-only
+    tools, but offering is not enforcing: a call to a tool it was not offered still arrives."""
     options = node.options()
     if options.mode != "plan" or call.tool in options.allow_tools:
         return None

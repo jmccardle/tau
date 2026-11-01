@@ -7,7 +7,7 @@ the scores asserted per candidate text also check that order.
 
 import asyncio
 import importlib.util
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 
@@ -81,6 +81,17 @@ def two_rounds(gate: Gate | None = None) -> FakeProvider:
     return FakeProvider([*first, *TWO_ROUNDS])
 
 
+def shown(events: Sequence[object]) -> list[str]:
+    """Each line forest showed, in order, from the views a client was sent (a repeat is one)."""
+    lines: list[str] = []
+    for e in events:
+        if isinstance(e, CursorView):
+            for who, text in e.shown:
+                if who == "forest" and text not in lines[-1:]:
+                    lines.append(text)
+    return lines
+
+
 @scenario
 async def test_n_cursors_sample_at_once_and_the_main_cursor_goes_to_the_best_leaf(
     tmp_path: Path,
@@ -112,8 +123,13 @@ async def test_n_cursors_sample_at_once_and_the_main_cursor_goes_to_the_best_lea
         "best #20 (0.95); 12 samples, 0 tokens"
     ), "B's mean backs up its three refinements"
     assert h.session.cursor(h.cursor).at == 20
-    assert h.notices()[0].startswith("round 1: [0.2, 0.9, 0.5], 6/12")
-    assert len(h.notices()) == 2
+    assert h.notices() == [], "the rounds are shown on the cursor, not told to one client"
+    lines = shown(h.heard)
+    assert lines == [
+        "round 1: sampling",
+        "round 2: sampling (previous: round 1: [0.2, 0.9, 0.5], 6/12 samples)",
+    ]
+    assert (await h.view()).shown == (), "gone when the search ends"
     assert h.session.cursors() == [h.cursor], "each branch is closed once its reply is read"
     assert len(h.session.closed()) == 12, "12 samples opened 12 cursors"
     await h.close()
@@ -179,8 +195,8 @@ async def test_a_frontend_sees_cursors_scores_and_progress(tmp_path: Path) -> No
     appended = [n for e in seen if isinstance(e, Appended) for n in e.nodes]
     kinds = [n.body.kind for n in appended if isinstance(n.body, Body.Custom)]
     assert kinds == ["forest/score"] * 2, "a score is an ordinary node: no new event kind"
-    assert not [e for e in seen if isinstance(e, Notice)], "progress went to the client that ran it"
-    assert h.notices() == ["round 1: [0.4, 0.6], 4/4 samples"]
+    assert not [e for e in seen if isinstance(e, Notice)]
+    assert shown(seen) == ["round 1: sampling"], "the tui knows a search is running, and why"
     best = max(forest.scores(h.session.tree, START).values(), key=lambda s: s.value)
     assert views[h.cursor].at == best.reply, "the tui learns where the main cursor went"
     await h.close()
