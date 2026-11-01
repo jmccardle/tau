@@ -152,10 +152,11 @@ Two of the wishes below are built and the extension uses them.
 - **Wish 2, the tool filter:** `pre_sample` sets `subject.tools` to `allow_tools` plus `bash` (when
   `allow_bash` is not empty), so the model is no longer shown `write`. The `# WISH` is gone and the
   test asserts `["read", "grep", "bash"]`. What it cost to find: an offer is not a wall (the driver
-  still runs a call to a tool the model was not offered, so `pre_tool` keeps refusing it), and the
-  extension cannot read the driver's tool names, so a driver without `read`, `grep` or `bash` fails
-  the step with `ValueError ... unknown names`. `examples/chat.py` has none of the three: plan mode
-  there fails at the first sample and says why.
+  still runs a call to a tool the model was not offered, so `pre_tool` keeps refusing it). The
+  extension first hard-coded `read`, `grep` and `bash`, so a driver without them failed the step
+  with `ValueError ... unknown names` (`examples/chat.py` has none of the three). It now offers the
+  names it wants that `cursor.tools()` lists, so on chat.py's driver (only `word_count`) it offers
+  none and still asks for approval.
 - **Wish 5 and Fought 6, the mode on screen:** `pre_step` and `post_step` call `cursor.show("plan
   mode")` while the option says plan, `show(None)` otherwise, so every client has the badge in
   `CursorView.shown` and the line client prints `[plan_mode: plan mode]` and `[plan_mode: cleared]`.

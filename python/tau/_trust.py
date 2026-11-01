@@ -449,11 +449,12 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
 
 
 def user_config_path(home: Path) -> Path | None:
-    """`<home>/config.json` if it exists, else `None` (no user config is fine). `TrustError`
-    if `<home>` cannot be searched."""
+    """`<home>/config.json` if it exists or is a symlink (a dangling one is a file that cannot
+    be read, not no file: its reader fails naming it), else `None` (no user config is fine).
+    `TrustError` if `<home>` cannot be searched."""
     user = home / "config.json"
     with _unless_io_fails(user, "inspected"):
-        return user if user.exists() else None
+        return user if user.exists() or user.is_symlink() else None
 
 
 def _layer(seen: _Seen) -> LayerText | None:

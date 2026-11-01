@@ -5,7 +5,7 @@ from pathlib import Path
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 
-from tau import Cursor, Ending, Part, Stop, Subject
+from tau import Author, Body, Cursor, Draft, Ending, Part, Stop, Subject
 
 
 def tools() -> list[FakeTool]:
@@ -126,4 +126,69 @@ async def test_only_pre_sample_offers_tools(tmp_path: Path) -> None:
     assert view.hook_error is not None
     assert view.hook_error.point == "pre_reply"
     assert "only pre_sample says which tools a sample is offered" in view.hook_error.error
+    await h.close()
+
+
+class Halts:
+    """Halts the step at `pre_sample` once, after the extensions before it have run."""
+
+    name = "halts"
+
+    def __init__(self) -> None:
+        self.first = True
+
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
+        if self.first:
+            self.first = False
+            return "halted"
+        return None
+
+
+class Answers:
+    """Answers the first sample itself, with a draft."""
+
+    name = "answers"
+
+    def __init__(self) -> None:
+        self.first = True
+
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> None:
+        if self.first:
+            self.first = False
+            subject.draft = Draft(
+                Body.Assistant([Part.Text("canned")], Stop.End), [], Author.Extension(self.name)
+            )
+
+
+@scenario
+async def test_an_offer_does_not_outlive_a_step_a_later_hook_halted(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("ok")]),
+        tools=tools(),
+        extensions=[Offers(["read"], times=1), Halts()],
+    )
+    await h.send("first")
+    await h.settle()
+    assert h.provider.requests == [], "the first step halted before any sample"
+    await h.send("second")
+    await h.settle()
+    assert [r.tool_names for r in h.provider.requests] == [["read", "write", "bash"]]
+    await h.close()
+
+
+@scenario
+async def test_an_offer_does_not_outlive_a_sample_a_draft_answered(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("ok")]),
+        tools=tools(),
+        extensions=[Offers(["read"], times=1), Answers()],
+    )
+    await h.send("first")
+    await h.settle()
+    assert h.provider.requests == [], "the draft answered the first sample"
+    await h.send("second")
+    await h.settle()
+    assert [r.tool_names for r in h.provider.requests] == [["read", "write", "bash"]]
     await h.close()

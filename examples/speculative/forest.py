@@ -272,3 +272,6 @@ def mark(verdict: str) -> float:
     if found is None:
         raise ValueError(f"the judge gave no score: {verdict!r}")
     return float(found.group(1))
+
+
+extensions = [Forest()]  # what `chat.py --extension` adds

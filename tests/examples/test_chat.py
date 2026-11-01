@@ -513,7 +513,8 @@ def test_a_loaded_class_is_a_working_extension_in_the_chat(tmp_path: Path) -> No
         "    return text.upper()\n\n\n"
         "class Shouter:\n"
         '    name = "shouter"\n'
-        "    commands = (shout,)\n",
+        "    commands = (shout,)\n\n\n"
+        "extensions = [Shouter()]\n",
     )
 
     async def scenario() -> None:
@@ -528,7 +529,7 @@ def test_a_loaded_class_is_a_working_extension_in_the_chat(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-def test_a_module_with_a_name_is_the_extension_itself_and_a_file_can_hold_several_classes(
+def test_a_module_with_a_name_is_the_extension_itself_else_its_extensions_list_is(
     tmp_path: Path,
 ) -> None:
     module = written(tmp_path, "mod.py", 'name = "modular"\n')
@@ -538,18 +539,55 @@ def test_a_module_with_a_name_is_the_extension_itself_and_a_file_can_hold_severa
         "from tau import StepLimit\n\n\n"  # imported, so not this file's
         'class Second:\n    name = "second"\n\n\n'
         'class First:\n    name = "first"\n\n\n'
-        "class Helper:\n    pass\n",
+        "class Helper:\n    pass\n\n\n"
+        "extensions = [First(), Second()]\n",
     )
     assert [e.name for e in chat.load_extensions(module)] == ["modular"]
-    assert [e.name for e in chat.load_extensions(two)] == ["second", "first"]
+    assert [e.name for e in chat.load_extensions(two)] == ["first", "second"], "in the list's order"
 
 
-def test_a_file_that_is_not_there_or_defines_no_extension_is_refused(tmp_path: Path) -> None:
-    empty = written(tmp_path, "empty.py", "class Helper:\n    pass\n")
+def test_a_file_with_neither_a_name_nor_an_extensions_list_is_refused_with_the_rule(
+    tmp_path: Path,
+) -> None:
+    classes = written(tmp_path, "classes.py", 'class Looks:\n    name = "looks"\n')
+    for file in (
+        classes,
+        written(tmp_path, "empty.py", "extensions = []\n"),
+        written(tmp_path, "notlist.py", "extensions = 3\n"),
+        written(tmp_path, "nothing.py", "class Helper:\n    pass\n"),
+    ):
+        with pytest.raises(ConfigError, match=r"extensions = \[\.\.\.\]") as refused:
+            chat.load_extensions(file)
+        assert str(file) in str(refused.value)
+
+
+def test_two_files_with_the_same_name_are_two_modules(tmp_path: Path) -> None:
+    """Each module is looked up by where its file is, so a type hint in one is resolved in it."""
+    for folder, extension in (("a", "A"), ("b", "B")):
+        (tmp_path / folder).mkdir()
+        written(
+            tmp_path / folder,
+            "ext.py",
+            "from dataclasses import dataclass\n\n"
+            f"Size = {'int' if folder == 'a' else 'str'}\n\n\n"
+            "@dataclass(frozen=True)\nclass Options:\n"
+            f'    size: "Size" = {1 if folder == "a" else repr("big")}\n\n\n'
+            f'class {extension}:\n    name = "{folder}"\n    options = Options\n\n\n'
+            f"extensions = [{extension}()]\n",
+        )
+    first = chat.load_extensions(tmp_path / "a" / "ext.py")
+    second = chat.load_extensions(tmp_path / "b" / "ext.py")
+    session = Session.create(model_config("scripted"), "sys", 0, tmp_path / "s")
+    models = read_models(
+        cli={"models": {"scripted": {"model": "scripted", "provider": "scripted"}}}
+    )
+    Driver(session, {"scripted": Scripted()}, models, extensions=[*first, *second])  # type: ignore[arg-type]
+    session.close()
+
+
+def test_a_file_that_is_not_there_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="no such file"):
         chat.load_extensions(tmp_path / "missing.py")
-    with pytest.raises(ConfigError, match="defines no extension"):
-        chat.load_extensions(empty)
 
 
 def test_what_a_file_raises_when_imported_is_raised(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ from contextlib import aclosing
 from typing import cast
 
 from tau import trace
-from tau._config import ConfigError, model_name
+from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import (
     Answer,
@@ -234,11 +234,13 @@ class SampleRun:
         cursor: int,
         tools: Sequence[Tool],
         on_delta: Callable[[Delta], None],
+        model_at: Callable[[int], str],
     ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` as `at` stands (the config is in it).
         with trace.span("driver", "request"):
-            at = session.cursor(cursor).at
-            self._walk = session.tree.walk(at)
+            self._at = session.cursor(cursor).at
+            self._walk = session.tree.walk(self._at)
+        self._model_at = model_at
         self._providers = providers
         self._catalog = catalog
         self._tools = tools
@@ -257,7 +259,7 @@ class SampleRun:
     async def _stream(self) -> Finish:
         finish: Finish | None = None
         try:
-            model = self._catalog.resolve(model_name(self._walk))
+            model = self._catalog.resolve(self._model_at(self._at))
         except ConfigError as e:
             raise SampleError(str(e)) from e
         provider = self._providers.get(model.provider)

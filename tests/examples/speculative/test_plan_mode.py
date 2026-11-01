@@ -228,6 +228,31 @@ async def test_the_model_is_offered_only_read_only_tools_and_a_call_to_another_i
 
 
 @scenario
+async def test_plan_mode_offers_the_read_only_tools_the_driver_has_and_no_more(
+    tmp_path: Path,
+) -> None:
+    """Not `read`, `grep` and `bash` by name: those of them in `cursor.tools()`."""
+    only_some = [FakeTool(n, "ran") for n in ("bash", "write", "read")]
+    h = await started(tmp_path / "some", [say(PLAN)], only_some)
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    assert (await h.view()).hook_error is None
+    assert h.provider.requests[0].tool_names == ["bash", "read"], "the driver's order, no write"
+    await h.close()
+
+    chat_like = [FakeTool("word_count", "ran")]  # examples/chat.py's driver
+    h = await started(tmp_path / "none", [say(PLAN)], chat_like)
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    assert (await h.view()).hook_error is None, "the step does not fail for tools it lacks"
+    assert h.provider.requests[0].tool_names == [], "none is offered, and it still asks to approve"
+    assert [q.text for q in (await h.view()).questions] == ["Approve this plan?"]
+    await h.close()
+
+
+@scenario
 async def test_plan_mode_entered_by_config_still_briefs_the_model(tmp_path: Path) -> None:
     h = await started(tmp_path, [say(PLAN)])
     await h.configure("plan_mode", {"mode": "plan"})

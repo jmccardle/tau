@@ -1,8 +1,9 @@
 """Speculative: plan mode, as an extension (a clone of the Claude Code / pi idea).
 
 `/plan [task]` puts the branch in plan mode: the model is briefed to research and propose a plan,
-and is offered only the read-only tools (`pre_sample` sets `subject.tools`; `allow_tools` and
-`bash` must be tools of the driver, or the step fails and says which are not). While the branch is
+and is offered only the read-only tools (`pre_sample` sets `subject.tools` to the names in
+`allow_tools`, and `bash` when `allow_bash` is not empty, that are tools of the driver
+(`cursor.tools()`): a driver without them offers fewer, or none). While the branch is
 in plan mode the line "plan mode" is shown on its cursor (`cursor.show`). When its reply ends,
 the person is asked to approve, revise or reject the plan. Approve leaves plan mode and tells the
 model to carry the plan out; revise sends the person's feedback and stays in plan mode; reject
@@ -73,9 +74,9 @@ async def pre_sample(cursor: Cursor, subject: Subject) -> str | None:
     options = cursor.options()
     if options.mode != "plan":
         return None
-    subject.tools = list(
-        dict.fromkeys([*options.allow_tools, *(["bash"] * bool(options.allow_bash))])
-    )
+    wanted = dict.fromkeys([*options.allow_tools, *(["bash"] * bool(options.allow_bash))])
+    have = cursor.tools()
+    subject.tools = [name for name in wanted if name in have]  # the ones this driver has
     marks = [Body.User(BRIEF), Body.User(APPROVED)]  # what we wrote; text we `send` is ours too
     last = [n.body for n in cursor.walk() if n.by == cursor.by and n.body in marks]
     if not last or last[-1] != marks[0]:

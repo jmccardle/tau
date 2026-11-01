@@ -153,3 +153,6 @@ class Gamemaster:
         lines = [f"{n}: {text_of(node.tree.node(node.cursor(everyone[n]).at).body)}" for n in asked]
         silent = [n for n in everyone if n not in asked]
         return "\n".join([*lines, f"(not asked: {', '.join(silent) or 'no one'})"])
+
+
+extensions = [Gamemaster()]  # what `chat.py --extension` adds

@@ -373,11 +373,44 @@ async def called(tmp_path: Path, function: object, args_raw: str) -> Outcome:
     return results.outcomes[0][1]
 
 
+SCENARIO_SECONDS = 60
+"""How long a scenario may run. No scenario takes a second: one still running at this limit is
+waiting for something that will not come, and fails instead of hanging the suite."""
+
+CLEANUP_SECONDS = 5
+"""How long the loop gets to cancel what a scenario left running, and to stop its worker threads.
+A task that never ends (a cancel made from the wrong thread can leave one) is left behind."""
+
+
+def _run_bounded(coro: Coroutine[Any, Any, None]) -> None:
+    """`asyncio.run`, but neither the scenario nor the loop's cleanup may take for ever:
+    `asyncio.run` waits without end for a task that will not cancel."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(asyncio.wait_for(coro, SCENARIO_SECONDS))
+    finally:
+        try:
+            left = asyncio.all_tasks(loop)
+            for task in left:
+                task.cancel()
+            if left:
+                loop.run_until_complete(asyncio.wait(left, timeout=CLEANUP_SECONDS))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(
+                asyncio.wait_for(loop.shutdown_default_executor(), CLEANUP_SECONDS)
+            )
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
 def scenario[**P](fn: Callable[P, Coroutine[Any, Any, None]]) -> Callable[P, None]:
-    """Make an async test a plain pytest function, run in its own loop."""
+    """Make an async test a plain pytest function, run in its own loop and bounded by
+    `SCENARIO_SECONDS` (`TimeoutError`)."""
 
     @functools.wraps(fn)
     def run(*args: P.args, **kwargs: P.kwargs) -> None:
-        asyncio.run(fn(*args, **kwargs))
+        _run_bounded(fn(*args, **kwargs))
 
     return run

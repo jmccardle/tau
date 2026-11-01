@@ -66,7 +66,8 @@ class Client(AsyncIterator[Event], Protocol):
 
     async def reopen(self, cursor: int) -> int:
         """Open a new cursor at the closed `cursor`'s last node, and move each of its labels
-        onto it. Returns the new id. `NoSuchCursor` if `cursor` is not closed."""
+        onto it. Returns the new id. `ValueError` if `cursor` is open, `NoSuchCursor` if it was
+        never opened."""
         ...
 
     async def set_label(self, cursor: int, label: str) -> None:

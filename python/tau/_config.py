@@ -1,6 +1,6 @@
 """Model configuration (D13): a `Config` node names a model; the driver resolves it.
 
-`model_config` and `model_name` write and read `Config` nodes' `data` (a JSON object core
+`model_config` and `config_fields` write and read `Config` nodes' `data` (a JSON object core
 never reads; glossary: config): `{"model": "<qualified name>"}`, and for a branch's
 extensions `{"extensions": {"<name>": {"<option>": value}}}` (D16 section 4). Core's
 `config_at` is the nearest `Config` only, so a node holds just what it changes and a reader
@@ -10,13 +10,13 @@ is the resolved model a provider is handed. `read_models` and `check_config` (in
 """
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import cast
 from urllib.parse import urlparse
 
-from tau._core import Body, Config, Node
+from tau._core import Config
 
 
 class ConfigError(ValueError):
@@ -188,16 +188,3 @@ def config_fields(config: Config) -> ConfigFields:
             )
         extensions[name] = cast("dict[str, object]", options)
     return ConfigFields(model, extensions)
-
-
-def _configs(walk: Sequence[Node]) -> list[ConfigFields]:
-    return [config_fields(n.body.config) for n in walk if isinstance(n.body, Body.Config)]
-
-
-def model_name(walk: Sequence[Node]) -> str:
-    """The qualified name of the last model a `Config` on `walk` names. `ConfigError` if a
-    `Config` on it is malformed (`config_fields`) or none names a model."""
-    models = [c.model for c in _configs(walk) if c.model is not None]
-    if not models:
-        raise ConfigError("config is missing 'model'")
-    return models[-1]

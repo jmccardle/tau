@@ -1,10 +1,11 @@
 """What an extension reads of its cursor (D3: the model) and shows of it (D4: `show`), and what
 every client is sent of both in `CursorView`."""
 
+import threading
 from pathlib import Path
 
 import pytest
-from fakes import FAKE_MODEL, FakeProvider, Gate, Reply
+from fakes import FAKE_MODEL, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 from test_commands import two_models
 
@@ -27,9 +28,15 @@ async def look(cursor: Cursor) -> str:
     return f"{cursor.model()} of {list(cursor.models())}"
 
 
+async def which_tools(cursor: Cursor) -> str:
+    """Say the names of the driver's tools."""
+    return ", ".join(cursor.tools())
+
+
 class Looker:
     name = "looker"
-    commands = (look,)
+    commands = (look, which_tools)
+    tools = (FakeTool("peek", "p"),)
 
 
 # D3: the model.
@@ -55,6 +62,18 @@ async def test_the_cursor_handle_reads_the_model_and_the_catalogs_names(tmp_path
     await h.run("model", {"model": "alt"})
     await h.settle()
     assert await h.run("look") == f"alt of ['{FAKE_MODEL}', 'alt']"
+    await h.close()
+
+
+@scenario
+async def test_the_cursor_handle_reads_the_names_of_the_drivers_tools(tmp_path: Path) -> None:
+    """The driver's own tools and the extensions', in the order a sample is offered them: the
+    names `Subject.tools` accepts."""
+    h = await Harness.create(
+        tmp_path, tools=[FakeTool("read", "r"), FakeTool("bash", "b")], extensions=[Looker()]
+    )
+    assert await h.run("which_tools") == "read, bash, peek"
+    await h.settle()
     await h.close()
 
 
@@ -114,6 +133,50 @@ async def test_what_an_extension_shows_is_in_the_view_every_client_is_sent(tmp_p
     assert (await h.view()).shown == (("badge", "plan mode"),), "a client connecting now"
     shown = {e.shown for e in h.heard if isinstance(e, CursorView) and e.shown}
     assert shown == {(("badge", "plan mode"),)}, "a client that was connected"
+    await h.close()
+
+
+class Named(str):
+    """An extension's name that notes the thread each hash is made on, while `watching`: the
+    driver keys what the extension shows by it, so that is where the show is written."""
+
+    watching = False
+    threads: list[int] = []  # noqa: RUF012 - one note for the test that watches
+
+    def __hash__(self) -> int:
+        if Named.watching:
+            Named.threads.append(threading.get_ident())
+        return super().__hash__()
+
+
+class Thread:
+    name = Named("thread")
+
+    def __init__(self) -> None:
+        self.commands = (self.shine_from_worker,)
+        self.worker: list[int] = []
+
+    def shine_from_worker(self, cursor: Cursor, text: str) -> None:
+        """Show text from a worker thread."""
+        self.worker.append(threading.get_ident())
+        Named.threads.clear()
+        Named.watching = True
+        try:
+            cursor.show(text)
+        finally:
+            Named.watching = False
+
+
+@scenario
+async def test_a_show_from_a_sync_command_is_written_on_the_loops_thread(tmp_path: Path) -> None:
+    ext = Thread()
+    h = await Harness.create(tmp_path, extensions=[ext])
+    await h.run("shine_from_worker", {"text": "from a thread"})
+    await h.settle()
+    assert ext.worker[0] != threading.get_ident(), "the command ran on a worker thread"
+    assert Named.threads, "the show was written"
+    assert set(Named.threads) == {threading.get_ident()}, "on the loop's thread, not the worker's"
+    assert (await h.view()).shown == (("thread", "from a thread"),)
     await h.close()
 
 

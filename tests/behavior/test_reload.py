@@ -1,6 +1,7 @@
 """`driver.reload(extensions)` (C2): the driver runs other extensions from the next job on, only
 when no effect is out."""
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,18 @@ import pytest
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, say, scenario
 
-from tau import Body, Busy, CommandFailed, ConfigError, Cursor, DefinitionError, Part, Stop, Subject
+from tau import (
+    Body,
+    Busy,
+    CommandFailed,
+    ConfigError,
+    Cursor,
+    CursorView,
+    DefinitionError,
+    Part,
+    Stop,
+    Subject,
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,57 @@ async def test_a_reload_is_refused_while_an_effect_is_out_and_says_which(tmp_pat
     gate.release()
     await h.settle()
     h.driver.reload([Unrelated()])
+    await h.close()
+
+
+@scenario
+async def test_a_reload_is_refused_while_a_command_waits_for_its_step(tmp_path: Path) -> None:
+    """The command has no effect out yet (it waits for its `pre_step`), but its cursor is busy
+    and it would run with the set it was started under."""
+    h = await Harness.create(tmp_path, extensions=[Old()], provider=FakeProvider([]))
+    waiting = asyncio.ensure_future(h.client.configure(h.cursor, "thing", {"size": 7}))
+    await asyncio.sleep(0)
+    assert h.session.cursor(h.cursor).busy
+    with pytest.raises(Busy, match=rf"cursors \[{h.cursor}\]"):
+        h.driver.reload([New()])
+    await waiting
+    await h.settle()
+    h.driver.reload([New()])
+    await h.close()
+
+
+async def shine(cursor: Cursor, text: str) -> None:
+    """Show text."""
+    cursor.show(text)
+
+
+class Badge:
+    name = "badge"
+    commands = (shine,)
+
+
+@scenario
+async def test_a_reload_drops_what_the_extensions_it_removed_showed(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Badge(), Old()], provider=FakeProvider([]))
+    await h.run("shine", {"text": "plan mode"})
+    await h.settle()
+    assert (await h.view()).shown == (("badge", "plan mode"),)
+    h.driver.reload([Old()])
+    await h.settle()
+    assert (await h.view()).shown == ()
+    last = [e for e in h.heard if isinstance(e, CursorView)][-1]
+    assert last.shown == (), "and a client that was connected is told"
+    await h.close()
+
+
+@scenario
+async def test_a_reload_keeps_what_the_extensions_it_keeps_showed(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Badge(), Old()], provider=FakeProvider([]))
+    await h.run("shine", {"text": "plan mode"})
+    await h.settle()
+    h.driver.reload([Old(), Badge()])
+    await h.settle()
+    assert (await h.view()).shown == (("badge", "plan mode"),)
     await h.close()
 
 

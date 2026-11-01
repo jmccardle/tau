@@ -98,3 +98,6 @@ class Ralph:
         cursor.set_auto(False)
         cursor.show(None)
         cursor.tell(f"ralph: stopped after {loop.iterations} iterations: {why}")
+
+
+extensions = [Ralph()]  # what `chat.py --extension` adds

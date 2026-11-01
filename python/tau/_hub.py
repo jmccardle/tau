@@ -260,6 +260,13 @@ class Hub:
         else:
             self._shown.setdefault(cursor, {})[extension] = text
 
+    def keep_shown(self, extensions: Collection[str]) -> None:
+        """Forget the text every extension but `extensions` shows: those are gone. Not sent until
+        the next `sync`."""
+        for shown in self._shown.values():
+            for extension in set(shown) - set(extensions):
+                del shown[extension]
+
     def sync(self) -> None:
         """Send what changed since the last call: the new nodes, then each changed `CursorView`
         (so a view never points at nodes the client has not been sent), then a `CursorGone` for

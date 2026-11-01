@@ -48,6 +48,7 @@ Close = Callable[[int], Awaitable[None]]
 """The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
 
 Show = Callable[[int, str, str | None], None]
+Tools = Callable[[], tuple[str, ...]]
 """The driver's show of text on a cursor: `(cursor, extension, text or None)`."""
 
 Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
@@ -82,6 +83,11 @@ class OptionsReader(Protocol):
         fit, or there is no file to write."""
         ...
 
+    def saved(self, extension: str) -> Mapping[str, object]:
+        """The options the user's config file itself sets for the extension, as JSON values;
+        `ConfigError` if there is no file to read."""
+        ...
+
 
 def reopened(
     session: Session,
@@ -90,11 +96,13 @@ def reopened(
     set_label: Callable[[str, int], None],
 ) -> int:
     """`reopen`, for whoever opens and labels as themselves: open a cursor at the closed
-    `cursor`'s last node, and move each of its labels onto it. `NoSuchCursor` if `cursor` is
-    not closed (open, or never opened)."""
+    `cursor`'s last node, and move each of its labels onto it. `ValueError` if `cursor` is open,
+    `NoSuchCursor` if it was never opened."""
     closed = dict(session.closed())
+    if cursor in session.cursors():
+        raise ValueError(f"cursor {cursor} is open")
     if cursor not in closed:
-        raise NoSuchCursor(f"cursor {cursor} is not closed")
+        raise NoSuchCursor(f"no cursor {cursor}")
     new = open(closed[cursor])
     for label, on in session.labels():
         if on == cursor:
@@ -294,8 +302,8 @@ class TreeHandle:
 
     def reopen(self, cursor: int) -> int:
         """Open a new cursor at the closed `cursor`'s last node and move each of its labels
-        onto it, as this extension. Returns the new id. `NoSuchCursor` if `cursor` is not
-        closed."""
+        onto it, as this extension. Returns the new id. `ValueError` if `cursor` is open,
+        `NoSuchCursor` if it was never opened."""
         self._check()
         return reopened(self._session, cursor, self.open, self.set_label)
 
@@ -358,6 +366,11 @@ class NodeHandle(TreeHandle):
         self._check()
         self._options.save(self.extension, changes)
 
+    def saved_options(self) -> Mapping[str, object]:
+        """`Cursor.saved_options`, from a tool hook."""
+        self._check()
+        return self._options.saved(self.extension)
+
     def walk(self) -> list[Node]:
         return self.tree.walk(self.id)
 
@@ -397,12 +410,14 @@ class Cursor(TreeHandle):
         close: Close,
         options: OptionsReader,
         show: Show,
+        tools: Tools,
     ) -> None:
         super().__init__(session, extension, now, poke, changed, rest, abort, close, id)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
         self._show = show
+        self._tools = tools
         self._options = options
         self.id = id
 
@@ -427,6 +442,11 @@ class Cursor(TreeHandle):
         """The qualified names of the models the catalog defines, in file order: what
         `set_model` accepts."""
         return self._options.models()
+
+    def tools(self) -> tuple[str, ...]:
+        """The names of the driver's tools, the extensions' included, in the order a sample is
+        offered them: the names a `pre_sample` hook may put in `Subject.tools`."""
+        return self._tools()
 
     def show(self, text: str | None) -> None:
         """Show `text` on this cursor to every client, as this extension's one line
@@ -462,9 +482,23 @@ class Cursor(TreeHandle):
         file is every session's and every branch's; `set_options` is this branch's, a node. No node
         is written and nothing moves. The project's config is never written. `ConfigError` if the
         extension has no options, the options that result (the layers, with these) do not fit its
-        options type, or the driver was given no user config; nothing is written then."""
+        options type, or the driver was given no user config; nothing is written then.
+
+        The file is read, changed and written back with no `await` in between, so on the event
+        loop (a hook, a tool, an async command) saves cannot interleave. It is not safe against
+        another τ process saving at the same moment (the last write wins, losing the other's
+        change), nor from sync commands that save at once on worker threads."""
         self._check()
         self._options.save(self.extension, changes)
+
+    def saved_options(self) -> Mapping[str, object]:
+        """What the user's config file itself sets of this extension's options, as JSON values
+        (`{}` if it sets none, or there is no file): the value `save_options` changes, not
+        `options()`, which folds the project's layer, the overrides and this branch's nodes in.
+        To add to a list option in the file, read it here, not there. `ConfigError` if the
+        extension has no options or the driver was given no user config."""
+        self._check()
+        return self._options.saved(self.extension)
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
@@ -508,8 +542,8 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the `Notice` call, the clock, `poke` and `changed`, the options, and `show`. One
-    place that builds them."""
+    cursor), the `Notice` call, the clock, `poke` and `changed`, the options, `show`, and the tools'
+    names. One place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -522,6 +556,7 @@ class Handles:
     abort: Abort
     close: Close
     show: Show
+    tools: Tools
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
@@ -539,6 +574,7 @@ class Handles:
             self.close,
             self.options,
             self.show,
+            self.tools,
         )
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:

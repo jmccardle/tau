@@ -39,7 +39,11 @@ class UserConfig:
         (extension, then field, to JSON value); the file's other content stays. `check` is
         given the catalog the layers make with the change, before anything is written, and
         raises `ConfigError` for options it refuses. Writes atomically, creating the file (and
-        `home`, private) if absent. Returns the catalog; nothing is written if any step raised.
+        `home`, private) if absent; a symlink is followed, so the file it names is replaced and
+        the link stays (a dangling one is a `ConfigError` naming it). Returns the catalog;
+        nothing is written if any step raised. The read-change-write has no `await`, so on the
+        event loop calls do not interleave; it is not safe against another τ process saving at
+        once, or sync commands saving at once from worker threads (the last write wins).
         `ConfigError` for a file or a result the loader refuses, `TrustError` for a disk that
         refuses."""
         path = self.home / "config.json"
@@ -57,8 +61,16 @@ class UserConfig:
             raise ConfigError(f"options are not JSON: {e}") from None
         catalog = read_models(LayerText(str(path), body), self.project, self.cli)
         check(catalog)
-        write_atomically(path, body)
+        write_atomically(path.resolve(), body)
         return catalog
+
+    def saved(self, extension: str) -> dict[str, object]:
+        """`extensions.<extension>` as the user's file itself holds it: the fields it sets, as
+        JSON values, and none of the project's, the overrides' or a node's (`{}` if the file
+        sets none, or there is no file). `ConfigError` for a file the loader refuses."""
+        data = self._read(self.home / "config.json")
+        extensions = cast("dict[str, dict[str, object]]", data.get("extensions") or {})
+        return dict(extensions.get(extension, {}))
 
     def _read(self, path: Path) -> dict[str, object]:
         """The user's file as an object (empty if there is none), once the loader accepts it."""

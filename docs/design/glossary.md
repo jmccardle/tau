@@ -505,8 +505,8 @@ mean something else.
 `Client.reopen(cursor)`, `TreeHandle.reopen(cursor)` -> the new cursor id · D17 · new
 
 `open(at=` the closed cursor's last node `)` plus moving each of its labels onto the new cursor.
-Composed in the driver, not core. `NoSuchCursor` if the cursor is not closed (open, or never
-opened). The new cursor is opened by the client, or by the handle's extension.
+Composed in the driver, not core. `ValueError` ("cursor 3 is open") if the cursor is open, `NoSuchCursor` if it was never
+opened. The new cursor is opened by the client, or by the handle's extension.
 
 ### CursorGone
 `tau.CursorGone(cursor, at)` (`events.py`) · D17 · new
@@ -760,7 +760,7 @@ key other than those two, a `model` that is not a non-empty string, `extensions`
 an object of objects). `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
 node when it is added (`Session::configs`), so it costs the same at any depth; core reads
 nothing in it. The driver therefore **folds the walk** itself: the model is the last one
-named on it (`model_name(walk)`; `ConfigError`, so a failed sample, if none names one), and
+named on it (`ExtensionOptions.model(node)`; `ConfigError`, so a failed sample, if none names one), and
 an option is the last one set on it (`ExtensionOptions`), each node adding to those before
 it. The model resolves in the `ModelCatalog` at each sample.
 
@@ -874,9 +874,9 @@ and group names may not contain control characters (the checker errors at that p
 `<home>/config.json` or `None`.
 
 ### tau_home, find_project, ProjectSearch, refuse_special, create_project, project_config_path, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
-module `tau._trust` (`LayerText`: `tau._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
+module `tau._trust` (`LayerText`: `tau._config_layers`); only `Trusted`, `UntrustedProject`, `TrustError` and `LayerText` are exported · D13 · new
 
-Everything here but those three names is internal: the outside reaches it
+Everything here but those four names is internal: the outside reaches it
 through `load_config` (finding, trusting, `.env`), `tau trust` (approval and the
 report), and `tau config check`. Tests do the same.
 
@@ -914,7 +914,7 @@ report), and `tau config check`. Tests do the same.
   `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the terminal side.
   `project_environment(trusted, environ)` overlays `environ` on the approved `.env` of a
   `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config layer already
-  read (source and text), accepted where a layer takes a `Path`.
+  read (source and text), accepted where a layer takes a `Path` (`read_models`, `check_config`); it is exported because `UserConfig.project` and `Trusted.layer()` are one.
 
 Rules. (A) The config and `.env` are read once per `ensure_trusted`; report, question, and
 approval use those bytes, and approval refuses ("changed while you were
@@ -1110,8 +1110,8 @@ returns the *ending* of the cursor's last step once it is at rest with no effect
 `rest` may return that earlier step's ending with the input still pending, so `rest` before
 `send` to be sure), or `None` if that is not known (it has not stepped since the session was loaded; endings are not
 persisted), and `abort(cursor)` aborts its step as a client's `abort` does (cancels the sample
-or calls, stops a command, declines open questions), safe from a sync tool's worker thread: it hops onto the loop and waits for it, and
-raises `RuntimeError` if the loop is closed or not running. `close_cursor(cursor)` (see
+or calls, stops a command, declines open questions), safe from a sync tool's worker thread: it hops onto the loop and waits for it (for as long as the loop is
+not run; `RuntimeError` if it is closed). `close_cursor(cursor)` (see
 **close_cursor**) closes a cursor once it is aborted and at rest. `rest` and `close_cursor` are async only, so a sync
 tool cannot call them. All three refuse (`ValueError`) the handle's own cursor (a cursor handle's `id`,
 a node handle's `cursor_id`): waiting on or closing itself would never end, and aborting itself would cancel
@@ -1124,10 +1124,14 @@ catalog) and `set_options(**changes)` (the calling extension's own options, whic
 walk's must fit their type; see *config*; nothing is written otherwise),
 `save_options(**changes)` (the same options written into the user's config file for every session
 and read by the running driver at once, no node; also on a node handle, so a tool hook can save;
-see *UserConfig*), `model()` (the qualified name of the model the cursor's branch is on, as its
+see *UserConfig*), `saved_options()` (the fields the user's config file itself sets of the
+calling extension's options, as JSON values, and none of the project's, the overrides' or a node's;
+also on a node handle; what an extension reads to add to a list option it saves, since `options()`
+folds the layers and nodes in), `model()` (the qualified name of the model the cursor's branch is on, as its
 next sample resolves it; `ConfigError` if no `Config` on the walk names one or one is
 malformed), `models()` (the catalog's qualified names, in file order, a tuple: what `set_model`
-accepts), `show(text)` (see **show**), `move(to)`, `write(body, delivers)`,
+accepts), `tools()` (the names of the driver's tools, the extensions' included, in the order a
+sample is offered them, a tuple: what `Subject.tools` accepts), `show(text)` (see **show**), `move(to)`, `write(body, delivers)`,
 `set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default to every
 connected client; dropped if `to` is not connected), and `ask`; its own `at`, `auto`,
 `items`, `labels`, and `moves` are `cursor(handle.id)`. A handle's writes that
@@ -1968,7 +1972,9 @@ takes a `Cursor`; a retired handle raises `NotInHook`) sets this extension's lin
 own cursor and replaces what it showed; `cursor.show(None)` shows nothing. `TypeError` for
 anything else. It is the driver's memory, like a step's ending: not in the log or the
 scratchpad, so it is gone when the session is reloaded (a hook shows it again), and it is
-dropped when the cursor closes (`reopen` starts with none). Each change is sent whole, as a
+dropped when the cursor closes (`reopen` starts with none) and when a `reload` removes the
+extension. From a sync command's worker thread the write hops onto the loop and waits for it, as
+`abort` does, so the hub is only ever written there. Each change is sent whole, as a
 `CursorView`, which a client that has not read the last one never sees (the stream keeps one
 `CursorView` per cursor): `show` is state, not a message; use `tell` for a message. A line client
 prints a change as `[extension: text]` and a removal as `[extension: cleared]`. A tool hook's
@@ -2085,7 +2091,7 @@ in an `Appended`.
 Python `tau.driver.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
-place that awaits. `Driver(session, providers, catalog, *, tools, extensions, clock)`:
+place that awaits. `Driver(session, providers, catalog, *, tools, extensions, clock, user_config)`:
 built from a session, a mapping of provider name to provider (each keyed by its own
 `name`, else `ValueError`; a sample whose model names another provider fails with the
 known names in the `sample_error`), a `ModelCatalog` (where it resolves the model name in
@@ -2095,12 +2101,14 @@ files calls it); a sample already running keeps the model it resolved. `reload(e
 runs other extensions in place of the driver's (the driver's own `tools` stay) from the next job
 it dispatches: it rebuilds the options, the tools and their owners, and the commands, and forgets
 every folded `Config`, all or nothing (`DefinitionError`, nothing changed, as at construction). It
-is refused with `Busy`, naming the cursors that have an effect out, while any effect is out, because
-every job holds the set it was dispatched with (a tool call is an effect, so a tool cannot reload
-the driver it runs in); a failed or stopped driver raises as every call does. The tree is not
-rewritten: a `Config` node that sets options of an extension no longer there, or that no longer fit
-its options type, fails when read (`ConfigError` from `options()`), not at the reload. Like
-`use_catalog` it tells no client anything: a client asks `commands()` and `options()` again, so
+is refused with `Busy`, naming the cursors, while any cursor is busy or any effect is out (a
+command waiting for its step has no effect out, but its cursor is busy), because every job holds
+the set it was dispatched with (a tool call is an effect, so a tool cannot reload the driver it
+runs in); a failed or stopped driver raises as every call does. The tree is not
+rewritten: a `Config` node that sets options of an extension no longer there, or that no longer
+fit its options type, fails when read (`ConfigError` from `options()`), not at the reload. What the
+removed extensions showed (`show`) is dropped, and the clients are sent the views without it. Apart
+from that, like `use_catalog` it tells no client anything: a client asks `commands()` and `options()` again, so
 what those return changes from the call after the reload. Its public surface is
 `start`, `stop`, `rest`, `use_catalog`, `reload`, `state`, `client(id)` (how a frontend gets a
 `LocalClient`) and `add_item`; the calls a client makes are implemented by a private `Calls`
@@ -2163,8 +2171,10 @@ one of the driver's tools (extensions' included) fails the step as a hook that b
 contract does, `ValueError` naming the unknown names and the tools there are; so does a `str`
 (`TypeError`) or `tools` set at any other point (`ValueError`: nothing else uses it). An offer is
 not a wall: a model may call a tool it was not offered, and the call runs unless a `pre_tool`
-hook refuses it. An extension cannot read the driver's tool names, so one that names tools of its
-own choosing (plan mode's `read`, `grep`, `bash`) fails the step on a driver that lacks them.
+hook refuses it. An extension reads the driver's tool names with `Cursor.tools()`, and offers
+those of its own choosing that are among them (plan mode's `read`, `grep`, `bash`); naming one the
+driver lacks fails the step. Every `pre_sample` answer replaces the last offer: the next sample
+starts at `None` again, also after a step that was halted, answered by a draft, aborted or closed.
 
 ### CallDraft
 `tau.CallDraft` (`protocols.py`) · new

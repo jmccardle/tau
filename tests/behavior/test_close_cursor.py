@@ -2,7 +2,6 @@
 cursor, what every other call on it says, what clients are sent, and `reopen`."""
 
 import asyncio
-import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -317,9 +316,9 @@ async def test_reopen_starts_a_new_cursor_at_the_last_node_and_moves_the_labels(
     assert h.session.label("scout") == new
     assert h.session.label("again") == new
     assert h.session.closed() == [(other, at)], "the old id stays closed"
-    with pytest.raises(NoSuchCursor, match="not closed"):
+    with pytest.raises(ValueError, match=f"cursor {new} is open"):
         await h.client.reopen(new)
-    with pytest.raises(NoSuchCursor, match="not closed"):
+    with pytest.raises(NoSuchCursor, match="no cursor 99"):
         await h.client.reopen(99)
     await h.close()
 
@@ -426,56 +425,3 @@ async def test_an_effect_with_a_rest_and_a_question_out_is_one_parked_effect(
     await h.settle()
     assert both.answers == [True]
     await h.close()
-
-
-# The loop thread
-
-
-class Stray:
-    """A sync tool that waits to be told, then aborts cursor 1 from its worker thread."""
-
-    name = "stray"
-
-    def __init__(self, started: threading.Event, release: threading.Event) -> None:
-        self.started, self.release = started, release
-        self.returned = threading.Event()
-        self.raised: list[BaseException] = []
-        self.tools = (self.cut,)
-
-    def cut(self, node: NodeHandle) -> str:
-        """Abort cursor 1, once released."""
-        self.started.set()
-        self.release.wait()
-        try:
-            node.abort(1)
-        except BaseException as e:
-            self.raised.append(e)
-        self.returned.set()
-        return "cut"
-
-
-def test_a_worker_thread_abort_fails_when_the_event_loop_is_not_running(tmp_path: Path) -> None:
-    """The abort hops onto the loop and waits for it: with no running loop to do it, it raises
-    instead of waiting for ever."""
-    started, release = threading.Event(), threading.Event()
-    stray = Stray(started, release)
-
-    async def start() -> Harness:
-        h = await Harness.create(
-            tmp_path, provider=FakeProvider([calls("cut")]), extensions=[stray]
-        )
-        await h.client.open(SYS)
-        await h.send("go")
-        while not started.is_set():
-            await asyncio.sleep(0)
-        return h  # the loop stops here, with the call out and the driver running
-
-    loop = asyncio.new_event_loop()
-    h = loop.run_until_complete(start())
-    release.set()
-    assert stray.returned.wait(10), "it waited for a loop that will never run it"
-    assert len(stray.raised) == 1
-    assert isinstance(stray.raised[0], RuntimeError)
-    assert "event loop is not running" in str(stray.raised[0])
-    loop.run_until_complete(h.close())
-    loop.close()

@@ -174,8 +174,7 @@ class Commands:
         )
 
     def use(self, commands: Mapping[str, _Command]) -> None:
-        """Run `commands` (`assemble_commands`) from now on; one already waiting for its step
-        runs as it was."""
+        """Run `commands` (`assemble_commands`) from now on."""
         self._commands = dict(commands)
 
     def forms(self) -> tuple[Form, ...]:

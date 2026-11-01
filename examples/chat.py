@@ -23,10 +23,10 @@ when it changes, and `[extension: cleared]` when it goes. Ctrl-D leaves.
 `--extension FILE` (repeatable) adds the extensions a Python file defines, after the demo's
 and `step_limit`, in the order named. Naming the file is the consent: it is imported and run
 with your authority, with no trust check (a config file is trusted by its hash; this is not
-that). A file defines an extension either as the module itself (it has a `name`, as
-examples/speculative/plan_mode.py does) or as classes with a `name` that are defined in the
-file and made with no arguments (`Ralph()`); every such class is added. `load_extensions`
-refuses a file that defines none. Try
+that). A file defines extensions by one rule: a module with a `name` is the extension itself
+(as examples/speculative/plan_mode.py is); otherwise the module must define
+`extensions = [Ralph(), ...]`, a list of extension instances, and that list is added in order.
+Anything else is an error naming the file and the rule. Try
 `--extension examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
 """
 
@@ -87,14 +87,21 @@ async def branch_from(cursor: Cursor, node: NodeId) -> None:
     cursor.move(node)
 
 
+EXTENSION_RULE = (
+    "a module with a `name` is the extension; otherwise it must define "
+    "`extensions = [...]`, a non-empty list of extension instances"
+)
+
+
 def load_extensions(path: Path) -> list[Extension]:
-    """The extensions the Python file `path` defines (the module docstring says how): the module
-    itself if it has a `name`, else one instance of each class defined in it that has one.
-    `ConfigError` if there is no such file or it defines none. The file runs as it is imported;
-    whatever it raises is raised."""
+    """The extensions the Python file `path` defines (the module docstring says the rule): the
+    module itself if it has a `name`, else the instances in its module-level `extensions` list.
+    `ConfigError` naming the file if it is not there or follows neither. The file runs as it is
+    imported; whatever it raises is raised."""
     if not path.is_file():
         raise ConfigError(f"--extension {path}: no such file")
-    name = f"chat_extension_{path.stem}"
+    # Keyed by where the file is, so two files with the same name are two modules.
+    name = f"chat_extension:{path.resolve()}"
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ConfigError(f"--extension {path}: not a Python file")
@@ -107,19 +114,13 @@ def load_extensions(path: Path) -> list[Extension]:
         raise
     if isinstance(getattr(module, "name", None), str):
         return [module]  # type: ignore[list-item]
-    found = [
-        thing()
-        for thing in vars(module).values()
-        if isinstance(thing, type)
-        and thing.__module__ == name
-        and isinstance(getattr(thing, "name", None), str)
-    ]
-    if not found:
+    listed = getattr(module, "extensions", None)
+    if not isinstance(listed, list | tuple) or not listed:
         raise ConfigError(
-            f"--extension {path} defines no extension: it needs a module-level `name`, or a "
-            "class defined in it with a `name`"
+            f"--extension {path} defines no extension: {EXTENSION_RULE}"
+            + (f" (its `extensions` is {listed!r})" if hasattr(module, "extensions") else "")
         )
-    return found
+    return list(listed)  # type: ignore[arg-type]
 
 
 EXTENSION_FILES = argparse.ArgumentParser(add_help=False)

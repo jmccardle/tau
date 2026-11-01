@@ -6,7 +6,7 @@ import os
 import pytest
 from world import World, loaded, models, tau, trust
 
-from tau import UntrustedProject, load_config
+from tau import ConfigError, UntrustedProject, load_config
 
 
 def file(world: World) -> dict[str, object]:
@@ -82,6 +82,38 @@ def test_set_refuses_a_file_that_is_not_sound_and_leaves_it(world: World) -> Non
     assert result.code == 1
     assert "invalid JSON" in result.err
     assert path.read_text(encoding="utf-8") == '{"extensions": '
+
+
+def test_set_writes_through_a_symlinked_file_and_leaves_the_link(world: World) -> None:
+    dotfiles = world.home / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "config.json"
+    target.write_text(json.dumps({"extensions": {"step_limit": {"limit": 5}}}), encoding="utf-8")
+    world.tau.mkdir(mode=0o700)
+    link = world.tau / "config.json"
+    link.symlink_to(target)
+    assert tau(world, "config", "set", "step_limit.limit=7").code == 0
+    assert link.is_symlink(), "the link is still a link"
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "extensions": {"step_limit": {"limit": 7}}
+    }
+    assert sorted(p.name for p in dotfiles.iterdir()) == ["config.json"], "no scratch file"
+
+
+def test_a_dangling_config_symlink_is_an_error_naming_it_not_no_file(world: World) -> None:
+    world.tau.mkdir(mode=0o700)
+    link = world.tau / "config.json"
+    link.symlink_to(world.home / "nowhere" / "config.json")
+    result = tau(world, "config", "set", "step_limit.limit=7")
+    assert (result.code, result.out) == (1, "")
+    assert str(link) in result.err
+    assert link.is_symlink()
+    assert not (world.home / "nowhere").exists(), "nothing was created behind the link"
+    result = tau(world, "config", "check")
+    assert result.code != 0
+    assert str(link) in result.both
+    with pytest.raises(ConfigError, match=str(link)):
+        loaded(world)
 
 
 @pytest.mark.parametrize("argv", [("config", "set"), ("config", "set", "limit=3")])

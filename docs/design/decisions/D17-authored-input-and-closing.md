@@ -148,7 +148,8 @@ each closed cursor, in id order.
 **Restarting** is `open(at=last node)`, then `set_label(label, new)` for each label
 to keep. A new id with the old name: the label moves. **`reopen(cursor) -> int`**
 does exactly that, moving every label, on tree handles and `Client` (decided; see
-Open). It is composed in the driver, not core.
+Open). It is composed in the driver, not core. `reopen` of an open cursor is a `ValueError` ("cursor 3 is open"); of an id
+never opened, `NoSuchCursor`.
 
 **Every other call on a closed cursor fails early** with a new core error,
 `Error::Closed(cursor)` ("cursor 3 is closed"). In Python it is **`CursorClosed`**,

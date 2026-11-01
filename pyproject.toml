@@ -38,6 +38,7 @@ features = ["abi3"]
 testpaths = ["tests"]
 pythonpath = ["tests/behavior", "tests/providers", "tests"]
 addopts = ["--strict-markers"]
+faulthandler_timeout = 120  # a hung test dumps every thread's stack instead of hanging silently
 
 [tool.ruff]
 line-length = 100

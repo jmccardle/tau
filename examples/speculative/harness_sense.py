@@ -370,3 +370,6 @@ class HarnessSense:
     # `Driver.reload(extensions)` exists now, but it is refused while any effect is out, and a tool
     # call is an effect: a tool cannot reload the driver it runs in. The app that owns the driver
     # reloads between steps (`rest`, then `reload`); this tool can only `check_extension`.
+
+
+extensions = [HarnessSense()]  # what `chat.py --extension` adds

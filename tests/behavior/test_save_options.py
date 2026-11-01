@@ -218,3 +218,78 @@ async def test_save_reads_on_a_command_line_as_a_flag_after_the_extension(tmp_pa
     assert parse("/config tuner mode=slow", forms, options).save is False
     with pytest.raises(ValueError, match="--save needs a name=value to save"):
         parse("/config tuner --save", forms, options)
+
+
+class Recalls:
+    """Reads what the user's file itself says of its options, from a cursor and from a tool."""
+
+    name = "tuner"
+    options = Options
+
+    def __init__(self) -> None:
+        self.saved: list[object] = []
+        self.commands = (self.recall,)
+
+    def recall(self, cursor: Cursor) -> None:
+        """Read the saved options."""
+        self.saved.append(cursor.saved_options())
+
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        self.saved.append(node.saved_options())
+        return None
+
+
+@scenario
+async def test_saved_options_are_what_the_users_file_alone_holds(tmp_path: Path) -> None:
+    config = tmp_path / "tau-home" / "config.json"
+    config.parent.mkdir()
+    config.write_text('{"extensions": {"tuner": {"mode": "slow"}}}', encoding="utf-8")
+    ext = Recalls()
+    layers = {"extensions": {"tuner": {"size": 3}}}
+    user = UserConfig(tmp_path / "tau-home", cli=layers)
+    h = await Harness.create(tmp_path, extensions=[ext], user_config=user)
+    await h.run("recall")
+    await h.settle()
+    assert ext.saved == [{"mode": "slow"}], "not the cli layer's size"
+    await h.configure("tuner", {"size": 5})  # a Config node on this branch
+    await h.settle()
+    await h.run("recall")
+    assert ext.saved[-1] == {"mode": "slow"}, "not a node's size either"
+    await h.close()
+
+
+@scenario
+async def test_saved_options_are_empty_when_there_is_no_file(tmp_path: Path) -> None:
+    ext = Recalls()
+    h = await Harness.create(tmp_path, extensions=[ext], user_config=home(tmp_path))
+    await h.run("recall")
+    assert ext.saved == [{}], "no file is no options"
+    await h.close()
+
+
+@scenario
+async def test_saved_options_without_a_user_file_to_read_fail_the_command(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Recalls()])
+    with pytest.raises(CommandFailed, match="ConfigError: this driver has no user config"):
+        await h.run("recall")
+    await h.close()
+
+
+@scenario
+async def test_a_tool_hook_reads_saved_options_too(tmp_path: Path) -> None:
+    config = tmp_path / "tau-home" / "config.json"
+    config.parent.mkdir()
+    config.write_text('{"extensions": {"tuner": {"mode": "slow"}}}', encoding="utf-8")
+    ext = Recalls()
+    call = Reply([Part.Call("c", "t", "{}")], Stop.Tools)
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([call, Reply([Part.Text("ok")])]),
+        tools=[FakeTool("t", "x")],
+        extensions=[ext],
+        user_config=home(tmp_path),
+    )
+    await h.send("go")
+    await h.settle()
+    assert ext.saved == [{"mode": "slow"}]
+    await h.close()

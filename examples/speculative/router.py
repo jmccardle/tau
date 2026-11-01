@@ -103,3 +103,6 @@ class Router:
             if home and home != cursor.model():
                 cursor.set_model(Model(home))
         return None
+
+
+extensions = [Router()]  # what `chat.py --extension` adds

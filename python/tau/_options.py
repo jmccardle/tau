@@ -235,6 +235,15 @@ class ExtensionOptions:
         saving = {extension: (self._types[extension], self._fields[extension], dict(changes))}
         self._use_catalog(save_options(self._user, saving))
 
+    def saved(self, extension: str) -> Mapping[str, object]:
+        """The fields of `extension`'s options that the user's file sets itself, as JSON values.
+        `ConfigError` if the extension has no options, or the driver was given no user config."""
+        if extension not in self._types:
+            raise ConfigError(f"extension {extension!r} has no options")
+        if self._user is None:
+            raise ConfigError("this driver has no user config to read")
+        return self._user.saved(extension)
+
     def check_config(
         self, at: int, model: str | None, extensions: Mapping[str, Mapping[str, object]]
     ) -> None:

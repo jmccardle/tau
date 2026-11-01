@@ -6,6 +6,7 @@ from tau._commands import CommandFailed
 from tau._config import ConfigError, ModelConfig, model_config
 from tau._config_layers import (
     ConfigProblem,
+    LayerText,
     ModelCatalog,
     ResolvedModel,
     check_config,
@@ -160,6 +161,7 @@ __all__ = [
     "Job",
     "LabelName",
     "Labels",
+    "LayerText",
     "Leased",
     "Live",
     "LiveDelta",

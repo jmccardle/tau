@@ -156,7 +156,7 @@ class Driver:
     of the `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels
     it. Extensions are listed in the constructor, in hook order, and checked there like tools
     (`DefinitionError`); `model.md` does not yet say how `config_at` names them. `reload` swaps
-    them for others while no effect is out.
+    them for others while nothing is in flight.
     """
 
     def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
@@ -180,7 +180,8 @@ class Driver:
         self._providers = dict(providers)
         self._catalog = catalog
         self._given = tuple(tools)
-        self._offered: dict[int, tuple[str, ...]] = {}  # cursor -> the offer of its pre_sample
+        # cursor -> the offer of its last pre_sample that a sample follows (None: every tool)
+        self._offered: dict[int, tuple[str, ...] | None] = {}
         self._options = ExtensionOptions(
             (), session, lambda: self._catalog, user_config, self.use_catalog
         )
@@ -207,9 +208,12 @@ class Driver:
             on_loop(self._hub.sync),
             self._options,
             self._ending_at_rest,
-            lambda cursor: _on_loop_wait(lambda: self._home, self._calls.abort, cursor),
+            lambda cursor: _on_loop_wait(lambda: self._home, partial(self._calls.abort, cursor)),
             self._close_cursor,
-            self._hub.show,
+            lambda cursor, extension, text: _on_loop_wait(
+                lambda: self._home, partial(self._hub.show, cursor, extension, text)
+            ),
+            lambda: tuple(self._tools),
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(
@@ -253,6 +257,7 @@ class Driver:
         tools, progress_tools = check_tools(listed)
         commands = assemble_commands(every)
         self._options.reload(checked)
+        self._hub.keep_shown([e.name for e in every])
         self._commands.use(commands)
         self._extensions, self._tools, self._owners = every, tools, owners
         self._progress_tools = progress_tools
@@ -290,19 +295,25 @@ class Driver:
     def reload(self, extensions: Sequence[Extension]) -> None:
         """Run `extensions` (listed in hook order, as at construction) instead of the ones the
         driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
-        and forget every folded `Config`. Only when no effect is out (`Busy` naming the cursors
-        that have one), since every job holds the set it was dispatched with; the next job
-        dispatched uses the new one. `DefinitionError` (nothing changes) as at construction. The
-        tree is not rewritten: a `Config` node that sets options of an extension no longer here
-        (or no longer fitting its type) fails when it is read (`ConfigError`), not now. Clients
-        are told nothing, as after `use_catalog`: they ask `commands()` and `options()` again."""
+        and forget every folded `Config`. Only when nothing is in flight: no cursor busy (a
+        command waiting for its step has none out yet, but its cursor is busy) and no effect
+        out, since every job holds the set it was dispatched with (`Busy` naming the cursors);
+        the next job dispatched uses the new one. `DefinitionError` (nothing changes) as at
+        construction. The tree is not rewritten: a `Config` node that sets options of an
+        extension no longer here (or no longer fitting its type) fails when it is read
+        (`ConfigError`), not now. Clients are told nothing, as after `use_catalog`: they ask
+        `commands()` and `options()` again."""
         self._check()
-        if self._out or self._tasks.effects:
+        busy = sorted(
+            {c for c in self.session.cursors() if self.session.cursor(c).busy} | set(self._out)
+        )
+        if busy or self._tasks.effects:
             raise Busy(
-                f"cannot reload with effects out: cursors {sorted(self._out)}, "
+                f"cannot reload while work is out: cursors {busy}, "
                 f"{len(self._tasks.effects)} effects running"
             )
         self._adopt(extensions)
+        self._hub.sync()  # what an extension that is gone showed
 
     # Lifecycle
 
@@ -480,12 +491,15 @@ class Driver:
         self, cursor: int, subject: Subject, hooks: Callable[[], Awaitable[Answer]]
     ) -> Callable[[], Awaitable[Answer]]:
         """The effect of a `pre_sample` job: `hooks`, then what they left in `subject.tools` is
-        the offer of the sample that follows (a failed hook leaves none)."""
+        the offer of the sample that follows. Every answer replaces the last offer; one that no
+        sample follows (a halt, a draft that answers the sample, a failed hook) leaves none."""
 
         async def effect() -> Answer:
             answer = await hooks()
-            if isinstance(answer, Answer.Hooks) and subject.tools is not None:
-                self._offered[cursor] = tuple(subject.tools)
+            if isinstance(answer, Answer.Hooks) and answer.stop is None and answer.draft is None:
+                self._offered[cursor] = None if subject.tools is None else tuple(subject.tools)
+            else:
+                self._offered.pop(cursor, None)
             return answer
 
         return effect
@@ -538,6 +552,7 @@ class Driver:
                     cursor,
                     self._offered_tools(cursor),
                     live,
+                    self._options.model,
                 )
                 self._out[cursor] = _Outstanding(sample=sample)
                 self._unit(cursor, sample.run)
@@ -592,25 +607,22 @@ def _on_loop(
 
 
 def _on_loop_wait[T](
-    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None],
-    call: Callable[[int], T],
-    arg: int,
+    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None], call: Callable[[], T]
 ) -> T:
-    """`call(arg)` on the loop's thread, whichever thread asks, and its result (or what it
+    """`call()` on the loop's thread, whichever thread asks, and its result (or what it
     raises) returned to the asker, who waits for it. Unlike `_on_loop` this is for a call whose
-    effect the asker's next step depends on: an abort made before a `send` must come first.
-    `RuntimeError` if the loop is closed or not running: nothing would ever run the call."""
+    effect the asker's next step depends on (an abort made before a `send` must come first) or
+    whose refusal the asker must hear (a `show` on a cursor that is gone).
+    `RuntimeError` if the loop is closed; the asker waits for as long as the loop is not run."""
     where = home()
     if where is None or threading.get_ident() == where[1]:
-        return call(arg)
+        return call()
     loop = where[0]
-    if loop.is_closed() or not loop.is_running():
-        raise RuntimeError("the driver's event loop is not running: the call would never run")
     done: concurrent.futures.Future[T] = concurrent.futures.Future()
 
     def run() -> None:
         try:
-            done.set_result(call(arg))
+            done.set_result(call())
         except BaseException as e:
             done.set_exception(e)
 

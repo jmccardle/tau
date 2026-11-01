@@ -12,7 +12,9 @@ docker logs; a command already piped to head, tail or wc is left alone). On a ma
 frontend `reject | allow | always | truncate`. `truncate` asks a second question for a grep pattern
 and rewrites the pending call's `command` to `{ cmd } 2>&1 | grep -e PAT | tail -n 200`. A reject is
 the call's `Err`, worded so the model can narrow the command. `always` lands in `Options.allow`
-in the user's config file (`NodeHandle.save_options`), so it holds in every session. With nobody to answer, the
+in the user's config file (`NodeHandle.save_options`), appended to the file's own `allow` (read with
+`NodeHandle.saved_options`, not `options()`, which folds in the project's layer, the overrides and
+this branch's nodes), so it holds in every session. With nobody to answer, the
 `unattended` option (default `reject`) decides; a connected client that never answers is given up
 on after `wait` seconds. Note the base `bash` tool already keeps only the last 10 kB of output,
 so the guard is about time and tokens spent, not about the final result size.

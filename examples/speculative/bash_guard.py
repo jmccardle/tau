@@ -4,9 +4,10 @@ A `pre_tool` hook matches the command against `Options.patterns`. On a match it 
 frontend `reject | allow | always | truncate`. `truncate` asks again for a grep pattern and
 rewrites the call's `command` to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. A reject is the
 call's `Err`, written so the model can narrow the command. `always` is saved to the user's
-config file (`NodeHandle.save_options(allow=...)`), so it holds in every session and shows in
-`/config bash_guard`. When nobody answers within `wait` seconds (a question waits even with
-no client connected) `unattended` decides.
+config file (`NodeHandle.save_options(allow=...)`), appended to the file's own `allow`
+(`saved_options`), never to what the project's layer, the overrides or a node add to it. It holds
+in every session and shows in `/config bash_guard`. When nobody answers within `wait` seconds (a
+question waits even with no client connected) `unattended` decides.
 """
 
 import asyncio
@@ -14,7 +15,7 @@ import json
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from tau import CallDraft, NodeHandle, Outcome
 
@@ -95,9 +96,10 @@ class BashGuard:
         )
         verdict = answer or options.unattended
         if verdict == "always":
-            node.save_options(
-                allow=sorted({*node.options().allow, pattern})
-            )  # read now: siblings save too
+            # The file's own list, read now (siblings save too), not the layers' and nodes' fold.
+            saved = cast("list[str]", node.saved_options().get("allow", []))
+            if pattern not in saved:
+                node.save_options(allow=[*saved, pattern])
         if verdict in ("allow", "always"):
             return None
         if verdict == "truncate":
@@ -127,3 +129,6 @@ class BashGuard:
             case Outcome.Err(error=error) if ran:
                 call.outcome = Outcome.Err(note + error)
         return None
+
+
+extensions = [BashGuard()]  # what `chat.py --extension` adds

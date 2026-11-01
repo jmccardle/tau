@@ -328,6 +328,39 @@ async def test_always_is_saved_to_the_users_file_for_every_session(tmp_path: Pat
 
 
 @scenario
+async def test_always_adds_to_the_files_own_allow_not_to_the_layers_and_nodes(
+    tmp_path: Path,
+) -> None:
+    """The file holds `old`. The overrides allow `cli` and this branch allows `node`: neither
+    belongs in the file."""
+    home = tmp_path / "tau-home"
+    home.mkdir()
+    (home / "config.json").write_text(
+        json.dumps({"extensions": {"bash_guard": {"allow": ["old"], "wait": 60}}}),
+        encoding="utf-8",
+    )
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([run("find /"), say("ok")]),
+        tools=[FakeTool("bash", "output")],
+        extensions=[guard.BashGuard()],
+        catalog=configured(allow=["cli"]),  # pyright: ignore[reportArgumentType]
+        user_config=UserConfig(home, cli=layers(allow=["cli"])),
+    )
+    await h.configure("bash_guard", {"allow": ["node"]})
+    await h.settle()
+    await h.send("go")
+    await h.settle()
+    await h.respond("always")
+    await h.settle()
+    saved = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    assert saved == {
+        "extensions": {"bash_guard": {"allow": ["old", r"\bfind\s+/(?:\s|$)"], "wait": 60}}
+    }
+    await h.close()
+
+
+@scenario
 async def test_always_in_a_batch_is_not_applied_to_the_questions_already_open(
     tmp_path: Path,
 ) -> None:
