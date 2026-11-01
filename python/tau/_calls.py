@@ -14,10 +14,11 @@ from contextlib import AbstractContextManager, contextmanager
 from tau import trace
 from tau._commands import Commands
 from tau._config_layers import ModelCatalog
-from tau._core import Author, Busy, ItemData, Session
+from tau._core import Author, Busy, ItemData, Node, Session
 from tau._hub import Feed, Hub
 from tau._questions import Questions
 from tau._values import Context, Form
+from tau.commandline import Parsed, parse
 from tau.events import LiveDelta
 from tau.handles import reopened
 from tau.protocols import Clock
@@ -175,6 +176,20 @@ class Calls:
 
     def options(self, cursor: int, extension: str) -> Form:
         return self._commands.options(cursor, extension)
+
+    def parse_line(self, cursor: int, line: str) -> Parsed:
+        return parse(line, self.forms(), self._commands.option_forms(cursor))
+
+    def option_forms(self, cursor: int) -> dict[str, Form]:
+        return self._commands.option_forms(cursor)
+
+    def nodes(self, start: int, limit: int) -> list[Node]:
+        if start < 0:
+            raise ValueError(f"start is a node id, not {start}")
+        if limit < 0:
+            raise ValueError(f"limit is a count, not {limit}")
+        tree = self.session.tree
+        return [tree.node(i) for i in range(start, min(start + limit, len(tree)))]
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
         return await self._commands.complete(cursor, named, prefix)

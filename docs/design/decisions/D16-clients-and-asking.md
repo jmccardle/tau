@@ -399,7 +399,8 @@ Where the text above was silent, as built:
 - **`Client.run` returns the result and raises the failure** (`CommandFailed`, `"Type: msg"`; an
   aborted command raises it too). `Notice`s remain for `progress` and `cursor.tell`.
 - **One stream-ending rule:** `CutOff` and a driver failure are `ConnectionError`s (the second's
-  message the failure's `"Type: msg"`, chained); a stopped driver ends the stream cleanly.
+  message the failure's `"Type: msg"`, chained); a stopped driver ends the stream cleanly. (D21
+  extends the rule to calls: a call on a failed or stopped driver is a `ConnectionError` too.)
 - **`Connected` is gone.** A node never changes and is keyed by id, so the snapshot (a `CursorState`
   per cursor, `Labels`) is well defined without a node count: a frontend reads `walk(at)` and
   ignores an `Appended` node it already has.

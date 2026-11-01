@@ -16,8 +16,10 @@ against a local one.
 **What exists (checked 2026-10-31).**
 - `Client` (`client.py`) has 22 async methods and is an event stream. Every argument and
   event is a plain frozen value except the core's `Node`, `Body`, `Author`, `Item`,
-  `ItemData` and `Ending`, Rust values that already have one JSON encoding: the serde
-  derives the log is written with (`tau-core/src/tree.rs`).
+  `ItemData` and `Ending`, Rust values with one JSON encoding: the serde derives the log is
+  written with (`tau-core/src/tree.rs`). **`Ending` had none** (it lived in `step.rs` with no
+  serde derive, since the log never holds one); 7B-1 gave it the same derives, externally tagged
+  like the rest (`"Done"`, `{"Failed": "E: x"}`).
 - A `Feed` is bounded (`Live` dropped, an `Appended`/`Notice` backlog `CutOff`); the pump never
   waits on a client. A lost client's questions go to the pool.
 - Path completion, the base tools' default `cwd`, and any relative path or subprocess in an
@@ -25,7 +27,7 @@ against a local one.
   into the session's working directory (D18 §1, §5), so these agree with the session's `cwd`,
   which `hello` reports** (review, 2026-10-31).
 - After a failure every call raises the failure itself, after a stop `RuntimeError`; only the
-  stream ends with `ConnectionError`. The `Harness` reads the session directly (the host's reads).
+  stream ends with `ConnectionError` (7B-1 changed this, §5). The `Harness` reads the session directly (the host's reads).
 
 **τ 0.15's serve** (protocol `"0.12"`) was one daemon for every session of every directory
 (`session_id` on each call) on TCP `127.0.0.1:8256` with an optional token; clients resumed
@@ -125,11 +127,18 @@ NoSuchCursor` catches `CursorClosed` remotely as it does locally.
 | -32013 | Stopped | `ConnectionError` | the driver has stopped or failed (below) |
 | -32014 | CutOff | `CutOff` | only in `end` |
 
-The table is one mapping in the protocol module; `--schema` emits it.
+The table is one mapping in the protocol module (`tau._protocol.ERRORS`); `--schema` emits it.
+`ProtocolError` is a `RuntimeError` and `ProtocolMismatch` a `ProtocolError`. The error object is
+`{code, message}` and, for the two rows that cannot be rebuilt from the message alone,
+`data`: `ProtocolMismatch` carries `{"server": 1}`, `UnknownCommand` `{"name": "zz"}`. The code's
+name is not on the wire; `ErrorCode`'s `x-names` has it. A row marked as not sent by exception
+(the JSON-RPC codes, `InvalidParams`, `Internal`) is sent by the server for its own reasons.
 
 **Amendment to D16 §5: a call on a stopped or failed driver raises `ConnectionError`**, locally
-too (the failure's `"Type: msg"`, chained, or "the driver is stopped"; today the failure itself
-or `RuntimeError`): over the wire it can only be one, and it is the stream's rule already.
+too (the failure's `"Type: msg"`, chained, or "the driver is stopped"; before, the failure
+itself or `RuntimeError`): over the wire it can only be one, and it is the stream's rule already.
+*Built (7B-1):* one function (`driver._running`) raises it, so `Driver.rest`, `add_item` and
+`DriverState.check` follow the client calls.
 
 ### 6. Disconnects, questions and backpressure
 
@@ -156,7 +165,7 @@ Three new `Client` calls, so local and remote stay one contract (amends D16 §5)
 - **`complete_line(cursor, line) -> list[str]`** is `commandline.completions` on the server:
   one round trip instead of one per form, option and named type.
 - **`nodes(start, limit) -> list[Node]`**: up to `limit` nodes from id `start`, in id order;
-  empty past the end. A tree view needs every node; with `children` alone that is a round trip
+  empty past the end; a negative `start` or `limit` is a `ValueError` (`Refused`). A tree view needs every node; with `children` alone that is a round trip
   per node. Ids are dense and nodes never change. `commandline` stays the pure library.
 
 ### 8. The protocol version and the schema
@@ -168,8 +177,12 @@ Three new `Client` calls, so local and remote stay one contract (amends D16 §5)
   signatures, the event dataclasses, the error table and the core values' schemas (from
   `schemars` derives beside their serde derives, Open 6). Nothing is listed by hand. Shape: `$defs/<method>` is its params object with
   `x-result`; `$defs/Event` a `oneOf` over `kind`; `$defs/End`; `$defs/ErrorCode` an enum with
-  `x-names`; `x-protocol` at the top. Params are closed, results open, as in 0.15.
-- **Checked in** as `docs/protocol.schema.json` and compared in CI the way the diagrams are, so
+  `x-names`; `x-protocol` at the top. Params are closed, results open, as in 0.15. `close` is not a message: closing the
+  connection is how a client disconnects (§6). `hello` is in the schema as a method like the
+  others, with `Welcome` as its result.
+- **Checked in** as `docs/protocol.schema.json` (written by `scripts/schema.py`, compared by
+  `scripts/schema.py --check` in `scripts/check.sh`, which CI runs; `tau serve --schema` prints
+  `tau._protocol.schema_text()`) and compared in CI the way the diagrams are, so
   any wire change is a readable diff. **At release:** if the schema differs from the last
   tag's, `PROTOCOL` goes up by one.
 

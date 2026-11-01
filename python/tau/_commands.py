@@ -209,6 +209,12 @@ class Commands:
         """`extension`'s options as a client edits them at `cursor`."""
         return self._options.form(extension, self._session.cursor(cursor).at)
 
+    def option_forms(self, cursor: int) -> dict[str, Form]:
+        """The options form of every extension that has options, as `cursor` sees them: what
+        `commandline.parse` reads `/config <extension>` by."""
+        at = self._session.cursor(cursor).at
+        return {name: self._options.form(name, at) for name in self._options.names()}
+
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
         """The values of the named type `named` that start with `prefix`."""
         return await complete(self._session, self._catalog(), cursor, named, prefix)

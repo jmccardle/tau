@@ -9,6 +9,7 @@ use std::collections::HashSet;
 /// kept exactly as given and opaque to core beyond that; `provider` names who
 /// may send it back.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "ReplayWire")]
 pub struct Replay {
     provider: String,
@@ -16,6 +17,7 @@ pub struct Replay {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct ReplayWire {
     provider: String,
     data: String,
@@ -158,6 +160,7 @@ impl<'de> Visitor<'de> for Inner {
 /// One piece of a reply. `replay` is `None` unless the provider kept data to
 /// send back. Logs written before replay existed load as `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(from = "wire::Part", into = "wire::Part")]
 pub enum Part {
     Text {
@@ -219,6 +222,7 @@ mod wire {
     /// A string is plain; an object is signed. Deserialized by hand because
     /// `untagged` would drop the reason a bad replay was refused.
     #[derive(Debug, Serialize)]
+    #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
     #[serde(untagged)]
     pub enum Prose {
         Plain(String),
@@ -261,6 +265,7 @@ mod wire {
     }
 
     #[derive(Debug, Serialize, Deserialize)]
+    #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
     pub enum Part {
         Text(Prose),
         Thinking(Prose),

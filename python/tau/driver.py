@@ -124,7 +124,7 @@ class DriverState:
     the questions open, the effects parked in the driver (`parked`: an effect with a question
     open or a handle's `rest` or `close_cursor` out waits for an answer or another cursor, and
     counts once however many it has out), what the driver died of, and whether it was stopped.
-    `check` raises the failure or `RuntimeError` for a stopped driver, as every client call does
+    `check` raises `ConnectionError` for a failed or stopped driver, as every client call does
     first."""
 
     units: int
@@ -135,7 +135,7 @@ class DriverState:
     stopped: bool
 
     def check(self) -> None:
-        """Raise the failure the driver died of, or `RuntimeError` if it is stopped."""
+        """Raise `ConnectionError` if the driver has failed or is stopped."""
         _running(self.failure, self.stopped)
 
 
@@ -150,8 +150,9 @@ class Driver:
 
     A frontend never calls the driver: it holds a `Client` (`client(id)` makes one, naming
     itself), whose calls run on the loop thread, publish what they changed, and poke the pump.
-    Once the driver has failed or stopped they raise (the failure, or `RuntimeError`), as `rest`
-    does; a stream connected then ends at once. The extensions' commands (`/model` of the
+    Once the driver has failed or stopped they raise `ConnectionError` (the failure's
+    `"Type: msg"`, chained, or "the driver is stopped"), as `rest` does; a stream connected then
+    ends at once. The extensions' commands (`/model` of the
     built-in extension `tau` first) run for clients; a command that takes a `Cursor` runs ahead
     of the `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels
     it. Extensions are listed in the constructor, in hook order, and checked there like tools
@@ -271,7 +272,7 @@ class Driver:
             return None
 
     def _check(self) -> None:
-        """Raise the failure the driver died of, or that it is stopped."""
+        """Raise `ConnectionError` if the driver has failed or is stopped."""
         _running(self._failure, self._stopped)
 
     def _fail(self, failure: Exception) -> None:
@@ -360,9 +361,9 @@ class Driver:
         )
 
     async def rest(self, cursor: int) -> None:
-        """Wait until the cursor is at rest with no effect out. Raises what an effect or the
-        pump died of, and `RuntimeError` once the driver is stopped (also if it is stopped
-        meanwhile). A cursor held by an open question or a gate does not rest."""
+        """Wait until the cursor is at rest with no effect out. Raises `ConnectionError` once the
+        driver has failed or stopped (also if it does meanwhile). A cursor held by an open
+        question or a gate does not rest."""
         while True:
             _running(self._failure, self._stopped)
             if not (self.session.cursor(cursor).busy or cursor in self._out):
@@ -641,11 +642,12 @@ def _as_failure(error: BaseException) -> Exception:
 
 
 def _running(failure: Exception | None, stopped: bool) -> None:
-    """Raise the failure the driver died of, or that it is stopped."""
+    """Raise `ConnectionError` if the driver has failed (`"Type: msg"` of the failure, chained)
+    or stopped: a client's stream ends with the same error, so a frontend has one rule."""
     if failure is not None:
-        raise failure
+        raise ConnectionError(f"{type(failure).__name__}: {failure}") from failure
     if stopped:
-        raise RuntimeError("the driver is stopped")
+        raise ConnectionError("the driver is stopped")
 
 
 def _catch_up(outs: dict[int, _Outstanding], cursor: int) -> Sequence[LiveDelta]:

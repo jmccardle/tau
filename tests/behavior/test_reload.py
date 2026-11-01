@@ -219,7 +219,7 @@ async def test_a_config_node_an_extension_can_no_longer_read_fails_when_read(
 async def test_a_stopped_driver_cannot_reload(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     await h.driver.stop()
-    with pytest.raises(RuntimeError, match="stopped"):
+    with pytest.raises(ConnectionError, match="the driver is stopped"):
         h.driver.reload([])
     h.session.close()
 

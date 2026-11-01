@@ -7,8 +7,10 @@ implementation, made by `Driver.client`; a remote one serializes each call and e
 protocol has no call that takes or returns a handle.
 
 A stream that ends in error raises `ConnectionError`: `CutOff` for a client that fell behind,
-or one whose message is the `"Type: msg"` of the failure that ended the driver. A frontend has
-one rule for both: `except ConnectionError`, then connect again.
+or one whose message is the `"Type: msg"` of the failure that ended the driver. So does a call
+on a driver that has failed (the same message, the failure chained) or stopped ("the driver is
+stopped"). A frontend has one rule for all of them: `except ConnectionError`, then connect
+again.
 """
 
 import asyncio
@@ -19,6 +21,7 @@ from tau._calls import Calls
 from tau._core import Node
 from tau._hub import Feed
 from tau._values import Form
+from tau.commandline import Parsed, completions
 from tau.events import Event
 
 
@@ -26,7 +29,8 @@ class Client(AsyncIterator[Event], Protocol):
     """What a frontend holds. Iterating it yields the events: a `CursorView` per open cursor, a
     `CursorGone` per closed one, and `Labels` first, then changes as they happen, until the driver
     stops (the stream ends), or the driver fails or the client is `CutOff` for falling behind (it
-    raises `ConnectionError`). Every call raises once the driver has failed or stopped."""
+    raises `ConnectionError`). Every call raises `ConnectionError` once the driver has failed or
+    stopped."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -133,7 +137,25 @@ class Client(AsyncIterator[Event], Protocol):
         the driver's machine's, relative to its working directory."""
         ...
 
+    async def parse_line(self, cursor: int, line: str) -> Parsed:
+        """`commandline.parse` of `line` with this driver's forms and the options forms
+        `cursor` sees: the command, its arguments, and the required parameters still `missing`.
+        `UnknownCommand` if no command has the name (send the line as text), `ValueError` for a
+        line that cannot be read, plain `LookupError` for a bare name two extensions share."""
+        ...
+
+    async def complete_line(self, cursor: int, line: str) -> list[str]:
+        """`commandline.completions` of `line` on the driver: what could finish its last
+        word, in one call."""
+        ...
+
     async def node(self, id: int) -> Node: ...
+
+    async def nodes(self, start: int, limit: int) -> list[Node]:
+        """Up to `limit` nodes from id `start`, in id order; none past the end. Ids are dense
+        and a node never changes, so a tree is read in ranges. `ValueError` for a negative
+        `start` or `limit`."""
+        ...
 
     async def walk(self, id: int) -> list[Node]:
         """The nodes from the root to `id`."""
@@ -169,6 +191,16 @@ class _Stream:
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
+
+
+async def _finished(calls: Calls, outcome: "asyncio.Future[str | None]") -> str | None:
+    """What a command came to. A command the driver gave up on, because it failed or was
+    stopped, is cancelled: the call says so."""
+    try:
+        return await outcome
+    except asyncio.CancelledError:
+        calls.check()
+        raise
 
 
 class LocalClient(_Stream):
@@ -225,7 +257,8 @@ class LocalClient(_Stream):
         return self._up().forms()
 
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None:
-        return await self._finished(self._up().run(self.id, cursor, command, args))
+        calls = self._up()
+        return await _finished(calls, calls.run(self.id, cursor, command, args))
 
     async def options(self, cursor: int, extension: str) -> Form:
         return self._up().options(cursor, extension)
@@ -233,22 +266,24 @@ class LocalClient(_Stream):
     async def configure(
         self, cursor: int, extension: str, values: Mapping[str, object], *, save: bool = False
     ) -> None:
-        await self._finished(self._up().configure(self.id, cursor, extension, values, save))
-
-    async def _finished(self, outcome: "asyncio.Future[str | None]") -> str | None:
-        """What a command came to. A command the driver gave up on, because it failed or was
-        stopped, is cancelled: the call says so."""
-        try:
-            return await outcome
-        except asyncio.CancelledError:
-            self._calls.check()
-            raise
+        calls = self._up()
+        await _finished(calls, calls.configure(self.id, cursor, extension, values, save))
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
         return await self._up().complete(cursor, named, prefix)
 
+    async def parse_line(self, cursor: int, line: str) -> Parsed:
+        return self._up().parse_line(cursor, line)
+
+    async def complete_line(self, cursor: int, line: str) -> list[str]:
+        calls = self._up()
+        return await completions(line, calls.forms(), self, cursor, calls.option_forms(cursor))
+
     async def node(self, id: int) -> Node:
         return self._up().session.tree.node(id)
+
+    async def nodes(self, start: int, limit: int) -> list[Node]:
+        return self._up().nodes(start, limit)
 
     async def walk(self, id: int) -> list[Node]:
         return self._up().session.tree.walk(id)

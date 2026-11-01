@@ -2193,16 +2193,19 @@ act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
 the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
-(extension)*, */config*, *complete*), the reads `node`, `walk`, `children`, `close`, and one event
+(extension)*, */config*, *complete*), `parse_line` and `complete_line` (the command line, read and
+completed on the driver; see *parse_line*), the reads `node`, `nodes`, `walk`, `children`,
+`close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
 `Client`. `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
-Every argument and event is a plain frozen value. For a remote client (Phase 6) the values of
-the protocol that are not plain (the core's `Node`, `Body`, `Author`, `Item`, `ItemData`,
-`Ending`) need one codec each; events and the rest travel as they are. `LocalClient` is the
+Every argument and event is a plain frozen value; over the wire (D21) the core's `Node`, `Body`,
+`Author`, `Item`, `ItemData` and `Ending` travel in the log's own JSON encoding (see *wire
+coding*) and the rest as their type hints say. `LocalClient` is the
 in-process implementation: creating one connects, taking the snapshot and subscribing in one
 synchronous act on the loop. A client is **connected** while it has a stream open; `close()`,
 a cut-off, or dropping the `LocalClient` (the hub holds streams weakly) disconnects it. Every
-call raises once the driver has failed or stopped. A stream that ends in error raises
+call raises `ConnectionError` once the driver has failed (its message the failure's `"Type: msg"`,
+chained) or stopped ("the driver is stopped"). A stream that ends in error raises
 `ConnectionError`: **CutOff**, or one whose message is the `"Type: msg"` of the failure that ended
 the driver, chained to it; after a plain stop the stream ends cleanly, and a client connecting
 after either gets a stream already ended. A frontend's one rule is `except ConnectionError`,
@@ -2210,6 +2213,50 @@ then reconnect: a new client with the same id, since the log is the truth and th
 resume. Its constructor is the driver's: `LocalClient` takes a private `Calls`, which holds the
 driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`, `stop`, `rest`,
 `use_catalog`, `reload`, `state`, `client` and `add_item`.
+
+### parse_line, complete_line, nodes
+`Client.parse_line(cursor, line) -> Parsed`, `Client.complete_line(cursor, line) -> list[str]`,
+`Client.nodes(start, limit) -> list[Node]` · D21 §7 · new
+
+The three calls that let a remote frontend need no copy of the driver's forms. `parse_line` is
+`commandline.parse` of a line with the driver's command forms and the options forms `cursor` sees
+(`/config <extension>`): a `Parsed` (the command's form, its arguments as decoded JSON, the
+required parameters still missing, and for `/config` the extension and `--save`), `UnknownCommand`
+for a name no command has (send the line as text), `ValueError` for a line that cannot be read.
+`complete_line` is `commandline.completions` on the driver, in one call instead of one per form,
+option and named type. `nodes` reads up to `limit` nodes from id `start` in id order, none past the
+end (ids are dense and a node never changes): a tree view reads in ranges, not a `children` call
+per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays the pure library.
+
+### PROTOCOL, ProtocolError, ProtocolMismatch
+`tau.PROTOCOL`, `tau.ProtocolError`, `tau.ProtocolMismatch` (`_protocol.py`) · D21 §3, §8 · new
+
+`PROTOCOL` is the wire's version, an integer (1 in 0.16.0). By D12 a version marks a *released*
+protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
+tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
+again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
+method that does not exist, a value that does not fit. `ProtocolMismatch` (a `ProtocolError`;
+`.server` is the protocol the server speaks) is `hello` naming another protocol; the reconnect
+rule `except ConnectionError` does not loop on it.
+
+### wire coding, error code
+`tau._protocol` (private; `docs/protocol.schema.json`) · D21 §4, §5, §8 · new
+
+What a server and a client both call, so neither describes a value or an error twice. **Wire
+coding**: `encode(value)` and `decode(type hint, data)` turn the values of `Client`'s calls and
+events to JSON and back, rebuilding the same frozen values (a remote event equals the local one). A
+dataclass is an object of its fields; an event, and a `Live`'s delta, also carries `kind`, its
+class name; the core's `Node`, `Body`, `Author`, `Item`, `ItemData` and `Ending` are the log's own
+serde JSON, from `tau._core.wire_encode` and `wire_decode`, so there is one encoding of a node in
+the system and a change to the log's encoding is a change to the wire. Serde tags a variant
+externally (`{"User": "hi"}`) where events are tagged by `kind`: two styles in one schema. A value
+passed to `answer`, `run` or `configure` must be JSON. **Error code**: the table `ERRORS` maps
+each exception to a code by the first class in its MRO the table names (`Internal`, -32603, for
+none), and a code to the class a remote client raises, so `except NoSuchCursor` catches
+`CursorClosed` remotely as it does locally. **The schema** (`schema_text()`) is JSON Schema
+2020-12 generated from `Client`'s signatures, the event dataclasses, the table and the core values'
+`schemars` derives (tau-core's optional `schema` feature, which only tau-py turns on); it is checked
+in and compared by `scripts/schema.py --check`, so any wire change is a readable diff.
 
 ### Calls
 `tau._calls.Calls`, `frontend` (private) · D16 · new
@@ -2406,13 +2453,15 @@ what those return changes from the call after the reload. Its public surface is
 changed (`Hub.sync`), then poke the pump. `add_item(to, data)` is for whoever has something to
 tell a resting cursor from outside a hook (a timer extension, `tau serve` relaying a webhook): any
 `ItemData` but `Input`, which only `input` and `send` add (they say who wrote it).
-Once the driver has failed or stopped, every client call raises (the failure, or `RuntimeError`),
-and a stream connected then ends at once (with the failure, or cleanly after a plain stop).
+Once the driver has failed or stopped, every client call raises `ConnectionError` (the failure's
+`"Type: msg"`, chained, or "the driver is stopped"), and a stream connected then ends at once
+(with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
 (**check_extensions**); how `config_at` will name them is open.
 `stop()` ends the clients' streams. A failure of the pump or an effect cancels the effects
-still running, ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
-`RuntimeError`, also for a caller already waiting. A hook adds its extension's item through
+still running, ends the streams with it, and makes `rest` raise `ConnectionError` chained to it;
+after `stop()`, `rest` raises `ConnectionError("the driver is stopped")`, also for a caller already
+waiting. A hook adds its extension's item through
 its handle. `state()` is the one read a harness needs (**DriverState**).
 
 ### pump
@@ -2500,7 +2549,7 @@ instead of retrying as it would a connection error.
 `Driver.rest(cursor)` · new
 
 Await until the cursor is at rest: not busy, no effect out.
-Re-raises what an effect or the pump died of. A cursor held by an open
+Raises `ConnectionError` once the driver has failed or stopped (the failure chained). A cursor held by an open
 question or a gate does not rest. The pump wakes its waiters after each pass.
 
 ### Clock, SystemClock

@@ -611,7 +611,7 @@ async def test_watching_catches_up_on_calls_under_the_providers_own_index(tmp_pa
 
 
 @scenario
-async def test_every_call_raises_the_same_way_once_the_driver_has_stopped(tmp_path: Path) -> None:
+async def test_every_call_raises_connection_error_once_the_driver_stopped(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     c, at = h.client, h.cursor
     await h.driver.stop()
@@ -637,7 +637,7 @@ async def test_every_call_raises_the_same_way_once_the_driver_has_stopped(tmp_pa
         c.children(99),
     ]
     for call in calls:
-        with pytest.raises(RuntimeError, match="stopped"):
+        with pytest.raises(ConnectionError, match="the driver is stopped"):
             await call
     h.session.close()
 

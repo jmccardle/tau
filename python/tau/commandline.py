@@ -31,11 +31,13 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from tau._commands import CONFIG, ambiguous
 from tau._values import Form, Json
-from tau.client import Client
+
+if TYPE_CHECKING:  # client imports us: it returns a `Parsed`
+    from tau.client import Client
 
 NO_OPTIONS: Mapping[str, Form] = MappingProxyType({})
 SAVE = "--save"
@@ -64,7 +66,7 @@ class Parsed:
     extension: str | None = None
     save: bool = False
 
-    async def run(self, client: Client, cursor: int) -> str | None:
+    async def run(self, client: "Client", cursor: int) -> str | None:
         """`client.run` the command, or `client.configure` the extension's options; returns the
         command's result."""
         if self.extension is None:
@@ -291,7 +293,7 @@ def _typing(line: str) -> tuple[list[str], str]:
     return [], ""
 
 
-async def values(schema: Json, prefix: str, client: Client, cursor: int) -> list[str]:
+async def values(schema: Json, prefix: str, client: "Client", cursor: int) -> list[str]:
     """What could finish `prefix` as a value of `schema`, each a whole value to replace it
     with (unquoted): a named type's through `client.complete` (paths on the driver's machine),
     the values of a `Literal`, `true` and `false`, the items of a list after its last comma."""
@@ -319,7 +321,7 @@ async def values(schema: Json, prefix: str, client: Client, cursor: int) -> list
 async def completions(
     line: str,
     commands: Sequence[Form],
-    client: Client,
+    client: "Client",
     cursor: int,
     options: Mapping[str, Form] = NO_OPTIONS,
 ) -> list[str]:

@@ -638,29 +638,32 @@ async def test_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_path: Path
         lambda: client.answer(0, "yes"),
     ]
     for call in calls:
-        with pytest.raises(RuntimeError, match="stopped"):
+        with pytest.raises(ConnectionError, match="the driver is stopped"):
             await call()
-    with pytest.raises(RuntimeError, match="stopped"):
+    with pytest.raises(ConnectionError, match="the driver is stopped"):
         h.driver.add_item(c, ItemData.Extension("x", "y"))
     assert h.snapshot() == before, "no cursor was left busy with nothing to run it"
     h.session.close()
 
 
 @scenario
-async def test_calls_on_a_failed_driver_raise_the_failure(tmp_path: Path) -> None:
+async def test_calls_on_a_failed_driver_raise_connection_error_chained_to_the_failure(
+    tmp_path: Path,
+) -> None:
     h, gate = await failing_harness(tmp_path)
     await h.send("hi")
     await h.settle()
     h.session.close()
     gate.release()
     await h.dies()
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match=r"^Closed: ") as ended:
         await h.client.send(h.cursor, "again")
-    with pytest.raises(Closed):
+    assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
+    with pytest.raises(ConnectionError, match="Closed"):
         h.driver.add_item(h.cursor, ItemData.Extension("x", "y"))
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match="Closed"):
         await h.client.answer(0, "yes")
-    with pytest.raises(Closed):
+    with pytest.raises(ConnectionError, match="Closed"):
         await h.client.remove_label("no-such-label")
     await h.driver.stop()
 

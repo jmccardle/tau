@@ -5,7 +5,9 @@
 # and nothing claims to (docs/plan.md amendments).
 #
 # `gate` runs scripts/check.sh, the same file developers run locally, with
-# only the dev group installed: the test suite must pass without τ 0.15.
+# only the dev group installed: the test suite must pass without τ 0.15. It
+# includes the wire steps: `scripts/schema.py --check` fails when
+# docs/protocol.schema.json is not what the code generates (D21 §8).
 # `wheels` builds portable manylinux2014 wheels (zig as the linker; no
 # docker) and tests each installed in a clean venv.
 

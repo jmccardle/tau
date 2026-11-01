@@ -34,4 +34,6 @@ step "ruff";         "$BIN/ruff" check .
 "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q tests
+step "wire coding";  "$PY" scripts/check_wire.py
+step "wire schema";  "$PY" scripts/schema.py --check   # docs/protocol.schema.json is generated (D21 §8)
 step "diagrams";     scripts/diagrams.sh --check   # rule 6; builds a feature-enabled core apart

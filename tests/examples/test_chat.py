@@ -374,7 +374,7 @@ def test_a_command_that_ends_in_something_unshown_ends_the_chat(tmp_path: Path) 
         await window.line("/model scripted")
         await until(lambda: not window.running)
         assert "the driver is stopped" in screen.text  # said at once, not at the next line
-        with pytest.raises(RuntimeError, match="stopped"):
+        with pytest.raises(ConnectionError, match="stopped"):
             await window.line("")  # the next line raises it, as the loop of `main` sees
         session.close()
 

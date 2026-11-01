@@ -94,6 +94,17 @@ impl Draft {
     }
 }
 
+impl From<Ending> for step::Ending {
+    fn from(e: Ending) -> Self {
+        match e {
+            Ending::Done {} => Self::Done,
+            Ending::Halted { reason } => Self::Halted(reason),
+            Ending::Failed { error } => Self::Failed(error),
+            Ending::Aborted {} => Self::Aborted,
+        }
+    }
+}
+
 debug_repr!(RunCall, Ending, Job, Answer, SampleEnd);
 
 impl From<step::Draft> for Draft {

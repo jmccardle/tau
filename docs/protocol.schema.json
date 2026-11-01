@@ -1,0 +1,1580 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "τ wire protocol",
+  "description": "JSON-RPC 2.0, one message per WebSocket text message (D21).",
+  "x-protocol": 1,
+  "$defs": {
+    "Appended": {
+      "description": "Nodes added to the tree, in id order, bodies included.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Appended"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Node"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "nodes"
+      ]
+    },
+    "Author": {
+      "oneOf": [
+        {
+          "enum": [
+            "Provider",
+            "Tools",
+            "Core"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Frontend": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Frontend"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Extension": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Extension"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Body": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "System": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "System"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "User": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "User"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Assistant": {
+              "properties": {
+                "finish_reason": {
+                  "description": "The provider's own finish string, verbatim; `None` when it sent none\n(an interrupted reply, a failed sample).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "meta": {
+                  "default": null,
+                  "description": "What the response carried besides its parts (model, id, usage...), as JSON\nobject text. Opaque to core; `None` when the provider sent none.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/Part"
+                  },
+                  "type": "array"
+                },
+                "stop": {
+                  "$ref": "#/$defs/Stop"
+                }
+              },
+              "required": [
+                "parts",
+                "stop"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Assistant"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One `(call id, outcome, by)` per call, in call order. `by` is who\nproduced that outcome: `Tools`, or the extension that answered or edited it.",
+          "properties": {
+            "Results": {
+              "items": {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/Outcome"
+                  },
+                  {
+                    "$ref": "#/$defs/Author"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "Results"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Config": {
+              "$ref": "#/$defs/Config"
+            }
+          },
+          "required": [
+            "Config"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Custom": {
+              "properties": {
+                "data": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Custom"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CallArgs": {
+      "description": "More of call `index`'s argument text (`args_raw`).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "CallArgs"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "index",
+        "text"
+      ]
+    },
+    "CallNamed": {
+      "description": "A call begins forming: call number `index` in this reply, with its `id` and tool.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "CallNamed"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "index",
+        "id",
+        "tool"
+      ]
+    },
+    "Config": {
+      "description": "A config snapshot. `data` is opaque to core and typed by the driver.",
+      "properties": {
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "CursorGone": {
+      "description": "Cursor `cursor` is closed (D17): a client drops its view of it. `at` is the node it was\nlast at, for restarting (`reopen`). A cursor has one state event at a time: its `CursorView`\nwhile open, this after it closes. Labels may still name it: they are its restart record.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "CursorGone"
+        },
+        "cursor": {
+          "type": "integer"
+        },
+        "at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "cursor",
+        "at"
+      ]
+    },
+    "CursorView": {
+      "description": "One cursor as a client sees it, whole: where it is (`at`), whether a step is running\n(`busy`), `auto`-step, its open `questions` (oldest first), its pending `items` (an\n`ItemData.Input` says who wrote it: its `by`), and how its last step ended (`ending`) with the\n`hook_error` that ended it, if a cursor hook failed in\nit. Both are `None` from the start of a step until it ends, and after a reload. `model` is the\nqualified name of the model the cursor's branch is on (what its next sample uses), `None` if\nno `Config` on the branch names one or one is unreadable (a sample says which). `shown` is\nwhat each extension shows on the cursor (`Cursor.show`), as `(extension, text)` pairs in\nextension-name order; it is not in the log, so it is empty after a reload.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "CursorView"
+        },
+        "cursor": {
+          "type": "integer"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "busy": {
+          "type": "boolean"
+        },
+        "auto": {
+          "type": "boolean"
+        },
+        "questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpenQuestion"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        },
+        "ending": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ending"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hook_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shown": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "cursor",
+        "at",
+        "busy",
+        "auto",
+        "questions",
+        "items",
+        "ending",
+        "hook_error",
+        "model",
+        "shown"
+      ]
+    },
+    "End": {
+      "description": "The params of the last message: the notification `end`. `error` is null when the driver stopped, else `CutOff` or `Stopped`.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Error"
+            }
+          ]
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "Ending": {
+      "description": "How a step ended. Serde-encoded as the nodes are: it crosses the wire in a `CursorView`.",
+      "oneOf": [
+        {
+          "enum": [
+            "Done",
+            "Aborted"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Halted": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Halted"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Failed": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Failed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Error": {
+      "description": "A JSON-RPC error object; `data` holds what a row needs to rebuild its exception (`ProtocolMismatch`: `server`; `UnknownCommand`: `name`).",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ErrorCode": {
+      "description": "The error table (D21 section 5).",
+      "enum": [
+        -32700,
+        -32600,
+        -32601,
+        -32602,
+        -32603,
+        -32001,
+        -32002,
+        -32003,
+        -32004,
+        -32005,
+        -32006,
+        -32007,
+        -32008,
+        -32009,
+        -32010,
+        -32011,
+        -32012,
+        -32013,
+        -32014
+      ],
+      "x-names": [
+        "ParseError",
+        "InvalidRequest",
+        "MethodNotFound",
+        "InvalidParams",
+        "Internal",
+        "Busy",
+        "NoSuchCursor",
+        "CursorClosed",
+        "NoSuchNode",
+        "NoSuchLabel",
+        "ProtocolMismatch",
+        "NotFound",
+        "UnknownCommand",
+        "Refused",
+        "NotYours",
+        "CommandFailed",
+        "ConfigError",
+        "Stopped",
+        "CutOff"
+      ],
+      "x-raises": [
+        "ProtocolError",
+        "ProtocolError",
+        "ProtocolError",
+        "TypeError",
+        "RuntimeError",
+        "Busy",
+        "NoSuchCursor",
+        "CursorClosed",
+        "NoSuchNode",
+        "NoSuchLabel",
+        "ProtocolMismatch",
+        "LookupError",
+        "UnknownCommand",
+        "ValueError",
+        "PermissionError",
+        "CommandFailed",
+        "ConfigError",
+        "ConnectionError",
+        "CutOff"
+      ]
+    },
+    "Event": {
+      "description": "The params of the notification `event`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Live"
+        },
+        {
+          "$ref": "#/$defs/CursorView"
+        },
+        {
+          "$ref": "#/$defs/CursorGone"
+        },
+        {
+          "$ref": "#/$defs/Labels"
+        },
+        {
+          "$ref": "#/$defs/Appended"
+        },
+        {
+          "$ref": "#/$defs/Notice"
+        }
+      ]
+    },
+    "Form": {
+      "description": "What a client knows of something it fills in: a command (its `name`, typed as `/name`,\nits `description` and the `schema` of its arguments, with the named types' `\"format\"` and\neach default, and the `extension` that owns it) or an extension's options (the `name` of the\nextension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is\nfor `/config`). Frozen, compared by value, and not hashable: the schema is a dict.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "object"
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "schema"
+      ]
+    },
+    "HookFailure": {
+      "description": "A cursor hook of `extension` raised, or broke its contract, at hook `point`\n(`\"pre_step\"`, `\"post_step\"`, ...). `error` is `\"Type: msg\"`, the text a `post_step` hook\nsees in `Ending.Failed`.",
+      "type": "object",
+      "properties": {
+        "extension": {
+          "type": "string"
+        },
+        "point": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "extension",
+        "point",
+        "error"
+      ]
+    },
+    "Item": {
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ItemData"
+        },
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "to",
+        "data"
+      ],
+      "type": "object"
+    },
+    "ItemData": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Input": {
+              "properties": {
+                "by": {
+                  "$ref": "#/$defs/Author"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "by",
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Extension": {
+              "properties": {
+                "data": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "data"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Extension"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Labels": {
+      "description": "Every label and the cursor it is on, in label order.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Labels"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "labels"
+      ]
+    },
+    "Live": {
+      "description": "A delta, on the cursor whose sample or tool call produced it. Never in the tree: a client\ndraws it as a layer over the cursor. Only a client watching the cursor hears it.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Live"
+        },
+        "cursor": {
+          "type": "integer"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextDelta"
+            },
+            {
+              "$ref": "#/$defs/ThinkingDelta"
+            },
+            {
+              "$ref": "#/$defs/CallNamed"
+            },
+            {
+              "$ref": "#/$defs/CallArgs"
+            },
+            {
+              "$ref": "#/$defs/ToolProgress"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "cursor",
+        "delta"
+      ]
+    },
+    "Node": {
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/Body"
+        },
+        "by": {
+          "$ref": "#/$defs/Author"
+        },
+        "delivers": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "parent": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "time": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "time",
+        "by",
+        "body",
+        "delivers"
+      ],
+      "type": "object"
+    },
+    "Notice": {
+      "description": "A message for this client alone: `cursor.tell`, an input a hook refused.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Notice"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "OpenQuestion": {
+      "description": "A question an extension asked and nobody has answered: `id` (what `answer` names), whom\nit is for (`to`: a client id, `None` for anyone), what it asks, and the JSON Schema of the\nanswer.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "to",
+        "text",
+        "schema"
+      ]
+    },
+    "Outcome": {
+      "oneOf": [
+        {
+          "enum": [
+            "Interrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Ok": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Ok"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Err": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Err"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Parsed": {
+      "description": "A command line, read: the `command` form, its `args` (decoded JSON), and the `missing`\nrequired parameters, in order, which a frontend asks for. For `/config <extension>` the\n`command` is the extension's options form, `args` the options to change and `extension`\nits name; with no `args` the line asks for the form, which a frontend shows from\n`Client.options`. `save` is whether `--save` was typed. `run` makes the call.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/Form"
+        },
+        "args": {
+          "type": "object"
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "save": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "args",
+        "missing"
+      ]
+    },
+    "Part": {
+      "description": "One piece of a reply. `replay` is `None` unless the provider kept data to\nsend back. Logs written before replay existed load as `None`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Text": {
+              "$ref": "#/$defs/Prose"
+            }
+          },
+          "required": [
+            "Text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Thinking": {
+              "$ref": "#/$defs/Prose"
+            }
+          },
+          "required": [
+            "Thinking"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Call": {
+              "properties": {
+                "args_raw": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "replay": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Replay"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "tool",
+                "args_raw"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Call"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Prose": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "properties": {
+            "replay": {
+              "$ref": "#/$defs/Replay"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "replay"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A string is plain; an object is signed. Deserialized by hand because\n`untagged` would drop the reason a bad replay was refused."
+    },
+    "Replay": {
+      "description": "Data only the provider that wrote a part can send back (a signature, a\nredacted block). `data` is the text of a JSON object with no repeated key,\nkept exactly as given and opaque to core beyond that; `provider` names who\nmay send it back.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "data"
+      ],
+      "type": "object"
+    },
+    "Stop": {
+      "enum": [
+        "End",
+        "Tools",
+        "Length",
+        "Interrupted",
+        "Error"
+      ],
+      "type": "string"
+    },
+    "TextDelta": {
+      "description": "Text of the reply arriving.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "TextDelta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "ThinkingDelta": {
+      "description": "Thinking text arriving.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ThinkingDelta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "ToolProgress": {
+      "description": "A running call showing partial output: `text` is new output since the last\n`ToolProgress` of the same call, not the whole so far. The call is named by `node`, the\nbatch's node (the `Assistant` node holding the call), and `call_id`: a server may reuse\nids across batches, so the id alone does not say which call. Only the driver makes one (a\ntool calls its `progress`); a provider cannot yield one. What the call saves is its\n`Outcome`, never this.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "ToolProgress"
+        },
+        "node": {
+          "type": "integer"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "node",
+        "call_id",
+        "text"
+      ]
+    },
+    "Welcome": {
+      "description": "What `hello` answers: the `protocol` the server speaks, its τ `version`, the `session` id\nit serves, the `cwd` that session runs in (paths complete there), and its `pid`.",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "session",
+        "cwd",
+        "pid"
+      ]
+    },
+    "abort": {
+      "description": "Abort the cursor's step and decline its open questions.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "answer": {
+      "description": "Answer an open question with a decoded JSON value; `None` declines. `ValueError` if\nthe value is wrong (the question stays open), `LookupError` if the question is closed\nor unknown (the first good answer wins), `PermissionError` if it is for another\nclient.",
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "integer"
+        },
+        "value": {}
+      },
+      "required": [
+        "question",
+        "value"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "children": {
+      "description": "",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      }
+    },
+    "close_cursor": {
+      "description": "Close the cursor (D17): abort its step as `abort` does, wait for it to rest, drop its\npending items, and close it. Clients are sent a `CursorGone`. Its id, last node and\nlabels stay; `reopen` restarts from them. `CursorClosed` if it is already closed.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "commands": {
+      "description": "Each command's form: its name, description and argument schema (named types with\ntheir `\"format\"`, each default), fixed until the driver reloads. If some extension has\noptions there is one more, `config`, whose one argument is the extension; it is\nchanged with `configure`, not `run`.",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Form"
+        }
+      }
+    },
+    "complete": {
+      "description": "The values of a named type (`\"path\"`, `\"model\"`, `\"cursor\"`, `\"label\"`, `\"node\"`;\nthe `\"format\"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are\nthe driver's machine's, relative to its working directory.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "named": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "named",
+        "prefix"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "complete_line": {
+      "description": "`commandline.completions` of `line` on the driver: what could finish its last\nword, in one call.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "line": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "line"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "configure": {
+      "description": "Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s\nbranch: a step of the cursor writes a `Config` node. With `save`, also write them into\nthe user's config file (`extensions.<name>`), which every session reads. `ConfigError`\nfor an extension without options, or values its options type refuses (or, with `save`,\na driver with no user config), `Busy` unless the cursor is at rest; nothing is written\nthen, neither node nor file.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "extension": {
+          "type": "string"
+        },
+        "values": {
+          "type": "object"
+        },
+        "save": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cursor",
+        "extension",
+        "values"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "go_to": {
+      "description": "Move the cursor to node `to`, aborting a busy step (which declines its open\nquestions).",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "to": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor",
+        "to"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "hello": {
+      "description": "The first message of a connection: the protocol the client speaks, its stable\n`client` id (`john@laptop:vscode`) and the `buffer` of its event stream (the server's\ndefault if left out). A different protocol is `ProtocolMismatch`. The server answers\n`Welcome`.",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "integer"
+        },
+        "client": {
+          "type": "string"
+        },
+        "buffer": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "client"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "$ref": "#/$defs/Welcome"
+      }
+    },
+    "input": {
+      "description": "Add `text` to the cursor's scratchpad as this client's input; returns the item.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "text"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "integer"
+      }
+    },
+    "node": {
+      "description": "",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "$ref": "#/$defs/Node"
+      }
+    },
+    "nodes": {
+      "description": "Up to `limit` nodes from id `start`, in id order; none past the end. Ids are dense\nand a node never changes, so a tree is read in ranges. `ValueError` for a negative\n`start` or `limit`.",
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "limit"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Node"
+        }
+      }
+    },
+    "open": {
+      "description": "Open a cursor at node `at`; it wakes. Returns its id.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "integer"
+      }
+    },
+    "options": {
+      "description": "`extension`'s options as they stand at `cursor`: a form whose schema has every\noption, each default the value now. `ConfigError` if it has no options.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "extension": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "extension"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "$ref": "#/$defs/Form"
+      }
+    },
+    "parse_line": {
+      "description": "`commandline.parse` of `line` with this driver's forms and the options forms\n`cursor` sees: the command, its arguments, and the required parameters still `missing`.\n`UnknownCommand` if no command has the name (send the line as text), `ValueError` for a\nline that cannot be read, plain `LookupError` for a bare name two extensions share.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "line": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "line"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "$ref": "#/$defs/Parsed"
+      }
+    },
+    "remove_label": {
+      "description": "Remove `label`; `NoSuchLabel` if there is none.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "reopen": {
+      "description": "Open a new cursor at the closed `cursor`'s last node, and move each of its labels\nonto it. Returns the new id. `ValueError` if `cursor` is open, `NoSuchCursor` if it was\nnever opened.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "integer"
+      }
+    },
+    "run": {
+      "description": "Run `/command` (`\"note\"`, or `\"a:note\"`, the extension's qualified name) with decoded\nJSON `args` on `cursor`; returns the command's result\n(`None` if it has none) once it has finished. `CommandFailed` (its message is the\nfailure as `\"Type: msg\"`) if it raised, or was aborted; it is raised as soon as the\ncommand raises, even when the command's step has not yet ended: the cursor may still be\nbusy for a moment while the step ends, and a retry then gets `Busy`. A command's `progress`\nand `cursor.tell` arrive as `Notice`s. `LookupError` for an unknown command or a bare name\ntwo extensions share (`\"/note is two commands: /a:note, /b:note\"`), `ValueError`\nnaming the problem for arguments that fit no parameter (the values are checked with the\nsession, `\"new\"` last), `Busy` for a command that runs as a step of the cursor when it is\nnot at rest.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "cursor",
+        "command",
+        "args"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "send": {
+      "description": "`input` with auto-step on.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "text"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "integer"
+      }
+    },
+    "set_auto": {
+      "description": "",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "on": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cursor",
+        "on"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "set_label": {
+      "description": "Put `label` on `cursor`; a label set elsewhere moves.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor",
+        "label"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "step": {
+      "description": "Start a step on a cursor at rest; `Busy` otherwise.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "walk": {
+      "description": "The nodes from the root to `id`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/Node"
+        }
+      }
+    },
+    "watch": {
+      "description": "Hear the `Live` of exactly these cursors from now on (a call replaces the last),\nstarting with what each sample in flight has streamed that is not in the tree yet.",
+      "type": "object",
+      "properties": {
+        "cursors": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "cursors"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    }
+  }
+}

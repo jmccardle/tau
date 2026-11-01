@@ -10,10 +10,14 @@ repository.workspace = true
 [features]
 # Logs every step position change to stderr (src/transitions.rs). Off by default.
 transitions = []
+# `JsonSchema` for the values that cross the wire (D21 section 8), beside their serde derives.
+# Only tau-py turns it on: tau-core, tau-store and the Rust tests build without schemars.
+schema = ["dep:schemars"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+schemars = { workspace = true, optional = true }
 tracing = { version = "0.1.44", default-features = false }
 
 [dev-dependencies]

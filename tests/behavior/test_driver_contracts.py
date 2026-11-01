@@ -101,9 +101,9 @@ async def test_rest_raises_when_the_driver_is_stopped_meanwhile_and_after(tmp_pa
     await asyncio.sleep(0)
     assert not waiting.done(), "the cursor is busy: rest waits"
     await h.driver.stop()
-    with pytest.raises(RuntimeError, match="stopped"):
+    with pytest.raises(ConnectionError, match="the driver is stopped"):
         await waiting
-    with pytest.raises(RuntimeError, match="stopped"):
+    with pytest.raises(ConnectionError, match="the driver is stopped"):
         await h.driver.rest(h.cursor)
     h.session.close()
 
@@ -555,11 +555,11 @@ async def test_a_panic_in_the_pump_fails_the_driver_and_ends_the_streams(tmp_pat
     stream = await h.connect("watcher")
     await h.send("go")
     clock.error = Panic("core panicked")  # the answer to the sample asks the clock
-    with pytest.raises(RuntimeError, match="Panic: core panicked"):
+    with pytest.raises(ConnectionError, match="RuntimeError: Panic: core panicked"):
         await asyncio.wait_for(h.driver.rest(h.cursor), 1)
     with pytest.raises(ConnectionError, match=r"^RuntimeError: Panic: core panicked$"):
         await asyncio.wait_for(read_all(stream), 1)  # what was buffered, then the failure
-    with pytest.raises(RuntimeError, match="Panic"):
+    with pytest.raises(ConnectionError, match="Panic"):
         await h.step()
     await h.driver.stop()
     h.session.close()
@@ -600,7 +600,7 @@ async def test_a_later_error_does_not_replace_the_one_that_killed_the_driver(
     await h.send("go")
     await h.settle()
     gate.release()
-    with pytest.raises(RuntimeError, match="the root cause"):
+    with pytest.raises(ConnectionError, match="the root cause"):
         await asyncio.wait_for(h.driver.rest(h.cursor), 1)
     await h.driver.stop()
     h.session.close()

@@ -377,6 +377,19 @@ impl From<tree::Node> for Node {
     }
 }
 
+impl From<Node> for tree::Node {
+    fn from(n: Node) -> Self {
+        Self {
+            id: n.id,
+            parent: n.parent,
+            time: n.time,
+            by: n.by.into(),
+            body: n.body.into(),
+            delivers: n.delivers,
+        }
+    }
+}
+
 /// Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`.
 #[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -448,6 +461,16 @@ pub struct Item {
 
 impl From<tree::Item> for Item {
     fn from(i: tree::Item) -> Self {
+        Self {
+            id: i.id,
+            to: i.to,
+            data: i.data.into(),
+        }
+    }
+}
+
+impl From<Item> for tree::Item {
+    fn from(i: Item) -> Self {
         Self {
             id: i.id,
             to: i.to,

@@ -8,6 +8,7 @@ mod tools;
 mod trace;
 mod values;
 mod view;
+mod wire;
 
 use pyo3::prelude::*;
 
@@ -27,6 +28,8 @@ mod _core {
     };
     #[pymodule_export]
     use super::view::{CursorState, Tree};
+    #[pymodule_export]
+    use super::wire::{wire_decode, wire_encode, wire_schema};
 
     #[pymodule_init]
     fn init(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {

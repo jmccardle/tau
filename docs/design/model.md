@@ -464,12 +464,13 @@ detected: the user's abort is the way out. An item the receiving extension turns
 A frontend holds a **client** (`Client`; `LocalClient` in process, a remote one in Phase 6),
 never the driver or the session: async calls (`input`, `send`, `step`, `go_to`, `set_auto`,
 `abort`, `open`, `set_label`, `remove_label`, `watch`, `answer`, `commands`, `run`, `options`,
-`configure`, `complete`), reads of the tree (`node`, `walk`, `children`), and one event stream,
+`configure`, `complete`, `parse_line`, `complete_line`), reads of the tree (`node`, `nodes`,
+`walk`, `children`), and one event stream,
 which is the client itself. Every client has an id, stable across reconnects, and its actions are
 `by: Frontend(client)`; a connection is not a client. Every argument and event is a plain frozen
 value; a remote client serializes them, with one codec each for the core's own values (`Node`,
 `Body`, `Author`, `Item`, `ItemData`, `Ending`). A stream that ends in error is a
-`ConnectionError`; a frontend reconnects.
+`ConnectionError`, and so is a call on a driver that has failed or stopped; a frontend reconnects.
 
 Small state is sent whole whenever it changes, never as a delta, and every client receives it for
 every cursor, so a frontend can show "cursor 3 is waiting on you" while it watches cursor 1.

@@ -16,6 +16,7 @@ pub type CursorId = u64;
 pub type ItemId = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Stop {
     End,
     Tools,
@@ -25,6 +26,7 @@ pub enum Stop {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Outcome {
     Ok(String),
     Err(String),
@@ -32,6 +34,7 @@ pub enum Outcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Body {
     System(String),
     User(String),
@@ -58,6 +61,7 @@ pub enum Body {
 
 /// A config snapshot. `data` is opaque to core and typed by the driver.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Config {
     pub data: String,
 }
@@ -69,6 +73,7 @@ impl From<&str> for Config {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Author {
     Frontend(String),
     Provider,
@@ -78,6 +83,7 @@ pub enum Author {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Node {
     pub id: NodeId,
     pub parent: Option<NodeId>,
@@ -97,12 +103,14 @@ pub struct Move {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ItemData {
     Input { by: Author, text: String },
     Extension { name: String, data: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Item {
     pub id: ItemId,
     pub to: CursorId,

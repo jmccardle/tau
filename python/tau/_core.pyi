@@ -9,7 +9,7 @@ with one nested class per variant, so `match job:` works.
 
 from collections.abc import Callable, Sequence
 from os import PathLike
-from typing import ClassVar, final
+from typing import Any, ClassVar, final
 
 from typing_extensions import disjoint_base
 
@@ -69,6 +69,9 @@ __all__ = [
     "stop_trace",
     "trace_clock",
     "trace_to",
+    "wire_decode",
+    "wire_encode",
+    "wire_schema",
 ]
 
 class NoSuchNode(LookupError): ...
@@ -725,3 +728,7 @@ class Bash:
 class BashRun:
     def wait(self, progress: Callable[[str], None] | None = None) -> Outcome: ...
     def kill(self) -> None: ...
+
+def wire_encode(value: Node | Body | Author | Item | ItemData | Ending) -> str: ...
+def wire_decode(kind: str, text: str) -> Any: ...
+def wire_schema() -> str: ...

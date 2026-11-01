@@ -1,6 +1,8 @@
 //! One cursor's step: the phase loop of model.md §6 as a sans-IO machine.
 //! `next_job` says what to do; the driver does it and `answer`s the result.
 
+use serde::{Deserialize, Serialize};
+
 use crate::transitions;
 use crate::tree::{
     Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Part, Session,
@@ -34,7 +36,9 @@ impl Hook {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How a step ended. Serde-encoded as the nodes are: it crosses the wire in a `CursorView`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Ending {
     Done,
     Halted(String),
@@ -631,5 +635,24 @@ impl Step {
         )?;
         self.go(Pos::PostResult);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ending;
+
+    /// `Ending` crosses the wire in the log's own style (D21 section 4): externally tagged.
+    #[test]
+    fn an_ending_is_json_tagged_like_the_nodes_are() {
+        for (ending, json) in [
+            (Ending::Done, r#""Done""#),
+            (Ending::Aborted, r#""Aborted""#),
+            (Ending::Halted("why".into()), r#"{"Halted":"why"}"#),
+            (Ending::Failed("E: x".into()), r#"{"Failed":"E: x"}"#),
+        ] {
+            assert_eq!(serde_json::to_string(&ending).unwrap(), json);
+            assert_eq!(serde_json::from_str::<Ending>(json).unwrap(), ending);
+        }
     }
 }

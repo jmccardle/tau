@@ -65,6 +65,7 @@ from tau._extensions import (
     list_extensions,
     load_extensions,
 )
+from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch
 from tau._startup import (
     LoadedConfig,
     Prompts,
@@ -135,6 +136,7 @@ from tau.step_limit import StepLimit
 __version__ = version("ffwf-tau")
 
 __all__ = [
+    "PROTOCOL",
     "Answer",
     "Appended",
     "Author",
@@ -216,6 +218,8 @@ __all__ = [
     "Progress",
     "PromptSource",
     "Prompts",
+    "ProtocolError",
+    "ProtocolMismatch",
     "Provider",
     "ProviderClosed",
     "ReadTool",
