@@ -157,7 +157,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Hot reload of extensions | `reload_extension` capability | **planned** | fixes C2 `driver.reload(extensions)` |
 | Skills (`SKILL.md` dirs, `--skill`, `--no-skills`) | `skills.py`, `resources.py` | **REGRESSION** | No glossary entry, no phase. (Only mentioned as an analogy in D17 and fixes ruling 3.) Extension-shaped |
 | Prompt templates (`/name args` from `~/.tau/prompts`, `.tau/prompts`) | `prompt_templates.py` | **REGRESSION** | Same: not built, not planned |
-| Context files (AGENTS.md, CLAUDE.md, `.tau/SYSTEM.md`) into the system prompt | `backends.py`, `cli.py:--no-context-files` | **REGRESSION** | `Session.create(config, system, now)` takes a string; nothing discovers files. `examples/chat.py` hard-codes its own |
+| Context files (AGENTS.md, CLAUDE.md, `.tau/SYSTEM.md`) into the system prompt | `backends.py`, `cli.py:--no-context-files` | **built** | D20: `tau.system_prompt`, once at creation, recorded as the `System` node; names are `AGENTS.md`, `CLAUDE.md` only; `tau context` shows the parts |
 | `ext:` bus / request-reply between extensions (`api.request`) | `docs/EXT-REQUEST.md` | **dropped** | Not in glossary; handles are the cross-extension surface (`TreeHandle`) |
 | NATS bus extension, `--bus` | `extensions_builtin/nats_bus.py` | **REGRESSION** | Not planned (extension-shaped) |
 | Budget / cost ledger examples (`24_budget.py`, `43_budget_ledger.py`) | `examples/` | **REGRESSION** | 0.15 had 40 numbered examples; 0.16 ships 11 plus 7 speculative |
@@ -215,9 +215,9 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `--max-turns N` | **dropped** (changed) | `StepLimit` option (D1) |
 | `--ext-config NAME:KEY=VALUE` | **planned** (unspecified) | the CLI layer of D13 |
 | `--ui-defaults METHOD=ANSWER,...` | **REGRESSION** | see 2.6 |
-| `--append-system-prompt TEXT` | **REGRESSION** | system prompt is a caller string |
-| `--system-prompt TEXT` | **REGRESSION** | same |
-| `-nc`, `--no-context-files` | **REGRESSION** | no context-file discovery |
+| `--append-system-prompt TEXT` | **built** | D20: `session_flags`; an error with `-c`, `-r`, `--session`, `--fork` (0.15 ignored it) |
+| `--system-prompt TEXT` | **built** | D20: the CLI layer of the `system_prompt` config key; no `{{fields}}` |
+| `-nc`, `--no-context-files` | **built** | D20: `session_flags`; accepted when continuing or forking (nothing is read then) |
 | `--prompt-template PATH`, `--no-prompt-templates` | **REGRESSION** | see 2.5 |
 | `--skill PATH`, `--no-skills` | **REGRESSION** | see 2.5 |
 | `-c`, `--continue` | **built** | D18: the newest session of the working directory, with any frontend (the `tau` program is Phase 8) |
@@ -311,7 +311,7 @@ counted once under its first).
 By impact on a coding agent session:
 
 1. **`edit`, `find`, `ls` tools** (2.2). 0.16's base toolset is read/write/grep/bash. No ADR drops them.
-2. **System prompt / context files** (`AGENTS.md`, `CLAUDE.md`, `.tau/SYSTEM.md`, `--system-prompt`, `--append-system-prompt`, `-nc`) (2.5, 2.8).
+2. ~~**System prompt / context files**~~ built (D20).
 3. **`@file` attachments, image input, skills, prompt templates** (2.2, 2.5, 2.9).
 4. **Cost, session stats, cache-miss notice, context window** (2.1, 2.4, 2.10). Usage tokens are recorded; nothing reads them.
 5. **Extension management without a program**: `tau ext *`, drop-in discovery, authorization; there is no way to run an extension from the `tau` command except an unscheduled "trusted loader" (2.5).

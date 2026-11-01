@@ -11,8 +11,10 @@ and:
 2. loads the config, loads the extensions, adds the built-in `session_name`, and for a new session
    selects the model (an existing session or a fork already records its model in its `Config` node,
    so `--model` is refused for them: `/model` switches a running session);
-3. asks `system` for the text of the `System` node, for a new session only (D20's
-   `system_prompt` is what a program passes);
+3. asks `system` for the text of the `System` node, for a new session only: by default
+   `tau.system_prompt` (D20) with the prompt flags (`--append-system-prompt`, `-nc`;
+   `--system-prompt` is a layer of the config, given to `load_config`), so an unreadable context
+   file stops the start before a session exists; a program with its own prompt passes `system`;
 4. creates, opens or forks the session, builds the providers and starts the `Driver`.
 
 The result is a `Started`; `stop` ends it, and removes a session that was never used. A session
@@ -32,6 +34,7 @@ from tau._extensions import absolute_explicit, load_extensions
 from tau._startup import LoadedConfig, Prompts, load_config, select_model
 from tau._trust import tau_home
 from tau.clock import SystemClock
+from tau.context import system_prompt
 from tau.driver import Driver
 from tau.protocols import Clock, Extension, Provider
 from tau.providers import builtin_providers
@@ -49,6 +52,20 @@ from tau.sessions import (
 SystemText = Callable[[Path, LoadedConfig], str]
 """What a new session's `System` node says: given the session's working directory and the loaded
 config. Called once, for a new session only."""
+
+
+def _assembled(flags: SessionFlags) -> SystemText:
+    """D20's assembly, with the flags' appended sections and `-nc`."""
+
+    def assemble(cwd: Path, loaded: LoadedConfig) -> str:
+        return system_prompt(
+            cwd,
+            loaded,
+            append=flags.append_system_prompt,
+            context_files=not flags.no_context_files,
+        ).text
+
+    return assemble
 
 
 @dataclass
@@ -182,7 +199,7 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     *,
     environ: Mapping[str, str],
     cwd: Path,
-    system: SystemText,
+    system: SystemText | None = None,
     prompts: Prompts | None = None,
     pick_session: PickSession | None = None,
     own: Sequence[Extension] = (),
@@ -192,7 +209,8 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     """Start the session `args` (the parsed `session_flags()` and `extension_flags()`) choose, for
     a program started in `cwd` with `environ`, as the module says. `own` are the program's own
     extensions, ahead of the loaded ones; `model` is `--model`; `prompts` ask a person to trust a
-    project or to pick a model; `pick_session` is what `-r` asks.
+    project or to pick a model; `pick_session` is what `-r` asks; `system` is the text of a new
+    session's `System` node (default: D20's `tau.system_prompt`, from the prompt flags in `args`).
 
     Raises what the steps raise: `ConfigError`, `TrustError`, `ExtensionLoadError`,
     `UnknownSession`, `Leased`, `FileNotFoundError` for a session whose working directory is
@@ -210,14 +228,16 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
             "switch a running session with /model"
         )
     os.chdir(choice.cwd)
-    loaded = load_config(choice.cwd, environ, ask=prompts.ask)
+    cli = None if flags.system_prompt is None else {"system_prompt": flags.system_prompt}
+    loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
     added = load_extensions(loaded, explicit=explicit, discover=discover)
     created = choice.kind != "existing"
     now = clock.now()
     match choice.kind:
         case "new":
             selected = select_model(loaded.catalog, model, pick=prompts.pick)
-            session, directory = _create(choice, loaded, selected, system, now)
+            text = system or _assembled(flags)
+            session, directory = _create(choice, loaded, selected, text, now)
         case "fork":
             session, directory = _fork(choice, now)
             selected = _recorded_model(session)

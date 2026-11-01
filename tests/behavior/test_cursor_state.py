@@ -105,6 +105,21 @@ async def test_a_config_node_cannot_set_load(tmp_path: Path) -> None:
     await h.close()
 
 
+@scenario
+async def test_a_config_node_cannot_set_system_prompt(tmp_path: Path) -> None:
+    """The prompt is written once, when the session is created (D20); a branch's `Config` is not a
+    place for it."""
+    h = await Harness.create(tmp_path, extensions=[Looker()])
+    at = h.session.cursor(h.cursor).at
+    body = Body.Config(Config('{"system_prompt": "other"}'))
+    node = h.session.append(at, body, Author.Tools(), 0)
+    await h.client.go_to(h.cursor, node)
+    await h.settle()
+    with pytest.raises(Exception, match=r"unexpected keys \['system_prompt'\]"):
+        await h.run("look")
+    await h.close()
+
+
 # D4: show.
 
 

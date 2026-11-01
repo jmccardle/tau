@@ -81,6 +81,7 @@ from tau._values import CursorId, DefinitionError, Form, LabelName, Model, NodeI
 from tau.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau.client import Client, LocalClient
 from tau.clock import SystemClock
+from tau.context import ContextFileError, PromptSource, SystemPrompt, system_prompt
 from tau.driver import Driver
 from tau.events import (
     Appended,
@@ -157,6 +158,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "ConfigProblem",
+    "ContextFileError",
     "Corrupt",
     "Cursor",
     "CursorClosed",
@@ -217,6 +219,7 @@ __all__ = [
     "PickSession",
     "Poisoned",
     "Progress",
+    "PromptSource",
     "Prompts",
     "Provider",
     "ProviderClosed",
@@ -235,6 +238,7 @@ __all__ = [
     "Stop",
     "Subject",
     "SystemClock",
+    "SystemPrompt",
     "SystemText",
     "TextDelta",
     "ThinkingDelta",
@@ -279,5 +283,6 @@ __all__ = [
     "safe_block",
     "select_model",
     "start_session",
+    "system_prompt",
     "to_markdown",
 ]

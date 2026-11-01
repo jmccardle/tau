@@ -841,7 +841,9 @@ per key, the layer, file path or `"cli"`, and the group that set it, `None`
 for the model itself), `default_model`, `warnings`, and `extensions` (the merged `extensions.<name>` objects of the
 layers, per option; checked by `check_config`'s `extensions`, not by the loader: it does not know the
 extensions), `load` (the merged top-level `load`: source key to `true` or `false`, a `null` dropping an
-inherited key) and `load_sources` (the layer, file path, that set each `load` key; see *load*).
+inherited key), `load_sources` (the layer, file path, that set each `load` key; see *load*),
+`system_prompt` (the merged top-level string, `None`: no layer sets one) and `system_prompt_source`
+(the layer that set it; see *system prompt*).
 `find(name)` returns the
 qualified names matching a qualified or bare name (0, 1, or many: the caller
 decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
@@ -859,7 +861,7 @@ is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
 in a problem, origin, or catalog text. `api_key` and `api_key_env` are one
 setting: the nearer one wins and drops the other. The first layer to define a name sets whether it is a model or a group; a later layer
 giving `models` to a model is an error, and otherwise only tunes it. a `base_url` that is not an http(s) URL with a host (including one `urlparse` rejects) is an error at that key. `provider` unset shows in `explain`
-with source `"default"`. The top level takes `models`, `default_model`, `extensions` and `load`;
+with source `"default"`. The top level takes `models`, `default_model`, `extensions`, `load` and `system_prompt`;
 frontend settings will widen it in a later part.
 
 ### trusted directory, trusted.json
@@ -1199,7 +1201,7 @@ modules `tau.session_start`, `tau.sessions`, `tau.cli` · D18 §5 · new
 The one start `tau`, `tau -p` and `tau serve` all call, so they agree. `session_flags()`
 (`tau.cli`; `add_help=False`, for `parents=`, as `extension_flags()` is) parses `-c/--continue`,
 `-r/--resume`, `--session REF`, `--fork REF`, `--no-session` (at most one of the five; `ConfigError`
-otherwise), `-n/--name NAME` and `--session-dir DIR`; **`SessionFlags.of(args, cwd)`** reads them,
+otherwise), `-n/--name NAME`, `--session-dir DIR` and the prompt flags (see *system prompt*); **`SessionFlags.of(args, cwd)`** reads them,
 making `--session-dir` and a path REF absolute against `cwd`, the directory they were typed in.
 `choose_session(flags, *, home, cwd, pick)` resolves them, writing nothing, to a **`SessionChoice`**
 (`new`, `existing` or `fork`; the sessions directory; the working directory to change into; the
@@ -1209,15 +1211,16 @@ everywhere)`, a **`PickSession`** (Phase 8's picker; without one, `ConfigError`)
 opens a REF. A leased session is an error, never a stand-in: `Leased`, naming the session and
 suggesting `--fork ID`.
 
-**`start_session(args, *, environ, cwd, system, prompts=None, pick_session=None, own=(),
+**`start_session(args, *, environ, cwd, system=None, prompts=None, pick_session=None, own=(),
 model=None, clock=None)`** (async) does, in this order: (0) the above, with `-e` paths made
 absolute (`absolute_explicit`); (1) `os.chdir` into the session's working directory (a new
 session's is the resolved `cwd`), before anything reads the config or `cwd`; (2) `load_config`,
 `load_extensions` (`-e`, `--no-extensions`), the `session_name` extension (added after the loaded
 ones, for a session with a directory) and `select_model` (a new session only: another records its model in its `Config` node, so `--model` on
 it is a `ConfigError` naming `/model`); (3) for a **new**
-session only, `system(cwd, loaded)` (**`SystemText`**) is the text of its `System` node (the seam
-for D20's `system_prompt`); (4) create the session (`Session.create` in a new session directory
+session only, `system(cwd, loaded)` (**`SystemText`**) is the text of its `System` node; by
+default `tau.system_prompt` with the prompt flags (see *system prompt*), and a program with its own
+prompt passes `system`; (4) create the session (`Session.create` in a new session directory
 with its `info.json`), load it (taking the lease), or fork it (`Session.read` of the source, no
 lease, written with one sync, `forked_from` recorded once; `-n` names it), build the providers and
 start the `Driver`. A failure before step 4 creates nothing; a session this call created is removed
@@ -1226,6 +1229,49 @@ if a later step fails. It returns **`Started`**: `session`, `driver`, `providers
 a **never-used session** (created by this run, still only its created nodes and no pending item)
 while the lease is held, then closes the session and the providers; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
+
+### system prompt, base text, context file, system_prompt
+modules `tau.context`, `tau._config_layers`, `tau.sessions`, `tau.cli` · D20 · new
+
+The **system prompt** is the text of the `System` node `Session.create` writes, assembled once by
+**`system_prompt(cwd, loaded, *, append=(), context_files=True)`** and never rebuilt: editing an
+`AGENTS.md` changes no running or continued session (I1). The shared start calls it for a new
+session only; a program with its own prompt passes `system=` to `start_session`, and a frontend
+that wants another passes another string. The parts, joined by blank lines, a part with no text
+left out: (1) the **base text**, the nearest layer's `system_prompt` (`--system-prompt` is the CLI
+layer, then the project's `.tau/config.json`, then the user's file), literal and with no
+`{{fields}}`; with none set, the built-in `prompts/base.md` (package data; 0.15's prose without its
+model sentence and tools list) with `{{cwd}}` replaced by the working directory; `"system_prompt":
+""` is no base text, `null` drops an inherited value; (2) each `--append-system-prompt TEXT`, in
+order; (3) unless `-nc`/`--no-context-files`, the **context files** in a `<project_context>` block,
+each as `<project_instructions path="/abs/path">`: one from `$TAU_HOME`, one from each directory
+from `/` down to the working directory (the nearest last), then the trusted project's
+`.tau/SYSTEM.md`.
+
+A **context file** is the first of `AGENTS.md`, `CLAUDE.md` in a directory that is a regular file
+(symlinks followed, named by the resolved path; a directory or FIFO of that name is skipped). A file
+reached twice is read once, at its first slot. A linked worktree nested inside its main repository
+(git's `.claude/worktrees/`) hides the main repository's file of the same name as its own. The
+project's `SYSTEM.md` is the bytes trust approved (`Trusted.system_md`), never the file now, and is
+read from the project's `.tau/`, not only the working directory's. `AGENTS.md` and `CLAUDE.md` need
+no trust. No size limit. **`ContextFileError`** (a `ConfigError`) is a file that was found and
+cannot be used (unreadable, not strict UTF-8, a symlink to nothing, or git's own files for the
+worktree rule); it names the path and the cause and says `--no-context-files`, and no session is
+created. A leading BOM is dropped.
+
+**`SystemPrompt`** has `text` and `sources`: a tuple of **`PromptSource`** (`origin`: `"base"`,
+`"config"`, `"flag"` or a file's absolute path; `size`: the bytes of text it contributes), one per
+part in order.
+
+The **prompt flags** are in `session_flags()`: `--system-prompt TEXT`, `--append-system-prompt
+TEXT` (repeatable) and `-nc`. On `-c`, `-r`, `--session` and `--fork` the first two are a
+`ConfigError` ("the session already has its system prompt (node 1); start a new session for a
+different one"; for a fork, "a fork copies its source's system prompt"), and `-nc` is accepted.
+`system_prompt` is a config key of the files and the command line only: a `Config` node holding it
+is refused like any key but `model` and `extensions`. **`tau context [-nc] [--system-prompt T]
+[--append-system-prompt T]... [--show]`** runs the assembly in the working directory without a
+session: a line per part (`SIZE  ORIGIN`), or with `--show` the text; `tau config check --show`
+adds a `system_prompt` line naming the layer.
 
 ### session_name, /name
 `tau._builtin.SessionName` · D18 · new

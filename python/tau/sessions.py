@@ -365,8 +365,11 @@ def absolute_ref(ref: str, cwd: Path) -> str:
 class SessionFlags:
     """What the session flags say, as `tau.cli.session_flags` parses them: `directory`
     (`--session-dir`), `continue_last` (`-c`), `resume` (`-r`), `session` and `fork` (REFs),
-    `no_session` and `name` (`-n`). At most one of the first five choices; `no_session` takes
-    none of the others. `ConfigError` otherwise."""
+    `no_session` and `name` (`-n`), and the prompt flags (D20): `system_prompt`
+    (`--system-prompt`), `append_system_prompt` (`--append-system-prompt`, in order) and
+    `no_context_files` (`-nc`). At most one of the first five choices; `no_session` takes none of
+    the others; a session that already has its prompt (`-c`, `-r`, `--session`, `--fork`) takes
+    neither `--system-prompt` nor `--append-system-prompt`. `ConfigError` otherwise."""
 
     directory: Path | None = None
     continue_last: bool = False
@@ -375,6 +378,9 @@ class SessionFlags:
     fork: str | None = None
     no_session: bool = False
     name: str | None = None
+    system_prompt: str | None = None
+    append_system_prompt: tuple[str, ...] = ()
+    no_context_files: bool = False
 
     def __post_init__(self) -> None:
         chosen = {
@@ -389,6 +395,28 @@ class SessionFlags:
             raise ConfigError(f"{' and '.join(given)} cannot be combined: each chooses the session")
         if self.no_session and (self.directory is not None or self.name is not None):
             raise ConfigError("--no-session keeps nothing, so it takes no --session-dir or -n")
+        if given and given != ["--no-session"]:
+            self._refuse_prompt(given[0])
+
+    def _refuse_prompt(self, chosen: str) -> None:
+        """A session that exists has its prompt (node 1); `-nc` is accepted, as nothing is read."""
+        flags = [
+            flag
+            for flag, on in (
+                ("--system-prompt", self.system_prompt is not None),
+                ("--append-system-prompt", bool(self.append_system_prompt)),
+            )
+            if on
+        ]
+        if flags:
+            why = (
+                "a fork copies its source's system prompt"
+                if chosen == "--fork"
+                else "the session already has its system prompt"
+            )
+            raise ConfigError(
+                f"{' and '.join(flags)}: {why} (node 1); start a new session for a different one"
+            )
 
     @classmethod
     def of(cls, args: object, cwd: Path) -> "SessionFlags":
@@ -410,6 +438,9 @@ class SessionFlags:
             absolute(option("fork")),
             cast("bool", option("no_session")),
             cast("str | None", option("name")),
+            cast("str | None", option("system_prompt")),
+            tuple(cast("list[str]", option("append_system_prompt"))),
+            cast("bool", option("no_context_files")),
         )
 
 

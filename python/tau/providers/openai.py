@@ -82,10 +82,10 @@ def _assistant(turn: AssistantTurn) -> Json:
 
 def messages(walk: Sequence[Node], *, structured: bool) -> list[Json]:
     """The wire messages for a walk. `Config` and `Custom` nodes never reach the model. The
-    `System` nodes that open the walk are `system` messages; one later is a user message
-    `[system note: ...]` (llama.cpp with the Qwen template answers HTTP 500 to a `system`
-    message after the first turn). A batch whose call arguments are not a JSON object, or any
-    batch when `structured` is false (no tools are offered), goes as text with its results
+    `System` nodes that open the walk are `system` messages (an empty one sends none); one later
+    is a user message `[system note: ...]` (llama.cpp with the Qwen template answers HTTP 500 to a
+    `system` message after the first turn). A batch whose call arguments are not a JSON object, or
+    any batch when `structured` is false (no tools are offered), goes as text with its results
     (llama.cpp refuses the history otherwise, HTTP 500); no arguments are sent as `{}`."""
     out: list[Json] = []
     spoken = False  # a turn other than `System` has been seen
@@ -93,6 +93,8 @@ def messages(walk: Sequence[Node], *, structured: bool) -> list[Json]:
         match turn:
             case SystemTurn(text=text) if spoken:
                 out.append({"role": "user", "content": system_note(text)})
+            case SystemTurn(text=""):  # no instruction: no message (as Anthropic and Gemini)
+                pass
             case SystemTurn(text=text):
                 out.append({"role": "system", "content": text})
             case UserTurn(text=text):

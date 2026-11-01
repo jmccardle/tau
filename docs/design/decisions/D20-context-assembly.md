@@ -1,6 +1,18 @@
 # D20: The system prompt is assembled once, when a session is created
 
-Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Context assembly" (`docs/plan.md`). Amends D13
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31; built
+2026-11-01 (differences from this text, all in the code's favour: the module is `tau/context.py`;
+`SystemPrompt.sources` is a tuple of `PromptSource(origin, size)`; the shared start's `system`
+callable is now optional and defaults to this assembly with the prompt flags, so `--append-system-prompt`
+and `-nc` reach it from `args`; `-nc` is accepted with `--fork` as well as with a continue, since
+nothing is read for either; a `Config` node holding `system_prompt` was already refused by the
+existing "only `model` and `extensions`" rule, so only a test was added; the worktree rule reads
+git's `.git` file and `commondir` itself, with no `git` process, and a git file it cannot read is a
+`ContextFileError` too; `tau context` asks to trust an untrusted project on a terminal, as a start
+does; the built-in base text is `python/tau/prompts/base.md`, from `BASE_SYSTEM_PROMPT` in
+`tau-agent-core/src/tau_agent_core/sdk.py` at `v0.15.0`, with its `{{model}}` sentence, `{{tools}}`
+and `{{project_context}}` removed and "preferrable" spelled "preferable"). Phase 7, "Context
+assembly" (`docs/plan.md`). Amends D13
 (one new config key). Restates `model.md` Q5 and I1 without changing them. Depends on D18
 (session catalog), D19 (the pinned set) and D21 (the wire) for the interfaces named under
 Open. Points marked "(review, 2026-10-31)" were decided in review; they stay proposals until
@@ -32,8 +44,8 @@ edit to `AGENTS.md` takes effect at once?
   `[system note: <text>]` (D15 D11). So an extension that writes a `System` node before the
   first message adds to the instruction. One written later adds a system note. Both are
   possible today, with no new interface.
-- An empty `System` text: Anthropic and Gemini send no instruction. OpenAI sends an empty
-  `system` message (`openai.py:96`).
+- An empty `System` text: Anthropic and Gemini send no instruction. OpenAI sent an empty
+  `system` message (`openai.py:96`) until this ADR was built; it now sends none.
 - Config: D13's layers are user, then project, then CLI flags, and the nearest wins. The top
   level of a config file accepts `models`, `default_model` and `extensions`
   (`_config_layers.py` `_TOP_KEYS`). The project is the nearest owned `.tau/` from the cwd
@@ -69,9 +81,9 @@ an example, or a user's own frontend.
 ```python
 loaded = tau.load_config(cwd, environ, ask=..., cli={"system_prompt": text})  # D13, as now
 prompt = tau.system_prompt(cwd, loaded, append=("...",), context_files=True)
-prompt.text      # the System node's text
-prompt.sources   # each part, in order: where it came from ("base", "config", "flag",
-                 # or a file's path) and its size in bytes
+prompt.text  # the System node's text
+prompt.sources  # each part, in order: where it came from ("base", "config", "flag",
+# or a file's path) and its size in bytes
 session = tau.Session.create(config, prompt.text, now, directory)
 ```
 

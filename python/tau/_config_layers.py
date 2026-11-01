@@ -26,7 +26,7 @@ Severity = Literal["error", "warning"]
 CLI = "cli"
 _MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
 # Frontend settings will widen the top level in a later part (D13: "and frontend settings").
-_TOP_KEYS = ("models", "default_model", "extensions", "load")
+_TOP_KEYS = ("models", "default_model", "extensions", "load", "system_prompt")
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RENAMED_KEY = "backend"  # rules: allow(backend): 0.15's key name, which D13 rejects by name
@@ -95,7 +95,10 @@ class ModelCatalog:
     `extensions` options the layers set (`{"step_limit": {"limit": 10}}`, merged per option;
     D16 section 4). Which options an extension has is its own to say (`check_config`).
     `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
-    `load_sources` the layer (file path) that set each key: what the extension loader reads."""
+    `load_sources` the layer (file path) that set each key: what the extension loader reads.
+    `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
+    `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
+    that set it (`CLI` for `--system-prompt`)."""
 
     models: Mapping[str, ResolvedModel]
     default_model: str | None
@@ -103,6 +106,8 @@ class ModelCatalog:
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
+    system_prompt: str | None = None
+    system_prompt_source: str | None = None
 
     def names(self) -> tuple[str, ...]:
         """All qualified names, in file order."""
@@ -674,6 +679,18 @@ def _load_switches(merged: _Tree, problems: _Problems) -> tuple[dict[str, bool],
     return switches, sources
 
 
+def _system_prompt(merged: _Tree, problems: _Problems) -> tuple[str | None, str | None]:
+    """The merged `system_prompt` (a string, possibly empty) and the layer that set it. A `null`
+    dropped an inherited value."""
+    node = merged.get("system_prompt")
+    if node is None or (isinstance(node, _Leaf) and node.value is None):
+        return None, None
+    if not (isinstance(node, _Leaf) and isinstance(node.value, str)):
+        problems.add("error", "'system_prompt' must be a string", _source_of(node), "system_prompt")
+        return None, None
+    return node.value, node.source
+
+
 def _build(
     user: Layer | None,
     project: Layer | None,
@@ -700,9 +717,12 @@ def _build(
     default = _default_model(merged, resolver.declared, problems)
     extensions = _extensions(merged, problems)
     switches, switched_by = _load_switches(merged, problems)
+    prompt, prompt_source = _system_prompt(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
-    catalog = ModelCatalog(resolver.models, default, warnings, extensions, switches, switched_by)
+    catalog = ModelCatalog(
+        resolver.models, default, warnings, extensions, switches, switched_by, prompt, prompt_source
+    )
     return catalog, found
 
 

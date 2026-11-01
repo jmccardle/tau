@@ -574,7 +574,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q1 | Name of a node's timestamp | `time` |
 | Q3 | Does `Custom` reach the model? | No; nor do items |
 | Q4 | Failure and abort | §8 |
-| Q5 | Roots | every root is `Config`; `Session::create` writes `Config`, `System`, opens a cursor |
+| Q5 | Roots | every root is `Config`; `Session::create` writes `Config`, `System`, opens a cursor; the text is assembled by `tau.system_prompt`, once (D20) |
 | Q6 | `opened_by` | the opening cursor; empty for a frontend |
 | Q7 | Authors | `Frontend(client)`, `Provider`, `Tools`, `Core`, `Extension(name)`; recorded only |
 | Q8 | Ids | session-local integers |

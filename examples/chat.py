@@ -3,12 +3,16 @@
 python examples/chat.py [--model NAME] [-e PATH|KEY ...] [--no-extensions]
                         [-c | -r | --session REF | --fork REF[:NODE] | --no-session]
                         [-n NAME] [--session-dir DIR]
+                        [--system-prompt TEXT] [--append-system-prompt TEXT ...] [-nc]
 
 Setup as for the other examples (examples/config.json; TAU_HOME names the directory holding
 the config and the sessions, `$TAU_HOME/sessions/`). The session is chosen by D18's flags and the
 shared start, as `tau` will: a new session each run, `-c` for the newest of this directory, `--fork`
 for a copy, `/name NAME` to name it, and `tau sessions` lists them. The process changes into the
-session's working directory. Try `--model mock:echo`, which needs no server.
+session's working directory. A new session's system prompt is `tau.system_prompt` (D20): the
+built-in base text, your `--append-system-prompt` sections and the `AGENTS.md` / `CLAUDE.md` files
+around the directory (`-nc` leaves them out; `tau context` shows them), recorded once as the
+session's first message. Try `--model mock:echo`, which needs no server.
 
 Type a message to send it. `/` alone lists the commands; Tab completes a command name and its
 arguments (models, cursors, nodes, paths ...); a command missing arguments asks for each; an
@@ -75,8 +79,6 @@ from tau import (
 )
 from tau.cli import extension_flags, session_flags
 from tau.commandline import Parsed, UnknownCommand, completions, parse, value, values
-
-SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
 
 
 def word_count(path: Path) -> str:
@@ -315,7 +317,6 @@ async def main(args: argparse.Namespace) -> None:
         args,
         environ=os.environ,
         cwd=Path.cwd(),
-        system=lambda cwd, loaded: SYSTEM,
         prompts=prompts(sys.stdin, sys.stdout),
         own=[Demo()],
         model=args.model,

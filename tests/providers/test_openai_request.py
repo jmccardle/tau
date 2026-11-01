@@ -216,6 +216,13 @@ async def test_a_system_node_after_the_first_turn_goes_as_a_user_system_note() -
 
 
 @scenario
+async def test_an_empty_leading_system_node_sends_no_message() -> None:
+    """`"system_prompt": ""` is a choice of no instruction (D20), as for Anthropic and Gemini."""
+    body = await body_of(walk_of(Body.User("hi"), system=""))
+    assert sent(body) == [{"role": "user", "content": "hi"}]
+
+
+@scenario
 async def test_calls_in_history_go_as_text_when_the_sample_offers_no_tools() -> None:
     walk = walk_of(
         Body.User("go"),

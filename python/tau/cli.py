@@ -1,6 +1,7 @@
 """The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
-[--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18). Starting a session
+[--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), and `tau context
+[--show]` (D20). Starting a session
 (`tau`, `tau -p`, `tau serve`) is Phase 8's; `tau.session_start.start_session` is their shared
 start.
 
@@ -12,7 +13,8 @@ Everything printed from config data goes through `safe_text`. `config set` and `
 `extension_flags` is the `-e` and `--no-extensions` parser a program that starts a session adds
 (`parents=[extension_flags()]`), and gives `load_extensions` (D19 section 5); `session_flags` is
 the one for the session (`-c`, `-r`, `--session`, `--fork`, `--no-session`, `-n`, `--session-dir`;
-D18 section 5), which `start_session` reads.
+D18 section 5), which `start_session` reads; it carries the prompt flags (`--system-prompt`,
+`--append-system-prompt`, `-nc`; D20) too.
 """
 
 import argparse
@@ -74,6 +76,7 @@ from tau._trust import (
 from tau._user_config import UserConfig
 from tau._values import Field, Json, object_schema
 from tau.commandline import value
+from tau.context import system_prompt
 from tau.markdown import export_markdown
 from tau.protocols import Extension, Provider
 from tau.providers import builtin_providers
@@ -148,12 +151,39 @@ def _session_dir_flag(*, nested: bool = False) -> argparse.ArgumentParser:
     return flags
 
 
+def _prompt_flags() -> argparse.ArgumentParser:
+    """`--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and `-nc` (D20)."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--system-prompt",
+        metavar="TEXT",
+        help="the base text of the system prompt, in place of the built-in one (use "
+        '"$(cat FILE)" for a file; empty: no base text)',
+    )
+    flags.add_argument(
+        "--append-system-prompt",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="add a section after the base text (repeatable)",
+    )
+    flags.add_argument(
+        "-nc",
+        "--no-context-files",
+        action="store_true",
+        help="leave out AGENTS.md, CLAUDE.md and .tau/SYSTEM.md",
+    )
+    return flags
+
+
 def session_flags() -> argparse.ArgumentParser:
     """A parser (`add_help=False`, for `parents=`) with the flags that choose the session
     (D18 section 5): `-c/--continue`, `-r/--resume`, `--session REF`, `--fork REF` and
-    `--no-session` (at most one), `-n/--name NAME` and `--session-dir DIR`. Pass the parsed
-    arguments to `start_session`, which makes paths absolute and rejects combinations."""
-    flags = argparse.ArgumentParser(add_help=False, parents=[_session_dir_flag()])
+    `--no-session` (at most one), `-n/--name NAME` and `--session-dir DIR`; and the prompt flags
+    of a new session (D20): `--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and
+    `-nc/--no-context-files`. Pass the parsed arguments to `start_session`, which makes paths
+    absolute and rejects combinations."""
+    flags = argparse.ArgumentParser(add_help=False, parents=[_session_dir_flag(), _prompt_flags()])
     flags.add_argument(
         "-c",
         "--continue",
@@ -222,6 +252,12 @@ def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argpars
     export.add_argument("ref", metavar="REF", help="SESSION or SESSION:NODE")
     export.add_argument("-o", "--output", metavar="FILE", help="write FILE (default: standard out)")
     export.add_argument("--thinking", action="store_true", help="include the model's thinking")
+    context = sub.add_parser(
+        "context", parents=[_prompt_flags()], help="what a new session here would tell the model"
+    )
+    context.add_argument(
+        "--show", action="store_true", help="print the system prompt instead of its parts"
+    )
     trust = sub.add_parser("trust", help="approve a project directory's .tau/")
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
@@ -440,6 +476,16 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         group = f", group {origin.group}" if origin.group else ""
         value = values.get(origin.key)
         out.write(safe_text(f"  {origin.key:<12} {value}  [{origin.source}{group}]") + "\n")
+    prompt = catalog.system_prompt
+    if prompt is None:
+        out.write("  system_prompt  (built in)\n")
+    else:
+        out.write(
+            safe_text(
+                f"  system_prompt  {len(prompt.encode())} bytes  [{catalog.system_prompt_source}]"
+            )
+            + "\n"
+        )
 
 
 def _trust(run: _Run, given: Path | None) -> int:
@@ -472,6 +518,23 @@ def _trust(run: _Run, given: Path | None) -> int:
             shutil.rmtree(root / TAU_DIR, ignore_errors=True)
         raise
     run.stdout.write(safe_block(f"trusted {root}" if asked else f"already trusted: {root}") + "\n")
+    return 0
+
+
+def _context(run: _Run, args: argparse.Namespace) -> int:
+    """The assembly a new session here would do, without creating one: each part with its origin
+    and size in bytes, or with `--show` the text."""
+    cwd = run.cwd.resolve()
+    cli = None if args.system_prompt is None else {"system_prompt": args.system_prompt}
+    loaded = load_config(cwd, run.environ, ask=prompts(run.stdin, run.stdout).ask, cli=cli)
+    assembled = system_prompt(
+        cwd, loaded, append=args.append_system_prompt, context_files=not args.no_context_files
+    )
+    if args.show:
+        run.stdout.write(safe_block(assembled.text) + "\n")
+    else:
+        for source in assembled.sources:
+            run.stdout.write(safe_text(f"{source.size:>8}  {source.origin}") + "\n")
     return 0
 
 
@@ -546,18 +609,26 @@ def _session_command(run: _Run, args: argparse.Namespace) -> int:
     return _sessions(run, args)
 
 
+def _ext_command(run: _Run, args: argparse.Namespace) -> int:
+    if args.ext_command == "list":
+        return _ext_list(run, args)
+    return _ext_switch(run, args.key, args.ext_command == "enable")
+
+
 def _dispatch(run: _Run, args: argparse.Namespace) -> int:
-    if args.command == "trust":
-        return _trust(run, args.dir)
-    if args.command in ("sessions", "export"):
-        return _session_command(run, args)
-    if args.command == "ext":
-        if args.ext_command == "list":
-            return _ext_list(run, args)
-        return _ext_switch(run, args.key, args.ext_command == "enable")
-    if args.config_command == "set":
-        return _set(run, args.assignments)
-    return _check(run, args.show)
+    match args.command:
+        case "trust":
+            return _trust(run, args.dir)
+        case "context":
+            return _context(run, args)
+        case "sessions" | "export":
+            return _session_command(run, args)
+        case "ext":
+            return _ext_command(run, args)
+        case _:
+            if args.config_command == "set":
+                return _set(run, args.assignments)
+            return _check(run, args.show)
 
 
 def _needs_help(
