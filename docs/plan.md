@@ -20,7 +20,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
-| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stage A built and signed off 2026-10-31; B–D next, in this repository (D17 accepted 2026-10-31). |
+| 5 extensions | **in progress**: D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage 2026-10-31, stopped for review (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
 | 7–9 | not started; see Phases. |
 
