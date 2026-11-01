@@ -1,6 +1,6 @@
 # Phase 5 fix plan: the extension and frontend contracts
 
-Status: **Stage A built and signed off 2026-10-31**; **Stage B built and signed off 2026-10-31**; **C and D run as one stage** (owner, 2026-10-31), **built 2026-10-31, stopped for review**; D17 accepted 2026-10-31. Sources: `examples/speculative/REPORT.md`
+Status: **Stage A built and signed off 2026-10-31**; **Stage B built and signed off 2026-10-31**; **C and D run as one stage** (owner, 2026-10-31), **built and signed off 2026-10-31** (the two `[justified]` ratchet entries included); D17 accepted 2026-10-31. Sources: `examples/speculative/REPORT.md`
 (seven extensions written against D16's surface), John's review of it (rulings
 below), and a read of the code behind each item. Sizes are rough estimates of
 lines changed, tests excluded unless noted.
