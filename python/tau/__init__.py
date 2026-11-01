@@ -57,6 +57,7 @@ from tau._core import (
     Undecodable,
     Version,
     WrongAnswer,
+    first_message,
 )
 from tau._dotenv import DotenvError
 from tau._extensions import (
@@ -101,6 +102,7 @@ from tau.events import (
     ToolProgress,
 )
 from tau.handles import Cursor, NodeHandle, Subject, TreeHandle
+from tau.markdown import export_markdown, to_markdown
 from tau.protocols import (
     CallDraft,
     Clock,
@@ -116,6 +118,22 @@ from tau.protocols import (
     replay_for,
 )
 from tau.providers import builtin_providers
+from tau.session_start import Started, SystemText, start_session
+from tau.sessions import (
+    ForkedFrom,
+    PickSession,
+    SessionChoice,
+    SessionFlags,
+    SessionInfo,
+    UnknownSession,
+    choose_session,
+    find_session,
+    first_cursor,
+    first_cursor_node,
+    list_sessions,
+    parse_ref,
+    rename_session,
+)
 from tau.step_limit import StepLimit
 
 __version__ = version("ffwf-tau")
@@ -161,6 +179,7 @@ __all__ = [
     "ExtensionLoadError",
     "ExtensionSource",
     "Finish",
+    "ForkedFrom",
     "Form",
     "GrepTool",
     "Hook",
@@ -195,6 +214,7 @@ __all__ = [
     "OpenQuestion",
     "Outcome",
     "Part",
+    "PickSession",
     "Poisoned",
     "Progress",
     "Prompts",
@@ -207,10 +227,15 @@ __all__ = [
     "SampleEnd",
     "SampleError",
     "Session",
+    "SessionChoice",
+    "SessionFlags",
+    "SessionInfo",
+    "Started",
     "StepLimit",
     "Stop",
     "Subject",
     "SystemClock",
+    "SystemText",
     "TextDelta",
     "ThinkingDelta",
     "TooLarge",
@@ -224,6 +249,7 @@ __all__ = [
     "TrustError",
     "Trusted",
     "Undecodable",
+    "UnknownSession",
     "UntrustedProject",
     "UserConfig",
     "Version",
@@ -234,13 +260,24 @@ __all__ = [
     "base_tools",
     "builtin_providers",
     "check_config",
+    "choose_session",
+    "export_markdown",
+    "find_session",
+    "first_cursor",
+    "first_cursor_node",
+    "first_message",
     "list_extensions",
+    "list_sessions",
     "load_config",
     "load_extensions",
     "model_config",
+    "parse_ref",
     "prompts",
     "read_models",
+    "rename_session",
     "replay_for",
     "safe_block",
     "select_model",
+    "start_session",
+    "to_markdown",
 ]

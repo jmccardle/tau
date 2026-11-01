@@ -369,3 +369,101 @@ def test_the_hook_argument_is_not_a_frontend_affordance() -> None:
         session.add_item(cursor, ItemData.Extension("x", "y"), hook=cursor)  # pyright: ignore[reportCallIssue]
     with pytest.raises(TypeError):
         session.set_label("main", cursor, hook=cursor)  # pyright: ignore[reportCallIssue]
+
+
+# Copies: fork, read without the lease, the first message (D18)
+
+
+def with_messages(directory: Path) -> tuple[Session, int, int]:
+    """A stored session: System, a user message (node 2), a reply (3), on a second branch from
+    node 2 another message (4), cursor 1 on it, and a label and a pending item."""
+    session, cursor = new(directory)
+    first = session.append(session.cursor(cursor).at, Body.User("hello"), Author.Core(), 5)
+    reply = session.append(
+        first, Body.Assistant([tau.Part.Text("hi")], tau.Stop.End, "stop"), Author.Provider(), 6
+    )
+    other = session.append(first, Body.User("elsewhere"), Author.Extension("gm"), 7)
+    session.open(other, Author.Core(), 8)
+    session.set_label("main", cursor)
+    session.add_item(cursor, ItemData.Input(Author.Core(), "pending"))
+    return session, reply, other
+
+
+def test_a_fork_is_the_walk_copied_node_for_node_with_one_cursor_on_its_tip(
+    tmp_path: Path,
+) -> None:
+    session, reply, _ = with_messages(tmp_path / "s")
+    copy = session.fork(reply, 99)
+    walk = session.tree.walk(reply)
+    assert [(n.id, n.parent, n.body, n.by, n.time) for n in copy.tree.walk(reply)] == [
+        (i, i - 1 if i else None, n.body, n.by, n.time) for i, n in enumerate(walk)
+    ]
+    assert len(copy.tree) == len(walk), "the other branch is not copied"
+    assert copy.cursors() == [0]
+    assert copy.cursor(0).at == reply
+    assert not copy.cursor(0).auto
+    assert copy.labels() == []
+    assert copy.cursor(0).items == []
+    assert copy.tree.walk(reply)[-1].body == walk[-1].body
+
+
+def test_a_fork_into_a_directory_reloads_as_it_was_and_the_source_is_untouched(
+    tmp_path: Path,
+) -> None:
+    session, reply, _ = with_messages(tmp_path / "s")
+    before = state(session)
+    copy = session.fork(reply, 99, tmp_path / "copy")
+    saved = state(copy)
+    copy.close()
+    assert state(session) == before
+    assert state(Session.load(tmp_path / "copy")) == saved
+    with pytest.raises(tau.Exists):
+        session.fork(reply, 99, tmp_path / "copy")
+
+
+def test_a_fork_of_a_node_that_is_not_there_is_no_such_node(tmp_path: Path) -> None:
+    session, _, _ = with_messages(tmp_path / "s")
+    with pytest.raises(tau.NoSuchNode):
+        session.fork(77, 0, tmp_path / "copy")
+    assert not (tmp_path / "copy").exists(), "nothing was written"
+
+
+def test_read_is_a_copy_of_a_session_another_holds_and_writes_nothing(tmp_path: Path) -> None:
+    held, _, _ = with_messages(tmp_path / "s")
+    with pytest.raises(tau.Leased):
+        Session.load(tmp_path / "s")
+    log = (tmp_path / "s" / "log").read_bytes()
+    copy = Session.read(tmp_path / "s")
+    assert state(copy) == state(held)
+    copy.append(0, Body.User("in the copy only"), Author.Core(), 1)  # accepted, never saved
+    copy.close()
+    assert (tmp_path / "s" / "log").read_bytes() == log
+    assert sorted(p.name for p in (tmp_path / "s").iterdir()) == ["log", "scratchpad"]
+
+
+def test_read_cuts_nothing_from_a_torn_tail(tmp_path: Path) -> None:
+    session, _, _ = with_messages(tmp_path / "s")
+    session.close()
+    log = tmp_path / "s" / "log"
+    log.write_bytes(log.read_bytes() + b"half a record")
+    copy = Session.read(tmp_path / "s")
+    assert len(copy.tree) == 5
+    assert log.read_bytes().endswith(b"half a record")
+    assert not list((tmp_path / "s").glob("dropped-*"))
+
+
+def test_read_refuses_a_directory_that_is_not_a_session(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        Session.read(tmp_path / "nothing")
+    (tmp_path / "log").write_bytes(b"not a log, but long enough")
+    with pytest.raises(tau.NotASession):
+        Session.read(tmp_path)
+
+
+def test_first_message_is_the_first_user_nodes_text_without_the_lease(tmp_path: Path) -> None:
+    session, _, _ = with_messages(tmp_path / "s")
+    assert tau.first_message(tmp_path / "s") == "hello"
+    empty, _ = new(tmp_path / "empty")
+    assert tau.first_message(tmp_path / "empty") is None
+    empty.close()
+    session.close()

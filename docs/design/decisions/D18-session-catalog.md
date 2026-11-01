@@ -1,6 +1,17 @@
 # D18: Session catalog: where sessions live and how a frontend finds one
 
-Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Session catalog" (`docs/plan.md`). Amends D9, D12
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31; built
+2026-11-01 (differences from this text, all in the code's favour: the shared start is
+`tau/session_start.py` and the catalog `tau/sessions.py`, so the catalog has no `Driver`
+dependency; the start takes the D20 seam as a `system(cwd, loaded)` callable and `-r`'s picker as
+`pick_session`; `list_sessions(sessions, *, cwd=None)` lists a row with an `error` in every
+listing, since such a row has no `cwd` to match; the prefix read is `first_message(directory)`;
+flag combinations the ADR forbids are a `ConfigError` from `SessionFlags`, not an `argparse`
+error; a name is stored stripped; `tau sessions name REF` with no name prints nothing and exits 1;
+`select_model` runs for a new session only: a continued or forked session's `Config` node
+already names its model (D13), so `-c` needs no `default_model`, and `--model` on one is a
+`ConfigError` naming `/model`; the `tau` and `tau -p` programs that call the start are Phase 8's). Phase 7, "Session
+catalog" (`docs/plan.md`). Amends D9, D12
 and D17 (see Amends). Answers D20's Open 4 and D21's Opens 1 and 2. Points marked
 "(review, 2026-10-31)" were decided in review; they stay proposals until the owner accepts
 the ADR.

@@ -175,7 +175,7 @@ def test_an_installed_package_loads_through_its_registration(world: World) -> No
 def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: World) -> None:
     user_file(world, "ralph")
     result = site_tau(world, "ext", "list", "--json")
-    assert list(site_rows(result)) == ["tau", "step_limit", "search", "ralph"]
+    assert list(site_rows(result)) == ["tau", "session_name", "step_limit", "search", "ralph"]
 
 
 # -- order and shadowing
@@ -284,6 +284,15 @@ def test_an_extension_named_for_a_built_in_is_a_name_clash_naming_both(world: Wo
         load_extensions(start(world))
 
 
+def test_an_extension_named_session_name_is_a_name_clash(world: World) -> None:
+    path = user_file(world, "imposter", MODULE.format(name="session_name", extra=""))
+    with pytest.raises(
+        ExtensionLoadError,
+        match=f"two extensions are named 'session_name': built-in session_name and {path}",
+    ):
+        load_extensions(start(world))
+
+
 def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: World) -> None:
     user_file(world, "ralph", WITH_COMMAND.format(name="ralph", command="go"))
     user_file(world, "off_one")
@@ -293,17 +302,19 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     trust(world, root)
     result = tau(world, "ext", "list", cwd=root)
     assert result.code == 0
-    pad = " " * 12
+    pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:4] == [
-        "tau         always     built-in",
+    assert lines[:6] == [
+        "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
-        "step_limit  on         built-in",
+        "session_name  always     built-in (added by the startup)",
+        f"{pad}commands: /name; tools: none",
+        "step_limit    on         built-in",
         f"{pad}commands: none; tools: none",
     ]
     config = world.tau / "config.json"
     assert f"{pad}load.off_one = false in {config}" in lines
-    shadowed = f"ralph       shadowed   {user_dir(world) / 'ralph.py'}"
+    shadowed = f"ralph         shadowed   {user_dir(world) / 'ralph.py'}"
     assert shadowed in lines
     assert f"{pad}by project {root / '.tau/extensions/ralph.py'}" in lines
     assert f"{pad}commands: /go; tools: none" in lines

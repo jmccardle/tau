@@ -4,12 +4,23 @@ import io
 import json
 import os
 import select
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from tau import LoadedConfig, UntrustedProject, builtin_providers, load_config, prompts
+from tau import (
+    Author,
+    Body,
+    LoadedConfig,
+    Session,
+    UntrustedProject,
+    builtin_providers,
+    load_config,
+    model_config,
+    prompts,
+)
 from tau.cli import main
 
 Ask = Callable[[str], bool]
@@ -32,6 +43,43 @@ class World:
             text = config if isinstance(config, str) else json.dumps(config)
             (root / ".tau" / "config.json").write_text(text, encoding="utf-8")
         return root
+
+    def session(  # noqa: PLR0913 - the fields of a session directory, as the catalog writes them
+        self,
+        id: str,
+        *,
+        cwd: Path | None = None,
+        name: str | None = None,
+        forked_from: dict[str, object] | None = None,
+        says: Sequence[str] = (),
+        build: Callable[[Session, int], int] | None = None,
+        system: str = "sys",
+        age: float = 0,
+        sessions: Path | None = None,
+    ) -> Path:
+        """A session directory as D18 lays it out, written by hand: `info.json`, and a log from
+        `Session.create` with `says` as user messages along one branch, then whatever `build`
+        appends (given the session and its tip, returning the new tip), `age` seconds old. Cursor
+        0 is left on the tip. Not held by anyone."""
+        directory = (sessions or self.tau / "sessions") / id
+        directory.mkdir(parents=True, mode=0o700)
+        info: dict[str, object] = {"cwd": str(cwd or self.home)}
+        if name is not None:
+            info["name"] = name
+        if forked_from is not None:
+            info["forked_from"] = forked_from
+        (directory / "info.json").write_text(json.dumps(info), encoding="utf-8")
+        made = Session.create(model_config("m"), system, 0, directory)
+        tip = made.cursor(0).at
+        for text in says:
+            tip = made.append(tip, Body.User(text), Author.Frontend("t"), 0)
+        if build is not None:
+            tip = build(made, tip)
+        made.go_to(0, tip, "t", 0)
+        made.close()
+        when = time.time() - age
+        os.utime(directory / "log", (when, when))
+        return directory
 
     def user_config(self, config: object) -> Path:
         self.tau.mkdir(mode=0o700, exist_ok=True)

@@ -556,7 +556,13 @@ atomically. A delivering record is durable before its items are removed;
 load drops delivered items. Open cuts the log back to its last good `Sync`
 (a torn tail) and keeps the cut bytes aside. One `flock` lease per session:
 only the holder writes, runs steps, and runs hooks. JMFTS is a replica fed
-from the log. Built in `crates/tau-store` (`Store::create`, `open`, `save`).
+from the log. Built in `crates/tau-store` (`Store::create`, `open`, `save`). A session is
+a directory under the sessions directory (D18): the store's files plus `info.json` (working
+directory, name, `forked_from`), which core and the store never read, so a session stays a pure
+function of its log and scratchpad. `Store::read` is a copy without the lease (the scratchpad
+first, then the log: D12's order makes the log at least as new), cutting and writing nothing;
+`Session::fork(node)` builds a new session from one walk, node for node; `Store::first_user`
+reads the log only as far as its first `User` node.
 
 ## Open questions
 

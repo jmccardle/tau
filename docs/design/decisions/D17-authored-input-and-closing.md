@@ -233,9 +233,8 @@ older log has no `Close` record and still loads. A build without C1 would fail o
 released formats only).
 
 **An empty session is allowed.** Closing the last open cursor is allowed, with no
-guard. A frontend that opens a session with no open cursor restarts one, or opens
-one at the `System` node. `examples/chat.py` (`session.cursors()[0]`) must handle
-this.
+guard. A frontend that opens a session with no open cursor restarts one: that is the
+library's first-cursor rule (D18 section 5, `tau.first_cursor`), which `examples/chat.py` calls.
 
 ### 3. B2, related but not decided here
 

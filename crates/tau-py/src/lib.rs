@@ -16,7 +16,7 @@ mod _core {
     #[pymodule_export]
     use super::job::{Answer, Draft, Ending, Hook, Job, RunCall, SampleEnd};
     #[pymodule_export]
-    use super::session::{HandleWrites, Session};
+    use super::session::{HandleWrites, Session, first_message};
     #[pymodule_export]
     use super::tools::{Bash, BashRun, Cancel, Grep, Read, Write};
     #[pymodule_export]

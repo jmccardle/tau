@@ -373,7 +373,13 @@ Move to a node neither on `walk(at)` nor below it. Going to an ancestor is
 ### fork
 retires `ctx.fork` and other senses
 
-A new session copying `walk(n)` from another. Never inside one session.
+A new session copying `walk(n)` from another. Never inside one session. `Session.fork(node, now,
+directory=None)` (core `Session::fork`) is the constructor: it copies `walk(node)` as records in one
+call (body, `by` and `time` as they were, parent links rebuilt, `delivers` emptied: item ids belong
+to one session), so node *i* of the copy is node *i* of the walk, with one cursor, 0, on the copied
+tip, auto-step off. It copies no other branch, cursor, label or pending item. `NoSuchNode` if
+`node` is absent. With a `directory` the copy is written with one sync. It works on a loaded
+session, a read copy or the live one. See *session catalog*.
 
 ### label
 *spike* `Session::set_label`, `remove_label`, `label`, `labels_of`,
@@ -722,7 +728,7 @@ calls (`Machine::hook_*`) are allowed only then, and a call made with
 `hook: Some(cursor)` skips its sync only then; a frontend's or the driver's
 call always syncs. A go-to or abort during a hook, cursor or tool, aborts
 the step and the hook finishes (Q34).
-### resume
+### crash mid-batch
 What a crash mid-batch leaves: the cursor at rest at the unanswered batch,
 every outcome lost (D4). Input goes under it; a step re-runs it.
 
@@ -1101,10 +1107,10 @@ is reported, as one **`ExtensionLoadError`** (an `ImportError`; `sources` the fa
 source's own files, the exception, and the one command that gets past it (`tau ext disable KEY`,
 or "fix it or drop the flag" for `-e`). The program exits 1 before it opens or writes a session
 (a failed discovered source stops the start: 0.15 only noticed). The driver adds `tau` first; a
-program adds `session_name` (D18) after `load_extensions` returns.
+program adds `session_name` (D18) after `load_extensions` returns (see *session_name*).
 
 `list_extensions(cwd, environ, *, explicit=(), discover=True) -> list[ExtensionSource]` imports the
-same and returns one **`ExtensionSource`** per source in load order, `tau` first: `key`, `state`
+same and returns one **`ExtensionSource`** per source in load order, `tau` and `session_name` (both `always`) first: `key`, `state`
 (`always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
 asked, and imported not at all), `kind` (`built-in`, `package`, `user`, `project`, `explicit`, or
 `load` for a `load` key no source has), `origin`, `detail` (why not on), and for a source that is on
@@ -1125,6 +1131,137 @@ is said to win, and its file is never written. **`-e VALUE`** (also `--extension
 args.no_extensions)`: `-e` names a file, a package directory or a discovered key and loads it even
 if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages and drop-ins but
 not built-ins; `-e x.pyc` is refused.
+
+### Session catalog: sessions directory, session id, info.json, SessionInfo, ref
+module `tau.sessions` · D18 · new
+
+The **sessions directory** is `$TAU_HOME/sessions`, or `--session-dir DIR` for one run (a flag only;
+`sessions_directory(home, given)`); it is created with mode 700 when the first session is. A
+session is one subdirectory named by its **session id**, `YYYYMMDD-HHMMSS-xxxxxx`: the UTC creation
+time and six random hex digits (`new_session_id(now)`), so `ls` lists them in creation order and a
+date works as a prefix. It is made by an exclusive `mkdir` (mode 700; a collision is `Exists`, with
+no retry) and holds the store's `log`, `scratchpad` and `dropped-*` and **`info.json`**, the
+catalog's alone: `{"cwd": ..., "name": ..., "forked_from": {"session": ..., "node": ...}}` (`cwd`
+required). It is written whole (temporary file, fsync, rename, fsync the directory) before the log
+exists; core and the store never read it, so a session is still a pure function of its log and
+scratchpad (I7). A missing, unparsable or `cwd`-less one makes the session unopenable and its row an
+error; there is no migration. Anything in the sessions directory that is not a directory is ignored.
+
+A **session's working directory** is `info.json`'s `cwd`: the resolved directory it was created in,
+never changed (a fork inherits its source's). The program changes into it at start (`os.chdir`, see
+*shared start*); if it is gone, opening fails and names it (`FileNotFoundError`), while `tau
+sessions` and `tau export` still work. **`--no-session`** keeps the session in memory
+(`directory=None`): never listed.
+
+**`SessionInfo`** is a listing row: `id`, `path`, `cwd`, `name`, `forked_from` (**`ForkedFrom`**:
+`session`, `node`), `updated` (the log's mtime in seconds, which every synced write moves), `first`
+(the text of the first `User` node, `first_message(directory)`, read from the start of the log only
+as far as that node, for a row with no `name` and only when asked for) and `error` (a directory
+that is not a readable session is a row with an `error`, never skipped). `title` is the name, else
+`first` on one line (cut to 80 characters), else `(no messages)`. `list_sessions(sessions, *,
+cwd=None)` scans the directory every time (no index, which would be a second source of truth),
+newest `updated` first, keeping the rows whose `cwd` equals the resolved `cwd` exactly (error rows
+always); `session_info(path)` is one row. Dropped from 0.15: message count and last message.
+
+A **session name** is optional free text in `info.json` (not unique; an empty name removes it; no
+model sees it), set by `-n NAME`, `tau sessions name REF [NAME]`, `rename_session(path, name)` and
+`/name [NAME]` (see *session_name*). A rename replaces `info.json` whole and takes no lease; the
+last of two wins; no event announces it. Auto-naming is dropped.
+
+A **ref** is `SESSION` or `SESSION:NODE` (`parse_ref`): `SESSION` is a path (it contains `/`), an
+id, an exact name or a unique id prefix, tried in that order, over the whole sessions directory
+(`find_session`); `:NODE` is read only when the ref ends in `:` and digits. A name or prefix of
+several sessions, or of none, is **`UnknownSession`** (a `LookupError`), listing the candidates with
+their `cwd` and age. `--session REF` takes no `:NODE` (the error says to use `--fork REF:N`).
+
+**`tau sessions [--all] [--json]`** prints a row per session: id, age, (with `--all`) `cwd`, title
+(`cut` and `awk` work); `--json` is one JSON object per line with the fields of `SessionInfo`.
+`tau sessions name REF [NAME]` prints the name (exit 1 if it has none), or sets it. **`tau export
+REF [-o FILE] [--thinking]`** writes the walk of the REF's node, else the first cursor's, as
+Markdown (see *to_markdown*). Both take `--session-dir`.
+
+Helpers in the module: `make_session_directory(sessions, now, cwd, name, forked_from)` (the exclusive
+`mkdir` and the first `info.json`), `read_name(path)`, `absolute_ref(ref, cwd)` and `age_of(row)`
+(`now`, `5m`, `3h`, `2d`: the age `tau sessions` prints).
+
+### first cursor, first_cursor, first_cursor_node
+`tau.sessions` · D18 · new
+
+Which cursor a frontend shows, or `-p` sends to: the open cursor with the lowest id; if none is
+open, the closed cursor with the lowest id, which `first_cursor(session, client)` reopens (a new
+id with the old labels), as `examples/chat.py` did by hand. `first_cursor_node(session)` makes the
+same choice without writing: the open cursor's `at`, or the closed one's last node; a fork and an
+export with no node given use it. The choice among other cursors is the frontend's (D16, D17).
+
+### shared start: start_session, Started, SessionFlags, session_flags
+modules `tau.session_start`, `tau.sessions`, `tau.cli` · D18 §5 · new
+
+The one start `tau`, `tau -p` and `tau serve` all call, so they agree. `session_flags()`
+(`tau.cli`; `add_help=False`, for `parents=`, as `extension_flags()` is) parses `-c/--continue`,
+`-r/--resume`, `--session REF`, `--fork REF`, `--no-session` (at most one of the five; `ConfigError`
+otherwise), `-n/--name NAME` and `--session-dir DIR`; **`SessionFlags.of(args, cwd)`** reads them,
+making `--session-dir` and a path REF absolute against `cwd`, the directory they were typed in.
+`choose_session(flags, *, home, cwd, pick)` resolves them, writing nothing, to a **`SessionChoice`**
+(`new`, `existing` or `fork`; the sessions directory; the working directory to change into; the
+source and node): `-c` is the newest session whose `cwd` is this directory
+(`UnknownSession` naming the directory and the sessions directory if none); `-r` asks `pick(here,
+everywhere)`, a **`PickSession`** (Phase 8's picker; without one, `ConfigError`); `--session`
+opens a REF. A leased session is an error, never a stand-in: `Leased`, naming the session and
+suggesting `--fork ID`.
+
+**`start_session(args, *, environ, cwd, system, prompts=None, pick_session=None, own=(),
+model=None, clock=None)`** (async) does, in this order: (0) the above, with `-e` paths made
+absolute (`absolute_explicit`); (1) `os.chdir` into the session's working directory (a new
+session's is the resolved `cwd`), before anything reads the config or `cwd`; (2) `load_config`,
+`load_extensions` (`-e`, `--no-extensions`), the `session_name` extension (added after the loaded
+ones, for a session with a directory) and `select_model` (a new session only: another records its model in its `Config` node, so `--model` on
+it is a `ConfigError` naming `/model`); (3) for a **new**
+session only, `system(cwd, loaded)` (**`SystemText`**) is the text of its `System` node (the seam
+for D20's `system_prompt`); (4) create the session (`Session.create` in a new session directory
+with its `info.json`), load it (taking the lease), or fork it (`Session.read` of the source, no
+lease, written with one sync, `forked_from` recorded once; `-n` names it), build the providers and
+start the `Driver`. A failure before step 4 creates nothing; a session this call created is removed
+if a later step fails. It returns **`Started`**: `session`, `driver`, `providers`, `loaded`,
+`model`, `cwd`, `directory`, `created`, and `never_used`. `Started.stop()` stops the driver, deletes
+a **never-used session** (created by this run, still only its created nodes and no pending item)
+while the lease is held, then closes the session and the providers; a crash can leave one, listed
+as `(no messages)` and removed with `rm -r`.
+
+### session_name, /name
+`tau._builtin.SessionName` · D18 · new
+
+The built-in extension the shared start adds after `load_extensions`, for a session that has a
+directory, built with that directory. Its one command, `/name [NAME]`, shows the session's name or
+sets it (an empty name removes it); the result is `named 'X'`, `name removed` or `(no name)`. It is
+not a D19 source: it has no key, `load` does not govern it, `--no-extensions` does not remove it,
+a loaded extension named `session_name` is a name clash, and `tau ext list` shows it as `always`.
+Over the wire `/name` is an ordinary command.
+
+### to_markdown, export_markdown
+`tau.markdown` · D18 §8 · new
+
+`to_markdown(nodes, *, thinking=False) -> str` is pure over a walk's nodes and deterministic (no
+export time or node times). `System` is under `## System` inside `<details>`, in a fence; `User`
+is `## User` (`## User (by gamemaster)` when an extension wrote it); `Assistant` has its text parts
+as written, each call as a line (`**Call:** tool (id)`) and a fenced block of its `args_raw`, and a
+stop other than `End` or `Tools` as an italic line; `Results` is one fenced block per outcome headed
+`**tool** ok|error|interrupted` (with `(by extension)` when an extension answered it; `LookupError`
+for a call no earlier `Assistant` node made); `Config` is one italic line; `Custom` nodes are left
+out (they never reach a model). Thinking is a blockquote and only with `thinking=True`. Each
+fence is one backtick longer than the longest run of backticks in its content (three at least).
+`export_markdown(info, node, nodes, *, thinking=False)` adds the header `tau export` writes: the
+title, the id, `cwd`, the node and `forked_from`. The tree is not exported (Markdown is linear:
+export each branch by `REF:NODE`).
+
+### read copy, Session.read
+`Session.read(directory)`, `Store::read` · D18 §7 · new
+
+An in-memory copy of a stored session as of its last sync, taking no lease, cutting nothing and
+writing nothing (no `dropped-*`). The store reads the scratchpad first and then the log; D12's order
+(the log is synced before the scratchpad is replaced) means the log read is at least as new as the
+pad, and replay drops what the newer log delivered, as load does. A record being appended ends the
+scan, as a torn tail does on open. Like any in-memory session it accepts changes and never saves
+them. Fork and export use it on a session another process holds.
 
 ### approved files (`tau._project_code`)
 module `tau._project_code` (private) · D19 · new

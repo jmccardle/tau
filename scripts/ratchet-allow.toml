@@ -27,5 +27,5 @@
 # Types over the method limit that are one concept: key = "the one concept it is".
 # Exempt from the count and printed on every run. Adding one needs a reviewer's yes.
 [justified]
-"tau-core::Session" = "the session's state: nodes, cursors, labels and scratchpad, each write queuing its record (I7); closing a cursor (D17) is one more write and one more read"
-"tau-py::Session" = "the Python face of Machine: one method per call a frontend, extension or driver makes, so a split changes the API; close_cursor and closed (D17) add two"
+"tau-core::Session" = "the session's state: nodes, cursors, labels and scratchpad, each write queuing its record (I7); closing a cursor (D17) is one more write and one more read; fork (D18) builds one from a walk"
+"tau-py::Session" = "the Python face of Machine: one method per call a frontend, extension or driver makes, so a split changes the API; close_cursor and closed (D17) add two, read and fork (D18) two more"

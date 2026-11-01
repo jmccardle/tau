@@ -1,5 +1,8 @@
 """The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
-...`, `tau trust [DIR]` (D13, D1) and `tau ext list|enable|disable` (D19).
+...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
+[--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18). Starting a session
+(`tau`, `tau -p`, `tau serve`) is Phase 8's; `tau.session_start.start_session` is their shared
+start.
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
@@ -7,7 +10,9 @@ drives it with real files and real streams. Exit status: 0 success, 1 a problem
 Everything printed from config data goes through `safe_text`. `config set` and `ext enable` /
 `disable` write the user's `<TAU_HOME>/config.json` and never the project's `.tau/config.json`.
 `extension_flags` is the `-e` and `--no-extensions` parser a program that starts a session adds
-(`parents=[extension_flags()]`), and gives `load_extensions` (D19 section 5).
+(`parents=[extension_flags()]`), and gives `load_extensions` (D19 section 5); `session_flags` is
+the one for the session (`-c`, `-r`, `--session`, `--fork`, `--no-session`, `-n`, `--session-dir`;
+D18 section 5), which `start_session` reads.
 """
 
 import argparse
@@ -17,6 +22,7 @@ import os
 import shlex
 import shutil
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,6 +36,15 @@ from tau._config_layers import (
     check_config,
     option_problems,
     read_models,
+)
+from tau._core import (
+    BadRecord,
+    Corrupt,
+    NoSuchNode,
+    NotASession,
+    Session,
+    Undecodable,
+    Version,
 )
 from tau._dotenv import DotenvError
 from tau._extensions import (
@@ -59,8 +74,21 @@ from tau._trust import (
 from tau._user_config import UserConfig
 from tau._values import Field, Json, object_schema
 from tau.commandline import value
+from tau.markdown import export_markdown
 from tau.protocols import Extension, Provider
 from tau.providers import builtin_providers
+from tau.sessions import (
+    UnknownSession,
+    absolute_ref,
+    age_of,
+    find_session,
+    first_cursor_node,
+    list_sessions,
+    parse_ref,
+    read_name,
+    rename_session,
+    sessions_directory,
+)
 
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
@@ -107,6 +135,48 @@ def extension_flags() -> argparse.ArgumentParser:
     return flags
 
 
+def _session_dir_flag(*, nested: bool = False) -> argparse.ArgumentParser:
+    """`--session-dir DIR`, the sessions directory for one run (default: `$TAU_HOME/sessions`).
+    `nested`: for a subcommand of a command that has it too, which must not reset it."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--session-dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS if nested else None,
+        help="keep and find sessions in DIR (default: $TAU_HOME/sessions)",
+    )
+    return flags
+
+
+def session_flags() -> argparse.ArgumentParser:
+    """A parser (`add_help=False`, for `parents=`) with the flags that choose the session
+    (D18 section 5): `-c/--continue`, `-r/--resume`, `--session REF`, `--fork REF` and
+    `--no-session` (at most one), `-n/--name NAME` and `--session-dir DIR`. Pass the parsed
+    arguments to `start_session`, which makes paths absolute and rejects combinations."""
+    flags = argparse.ArgumentParser(add_help=False, parents=[_session_dir_flag()])
+    flags.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="open the newest session of this directory",
+    )
+    flags.add_argument("-r", "--resume", action="store_true", help="choose a session to open")
+    flags.add_argument(
+        "--session", metavar="REF", help="open this session: a path, an id, a name or an id prefix"
+    )
+    flags.add_argument(
+        "--fork",
+        metavar="REF",
+        help="start a new session as a copy of one walk of REF (REF:NODE for a node)",
+    )
+    flags.add_argument(
+        "--no-session", action="store_true", help="keep the session in memory: never listed"
+    )
+    flags.add_argument("-n", "--name", metavar="NAME", help="name the session")
+    return flags
+
+
 def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(prog="tau", description="τ next (Trusty).")
     sub = parser.add_subparsers(dest="command")
@@ -133,6 +203,25 @@ def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argpars
     for name, what in (("enable", "load"), ("disable", "not load")):
         switch = ext_sub.add_parser(name, help=f"{what} the source KEY at every start")
         switch.add_argument("key", metavar="KEY", help="the source's key (see `tau ext list`)")
+    sessions = sub.add_parser(
+        "sessions", parents=[_session_dir_flag()], help="list sessions; `sessions name` names one"
+    )
+    sessions.add_argument("--all", action="store_true", help="every directory, with its cwd")
+    sessions.add_argument(
+        "--json", action="store_true", help="one JSON object per session, per line"
+    )
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", metavar="{name}")
+    named = sessions_sub.add_parser(
+        "name", parents=[_session_dir_flag(nested=True)], help="show or set a session's name"
+    )
+    named.add_argument("ref", metavar="REF", help="a path, an id, a name or an id prefix")
+    named.add_argument("name", nargs="?", metavar="NAME", help="the new name; empty removes it")
+    export = sub.add_parser(
+        "export", parents=[_session_dir_flag()], help="write a session's walk as Markdown"
+    )
+    export.add_argument("ref", metavar="REF", help="SESSION or SESSION:NODE")
+    export.add_argument("-o", "--output", metavar="FILE", help="write FILE (default: standard out)")
+    export.add_argument("--thinking", action="store_true", help="include the model's thinking")
     trust = sub.add_parser("trust", help="approve a project directory's .tau/")
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
@@ -386,14 +475,82 @@ def _trust(run: _Run, given: Path | None) -> int:
     return 0
 
 
+def _sessions_dir(run: _Run, given: str | None) -> Path:
+    where = None if given is None else Path(os.path.abspath(run.cwd / given))
+    return sessions_directory(tau_home(run.environ), where)
+
+
+def _sessions(run: _Run, args: argparse.Namespace) -> int:
+    rows = list_sessions(_sessions_dir(run, args.session_dir), cwd=None if args.all else run.cwd)
+    now = time.time()
+    for row in rows:
+        if args.json:
+            data = {**asdict(row), "path": str(row.path)}
+            run.stdout.write(json.dumps(data) + "\n")
+            continue
+        title = f"error: {row.error}" if row.error else row.title
+        where = f"{row.cwd or '?'}  " if args.all else ""
+        run.stdout.write(safe_text(f"{row.id}  {age_of(row, now):>4}  {where}{title}") + "\n")
+    return 0
+
+
+def _session_name(run: _Run, args: argparse.Namespace) -> int:
+    sessions = _sessions_dir(run, getattr(args, "session_dir", None))
+    session, node = parse_ref(absolute_ref(args.ref, run.cwd))
+    if node is not None:
+        raise UnknownSession(f"a session's name is not about a node: {args.ref!r}")
+    info = find_session(sessions, session)
+    if info.error is not None:
+        raise NotASession(f"{info.path}: {info.error}")
+    if args.name is None:
+        name = read_name(info.path)
+        if name is not None:
+            run.stdout.write(safe_text(name) + "\n")
+        return 0 if name is not None else 1
+    rename_session(info.path, args.name)
+    named = args.name.strip()
+    shown = f"named {info.id}: {named}" if named else f"removed the name of {info.id}"
+    run.stdout.write(safe_text(shown) + "\n")
+    return 0
+
+
+def _export(run: _Run, args: argparse.Namespace) -> int:
+    session, node = parse_ref(absolute_ref(args.ref, run.cwd))
+    info = find_session(_sessions_dir(run, args.session_dir), session, first=True)
+    if info.error is not None:
+        raise NotASession(f"{info.path}: {info.error}")
+    copy = Session.read(info.path)  # no lease: a session another process holds exports too
+    try:
+        at = first_cursor_node(copy) if node is None else node
+        copy.tree.node(at)
+        text = export_markdown(info, at, copy.tree.walk(at), thinking=args.thinking)
+    finally:
+        copy.close()
+    if args.output is None:
+        run.stdout.write(text)
+    else:
+        (run.cwd / args.output).write_text(text, encoding="utf-8")
+    return 0
+
+
 def _fail(err: TextIO, message: str) -> int:
     err.write("tau: " + safe_block(message) + "\n")
     return 1
 
 
+def _session_command(run: _Run, args: argparse.Namespace) -> int:
+    if args.command == "export":
+        return _export(run, args)
+    if args.sessions_command == "name":
+        return _session_name(run, args)
+    return _sessions(run, args)
+
+
 def _dispatch(run: _Run, args: argparse.Namespace) -> int:
     if args.command == "trust":
         return _trust(run, args.dir)
+    if args.command in ("sessions", "export"):
+        return _session_command(run, args)
     if args.command == "ext":
         if args.ext_command == "list":
             return _ext_list(run, args)
@@ -401,6 +558,22 @@ def _dispatch(run: _Run, args: argparse.Namespace) -> int:
     if args.config_command == "set":
         return _set(run, args.assignments)
     return _check(run, args.show)
+
+
+def _needs_help(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    config: argparse.ArgumentParser,
+    ext: argparse.ArgumentParser,
+) -> argparse.ArgumentParser | None:
+    """The parser whose help to print because the command line stops at a group of commands."""
+    if args.command is None:
+        return parser
+    if args.command == "config" and args.config_command is None:
+        return config
+    if args.command == "ext" and args.ext_command is None:
+        return ext
+    return None
 
 
 def main(  # noqa: PLR0913 - the process, injected so a test can supply real ones
@@ -424,18 +597,29 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     )
     parser, config, ext = _parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
-    if args.command is None:
-        parser.print_help(err)
-        return _USAGE_ERROR
-    if args.command == "config" and args.config_command is None:
-        config.print_help(err)
-        return _USAGE_ERROR
-    if args.command == "ext" and args.ext_command is None:
-        ext.print_help(err)
+    wanted = _needs_help(args, parser, config, ext)
+    if wanted is not None:
+        wanted.print_help(err)
         return _USAGE_ERROR
     try:
         return _dispatch(run, args)
-    except (ConfigError, TrustError, DotenvError, ExtensionLoadError) as e:
+    except (
+        ConfigError,
+        TrustError,
+        DotenvError,
+        ExtensionLoadError,
+        UnknownSession,
+        NoSuchNode,
+        NotASession,
+        Version,
+        Corrupt,
+        Undecodable,
+        BadRecord,
+    ) as e:
+        return _fail(err, str(e))
+    except OSError as e:  # a session's files: missing, unreadable, or held (`Leased`)
+        if args.command not in ("sessions", "export"):
+            raise
         return _fail(err, str(e))
     except KeyboardInterrupt:
         err.write("\ntau: interrupted\n")

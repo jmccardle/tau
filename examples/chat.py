@@ -1,10 +1,14 @@
 """A line chat over a `LocalClient`: the hands-on demo of commands, questions and completion.
 
 python examples/chat.py [--model NAME] [-e PATH|KEY ...] [--no-extensions]
+                        [-c | -r | --session REF | --fork REF[:NODE] | --no-session]
+                        [-n NAME] [--session-dir DIR]
 
 Setup as for the other examples (examples/config.json; TAU_HOME names the directory holding
-the config and the session, `chat-session/`, which is reopened on the next run). Try
-`--model mock:echo`, which needs no server.
+the config and the sessions, `$TAU_HOME/sessions/`). The session is chosen by D18's flags and the
+shared start, as `tau` will: a new session each run, `-c` for the newest of this directory, `--fork`
+for a copy, `/name NAME` to name it, and `tau sessions` lists them. The process changes into the
+session's working directory. Try `--model mock:echo`, which needs no server.
 
 Type a message to send it. `/` alone lists the commands; Tab completes a command name and its
 arguments (models, cursors, nodes, paths ...); a command missing arguments asks for each; an
@@ -32,17 +36,19 @@ extension instances, added in order. A source that fails to load stops the chat 
 and says how to get past it. Try `-e examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
 """
 
+import argparse
 import asyncio
+import os
 import readline
 import shlex
 import sys
 from collections import Counter
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from common import close_all, run
+from common import exit_on_failure, run_until_signalled
 
 from tau import (
     Appended,
@@ -55,24 +61,19 @@ from tau import (
     CommandFailed,
     Cursor,
     CursorView,
-    Driver,
     Form,
     Live,
-    LoadedConfig,
     Node,
     NodeHandle,
     NodeId,
     Notice,
     OpenQuestion,
-    Session,
-    SystemClock,
     TextDelta,
-    absolute_explicit,
-    builtin_providers,
-    load_extensions,
-    model_config,
+    first_cursor,
+    prompts,
+    start_session,
 )
-from tau.cli import extension_flags
+from tau.cli import extension_flags, session_flags
 from tau.commandline import Parsed, UnknownCommand, completions, parse, value, values
 
 SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
@@ -309,34 +310,19 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
     readline.parse_and_bind("tab: complete")
 
 
-async def main(
-    name: str,
-    loaded: LoadedConfig,
-    explicit: Sequence[str] = (),
-    discover: bool = True,
-) -> None:
-    clock = SystemClock()
-    added = load_extensions(loaded, explicit=explicit, discover=discover)
-    providers = builtin_providers(loaded.environ)
-    where = loaded.home / "chat-session"
-    where.parent.mkdir(parents=True, exist_ok=True)
-    if where.exists():
-        session = Session.load(where)
-    else:
-        session = Session.create(model_config(name), SYSTEM, clock.now(), where)
-    driver = Driver(
-        session,
-        providers,
-        loaded.catalog,
-        extensions=[Demo(), *added],
-        user_config=loaded.user,
+async def main(args: argparse.Namespace) -> None:
+    started = await start_session(
+        args,
+        environ=os.environ,
+        cwd=Path.cwd(),
+        system=lambda cwd, loaded: SYSTEM,
+        prompts=prompts(sys.stdin, sys.stdout),
+        own=[Demo()],
+        model=args.model,
     )
-    driver.start()
-    client = driver.client("chat:line")
-    # Every cursor may have been closed (D17): restart the first, which keeps its labels.
-    cursor = (
-        session.cursors()[0] if session.cursors() else await client.reopen(session.closed()[0][0])
-    )
+    client = started.driver.client("chat:line")
+    # Every cursor may have been closed (D17): the library restarts the first, keeping its labels.
+    cursor = await first_cursor(started.session, client)
     chat = Chat(client, cursor, partial(print, end="", flush=True), prompt)
     await chat.refresh()
     await client.watch([chat.cursor])
@@ -354,9 +340,7 @@ async def main(
             task.cancel()
         listener.cancel()
         await client.close()
-        await driver.stop()
-        session.close()
-        await close_all(providers)
+        await started.stop()
 
 
 async def prompt(text: str) -> str:
@@ -364,7 +348,6 @@ async def prompt(text: str) -> str:
 
 
 if __name__ == "__main__":
-    flags = extension_flags()
-    given = flags.parse_known_args(sys.argv[1:])[0]
-    explicit = absolute_explicit(given.extension, Path.cwd())
-    run(partial(main, explicit=explicit, discover=not given.no_extensions), [flags])
+    parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
+    parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
+    exit_on_failure(lambda: run_until_signalled(main(parser.parse_args())))

@@ -597,6 +597,140 @@ fn a_record_from_before_meta_loads_with_none() {
     );
 }
 
+#[test]
+fn a_fork_written_to_a_store_reloads_as_it_was() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    s.write(c, Body::User("a".into()), vec![], Author::Core, 3)
+        .unwrap();
+    let (mut copy, _) = s.fork(2, 9).unwrap();
+    let d = dir();
+    drop(Store::create(d.path(), &mut copy).unwrap());
+    let (_, loaded) = Store::open(d.path()).unwrap();
+    assert_eq!(loaded, as_loaded(&copy), "I7 for a fork");
+    assert_eq!(loaded.tree.node_count(), 3);
+}
+
+/// A holder's session on disk with a user message `text` at cursor 0, and the store.
+fn held(d: &Path, text: &str) -> (Session, Store) {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let store = Store::create(d, &mut s).unwrap();
+    s.write(c, Body::User(text.into()), vec![], Author::Core, 0)
+        .unwrap();
+    s.sync();
+    (s, store)
+}
+
+#[test]
+fn read_takes_no_lease_and_sees_the_last_sync() {
+    let d = dir();
+    let (mut s, mut store) = held(d.path(), "first");
+    store = store.save(&mut s).unwrap();
+    s.write(0, Body::User("unsynced".into()), vec![], Author::Core, 0)
+        .unwrap();
+    store = store.save(&mut s).unwrap();
+    let copy = Store::read(d.path()).unwrap();
+    assert_eq!(
+        copy.tree.node_count(),
+        3,
+        "root, system, the synced message"
+    );
+    assert!(
+        matches!(Store::open(d.path()), Err(Error::Leased)),
+        "still held"
+    );
+    drop(store);
+}
+
+#[test]
+fn read_cuts_nothing_and_writes_nothing() {
+    let d = dir();
+    let (mut s, store) = held(d.path(), "first");
+    drop(store.save(&mut s).unwrap());
+    let log = d.path().join("log");
+    let mut bytes = fs::read(&log).unwrap();
+    bytes.extend_from_slice(b"a record being appended");
+    fs::write(&log, &bytes).unwrap();
+    let copy = Store::read(d.path()).unwrap();
+    assert_eq!(copy.tree.node_count(), 3, "the torn tail ends the scan");
+    assert_eq!(fs::read(&log).unwrap(), bytes, "the log is as it was");
+    let files = fs::read_dir(d.path()).unwrap().count();
+    assert_eq!(files, 1, "no dropped-* and no other file");
+}
+
+#[test]
+fn read_with_a_scratchpad_older_than_the_log_drops_what_the_log_delivered() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    let item = s.add_item(
+        c,
+        ItemData::Input {
+            by: Author::Core,
+            text: "hi".into(),
+        },
+    );
+    s.sync();
+    store = store.save(&mut s).unwrap();
+    // The scratchpad file as it was while the item was pending.
+    let older = fs::read(d.path().join("scratchpad")).unwrap();
+    s.write(c, Body::User("hi".into()), vec![item], Author::Core, 0)
+        .unwrap();
+    s.sync();
+    drop(store.save(&mut s).unwrap());
+    // A reader that took the pad first, then saw the log the holder wrote after.
+    fs::write(d.path().join("scratchpad"), older).unwrap();
+    let copy = Store::read(d.path()).unwrap();
+    assert_eq!(copy.items(c).count(), 0, "the log delivered it");
+    assert_eq!(copy.tree.node_count(), 3);
+}
+
+#[test]
+fn read_refuses_what_open_refuses() {
+    let d = dir();
+    assert!(matches!(Store::read(d.path()), Err(Error::Io(_))));
+    fs::write(d.path().join("log"), b"not a log at all").unwrap();
+    assert!(matches!(Store::read(d.path()), Err(Error::NotASession(_))));
+}
+
+#[test]
+fn first_user_reads_only_as_far_as_the_first_user_node() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    assert_eq!(Store::first_user(d.path()).unwrap(), None);
+    for text in ["one", "two"] {
+        s.write(c, Body::User(text.into()), vec![], Author::Core, 0)
+            .unwrap();
+        s.sync();
+        store = store.save(&mut s).unwrap();
+    }
+    assert_eq!(Store::first_user(d.path()).unwrap().as_deref(), Some("one"));
+    // Whatever follows the first message is not read: damage after it is not seen.
+    let log = d.path().join("log");
+    let mut bytes = fs::read(&log).unwrap();
+    bytes.extend_from_slice(&[0xff; 40]);
+    fs::write(&log, bytes).unwrap();
+    assert_eq!(Store::first_user(d.path()).unwrap().as_deref(), Some("one"));
+    drop(store);
+}
+
+#[test]
+fn first_user_ends_at_a_torn_record() {
+    let d = dir();
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    drop(Store::create(d.path(), &mut s).unwrap());
+    let log = d.path().join("log");
+    let mut bytes = fs::read(&log).unwrap();
+    bytes.extend_from_slice(&[0xff; 40]); // a length far past the end
+    fs::write(&log, bytes).unwrap();
+    assert_eq!(Store::first_user(d.path()).unwrap(), None);
+    fs::write(&log, b"nonsense, long enough to hold a header").unwrap();
+    assert!(matches!(
+        Store::first_user(d.path()),
+        Err(Error::NotASession(_))
+    ));
+}
+
 /// A sample that finished with `d`'s body.
 fn sampled(d: Draft) -> Answer {
     let Body::Assistant {

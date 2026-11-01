@@ -18,10 +18,12 @@ from tau import (
     DotenvError,
     Driver,
     ExtensionLoadError,
+    Leased,
     LoadedConfig,
     Provider,
     Session,
     TrustError,
+    UnknownSession,
     load_config,
     prompts,
     safe_block,
@@ -101,10 +103,28 @@ def run(
 ) -> None:
     """Choose a model, run `main(name, loaded)`; on a failure print one line and exit 1.
     `parents` are as for `choose_model`."""
-    try:
+
+    def go() -> None:
         name, loaded = choose_model(sys.argv[1:], parents)
         run_until_signalled(main(name, loaded))
-    except (ConfigError, TrustError, DotenvError, ExtensionLoadError, SampleFailed) as e:
+
+    exit_on_failure(go)
+
+
+def exit_on_failure(program: Callable[[], None]) -> None:
+    """Run `program`; a failure a person can fix prints one line and exits 1."""
+    try:
+        program()
+    except (
+        ConfigError,
+        TrustError,
+        DotenvError,
+        ExtensionLoadError,
+        UnknownSession,
+        SampleFailed,
+        Leased,
+        FileNotFoundError,
+    ) as e:
         sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)

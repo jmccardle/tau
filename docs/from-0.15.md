@@ -104,18 +104,21 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | `navigate` / go to node | `tree_ops.py` | **built** | `go_to` (glossary "go to") |
 | Branch from any node, in-session fork | `ctx.fork`, `tree_ops.fork` | **built** (renamed) | "branch" (glossary; rule 3 bans in-session "fork") |
 | Re-run a tool batch | `Session.rerun` | **built** | "re-run" (glossary): go to the `Assistant`, step, sibling `Results` |
-| `--fork REF` / copy a session into a new one | `cli.py:--fork`, `session_manager` | **REGRESSION** | glossary says "fork: a new session copying `walk(n)` from another" but `copied_from` is "not yet spiked" and no API or phase builds it |
+| `--fork REF` / copy a session into a new one | `cli.py:--fork`, `session_manager` | **built** (changed) | D18: `Session.fork(node, now, directory)` copies one walk in one call; `--fork REF[:NODE]` is in `session_flags`, provenance is `forked_from` in `info.json` (not `copied_from`, which stays same-session); the `tau` program that takes the flag is Phase 8 |
 | `summarize_and_navigate` (branch summary on leaving a branch) | `tree_ops.py`, `capabilities.py:1991` | **planned** (unspecified) | D3 compaction extension builds "a summary node under a kept prefix"; branch summaries are not named |
 | `elide_span` (fold a span out of context) | `tree_surgery.py`, `tree_ops.py` | **planned** (unspecified) | plan.md Phase 8: tau-code "elide ... become commands or extensions, or are dropped" |
 | `commit_branch`, `paste_subtree` | `tree_surgery.py` | **planned** (unspecified) | same Phase 8 sentence; glossary "branch" retires `commit_branch` |
 | Tree browser TUI (edit the tree) | `tree_browser.py`, `docs/TREE-BROWSER-AS-EDITOR.md` | **REGRESSION** | Phase 8 widget reuse list names "message, tool and reasoning boxes, stream strip, themes, dialogs, session picker"; not the tree browser |
 | Model compare (N cursors, one prompt, keep one) | `compare.py`, `compare_view.py`, `/compare` | **planned** (unspecified) | Phase 8 tau-code sentence (above) lists "compare"; ADR D17 mentions it; no design |
 | Seeded branches / spawn (`spawn_branch`, `seed`) | `seed.py`, `docs/SEEDED-BRANCHES.md` | **planned** | Stage B1-B3 (sub-agent primitive: authored input, `tree.rest`, `tree.abort`), sub-agent extension Phase 8 |
-| Session picker / listing (`list_sessions`, `--resume`) | `session_catalog.py`, `session_picker.py` | **planned** | Phase 7 "session catalog (ADR)"; picker widget reuse Phase 8 |
-| Session naming (`--name`, `/name`, autoname example) | `session_log.py`, `examples/42_session_autoname.py` | **planned** (unspecified) | Phase 7 catalog "names them"; cursor labels exist, session title does not |
-| Session export: Markdown/HTML (`--export-html`) | `export.py`, `docs/HTML-EXPORT.md` | **REGRESSION** | Not built, not planned |
+| Session listing (`list_sessions`) | `session_catalog.py` | **built** (changed) | D18: `tau.list_sessions`, `tau sessions [--all] [--json]`: a scan of `$TAU_HOME/sessions`, no index; message count and last message are **dropped** (they need a full read of the log), the title is the name, else the first message |
+| Session picker (`--resume`) | `session_picker.py` | **planned** | `-r` is in `session_flags` and `choose_session` takes the picker as a callable; the widget is Phase 8 |
+| Session naming (`--name`, `/name`) | `session_log.py` | **built** | D18: `-n NAME`, `tau sessions name`, `/name` from the built-in `session_name`; the name is in `info.json`. Auto-naming (`examples/42_session_autoname.py`) is **dropped**: the fallback title is the first message |
+| Session export: Markdown (`export.py`) | `export.py` | **built** (changed) | D18: `tau export REF [-o FILE] [--thinking]`, `tau.to_markdown`; deterministic, one walk (`REF:NODE`), thinking only on request |
+| Session export: HTML (`--export-html`) | `export.py`, `docs/HTML-EXPORT.md` | **post-0.16** | D18: not built |
+| 0.15 session files (`sessions/<dashed-cwd>/<time>_<uuid>.jsonl`), the read-only second view of a held session | `session_store.py` | **dropped** (changed) | D9, D18: a directory per session under `$TAU_HOME/sessions`; a held session is `Leased` (fork it, or read it with `tau export`) |
 | Session import/export JSONL (JMFTS) | `cli.py:--import-session/--export-session` | **post-0.16** | tied to JMFTS (below) |
-| `--no-session` ephemeral | `cli.py` | **built** (library) | `Session.create` with no directory is in memory (glossary one-off recipe, `examples/one_off.py`); CLI flag **planned** (unspecified) |
+| `--no-session` ephemeral | `cli.py` | **built** | `Session.create` with no directory is in memory (`examples/one_off.py`); `--no-session` is in `session_flags` and `start_session` |
 | Message timestamps | `docs/MESSAGE-TIMESTAMPS.md` | **built** | `Node.time` |
 | Crash behavior (partial reply saved, finalize) | `docs/TURN-FAILURES.md` | **built** (changed) | D4: rest at the batch, no repair; `Interrupted` replies kept |
 | Transcript window (render cap for long sessions) | `docs/TRANSCRIPT-WINDOW.md` | **planned** | D14 "deferred": every body stays in memory; load-a-subset left for later; TUI is Phase 8 |
@@ -208,7 +211,7 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `-e`, `--extension PATH|MODULE` | **planned** | `chat.py --extension` (C3); `tau` flag via trusted loader, unscheduled |
 | `-ne`, `--no-extensions` | **REGRESSION** | no discovery, so nothing to disable |
 | `--bus` | **REGRESSION** | NATS extension not planned |
-| `--no-session` | **planned** (unspecified) | library has in-memory sessions |
+| `--no-session` | **built** | D18: `session_flags`, `start_session` |
 | `--max-turns N` | **dropped** (changed) | `StepLimit` option (D1) |
 | `--ext-config NAME:KEY=VALUE` | **planned** (unspecified) | the CLI layer of D13 |
 | `--ui-defaults METHOD=ANSWER,...` | **REGRESSION** | see 2.6 |
@@ -217,17 +220,17 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `-nc`, `--no-context-files` | **REGRESSION** | no context-file discovery |
 | `--prompt-template PATH`, `--no-prompt-templates` | **REGRESSION** | see 2.5 |
 | `--skill PATH`, `--no-skills` | **REGRESSION** | see 2.5 |
-| `-c`, `--continue` | **planned** | Phase 7 session catalog (newest session) |
-| `-r`, `--resume` | **planned** | Phase 7 catalog + Phase 8 picker |
-| `--session REF` | **planned** | Phase 7 catalog |
-| `--fork REF` | **REGRESSION** | see 2.3 |
-| `-n`, `--name` | **planned** (unspecified) | Phase 7 catalog |
+| `-c`, `--continue` | **built** | D18: the newest session of the working directory, with any frontend (the `tau` program is Phase 8) |
+| `-r`, `--resume` | **planned** | D18: parsed and resolved (`choose_session`); the picker is Phase 8 |
+| `--session REF` | **built** | D18: a path, an id, a name or a unique id prefix, searched over the whole sessions directory |
+| `--fork REF` | **built** (changed) | D18: `REF[:NODE]`; see 2.3 |
+| `-n`, `--name` | **built** | D18 |
 | `--thinking LEVEL` | **dropped** (changed) | provider `options` (2.1) |
 | `--store file|jmfts` | **post-0.16** | JMFTS |
 | `--connect ADDR`, `--cwd PATH` | **planned** | Phase 7 `RemoteClient`, `tau serve` |
-| `--session-dir DIR` | **REGRESSION** (minor) | store lives under `$TAU_HOME/sessions`; Phase 7 catalog "where sessions live" is the place to decide |
+| `--session-dir DIR` | **built** | D18: a flag only; `TAU_HOME` already moves everything |
 | `--import-session PATH` / `--export-session REF PATH` | **post-0.16** | JMFTS |
-| `--export-html REF [OUT]` | **REGRESSION** | see 2.3 |
+| `--export-html REF [OUT]` | **post-0.16** | see 2.3; Markdown is `tau export` |
 | `--verbose` | **REGRESSION** (minor) | `tau.trace` (Chrome trace) is new; no log verbosity |
 | `--fun` / `--no-fun` (random tagline) | **REGRESSION** (cosmetic) | |
 | `tau serve` (default 127.0.0.1) | **planned** | Phase 7 |

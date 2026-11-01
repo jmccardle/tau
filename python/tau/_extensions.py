@@ -28,7 +28,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
-from tau._builtin import Tau
+from tau._builtin import SESSION_NAME, Tau
 from tau._commands import assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
@@ -78,12 +78,12 @@ class ExtensionLoadError(ImportError):
 
 @dataclass(frozen=True)
 class ExtensionSource:
-    """One row of `tau ext list`: the source's `key`, its `state` (`always`: `tau`; `on`; `off`;
-    `shadowed`, by what; `failed`; `untrusted`), its `kind` (`built-in`, `package`, `user`,
-    `project`, `explicit` for `-e`, or `load` for a `load` key that no source has), `origin`
-    (where it is) and `detail` (why it is off, shadowed, untrusted or failed). `extensions` are
-    the names of the extensions it provides, `commands` their commands' qualified names and
-    `tools` their tools' names; all empty unless it is on."""
+    """One row of `tau ext list`: the source's `key`, its `state` (`always`: `tau` and
+    `session_name`; `on`; `off`; `shadowed`, by what; `failed`; `untrusted`), its `kind`
+    (`built-in`, `package`, `user`, `project`, `explicit` for `-e`, or `load` for a `load` key
+    that no source has), `origin` (where it is) and `detail` (why it is off, shadowed, untrusted
+    or failed). `extensions` are the names of the extensions it provides, `commands` their
+    commands' qualified names and `tools` their tools' names; all empty unless it is on."""
 
     key: str
     state: State
@@ -120,10 +120,9 @@ class _Candidate:
 
 @dataclass(frozen=True)
 class Inspection:
-    """What `inspect_extensions` found: a row per source in load order (`tau` first), the
-    `extensions` of
-    those that loaded in hook order (not `tau`), and each failure's message with the exceptions
-    behind them."""
+    """What `inspect_extensions` found: a row per source in load order (`tau` and `session_name`,
+    which the startup adds, first), the `extensions` of those that loaded in hook order (neither
+    of those two), and each failure's message with the exceptions behind them."""
 
     sources: tuple[ExtensionSource, ...]
     extensions: tuple[Extension, ...]
@@ -617,13 +616,23 @@ def _inspect(inputs: _Inputs, explicit: Sequence[str], discover: bool) -> Inspec
     run = _Run()
     tau = Tau()
     run.names[tau.name] = "built-in tau"
+    run.names[SESSION_NAME] = f"built-in {SESSION_NAME}"
     _settle(candidates, inputs, discover, run, named)
     _load_keys(candidates, inputs, run)
     first = ExtensionSource(
         tau.name, "always", "built-in", "built-in", None, (tau.name,), ("tau:model",)
     )
+    added = ExtensionSource(
+        SESSION_NAME,
+        "always",
+        "built-in",
+        "built-in (added by the startup)",
+        None,
+        (SESSION_NAME,),
+        (f"{SESSION_NAME}:name",),
+    )
     return Inspection(
-        (first, *run.sources), tuple(run.extensions), tuple(run.errors), tuple(run.causes)
+        (first, added, *run.sources), tuple(run.extensions), tuple(run.errors), tuple(run.causes)
     )
 
 
@@ -678,8 +687,9 @@ def list_extensions(
     explicit: Sequence[str] = (),
     discover: bool = True,
 ) -> list[ExtensionSource]:
-    """One `ExtensionSource` per source in load order, `tau` first: what a start in `cwd`
-    would import (it imports the same, and shows a failure as a row instead of raising it). It
+    """One `ExtensionSource` per source in load order, `tau` and `session_name` first: what a start
+    in `cwd` would import (it imports the same, and shows a failure as a row instead of raising
+    it). It
     never asks about trust: a project that is not trusted shows its sources as `untrusted`.
     `ConfigError` or `TrustError` for config or trust files the loader refuses."""
     return list(_inspect(_inputs_for(cwd, environ), explicit, discover).sources)

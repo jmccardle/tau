@@ -122,3 +122,76 @@ fn a_logged_root_that_is_not_a_config_does_not_replay() {
         Err(Error::BadRecord(0))
     );
 }
+
+#[test]
+fn a_fork_is_one_walk_copied_node_for_node() {
+    let (mut s, c) = Session::create("{}", "sys", 1);
+    let a = s
+        .write(
+            c,
+            Body::User("a".into()),
+            vec![],
+            Author::Frontend("t".into()),
+            5,
+        )
+        .unwrap();
+    let b = user(&mut s, c, "b");
+    // Another branch, a label, a second cursor and a pending item: none of them are copied.
+    let other = s.open(a, Author::Core, 6).unwrap();
+    s.write(
+        other,
+        Body::User("elsewhere".into()),
+        vec![],
+        Author::Core,
+        7,
+    )
+    .unwrap();
+    s.set_label("main", c).unwrap();
+    s.add_item(
+        c,
+        tau_core::tree::ItemData::Input {
+            by: Author::Core,
+            text: "pending".into(),
+        },
+    );
+    let (copy, cursor) = s.fork(b, 99).unwrap();
+    let walk = s.tree.walk(b);
+    assert_eq!(copy.tree.node_count(), walk.len());
+    for (i, original) in walk.iter().enumerate() {
+        let node = copy.tree.node(i as u64).unwrap();
+        assert_eq!(node.parent, i.checked_sub(1).map(|p| p as u64));
+        assert_eq!(
+            (&node.body, &node.by, node.time),
+            (&original.body, &original.by, original.time)
+        );
+    }
+    assert_eq!(cursor, 0);
+    assert_eq!(
+        copy.at(0),
+        Ok(walk.len() as u64 - 1),
+        "cursor 0 on the copied tip"
+    );
+    assert_eq!(copy.at(1), Err(Error::NoSuchCursor(1)));
+    assert_eq!(copy.labels().count(), 0);
+    assert_eq!(copy.items(0).count(), 0);
+    assert_eq!(copy.auto.get(&0), Some(&false));
+}
+
+#[test]
+fn a_forks_delivers_are_emptied_and_a_missing_node_is_refused() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let item = s.add_item(
+        c,
+        tau_core::tree::ItemData::Input {
+            by: Author::Core,
+            text: "hi".into(),
+        },
+    );
+    let tip = s
+        .write(c, Body::User("hi".into()), vec![item], Author::Core, 0)
+        .unwrap();
+    assert_eq!(s.tree.node(tip).unwrap().delivers, [item]);
+    let (copy, _) = s.fork(tip, 0).unwrap();
+    assert_eq!(copy.tree.node(2).unwrap().delivers, Vec::<u64>::new());
+    assert_eq!(s.fork(77, 0).map(|_| ()), Err(Error::NoSuchNode(77)));
+}

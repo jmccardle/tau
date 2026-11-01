@@ -197,6 +197,39 @@ fn open_session(py: Python<'_>, inner: Inner) -> PyResult<Session> {
     Ok(Session { shared, tree })
 }
 
+/// A `Session` over `session`, written to a new store in `directory` (created if missing) with
+/// one sync when given, else in memory.
+#[allow(clippy::needless_pass_by_value)] // only `&Path` is used
+fn stored(
+    py: Python<'_>,
+    mut session: tree::Session,
+    directory: Option<PathBuf>,
+) -> PyResult<Session> {
+    let inner = py
+        .detach(|| {
+            let store = directory
+                .as_deref()
+                .map(|dir| Store::create(dir, &mut session))
+                .transpose()?;
+            Inner {
+                machine: Machine::new(session),
+                store,
+            }
+            .save()
+        })
+        .map_err(|f| f.into_py_in(directory.as_deref()))?;
+    open_session(py, inner)
+}
+
+/// The text of the first `User` node in the session in `directory`, read from the start of its
+/// log only as far as that node; no lease. `None` if it has none.
+#[pyfunction]
+#[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
+pub fn first_message(py: Python<'_>, directory: PathBuf) -> PyResult<Option<String>> {
+    py.detach(|| Store::first_user(&directory))
+        .map_err(|e| Failure::from(e).into_py_in(Some(&directory)))
+}
+
 #[pymethods]
 impl Session {
     /// A new session with a `Config` root, a `System` node, and cursor 0 on
@@ -211,22 +244,42 @@ impl Session {
         now: u64,
         directory: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let inner = py
-            .detach(|| {
-                let (mut session, _) =
-                    tree::Session::create(tree::Config::from(config), system, now);
-                let store = directory
-                    .as_deref()
-                    .map(|dir| Store::create(dir, &mut session))
-                    .transpose()?;
-                Inner {
-                    machine: Machine::new(session),
-                    store,
-                }
-                .save()
-            })
-            .map_err(|f| f.into_py_in(directory.as_deref()))?;
-        open_session(py, inner)
+        let (session, _) = tree::Session::create(tree::Config::from(config), system, now);
+        stored(py, session, directory)
+    }
+
+    /// A new session holding a copy of `walk(node)` (D18 section 6): node *i* of the copy is
+    /// node *i* of the walk, with cursor 0 on its tip. In `directory` (created if missing)
+    /// when given, else in memory, written with one sync. `NoSuchNode` if `node` is absent.
+    #[pyo3(signature = (node, now, directory = None))]
+    fn fork(
+        &self,
+        py: Python<'_>,
+        node: u64,
+        now: u64,
+        directory: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let (copy, _) = self.shared.read(py, tracing::info_span!("py.fork"), |i| {
+            Ok(i.machine.session.fork(node, now)?)
+        })?;
+        stored(py, copy, directory)
+    }
+
+    /// The session in `directory` as a copy in memory, as of its last sync, taking no lease
+    /// and writing nothing (D18 section 7). It accepts changes and never saves them.
+    #[staticmethod]
+    #[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
+    fn read(py: Python<'_>, directory: PathBuf) -> PyResult<Self> {
+        let session = py
+            .detach(|| Store::read(&directory))
+            .map_err(|e| Failure::from(e).into_py_in(Some(&directory)))?;
+        open_session(
+            py,
+            Inner {
+                machine: Machine::loaded(session),
+                store: None,
+            },
+        )
     }
 
     /// Open the session in `directory`, taking its lease. Every cursor loads

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tau_core::tree::{Record, Scratchpad, Session};
+use tau_core::tree::{Body, Record, Scratchpad, Session};
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
@@ -175,6 +175,84 @@ impl Store {
             dropped: (bytes.len() - end) as u64,
         };
         Ok((store, session))
+    }
+
+    /// The session in `dir` as a copy in memory, as of the last `Sync` written, without its
+    /// lease: nothing is cut, kept aside or written, so a session another store holds can be
+    /// read. The scratchpad file is read first and then the log; the holder syncs the log
+    /// before it replaces the scratchpad (D12), so the log read is at least as new as the pad
+    /// and replay drops whatever the newer log delivered, as `open` does. A record being
+    /// appended ends the scan, as a torn tail does on open.
+    ///
+    /// # Errors
+    ///
+    /// As `open`, except `Leased`, and nothing is cut.
+    pub fn read(dir: &Path) -> Result<Session, Error> {
+        let path = dir.join(LOG);
+        let pad = read_pad(&dir.join(PAD))?;
+        let bytes = fs::read(&path)?;
+        check_header(&bytes, LOG_MAGIC, &path)?;
+        let (records, _) = scan(&bytes[HEADER..], &path)?;
+        if records.is_empty() {
+            return Err(Error::NotASession(path));
+        }
+        tau_core::tree::load(records, pad).map_err(Error::Core)
+    }
+
+    /// The text of the first `User` node in the session in `dir`, reading the log from its
+    /// start only as far as that node, without the lease. `None` if the log, up to its first
+    /// torn record, has none. Nothing is cut or written.
+    ///
+    /// # Errors
+    ///
+    /// `NotASession` for bad magic; `Version`; `Undecodable` for an intact record that does
+    /// not decode; `Io`.
+    pub fn first_user(dir: &Path) -> Result<Option<String>, Error> {
+        let path = dir.join(LOG);
+        let file = File::open(&path)?;
+        let size = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+        let mut log = io::BufReader::new(file);
+        let mut magic = [0; HEADER];
+        if log.read_exact(&mut magic).is_err() {
+            return Err(Error::NotASession(path));
+        }
+        check_header(&magic, LOG_MAGIC, &path)?;
+        let mut at = HEADER;
+        for record in 0.. {
+            let mut head = [0; 8];
+            if log.read_exact(&mut head).is_err() {
+                break;
+            }
+            let [a, b, c, d, ..] = head;
+            let len = u32::from_le_bytes([a, b, c, d]) as usize;
+            if at.saturating_add(8).saturating_add(len) > size {
+                break; // a record longer than the file is torn
+            }
+            let mut whole = head.to_vec();
+            whole.resize(8 + len, 0);
+            if log.read_exact(&mut whole[8..]).is_err() {
+                break;
+            }
+            match decode::<Record>(&whole, 0) {
+                Decoded::Record(Record::Write { node, .. }, _) => {
+                    if let Body::User(text) = node.body {
+                        return Ok(Some(text));
+                    }
+                }
+                Decoded::Record(..) => {}
+                Decoded::Torn => break,
+                Decoded::Undecodable(reason) => {
+                    return Err(Error::Undecodable {
+                        path,
+                        record,
+                        offset: at,
+                        reason,
+                    });
+                }
+            }
+            at += whole.len();
+        }
+        Ok(None)
     }
 
     /// Takes `session`'s queued records. Everything up to the last queued

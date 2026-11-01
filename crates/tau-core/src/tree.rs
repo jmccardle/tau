@@ -253,6 +253,36 @@ impl Session {
         (s, cursor)
     }
 
+    /// A new session holding a copy of `walk(node)`: every node as a record (body,
+    /// `by` and `time` as they were, `delivers` emptied: item ids belong to one session),
+    /// parents rebuilt, so node *i* of the copy is node *i* of the walk. Cursor 0 is opened
+    /// on the copied tip at `time`, auto-step off. Nothing else is copied: other branches,
+    /// cursors, labels, pending items.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `node` is not a node.
+    ///
+    /// # Panics
+    ///
+    /// Never: a walk starts at a `Config` root, and each copied node passed V2 once.
+    pub fn fork(&self, node: NodeId, time: u64) -> Result<(Self, CursorId), Error> {
+        self.tree.node(node)?;
+        let mut copy = Self::default();
+        let mut tip = 0;
+        for n in self.tree.walk(node) {
+            tip = match (&n.body, n.parent) {
+                (Body::Config(c), None) => copy.append_root(n.by.clone(), c.clone(), n.time),
+                (body, Some(_)) => copy
+                    .append(tip, n.by.clone(), body.clone(), vec![], n.time)
+                    .expect("a node that passed V2 passes it again"),
+                (_, None) => unreachable!("a root is a Config"),
+            };
+        }
+        let cursor = copy.open(tip, Author::Core, time)?;
+        Ok((copy, cursor))
+    }
+
     /// Open a cursor at `at`.
     ///
     /// # Errors
