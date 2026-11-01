@@ -1,6 +1,6 @@
 # D20: The system prompt is assembled once, when a session is created
 
-Status: proposed (2026-10-31). Phase 7, "Context assembly" (`docs/plan.md`). Amends D13
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Context assembly" (`docs/plan.md`). Amends D13
 (one new config key). Restates `model.md` Q5 and I1 without changing them. Depends on D18
 (session catalog), D19 (the pinned set) and D21 (the wire) for the interfaces named under
 Open. Points marked "(review, 2026-10-31)" were decided in review; they stay proposals until
@@ -231,7 +231,7 @@ None. The log, the scratchpad and `VERSION` are untouched. The prompt was alread
 | Accept a file path for `--system-prompt` when one exists | Guessing between text and path surprises both ways. Use `"$(cat f)"`. |
 | Ignore prompt flags on a continued session (0.15 did for append) | The user asked for something that does not happen, and nothing says so. |
 
-## Open (for the owner)
+## Open (accepted as recommended, 2026-11-01)
 
 1. **The built-in base text.** Recommendation: carry 0.15's base prose minus the model
    sentence and the tools list, as `python/tau/prompts/base.md`, with the cwd sentence filled

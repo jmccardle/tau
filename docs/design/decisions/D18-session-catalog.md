@@ -1,6 +1,6 @@
 # D18: Session catalog: where sessions live and how a frontend finds one
 
-Status: proposed (2026-10-31). Phase 7, "Session catalog" (`docs/plan.md`). Amends D9, D12
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Session catalog" (`docs/plan.md`). Amends D9, D12
 and D17 (see Amends). Answers D20's Open 4 and D21's Opens 1 and 2. Points marked
 "(review, 2026-10-31)" were decided in review; they stay proposals until the owner accepts
 the ADR.
@@ -242,7 +242,7 @@ one italic line.
 | Defer creating the file until first use (0.15) | Needs a way to persist an in-memory session later; removing a never-used one is ~10 lines. |
 | Pass the session's `cwd` to each consumer instead of `chdir` | Every consumer, extensions and a third-party `open("x")` included, would have to be told. One `chdir` makes them agree (review, 2026-10-31). |
 
-## Open (for the owner)
+## Open (accepted as recommended, 2026-11-01)
 
 1. **A fork's working directory.** Recommendation: inherit the source's `cwd` (§6), so the
    copied `System` node stays true. The alternative takes the directory the fork is made from

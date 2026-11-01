@@ -1,6 +1,6 @@
 # D21: The wire: `tau serve` and `RemoteClient`
 
-Status: proposed (2026-10-31). Phase 7, D16 stage 4. Amends D16 §5 (transport, calls on a
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, D16 stage 4. Amends D16 §5 (transport, calls on a
 stopped driver, three new calls) and `model.md` §9. Depends on D18 (session ids, opening a
 session, the shared start). Points marked "(review, 2026-10-31)" were decided in review; they
 stay proposals until the owner accepts the ADR.
@@ -256,7 +256,7 @@ decides the TUI's); `shutdown`; `epoch`/`seq` replay; 0.15's parked-question fla
 Elide, commit-branch, paste-subtree, compare and the panel and step-debugger verbs have no
 wire counterpart (the plan sends them to commands or extensions, or drops them).
 
-## Open
+## Open (accepted as recommended, 2026-11-01)
 
 1. **Who owns the shared startup?** Answered by D18 §5, as recommended.
 2. **What D18 must give.** Answered by D18 §1-2 (a 22-character id; `tau sessions --json`).

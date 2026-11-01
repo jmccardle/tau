@@ -1,6 +1,6 @@
 # D19: Extension loading
 
-Status: proposed (2026-10-31). Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
 (trust's hash scope; a new top-level key; a second user-file write), D16 §2 (command names),
 and fix plan C3 (`examples/chat.py`'s loader becomes the library's). Points marked "(review,
 2026-10-31)" were decided in review; they stay proposals until the owner accepts the ADR.
@@ -257,7 +257,7 @@ has a version (D12/D13/D17); old records are re-asked. Session files are unchang
 | A failed discovered source is a notice (0.15 #58) | A guard that fails to import runs the session unguarded (Open 2). |
 | `-e MODULE`; `module:attr`; re-reading project files at import; `--no-extensions` turning off built-ins | A fourth form; a second rule beside C3's; the race D13 closed for `config.json`; built-ins are τ's behaviour, switched in `load`. |
 
-## Open
+## Open (accepted as recommended, 2026-11-01)
 
 1. **Discovered sources are on by default.** *Recommend yes*: installing or placing them is
    the consent, and `tau ext disable` is the off switch.
