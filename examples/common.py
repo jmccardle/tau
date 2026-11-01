@@ -17,6 +17,7 @@ from tau import (
     ConfigError,
     DotenvError,
     Driver,
+    ExtensionLoadError,
     LoadedConfig,
     Provider,
     Session,
@@ -103,7 +104,7 @@ def run(
     try:
         name, loaded = choose_model(sys.argv[1:], parents)
         run_until_signalled(main(name, loaded))
-    except (ConfigError, TrustError, DotenvError, SampleFailed) as e:
+    except (ConfigError, TrustError, DotenvError, ExtensionLoadError, SampleFailed) as e:
         sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)

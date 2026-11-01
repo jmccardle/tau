@@ -4,6 +4,8 @@
 arguments as decoded JSON, and the required parameters still missing; `completions(...)` says
 what could finish the word being typed. `value` and `values` do the same for one value of any
 schema: a question's answer typed as text is read and completed as a command's argument is.
+A command is typed `/name`, or `/extension:name`, the qualified name nothing can take: a bare
+name that two extensions share is ambiguous (`LookupError`) and is completed qualified.
 Words are shell words (`shlex`): quote a value with spaces. Positional words fill the
 parameters in order, skipping those set by `name=value`; except that when the last parameter
 is a plain `str` (or a `str | None`; not a `Literal` or a named type) it takes the rest of the
@@ -25,12 +27,13 @@ every session (`Client.configure(save=True)`); without it they change only the b
 
 import json
 import shlex
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import cast
 
-from tau._commands import CONFIG
+from tau._commands import CONFIG, ambiguous
 from tau._values import Form, Json
 from tau.client import Client
 
@@ -65,7 +68,7 @@ class Parsed:
         """`client.run` the command, or `client.configure` the extension's options; returns the
         command's result."""
         if self.extension is None:
-            return await client.run(cursor, self.command.name, self.args)
+            return await client.run(cursor, self.command.qualified, self.args)
         await client.configure(cursor, self.extension, self.args, save=self.save)
         return None
 
@@ -148,17 +151,26 @@ def _split(line: str) -> list[str]:
 
 
 def _find(name: str, commands: Sequence[Form]) -> Form:
-    for command in commands:
-        if command.name == name:
-            return command
-    raise UnknownCommand(name)
+    """The command `/name` is: a qualified `extension:name` exactly, a bare `name` if only one
+    extension has it. `UnknownCommand` for none; plain `LookupError`, naming each, for several."""
+    if ":" in name:
+        found = [c for c in commands if c.qualified == name]
+    else:
+        found = [c for c in commands if c.name == name]
+    if not found:
+        raise UnknownCommand(name)
+    if len(found) > 1:
+        raise LookupError(ambiguous(name, [c.qualified for c in found]))
+    return found[0]
 
 
 def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_OPTIONS) -> Parsed:
-    """Read a line that starts with `/`. `UnknownCommand` if no command has the name,
-    `ValueError` naming the problem for a line that is not a command line, quotes that do not
-    close, too many words, a word that cannot be the parameter's value, or `/config` of an
-    extension not in `options` (the options forms of `Client.options`, by extension)."""
+    """Read a line that starts with `/`. `UnknownCommand` if no command has the name, plain
+    `LookupError` ("/note is two commands: /a:note, /b:note") if a bare name is several
+    extensions' commands, `ValueError` naming the problem for a line that is not a command
+    line, quotes that do not close, too many words, a word that cannot be the parameter's
+    value, or `/config` of an extension not in `options` (the options forms of
+    `Client.options`, by extension)."""
     name, *rest = line.strip().split(None, 1)
     text = rest[0] if rest else ""
     if not name.startswith("/") or name == "/":
@@ -320,10 +332,10 @@ async def completions(
         return []
     words, current = _typing(line)
     if not words:
-        return [f"/{c.name}" for c in commands if c.name.startswith(current[1:])]
+        return _command_names(current[1:], commands)
     try:
         form = _find(words[0][1:], commands)
-    except UnknownCommand:
+    except LookupError:  # unknown, or several: nothing to complete until it is qualified
         return []
     rest = words[1:]
     if form.name == CONFIG and rest:
@@ -337,6 +349,20 @@ async def completions(
     name, prefix, lead = wanted
     found = await values(cast("Json", _properties(form)[name]), prefix, client, cursor)
     return [lead + shlex.quote(v) for v in found]
+
+
+def _command_names(prefix: str, commands: Sequence[Form]) -> list[str]:
+    """The names that could finish `/prefix`: the bare name of each command only one extension
+    has and the qualified name of each that several share; after `extension:`, that extension's
+    commands."""
+    shared = Counter(c.name for c in commands)
+    if ":" in prefix:
+        return [f"/{c.qualified}" for c in commands if c.qualified.startswith(prefix)]
+    return [
+        f"/{c.name if shared[c.name] == 1 else c.qualified}"
+        for c in commands
+        if (c.name if shared[c.name] == 1 else c.qualified).startswith(prefix)
+    ]
 
 
 def _extension(word: str) -> str:

@@ -1,6 +1,12 @@
 # D19: Extension loading
 
-Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
+Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31; built
+2026-11-01 (differences from this text, all in the code's favour: the walk of `.tau/extensions/`
+lives in `_trust.py`, not `_project_code.py`, which holds only the import finder, because the
+reader it needs is `_trust`'s; the built-in `step_limit` is the only built-in and has no "default
+off" switch yet, which waits for Phase 8's first off-by-default built-in; the `tau` row of `tau ext
+list` lists `/model` and not `/config`; `tau ext list` shows a `load` key that names no source as a
+row of kind `load`). Phase 7, "Extension loading" (`docs/plan.md`). Amends D13
 (trust's hash scope; a new top-level key; a second user-file write), D16 §2 (command names),
 and fix plan C3 (`examples/chat.py`'s loader becomes the library's). Points marked "(review,
 2026-10-31)" were decided in review; they stay proposals until the owner accepts the ADR.

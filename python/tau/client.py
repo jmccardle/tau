@@ -98,12 +98,14 @@ class Client(AsyncIterator[Event], Protocol):
         ...
 
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None:
-        """Run `/command` with decoded JSON `args` on `cursor`; returns the command's result
+        """Run `/command` (`"note"`, or `"a:note"`, the extension's qualified name) with decoded
+        JSON `args` on `cursor`; returns the command's result
         (`None` if it has none) once it has finished. `CommandFailed` (its message is the
         failure as `"Type: msg"`) if it raised, or was aborted; it is raised as soon as the
         command raises, even when the command's step has not yet ended: the cursor may still be
         busy for a moment while the step ends, and a retry then gets `Busy`. A command's `progress`
-        and `cursor.tell` arrive as `Notice`s. `LookupError` for an unknown command, `ValueError`
+        and `cursor.tell` arrive as `Notice`s. `LookupError` for an unknown command or a bare name
+        two extensions share (`"/note is two commands: /a:note, /b:note"`), `ValueError`
         naming the problem for arguments that fit no parameter (the values are checked with the
         session, `"new"` last), `Busy` for a command that runs as a step of the cursor when it is
         not at rest."""

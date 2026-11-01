@@ -1,7 +1,8 @@
 """The one config file τ writes: the user's `<TAU_HOME>/config.json` (D1, ruling 6).
 
 `UserConfig` is the layers a frontend loaded, so that after an edit it can read them again. Its
-only write is `extensions.<name>.<field>` in the user layer. The project layer has no write: an
+writes are `extensions.<name>.<field>` (`save_options`) and `load.<key>` (`save_load`) in the user
+layer. The project layer has no write: an
 edit τ made to `.tau/config.json` would have to re-record the trust hash, and that waits for a
 trust rule.
 """
@@ -61,6 +62,22 @@ class UserConfig:
             raise ConfigError(f"options are not JSON: {e}") from None
         catalog = read_models(LayerText(str(path), body), self.project, self.cli)
         check(catalog)
+        write_atomically(path.resolve(), body)
+        return catalog
+
+    def save_load(self, key: str, on: bool) -> ModelCatalog:
+        """Set `load.<key>` to `on` in the user's file (D19 section 3; `tau ext enable` and
+        `disable`): whether the extension source `key` is loaded at start. The file's other
+        content stays; it is written as `save_options` writes: atomically, a symlink followed,
+        nothing written if a step raised. Returns the catalog the layers make now, whose `load`
+        shows whether a nearer layer overrules the value. This does not know the sources: whether
+        `key` names one is for the caller. `ConfigError` for a file the loader refuses,
+        `TrustError` for a disk that refuses."""
+        path = self.home / "config.json"
+        data = self._read(path)
+        data["load"] = {**(cast("dict[str, object] | None", data.get("load")) or {}), key: on}
+        body = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        catalog = read_models(LayerText(str(path), body), self.project, self.cli)
         write_atomically(path.resolve(), body)
         return catalog
 

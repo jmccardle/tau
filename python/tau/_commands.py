@@ -46,6 +46,13 @@ from tau.protocols import Clock
 CONFIG = "config"
 """The name `/config` has when some extension has options (a built-in, not a function)."""
 
+
+def ambiguous(name: str, qualified: Sequence[str]) -> str:
+    """The message for a bare `/name` that several extensions' commands share."""
+    count = {2: "two"}.get(len(qualified), str(len(qualified)))
+    return f"/{name} is {count} commands: " + ", ".join(f"/{q}" for q in qualified)
+
+
 _ABORTED = "Aborted: the cursor's step was aborted or the cursor was moved"
 
 
@@ -83,14 +90,20 @@ class _Command:
             self.described.name,
             self.described.description,
             object_schema(self.described.fields, model=False),
+            self.owner,
         )
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.owner}:{self.described.name}"
 
 
 def assemble_commands(extensions: Sequence[object]) -> dict[str, _Command]:
     """Each extension's `commands` attribute, a plain function described as a command, by
-    name. `DefinitionError` for a `commands` that is not a sequence of functions, a name two
-    commands share or `config` (the built-in `/config` is named so), or a function that cannot
-    be described (a `NodeHandle` parameter is refused)."""
+    qualified name (`extension:name`). Two extensions may list one name: the bare `/name` is
+    then ambiguous (`Commands.run`). `DefinitionError` for a `commands` that is not a sequence of
+    functions, a name two commands of one extension share or `config` (the built-in `/config` is
+    named so), or a function that cannot be described (a `NodeHandle` parameter is refused)."""
     found: dict[str, _Command] = {}
     for ext in extensions:
         owner = cast("str", getattr(ext, "name"))  # noqa: B009
@@ -116,12 +129,12 @@ def assemble_commands(extensions: Sequence[object]) -> dict[str, _Command]:
                     f"extension {owner!r}: a command cannot be named {CONFIG!r}, the built-in "
                     "/config's name"
                 )
-            if described.name in found:
+            command = _Command(function, described, owner)
+            if command.qualified in found:
                 raise DefinitionError(
-                    f"two commands are named {described.name!r} "
-                    f"(extensions {found[described.name].owner!r} and {owner!r})"
+                    f"two commands are named {described.name!r} (extension {owner!r})"
                 )
-            found[described.name] = _Command(function, described, owner)
+            found[command.qualified] = command
     return found
 
 
@@ -206,15 +219,15 @@ class Commands:
         self, client: str, cursor: int, name: str, args: Mapping[str, object]
     ) -> "asyncio.Future[str | None]":
         """Start command `name` for `client` on `cursor` with the decoded JSON `args`; the
-        future is its outcome (the module docstring). `LookupError` for an unknown command;
+        future is its outcome (the module docstring). `LookupError` for an unknown command, or a
+        bare name that several extensions' commands share (`/note is two commands: /a:note,
+        /b:note`);
         `ValueError` naming the problem for arguments that do not fit (checked against the
         session, `"new"` last), or for `config`; `Busy` for a command that takes a `Cursor`
         when the cursor is not at rest. Nothing is opened or started for a refused call."""
         if name == CONFIG and self._options.names():
             raise ValueError(f"/{CONFIG} is not run with arguments: use configure")
-        command = self._commands.get(name)
-        if command is None:
-            raise LookupError(f"no command {name!r}; the commands are {list(self._commands)}")
+        command = self._named(name)
         with self._frontend():
             self._session.cursor(cursor)
             context = Context(
@@ -229,6 +242,19 @@ class Commands:
                 self._need_rest(cursor, name)
             bound = convert_object(command.described.fields, args, context)
             return self._start(command, bound, client, cursor)
+
+    def _named(self, name: str) -> _Command:
+        """The command `/name` is: a qualified `extension:name` exactly, a bare `name` if one
+        extension has it. `LookupError` for none, or for several (naming each)."""
+        if ":" in name:
+            found = [self._commands[name]] if name in self._commands else []
+        else:
+            found = [c for c in self._commands.values() if c.described.name == name]
+        if not found:
+            raise LookupError(f"no command {name!r}; the commands are {list(self._commands)}")
+        if len(found) > 1:
+            raise LookupError(ambiguous(name, [c.qualified for c in found]))
+        return found[0]
 
     def configure(
         self,

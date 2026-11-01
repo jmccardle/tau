@@ -26,7 +26,7 @@ Severity = Literal["error", "warning"]
 CLI = "cli"
 _MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
 # Frontend settings will widen the top level in a later part (D13: "and frontend settings").
-_TOP_KEYS = ("models", "default_model", "extensions")
+_TOP_KEYS = ("models", "default_model", "extensions", "load")
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RENAMED_KEY = "backend"  # rules: allow(backend): 0.15's key name, which D13 rejects by name
@@ -93,12 +93,16 @@ class ResolvedModel:
 class ModelCatalog:
     """Every model the merged layers define, plus `default_model`, any warnings, and the
     `extensions` options the layers set (`{"step_limit": {"limit": 10}}`, merged per option;
-    D16 section 4). Which options an extension has is its own to say (`check_config`)."""
+    D16 section 4). Which options an extension has is its own to say (`check_config`).
+    `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
+    `load_sources` the layer (file path) that set each key: what the extension loader reads."""
 
     models: Mapping[str, ResolvedModel]
     default_model: str | None
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
+    load: Mapping[str, bool] = field(default_factory=lambda: {})
+    load_sources: Mapping[str, str] = field(default_factory=lambda: {})
 
     def names(self) -> tuple[str, ...]:
         """All qualified names, in file order."""
@@ -645,6 +649,31 @@ def _extensions(merged: _Tree, problems: _Problems) -> dict[str, dict[str, objec
     return out
 
 
+def _load_switches(merged: _Tree, problems: _Problems) -> tuple[dict[str, bool], dict[str, str]]:
+    """The merged `load` object: each extension source's key to `true` or `false`, and the
+    layer that set it. A `null` dropped the key in a nearer layer."""
+    node = merged.get("load")
+    if node is None or (isinstance(node, _Leaf) and node.value is None):
+        return {}, {}
+    if not isinstance(node, dict):
+        problems.add("error", "'load' must be an object", _source_of(node), "load")
+        return {}, {}
+    switches: dict[str, bool] = {}
+    sources: dict[str, str] = {}
+    for key, setting in node.items():
+        if not isinstance(setting, _Leaf):
+            problems.add(
+                "error", f"'load.{key}' must be true or false", _source_of(setting), "load"
+            )
+        elif setting.value is None:
+            continue
+        elif not isinstance(setting.value, bool):
+            problems.add("error", f"'load.{key}' must be true or false", setting.source, "load")
+        else:
+            switches[key], sources[key] = setting.value, setting.source
+    return switches, sources
+
+
 def _build(
     user: Layer | None,
     project: Layer | None,
@@ -670,12 +699,14 @@ def _build(
     resolver.key_problems()
     default = _default_model(merged, resolver.declared, problems)
     extensions = _extensions(merged, problems)
+    switches, switched_by = _load_switches(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
-    return ModelCatalog(resolver.models, default, warnings, extensions), found
+    catalog = ModelCatalog(resolver.models, default, warnings, extensions, switches, switched_by)
+    return catalog, found
 
 
-def _option_problems(
+def option_problems(
     catalog: ModelCatalog, extensions: Sequence[object]
 ) -> tuple[ConfigProblem, ...]:
     """Every problem in what the layers set for the `extensions` that have options."""
@@ -715,7 +746,7 @@ def check_config(  # noqa: PLR0913 - the layers, the environment, and what is ch
     warning. An empty result means the layers are sound.
     """
     catalog, found = _build(user, project, cli, environ, providers)
-    return found + _option_problems(catalog, extensions)
+    return found + option_problems(catalog, extensions)
 
 
 def read_models(

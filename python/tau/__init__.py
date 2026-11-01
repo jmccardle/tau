@@ -59,6 +59,13 @@ from tau._core import (
     WrongAnswer,
 )
 from tau._dotenv import DotenvError
+from tau._extensions import (
+    ExtensionLoadError,
+    ExtensionSource,
+    absolute_explicit,
+    list_extensions,
+    load_extensions,
+)
 from tau._startup import (
     LoadedConfig,
     Prompts,
@@ -151,6 +158,8 @@ __all__ = [
     "Event",
     "Exists",
     "Extension",
+    "ExtensionLoadError",
+    "ExtensionSource",
     "Finish",
     "Form",
     "GrepTool",
@@ -221,10 +230,13 @@ __all__ = [
     "WriteTool",
     "WrongAnswer",
     "__version__",
+    "absolute_explicit",
     "base_tools",
     "builtin_providers",
     "check_config",
+    "list_extensions",
     "load_config",
+    "load_extensions",
     "model_config",
     "prompts",
     "read_models",

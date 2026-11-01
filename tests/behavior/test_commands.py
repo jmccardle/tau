@@ -34,6 +34,11 @@ from tau import (
 )
 
 
+def model(tree: TreeHandle) -> str:
+    """Another /model."""
+    return "mine"
+
+
 def word_count(path: Path) -> str:
     """Count the words in a file."""
     return f"{len(path.read_text().split())} words"
@@ -368,20 +373,87 @@ async def test_only_the_client_that_ran_the_command_is_told_its_progress(tmp_pat
 # Building the driver.
 
 
-def test_two_commands_with_one_name_fail_when_the_driver_is_built() -> None:
+def test_two_commands_with_one_name_in_one_extension_fail_when_the_driver_is_built() -> None:
     def a(tree: TreeHandle) -> None:
         """A."""
 
-    class One:
-        name = "one"
-        commands = (a,)
+    class Twice:
+        name = "twice"
+        commands = (a, a)
 
-    class Two:
-        name = "two"
-        commands = (a,)
+    with pytest.raises(DefinitionError, match=r"two commands are named 'a' \(extension 'twice'\)"):
+        build([Twice()])
 
-    with pytest.raises(DefinitionError, match="two commands are named 'a'"):
-        build([One(), Two()])
+
+# Qualified names (D19 section 7).
+
+
+def note_a(tree: TreeHandle) -> str:
+    """A's note."""
+    return "from a"
+
+
+def note_b(tree: TreeHandle) -> str:
+    """B's note."""
+    return "from b"
+
+
+note_a.__name__ = note_b.__name__ = "note"
+
+
+class A:
+    name = "a"
+    commands = (note_a,)
+
+
+class B:
+    name = "b"
+    commands = (note_b,)
+
+
+@scenario
+async def test_two_extensions_may_share_a_command_name_and_each_is_reached_qualified(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[A(), B()])
+    forms = [f for f in await h.client.commands() if f.name == "note"]
+    assert [(f.extension, f.qualified) for f in forms] == [("a", "a:note"), ("b", "b:note")]
+    assert await h.run("a:note") == "from a"
+    assert await h.run("b:note") == "from b"
+    await h.close()
+
+
+@scenario
+async def test_a_bare_name_two_extensions_share_is_refused_naming_both(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[A(), B()])
+    with pytest.raises(LookupError, match="/note is two commands: /a:note, /b:note"):
+        await h.run("note")
+    await h.close()
+
+
+@scenario
+async def test_a_bare_name_works_while_one_extension_has_it(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[A()])
+    assert await h.run("note") == "from a"
+    assert await h.run("a:note") == "from a"
+    with pytest.raises(LookupError, match="no command 'b:note'"):
+        await h.run("b:note")
+    await h.close()
+
+
+@scenario
+async def test_the_built_in_gets_no_special_treatment_an_extension_may_add_model(
+    tmp_path: Path,
+) -> None:
+    class Models:
+        name = "models"
+        commands = (model,)
+
+    h = await Harness.create(tmp_path, extensions=[Models()])
+    with pytest.raises(LookupError, match="/model is two commands: /tau:model, /models:model"):
+        await h.run("model")
+    assert await h.run("models:model") == "mine"
+    await h.close()
 
 
 def test_a_command_may_not_be_named_config() -> None:
@@ -396,24 +468,24 @@ def test_a_command_may_not_be_named_config() -> None:
         build([Shadow()])
 
 
-def test_a_command_may_not_be_named_for_a_built_in() -> None:
-    def model(tree: TreeHandle) -> None:
-        """Shadow."""
-
-    class Shadow:
-        name = "shadow"
-        commands = (model,)
-
-    with pytest.raises(DefinitionError, match="'model'"):
-        build([Shadow()])
-
-
 def test_an_extension_may_not_be_named_tau() -> None:
     class Imposter:
         name = "tau"
 
     with pytest.raises(DefinitionError, match="'tau'"):
         build([Imposter()])
+
+
+@pytest.mark.parametrize("name", ["a:b", "a.b", "a b", "ü", "a/b"])
+def test_an_extension_name_is_letters_digits_underscore_and_hyphen(name: str) -> None:
+    class Odd:
+        pass
+
+    Odd.name = name  # type: ignore[attr-defined]
+    with pytest.raises(DefinitionError, match="letters, digits"):
+        build([Odd()])
+    Odd.name = "odd_name-2"  # type: ignore[attr-defined]
+    build([Odd()])
 
 
 def test_a_command_may_not_take_a_nodes_handle() -> None:

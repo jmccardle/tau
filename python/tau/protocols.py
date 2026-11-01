@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import re
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -295,14 +296,25 @@ class Extension(Protocol):
     def name(self) -> str: ...
 
 
+EXTENSION_NAME = re.compile(r"[A-Za-z0-9_-]+")
+"""What an extension's name, and a source's key, must match (D19 section 1)."""
+
+
 def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
-    """The extensions, in order, each checked against the `Extension` contract; raises
-    `DefinitionError` naming the extension."""
+    """The extensions, in order, each checked against the `Extension` contract (a `name` of
+    letters, digits, `_` and `-`, unique; hooks that are points); raises `DefinitionError` naming
+    the extension."""
     names: set[str] = set()
     for i, candidate in enumerate(extensions):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
             raise DefinitionError(f"extension {i} ({candidate!r}): `name` must be a non-empty str")
+        if not EXTENSION_NAME.fullmatch(name):
+            raise DefinitionError(
+                f"extension {name!r}: a name is letters, digits, `_` and `-`: a `:` would break "
+                "`/extension:command`, a `.` `tau config set EXTENSION.FIELD=V`, and a space a "
+                "command line"
+            )
         if name in names:
             raise DefinitionError(f"two extensions are named {name!r}")
         names.add(name)

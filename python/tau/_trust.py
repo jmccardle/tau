@@ -2,9 +2,10 @@
 
 A project is the nearest directory upward holding a `.tau/` that is a real
 directory owned by the user. Its config and `.env` are read only while it is
-trusted. Trust is pinned to the bytes of `.tau/config.json` and of `.env`:
-`trusted.json` holds their sha256, which decides, and a redacted copy of the
-config for showing diffs. Content decides: there is no owner check on either file.
+trusted. Trust is pinned to the bytes of `.tau/config.json`, of `.env`, of every file under
+`.tau/extensions/` and of `.tau/SYSTEM.md` (D19 section 4): `trusted.json` holds their sha256,
+which decides, and a redacted copy of the config for showing diffs. Content decides: there is
+no owner check on any file. What is used afterwards is the bytes that were approved.
 
 The files are read once per `ensure_trusted` call. The report, the question,
 and the approval all work from those bytes; approval re-reads and refuses if
@@ -42,6 +43,8 @@ _MAX_BYTES = 1 << 20
 _LATIN1_MAX = 0xFF
 _BMP_MAX = 0xFFFF
 _SECRET = "(secret)"
+EXTENSIONS_DIR = "extensions"
+SYSTEM_MD = "SYSTEM.md"
 
 
 _SURROGATE_BYTES = range(0xDC80, 0xDD00)  # a byte that was not UTF-8, as surrogateescape holds it
@@ -118,12 +121,18 @@ class UntrustedProject(TrustError):
 @dataclass(frozen=True)
 class Trusted:
     """A trusted project: its `root`, and the exact `.tau/config.json` and `.env` text that
-    was approved (`None`: no such file). Use `layer()`, `read_models()` and
-    `project_environment` rather than re-reading the files."""
+    was approved (`None`: no such file). `extension_files` is every file under
+    `.tau/extensions/` as approved (path relative to it, with `/`, to bytes; `None`: there is no
+    such directory), which the extension loader imports from and never re-reads; `system_md` the
+    bytes of `.tau/SYSTEM.md` as approved (`None`: no such file), which the prompt's assembly
+    reads. Use `layer()`, `read_models()` and `project_environment` rather than re-reading the
+    files."""
 
     root: Path
     config_text: str | None
     env_text: str | None
+    extension_files: Mapping[str, bytes] | None
+    system_md: bytes | None
 
     def layer(self) -> LayerText | None:
         """The project config layer for `read_models`, or `None` if there is no file."""
@@ -143,19 +152,27 @@ class Trusted:
 class _Approval:
     sha256: str
     env_sha256: str
+    extensions_sha256: str
+    system_sha256: str
     redacted: str
+    extensions: Mapping[str, str]  # path under .tau/extensions/ -> sha256, for showing diffs
 
 
 @dataclass(frozen=True)
 class _Seen:
     """What one read of the project showed: the text and digest of `.tau/config.json` and of
-    `.env` (`None`: absent), and `.tau/`'s mode."""
+    `.env` (`None`: absent), the files of `.tau/extensions/` and the bytes of `.tau/SYSTEM.md`
+    with their digests, and `.tau/`'s mode."""
 
     root: Path
     config: str | None
     config_sha: str
     env: str | None
     env_sha: str
+    extensions: dict[str, bytes] | None
+    extensions_sha: str
+    system: bytes | None
+    system_sha: str
     tau_mode: int
 
 
@@ -324,19 +341,83 @@ def _decode(raw: bytes | None, path: Path) -> str | None:
         raise _refusal(path, "is not valid UTF-8") from e
 
 
-def _read_pair(root: Path) -> tuple[bytes | None, bytes | None]:
-    return _read_regular(project_config_path(root)), _read_regular(root / _ENV)
+def _read_extensions(root: Path) -> dict[str, bytes] | None:
+    """Every file under `.tau/extensions/` but `__pycache__/` (path relative to it, with `/`, to
+    bytes); `None` if there is no such directory. A symlink, a FIFO or any file the reader
+    refuses is a `TrustError`."""
+    base = root / TAU_DIR / EXTENSIONS_DIR
+    try:
+        info = base.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        raise _refusal(base, "is a symlink or not a directory; tau refuses those inside a project")
+    files: dict[str, bytes] = {}
+
+    def walk(directory: Path, prefix: str) -> None:
+        with _unless_io_fails(directory, "listed"), os.scandir(directory) as listing:
+            found = sorted(listing, key=lambda e: e.name)
+        for item in found:
+            path = directory / item.name
+            if item.name == "__pycache__":
+                continue
+            if item.is_dir(follow_symlinks=False):
+                walk(path, f"{prefix}{item.name}/")
+                continue
+            raw = _read_regular(path)  # refuses a symlink, a FIFO, an oversize file
+            if raw is None:
+                raise _refusal(path, "vanished while the project was being read")
+            files[f"{prefix}{item.name}"] = raw
+
+    walk(base, "")
+    return files
+
+
+def _file_hashes(files: Mapping[str, bytes]) -> dict[str, str]:
+    return {path: hashlib.sha256(raw).hexdigest() for path, raw in sorted(files.items())}
+
+
+def _extensions_digest(files: Mapping[str, bytes] | None) -> str:
+    """The digest of the files under `.tau/extensions/` (path and sha256 of each); a missing
+    directory has the marker a missing file has, so adding the first file changes it."""
+    return _digest(None if files is None else json.dumps(_file_hashes(files)).encode())
+
+
+def _read_all(
+    root: Path,
+) -> tuple[bytes | None, bytes | None, dict[str, bytes] | None, bytes | None]:
+    """The project's files as bytes, in one pass: config, `.env`, extension files, SYSTEM.md."""
+    return (
+        _read_regular(project_config_path(root)),
+        _read_regular(root / _ENV),
+        _read_extensions(root),
+        _read_regular(root / TAU_DIR / SYSTEM_MD),
+    )
+
+
+def _digests(
+    config: bytes | None,
+    env: bytes | None,
+    extensions: dict[str, bytes] | None,
+    system: bytes | None,
+) -> tuple[str, str, str, str]:
+    return _digest(config), _digest(env), _extensions_digest(extensions), _digest(system)
 
 
 def _see(root: Path) -> _Seen:
     with _tau_dir(root) as (_, info):
-        config, env = _read_pair(root)
+        config, env, extensions, system = _read_all(root)
+    sha, env_sha, extensions_sha, system_sha = _digests(config, env, extensions, system)
     return _Seen(
         root,
         _decode(config, project_config_path(root)),
-        _digest(config),
+        sha,
         _decode(env, root / _ENV),
-        _digest(env),
+        env_sha,
+        extensions,
+        extensions_sha,
+        system,
+        system_sha,
         stat.S_IMODE(info.st_mode),
     )
 
@@ -344,7 +425,7 @@ def _see(root: Path) -> _Seen:
 # -- trusted.json
 
 
-def _require_private(path: Path, fix: str) -> None:
+def require_private(path: Path, fix: str) -> None:
     with _unless_io_fails(path, "inspected"), contextlib.suppress(FileNotFoundError):
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & _WRITABLE_BY_OTHERS:
@@ -358,9 +439,9 @@ def _trusted_path(home: Path) -> Path:
 
 
 def _approved(home: Path) -> dict[str, _Approval]:
-    _require_private(home, "chmod 700")
+    require_private(home, "chmod 700")
     path = _trusted_path(home)
-    _require_private(path, "chmod 600")
+    require_private(path, "chmod 600")
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -371,13 +452,22 @@ def _approved(home: Path) -> dict[str, _Approval]:
         raise ConfigError(f"{path} is not tau's trusted.json ({e!r}); fix or delete it") from e
     try:
         projects = cast("dict[str, dict[str, object]]", cast("dict[str, object]", data)["projects"])
-        # A record from before `.env` was pinned has no `env_sha256`: not approved.
-        current = {root: r for root, r in projects.items() if "env_sha256" in r}
-        keys = ("sha256", "env_sha256", "config")
+        # A record from before `.env`, `.tau/extensions/` or `.tau/SYSTEM.md` was pinned lacks
+        # its hash: not approved.
+        pinned = ("env_sha256", "extensions_sha256", "system_sha256")
+        current = {root: r for root, r in projects.items() if all(k in r for k in pinned)}
+        keys = ("sha256", "config", *pinned)
         if not all(isinstance(r[k], str) for r in current.values() for k in keys):
             raise TypeError("a project's record is not text")
         return {
-            root: _Approval(str(r["sha256"]), str(r["env_sha256"]), str(r["config"]))
+            root: _Approval(
+                str(r["sha256"]),
+                str(r["env_sha256"]),
+                str(r["extensions_sha256"]),
+                str(r["system_sha256"]),
+                str(r["config"]),
+                dict(cast("dict[str, str]", r["extensions"])),
+            )
             for root, r in current.items()
         }
     except (KeyError, TypeError, AttributeError) as e:
@@ -404,12 +494,24 @@ def _redacted(text: str | None) -> str:
 def _record(home: Path, seen: _Seen) -> None:
     projects = _approved(home)
     projects[str(seen.root.resolve())] = _Approval(
-        seen.config_sha, seen.env_sha, _redacted(seen.config)
+        seen.config_sha,
+        seen.env_sha,
+        seen.extensions_sha,
+        seen.system_sha,
+        _redacted(seen.config),
+        _file_hashes(seen.extensions or {}),
     )
     body = json.dumps(
         {
             "projects": {
-                r: {"sha256": a.sha256, "env_sha256": a.env_sha256, "config": a.redacted}
+                r: {
+                    "sha256": a.sha256,
+                    "env_sha256": a.env_sha256,
+                    "extensions_sha256": a.extensions_sha256,
+                    "system_sha256": a.system_sha256,
+                    "config": a.redacted,
+                    "extensions": a.extensions,
+                }
                 for r, a in projects.items()
             }
         },
@@ -442,6 +544,8 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
         approval is not None
         and approval.sha256 == seen.config_sha
         and approval.env_sha256 == seen.env_sha
+        and approval.extensions_sha256 == seen.extensions_sha
+        and approval.system_sha256 == seen.system_sha
     )
 
 
@@ -529,6 +633,37 @@ def _changes(approval: _Approval, seen: _Seen) -> list[str]:
         ]
     if approval.env_sha256 != seen.env_sha:
         lines.append("  .env changed since you approved it")
+    lines += _code_changes(approval, seen)
+    return lines
+
+
+def _code_changes(approval: _Approval, seen: _Seen) -> list[str]:
+    """Which files under `.tau/extensions/` were added, removed or changed since approval, and
+    whether `.tau/SYSTEM.md` changed. Names only: no code is printed."""
+    lines: list[str] = []
+    now = _file_hashes(seen.extensions or {})
+    before = approval.extensions
+    for label, paths in (
+        ("added", [p for p in now if p not in before]),
+        ("removed", [p for p in before if p not in now]),
+        ("changed", [p for p in now if p in before and now[p] != before[p]]),
+    ):
+        lines += [safe_text(f"  .tau/extensions/{p} {label}") for p in paths]
+    if approval.extensions_sha256 != seen.extensions_sha and not lines:
+        lines.append("  .tau/extensions/ appeared or went away")
+    if approval.system_sha256 != seen.system_sha:
+        lines.append("  .tau/SYSTEM.md changed since you approved it")
+    return lines
+
+
+def _code_listing(seen: _Seen) -> list[str]:
+    """The files that will run with your authority, and the prompt file, by name and size."""
+    lines: list[str] = []
+    if seen.extensions:
+        lines += ["", "Its extensions (code that runs with your authority):"]
+        lines += [safe_text(f"  {p}  {len(raw)} bytes") for p, raw in seen.extensions.items()]
+    if seen.system is not None:
+        lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
     return lines
 
 
@@ -548,6 +683,7 @@ def _assess(seen: _Seen, home: Path, approval: _Approval | None) -> _Assessment:
         lines += ["Its config:", *_shown_config(seen)]
     if names := _env_names(seen):
         lines += ["", f"Its .env sets: {', '.join(names)}"]
+    lines += _code_listing(seen)
     lines += ["", "Checks:", *_checks(seen)]
     if approval is not None and not errors:
         lines += ["", "Changes since approval:", *_changes(approval, seen)]
@@ -571,16 +707,16 @@ def _write_gitignore(tau_fd: int) -> None:
 def _approve(seen: _Seen, home: Path) -> Trusted:
     root = seen.root
     with _tau_dir(root) as (fd, _), _unless_io_fails(root / TAU_DIR, "set up for approval"):
-        again = tuple(_digest(raw) for raw in _read_pair(root))
-        if again != (seen.config_sha, seen.env_sha):
+        again = _digests(*_read_all(root))
+        if again != (seen.config_sha, seen.env_sha, seen.extensions_sha, seen.system_sha):
             raise TrustError(
-                f"{_p(root)}: the config or .env changed while you were reading; run again", root
+                f"{_p(root)}: a file under .tau/ changed while you were reading; run again", root
             )
         os.fchmod(fd, _PRIVATE)
         _write_gitignore(fd)
         _read_regular(root / TAU_DIR / ".gitignore")  # refuses a symlink that was already there
     _record(home, seen)
-    return Trusted(root, seen.config, seen.env)
+    return Trusted(root, seen.config, seen.env, seen.extensions, seen.system)
 
 
 def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None) -> Trusted:
@@ -594,7 +730,7 @@ def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None)
     seen = _see(root)
     approval = _approved(home).get(str(root.resolve()))
     if _pinned(approval, seen):
-        return Trusted(root, seen.config, seen.env)
+        return Trusted(root, seen.config, seen.env, seen.extensions, seen.system)
     assessment = _assess(seen, home, approval)
     hint = "" if assessment.errors else f"\nTrust it with: tau trust {shlex.quote(_p(root))}"
     refusal = UntrustedProject(root, assessment.report + hint, _layer(seen))

@@ -834,7 +834,9 @@ error; it finds and trusts no file. It returns a **`ModelCatalog`**: `models`
 per key, the layer, file path or `"cli"`, and the group that set it, `None`
 for the model itself), `default_model`, `warnings`, and `extensions` (the merged `extensions.<name>` objects of the
 layers, per option; checked by `check_config`'s `extensions`, not by the loader: it does not know the
-extensions). `find(name)` returns the
+extensions), `load` (the merged top-level `load`: source key to `true` or `false`, a `null` dropping an
+inherited key) and `load_sources` (the layer, file path, that set each `load` key; see *load*).
+`find(name)` returns the
 qualified names matching a qualified or bare name (0, 1, or many: the caller
 decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
 origins. `check_config(user, project, cli, environ, *, providers, extensions=())` (`providers`: the
@@ -851,17 +853,19 @@ is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
 in a problem, origin, or catalog text. `api_key` and `api_key_env` are one
 setting: the nearer one wins and drops the other. The first layer to define a name sets whether it is a model or a group; a later layer
 giving `models` to a model is an error, and otherwise only tunes it. a `base_url` that is not an http(s) URL with a host (including one `urlparse` rejects) is an error at that key. `provider` unset shows in `explain`
-with source `"default"`. The top level takes `models` and `default_model`;
+with source `"default"`. The top level takes `models`, `default_model`, `extensions` and `load`;
 frontend settings will widen it in a later part.
 
 ### trusted directory, trusted.json
 D13 · new
 
 A project directory whose `.tau/` the user approved, listed in
-`$TAU_HOME/trusted.json` with a hash of its `.tau/config.json` and of its `.env`;
-a changed hash is untrusted again. The project is the nearest `.tau/` upward from the
-working directory, stopping at `$HOME`. Only a trusted directory's project config and `.env`
-are read. Approval also makes `.tau/` the user's, mode `700`, with a
+`$TAU_HOME/trusted.json` with a hash of its `.tau/config.json`, of its `.env`, of every file under
+`.tau/extensions/` (`extensions_sha256`) and of `.tau/SYSTEM.md` (`system_sha256`) (D19 §4);
+a changed hash is untrusted again, and so is adding the first extension file or a `SYSTEM.md`. The
+project is the nearest `.tau/` upward from the
+working directory, stopping at `$HOME`. Only a trusted directory's project config, `.env`,
+extension code and `SYSTEM.md` are used, and what is used is the bytes that were approved. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
 ### safe_block, safe_text, user_config_path
@@ -895,16 +899,23 @@ report), and `tau config check`. Tests do the same.
 - `trusted.json` (in `TAU_HOME`, written atomically) holds per project the sha256 of the
   approved config bytes and of the approved `.env` bytes (each behind a marker byte, so an
   absent file differs from an empty one), which decide, and a redacted copy of the config
-  (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs.
+  (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs. D19 §4 adds
+  `extensions_sha256` (the digest of the (path, sha256) list of every regular file under
+  `.tau/extensions/` except `__pycache__/`, with the marker for a missing directory), `extensions`
+  (the per-file map, for diffs) and `system_sha256` (`.tau/SYSTEM.md`, with the marker).
 - `ensure_trusted(root, home, *, ask)` returns a frozen **`Trusted`** (`root`,
-  `config_text`, `env_text`, `layer()` as a `LayerText`, and `read_models(user=, cli=)`
+  `config_text`, `env_text`, `extension_files` (the approved files under `.tau/extensions/`,
+  relative path to bytes; `None`: no such directory), `system_md` (the approved bytes of
+  `.tau/SYSTEM.md`, `None`: none; what D20's assembly reads, never the file), `layer()` as a `LayerText`, and `read_models(user=, cli=)`
   returning the catalog from the approved text; callers use these, never
   `project_config_path`, which is for display) if both hashes match. Otherwise it builds
   the report, the text a user reads before agreeing: the project config itself with
   `api_key` values blanked, the variable names (never values) its `.env` sets, the `.tau/`
-  checks (mode, `.gitignore`), and for a changed project a unified diff of the redacted
-  configs ("a secret value changed" when only a secret did) and ".env changed since you
-  approved it". With no `ask` (no live terminal), or on a no, it raises
+  checks (mode, `.gitignore`), the files under `.tau/extensions/` with their sizes and the size of
+  `SYSTEM.md` (never any code), and for a changed project a unified diff of the redacted
+  configs ("a secret value changed" when only a secret did), ".env changed since you
+  approved it", and which extension files were added, removed or changed and whether `SYSTEM.md`
+  changed. With no `ask` (no live terminal), or on a no, it raises
   **`UntrustedProject`** (message: the report and `tau trust <root>`, the path
   shell-quoted, the command left out when the config or `.env` has errors to fix first;
   `layer`: the config it holds, to show its problems). On a yes it sets
@@ -930,8 +941,10 @@ run; tau never changes them. (I) Every project-supplied string in a report or
 trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes. (J) An `OSError` in trust's file
 access (a mode-000 `config.json`, `.tau/` or `TAU_HOME`, a read-only `TAU_HOME` that cannot
 take the approval) is a `TrustError` naming the path, never a traceback. (K) A record in
-`trusted.json` from before `.env` was pinned (no `env_sha256`) is not an approval: the
-project is untrusted, and the next approval replaces the record.
+`trusted.json` from before `.env`, `.tau/extensions/` or `.tau/SYSTEM.md` was pinned (no
+`env_sha256`, `extensions_sha256` or `system_sha256`) is not an approval: the project is untrusted,
+and the next approval replaces the record. (L) A symlink, FIFO or oversize file under
+`.tau/extensions/`, or a symlinked `SYSTEM.md`, is a `TrustError` naming it (rule B).
 (J) `config.json` and `.env` over 1 MiB are an error naming file and size; files are
 opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` without a line of exactly `*`,
 or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
@@ -967,7 +980,10 @@ for `Driver(user_config=)` (see *UserConfig*).
 The one config file τ writes: the user's `<TAU_HOME>/config.json` (decision 4: τ owns it, D13).
 A frozen record of the layers a frontend loaded (`home`, the approved `project` layer as a
 `LayerText` or `None`, the `cli` overrides), so that after a write it can read them again.
-Its one operation, `save_options(changes, check)`, sets `extensions.<name>.<field>` for each
+Two operations write. `save_load(key, on)` (D19 §3) sets `load.<key>` in the user's file the same
+way (read, merge, atomic write; the file's other content stays) and returns the catalog, whose
+`load` shows whether a nearer layer overrules it; it does not know the sources, so whether `key`
+names one is the caller's (`tau ext enable`/`disable`). `save_options(changes, check)` sets `extensions.<name>.<field>` for each
 field of `changes` (extension, then field, to JSON value) in the user's file: it reads the file
 (`ConfigError`, in the loader's words, if the loader would refuse it; an absent file is `{}`),
 sets the fields, merges the layers (`read_models`), calls `check(catalog)` (which raises
@@ -980,8 +996,9 @@ written is kept with its value and order, whitespace is not. The project layer h
 its path is not a parameter of anything, and an edit τ made would have to re-record the
 trust hash, which waits for a trust rule. A `Config` node means this branch; the file means
 every session (a node's value still wins on its branch). `UserConfig` is the whole of how τ
-reaches the file; the three ways in are `tau config set`, `/config <extension> ... --save`
-and `Cursor.save_options` (see *tau config set*, *commandline*, *Handles*).
+reaches the file; the ways in are `tau config set`, `tau ext enable`/`disable`,
+`/config <extension> ... --save` and `Cursor.save_options` (see *tau config set*, *tau ext*,
+*commandline*, *Handles*).
 
 ### select_model, Pick, terminal_pick, Prompts, prompts
 module `tau._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
@@ -1010,8 +1027,9 @@ argument defaults to the process's. Exit status 0 success, 1 a problem, 2 usage
 `UserConfig.save_options`, all or none: a value is read as `/config` reads it (`commandline.value`
 by the option's schema), an unknown extension or field is a `ConfigError`, and every
 extension's options are built with the changes before the file is written. It knows the
-extensions `tau config check` knows (`StepLimit`), and checks the user layer by itself (a
-project is neither read nor written, so it works from any directory, trusted project or not).
+extensions a start would load (`load_extensions`: the built-ins, packages and drop-ins, and a
+trusted project's own; a failed source is its start error), and checks the user layer by itself
+(the project is never written, so it works from any directory, trusted project or not).
 It prints `set <assignments> in <path>`, exit 0.
 
 `tau config check` runs `check_config` (with `builtin_providers`) over the user config
@@ -1022,10 +1040,10 @@ project is never used, and it is itself an error (startup would refuse it), even
 config file. A refused file (symlink, not a regular file) is reported under its own path;
 `tau trust` shows a malformed `.env`. A trusted one is checked from the approved
 text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
-0 otherwise (warnings print). It then checks the `extensions` options of the extensions the
-command knows (`check_config(..., extensions=(StepLimit(),))`, so `extensions.step_limit.limit: 0`
-is an error). The command loads no extensions of a project, so their options are checked where they
-are loaded: a program that builds its driver passes them as `extensions`.
+0 otherwise (warnings print). It then loads the extensions as a start would (`load_extensions`; a
+failed source is an error printing the start's message, and a `load` key no source has is a warning
+when `false`) and checks the `extensions` options of those it loaded (`option_problems`, so
+`extensions.step_limit.limit: 0` is an error).
 `--show MODEL` (after a check with no errors; warnings are fine) selects as
 `select_model` does and prints the qualified name, then each resolved key, its
 value, and `[file or cli or default, group G]`. A literal `api_key` shows as
@@ -1042,6 +1060,80 @@ prints `already trusted: <root>` and exits 0; otherwise it prints the report and
 `trusted <root>`; it is the explicit command, so there is no y/N prompt. A
 config with errors cannot be approved: the report and the refusal go to stderr,
 exit 1.
+
+### Extension loading: source, key, drop-in, shadowed, load
+module `tau._extensions` (private; the names below are exported from `tau`) · D19 · new
+
+A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
+for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
+**load order**: a **built-in** (a class in `tau`, fresh instances at each load: `step_limit`, key
+its name); an installed package's registration in the `tau.extensions` group (key the registration's
+name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
+or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
+approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
+is neither a `.py` file nor a package directory are ignored. Every source but a built-in is read by
+one rule (C3's): a module with a `str` `name` is the extension, otherwise its `extensions` is a
+non-empty list or tuple of extension objects, added in order; anything else is an
+`ExtensionLoadError` naming the source and the rule. A file is imported under a private module name
+derived from its resolved path; a package's module under its real name. **Shadowed**: for one key
+the nearest row wins and the others are never imported (the project's `plan_mode.py` over the
+user's; `-e ./search.py` over the `search` package); two sources of one key in the winning row are
+an error naming both.
+
+**`load`** is the top-level config key, an object from source key to `true` or `false`, merged like
+every object (nearest layer wins, `null` drops). It lives in the files only (a `Config` node
+cannot set it). A source is on unless `load` says off (or, for packages and drop-ins,
+`--no-extensions`); `"KEY": true` where no source has the key stops the start, `false` there is
+allowed and `tau config check` warns.
+
+`load_extensions(loaded, *, explicit=(), discover=True) -> list[Extension]` is the one entry point
+every frontend calls after `load_config` and before opening a session: the built-ins `load`
+leaves on and, with `discover`, the packages and drop-ins it leaves on (the project's only if
+trusted), then `explicit` (`-e` values: a path if it has a `/` or ends in `.py`, else the key of
+a discovered source, which loads whatever `load` says; naming one is the consent and needs no
+trust). `absolute_explicit(values, cwd)` makes the paths absolute against `cwd` (a program that
+changes directory calls it first). Each source is imported and given the driver's definition
+checks (extension names, tools, commands, options types) so a failure names its source; then the
+checks across sources (one extension name, one tool name) and the `load` keys. **Every** failure
+is reported, as one **`ExtensionLoadError`** (an `ImportError`; `sources` the failed
+`ExtensionSource`s, the first underlying exception `__cause__`) whose message is, per failure,
+`extension "KEY" failed to load; tau did not start.`, the `source:`, the traceback lines in the
+source's own files, the exception, and the one command that gets past it (`tau ext disable KEY`,
+or "fix it or drop the flag" for `-e`). The program exits 1 before it opens or writes a session
+(a failed discovered source stops the start: 0.15 only noticed). The driver adds `tau` first; a
+program adds `session_name` (D18) after `load_extensions` returns.
+
+`list_extensions(cwd, environ, *, explicit=(), discover=True) -> list[ExtensionSource]` imports the
+same and returns one **`ExtensionSource`** per source in load order, `tau` first: `key`, `state`
+(`always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
+asked, and imported not at all), `kind` (`built-in`, `package`, `user`, `project`, `explicit`, or
+`load` for a `load` key no source has), `origin`, `detail` (why not on), and for a source that is on
+the `extensions`, qualified `commands` and `tools` it provides. It is not served over the wire.
+
+### tau ext, -e, --no-extensions
+`tau.cli` · D19 · new
+
+`tau ext list [-e VALUE] [--no-extensions] [--json]` prints a row per `ExtensionSource` (key, state,
+origin) then indented lines: the reason, or `commands: ...; tools: ...` (a command bare where one
+source has it, else `ext:name`); `--json` is one JSON object per source per line (the dataclass's
+fields). Exit 1 if any source failed. `tau ext enable KEY` / `tau ext disable KEY` write
+`load.KEY` into the user's file (`UserConfig.save_load`) and say so; a key no source has is a
+`ConfigError` listing the keys and writes nothing; a project layer that sets the key the other way
+is said to win, and its file is never written. **`-e VALUE`** (also `--extension`, repeatable) and
+**`--no-extensions`** are `extension_flags()`, a parser a program passes as `parents=` and reads as
+`load_extensions(loaded, explicit=absolute_explicit(args.extension, cwd), discover=not
+args.no_extensions)`: `-e` names a file, a package directory or a discovered key and loads it even
+if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages and drop-ins but
+not built-ins; `-e x.pyc` is refused.
+
+### approved files (`tau._project_code`)
+module `tau._project_code` (private) · D19 · new
+
+`ApprovedFiles` is the import finder of one project source: it serves the module's source from the
+bytes `Trusted.extension_files` holds (compiled under the file's real path, so a traceback names it)
+and refuses a module not among them, even if a file by that name has appeared. A file changed after
+approval cannot slip in; relative imports work; nothing writes `__pycache__` into the project. Data
+files an extension reads at run time are pinned at start, not re-checked on each read.
 
 ## Hooks
 
@@ -1520,9 +1612,11 @@ when left out); `field_of(name, hint, default, has_default=)` makes one, and
 `object_schema` / `check_object` / `convert_object` treat a tuple of them as an object: a
 function's parameters, or an options dataclass's fields. `object_schema` carries each default as
 `"default"` (a `Path` as its string) in the client schema, or, for an options form, the value now;
-the model's schema has none. A `Form(name, description, schema)` is what a client knows of
-something it fills in: a command, or an extension's options (the `name` is the extension; the
-defaults are the values now); frozen, and not hashable, the schema being a dict. A hint outside the
+the model's schema has none. A `Form(name, description, schema, extension=None)` is what a client knows of
+something it fills in: a command (`extension` is its owner) or an extension's options (the `name` is the
+extension, `extension` `None`, as for `/config`; the
+defaults are the values now); frozen, and not hashable, the schema being a dict. Its `qualified`
+is `extension:name` for a command, the **qualified command name** nothing can take (D19 §7). A hint outside the
 language, a default that does not fit it, or an `Annotated` carrying other than one `str` is a
 `DefinitionError`. Supported: `str`, `int`, `float`, `bool`, `Literal` of `str` or `int`, `list[T]`,
 `T | None`, `Annotated[T, "text"]` (the text is the schema's `"description"`),
@@ -1565,8 +1659,15 @@ A plain function an extension lists in its `commands` attribute, offered to a pe
 the same function may be in `tools`. Described when the driver is built by
 `describe(fn, what="command")`: injected `Progress` (each call is a `Notice`), `TreeHandle`, and
 `Cursor`; `NodeHandle` is refused (`DefinitionError`). Its handles have no client (a command that takes both a `TreeHandle` and a `Cursor` is given the
-one `Cursor` for both). Names are unique across extensions, the built-in ones included, and `config` is taken
-(`DefinitionError`). `Client.run` returns the command's result (`str | None`) when the command
+one `Cursor` for both). Names are unique within an extension (`DefinitionError`) and `config` is taken; two extensions
+may share one (D19 §7): every command has a **qualified name** `/<extension>:<command>` that nothing
+can take, and the bare `/name` works while exactly one extension has it. `Client.run` takes either;
+a bare name two extensions share raises `LookupError` (`/note is two commands: /a:note, /b:note`),
+as does `commandline.parse` before any round trip (an unknown `/x:y` is `UnknownCommand`).
+Load order never decides what `/note` does, and `tau` is not special: an extension adding `/model`
+makes the bare `/model` ambiguous and `/tau:model` still works. Completion after `/` offers the bare
+name of each unique command and the qualified names of shared ones, and after `/<extension>:` that
+extension's commands. `Client.run` returns the command's result (`str | None`) when the command
 has finished, and raises `CommandFailed`, whose message is the failure as `"Type: msg"`: as soon as
 the command raises (see *Cursor command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
 worker thread, as a tool does. A `Form` (**values**) is what a client knows of one: name,
@@ -1595,7 +1696,8 @@ loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 `tau._builtin.Tau` · D16 · new
 
 The built-in extension, always first in the driver's list (its name is taken: a user extension
-named `tau` is a `DefinitionError`). `/model <Model>` is a `Cursor` command that switches the
+named `tau` is a `DefinitionError`; extension names are letters, digits, `_` and `-`, so `:`, `.`
+and spaces cannot break `/ext:cmd`, `tau config set EXT.FIELD=V` or a command line). `/model <Model>` is a `Cursor` command that switches the
 branch to a configured model (`Cursor.set_model`). `/config <extension> name=value ...` changes
 an extension's options on the branch: its values are a mapping, which the type language has no
 hint for, so it is not a function. `Client.commands()` lists a `config` `Form` (its one parameter
@@ -1668,6 +1770,8 @@ included; a list takes comma-separated items, or a JSON array when the text star
 `float`, `true`/`false`, a `Literal`'s values; a named type is a string or integer). `missing`
 lists the required parameters not given, for the frontend to ask. `UnknownCommand` (a
 `LookupError`) names a command there is not, so a frontend can warn and send the line as text;
+a bare name that two extensions' commands share is a plain `LookupError` ("/note is two
+commands: /a:note, /b:note"), which a frontend shows, not sends; `/ext:name` names one exactly;
 `ValueError` for anything unreadable. `/config <extension> name=value ...` is the one line that is
 not a command's: the words after the extension are read by that extension's options `Form`, which
 the frontend passes as `options` (by extension name; the `config` form lists the names, and
@@ -1681,7 +1785,8 @@ makes the call, `Client.run` or `Client.configure`, and returns the result.
 cursor)` says what could finish it; both serve a command's argument and a question's answer
 typed as text alike (`new` for a `CursorId` question). `async completions(line, commands, client,
 cursor, options)` says what could finish the word being typed, each a whole word (quoted if
-needed): command names after `/`, then `values` of the parameter (a `Literal`'s values,
+needed): command names after `/` (bare for a command only one extension has, qualified for a
+shared one; after `/ext:`, that extension's), then `values` of the parameter (a `Literal`'s values,
 `client.complete` for a named type), the extensions after `/config `, and their options. The
 driver's check stays the authority; this only spares a round trip.
 
@@ -1696,7 +1801,8 @@ driver then runs `check_tools` over the whole.
 `check_extensions` (`protocols.py`) · new
 
 Raised as a `DefinitionError` by `Driver.__init__` for an object that is not an `Extension`,
-naming it: a missing, non-`str` or empty `name`, two extensions with one name, or any attribute
+naming it: a missing, non-`str` or empty `name`, a `name` that is not letters, digits, `_` and `-`
+(`protocols.EXTENSION_NAME`; D19 §1), two extensions with one name, or any attribute
 (method, field, class attribute) named `pre_*` or `post_*` that is not a hook point or is not
 callable. A module with a `name` is an extension (D16 §6).
 

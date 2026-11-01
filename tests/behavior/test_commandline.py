@@ -350,3 +350,66 @@ async def test_value_reads_text_and_values_completes_it_as_a_commands_argument_i
     assert value("slow", mode_schema) == "slow"
     assert await values(mode_schema, "f", h.client, h.cursor) == ["fast"]
     await h.close()
+
+
+# Qualified names (D19 section 7).
+
+
+def note_a(tree: TreeHandle) -> str:
+    """A's note."""
+    return "from a"
+
+
+def note_b(tree: TreeHandle) -> str:
+    """B's note."""
+    return "from b"
+
+
+def only_a(tree: TreeHandle) -> None:
+    """Only A has it."""
+
+
+note_a.__name__ = note_b.__name__ = "note"
+
+
+class A:
+    name = "a"
+    commands = (note_a, only_a)
+
+
+class B:
+    name = "b"
+    commands = (note_b,)
+
+
+@scenario
+async def test_a_qualified_name_parses_and_a_shared_bare_name_is_ambiguous(tmp_path: Path) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[A(), B()]))
+    assert parse("/b:note", infos).command.extension == "b"
+    assert parse("/only_a", infos).command.qualified == "a:only_a"
+    with pytest.raises(LookupError, match="/note is two commands: /a:note, /b:note") as caught:
+        parse("/note", infos)
+    assert not isinstance(caught.value, UnknownCommand), "a frontend must not send it as text"
+    with pytest.raises(UnknownCommand):
+        parse("/c:note", infos)
+
+
+@scenario
+async def test_a_qualified_name_runs_the_command_of_that_extension(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[A(), B()])
+    parsed = parse("/b:note", await commands(h))
+    assert await parsed.run(h.client, h.cursor) == "from b"
+    await h.close()
+
+
+@scenario
+async def test_completion_offers_bare_names_of_unique_commands_and_qualified_shared_ones(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[A(), B()])
+    assert await complete(h, "/") == ["/model", "/a:note", "/only_a", "/b:note"]
+    assert await complete(h, "/on") == ["/only_a"]
+    assert await complete(h, "/a") == ["/a:note"]
+    assert await complete(h, "/b:") == ["/b:note"]
+    assert await complete(h, "/a:n") == ["/a:note"]
+    await h.close()

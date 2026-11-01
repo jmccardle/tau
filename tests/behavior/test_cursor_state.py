@@ -92,6 +92,19 @@ async def test_an_unreadable_config_has_no_model_in_the_view_and_fails_the_handl
     await h.close()
 
 
+@scenario
+async def test_a_config_node_cannot_set_load(tmp_path: Path) -> None:
+    """Loading happens once at start (D19 section 3); a branch's `Config` is not a place for it."""
+    h = await Harness.create(tmp_path, extensions=[Looker()])
+    at = h.session.cursor(h.cursor).at
+    node = h.session.append(at, Body.Config(Config('{"load": {"x": false}}')), Author.Tools(), 0)
+    await h.client.go_to(h.cursor, node)
+    await h.settle()
+    with pytest.raises(Exception, match=r"unexpected keys \['load'\]"):
+        await h.run("look")
+    await h.close()
+
+
 # D4: show.
 
 

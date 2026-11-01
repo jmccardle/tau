@@ -79,6 +79,39 @@ def check(
     return check_config(write(tmp_path / "c.json", data), environ=environ, providers=PROVIDERS)
 
 
+# -- load (D19 section 3)
+
+
+def test_load_merges_by_key_nearest_wins_and_null_drops(world: World) -> None:
+    user = {"load": {"search": False, "ralph": True, "plan_mode": False}}
+    project = {"load": {"search": True, "ralph": None}}
+    catalog = load(world, user, project)
+    assert dict(catalog.load) == {"search": True, "plan_mode": False}
+    assert catalog.load_sources["search"].endswith("proj/.tau/config.json")
+    assert catalog.load_sources["plan_mode"] == str(world.tau / "config.json")
+
+
+def test_load_is_absent_by_default(world: World) -> None:
+    assert dict(load(world, {"models": {}}).load) == {}
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({"search": "no"}, "'load.search' must be true or false"),
+        ({"search": {"on": True}}, "'load.search' must be true or false"),
+    ],
+)
+def test_a_load_value_must_be_true_or_false(
+    tmp_path: Path, value: dict[str, object], message: str
+) -> None:
+    assert only_error(check(tmp_path, {"load": value})).message == message
+
+
+def test_load_must_be_an_object(tmp_path: Path) -> None:
+    assert only_error(check(tmp_path, {"load": ["search"]})).message == "'load' must be an object"
+
+
 # -- reading and lookup
 
 

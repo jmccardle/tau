@@ -1,6 +1,6 @@
 """A line chat over a `LocalClient`: the hands-on demo of commands, questions and completion.
 
-python examples/chat.py [--model NAME] [--extension FILE ...]
+python examples/chat.py [--model NAME] [-e PATH|KEY ...] [--no-extensions]
 
 Setup as for the other examples (examples/config.json; TAU_HOME names the directory holding
 the config and the session, `chat-session/`, which is reopened on the next run). Try
@@ -20,22 +20,23 @@ being watched (an extension that sent to it, another client) is shown under thei
 cursor (`cursor.show`: plan mode's mode, ralph's iteration) is printed as `[extension: text]`
 when it changes, and `[extension: cleared]` when it goes. Ctrl-D leaves.
 
-`--extension FILE` (repeatable) adds the extensions a Python file defines, after the demo's
-and `step_limit`, in the order named. Naming the file is the consent: it is imported and run
-with your authority, with no trust check (a config file is trusted by its hash; this is not
-that). A file defines extensions by one rule: a module with a `name` is the extension itself
-(as examples/speculative/plan_mode.py is); otherwise the module must define
-`extensions = [Ralph(), ...]`, a list of extension instances, and that list is added in order.
-Anything else is an error naming the file and the rule. Try
-`--extension examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
+The extensions are the library's loader (D19): the built-ins (`step_limit`), installed packages and
+drop-ins in `$TAU_HOME/extensions/` and a trusted project's `.tau/extensions/`, after the
+demo's own.
+`-e PATH` (repeatable) adds a Python file or package directory, `-e KEY` one of the discovered
+sources even when `load` turns it off, and `--no-extensions` loads no package or drop-in. Naming a
+path is the consent: it is imported and run with your authority, with no trust check. A file
+provides extensions by one rule: a module with a `name` is the extension itself (as
+examples/speculative/plan_mode.py is); otherwise it defines `extensions = [Ralph(), ...]`, a list of
+extension instances, added in order. A source that fails to load stops the chat before it starts
+and says how to get past it. Try `-e examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
 """
 
-import argparse
 import asyncio
-import importlib.util
 import readline
 import shlex
 import sys
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -52,11 +53,9 @@ from tau import (
     CallNamed,
     Client,
     CommandFailed,
-    ConfigError,
     Cursor,
     CursorView,
     Driver,
-    Extension,
     Form,
     Live,
     LoadedConfig,
@@ -66,12 +65,14 @@ from tau import (
     Notice,
     OpenQuestion,
     Session,
-    StepLimit,
     SystemClock,
     TextDelta,
+    absolute_explicit,
     builtin_providers,
+    load_extensions,
     model_config,
 )
+from tau.cli import extension_flags
 from tau.commandline import Parsed, UnknownCommand, completions, parse, value, values
 
 SYSTEM = "You are a terse assistant. Use word_count when asked about a file."
@@ -85,53 +86,6 @@ def word_count(path: Path) -> str:
 async def branch_from(cursor: Cursor, node: NodeId) -> None:
     """Go back to a node of this cursor's walk."""
     cursor.move(node)
-
-
-EXTENSION_RULE = (
-    "a module with a `name` is the extension; otherwise it must define "
-    "`extensions = [...]`, a non-empty list of extension instances"
-)
-
-
-def load_extensions(path: Path) -> list[Extension]:
-    """The extensions the Python file `path` defines (the module docstring says the rule): the
-    module itself if it has a `name`, else the instances in its module-level `extensions` list.
-    `ConfigError` naming the file if it is not there or follows neither. The file runs as it is
-    imported; whatever it raises is raised."""
-    if not path.is_file():
-        raise ConfigError(f"--extension {path}: no such file")
-    # Keyed by where the file is, so two files with the same name are two modules.
-    name = f"chat_extension:{path.resolve()}"
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ConfigError(f"--extension {path}: not a Python file")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module  # a dataclass or a type hint looks its module up here
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[name]
-        raise
-    if isinstance(getattr(module, "name", None), str):
-        return [module]  # type: ignore[list-item]
-    listed = getattr(module, "extensions", None)
-    if not isinstance(listed, list | tuple) or not listed:
-        raise ConfigError(
-            f"--extension {path} defines no extension: {EXTENSION_RULE}"
-            + (f" (its `extensions` is {listed!r})" if hasattr(module, "extensions") else "")
-        )
-    return list(listed)  # type: ignore[arg-type]
-
-
-EXTENSION_FILES = argparse.ArgumentParser(add_help=False)
-EXTENSION_FILES.add_argument(
-    "--extension",
-    action="append",
-    default=[],
-    type=Path,
-    metavar="FILE",
-    help="a Python file defining extensions to add (repeatable); naming it is the consent",
-)
 
 
 class Demo:
@@ -263,7 +217,8 @@ class Chat:
             elif not text.startswith("/"):
                 await self.client.send(self.cursor, text)
             elif text.strip() == "/":
-                self.out("".join(self.describe(c) for c in self.commands))
+                shared = Counter(c.name for c in self.commands)
+                self.out("".join(self.describe(c, shared[c.name] > 1) for c in self.commands))
             else:
                 await self.command(text)
         except UnknownCommand as e:
@@ -326,11 +281,13 @@ class Chat:
         )
         return f"/config {form.name} name=value ... [--save]\n{shown}"
 
-    def describe(self, command: Form) -> str:
+    def describe(self, command: Form, qualified: bool) -> str:
+        """One line of the command list: `/name`, or `/extension:name` where it is shared."""
         required = command.schema.get("required", [])
         names = command.schema["properties"]
         params = " ".join(f"<{n}>" if n in required else f"[{n}]" for n in names)  # type: ignore[attr-defined]
-        return f"/{command.name} {params}  {command.description.splitlines()[0]}\n"
+        name = command.qualified if qualified else command.name
+        return f"/{name} {params}  {command.description.splitlines()[0]}\n"
 
 
 def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
@@ -352,9 +309,14 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
     readline.parse_and_bind("tab: complete")
 
 
-async def main(name: str, loaded: LoadedConfig, files: Sequence[Path] = ()) -> None:
+async def main(
+    name: str,
+    loaded: LoadedConfig,
+    explicit: Sequence[str] = (),
+    discover: bool = True,
+) -> None:
     clock = SystemClock()
-    added = [e for file in files for e in load_extensions(file)]
+    added = load_extensions(loaded, explicit=explicit, discover=discover)
     providers = builtin_providers(loaded.environ)
     where = loaded.home / "chat-session"
     where.parent.mkdir(parents=True, exist_ok=True)
@@ -366,7 +328,7 @@ async def main(name: str, loaded: LoadedConfig, files: Sequence[Path] = ()) -> N
         session,
         providers,
         loaded.catalog,
-        extensions=[Demo(), StepLimit(), *added],
+        extensions=[Demo(), *added],
         user_config=loaded.user,
     )
     driver.start()
@@ -402,5 +364,7 @@ async def prompt(text: str) -> str:
 
 
 if __name__ == "__main__":
-    files = EXTENSION_FILES.parse_known_args(sys.argv[1:])[0].extension
-    run(partial(main, files=files), [EXTENSION_FILES])
+    flags = extension_flags()
+    given = flags.parse_known_args(sys.argv[1:])[0]
+    explicit = absolute_explicit(given.extension, Path.cwd())
+    run(partial(main, explicit=explicit, discover=not given.no_extensions), [flags])

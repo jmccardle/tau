@@ -372,13 +372,20 @@ def kind_of(hint: object) -> Kind | None:
 class Form:
     """What a client knows of something it fills in: a command (its `name`, typed as `/name`,
     its `description` and the `schema` of its arguments, with the named types' `"format"` and
-    each default) or an extension's options (the `name` of the extension, and a `schema` whose
-    defaults are the values now). Frozen, compared by value, and not hashable: the schema is a
-    dict."""
+    each default, and the `extension` that owns it) or an extension's options (the `name` of the
+    extension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is
+    for `/config`). Frozen, compared by value, and not hashable: the schema is a dict."""
 
     name: str
     description: str
     schema: Json
+    extension: str | None = None
+
+    @property
+    def qualified(self) -> str:
+        """`extension:name` for a command, which nothing can take the name of; `name` for a form
+        with no extension."""
+        return self.name if self.extension is None else f"{self.extension}:{self.name}"
 
 
 @dataclass(frozen=True)
