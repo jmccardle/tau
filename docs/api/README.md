@@ -35,7 +35,7 @@ parameter may use. For an extension author and for anyone who reads what an exte
 
 ## Tools
 
-`Tool`, the `ToolError` a tool raises, `Progress`, and the four base tools. An extension author
+`Tool`, the `ToolError` a tool raises, `Progress`, and the six base tools. An extension author
 writes tools, and an embedder hands them to a driver.
 
 ## The session's records

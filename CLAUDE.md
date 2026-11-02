@@ -62,7 +62,7 @@ changing a public signature.
 |---|---|
 | `crates/tau-core` | Pure Rust. No IO, no async runtime, no PyO3. Behavior lives here. |
 | `crates/tau-store` | The only Rust crate that touches the filesystem for sessions (logs, scratchpads). |
-| `crates/tau-tools` | The base tools (`read`, `write`, `grep`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
+| `crates/tau-tools` | The base tools (`read`, `write`, `edit`, `grep`, `find`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
 | `crates/tau-py` | PyO3 bindings, built as `tau._core`. Conversion and error mapping only. |
 | `python/tau` | Python package. `_core.pyi` is the hand-written stub for the native module. |
 | `tests/behavior` | The behavior suite through the `Harness` protocol, run twice: clients local, then remote over a Unix socket (D21). |

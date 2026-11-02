@@ -343,7 +343,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`step_limit`) | its name | `load` says off |
+| built-in | inside τ (`base_tools`, `step_limit`) | its name | `load` says off (`base_tools` also with `--no-extensions`) |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |
@@ -396,6 +396,14 @@ tau ext enable shouter
 
 This writes `"load": { "shouter": false }` into your user config. `--no-extensions` turns off the
 package, user and project rows for one run, and `-e` still loads what you name.
+
+The tools the model starts with, `read`, `write`, `edit`, `grep`, `find` and `bash`, come from a
+built-in extension, `base_tools`. `tau ext disable base_tools` (or `"load": { "base_tools": false }`)
+starts sessions without them, and so does `--no-extensions`; `tau ext list` shows what is left. Then
+the model has only the tools your extensions list. To have fewer of them, turn `base_tools` off and
+list the ones you want (`from tau import ReadTool`, in your extension's `tools`), or put a
+drop-in named `base_tools` where it shadows the built-in. A program that builds a `Driver` itself
+gives it `tools=base_tools(cwd)`.
 
 **A source that fails to load stops τ from starting**, and the message names the source, the
 error, and the way past it (`tau ext disable KEY`, or `--no-extensions`). A guard extension that

@@ -79,11 +79,11 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | `write` | `tools/write.py` | **built** | atomic temp+rename, creates dirs, `tau.WriteTool` |
 | `grep` | `tools/grep.py` | **built** | ripgrep engine, ignore-aware, `files`, `glob`, `ignore_case` |
 | `bash` (timeout, streaming, kill) | `tools/bash.py` | **built** | kills the process group on cancel/timeout; Linux-only (`/proc`); live `ToolProgress` (`examples/bash_progress.py`) |
-| **`edit`** (search/replace with diff rendering) | `tools/edit.py` | **REGRESSION** | Not in `base_tools` (read, write, grep, bash only), not in plan.md or any ADR. The agent can only rewrite whole files or shell out to sed. Highest-impact missing tool |
-| **`find`** (glob/regex file finder) | `tools/find.py` | **REGRESSION** | Not built, not planned |
-| **`ls`** | `tools/ls.py` | **REGRESSION** | Not built, not planned (bash covers it, but the 0.15 default toolset had it) |
+| `edit` (search/replace with diff rendering) | `tools/edit.py` | **built** (changed) | `crates/tau-tools/src/edit.rs`, `tau.EditTool`. One replacement per call, `replace_all` as in 0.15; the diff is a real unified diff; atomic write (0.15 truncated in place); CRLF and a missing final newline are kept (0.15 turned CRLF into LF); a non-UTF-8 file is refused; the errors say how to fix the call |
+| `find` (glob/regex file finder) | `tools/find.py` | **built** (changed) | `crates/tau-tools/src/find.rs`, `tau.FindTool`. One glob (`pattern`) on `grep`'s walk, so ignore rules apply (0.15 listed everything); hidden files and directories are listed, `.git` is not; sorted, limited like `grep`. No `regex` or `type` filter, and no directories (`bash` has `find`) |
+| `ls` | `tools/ls.py` | **dropped** | `bash` covers it (decided 2026-11-01) |
 | Output limit 10 kB + overflow file | `tool_output.py`, `docs/` | **built** (changed) | `max_output`, overflow file `<id>.out` in `/tmp/tau-<uid>` (0600), 64 MiB cap; pruning deferred (plan.md "Deferred 2026-10-29") |
-| Tool factories (`create_coding_tools`, `create_read_only_tools`) | `tools/__init__.py` | **built** (changed) | `base_tools(cwd)` returns all four; no read-only preset |
+| Tool factories (`create_coding_tools`, `create_read_only_tools`) | `tools/__init__.py` | **built** (changed) | `base_tools(cwd)` returns all six; the shared start gets them from the built-in extension `base_tools` (off with `load` or `--no-extensions`); no read-only preset |
 | Function tools (`@tool`, schema from signature) | `tool_schema.py`, `tools/base.py` | **built** | `0.16: _functions.py`, `Annotated[T,"text"]` descriptions (D16 section 1) |
 | Parallel tool calls; sequential mode (`tool_execution_mode`) | `settings.py:48` | **planned** | Calls run in parallel; Q21 `exclusive` tool "not built yet" (`model.md:565`) |
 | Tool allow/deny lists: `--tools`, `--no-tools`, `--exclude-tools`, `--no-builtin-tools`, `tool_exposure`, `tool_declaration` | `cli.py`, `tool_catalog.py`, `session_log.CONFIG_KEYS` | **planned** (unspecified) | Library side: fixes D2 (`pre_sample` hook sets `subject.tools`; Stage D) and the program passes `tools=` to `Driver`. No CLI flag exists (see 2.8) |
@@ -207,9 +207,9 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `-t`, `--tools` | **planned** (unspecified) | D2 / `Driver(tools=)` |
 | `-nt`, `--no-tools` | **planned** (unspecified) | same |
 | `-xt`, `--exclude-tools` | **planned** (unspecified) | same |
-| `-nbt`, `--no-builtin-tools` | **planned** (unspecified) | `base_tools` is opt-in already |
+| `-nbt`, `--no-builtin-tools` | **planned** (unspecified) | the `base_tools` extension is off with `load: {base_tools: false}` or `--no-extensions` |
 | `-e`, `--extension PATH|MODULE` | **planned** | `chat.py --extension` (C3); `tau` flag via trusted loader, unscheduled |
-| `-ne`, `--no-extensions` | **REGRESSION** | no discovery, so nothing to disable |
+| `-ne`, `--no-extensions` | **built** (changed) | D19: loads no package or drop-in, and not the `base_tools` built-in |
 | `--bus` | **REGRESSION** | NATS extension not planned |
 | `--no-session` | **built** | D18: `session_flags`, `start_session` |
 | `--max-turns N` | **dropped** (changed) | `StepLimit` option (D1) |
@@ -310,7 +310,7 @@ counted once under its first).
 
 By impact on a coding agent session:
 
-1. **`edit`, `find`, `ls` tools** (2.2). 0.16's base toolset is read/write/grep/bash. No ADR drops them.
+1. ~~**`edit`, `find`, `ls` tools** (2.2)~~ `edit` and `find` built (Stage 8A); `ls` dropped (`bash`).
 2. ~~**System prompt / context files**~~ built (D20).
 3. **`@file` attachments, image input, skills, prompt templates** (2.2, 2.5, 2.9).
 4. **Cost, session stats, cache-miss notice, context window** (2.1, 2.4, 2.10). Usage tokens are recorded; nothing reads them.

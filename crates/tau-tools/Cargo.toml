@@ -1,6 +1,6 @@
 [package]
 name = "tau-tools"
-description = "The base tools (read, write, grep, bash). Filesystem and process IO; no PyO3."
+description = "The base tools (read, write, edit, grep, find, bash). Filesystem and process IO; no PyO3."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

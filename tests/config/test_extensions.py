@@ -82,7 +82,7 @@ def start(world: World, cwd: Path | None = None) -> LoadedConfig:
 
 def test_a_module_with_a_name_is_the_extension(world: World) -> None:
     user_file(world, "ralph")
-    assert names(load_extensions(start(world))) == ["step_limit", "ralph"]
+    assert names(load_extensions(start(world))) == ["base_tools", "step_limit", "ralph"]
 
 
 def test_otherwise_its_extensions_list_is_added_in_order(world: World) -> None:
@@ -145,7 +145,7 @@ def test_names_that_start_with_dot_or_underscore_and_other_files_are_ignored(wor
     write(directory / "README.md", "# not code\n")
     (directory / "empty_dir").mkdir()
     write(directory / "__pycache__" / "x.py", "raise SystemExit('must not be imported')\n")
-    assert names(load_extensions(start(world))) == ["step_limit"]
+    assert names(load_extensions(start(world))) == ["base_tools", "step_limit"]
 
 
 def test_a_file_and_a_built_in_come_from_their_places(world: World) -> None:
@@ -174,7 +174,14 @@ def test_an_installed_package_loads_through_its_registration(world: World) -> No
 def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: World) -> None:
     user_file(world, "ralph")
     result = site_tau(world, "ext", "list", "--json")
-    assert list(site_rows(result)) == ["tau", "session_name", "step_limit", "search", "ralph"]
+    assert list(site_rows(result)) == [
+        "tau",
+        "session_name",
+        "base_tools",
+        "step_limit",
+        "search",
+        "ralph",
+    ]
 
 
 # -- order and shadowing
@@ -192,6 +199,7 @@ def test_the_load_order_is_built_ins_packages_user_project_then_explicit(
     other = write(tmp_path / "y_flag.py", MODULE.format(name="y_flag", extra=""))
     extensions = load_extensions(start(world, root), explicit=[str(flag), str(other)])
     assert names(extensions) == [
+        "base_tools",
         "step_limit",
         "a_user",
         "b_user",
@@ -303,11 +311,13 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:6] == [
+    assert lines[:8] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
         f"{pad}commands: /name; tools: none",
+        "base_tools    on         built-in",
+        f"{pad}commands: none; tools: read, write, edit, grep, find, bash",
         "step_limit    on         built-in",
         f"{pad}commands: none; tools: none",
     ]
@@ -345,7 +355,7 @@ def test_a_user_extensions_directory_writable_by_others_is_refused_with_the_chmo
 def test_load_false_turns_a_source_off_and_the_row_says_which_file_did(world: World) -> None:
     user_file(world, "ralph", "raise SystemExit('off means not imported')\n")
     world.user_config({"load": {"ralph": False, "step_limit": False}})
-    assert load_extensions(start(world)) == []
+    assert names(load_extensions(start(world))) == ["base_tools"]
     found = rows(world)
     for key in ("ralph", "step_limit"):
         assert found[key]["state"] == "off"
@@ -363,7 +373,7 @@ def test_load_true_for_a_key_nothing_has_stops_the_start(world: World) -> None:
 
 def test_load_false_for_a_key_nothing_has_starts_and_check_warns(world: World) -> None:
     world.user_config({"load": {"nope": False}})
-    assert names(load_extensions(start(world))) == ["step_limit"]
+    assert names(load_extensions(start(world))) == ["base_tools", "step_limit"]
     result = tau(world, "config", "check")
     assert result.code == 0
     assert "warning: load.nope: no extension source has the key 'nope' (a typo?)" in result.out
@@ -377,7 +387,9 @@ def test_the_project_load_layer_overrides_the_users(world: World) -> None:
     assert "ralph" in names(load_extensions(start(world, root)))
 
 
-def test_no_extensions_turns_off_packages_and_drop_ins_but_not_built_ins(world: World) -> None:
+def test_no_extensions_turns_off_packages_and_drop_ins_and_the_tools_but_not_other_built_ins(
+    world: World,
+) -> None:
     user_file(world, "ralph")
     root = world.project()
     project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
@@ -387,6 +399,10 @@ def test_no_extensions_turns_off_packages_and_drop_ins_but_not_built_ins(world: 
     for key in ("search", "ralph", "plan_mode"):
         assert (found[key]["state"], found[key]["detail"]) == ("off", "--no-extensions")
     assert found["step_limit"]["state"] == "on"
+    assert (found["base_tools"]["state"], found["base_tools"]["detail"]) == (
+        "off",
+        "--no-extensions",
+    )
 
 
 def test_load_false_turns_an_installed_package_off(world: World) -> None:
@@ -458,7 +474,9 @@ def test_disable_and_enable_write_load_into_the_users_file_and_keep_the_rest(
 def test_a_key_no_source_has_writes_nothing(world: World) -> None:
     result = tau(world, "ext", "disable", "nope")
     assert result.code == 1
-    assert "no extension source has the key 'nope'; the keys are ['step_limit']" in (result.err)
+    assert "no extension source has the key 'nope'; the keys are ['base_tools', 'step_limit']" in (
+        result.err
+    )
     assert not (world.tau / "config.json").exists()
 
 

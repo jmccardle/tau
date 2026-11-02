@@ -12,6 +12,8 @@ use std::sync::{PoisonError, RwLock};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tau_tools::bash::{Bash as BashTool, BashConfig, BashRun as Run};
+use tau_tools::edit::Edit as EditTool;
+use tau_tools::find::Find as FindTool;
 use tau_tools::grep::Grep as GrepTool;
 use tau_tools::read::Read as ReadTool;
 use tau_tools::write::Write as WriteTool;
@@ -56,7 +58,7 @@ fn parameters_json(schema: &serde_json::Value) -> String {
     schema.to_string()
 }
 
-/// A flag that stops a running `read` or `grep`.
+/// A flag that stops a running `read`, `grep` or `find`.
 #[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Cancel {
@@ -150,6 +152,49 @@ impl Write {
     }
 }
 
+/// The `edit` tool.
+#[pyclass(frozen, module = "tau._core")]
+#[derive(Debug)]
+pub struct Edit {
+    inner: EditTool,
+}
+
+#[pymethods]
+impl Edit {
+    #[new]
+    fn new(
+        cwd: PathBuf,
+        max_output: usize,
+        overflow_dir: Option<PathBuf>,
+        max_overflow: usize,
+    ) -> PyResult<Self> {
+        let limits = limits(max_output, overflow_dir, max_overflow)?;
+        Ok(Self {
+            inner: EditTool::new(cwd, limits),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "edit"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&EditTool::parameters())
+    }
+
+    /// Run the call; releases the GIL.
+    fn run(&self, py: Python<'_>, args_raw: &str) -> Outcome {
+        outcome(py.detach(|| self.inner.run(args_raw)))
+    }
+}
+
 /// The `grep` tool.
 #[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
@@ -185,6 +230,49 @@ impl Grep {
     #[getter]
     fn parameters_json(&self) -> String {
         parameters_json(&GrepTool::parameters())
+    }
+
+    /// Run the call; releases the GIL.
+    fn run(&self, py: Python<'_>, args_raw: &str, cancel: &Cancel) -> Outcome {
+        outcome(py.detach(|| self.inner.run(args_raw, &cancel.flag)))
+    }
+}
+
+/// The `find` tool.
+#[pyclass(frozen, module = "tau._core")]
+#[derive(Debug)]
+pub struct Find {
+    inner: FindTool,
+}
+
+#[pymethods]
+impl Find {
+    #[new]
+    fn new(
+        cwd: PathBuf,
+        max_output: usize,
+        overflow_dir: Option<PathBuf>,
+        max_overflow: usize,
+    ) -> PyResult<Self> {
+        let limits = limits(max_output, overflow_dir, max_overflow)?;
+        Ok(Self {
+            inner: FindTool::new(cwd, limits),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "find"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&FindTool::parameters())
     }
 
     /// Run the call; releases the GIL.

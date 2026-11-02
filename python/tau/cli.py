@@ -120,7 +120,8 @@ def _assignment(text: str) -> tuple[str, str, str]:
 
 def extension_flags() -> argparse.ArgumentParser:
     """A parser (`add_help=False`, for `parents=`) with the flags that choose extensions:
-    `-e VALUE` (repeatable; a path, or the key of a discovered source) and `--no-extensions`.
+    `-e VALUE` (repeatable; a path, or the key of a source: a discovered one or a built-in) and
+    `--no-extensions`.
     `tau.start_session` reads them from the parsed args."""
     flags = argparse.ArgumentParser(add_help=False)
     flags.add_argument(
@@ -135,7 +136,8 @@ def extension_flags() -> argparse.ArgumentParser:
     flags.add_argument(
         "--no-extensions",
         action="store_true",
-        help="load no installed package or drop-in (built-ins follow `load`; -e still loads)",
+        help="skip every extension source except -e: no installed package, drop-in or base_tools "
+        "(the other built-ins, step_limit, still follow `load`)",
     )
     return flags
 

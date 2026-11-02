@@ -1070,12 +1070,24 @@ prints `already trusted: <root>` and exits 0; otherwise it prints the report and
 config with errors cannot be approved: the report and the refusal go to stderr,
 exit 1.
 
+### base_tools (extension)
+`tau._base_tools.BaseTools`, key `base_tools` (not exported; `tau ext list` shows it) · D19 · new (Phase 8)
+
+The built-in extension that gives a session the base tools: `tools` is `base_tools()` (the six
+tools above), built when the extensions are loaded, in the process's working directory, which the
+shared start (`start_session`) has already changed to the session's. It is on like `step_limit`:
+off with `load: {base_tools: false}` in the config (`tau ext disable base_tools`) or with
+`--no-extensions` (`-e base_tools` brings it back), and `tau ext list` shows it. It has no options and no
+commands and loads before `step_limit`. A user who wants fewer tools turns it off and loads their own
+extension (or a drop-in named `base_tools`, which shadows it). A program that builds a `Driver`
+itself has no base tools unless it passes `tools=base_tools(cwd)`.
+
 ### Extension loading: source, key, drop-in, shadowed, load
 module `tau._extensions` (private; the names below are exported from `tau`) · D19 · new
 
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
-**load order**: a **built-in** (a class in `tau`, fresh instances at each load: `step_limit`, key
+**load order**: a **built-in** (a class in `tau`, fresh instances at each load: `base_tools` and `step_limit`, key
 its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
@@ -1099,8 +1111,9 @@ allowed and `tau config check` warns.
 every frontend calls after `load_config` and before opening a session: the built-ins `load`
 leaves on and, with `discover`, the packages and drop-ins it leaves on (the project's only if
 trusted), then `explicit` (`-e` values: a path if it has a `/` or ends in `.py`, else the key of
-a discovered source, which loads whatever `load` says; naming one is the consent and needs no
-trust). A program that changes directory makes the paths absolute first; `start_session` does. Each source is imported and given the driver's definition
+a source, discovered or built-in, which loads whatever `load` says; naming one is the consent and
+needs no trust). `base_tools` is built when this runs, in the process's working directory, so a
+program that calls it changes directory first, as `start_session` does. A program that changes directory makes the paths absolute first; `start_session` does. Each source is imported and given the driver's definition
 checks (extension names, tools, commands, options types) so a failure names its source; then the
 checks across sources (one extension name, one tool name) and the `load` keys. **Every** failure
 is reported, as one **`ExtensionLoadError`** (an `ImportError`; `sources` the failed
@@ -1130,8 +1143,8 @@ fields). Exit 1 if any source failed. `tau ext enable KEY` / `tau ext disable KE
 is said to win, and its file is never written. **`-e VALUE`** (also `--extension`, repeatable) and
 **`--no-extensions`** are `extension_flags()`, a parser a program passes as `parents=` and reads as
 `start_session` reads them from the parsed args: `-e` names a file, a package directory or a discovered key and loads it even
-if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages and drop-ins but
-not built-ins; `-e x.pyc` is refused.
+if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages, drop-ins and the
+`base_tools` built-in (not `step_limit`); `-e x.pyc` is refused.
 
 ### Session catalog: sessions directory, session id, info.json, SessionInfo, ref
 module `tau._sessions` · D18 · new
@@ -2005,13 +2018,15 @@ What `Finish` and `SampleError` check `meta` with: `None`, or the text of a stri
 object. `TypeError` for a non-`str`, `ValueError` for text that is not a JSON object
 (`NaN` and `Infinity` are not JSON).
 
-### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
+### base tools: ReadTool, WriteTool, EditTool, GrepTool, FindTool, BashTool, base_tools
 `tau.ReadTool` and the others, `tau.base_tools(cwd, ...)` (`_base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
 
-Four `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
+Six `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
 PyO3) and whose `call` runs it on a worker thread with the GIL released, so
 calls run in parallel (also on a free-threaded build) and never block the
-loop. `base_tools(cwd)` returns all four. `cwd` (default: the current
+loop. `base_tools(cwd)` returns all six, in the order of the table. A session the shared start opens gets
+them from the `base_tools` extension (next entry); a program that builds a `Driver` itself passes
+`tools=base_tools(cwd)`. `cwd` (default: the current
 directory, which must exist: `NotADirectoryError`) is what relative paths and
 the shell's working directory are relative to. An expected failure (bad
 arguments, a missing file, a nonzero exit) is `Err(message)`; nothing is raised out of `call`. The arguments
@@ -2021,23 +2036,25 @@ are strict: an unknown or missing field is an `Err`.
 |---|---|---|
 | `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, its start is shown and the last line says `[line N is cut at byte B; read cannot show the rest (use bash: cut -c or tail -c); offset=N+1 continues after it]`: `read` has no way to reach past the first `B` bytes of one line. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
 | `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
+| `edit` | `path`, `old_string`, `new_string`, `replace_all` (default false) | One exact search and replace in one existing file. `old_string` (not empty, not equal to `new_string`) must occur exactly once, or `replace_all` changes every occurrence (non-overlapping, left to right). No occurrence: `Err` `old_string not found in <path>: it must match the file exactly ...`; several without `replace_all`: `Err` `old_string occurs N times in <path> (lines 1, 4, 9; the first five, then "and N more"): add the lines around the one to change to make it unique, or set replace_all ...`; the file is not touched in either case. Line endings: in a file whose every line break is CRLF, the `\n` in `old_string` and `new_string` stand for CRLF (the model cannot see the `\r`); any other file, mixed endings included, is matched byte for byte. The rest of the file, a missing final newline included, is kept byte for byte. `Err` for a missing file (`file not found: <path> (edit changes an existing file; write creates one)`), a directory, a file that is not a regular file, and a file that is not UTF-8 (`<path> is not valid UTF-8 (the first bad byte is at offset N)`). Written as `write` writes (a new file beside it, renamed over it, symlink followed, permission bits kept); edits of one file wait for each other (a process-wide lock on its canonical path, from read to rename), so two in one step both land; paths are a default, not a sandbox. Answers `Replaced N occurrence(s) in <path>` then a unified diff (`--- <path>`, `+++ <path>`, hunks of 3 lines of context, git's `\ No newline at end of file`), built from the replaced spans, not by a diff search. The diff is limited like `grep`'s (head kept, the whole saved). Its `Err`s are the model's to fix, never a guess. |
 | `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes (before decoding) with ` [+N bytes]`; a file with a line over 16 MiB (the searcher's heap limit) is not searched and is named in the could-not-search note. The search stops once the matches held reach the overflow cap, and a note says that some files were not searched. No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
+| `find` | `pattern` (a glob, not empty), `path` (a directory, default `cwd`) | The files under `path` whose name matches the glob, on `grep`'s walk (the same code: `.gitignore` in any tree, `.ignore`), except that hidden files and directories are listed and entered (`.env`, `.github/`), `.git` below `path` never.  A glob without a `/` matches the file name at any depth (`*.rs`); one with a `/` matches the path below `path` (`src/**/*.rs`; `**` also matches no directory, so that glob lists `src/lib.rs` too). Lists files and symlinks (not followed), not directories. One path per line, relative to `path` (not to `cwd`), sorted bytewise; head kept past `max_output`, the whole list saved, as `grep`; the walk stops once the paths held reach the overflow cap and a note says so. No match: `No files found matching "<pattern>"` (an `Ok`). `Err` for an empty, invalid or absolute glob (a glob is relative to `path`: the message says to pass the directory as `path`), a missing `path`, a `path` that is a file. Notes add last lines: an invalid-UTF-8 note, `[N paths could not be read; first: ...]`. |
 | `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; `setsid` runs in the child before `exec`, so the session exists when the call starts), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. The one `unsafe` block of the workspace is here (`pre_exec`); the workspace lint is `deny`, not `forbid`, for that. |
 
-`write` has no output limit: its answer is one short line. The other three
+`write` has no output limit: its answer is one short line. The other five
 share the *output limit*.
 
 ### output limit, max_output
-`max_output=` on `ReadTool`, `GrepTool`, `BashTool`, `base_tools` · new
+`max_output=` on `ReadTool`, `EditTool`, `GrepTool`, `FindTool`, `BashTool`, `base_tools` · new
 
-The most bytes of text the model gets from `read`, `grep` or `bash` (`read` only stops; it saves nothing): 10_000 by
+The most bytes of text the model gets from `read`, `edit`, `grep`, `find` or `bash` (`read` only stops; it saves nothing): 10_000 by
 default, at least 1. It bounds the *kept text*; the truncation note is extra.
 Output at or under the limit is returned whole and writes no file.
 
 ### kept end
 `Keep::Head`, `Keep::Tail` (`tau-tools/src/limit.rs`) · new
 
-Which end of an over-limit output the model keeps. **`read` and `grep` keep the
+Which end of an over-limit output the model keeps. **`read`, `edit` (its diff), `grep` and `find` keep the
 head** (`read` through `Sink::unspilled`, a sink that saves no file and adds no note) (the start of a file, the first matches); **`bash` keeps the tail**
 (errors and the result of a command land at the end). A judgment call of the
 implementation, for John to overrule: it is one argument to `Sink::new` per

@@ -1,21 +1,34 @@
-"""The base tools: `read`, `write`, `grep`, `bash`, implemented in Rust (`crates/tau-tools`).
+"""The base tools: `read`, `write`, `edit`, `grep`, `find`, `bash`, implemented in Rust
+(`crates/tau-tools`).
 
 Each class satisfies `Tool`. The work runs on a worker thread with the GIL released, so
 calls run in parallel, even on free-threaded builds, and never block the event loop.
 
+A session started by `start_session` (`tau serve`, and later `tau` and `tau -p`) has these tools
+from the built-in extension `base_tools`, in the session's working directory: it is on unless the
+config says `load: {base_tools: false}` or the run is given `--no-extensions` (`tau ext list`
+shows it). A program that builds a `Driver` itself gives it the tools:
+
     tools = base_tools(cwd="/work/project")
     driver = Driver(session, providers, catalog, tools=tools)
 
-`grep` and `bash` limit their output to `max_output` bytes (default 10_000): past it, the model
-gets the kept lines and a note naming the omitted line count and a file that holds the full
-output (up to `max_overflow` bytes, default 64 MiB). `grep` keeps the head, `bash` the tail. The
-files live in `overflow_dir`, by default `$XDG_RUNTIME_DIR/tau` when that is set, else
-`<temp dir>/tau-<euid>`; the directory must be private to the user (a symlink, a directory of
-another user or one open to others is refused when a file is first needed, and the answer says
-the full output was not saved), and files in it older than a day are removed when it is opened.
+`edit`, `grep`, `find` and `bash` limit their output to `max_output` bytes (default 10_000): past
+it, the model gets the kept lines and a note naming the omitted line count and a file that holds
+the full output (up to `max_overflow` bytes, default 64 MiB). `edit` (its diff), `grep` and
+`find` keep the head, `bash` the tail. The files live in `overflow_dir`, by default
+`$XDG_RUNTIME_DIR/tau` when that is set, else `<temp dir>/tau-<euid>`; the directory must be
+private to the user (a symlink, a directory of another user or one open to others is refused when
+a file is first needed, and the answer says the full output was not saved), and files in it older
+than a day are removed when it is opened.
 `read` limits its output to `max_output` bytes too, but writes no file: it stops after the last
 whole line that fits and says which `offset` continues. `write` answers one short line, so the
 limit does not apply to it.
+
+`edit` replaces exact text in one file, once (or everywhere with `replace_all`), and answers a
+unified diff; the file is written atomically, as `write` does, and keeps its line endings and a
+missing final newline. `find` lists the files under a directory whose name matches a glob,
+sorted, with `grep`'s walk (ignore rules apply) but listing hidden files and directories as well
+(never `.git`).
 
 An expected failure (bad arguments, a missing file, a command that exits nonzero, an overflow
 file that cannot be written) answers `Outcome.Err` with a message for the model; nothing is
@@ -23,8 +36,9 @@ raised out of `call`. A bad constructor argument raises `ValueError` or `NotADir
 
 `bash` also takes a `progress` callback (see `Tool`) and passes it the output as it arrives.
 
-Cancelling `call` stops the work: `read` and `grep` stop at their next check, `bash` terminates
-its process group (SIGTERM, then SIGKILL after `kill_grace_ms`) and waits for it to end.
+Cancelling `call` stops the work: `read`, `grep` and `find` stop at their next check, `bash`
+terminates its process group (SIGTERM, then SIGKILL after `kill_grace_ms`) and waits for it to
+end.
 
 A program that uses these tools must turn SIGTERM and SIGHUP (a closed terminal) into that
 cancellation, as `asyncio.run` already does for SIGINT: a Python process that dies from either
@@ -83,7 +97,7 @@ class _Described:
 
     @property
     def name(self) -> str:
-        """The tool's name: `read`, `write`, `grep` or `bash`."""
+        """The tool's name: `read`, `write`, `edit`, `grep`, `find` or `bash`."""
         return self._described.name
 
     @property
@@ -129,7 +143,7 @@ class _Cancellable(_Described):
     """A tool whose Rust engine runs to completion in one blocking call, checking a
     `Cancel` flag as it goes."""
 
-    def __init__(self, engine: "_core.Read | _core.Grep") -> None:
+    def __init__(self, engine: "_core.Read | _core.Grep | _core.Find") -> None:
         super().__init__(engine)
         self._engine = engine
 
@@ -187,6 +201,43 @@ class WriteTool(_Described):
     async def call(self, args_raw: str) -> Outcome:
         """Write the file named in `args_raw`. `Ok` with a short confirmation, or `Err`."""
         return await asyncio.to_thread(self._engine.run, args_raw)
+
+
+class EditTool(_Described):
+    """`edit`: exact search and replace in one file, atomically; answers a unified diff. Keeps
+    the head of a long diff."""
+
+    def __init__(
+        self,
+        cwd: str | os.PathLike[str] | None = None,
+        *,
+        max_output: int = DEFAULT_MAX_OUTPUT,
+        overflow_dir: str | os.PathLike[str] | None = None,
+        max_overflow: int = DEFAULT_MAX_OVERFLOW,
+    ) -> None:
+        engine = _core.Edit(_working_directory(cwd), max_output, overflow_dir, max_overflow)
+        super().__init__(engine)
+        self._engine = engine
+
+    async def call(self, args_raw: str) -> Outcome:
+        """Edit the file named in `args_raw`. `Ok` with the diff, or `Err`."""
+        return await asyncio.to_thread(self._engine.run, args_raw)
+
+
+class FindTool(_Cancellable):
+    """`find`: the files under a directory whose name matches a glob, with `grep`'s walk.
+    Keeps the head."""
+
+    def __init__(
+        self,
+        cwd: str | os.PathLike[str] | None = None,
+        *,
+        max_output: int = DEFAULT_MAX_OUTPUT,
+        overflow_dir: str | os.PathLike[str] | None = None,
+        max_overflow: int = DEFAULT_MAX_OVERFLOW,
+    ) -> None:
+        engine = _core.Find(_working_directory(cwd), max_output, overflow_dir, max_overflow)
+        super().__init__(engine)
 
 
 class BashTool(_Described):
@@ -249,7 +300,7 @@ class BashTool(_Described):
             raise
 
 
-def base_tools(  # noqa: PLR0913 - the settings the four tools share
+def base_tools(  # noqa: PLR0913 - the settings the tools share
     cwd: str | os.PathLike[str] | None = None,
     *,
     max_output: int = DEFAULT_MAX_OUTPUT,
@@ -258,12 +309,15 @@ def base_tools(  # noqa: PLR0913 - the settings the four tools share
     bash_timeout_ms: int = DEFAULT_BASH_TIMEOUT_MS,
     bash_max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS,
     bash_kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
-) -> list[ReadTool | WriteTool | GrepTool | BashTool]:
-    """`read`, `write`, `grep` and `bash`, all working in `cwd` (default: the current directory)."""
+) -> list[ReadTool | WriteTool | EditTool | GrepTool | FindTool | BashTool]:
+    """`read`, `write`, `edit`, `grep`, `find` and `bash`, all working in `cwd` (default: the
+    current directory)."""
     return [
         ReadTool(cwd, max_output=max_output),
         WriteTool(cwd),
+        EditTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
         GrepTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
+        FindTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
         BashTool(
             cwd,
             max_output=max_output,
@@ -274,3 +328,16 @@ def base_tools(  # noqa: PLR0913 - the settings the four tools share
             kill_grace_ms=bash_kill_grace_ms,
         ),
     ]
+
+
+class BaseTools:
+    """The built-in extension `base_tools`: `base_tools()` as an extension's `tools`, so every
+    session the shared start opens has them. Built when the extensions are loaded, in the process's
+    working directory (see `load_extensions`), which the shared start has already changed to the
+    session's (a program that calls `load_extensions` itself changes directory first). It has no
+    options: to have fewer tools, turn it off (`load: {base_tools: false}`) and load your own."""
+
+    name = "base_tools"
+
+    def __init__(self) -> None:
+        self.tools = tuple(base_tools())

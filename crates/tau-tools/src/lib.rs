@@ -1,20 +1,24 @@
-//! The base tools: `read`, `write`, `grep`, `bash`.
+//! The base tools: `read`, `write`, `edit`, `grep`, `find`, `bash`.
 //!
 //! Filesystem and process IO, no `PyO3`, no async runtime. Every tool takes the
 //! call's raw JSON arguments and answers `Ok(text)` or `Err(message)` for the
 //! model; nothing panics or raises for an expected failure (bad arguments,
 //! missing files, a command that exits nonzero).
 //!
-//! `grep` and `bash` limit their output through [`limit::Sink`]: past the limit
-//! the full output goes to an overflow file and the model gets the kept text plus
-//! a note. `read` uses a sink that saves nothing (the file it reads is on disk).
+//! `edit` (its diff), `grep`, `find` and `bash` limit their output through [`limit::Sink`]:
+//! past the limit the full output goes to an overflow file and the model gets the kept
+//! text plus a note. `read` uses a sink that saves nothing (the file it reads is on disk).
 
 pub mod bash;
+pub(crate) mod diff;
+pub mod edit;
+pub mod find;
 pub mod grep;
 pub mod limit;
 pub mod progress;
 pub mod read;
 pub(crate) mod session;
+pub(crate) mod walk;
 pub mod write;
 
 use std::fmt;

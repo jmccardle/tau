@@ -19,7 +19,7 @@ mod _core {
     #[pymodule_export]
     use super::session::{HandleWrites, Session, first_message};
     #[pymodule_export]
-    use super::tools::{Bash, BashRun, Cancel, Grep, Read, Write};
+    use super::tools::{Bash, BashRun, Cancel, Edit, Find, Grep, Read, Write};
     #[pymodule_export]
     use super::trace::{stop_trace, trace_clock, trace_to};
     #[pymodule_export]

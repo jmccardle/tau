@@ -12,20 +12,19 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use globset::{GlobBuilder, GlobMatcher};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{
     BinaryDetection, Searcher, SearcherBuilder, Sink as SearchSink, SinkFinish, SinkMatch,
 };
-use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Keep, LOSSY_NOTE, Sink};
+use crate::walk::{Glob, Hidden, Item, clean, walk};
 use crate::{Cancel, Limits, Result, ToolError, lock, parse_args, resolve};
 
 /// The most bytes of one matching line that are shown.
@@ -171,29 +170,23 @@ impl Grep {
         if !root.is_dir() {
             return Err(format!("path not found: {given}").into());
         }
-        let glob = args.glob.as_deref().map(compile_glob).transpose()?;
-        let mut walk = WalkBuilder::new(&root);
-        // .gitignore applies in any tree, not only inside a git repository.
-        walk.require_git(false);
-        let (root, glob) = (&root, &glob);
-        walk.build_parallel().run(|| {
-            let mut searcher = searcher();
-            Box::new(move |found| {
-                if search.should_stop() {
-                    return ignore::WalkState::Quit;
-                }
-                match found {
-                    Ok(item) if item.file_type().is_some_and(|t| t.is_file()) => {
-                        if glob_allows(glob.as_ref(), root, item.path()) {
-                            search.file(&mut searcher, item.path());
-                        }
+        let glob = args.glob.as_deref().map(Glob::new).transpose()?;
+        let unreadable = |e: String| lock(&search.unreadable).push(e);
+        walk(
+            &root,
+            glob.as_ref(),
+            Hidden::Skipped,
+            &|| search.should_stop(),
+            &unreadable,
+            || {
+                let mut searcher = searcher();
+                move |item: &Item| {
+                    if item.file_type().is_some_and(|t| t.is_file()) {
+                        search.file(&mut searcher, item.path());
                     }
-                    Ok(_) => {}
-                    Err(e) => lock(&search.unreadable).push(e.to_string()),
                 }
-                ignore::WalkState::Continue
-            })
-        });
+            },
+        );
         Ok(false)
     }
 
@@ -449,38 +442,6 @@ fn searcher() -> Searcher {
         .line_number(true)
         .binary_detection(BinaryDetection::quit(0))
         .build()
-}
-
-/// A glob and whether it has a `/` (so it is matched against the path below
-/// the searched directory instead of the file name).
-fn compile_glob(glob: &str) -> Result<(GlobMatcher, bool)> {
-    let slashed = glob.contains('/');
-    let matcher = GlobBuilder::new(glob.trim_start_matches("./"))
-        .literal_separator(slashed)
-        .build()
-        .map_err(|e| ToolError(format!("invalid glob: {e}")))?
-        .compile_matcher();
-    Ok((matcher, slashed))
-}
-
-fn glob_allows(glob: Option<&(GlobMatcher, bool)>, root: &Path, path: &Path) -> bool {
-    let Some((matcher, slashed)) = glob else {
-        return true;
-    };
-    if *slashed {
-        matcher.is_match(path.strip_prefix(root).unwrap_or(path))
-    } else {
-        path.file_name()
-            .is_some_and(|name| matcher.is_match(Path::new(name)))
-    }
-}
-
-/// `path` without `.` components, so that it can be shown relative to the
-/// working directory.
-fn clean(path: &Path) -> PathBuf {
-    path.components()
-        .filter(|c| *c != Component::CurDir)
-        .collect()
 }
 
 #[cfg(test)]

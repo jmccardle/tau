@@ -540,8 +540,13 @@ The extensions to run, in hook order (the driver puts `tau` first; a program add
 
 The sources are the built-ins that `load` leaves on and, with `discover`, the installed
 packages and the user's and the trusted project's drop-ins that it leaves on; then
-`explicit` (`-e` values: paths, or the keys of discovered sources, which load whatever
-`load` says; relative paths are taken against the working directory, see `absolute_explicit`).
+`explicit` (`-e` values: paths, or the keys of sources, discovered or built-in, which load
+whatever `load` says; relative paths are taken against the working directory, see
+`absolute_explicit`). Without `discover` (`--no-extensions`) every source is skipped except
+`explicit`: no package, no drop-in and not `base_tools`; the other built-ins (`step_limit`)
+stay as `load` says. `base_tools` is built when this runs and roots its tools at the
+process's working directory then, so a program that calls this must change directory first, as
+`start_session` does.
 `ExtensionLoadError` naming every source that failed, with the one command that gets past
 each: nothing is started or written by then.
 

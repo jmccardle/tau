@@ -157,7 +157,8 @@ def extension_flags() -> argparse.ArgumentParser
 ```
 
 A parser (`add_help=False`, for `parents=`) with the flags that choose extensions:
-`-e VALUE` (repeatable; a path, or the key of a discovered source) and `--no-extensions`.
+`-e VALUE` (repeatable; a path, or the key of a source: a discovered one or a built-in) and
+`--no-extensions`.
 `tau.start_session` reads them from the parsed args.
 
 ## tau.cli.main

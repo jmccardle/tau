@@ -134,7 +134,8 @@ tau context --show --append-system-prompt "Answer in one line." | tail -n 3
 ```
 
 `tau ext list` shows every extension source and why it is on or off. Extensions add commands,
-tools and hooks to a session; [Writing an extension](extensions.md) shows how.
+tools and hooks to a session; [Writing an extension](extensions.md) shows how. The built-in
+`base_tools` is what gives the model `read`, `write`, `edit`, `grep`, `find` and `bash`.
 
 ```bash
 tau ext list

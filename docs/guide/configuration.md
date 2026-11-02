@@ -214,7 +214,7 @@ These are not config, and they last for one run:
 |---|---|
 | `--session-dir DIR` | keep and find sessions in `DIR` instead of `$TAU_HOME/sessions` |
 | `-e PATH\|KEY` | load this extension, even if it is off |
-| `--no-extensions` | load no package or drop-in |
+| `--no-extensions` | load no package or drop-in, and not the `base_tools` extension (the model gets no tools of its own) |
 | `-c`, `-r`, `--session REF`, `--fork REF`, `--no-session`, `-n NAME` | which session, and its name ([Quickstart](quickstart.md)) |
 
 ## When it fails

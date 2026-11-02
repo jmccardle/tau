@@ -95,7 +95,7 @@ impl Write {
 }
 
 /// `path` with a final symlink, dangling or not, replaced by what it points at.
-fn follow_symlinks(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn follow_symlinks(path: &Path) -> std::io::Result<PathBuf> {
     let mut path = path.to_owned();
     for _ in 0..MAX_HOPS {
         match fs::symlink_metadata(&path) {
@@ -112,7 +112,7 @@ fn follow_symlinks(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Write `bytes` to a new file beside `target`, then rename it over `target`.
-fn replace(target: &Path, parent: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn replace(target: &Path, parent: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let name = target
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());

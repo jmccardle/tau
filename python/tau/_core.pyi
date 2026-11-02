@@ -30,8 +30,10 @@ __all__ = [
     "CursorState",
     "Draft",
     "DuplicateCall",
+    "Edit",
     "Ending",
     "Exists",
+    "Find",
     "Grep",
     "HandleWrites",
     "Hook",
@@ -1012,7 +1014,7 @@ class Session:
 
 @final
 class Cancel:
-    """A flag that stops a running `read` or `grep`."""
+    """A flag that stops a running `read`, `grep` or `find`."""
 
     def __new__(cls) -> Cancel: ...
     def cancel(self) -> None:
@@ -1047,6 +1049,26 @@ class Write:
         """Run the call; releases the GIL."""
 
 @final
+class Edit:
+    """The `edit` tool."""
+
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int,
+        overflow_dir: str | PathLike[str] | None,
+        max_overflow: int,
+    ) -> Edit: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str) -> Outcome:
+        """Run the call; releases the GIL."""
+
+@final
 class Grep:
     """The `grep` tool."""
 
@@ -1057,6 +1079,26 @@ class Grep:
         overflow_dir: str | PathLike[str] | None,
         max_overflow: int,
     ) -> Grep: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str, cancel: Cancel) -> Outcome:
+        """Run the call; releases the GIL."""
+
+@final
+class Find:
+    """The `find` tool."""
+
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int,
+        overflow_dir: str | PathLike[str] | None,
+        max_overflow: int,
+    ) -> Find: ...
     @property
     def name(self) -> str: ...
     @property

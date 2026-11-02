@@ -61,6 +61,18 @@ async def ping() -> str:
 
 commands = (ping,)
 '''
+SPY = '''
+from tau import Cursor
+
+name = "spy"
+
+async def which_tools(cursor: Cursor) -> str:
+    """Say the names of the driver's tools."""
+    return ", ".join(cursor.tools())
+
+commands = (which_tools,)
+'''
+BASE_TOOLS = "read, write, edit, grep, find, bash"
 MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}}}
 
 
@@ -637,6 +649,33 @@ def test_a_fork_never_modified_leaves_no_trace_but_a_modified_one_is_listed(
     (copy,) = [r for r in rows(configured) if r.id != OLD]
     assert copy.forked_from is not None
     assert copy.forked_from.session == OLD
+
+
+# -- the base tools: a new session offers its model the tools of the built-in `base_tools`
+# extension; the config's `load` and `--no-extensions` turn them off
+
+
+def offered(world: World, *argv: str) -> str:
+    spy = world.home / "spy.py"
+    spy.write_text(SPY, encoding="utf-8")
+    started = start(world, "--no-session", "-e", str(spy), *argv)
+    try:
+        return run(started.driver.client("t").run(0, "which_tools", {})) or ""
+    finally:
+        stop(started)
+
+
+def test_a_started_session_offers_the_base_tools(configured: World) -> None:
+    assert offered(configured) == BASE_TOOLS
+
+
+def test_load_false_in_the_config_starts_a_session_without_them(configured: World) -> None:
+    configured.user_config({**MOCK, "load": {"base_tools": False}})
+    assert offered(configured) == ""
+
+
+def test_no_extensions_starts_a_session_without_them(configured: World) -> None:
+    assert offered(configured, "--no-extensions") == ""
 
 
 # -- the first cursor

@@ -2,7 +2,15 @@
 
 from importlib.metadata import version
 
-from tau._base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
+from tau._base_tools import (
+    BashTool,
+    EditTool,
+    FindTool,
+    GrepTool,
+    ReadTool,
+    WriteTool,
+    base_tools,
+)
 from tau._client import Client, LocalClient
 from tau._clock import SystemClock
 from tau._commands import CommandFailed
@@ -191,12 +199,14 @@ __all__ = [
     "Driver",
     "DriverState",
     "DuplicateCall",
+    "EditTool",
     "Ending",
     "Event",
     "Exists",
     "Extension",
     "ExtensionLoadError",
     "ExtensionSource",
+    "FindTool",
     "Finish",
     "ForkedFrom",
     "Form",

@@ -23,10 +23,10 @@ names = [
 [[group]]
 id = "tools"
 title = "Tools"
-reader = "What the model can call. Write a `Tool`, or use the four base tools."
+reader = "What the model can call. Write a `Tool`, or use the six base tools."
 names = [
-    "Tool", "Progress", "ToolError", "ReadTool", "WriteTool", "GrepTool", "BashTool",
-    "base_tools",
+    "Tool", "Progress", "ToolError", "ReadTool", "WriteTool", "EditTool", "GrepTool", "FindTool",
+    "BashTool", "base_tools",
 ]
 
 [[group]]

@@ -101,6 +101,32 @@ class BashTool
     property description: str
     property name: str
     property parameters: Mapping[str, object]
+class EditTool
+    def __init__(
+        self,
+        cwd: str | os.PathLike[str] | None = None,
+        *,
+        max_output: int = 10000,
+        overflow_dir: str | os.PathLike[str] | None = None,
+        max_overflow: int = 64 * 1024 * 1024,
+    ) -> None
+    async def call(self, args_raw: str) -> Outcome
+    property description: str
+    property name: str
+    property parameters: Mapping[str, object]
+class FindTool
+    def __init__(
+        self,
+        cwd: str | os.PathLike[str] | None = None,
+        *,
+        max_output: int = 10000,
+        overflow_dir: str | os.PathLike[str] | None = None,
+        max_overflow: int = 64 * 1024 * 1024,
+    ) -> None
+    async def call(self, args_raw: str) -> Outcome
+    property description: str
+    property name: str
+    property parameters: Mapping[str, object]
 class GrepTool
     def __init__(
         self,
@@ -142,7 +168,7 @@ def base_tools(
     bash_timeout_ms: int = 30000,
     bash_max_timeout_ms: int = 600000,
     bash_kill_grace_ms: int = 2000,
-) -> list[ReadTool | WriteTool | GrepTool | BashTool]
+) -> list[ReadTool | WriteTool | EditTool | GrepTool | FindTool | BashTool]
 
 == records: The session's records
 class Author
