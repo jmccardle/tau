@@ -11,7 +11,7 @@ Listing is a scan, with no index: `list_sessions` returns a `SessionInfo` per di
 with an `error` for one that is not a readable session. `find_session` resolves a ref: a path, an
 id, an exact unique name, or a unique id prefix. `SessionFlags` are the session flags, checked.
 `first_cursor` and `first_cursor_node` are the rule for which cursor a frontend shows. Which
-session a program opens, and how it starts, is `tau.session_start`.
+session a program opens, and how it starts, is `tau._session_start`.
 """
 
 import json
@@ -30,7 +30,7 @@ from tau._core import Exists, Session, first_message
 from tau._refs import absolute_ref
 
 if TYPE_CHECKING:
-    from tau.client import Client
+    from tau._client import Client
 
 SESSIONS = "sessions"
 INFO = "info.json"

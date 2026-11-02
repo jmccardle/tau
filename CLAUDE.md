@@ -27,7 +27,7 @@ Sibling projects are clients of τ and sync with it after 0.16.0:
 1. 0.15 code comes in only as described above, never as harness behavior. Learn 0.15 behavior by reading it, then write the behavior as a test.
 2. No new type, field, or module-level concept without a glossary entry; anything not in the glossary is suspect.
 3. Banned identifiers and docstring words (lint in CI): `lane`, `suspension`, `suspend`, `responder`, `side_entry`, `incomplete`, `default_leaf`, `acting_cursor`, `head` (as a frontend), `frame`, `entry` (use `node`), `backend` (use `provider` or `frontend`), `fork` for anything in-session (use `branch`).
-4. Tests go through the `Harness` protocol, the public Python API (`tau`'s exports and `tau.cli.main`), or the files and wire formats those read. Underscore modules (`_trust`, `_dotenv`, `_config_layers`, ...) are private. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
+4. Tests go through the `Harness` protocol, the public Python API (what `docs/api/groups.toml` lists: `tau`'s exports, and the three public modules `tau.cli`, `tau.commandline` and `tau.trace`), or the files and wire formats those read. Every other module is private, and its name starts with an underscore (`_trust`, `_events`, `_driver`, ...); `scripts/api_docs.py --check` fails when one does not. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
 5. Each phase ends with a stop for review. Do not start the next phase without sign-off.
 6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
 7. Ratchet in CI from Phase 3, over `crates/*/src` and `python/tau` (src, not
@@ -45,7 +45,16 @@ An unrelated use of a banned word is allowed only with a reason on the same line
 ruff banned-api (`unittest.mock`), and `tests/conftest.py` (`monkeypatch`).
 
 `python/tau/_core.pyi` is hand-written; `mypy.stubtest` (in `check.sh`)
-holds it to the built module.
+holds it to the built module, and `scripts/api_docs.py --check` holds its docstrings equal
+to the built module's `__doc__`. The Rust `///` is the source: after changing one, rebuild and run
+`scripts/api_docs.py --sync-stub`.
+
+The public API is documented from code. `docs/api/groups.toml` says what is public;
+`scripts/api_docs.py` generates `docs/api/surface.txt` (every public name with its signature: any
+API change is a diff to review) and `docs/reference/` (from the docstrings), and `check.sh` fails
+when they are stale. A public name needs a docstring (`scripts/ratchet.py` counts the ones that
+lack it); the generated files are never edited by hand. Rerun `scripts/api_docs.py` after
+changing a public signature.
 
 ## Layout
 
@@ -59,6 +68,8 @@ holds it to the built module.
 | `tests/behavior` | The behavior suite through the `Harness` protocol, run twice: clients local, then remote over a Unix socket (D21). |
 | `tests/serve` | What only a wire has: the handshake, bad messages, each way a stream ends, disconnects, and `tau serve` (`-d`, `--stop`, `--schema`) as real processes. |
 | `tests/core` | The native module through the public Python API: a hand-run job loop, errors, persistence, threads. |
+| `docs/api` | What is public and for whom (`README.md`, `groups.toml`), and the generated `surface.txt`. |
+| `docs/reference` | The generated reference, one page per group of the public surface. |
 | `scripts/` | Gates: `check.sh` (everything, in CI order). |
 
 ## Commands

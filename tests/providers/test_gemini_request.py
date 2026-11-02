@@ -31,6 +31,7 @@ from wire import (
 from tau import (
     Author,
     Body,
+    GeminiProvider,
     ModelConfig,
     Outcome,
     Part,
@@ -38,7 +39,6 @@ from tau import (
     SampleError,
     Stop,
 )
-from tau.providers.gemini import GeminiProvider
 
 DEFAULT_URL = "https://generativelanguage.googleapis.com/v1beta"
 

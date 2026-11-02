@@ -9,9 +9,9 @@ from typing import Protocol, cast
 
 from tau._config import ModelConfig
 from tau._core import Node, Outcome, Part, Stop
+from tau._events import Delta
+from tau._handles import Cursor, NodeHandle, Subject
 from tau._values import DefinitionError
-from tau.events import Delta
-from tau.handles import Cursor, NodeHandle, Subject
 
 
 @dataclass(frozen=True)
@@ -332,6 +332,9 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
 
 
 class Clock(Protocol):
+    """What the driver reads time through, so a test can move time itself. `SystemClock` is the
+    real one."""
+
     def now(self) -> int:
-        """Milliseconds."""
+        """The current time in milliseconds. It stamps the nodes the driver writes."""
         ...

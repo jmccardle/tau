@@ -30,7 +30,7 @@ from typing import NamedTuple, TextIO, cast
 from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, check_config, read_models
 from tau._dotenv import DotenvError, parse_dotenv
-from tau.providers import builtin_providers
+from tau._providers import builtin_providers
 
 TAU_DIR = ".tau"
 _ENV = ".env"

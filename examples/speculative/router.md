@@ -78,7 +78,7 @@ after the reply that ends the turn (not after a tool-call reply).
 
 1. **Which model answered, and why.** The tree holds the switch (`Config` by `Extension("router")`)
    and, by my convention, a `Custom` `route` node with the reason (86). The answer itself carries
-   the provider's model id in `Assistant.meta` for the real providers (`providers/openai.py:174`,
+   the provider's model id in `Assistant.meta` for the real providers (`_providers/openai.py:174`,
    `anthropic.py:165`), not the catalog name; `FakeProvider` copies nothing there unless the script
    does. Nothing in core links a reply to a catalog name. Severity: awkward.
 2. **`tell` has no recipient in `pre_input`.** `cursor.client` is the nearest earlier frontend

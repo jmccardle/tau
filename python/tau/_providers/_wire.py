@@ -23,8 +23,8 @@ import httpx
 
 from tau._config import ModelConfig
 from tau._core import Part, Stop
-from tau.events import Delta
-from tau.protocols import Finish, ProviderClosed, SampleError
+from tau._events import Delta
+from tau._protocols import Finish, ProviderClosed, SampleError
 
 Json = dict[str, object]
 HTTP_OK = 200

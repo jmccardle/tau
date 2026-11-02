@@ -186,14 +186,14 @@ whose `provider` is not its own.
    `part.replay.data` (parsing keeps string values but not necessarily number or escape
    spelling). The ordering rule already
    compared only text, tool and arguments, so a final part may carry replay its deltas lacked.
-   The walk rules live in the private `providers/_walk.py` (`turns(walk)`), which the OpenAI
+   The walk rules live in the private `_providers/_walk.py` (`turns(walk)`), which the OpenAI
    provider uses with byte-identical requests; it is private until a third-party provider
    needs it. A `ToolResults` result also carries the call's `tool` (Gemini names it) and
    `error` (Anthropic flags it). A signed part cut off at a cancel is saved without its
    signature, so it counts as unsigned and is never sent.
 
-15. **The Anthropic provider** (`providers/anthropic.py`, request half in
-   `providers/_anthropic_request.py`) keeps to the contract. What the docs showed that
+15. **The Anthropic provider** (`_providers/anthropic.py`, request half in
+   `_providers/_anthropic_request.py`) keeps to the contract. What the docs showed that
    shaped it: the API requires `max_tokens`, so `check` requires it (no default); newer
    models take `thinking.type` `adaptive` with `output_config.effort`, and `enabled` with
    `budget_tokens` is refused by 4.7 and later, so `thinking` is passed through as an object
@@ -223,7 +223,7 @@ whose `provider` is not its own.
    `2026-10-21` removes `temperature`, `top_p` and `top_k`. `Part.Thinking` text is the summary, so a round trip sends
    the signature and the summary together as received.
 
-16. **The Gemini provider** (`providers/gemini.py`) is built to the contract, and building it
+16. **The Gemini provider** (`_providers/gemini.py`) is built to the contract, and building it
    showed:
    - *Signatures arrive on the last chunk of the text they sign*, often one with no text (live,
      `gemini-3.5-flash`: three text chunks, then `{"text": "", "thoughtSignature": ...}` with the
@@ -254,7 +254,7 @@ whose `provider` is not its own.
    Gemini 503 inside the stream left a lone `Thinking` part and no reason in the tree.
    Chosen: the failed reply carries the error in its `meta`, as
    `error: {message, status?, retry_after?}` (amended by Review: also `internal?` and
-   `provider?`), added by the driver (`effects.py`) from
+   `provider?`), added by the driver (`_effects.py`) from
    `SampleError`. Rejected: a core-written `sample_error` node after the reply. It would
    hang a side child under the cursor's node, so a frontend reading the reply would
    still not learn why, and a second place to look. Core keeps `meta` opaque, so no

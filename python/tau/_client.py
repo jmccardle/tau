@@ -19,10 +19,10 @@ from typing import Protocol, Self
 
 from tau._calls import Calls
 from tau._core import Node
+from tau._events import Event
 from tau._hub import Feed
 from tau._values import Form
 from tau.commandline import Parsed, completions
-from tau.events import Event
 
 
 class Client(AsyncIterator[Event], Protocol):

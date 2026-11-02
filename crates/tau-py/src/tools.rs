@@ -1,7 +1,7 @@
 //! The base tools of `tau-tools`, as Python classes. Conversion only: each
 //! `run`/`wait` releases the GIL for the whole of the work and answers an
 //! `Outcome`. The `Tool` protocol's `async call` is Python's, in
-//! `tau.base_tools`, which runs these off the event loop.
+//! `tau._base_tools`, which runs these off the event loop.
 
 // Properties are methods in Python, whether or not they read `self`.
 #![allow(clippy::unused_self)]

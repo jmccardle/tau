@@ -2,7 +2,7 @@
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
 [--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), `tau context
 [--show]` (D20) and `tau serve` (D21; `tau._serve_cli`). Starting a session for a person
-(`tau`, `tau -p`) is Phase 8's; `tau.session_start.start_session` is their shared start.
+(`tau`, `tau -p`) is Phase 8's; `tau._session_start.start_session` is their shared start.
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
@@ -38,6 +38,7 @@ from tau._config_layers import (
     option_problems,
     read_models,
 )
+from tau._context import system_prompt
 from tau._core import (
     BadRecord,
     Corrupt,
@@ -57,11 +58,24 @@ from tau._extensions import (
     list_extensions,
     switch_source,
 )
+from tau._markdown import to_markdown
 from tau._options import option_fields, save_options
 from tau._protocol import ProtocolError
+from tau._protocols import Extension, Provider
+from tau._providers import builtin_providers
 from tau._refs import absolute_ref, parse_ref
 from tau._serve_cli import error_line, serve
 from tau._serve_record import ServeFailed
+from tau._sessions import (
+    UnknownSession,
+    age_of,
+    find_session,
+    first_cursor_node,
+    list_sessions,
+    read_name,
+    rename_session,
+    sessions_directory,
+)
 from tau._startup import LoadedConfig, load_config, prompts, select_model
 from tau._trust import (
     TAU_DIR,
@@ -80,20 +94,6 @@ from tau._trust import (
 from tau._user_config import UserConfig
 from tau._values import Field, Json, object_schema
 from tau.commandline import value
-from tau.context import system_prompt
-from tau.markdown import to_markdown
-from tau.protocols import Extension, Provider
-from tau.providers import builtin_providers
-from tau.sessions import (
-    UnknownSession,
-    age_of,
-    find_session,
-    first_cursor_node,
-    list_sessions,
-    read_name,
-    rename_session,
-    sessions_directory,
-)
 
 _USAGE_ERROR = 2
 _INTERRUPTED = 130

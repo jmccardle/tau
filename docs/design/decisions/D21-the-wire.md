@@ -39,7 +39,7 @@ completed on the server. The exit test: the behavior suite passes against a remo
 against a local one.
 
 **What exists (checked 2026-10-31).**
-- `Client` (`client.py`) has 22 async methods and is an event stream. Every argument and
+- `Client` (`_client.py`) has 22 async methods and is an event stream. Every argument and
   event is a plain frozen value except the core's `Node`, `Body`, `Author`, `Item`,
   `ItemData` and `Ending`, Rust values with one JSON encoding: the serde derives the log is
   written with (`tau-core/src/tree.rs`). **`Ending` had none** (it lived in `step.rs` with no

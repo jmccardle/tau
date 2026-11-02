@@ -14,9 +14,9 @@ from typing import cast
 
 from tau._config import ModelConfig
 from tau._core import Body, Node, Part, Stop
-from tau.events import Delta, TextDelta
-from tau.protocols import Finish, SampleError, Tool
-from tau.providers._wire import is_count, option_problems
+from tau._events import Delta, TextDelta
+from tau._protocols import Finish, SampleError, Tool
+from tau._providers._wire import is_count, option_problems
 
 NAME = "mock"
 DEFAULT_DELAY_MS = 30

@@ -2,7 +2,7 @@
 
 Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31; built
 2026-11-01 (differences from this text, all in the code's favour: the shared start is
-`tau/session_start.py` and the catalog `tau/sessions.py`, so the catalog has no `Driver`
+`tau/_session_start.py` and the catalog `tau/_sessions.py`, so the catalog has no `Driver`
 dependency; the start takes the D20 seam as a `system(cwd, loaded)` callable and `-r`'s picker as
 `pick_session`; `list_sessions(sessions, *, cwd=None)` lists a row with an `error` in every
 listing, since such a row has no `cwd` to match; the prefix read is `first_message(directory)`, in the
@@ -316,8 +316,8 @@ one italic line.
 | item | lines |
 |---|---|
 | core `Session::fork`; store `read` and the prefix read; `tau-py` bindings and stub | ~140 |
-| `tau/sessions.py`: directory, ids, `info.json` (atomic), list, refs, newest, create, fork, rename, first cursor, never-used removal, the shared start (with the `chdir`) | ~250 |
-| `tau/markdown.py` (`to_markdown`, fence sizing); `session_name` | ~150 |
+| `tau/_sessions.py`: directory, ids, `info.json` (atomic), list, refs, newest, create, fork, rename, first cursor, never-used removal, the shared start (with the `chdir`) | ~250 |
+| `tau/_markdown.py` (`to_markdown`, fence sizing); `session_name` | ~150 |
 | CLI: `tau sessions [--all] [--json]`, `tau sessions name`, `tau export`; `examples/chat.py` switched | ~120 |
 | tests, Rust: a fork's tree equals the walk, reload equals (I7), `read` with a newer scratchpad, a torn tail | ~120 |
 | tests, behavior via `tau.cli.main` and `Harness`: list, refs, `-c` with none or leased, first cursor, fork and `forked_from`, the `chdir`, rename while leased, never-used removal, export golden files | ~370 |

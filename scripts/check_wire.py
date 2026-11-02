@@ -13,8 +13,7 @@ from collections.abc import Callable
 
 import tau
 from tau import _protocol as wire
-from tau.commandline import UnknownCommand
-from tau.events import (
+from tau._events import (
     Appended,
     CallArgs,
     CallNamed,
@@ -30,6 +29,7 @@ from tau.events import (
     ThinkingDelta,
     ToolProgress,
 )
+from tau.commandline import UnknownCommand
 
 problems: list[str] = []
 

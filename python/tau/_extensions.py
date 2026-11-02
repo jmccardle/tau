@@ -34,7 +34,9 @@ from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._options import option_fields
 from tau._project_code import ApprovedFiles, forget
+from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
 from tau._startup import LoadedConfig
+from tau._step_limit import StepLimit
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -47,10 +49,8 @@ from tau._trust import (
     user_config_path,
 )
 from tau._user_config import UserConfig
-from tau.protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
-from tau.step_limit import StepLimit
 
-State = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
+SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
 SourceKind = Literal["built-in", "package", "user", "project", "explicit", "load"]
 
 GROUP = "tau.extensions"
@@ -86,7 +86,7 @@ class ExtensionSource:
     commands' qualified names and `tools` their tools' names; all empty unless it is on."""
 
     key: str
-    state: State
+    state: SourceState
     kind: SourceKind
     origin: str
     detail: str | None = None
@@ -496,7 +496,7 @@ class _Run:
     names: dict[str, str] = field(default_factory=lambda: {})
     tools: dict[str, str] = field(default_factory=lambda: {})
 
-    def row(self, c: _Candidate, state: State, detail: str | None = None) -> None:
+    def row(self, c: _Candidate, state: SourceState, detail: str | None = None) -> None:
         self.sources.append(ExtensionSource(c.key, state, c.kind, c.origin, detail))
 
     def fail(self, c: _Candidate, lines: Sequence[str], detail: str) -> None:

@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Annotated
 
 from tau import (
+    CURSOR_POINTS,
+    TOOL_POINTS,
     Author,
     Body,
     CallDraft,
@@ -44,7 +46,6 @@ from tau import (
     model_config,
     read_models,
 )
-from tau.protocols import CURSOR_POINTS, TOOL_POINTS
 
 NOTE = "harness_sense.note"
 STOPPED = "harness_sense.stopped"

@@ -11,8 +11,8 @@ from dataclasses import replace
 from typing import cast
 
 from tau._core import Node, Part
-from tau.protocols import SampleError, Tool, replay_for
-from tau.providers._walk import (
+from tau._protocols import SampleError, Tool, replay_for
+from tau._providers._walk import (
     AssistantTurn,
     CallResult,
     Messages,
@@ -25,7 +25,7 @@ from tau.providers._walk import (
     stop_note,
     turns,
 )
-from tau.providers._wire import Json, plain
+from tau._providers._wire import Json, plain
 
 NAME = "anthropic"
 _SIGNED_BLOCKS = (

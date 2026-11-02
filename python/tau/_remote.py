@@ -23,6 +23,7 @@ from websockets.asyncio.client import ClientConnection, unix_connect
 from websockets.exceptions import ConnectionClosed
 
 from tau._core import Node
+from tau._events import Event
 from tau._hub import Feed
 from tau._protocol import (
     PROTOCOL,
@@ -36,7 +37,6 @@ from tau._protocol import (
 )
 from tau._values import Form, Json
 from tau.commandline import Parsed
-from tau.events import Event
 
 _END: Final = object()
 """Queued after the last event: the stream has ended."""

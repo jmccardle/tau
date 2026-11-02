@@ -64,7 +64,7 @@ the person, after each round, whether to go on. `/forest_tree <node>` re-renders
    after the wake and the news rule starts a second, empty step (hooks run twice; `StepLimit`
    counts 2). Gap left open. **Cosmetic**.
 3. **Judge a reply without a cursor.**
-   `model.md` §7 says a handle may "sample a walk or run a tool outside any step"; `handles.py`
+   `model.md` §7 says a handle may "sample a walk or run a tool outside any step"; `_handles.py`
    has no such method. Did: each judge sample is a cursor with its own two nodes. This is also
    the brief's "judge is a branch", but 12 samples is 12 cursors. **Awkward**.
 4. **Cursors never close** (Q12). Test asserts `1 + 12` cursors after a 12-sample search, all at
@@ -186,7 +186,7 @@ Smallest first; each says what it deletes or enables.
 4. **`opened_by` in `CursorView`** (Q6 is already in `model.md`): a frontend folds children under
    the main cursor without guessing; no extension code changes.
 5. **`Client.run` / `configure` return when a `Cursor` command's step has ended** (or say plainly
-   in `client.py` that they do not, and give a frontend `Client.rest(cursor)`). Deletes the
+   in `_client.py` that they do not, and give a frontend `Client.rest(cursor)`). Deletes the
    `settle()` and the Busy race in callers; changes nothing in the extension.
 6. `commandline.parse`: a final `str` parameter takes the rest of the line, so `/search 3 what is
    2+2` works. Pure frontend library.

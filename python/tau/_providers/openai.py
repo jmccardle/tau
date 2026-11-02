@@ -14,9 +14,9 @@ import httpx
 
 from tau._config import ConfigError, ModelConfig
 from tau._core import Node, Part, Stop
-from tau.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau.protocols import Finish, SampleError, Tool
-from tau.providers._walk import (
+from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau._protocols import Finish, SampleError, Tool
+from tau._providers._walk import (
     AssistantTurn,
     SystemTurn,
     ToolResults,
@@ -26,7 +26,7 @@ from tau.providers._walk import (
     system_note,
     turns,
 )
-from tau.providers._wire import (
+from tau._providers._wire import (
     Connection,
     Json,
     count,

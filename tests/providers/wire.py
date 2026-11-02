@@ -20,14 +20,17 @@ import httpx
 import pytest
 
 from tau import (
+    AnthropicProvider,
     Author,
     Body,
     Delta,
     Driver,
     Finish,
+    GeminiProvider,
     ModelCatalog,
     ModelConfig,
     Node,
+    OpenAIProvider,
     Part,
     Provider,
     SampleError,
@@ -37,9 +40,6 @@ from tau import (
     model_config,
     read_models,
 )
-from tau.providers.anthropic import AnthropicProvider
-from tau.providers.gemini import GeminiProvider
-from tau.providers.openai import OpenAIProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SSE = {"content-type": "text/event-stream"}

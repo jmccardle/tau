@@ -22,6 +22,7 @@ from wire import (
 from tau import (
     Body,
     Driver,
+    OpenAIProvider,
     Part,
     Session,
     StepLimit,
@@ -29,7 +30,6 @@ from tau import (
     SystemClock,
     model_config,
 )
-from tau.providers.openai import OpenAIProvider
 
 # What the recorded `plain` stream says about itself; it carried no usage.
 PLAIN_META = json.dumps(

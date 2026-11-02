@@ -300,6 +300,9 @@ Every frontend needs these before it can start a session.
   - **Guides**, user-facing and separate from `docs/design/`: quickstart; the
     model in ten minutes; writing an extension; writing a frontend;
     configuration; the wire protocol, generated from the schema.
+  - **7C-1 built** (2026-11-01): `docs/api/` (groups, README, `surface.txt`), `docs/reference/`,
+    `scripts/api_docs.py` (with `--sync-stub`), and the docstring count in the ratchet (report
+    only until 7C-2 sets the bar to 0).
 - **Exit:**
   - a remote client passes the same behavior tests as a local one;
   - `tau-search`'s extension loads through the entry point (`-e` for now);

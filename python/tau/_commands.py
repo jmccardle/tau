@@ -27,9 +27,12 @@ from tau._complete import complete
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Session
+from tau._effects import describe_failure
 from tau._functions import INJECT_CURSOR, INJECT_NODE, Described, describe, invoke
+from tau._handles import Handles, TreeHandle
 from tau._hub import Hub
 from tau._options import ExtensionOptions
+from tau._protocols import Clock
 from tau._values import (
     Context,
     DefinitionError,
@@ -39,9 +42,6 @@ from tau._values import (
     convert_object,
     object_schema,
 )
-from tau.effects import describe_failure
-from tau.handles import Handles, TreeHandle
-from tau.protocols import Clock
 
 CONFIG = "config"
 """The name `/config` has when some extension has options (a built-in, not a function)."""

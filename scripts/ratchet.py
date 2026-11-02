@@ -9,6 +9,8 @@ Checks:
   * no file over 800 lines
   * banned-term count 0 (scripts/check_rules.py)
   * the I7 property tests still exist (cargo test runs them; check.sh runs that)
+  * public names without a docstring (docs/api/groups.toml says what is public; scripts/api_docs.py
+    counts): reported per group, and gated by DOCSTRING_BAR once it is a number
 
 Known violations are listed with their current value in scripts/ratchet-allow.toml.
 The list only shrinks: the ratchet fails when an allowed item gets worse, when
@@ -33,6 +35,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import api_docs
 import check_rules
 import pymetrics
 import rustmetrics
@@ -49,6 +52,9 @@ JUSTIFIED_TITLE = (
     '# Types over the method limit that are one concept: key = "the one concept it is".\n'
     "# Exempt from the count and printed on every run. Adding one needs a reviewer's yes."
 )
+# The most public names that may lack a docstring. None: report the count and do not gate (the
+# docstrings are written in Phase 7C-2, which sets this to 0 and from then on it only holds).
+DOCSTRING_BAR: int | None = None
 I7_TESTS = [
     ("crates/tau-core/tests/replay.rs", "reload_at_any_sync_equals_the_state_at_that_sync"),
     ("crates/tau-store/tests/store.rs", "a_torn_tail_opens_as_the_last_sync_before_it"),
@@ -169,6 +175,22 @@ def missing_i7() -> list[str]:
     ]
 
 
+def undocumented_public() -> tuple[int, str, list[str]]:
+    """(count, per-group summary, problems) of the public names without a docstring."""
+    try:
+        missing = api_docs.undocumented()
+    except api_docs.SurfaceError as e:
+        return 0, "", [f"DOCS     the public surface is inconsistent: {e}"]
+    total = sum(len(v) for v in missing.values())
+    summary = ", ".join(f"{g} {len(v)}" for g, v in missing.items() if v)
+    problems = []
+    if DOCSTRING_BAR is not None and total > DOCSTRING_BAR:
+        problems.append(
+            f"DOCS     {total} public name(s) without a docstring (bar {DOCSTRING_BAR})"
+        )
+    return total, summary, problems
+
+
 def git(*args: str) -> str:
     r = subprocess.run(["git", *args], check=False, cwd=ROOT, capture_output=True, text=True)
     if r.returncode:
@@ -242,6 +264,10 @@ def main() -> int:
             print(f"ratchet: rewrote {ALLOW.relative_to(ROOT)}")
             return 0
     fails += [f"BANNED   {b}" for b in banned_terms()] + [f"I7       {m}" for m in missing_i7()]
+    undocumented, per_group, doc_problems = undocumented_public()
+    fails += doc_problems
+    bar = "report only" if DOCSTRING_BAR is None else f"bar {DOCSTRING_BAR}"
+    print(f"ratchet: {undocumented} public name(s) without a docstring ({bar}): {per_group or '-'}")
     listed = sum(len(v) for v in allow.values())
     if fails:
         print(f"ratchet: {len(fails)} problem(s):", file=sys.stderr)

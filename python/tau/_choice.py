@@ -8,7 +8,7 @@ from typing import Literal, cast
 from tau._config import ConfigError
 from tau._core import NotASession
 from tau._refs import parse_ref
-from tau.sessions import (
+from tau._sessions import (
     PickSession,
     SessionFlags,
     SessionInfo,

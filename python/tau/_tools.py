@@ -27,6 +27,8 @@ from tau._functions import (
     describe,
     invoke,
 )
+from tau._handles import NodeHandle
+from tau._protocols import Progress
 from tau._values import (
     Context,
     DefinitionError,
@@ -36,8 +38,6 @@ from tau._values import (
     json_type,
     object_schema,
 )
-from tau.handles import NodeHandle
-from tau.protocols import Progress
 
 __all__ = ["FunctionTool", "ToolError", "assemble_tools"]
 

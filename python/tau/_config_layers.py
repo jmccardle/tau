@@ -18,8 +18,8 @@ from typing import Literal, cast
 
 from tau._config import ConfigError, ModelConfig, key_problem, url_problem
 from tau._options import make_options, option_fields
+from tau._protocols import Provider
 from tau._values import Context, DefinitionError
-from tau.protocols import Provider
 
 Severity = Literal["error", "warning"]
 

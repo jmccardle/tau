@@ -352,7 +352,9 @@ impl From<Body> for tree::Body {
     }
 }
 
-/// Python view of [`tree::Node`].
+/// One record of a session's tree, written once and never changed: its `id`, its `parent`
+/// (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
+/// it holds (`body`), and the scratchpad items it consumed (`delivers`).
 #[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {

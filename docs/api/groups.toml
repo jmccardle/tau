@@ -1,0 +1,121 @@
+# What is public, and for whom. scripts/api_docs.py reads this file; `tau.__all__` must list
+# exactly the names without a dot, and docs/api/README.md must have a `## <title>` heading per
+# group. A name is `Name` (`tau.Name`) or `module.name` (`tau.module.name`, for a public module).
+
+# Classes tau makes and hands to a program (a handle, a client from `Driver.client`): their
+# constructors are tau's own and are not part of the surface.
+made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient"]
+
+[[group]]
+id = "extensions"
+title = "Writing an extension"
+reader = "An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given."
+names = [
+    "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
+    "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
+    "StepLimit", "CURSOR_POINTS", "TOOL_POINTS",
+]
+
+[[group]]
+id = "tools"
+title = "Tools"
+reader = "What the model can call. Write a `Tool`, or use the four base tools."
+names = [
+    "Tool", "Progress", "ToolError", "ReadTool", "WriteTool", "GrepTool", "BashTool",
+    "base_tools",
+]
+
+[[group]]
+id = "records"
+title = "The session's records"
+reader = "The values a session is made of, read by every kind of program: nodes and what they hold, who wrote them, the scratchpad's items."
+names = [
+    "Node", "Body", "Part", "Replay", "Outcome", "Author", "Stop", "Config", "Move", "Item",
+    "ItemData", "Draft", "Tree", "CursorState",
+]
+
+[[group]]
+id = "clients"
+title = "Writing a frontend"
+reader = "A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed."
+names = [
+    "Client", "LocalClient", "RemoteClient", "CommandFailed", "Parsed", "UnknownCommand",
+    "commandline.parse", "commandline.completions", "commandline.value", "commandline.values",
+]
+
+[[group]]
+id = "events"
+title = "Events"
+reader = "What a client's stream yields."
+names = [
+    "Event", "Live", "LiveDelta", "Delta", "TextDelta", "ThinkingDelta", "CallNamed", "CallArgs",
+    "ToolProgress", "CursorView", "CursorGone", "Labels", "Appended", "Notice", "CutOff",
+    "HookFailure", "OpenQuestion",
+]
+
+[[group]]
+id = "sessions"
+title = "Starting and finding sessions"
+reader = "What a frontend does before it has a client: start or reopen a session, list the others, export one."
+names = [
+    "start_session", "Started", "SystemText", "SessionFlags", "PickSession", "SessionInfo",
+    "ForkedFrom", "UnknownSession", "list_sessions", "find_session", "rename_session",
+    "first_cursor", "first_cursor_node", "to_markdown", "cli.main", "cli.session_flags",
+    "cli.extension_flags",
+]
+
+[[group]]
+id = "wire"
+title = "The wire"
+reader = "`tau serve` and the remote client."
+names = ["PROTOCOL", "ProtocolError", "ProtocolMismatch", "Welcome", "Server", "Json"]
+
+[[group]]
+id = "driver"
+title = "Embedding tau"
+reader = "A program that runs sessions itself: the driver and its clock."
+names = ["__version__", "Driver", "DriverState", "Clock", "SystemClock"]
+
+[[group]]
+id = "providers"
+title = "Providers"
+reader = "The model APIs: the contract a provider keeps, and the four that ship."
+names = [
+    "Provider", "Finish", "SampleError", "ProviderClosed", "replay_for", "builtin_providers",
+    "OpenAIProvider", "AnthropicProvider", "GeminiProvider", "MockProvider",
+]
+
+[[group]]
+id = "machine"
+title = "The step machine"
+reader = "The sans-IO core: a `Session` hands out jobs and a program performs them. For a program that is its own driver."
+names = ["Session", "Job", "Answer", "SampleEnd", "RunCall", "Next", "Hook", "Ending"]
+
+[[group]]
+id = "config"
+title = "Configuration and context"
+reader = "Models, the config files, trust, extension loading, the system prompt."
+names = [
+    "ModelConfig", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
+    "LayerText", "read_models", "check_config", "LoadedConfig", "load_config", "UserConfig",
+    "Prompts", "prompts", "select_model", "Trusted", "TrustError", "UntrustedProject",
+    "safe_block", "DotenvError", "Ask", "Pick", "Layer", "Origin", "Severity", "SourceKind", "SourceState", "ExtensionSource", "ExtensionLoadError", "list_extensions",
+    "load_extensions", "SystemPrompt", "PromptSource", "ContextFileError", "system_prompt",
+]
+
+[[group]]
+id = "errors"
+title = "Errors"
+reader = "What the session and its store raise."
+names = [
+    "NoSuchNode", "NoSuchCursor", "CursorClosed", "NoSuchLabel", "Busy", "NotInHook",
+    "NoSuchItem", "NotPending", "DuplicateCall", "BadRecord", "BadReplay", "WrongAnswer",
+    "Closed", "Leased", "Exists", "NotASession", "Version", "Corrupt", "Undecodable", "TooLarge",
+    "Poisoned", "TraceError",
+]
+
+[[group]]
+id = "diagnostics"
+title = "Tracing"
+reader = "One timeline across Rust and Python, for finding where time goes."
+names = ["trace.capture", "trace.span", "trace.start", "trace.stop"]

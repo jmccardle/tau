@@ -19,10 +19,10 @@ import httpx
 
 from tau._config import ConfigError, ModelConfig
 from tau._core import BadReplay, Node, Part, Replay, Stop
-from tau.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau.protocols import Finish, SampleError, Tool
-from tau.providers._anthropic_request import breakpoints, conversation, tools_array
-from tau.providers._wire import (
+from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau._protocols import Finish, SampleError, Tool
+from tau._providers._anthropic_request import breakpoints, conversation, tools_array
+from tau._providers._wire import (
     Connection,
     Json,
     count,

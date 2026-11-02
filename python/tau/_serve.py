@@ -35,6 +35,9 @@ from websockets.asyncio.server import Server as _Sockets
 from websockets.asyncio.server import ServerConnection, unix_serve
 from websockets.exceptions import ConnectionClosed
 
+from tau._client import LocalClient
+from tau._driver import Driver
+from tau._events import Event
 from tau._protocol import (
     CODES,
     METHODS,
@@ -48,9 +51,6 @@ from tau._protocol import (
     error_object,
 )
 from tau._values import Json
-from tau.client import LocalClient
-from tau.driver import Driver
-from tau.events import Event
 
 BUFFER: Final = 256
 """The bound of a client's event stream when its `hello` names none."""

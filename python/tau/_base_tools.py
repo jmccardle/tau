@@ -49,7 +49,7 @@ from typing import Protocol
 
 from tau import _core
 from tau._core import Outcome
-from tau.protocols import Progress
+from tau._protocols import Progress
 
 DEFAULT_MAX_OUTPUT = 10_000
 DEFAULT_MAX_OVERFLOW = 64 * 1024 * 1024

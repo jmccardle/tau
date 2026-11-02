@@ -12,9 +12,9 @@ from pathlib import Path
 
 from tau._config import model_config
 from tau._core import Body
+from tau._handles import Cursor
+from tau._sessions import read_name, rename_session
 from tau._values import Model
-from tau.handles import Cursor
-from tau.sessions import read_name, rename_session
 
 NAME = "tau"
 SESSION_NAME = "session_name"

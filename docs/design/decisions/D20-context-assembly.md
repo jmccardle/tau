@@ -1,7 +1,7 @@
 # D20: The system prompt is assembled once, when a session is created
 
 Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31; built
-2026-11-01 (differences from this text, all in the code's favour: the module is `tau/context.py`;
+2026-11-01 (differences from this text, all in the code's favour: the module is `tau/_context.py`;
 `SystemPrompt.sources` is a tuple of `PromptSource(origin, size)`; the shared start's `system`
 callable is now optional and defaults to this assembly with the prompt flags, so `--append-system-prompt`
 and `-nc` reach it from `args`; `-nc` is accepted with `--fork` as well as with a continue, since
@@ -300,7 +300,7 @@ None. The log, the scratchpad and `VERSION` are untouched. The prompt was alread
 
 | item | lines |
 |---|---|
-| `tau/context.py`: discovery (ancestors, `$TAU_HOME`, project `SYSTEM.md` from the approved bytes, worktree shadowing, dedupe), strict read, rendering, `SystemPrompt` | ~180 |
+| `tau/_context.py`: discovery (ancestors, `$TAU_HOME`, project `SYSTEM.md` from the approved bytes, worktree shadowing, dedupe), strict read, rendering, `SystemPrompt` | ~180 |
 | `system_prompt` key: `_TOP_KEYS`, type check, refused in a `Config` node, merged read, `--show` source | ~30 |
 | CLI: the three flags on whatever creates a session (D18's command), refusal on continue and fork; `tau context` | ~60 |
 | `prompts/base.md` and package data | ~40 text |

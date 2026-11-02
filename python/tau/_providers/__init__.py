@@ -2,11 +2,11 @@
 
 from collections.abc import Mapping
 
-from tau.protocols import Provider
-from tau.providers.anthropic import AnthropicProvider
-from tau.providers.gemini import GeminiProvider
-from tau.providers.mock import MockProvider
-from tau.providers.openai import OpenAIProvider
+from tau._protocols import Provider
+from tau._providers.anthropic import AnthropicProvider
+from tau._providers.gemini import GeminiProvider
+from tau._providers.mock import MockProvider
+from tau._providers.openai import OpenAIProvider
 
 
 def builtin_providers(environ: Mapping[str, str]) -> dict[str, Provider]:

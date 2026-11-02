@@ -41,22 +41,22 @@ from functools import partial
 from tau import trace
 from tau._builtin import Tau
 from tau._calls import Calls, frontend
+from tau._client import LocalClient
+from tau._clock import SystemClock
 from tau._commands import Commands, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
+from tau._effects import CallRun, SampleRun, run_hooks
+from tau._events import LiveDelta
+from tau._handles import Handles, Subject
 from tau._hub import Hub
 from tau._options import ExtensionOptions
+from tau._protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
 from tau._questions import Questions
 from tau._tools import assemble_tools
 from tau._user_config import UserConfig
 from tau._values import Context, Kind
-from tau.client import LocalClient
-from tau.clock import SystemClock
-from tau.effects import CallRun, SampleRun, run_hooks
-from tau.events import LiveDelta
-from tau.handles import Handles, Subject
-from tau.protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
 
 
 class _Waiters:

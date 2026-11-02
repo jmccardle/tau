@@ -39,7 +39,7 @@ input and stays in plan mode; reject leaves plan mode and stops. The mode is an 
 ### (a) Expressing the behaviour
 
 1. **Offer only read-only tools** → a sample is always given the driver's whole `tools` tuple
-   (`driver.py` `SampleRun(... tuple(self._tools.values()) ...)`); no hook, option or `Config` can
+   (`_driver.py` `SampleRun(... tuple(self._tools.values()) ...)`); no hook, option or `Config` can
    narrow it per cursor. → Refuse after the fact in `pre_tool` (line 86); the model is still shown
    `write` and `bash` and learns by being refused (asserted:
    `provider.requests[0].tool_names == ["read", "write", "bash"]`). → Open, `# WISH` at line 88.
@@ -167,7 +167,7 @@ Two of the wishes below are built and the extension uses them.
 
 Smallest first.
 
-1. **Fix the docs: `Client.run` returns at command return** (D16 §2, `client.py`). Deletes nothing,
+1. **Fix the docs: `Client.run` returns at command return** (D16 §2, `_client.py`). Deletes nothing,
    prevents the deadlock a line client would otherwise build in.
 2. **A per-branch tool filter, owned by an extension.** The smallest shape: a `pre_sample` hook may
    set `subject.tools: Sequence[str] | None` (names to offer for this sample; `None` = all). Core

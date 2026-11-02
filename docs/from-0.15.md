@@ -49,9 +49,9 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
-| OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI, gateways) | `tau-llm/.../providers/openai.py` (2,111 lines) | **built** | `0.16: python/tau/providers/openai.py` (435 lines), streams parts + deltas, `usage` normalized, `usage_raw` kept; live-tested against 192.168.1.100:8100 |
-| Anthropic Messages API | `providers/anthropic.py` | **built** | `0.16: providers/anthropic.py`, `_anthropic_request.py`; thinking replay data, signatures |
-| Google Gemini | `providers/google.py` | **built** | `0.16: providers/gemini.py`; Gemini 3 thought signatures; no fallback signature when switching providers mid tool loop (D15) |
+| OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI, gateways) | `tau-llm/.../providers/openai.py` (2,111 lines) | **built** | `0.16: python/tau/_providers/openai.py` (435 lines), streams parts + deltas, `usage` normalized, `usage_raw` kept; live-tested against 192.168.1.100:8100 |
+| Anthropic Messages API | `providers/anthropic.py` | **built** | `0.16: _providers/anthropic.py`, `_anthropic_request.py`; thinking replay data, signatures |
+| Google Gemini | `providers/google.py` | **built** | `0.16: _providers/gemini.py`; Gemini 3 thought signatures; no fallback signature when switching providers mid tool loop (D15) |
 | Provider registry: `register_api` / `register_provider` / `ProviderSpec` (add a vendor in 6 lines) | `providers/base.py`, `providers/__init__.py` | **built** (changed) | Vendors are config groups (`base_url`, `api_key_env`, `provider`) per D13; extra providers are objects passed to `Driver` (D15). `tau config check` knows only the built-ins (D15 "Deferred") |
 | Prompt cache marks (Anthropic `cache_control`) | `docs/PROMPT-CACHING.md`, `providers/anthropic.py` | **built** | `0.16: _anthropic_request.py:197`; `options.prompt_caching` default on. `cache_state(walk)` for the provider is **planned** (plan.md Phase 5 paragraph) |
 | Cache-miss notice / `prompt_cache.py` ("your cache is not being read") | `tau_agent_core/prompt_cache.py`, `test_cache_miss_notice.py` | **REGRESSION** | `usage.cached` is recorded; nothing reads it and warns. Natural fit for a frontend or extension; not listed |
@@ -68,7 +68,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Tolerant JSON for streamed tool-call args (`json_parse`), repair count | `tau_llm/json_parse.py` | **dropped** (changed) | Calls keep `args_raw` byte for byte; bad args come back to the model as an `Err` (`test_scenarios.py` "bad args"); no repair, no repair count |
 | llama.cpp `timings` readout / telemetry strip | `examples/70_telemetry.py`, `chat_widgets.format_telemetry` | **REGRESSION** | `usage_raw` is kept; `timings` is not folded onto `meta`. Minor |
 | Provider lifetime/pool, `aclose()` | `docs/PROVIDER-LIFETIME.md` | **built** | Long-lived provider objects, caller closes (D15, `builtin_providers`) |
-| Mock provider | `tau_agent_core/testing`, tests | **built** | `0.16: providers/mock.py`, `FakeProvider` in `tests/behavior` |
+| Mock provider | `tau_agent_core/testing`, tests | **built** | `0.16: _providers/mock.py`, `FakeProvider` in `tests/behavior` |
 | Third-party / extension-supplied providers | `docs/EXTENSION-PROVIDERS.md` (research) | **built** | Any object with `check/sample/aclose` passed to `Driver` |
 
 ### 2.2 Tools
@@ -259,7 +259,7 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | Enter-key mode, editor widgets, slash-command completion in editor | `editor_widgets.py`, `ENTER-KEY.md` | **planned** (unspecified) | `Client.complete` + `commandline` are the library half (D16) |
 | `@file` attachments (inline limit, TUI chips) | `attachments.py`, `docs/FILE-ATTACHMENTS.md` | **REGRESSION** | Not built, not planned |
 | `-p` headless printing | `headless.py` | **planned** | Phase 8 |
-| JSONL event stream (`--mode json`, deltas) | `JSON-MODE-DELTAS.md` | **planned** | Phase 8; events are `tau.events` plain frozen values (D15/D16) |
+| JSONL event stream (`--mode json`, deltas) | `JSON-MODE-DELTAS.md` | **planned** | Phase 8; events are `tau._events` plain frozen values (D15/D16) |
 | REPL head (scrollback prompt loop) | `repl.py`, `repl_input.py`, `repl_theme.py` | **REGRESSION** | see 2.8 |
 | RPC (stdio JSON-RPC) | `tau_agent_core/rpc/`, `rpc_mode.py` | **planned** (changed) | Phase 7 `tau serve` (WebSocket); same `Client` contract serialized |
 | `tau serve` multiplexer daemon, `RemoteClient` | `serve/` (8 files) | **planned** | Phase 7 (D16 stage 4) |

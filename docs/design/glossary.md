@@ -48,7 +48,7 @@ driver's ordering rule (see **provider, model**) ignores it: a provider learns a
 only at the end of a block, so it is on the part and on none of its deltas.
 
 ### replay_for
-`tau.replay_for(part, provider)` (`protocols.py`) · D15 · new
+`tau.replay_for(part, provider)` (`_protocols.py`) · D15 · new
 
 The replay data a provider may send back for a part, parsed: the JSON object in
 `part.replay.data` when the part's replay is tagged with `provider`, else `None`. String
@@ -58,7 +58,7 @@ treated as unsigned (`model.md` §10.4), so no provider repeats the tag check. D
 the provider's own name that this version cannot understand counts as unsigned too.
 
 ### turns (the walk module)
-`tau.providers._walk.turns(walk, ...)` · D15 · new
+`tau._providers._walk.turns(walk, ...)` · D15 · new
 
 The rules every provider shares (`model.md` §10.5 to §10.7), applied once to a walk:
 which nodes count (`Config` and `Custom` do not), which replies are runnable (a batch
@@ -515,7 +515,7 @@ Composed in the driver, not core. `ValueError` ("cursor 3 is open") if the curso
 opened. The new cursor is opened by the client, or by the handle's extension.
 
 ### CursorGone
-`tau.CursorGone(cursor, at)` (`events.py`) · D17 · new
+`tau.CursorGone(cursor, at)` (`_events.py`) · D17 · new
 
 The state event for a closed cursor: the client drops its `CursorView`, and `at` is the last node,
 for restarting. A cursor has one state event at a time: its `CursorView` while open, its
@@ -694,7 +694,7 @@ cursor (the **rest rule**), and load. Any reader sees the change the same way:
 `Session.auto(cursor)`, `cursor.auto` in a hook.
 
 ### StepLimit
-`tau.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
+`tau.StepLimit` (`_step_limit.py`) · extension, retires `Config::max_steps`
 and `Session::taken`
 
 `StepLimit()`: an extension that guards loops where the cursor does move
@@ -823,13 +823,14 @@ of group names and its own name joined by `:` (`free_tokens:gpt-6-sol`).
 Names may not contain `:`. A `Config` node stores a qualified name; a bare
 name is only a search term.
 
-### read_models, check_config, ModelCatalog, ResolvedModel, Origin, ConfigProblem
-module `tau._config_layers`; all but `Origin` exported · D13 · new
+### read_models, check_config, ModelCatalog, ResolvedModel, Origin, Layer, Severity, ConfigProblem
+module `tau._config_layers`; all exported · D13 · new
 
 `read_models` is the catalog without files or trust: how a program that embeds
 the driver builds a `ModelCatalog` from a mapping (`read_models(cli=...)`). A
-frontend that reads files calls `load_config`. `Origin` is internal: it is only
-the item type of `explain`, read by attribute (`key`, `source`, `group`).
+frontend that reads files calls `load_config`. `Origin` is the item type of `explain`, read
+by attribute (`key`, `source`, `group`). A **`Layer`** is a `Path` or a `LayerText`; a
+**`Severity`** is `"error"` or `"warning"`.
 
 `read_models(user, project, cli)` reads the layers (each may be absent; `cli`
 is a mapping in the file's JSON shape), merges their raw trees (objects by
@@ -1008,8 +1009,8 @@ reaches the file; the ways in are `tau config set`, `tau ext enable`/`disable`,
 `/config <extension> ... --save` and `Cursor.save_options` (see *tau config set*, *tau ext*,
 *commandline*, *Handles*).
 
-### select_model, Pick, terminal_pick, Prompts, prompts
-module `tau._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
+### select_model, Ask, Pick, terminal_pick, Prompts, prompts
+module `tau._startup` (`Ask` is a callable from a question to a `bool`); `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
 
 `select_model(catalog, requested=None, *, pick)` returns one qualified name:
 `requested` (`--model`), else `catalog.default_model`, else a `ConfigError` that
@@ -1112,8 +1113,8 @@ program adds `session_name` (D18) after `load_extensions` returns (see *session_
 
 `list_extensions(cwd, environ, *, explicit=(), discover=True) -> list[ExtensionSource]` imports the
 same and returns one **`ExtensionSource`** per source in load order, `tau` and `session_name` (both `always`) first: `key`, `state`
-(`always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
-asked, and imported not at all), `kind` (`built-in`, `package`, `user`, `project`, `explicit`, or
+(a **`SourceState`**: `always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
+asked, and imported not at all), `kind` (a **`SourceKind`**: `built-in`, `package`, `user`, `project`, `explicit`, or
 `load` for a `load` key no source has), `origin`, `detail` (why not on), and for a source that is on
 the `extensions`, qualified `commands` and `tools` it provides. It is not served over the wire.
 
@@ -1133,7 +1134,7 @@ if `load` or `--no-extensions` turns it off; `--no-extensions` turns off package
 not built-ins; `-e x.pyc` is refused.
 
 ### Session catalog: sessions directory, session id, info.json, SessionInfo, ref
-module `tau.sessions` · D18 · new
+module `tau._sessions` · D18 · new
 
 The **sessions directory** is `$TAU_HOME/sessions`, or `--session-dir DIR` for one run (a flag only;
 `sessions_directory(home, given)`); it is created with mode 700 when the first session is. A
@@ -1186,7 +1187,7 @@ Helpers in the module: `make_session_directory(sessions, now, cwd, name, forked_
 (`now`, `5m`, `3h`, `2d`: the age `tau sessions` prints).
 
 ### first cursor, first_cursor, first_cursor_node
-`tau.sessions` · D18 · new
+`tau._sessions` · D18 · new
 
 Which cursor a frontend shows, or `-p` sends to: the open cursor with the lowest id; if none is
 open, the closed cursor with the lowest id, which `first_cursor(session, client)` reopens (a new
@@ -1195,7 +1196,7 @@ same choice without writing: the open cursor's `at`, or the closed one's last no
 export with no node given use it. The choice among other cursors is the frontend's (D16, D17).
 
 ### shared start: start_session, Started, SessionFlags, session_flags
-modules `tau.session_start`, `tau.sessions`, `tau.cli` · D18 §5 · new
+modules `tau._session_start`, `tau._sessions`, `tau.cli` · D18 §5 · new
 
 The one start `tau`, `tau -p` and `tau serve` all call, so they agree. `session_flags()`
 (`tau.cli`; `add_help=False`, for `parents=`, as `extension_flags()` is) parses `-c/--continue`,
@@ -1231,7 +1232,7 @@ run (`/name`) counts as used; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
 
 ### system prompt, base text, context file, system_prompt
-modules `tau.context`, `tau._config_layers`, `tau.sessions`, `tau.cli` · D20 · new
+modules `tau._context`, `tau._config_layers`, `tau._sessions`, `tau.cli` · D20 · new
 
 The **system prompt** is the text of the `System` node `Session.create` writes, assembled once by
 **`system_prompt(cwd, loaded, *, append=(), context_files=True)`** and never rebuilt: editing an
@@ -1284,7 +1285,7 @@ a loaded extension named `session_name` is a name clash, and `tau ext list` show
 Over the wire `/name` is an ordinary command.
 
 ### to_markdown
-`tau.markdown` · D18 §8 · new
+`tau._markdown` · D18 §8 · new
 
 `to_markdown(nodes, *, thinking=False, of=None) -> str` is pure over a walk's nodes and deterministic (no
 export time or node times). `System` is under `## System` inside `<details>`, in a fence; `User`
@@ -1427,14 +1428,14 @@ hook job is out they ride the phase's sync instead of syncing. Only the
 handles hold one; it is not exported from `tau`, and it is a type apart
 so the public `Session` cannot be given a hook to skip a sync with. It stays constructible from
 Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its hook id; the
-only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
+only caller is `_handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
 `hook` parameter and always binds `None`, which syncs, and `_core` is a private module (rule 4
 keeps tests out of it). Not built: updating an item
 in place, and a handle's `sample` of a
 walk and running a tool outside any step (model.md §7).
 
 ### Poke, Now, Changed
-Python aliases in `handles.py` · new
+Python aliases in `_handles.py` · new
 
 `Poke = Callable[[], None]`: the driver's poke, which tells the pump a handle
 call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
@@ -1468,7 +1469,7 @@ and core's busy rules apply (model.md §7). A question lives only while its `ask
 that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it.
 
 ### OpenQuestion
-`tau.OpenQuestion(id, to, text, schema)` (`events.py`) · D16 · new
+`tau.OpenQuestion(id, to, text, schema)` (`_events.py`) · D16 · new
 
 What a client sees of an open question (see **question**): `schema` is the JSON Schema of the
 answer with the named types' `"format"`. A plain frozen value.
@@ -1514,14 +1515,14 @@ provider that does is `examples/retry.py` (`RetryProvider`); it reads `SampleErr
 `retry_after` and the `httpx` error in `__cause__`.
 
 ### builtin_providers
-`tau.builtin_providers(environ)` (module `tau.providers`) · D15 · new
+`tau.builtin_providers(environ)` (module `tau._providers`) · D15 · new
 
 The built-in providers by name, `{"openai": OpenAIProvider, "anthropic": AnthropicProvider,
 "gemini": GeminiProvider, "mock": MockProvider}`: what the CLI and the examples give `Driver` and
 `check_config`. `environ` is where the hosted providers look up keys. The caller closes them.
 
 ### OpenAIProvider
-`tau.providers.openai.OpenAIProvider` · new
+`tau.OpenAIProvider` · new
 
 The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
 Is handed the resolved `ModelConfig` as `sample(walk, model, tools)`; it parses no node data. The request carries `model`,
@@ -1590,7 +1591,7 @@ end, so the connection returns to the pool. Constructor: `transport`
 `timeout`. The request is built inside `sample` and is not public.
 
 ### AnthropicProvider
-`tau.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new
+`tau.AnthropicProvider`, name `"anthropic"` · D15 · new
 
 The provider for the Anthropic Messages API (`POST {base_url}/v1/messages`, SSE; `base_url`
 is the API root, `https://api.anthropic.com` when unset; one ending in `/v1` is a `check`
@@ -1630,16 +1631,16 @@ whose `status` is the response's, or for an event the status its `type` stands f
 `overloaded_error`), with `retry_after` from the header. Client handling is `Connection`'s.
 
 ### _anthropic_request (the Anthropic request module)
-`tau.providers._anthropic_request` · D15 · new
+`tau._providers._anthropic_request` · D15 · new
 
-The walk as an Anthropic request, split from `providers/anthropic.py` (which reads the
+The walk as an Anthropic request, split from `_providers/anthropic.py` (which reads the
 response) to stay under the file-size ratchet: `conversation(walk, manual_thinking, has_tools)`
 gives `system` and `messages`, `tools_array`, and `breakpoints` the cache marks. It
 applies `turns` and holds every rule above that turns a walk into text instead of failing it.
 Private: the shapes may change with the next provider.
 
 ### _wire (the provider helpers module)
-`tau.providers._wire` · D15 · new
+`tau._providers._wire` · D15 · new
 
 What every hosted provider shares over HTTP: `retry_after` (a `Retry-After` header as
 seconds, `None` when not finite), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
@@ -1659,7 +1660,7 @@ and infinity are invalid; a lone surrogate is a `SampleError`); `SampleError`s f
 never quote the header; the `httpx` error is the `__cause__`. Private to the package.
 
 ### GeminiProvider
-`tau.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
+`tau.GeminiProvider`, name `"gemini"` · D15 · new
 
 The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
 `OpenAIProvider` (`Connection`: one client per loop, `ProviderClosed`, `status` and `retry_after`, the
@@ -1710,7 +1711,7 @@ are refused; its `generationConfig` merges into ours, and may not set `candidate
 A walk ending in a `model` turn fails the sample before any request.
 
 ### MockProvider
-`tau.providers.mock.MockProvider`, name `"mock"` · D15 · new
+`tau.MockProvider`, name `"mock"` · D15 · new
 
 Hits no network and needs no key. It streams a reply as `TextDelta`s, a word and the
 space after it each, with a delay before each; then yields the whole `Text` and a
@@ -1723,7 +1724,7 @@ holding exactly the text streamed. It fails the sample if the walk has no user t
 and there is no `reply`.
 
 ### tool, Tool
-`tau.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
+`tau.Tool` (protocol, `_protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
 
 The contract the driver and providers depend on: `name`, `description`,
 `parameters` (a JSON Schema object for the arguments), and
@@ -1777,11 +1778,11 @@ that is not callable, a misspelt `pre_*`/`post_*` attribute), two tools, command
 with one name, a function that takes a handle given as a driver tool, a `tools` or `commands`
 that is not a sequence, an options type that is not a frozen dataclass of the language, and
 `ask(expect=...)` of a type outside the language. `check_tools` and `check_extensions`
-(`protocols.py`) make the contract checks and return the tools by name (with the names of those
+(`_protocols.py`) make the contract checks and return the tools by name (with the names of those
 that take progress) and the extensions.
 
 ### values, Kind, Context, Field, Form
-`tau._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau.Form` · D16 · new
+`tau._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau.Form`, `tau.Json` (`dict[str, object]`, what a schema or decoded JSON object is typed as) · D16 · new
 
 The one type language: a Python type hint becomes a `Kind` holding its `schema` (for a
 client, named types with `"format"`), its `model_schema` (without the format, which no
@@ -1925,7 +1926,7 @@ extensions=)` is the check `tau config check` makes for the extensions it knows,
 that loads others can pass them.
 
 ### Handles
-`tau.handles.Handles` · D16 · new
+`tau._handles.Handles` · D16 · new
 
 What the driver wires into every handle it makes (session, question call, clock, `poke`,
 `changed`, options), with `cursor(id, extension, runner=None)` (`runner`: the client of the
@@ -1982,7 +1983,7 @@ functions, made `FunctionTool`s, and `Tool` objects), with the extension that li
 driver then runs `check_tools` over the whole.
 
 ### check_extensions
-`check_extensions` (`protocols.py`) · new
+`check_extensions` (`_protocols.py`) · new
 
 Raised as a `DefinitionError` by `Driver.__init__` for an object that is not an `Extension`,
 naming it: a missing, non-`str` or empty `name`, a `name` that is not letters, digits, `_` and `-`
@@ -2005,7 +2006,7 @@ object. `TypeError` for a non-`str`, `ValueError` for text that is not a JSON ob
 (`NaN` and `Infinity` are not JSON).
 
 ### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
-`tau.ReadTool` and the others, `tau.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
+`tau.ReadTool` and the others, `tau.base_tools(cwd, ...)` (`_base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
 
 Four `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
 PyO3) and whose `call` runs it on a worker thread with the GIL released, so
@@ -2160,7 +2161,7 @@ constructor argument raises `ValueError`. Python code uses the `Tool` classes
 above instead.
 
 ### Finish
-`tau.Finish` (`protocols.py`) · new
+`tau.Finish` (`_protocols.py`) · new
 
 What a provider yields last: `Finish(stop, reason, meta)`, the normalised `Stop`,
 the provider's own string (`None` if it has none), and the response `meta`
@@ -2186,7 +2187,7 @@ program holds: a `Client`, with an id.
 
 ### Client, LocalClient
 `tau.Client` (a `Protocol`), `tau.LocalClient` (made by `Driver.client(id, *,
-buffer=256)`; `client.py`) · D16 · new
+buffer=256)`; `_client.py`) · D16 · new
 
 A frontend's whole view of a session (in process, or over the wire as a `RemoteClient`); it never
 touches `Driver` or `Session`. Async calls that
@@ -2288,7 +2289,7 @@ another user owns it or can write it, and there is no token. A served session mu
 (`--no-session` has no id to name its files). `python -m tau` is the `tau` command.
 
 ### RemoteClient, hello, Welcome, end
-`tau.RemoteClient`, `tau.Welcome` (`remote.py`, `_protocol.py`) · D21 §3, §9 · new
+`tau.RemoteClient`, `tau.Welcome` (`_remote.py`, `_protocol.py`) · D21 §3, §9 · new
 
 `await RemoteClient.connect(socket, client, *, buffer=256)` dials the Unix socket, says **hello**
 (`{protocol, client, buffer?}`; a different protocol is `ProtocolMismatch`, a `RuntimeError`, and
@@ -2313,7 +2314,7 @@ driver is running, change, publish what changed, wake the pump. It exists so tha
 call a frontend makes.
 
 ### event
-`tau.Event` (`events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
+`tau.Event` (`_events.py`) · D15, D16 · retires `AgentEvent`, `WireEvent`, status
 
 What a client hears: `Live | CursorView | CursorGone | Labels | Appended | Notice`. Small state
 is sent whole whenever it changes, to every client, for every cursor; `Live` goes to clients
@@ -2327,7 +2328,7 @@ holds schemas (dicts), so it is not hashable. What an extension shows (`cursor.s
 
 ### CursorView
 `tau.CursorView(cursor, at, busy, auto, questions, items, ending, hook_error, model, shown)`
-(`events.py`) · D16 · new (the event D16 calls `CursorState`; that name is the read type of
+(`_events.py`) · D16 · new (the event D16 calls `CursorState`; that name is the read type of
 `Session.cursor`)
 
 One cursor as a client sees it, whole: `at`, `busy`, `auto`, its open `questions`
@@ -2361,19 +2362,19 @@ prints a change as `[extension: text]` and a removal as `[extension: cleared]`. 
 handle has no `show` yet.
 
 ### HookFailure
-`tau.HookFailure(extension, point, error)` (`events.py`) · D16 · new, retires `HookError`
+`tau.HookFailure(extension, point, error)` (`_events.py`) · D16 · new, retires `HookError`
 
 A cursor hook of `extension` raised, or broke its contract, at hook `point`; `error` is
 `"Type: msg"`, the text a `post_step` hook sees as `Ending.Failed`. Never for a tool hook (that
 is the `Err` in `Results`).
 
 ### Labels
-`tau.Labels(labels)` (`events.py`) · D16 · new
+`tau.Labels(labels)` (`_events.py`) · D16 · new
 
 Every label and its cursor, `((label, cursor), ...)` in label order.
 
 ### Appended
-`tau.Appended(nodes)` (`events.py`) · D16 · new, retires `Saved`
+`tau.Appended(nodes)` (`_events.py`) · D16 · new, retires `Saved`
 
 Nodes added to the tree, in id order, bodies included. A client drops a call's `ToolProgress`
 layer when the `Results` node answering it arrives, and a cursor's reply layer (text, thinking
@@ -2381,13 +2382,13 @@ and call deltas) when its `CursorView` has a different `at` or is not busy. A ca
 before its batch is whole adds no node, so nothing is sent.
 
 ### Notice
-`tau.Notice(text)` (`events.py`) · D16 · new
+`tau.Notice(text)` (`_events.py`) · D16 · new
 
 A message for one client, or for every client: `cursor.tell` (without `to`: all), an input a hook
 refused. Sent only to the clients with that id; dropped if there is none connected.
 
 ### CutOff
-`tau.CutOff` (`events.py`; a `ConnectionError`) · D16 · new
+`tau.CutOff` (`_events.py`; a `ConnectionError`) · D16 · new
 
 What a client's stream ends with when its `Appended` and `Notice` backlog passed its buffer.
 Nothing buffered is delivered. The client is disconnected; it reconnects to a fresh snapshot.
@@ -2420,7 +2421,7 @@ second concurrent `anext` raises `RuntimeError`. `take()` removes and returns wh
 local one is.
 
 ### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
-`tau.events` (exported) · D15 · new
+`tau.TextDelta`, `ThinkingDelta`, `CallNamed`, `CallArgs` and `Delta` (`_events.py`) · D15 · new
 
 What a provider's `sample` yields while a part is still arriving, with no cursor
 (the provider does not know it): `TextDelta(text)`, `ThinkingDelta(text)`,
@@ -2428,7 +2429,7 @@ What a provider's `sample` yields while a part is still arriving, with no cursor
 of its `args_raw`). `Delta` is their union: what a provider may yield. Never saved.
 
 ### tool progress, ToolProgress
-`tau.ToolProgress(node, call_id, text)` (`events.py`) · D15 · new
+`tau.ToolProgress(node, call_id, text)` (`_events.py`) · D15 · new
 
 What a running tool shows through its progress callback: `text` is the output that arrived
 since the previous `ToolProgress` of the same call, not the whole so far. The call is `node`
@@ -2439,12 +2440,12 @@ holds only the `Outcome` the tool returns. Obeys the buffer rules of any `Live` 
 buffer drops it).
 
 ### LiveDelta
-`tau.LiveDelta` (`events.py`) · D15 · new
+`tau.LiveDelta` (`_events.py`) · D15 · new
 
 `Delta | ToolProgress`: what a `Live` carries. A provider's `sample` yields only `Delta`.
 
 ### progress callback, Progress
-`tau.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
+`tau.Progress` = `Callable[[str], None]` (`_protocols.py`) · D15 · new
 
 What a tool is given to show partial output: `progress(text)`. A hand-written `Tool` opts in by
 giving `call` a parameter named `progress`, detected once when the driver is built
@@ -2470,7 +2471,7 @@ layer, keyed by `(node, call_id)`, when a `Results` node of that batch answering
 in an `Appended`.
 
 ### driver
-Python `tau.driver.Driver` · new
+Python `tau.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
 place that awaits. `Driver(session, providers, catalog, *, tools, extensions, clock, user_config)`:
@@ -2526,7 +2527,7 @@ It reports `(cursor, Answer)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
 ### DriverState
-`tau.driver.DriverState` (not exported), from `Driver.state()` · new
+`tau.DriverState` (`_driver.py`), from `Driver.state()` · new
 
 A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
 `queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
@@ -2561,7 +2562,7 @@ driver lacks fails the step. Every `pre_sample` answer replaces the last offer: 
 starts at `None` again, also after a step that was halted, answered by a draft, aborted or closed.
 
 ### CallDraft
-`tau.CallDraft` (`protocols.py`) · new
+`tau.CallDraft` (`_protocols.py`) · new
 
 The call draft a tool hook receives: `{id, tool, args_raw, outcome?}`. `id` and `tool` are
 read-only (an edit would be ignored, so setting one raises `AttributeError`); `args_raw` and
@@ -2584,7 +2585,7 @@ server asked to wait (`None` if it did not say). A retrying wrapper provider rea
 (D15); nothing in core or the driver does.
 
 ### ProviderClosed
-`tau.ProviderClosed` (a `SampleError`; `protocols.py`) · D15 · new
+`tau.ProviderClosed` (a `SampleError`; `_protocols.py`) · D15 · new
 
 What a sample raises when its provider was closed (`aclose()`) before it started, or while
 it ran. Not transient: a retry cannot succeed, so a retrying wrapper provider passes it on
@@ -2670,6 +2671,28 @@ the Python `Session.dropped` was removed, because nothing but a test asserting
 
 An exclusive `flock` on the log, held while a `Store` lives. Only the holder
 writes and runs steps; a second open is `Error::Leased`.
+
+## The public API
+
+### public surface, group, made_by_tau
+`docs/api/groups.toml`, `docs/api/README.md`, `scripts/api_docs.py` · Phase 7C · new
+
+What one of three readers needs (an extension author, a frontend author, an embedder), and
+nothing else. A **group** is a reader's reason to open a set of names (`extensions`, `clients`,
+`events`, ...); `groups.toml` lists them, every name of `tau.__all__` is in exactly one, and a
+name is `Name` (`tau.Name`) or `module.name` for the public modules `tau.cli`, `tau.commandline`
+and `tau.trace`. Every other module's name starts with an underscore. **`made_by_tau`** lists the
+classes tau makes and hands over (a handle, a `LocalClient`): their constructors are not part of
+the surface. A public signature names only public types; `api_docs.py --check` fails otherwise.
+
+### surface manifest, reference
+`docs/api/surface.txt`, `docs/reference/` · Phase 7C · new
+
+Both generated from the code by `scripts/api_docs.py` and compared by `check.sh`, so a change
+to the API is a diff. The manifest is every public name with its signature, sorted. The
+reference is one Markdown page per group, from the docstrings. A native type's docstring is its
+Rust `///`; `_core.pyi` carries the same text (`api_docs.py --sync-stub` copies it) and the check
+holds the two equal. `scripts/ratchet.py` counts public names without a docstring.
 
 ## Testing
 

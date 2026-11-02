@@ -11,7 +11,7 @@ from collections.abc import Callable, Collection, Sequence
 from types import TracebackType
 
 from tau._core import Ending, Session
-from tau.events import (
+from tau._events import (
     Appended,
     CursorGone,
     CursorView,

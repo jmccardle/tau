@@ -27,8 +27,7 @@ from wire import (
 )
 from world import World, tau
 
-from tau import Body, ModelConfig, Node, Part, Replay, Stop
-from tau.providers.anthropic import AnthropicProvider
+from tau import AnthropicProvider, Body, ModelConfig, Node, Part, Replay, Stop
 
 RESOLVED = ANTHROPIC.model(None)  # the provider's own URL
 SIGNED = Replay("anthropic", json.dumps({"type": "thinking", "signature": SIGNATURE}))

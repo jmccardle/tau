@@ -24,7 +24,7 @@ __all__ = ["TraceError", "capture", "span", "start", "stop"]
 TraceError = _core.TraceError
 
 # Python's tracks are numbered from here, clear of the native threads' 0, 1, 2, ...
-FIRST_TRACK = 1000
+_FIRST_TRACK = 1000
 
 _events: list[dict[str, Any]] | None = None
 _tracks: dict[int, int] = {}
@@ -56,7 +56,7 @@ class _Span:
         if events is None:
             return
         end = _core.trace_clock()
-        track = _tracks.setdefault(self._task, FIRST_TRACK + len(_tracks))
+        track = _tracks.setdefault(self._task, _FIRST_TRACK + len(_tracks))
         events.append(
             {
                 "ph": "X",
@@ -99,7 +99,7 @@ def _task_id() -> int:
     return 0 if task is None else id(task)
 
 
-def span(kind: str, name: str, **args: object) -> _Span | _Off:
+def span(kind: str, name: str, **args: object) -> contextlib.AbstractContextManager[None]:
     """A context manager timing its block as a span of `kind` (`hook`, `sample`,
     `tool`, `driver`) and `name`. A no-op unless a trace is running."""
     if _events is None:
@@ -133,7 +133,7 @@ def stop() -> Path:
             "pid": 1,
             "tid": track,
             "name": "thread_name",
-            "args": {"name": f"python task {track - FIRST_TRACK}"},
+            "args": {"name": f"python task {track - _FIRST_TRACK}"},
         }
         for track in tracks.values()
     )

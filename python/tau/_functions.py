@@ -20,9 +20,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import cast, get_type_hints
 
+from tau._handles import Cursor, NodeHandle, TreeHandle
+from tau._protocols import Progress
 from tau._values import DefinitionError, Field, field_of
-from tau.handles import Cursor, NodeHandle, TreeHandle
-from tau.protocols import Progress
 
 # Injection kinds, by what fills them.
 INJECT_PROGRESS = "progress"

@@ -76,7 +76,7 @@ WISH (lines 375-383).
    loaded"; the edit-validate half of the loop, none of the swap. → Gap left open, WISH sketch at
    375. **Severity: blocker** for the question as posed ("hot-reload into the running driver").
 6. **Try the modified harness on a scratch branch** → `model.md` §7 says a handle can "sample a
-   walk or run a tool outside any step"; `handles.py` has neither, so a probe cannot just ask the
+   walk or run a tool outside any step"; `_handles.py` has neither, so a probe cannot just ask the
    model. → A whole cursor: `client.open`, `input`, `step`. A handle *can* start it (`open`, `send`)
    but only the driver can wait for it (`Driver.rest`); that is why probe needs `attach`.
    → Implemented. **Severity: awkward.** Gotcha found on the way: `CursorId` can be a tool

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Annotated
 
-from tau.handles import Cursor, Subject
+from tau._handles import Cursor, Subject
 
 
 @dataclass(frozen=True)

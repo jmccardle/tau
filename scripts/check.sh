@@ -36,4 +36,5 @@ step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q tests
 step "wire coding";  "$PY" scripts/check_wire.py
 step "wire schema";  "$PY" scripts/schema.py --check   # docs/protocol.schema.json is generated (D21 §8)
+step "api docs";     "$PY" scripts/api_docs.py --check   # docs/api/surface.txt, docs/reference/, and _core.pyi's docstrings against the built module
 step "diagrams";     scripts/diagrams.sh --check   # rule 6; builds a feature-enabled core apart

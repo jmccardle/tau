@@ -19,7 +19,7 @@ import re
 from collections.abc import Iterable
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
-from tau.sessions import SessionInfo
+from tau._sessions import SessionInfo
 
 _TICKS = re.compile(r"`+")
 _STOPS = ((Stop.Length, "length"), (Stop.Interrupted, "interrupted"), (Stop.Error, "error"))

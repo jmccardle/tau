@@ -2,16 +2,23 @@
 
 from importlib.metadata import version
 
+from tau._base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
+from tau._client import Client, LocalClient
+from tau._clock import SystemClock
 from tau._commands import CommandFailed
 from tau._config import ConfigError, ModelConfig, model_config
 from tau._config_layers import (
     ConfigProblem,
+    Layer,
     LayerText,
     ModelCatalog,
+    Origin,
     ResolvedModel,
+    Severity,
     check_config,
     read_models,
 )
+from tau._context import ContextFileError, PromptSource, SystemPrompt, system_prompt
 from tau._core import (
     Answer,
     Author,
@@ -59,31 +66,8 @@ from tau._core import (
     WrongAnswer,
 )
 from tau._dotenv import DotenvError
-from tau._extensions import (
-    ExtensionLoadError,
-    ExtensionSource,
-    list_extensions,
-    load_extensions,
-)
-from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
-from tau._serve import Server
-from tau._startup import (
-    LoadedConfig,
-    Prompts,
-    load_config,
-    prompts,
-    select_model,
-)
-from tau._tools import ToolError
-from tau._trust import Trusted, TrustError, UntrustedProject, safe_block
-from tau._user_config import UserConfig
-from tau._values import CursorId, DefinitionError, Form, LabelName, Model, NodeId
-from tau.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
-from tau.client import Client, LocalClient
-from tau.clock import SystemClock
-from tau.context import ContextFileError, PromptSource, SystemPrompt, system_prompt
-from tau.driver import Driver
-from tau.events import (
+from tau._driver import Driver, DriverState
+from tau._events import (
     Appended,
     CallArgs,
     CallNamed,
@@ -102,9 +86,20 @@ from tau.events import (
     ThinkingDelta,
     ToolProgress,
 )
-from tau.handles import Cursor, NodeHandle, Subject, TreeHandle
-from tau.markdown import to_markdown
-from tau.protocols import (
+from tau._extensions import (
+    ExtensionLoadError,
+    ExtensionSource,
+    SourceKind,
+    SourceState,
+    list_extensions,
+    load_extensions,
+)
+from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
+from tau._markdown import to_markdown
+from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
+from tau._protocols import (
+    CURSOR_POINTS,
+    TOOL_POINTS,
     CallDraft,
     Clock,
     CursorHook,
@@ -118,10 +113,15 @@ from tau.protocols import (
     ToolHook,
     replay_for,
 )
-from tau.providers import builtin_providers
-from tau.remote import RemoteClient
-from tau.session_start import Started, SystemText, start_session
-from tau.sessions import (
+from tau._providers import builtin_providers
+from tau._providers.anthropic import AnthropicProvider
+from tau._providers.gemini import GeminiProvider
+from tau._providers.mock import MockProvider
+from tau._providers.openai import OpenAIProvider
+from tau._remote import RemoteClient
+from tau._serve import Server
+from tau._session_start import Started, SystemText, start_session
+from tau._sessions import (
     ForkedFrom,
     PickSession,
     SessionFlags,
@@ -133,14 +133,32 @@ from tau.sessions import (
     list_sessions,
     rename_session,
 )
-from tau.step_limit import StepLimit
+from tau._startup import (
+    Ask,
+    LoadedConfig,
+    Pick,
+    Prompts,
+    load_config,
+    prompts,
+    select_model,
+)
+from tau._step_limit import StepLimit
+from tau._tools import ToolError
+from tau._trust import Trusted, TrustError, UntrustedProject, safe_block
+from tau._user_config import UserConfig
+from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
+from tau.commandline import Parsed, UnknownCommand
 
 __version__ = version("ffwf-tau")
 
 __all__ = [
+    "CURSOR_POINTS",
     "PROTOCOL",
+    "TOOL_POINTS",
     "Answer",
+    "AnthropicProvider",
     "Appended",
+    "Ask",
     "Author",
     "BadRecord",
     "BadReplay",
@@ -172,6 +190,7 @@ __all__ = [
     "DotenvError",
     "Draft",
     "Driver",
+    "DriverState",
     "DuplicateCall",
     "Ending",
     "Event",
@@ -182,20 +201,24 @@ __all__ = [
     "Finish",
     "ForkedFrom",
     "Form",
+    "GeminiProvider",
     "GrepTool",
     "Hook",
     "HookFailure",
     "Item",
     "ItemData",
     "Job",
+    "Json",
     "LabelName",
     "Labels",
+    "Layer",
     "LayerText",
     "Leased",
     "Live",
     "LiveDelta",
     "LoadedConfig",
     "LocalClient",
+    "MockProvider",
     "Model",
     "ModelCatalog",
     "ModelConfig",
@@ -212,9 +235,13 @@ __all__ = [
     "NotInHook",
     "NotPending",
     "Notice",
+    "OpenAIProvider",
     "OpenQuestion",
+    "Origin",
     "Outcome",
+    "Parsed",
     "Part",
+    "Pick",
     "PickSession",
     "Poisoned",
     "Progress",
@@ -235,6 +262,9 @@ __all__ = [
     "Session",
     "SessionFlags",
     "SessionInfo",
+    "Severity",
+    "SourceKind",
+    "SourceState",
     "Started",
     "StepLimit",
     "Stop",
@@ -255,6 +285,7 @@ __all__ = [
     "TrustError",
     "Trusted",
     "Undecodable",
+    "UnknownCommand",
     "UnknownSession",
     "UntrustedProject",
     "UserConfig",

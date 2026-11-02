@@ -33,17 +33,15 @@ from pathlib import Path
 
 from tau._builtin import SessionName
 from tau._choice import SessionChoice, choose_session
+from tau._clock import SystemClock
 from tau._config import ConfigError, config_fields, model_config
+from tau._context import system_prompt
 from tau._core import Leased, Session
+from tau._driver import Driver
 from tau._extensions import absolute_explicit, load_extensions
-from tau._startup import LoadedConfig, Prompts, load_config, select_model
-from tau._trust import tau_home
-from tau.clock import SystemClock
-from tau.context import system_prompt
-from tau.driver import Driver
-from tau.protocols import Clock, Extension, Provider
-from tau.providers import builtin_providers
-from tau.sessions import (
+from tau._protocols import Clock, Extension, Provider
+from tau._providers import builtin_providers
+from tau._sessions import (
     ForkedFrom,
     PickSession,
     SessionFlags,
@@ -52,6 +50,8 @@ from tau.sessions import (
     read_name,
     rename_session,
 )
+from tau._startup import LoadedConfig, Prompts, load_config, select_model
+from tau._trust import tau_home
 
 SystemText = Callable[[Path, LoadedConfig], str]
 """What a new session's `System` node says: given the session's working directory and the loaded

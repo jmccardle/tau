@@ -290,7 +290,7 @@ gamemaster and forest) needs B1, B2 and C1 together:
     altogether).
   - `close_cursor` on `Client`, `LocalClient` and tree handles.
   - `closed()` on tree handles.
-  - `CursorGone` in `events.py` and the snapshot; the hub's diff and cleanup.
+  - `CursorGone` in `_events.py` and the snapshot; the hub's diff and cleanup.
 - **I7.** The replay property tests need:
   - a `Close` op that picks among open cursors. The tests' `cursors()` helper
     counts ids with `at(c).is_ok()` until the first failure, so it must count every

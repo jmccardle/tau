@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol, cast
 
 from tau import _core
+from tau._client import Client
 from tau._commands import CommandFailed
 from tau._config import ConfigError
 from tau._core import (
@@ -40,10 +41,9 @@ from tau._core import (
     NoSuchLabel,
     NoSuchNode,
 )
+from tau._events import CutOff, Event, LiveDelta
 from tau._values import Json
-from tau.client import Client
 from tau.commandline import UnknownCommand
-from tau.events import CutOff, Event, LiveDelta
 
 PROTOCOL: Final = 1
 """The wire protocol's version. D12: a version marks a released protocol. It goes up by one at a

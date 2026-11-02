@@ -12,8 +12,8 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 from tau._core import Body, Node, Outcome, Part, Stop
-from tau.protocols import SampleError
-from tau.providers._wire import Json, has_lone_surrogate, strict_loads
+from tau._protocols import SampleError
+from tau._providers._wire import Json, has_lone_surrogate, strict_loads
 
 # The stops a reply is noted for when its calls cannot run (model.md 10.6).
 _STOP_NOTES: dict[Stop, str] = {

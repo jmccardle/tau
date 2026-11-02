@@ -37,10 +37,9 @@ from tau._commands import CONFIG, ambiguous
 from tau._values import Form, Json
 
 if TYPE_CHECKING:  # client imports us: it returns a `Parsed`
-    from tau.client import Client
+    from tau._client import Client
 
-NO_OPTIONS: Mapping[str, Form] = MappingProxyType({})
-SAVE = "--save"
+_SAVE = "--save"
 """The flag of `/config <extension> name=value --save`: write to the user's file too."""
 
 
@@ -166,7 +165,9 @@ def _find(name: str, commands: Sequence[Form]) -> Form:
     return found[0]
 
 
-def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_OPTIONS) -> Parsed:
+def parse(
+    line: str, commands: Sequence[Form], options: Mapping[str, Form] = MappingProxyType({})
+) -> Parsed:
     """Read a line that starts with `/`. `UnknownCommand` if no command has the name, plain
     `LookupError` ("/note is two commands: /a:note, /b:note") if a bare name is several
     extensions' commands, `ValueError` naming the problem for a line that is not a command
@@ -187,10 +188,10 @@ def parse(line: str, commands: Sequence[Form], options: Mapping[str, Form] = NO_
     form = options.get(extension)
     if form is None:
         raise ValueError(f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)}")
-    save = SAVE in words[1:]
-    parsed = _read(form, [w for w in words[1:] if w != SAVE])
+    save = _SAVE in words[1:]
+    parsed = _read(form, [w for w in words[1:] if w != _SAVE])
     if save and not parsed.args:
-        raise ValueError(f"/{CONFIG}: {SAVE} needs a name=value to save")
+        raise ValueError(f"/{CONFIG}: {_SAVE} needs a name=value to save")
     return replace(parsed, extension=extension, save=save)
 
 
@@ -323,7 +324,7 @@ async def completions(
     commands: Sequence[Form],
     client: "Client",
     cursor: int,
-    options: Mapping[str, Form] = NO_OPTIONS,
+    options: Mapping[str, Form] = MappingProxyType({}),
 ) -> list[str]:
     """What could finish the word being typed at the end of `line`, each a whole word to
     replace it with (quoted if it needs to be): command names after `/`, then for each
@@ -344,7 +345,7 @@ async def completions(
         chosen = options.get(_extension(rest[0]))
         if chosen is None:
             return []
-        form, rest = chosen, [w for w in rest[1:] if w != SAVE]
+        form, rest = chosen, [w for w in rest[1:] if w != _SAVE]
     wanted = _wanted(form, rest, current)
     if wanted is None:
         return []

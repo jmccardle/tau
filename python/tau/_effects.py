@@ -26,11 +26,9 @@ from tau._core import (
     SampleEnd,
     Session,
 )
-from tau._tools import FunctionTool, ToolError
-from tau._values import Context
-from tau.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
-from tau.handles import Cursor, NodeHandle, Subject
-from tau.protocols import (
+from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
+from tau._handles import Cursor, NodeHandle, Subject
+from tau._protocols import (
     CallDraft,
     CursorHook,
     Extension,
@@ -42,6 +40,8 @@ from tau.protocols import (
     Tool,
     ToolHook,
 )
+from tau._tools import FunctionTool, ToolError
+from tau._values import Context
 
 
 async def run_hooks(  # noqa: PLR0913, PLR0917 - a hook job and all it is run with

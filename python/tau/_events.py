@@ -155,6 +155,7 @@ class Notice:
 
 
 Event = Live | CursorView | CursorGone | Labels | Appended | Notice
+"""Everything a `Client`'s stream yields: a live event (never saved) or one of the saved ones."""
 
 
 class CutOff(ConnectionError):

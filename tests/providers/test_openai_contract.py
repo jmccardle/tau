@@ -29,13 +29,13 @@ from tau import (
     CallNamed,
     Finish,
     ModelConfig,
+    OpenAIProvider,
     Part,
+    Provider,
     Stop,
     TextDelta,
     ThinkingDelta,
 )
-from tau.protocols import Provider
-from tau.providers.openai import OpenAIProvider
 
 
 def with_options(**options: object) -> ModelConfig:
