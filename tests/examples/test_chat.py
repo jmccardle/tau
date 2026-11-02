@@ -501,7 +501,7 @@ def test_the_chat_takes_the_librarys_extension_flags() -> None:
 
 
 def test_the_step_limit_comes_from_the_loader_not_from_the_chat(world: World) -> None:
-    assert [e.name for e in load(world)] == ["step_limit"]
+    assert [e.name for e in load(world)] == ["base_tools", "step_limit"]
 
 
 @pytest.mark.parametrize("path", sorted(SPECULATIVE.glob("*.py")), ids=lambda p: p.stem)
@@ -509,7 +509,7 @@ def test_every_speculative_example_loads_unchanged_and_builds_a_driver(
     tmp_path: Path, world: World, path: Path
 ) -> None:
     loaded = load(world, path)
-    assert [e.name for e in loaded] == ["step_limit", path.stem]
+    assert [e.name for e in loaded] == ["base_tools", "step_limit", path.stem]
     session = Session.create(model_config("scripted"), "sys", 0, tmp_path / "s")
     models = read_models(
         cli={"models": {"scripted": {"model": "scripted", "provider": "scripted"}}}
@@ -533,7 +533,7 @@ def test_a_loaded_class_is_a_working_extension_in_the_chat(tmp_path: Path, world
     )
 
     async def scenario() -> None:
-        extras = load(world, file)[1:]  # the chat's own start adds step_limit
+        extras = load(world, file)[2:]  # past base_tools, step_limit: the chat adds its own
         window, driver, session, screen = await start(tmp_path, Scripted(), Typed(), *extras)
         await window.line("/shout hello")
         await window.finished()
@@ -559,7 +559,7 @@ def test_two_files_with_the_same_name_are_two_modules(tmp_path: Path, world: Wor
             f'class {extension}:\n    name = "{folder}"\n    options = Options\n\n\n'
             f"extensions = [{extension}()]\n",
         )
-        loaded += load(world, file)[1:]  # the one key is `ext`: a second file in one load shadows
+        loaded += load(world, file)[2:]  # the one key is `ext`: a second file in one load shadows
     session = Session.create(model_config("scripted"), "sys", 0, tmp_path / "s")
     models = read_models(
         cli={"models": {"scripted": {"model": "scripted", "provider": "scripted"}}}

@@ -23,7 +23,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 5 extensions | **done** (2026-10-31): D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage and signed off 2026-10-31 (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
 | 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built, reviewed and signed off 2026-11-01. Stage 7B (D21, the wire) built, reviewed and signed off 2026-11-01. Stage 7C (API docs: surface, reference, docstrings, guides) built, reviewed and signed off 2026-11-02. Exit gap: tau-search's own extension cannot load until its port after 0.16.0; the entry point is tested with fixture packages. |
-| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. 8A built and reviewed 2026-11-02, stopped for review; D22–D24 proposed and fact-checked, awaiting rulings. |
+| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. D22–D24 accepted 2026-11-02; 8A signed off 2026-11-02; 8B next. |
 | 9 | not started; see Phases. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -322,7 +322,9 @@ Every frontend needs these before it can start a session.
   against `Client`.
 - `tau -p`, with text or JSON output. The `-p` client is the one that
   answers questions: with `--answer` rules (0.15's `--ui-defaults`), or it
-  declines. Ruling 1 holds, because someone does answer.
+  declines. Ruling 1 holds, because someone does answer. On a session held by
+  a running `tau serve`, `-p` connects to that server (D22 §8); attached, it
+  answers or declines only questions on its own cursor.
 - `--version` and `--verbose`.
 - A ratatui example TUI, a Rust client of `tau serve` in `examples/ratatui/`
   (its own Cargo package, outside the workspace and the ratchet). It is the
@@ -330,7 +332,8 @@ Every frontend needs these before it can start a session.
 
 **Base tools:** the shared start (`tau.start_session`, D18 §5) gets them from a built-in
 extension, `base_tools`, loaded like `step_limit` and turned off with `load: {base_tools: false}`
-or `--no-extensions` (decided 2026-11-01). Then `edit` (search and replace, reporting a diff; in
+or `tau ext disable base_tools` (decided 2026-11-01). `--no-extensions` skips the discovered
+sources only and leaves every built-in as `load` says (ruling 2026-11-02, as D19 §5). Then `edit` (search and replace, reporting a diff; in
 Rust beside `write`), and `find` (glob).
 
 **Dropped or deferred from 0.15** (decided 2026-11-01): the `ls` tool (`bash` covers it), the
@@ -340,9 +343,11 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
 - compaction, which needs `context_window` on `ModelConfig` and a token
   estimate;
 - permissions, from the bash_guard prototype;
-- sub-agent, from forest and gamemaster;
-- prune;
-- retry on provider errors (today only `examples/retry.py`);
+- sub-agent, from forest and gamemaster; off by default, and the first cut if 8E runs long;
+- prune, in with the design of D24 §9 (by turns, no model); `/prune` ships, automatic pruning
+  waits for a way to know the cache's state;
+- retry on provider errors (today only `examples/retry.py`): a provider wrapper, on by
+  default, turned off with `load: {retry: false}` (D24 §4);
 - skills and prompt templates (commands that insert text);
 - `@file` attachments;
 - usage: per-turn cost (price fields on `ModelConfig`), session stats, and the

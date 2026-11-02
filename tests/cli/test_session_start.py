@@ -674,7 +674,12 @@ def test_load_false_in_the_config_starts_a_session_without_them(configured: Worl
     assert offered(configured) == ""
 
 
-def test_no_extensions_starts_a_session_without_them(configured: World) -> None:
+def test_no_extensions_leaves_them_offered(configured: World) -> None:
+    assert offered(configured, "--no-extensions") == BASE_TOOLS
+
+
+def test_load_false_beats_no_extensions_for_them(configured: World) -> None:
+    configured.user_config({**MOCK, "load": {"base_tools": False}})
     assert offered(configured, "--no-extensions") == ""
 
 

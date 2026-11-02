@@ -136,7 +136,7 @@ async def test_with_load_false_the_model_is_offered_none_of_them(
 
 
 @scenario
-async def test_with_no_extensions_the_model_is_offered_none_of_them(
+async def test_with_no_extensions_the_model_is_still_offered_them(
     tmp_path: Path, world: World
 ) -> None:
     provider = FakeProvider([Reply([Part.Text("hi")])])
@@ -146,5 +146,5 @@ async def test_with_no_extensions_the_model_is_offered_none_of_them(
     )
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == []
+    assert provider.requests[0].tool_names == ["read", "write", "edit", "grep", "find", "bash"]
     await h.close()

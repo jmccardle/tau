@@ -28,11 +28,11 @@ being watched (an extension that sent to it, another client) is shown under thei
 cursor (`cursor.show`: plan mode's mode, ralph's iteration) is printed as `[extension: text]`
 when it changes, and `[extension: cleared]` when it goes. Ctrl-D leaves.
 
-The extensions are the library's loader (D19): the built-ins (`step_limit`), installed packages and
-drop-ins in `$TAU_HOME/extensions/` and a trusted project's `.tau/extensions/`, after the
-demo's own.
-`-e PATH` (repeatable) adds a Python file or package directory, `-e KEY` one of the discovered
-sources even when `load` turns it off, and `--no-extensions` loads no package or drop-in. Naming a
+The extensions are the library's loader (D19): the built-ins (`base_tools`, `step_limit`),
+installed packages and drop-ins in `$TAU_HOME/extensions/` and a trusted project's
+`.tau/extensions/`, after the demo's own. `-e PATH` (repeatable) adds a Python file or package
+directory, `-e KEY` one of the discovered sources even when `load` turns it off, and
+`--no-extensions` loads no package or drop-in (the built-ins follow `load`). Naming a
 path is the consent: it is imported and run with your authority, with no trust check. A file
 provides extensions by one rule: a module with a `name` is the extension itself (as
 examples/speculative/plan_mode.py is); otherwise it defines `extensions = [Ralph(), ...]`, a list of

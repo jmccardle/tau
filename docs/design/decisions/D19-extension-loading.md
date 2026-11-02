@@ -155,8 +155,7 @@ D20's file, if the owner accepts D20 Open 2).
   refused.
 - An `-e` source loads even if `load` turns it off or `--no-extensions` is given. A path needs
   no trust, even inside a project: naming it is the consent (C3).
-- **`--no-extensions`** turns off rows 2-4, and the built-in `base_tools` (Phase 8: a bare run has no
-  tools; `-e base_tools` brings it back); the other built-ins still follow `load`; `-e` still loads.
+- **`--no-extensions`** turns off rows 2-4; built-ins still follow `load`, `-e` still loads.
 
 ### 6. When a source fails: τ does not start
 
@@ -266,7 +265,7 @@ has a version (D12/D13/D17); old records are re-asked. Session files are unchang
 | Refuse two sources with one key | You could neither override a package with your own copy nor `-e` its file. |
 | First-wins command names with pins (0.15); namespacing tools too | Load order would decide what `/note` does. A tool's name is model-facing and recorded, so a rename changes prompts and replay. |
 | A failed discovered source is a notice (0.15 #58) | A guard that fails to import runs the session unguarded (Open 2). |
-| `-e MODULE`; `module:attr`; re-reading project files at import; `--no-extensions` turning off built-ins other than `base_tools` | A fourth form; a second rule beside C3's; the race D13 closed for `config.json`; built-ins are τ's behaviour, switched in `load`. |
+| `-e MODULE`; `module:attr`; re-reading project files at import; `--no-extensions` turning off built-ins | A fourth form; a second rule beside C3's; the race D13 closed for `config.json`; built-ins are τ's behaviour, switched in `load`. |
 
 ## Open (accepted as recommended, 2026-11-01)
 

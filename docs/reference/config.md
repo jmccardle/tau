@@ -542,11 +542,11 @@ The sources are the built-ins that `load` leaves on and, with `discover`, the in
 packages and the user's and the trusted project's drop-ins that it leaves on; then
 `explicit` (`-e` values: paths, or the keys of sources, discovered or built-in, which load
 whatever `load` says; relative paths are taken against the working directory, see
-`absolute_explicit`). Without `discover` (`--no-extensions`) every source is skipped except
-`explicit`: no package, no drop-in and not `base_tools`; the other built-ins (`step_limit`)
-stay as `load` says. `base_tools` is built when this runs and roots its tools at the
-process's working directory then, so a program that calls this must change directory first, as
-`start_session` does.
+`absolute_explicit`). Without `discover` (`--no-extensions`) the packages and drop-ins are
+skipped, `explicit` still loads, and the built-ins (`base_tools`, `step_limit`) stay as `load`
+says. `base_tools` is built when this runs and roots its tools at the process's working
+directory then, so a program that calls this must change directory first, as `start_session`
+does.
 `ExtensionLoadError` naming every source that failed, with the one command that gets past
 each: nothing is started or written by then.
 

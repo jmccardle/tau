@@ -1,6 +1,6 @@
 # D23: The TUI: `tau` opens a Textual app over a `Client`
 
-Status: proposed 2026-11-02. Phase 8, stage 8C. Depends on D16 (clients, questions, forms), D17
+Status: accepted 2026-11-02. Phase 8, stage 8C. Depends on D16 (clients, questions, forms), D17
 (closing cursors), D18 (the catalog, the shared start), D21 (the wire) and D22 §8 (`open_client`,
 attach). Answers `docs/from-0.15.md` §2.9's TUI rows.
 
@@ -32,11 +32,13 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
 
 ### 1. Launch
 
-- `tau [flags]` opens the TUI. Flags: D18's session flags (`-r` included), D19's, D20's, `-m`,
-  `--theme NAME`, `--verbose` (D22 §7: the start report goes to stderr before the screen opens,
+- `tau [flags]` opens the TUI. Flags: D18's session flags (`-r` included), D19's (`--no-extensions`
+  skips discovered sources only, D22 §1), D20's, `-m`, `--set` (D22 §1), `--theme NAME`, `--verbose` (D22 §7: the start report goes to stderr before the screen opens,
   so it is on the terminal after quitting). `--answer` and `--json` are usage errors: there is a
   person, and a screen.
-- A positional message without `-p` is a usage error, as in 0.15 (Open 1).
+- A positional message without `-p` is a usage error, as in 0.15. The first argument already
+  chooses between subcommands and launch (D22 §1), and `tau export` would be a message or a
+  command by spelling; revisit with use.
 - **Order, one asyncio loop:** `-r` runs the picker first (§5) and becomes `--session ID`; then
   `open_client` with terminal prompts, so a trust question is asked on the plain terminal before
   the screen opens; then `await TauApp(...).run_async()` on the same loop as the driver; then
@@ -53,7 +55,8 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
 ### 2. The app's structure
 
 - **`tau.tui`** is a public module (the fourth, beside `tau.cli`, `tau.commandline` and
-  `tau.trace`; this amends CLAUDE.md rule 4's "three public modules" and `docs/api/groups.toml`),
+  `tau.trace`; 8C amends CLAUDE.md's public module list and `docs/api/groups.toml` when it
+  builds it),
   so tests can drive it (rule 4) and others can embed it. Public: `TauApp(client,
   cursor, *, welcome, snapshot, theme=None)` and `SessionPicker` (§5). Everything else is private
   modules under `tau/tui/`, each under the ratchet's 800 lines.
@@ -132,7 +135,7 @@ extension's name (0.15's style guide §2).
 - `tau -r` runs it as its own small app before the start (§1).
 - **In the app** (Ctrl+O), picking a session, or Ctrl+N for a new one, stops cleanly (the
   never-used rule applies) and **re-executes** `tau --session ID` (or `tau`) with the same
-  extension flags, in the same terminal (Open 2). One process holds one session and one working
+  extension flags, in the same terminal. One process holds one session and one working
   directory (D18 §1, D21 §1); re-running the start in a live process would import a second
   project's extensions into the first one's interpreter.
 
@@ -217,7 +220,7 @@ after 0.16.0).
 - **8C-2, the model's shape:** the cursor bar and switching, labels, Ctrl+Z edit-and-resend, the
   tree screen, the session picker (`-r`, Ctrl+O, Ctrl+N by re-exec).
 - **8C-3:** `/config` forms with save, a `/model` picker over `complete(cursor, "model", "")`,
-  persisted theme (Open 3), the render window for long walks, snapshots, the guide page.
+  persisted theme (Ruling 3), the render window for long walks, snapshots, the guide page.
 
 ## Gaps in the `Client` contract and the shared start
 
@@ -230,12 +233,13 @@ the events and the reads. What is missing:
    `first_cursor`. `open_client` computes it from the snapshot.
 3. **A pending input cannot be taken back.** No `Client` call removes an item; handles have
    `remove_item`. 0.15's reclaim (Up on an empty editor) has no counterpart. Not needed for 8C-1
-   (Open 4).
+   (Ruling 4: `Client.remove_item` arrives in 8C-2).
 4. **The start asks on the terminal, synchronously** (`Prompts`, `PickSession`): it must run
    before the app takes the screen, and switching sessions in-app means re-executing (§5). Async
-   prompts would allow both in-app, at the cost of an API change; not needed if Open 2 holds.
+   prompts would allow both in-app, at the cost of an API change; not needed with re-exec.
 5. **A local client has no `welcome`.** The header needs the session id and `cwd` either way;
-   `Opened.welcome` (D22 §8) supplies it. A rename by another client sends no event (D18 §3),
+   `Opened.welcome` (D22 §8) supplies it; with `--no-session` there is none, and the header shows
+   `cwd` only. A rename by another client sends no event (D18 §3),
    so the title goes stale until the next start: accepted.
 6. **`Notice` has no cursor**, so a sub-agent's `tell` cannot be placed on its cursor; it is a
    toast. Accepted for 0.16.
@@ -255,23 +259,21 @@ the tree is `nodes` plus `Labels`.
 | `tau.tui` private, tested through `tau.cli.main` | Pilot needs the `App` object; rule 4 allows only public names. |
 | `textual` as an extra (`ffwf-tau[tui]`) | `tau` alone would fail with an install hint; no real decision is asked. |
 
-## Open questions
+## Rulings (2026-11-02)
 
-1. **`tau MESSAGE` without `-p`.** Open the TUI and send it? *Recommend:* not in 8C. The first
-   argument already chooses between subcommands and launch (D22 §1), and `tau export` would be
-   a message or a command by spelling; revisit with use.
-2. **In-app session switching by re-exec.** *Recommend:* yes (§5). The alternative is async
-   start prompts and a second start in the same process, with extension modules already imported.
-3. **Where the theme is kept.** *Recommend:* a `tui` key in the user config, `{"tui": {"theme":
-   "mocha", "enter": "submit"}}`, written by the app through `UserConfig` when the person picks a
-   theme (τ owns `config.json`, D13); `--theme` for one run. The project config never sets it.
-   Today an unknown top-level key is a `ConfigError` (`_TOP_KEYS` in `_config_layers.py`), so
-   this amends D13's top-level keys.
-4. **`Client.remove_item(cursor, item)`** for a pending input this client wrote (gap 3).
-   *Recommend:* yes in 8C-2, only for `Input` items authored by the calling client;
-   `LookupError` once delivered. The alternative is to show pending items without a way back.
-5. **Snapshot tests.** *Recommend:* a handful, in 8C-3, behind the pilot tests; they catch layout
-   regressions pilot cannot, and cost a diff review per style change.
+Decided as the drafts recommended, except where noted.
+
+1. **`tau MESSAGE` without `-p`:** a usage error; not in 8C (§1).
+2. **In-app session switching** is by re-exec (§5).
+3. **Theme:** a top-level `tui` key in the user config, `{"tui": {"theme": "mocha"}}`, written by
+   the app through `UserConfig` when the person picks a theme (τ owns `config.json`, D13);
+   `--theme` for one run; the project config never sets it. The draft's `enter` key is dropped.
+   An unknown top-level key is a `ConfigError` today (`_TOP_KEYS` in `_config_layers.py`), so 8C
+   adds `tui` there and amends D13's top-level keys, as it amends CLAUDE.md's public module list
+   for `tau.tui`.
+4. **`Client.remove_item(cursor, item)`:** yes, in 8C-2, only for `Input` items authored by the
+   calling client; `LookupError` once delivered.
+5. **Snapshot tests:** a handful, in 8C-3, behind the pilot tests.
 
 ## Glossary entries proposed
 
@@ -284,9 +286,9 @@ the tree is `nodes` plus `Labels`.
 - **`SessionPicker`**: the `-r` / Ctrl+O picker over `list_sessions`.
 - **tree screen**: rows from `nodes`; go to, open, label.
 - **edit last message** (Ctrl+Z): a go-to before the last `User` node, its text in the editor.
-- **theme**, **`tui` config key** (Open 3).
+- **theme**, **`tui` config key** (`theme` only).
 - **re-exec** (session switch in the TUI).
-- Amended: **`OpenQuestion`** (`extension`), **Client** (`remove_item`, if Open 4 is accepted).
+- Amended: **`OpenQuestion`** (`extension`), **Client** (`remove_item`).
 
 ## Build (rough lines, tests separate)
 

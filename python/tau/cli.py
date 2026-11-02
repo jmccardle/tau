@@ -136,8 +136,8 @@ def extension_flags() -> argparse.ArgumentParser:
     flags.add_argument(
         "--no-extensions",
         action="store_true",
-        help="skip every extension source except -e: no installed package, drop-in or base_tools "
-        "(the other built-ins, step_limit, still follow `load`)",
+        help="skip every discovered extension source except -e: no installed package or drop-in "
+        "(the built-ins, base_tools and step_limit, still follow `load`)",
     )
     return flags
 

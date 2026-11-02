@@ -387,22 +387,22 @@ def test_the_project_load_layer_overrides_the_users(world: World) -> None:
     assert "ralph" in names(load_extensions(start(world, root)))
 
 
-def test_no_extensions_turns_off_packages_and_drop_ins_and_the_tools_but_not_other_built_ins(
+def test_no_extensions_turns_off_packages_and_drop_ins_but_not_built_ins(
     world: World,
 ) -> None:
     user_file(world, "ralph")
     root = world.project()
     project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
     trust(world, root)
-    assert names(load_extensions(start(world, root), discover=False)) == ["step_limit"]
+    assert names(load_extensions(start(world, root), discover=False)) == [
+        "base_tools",
+        "step_limit",
+    ]
     found = site_rows(site_tau(world, "ext", "list", "--json", "--no-extensions", cwd=root))
     for key in ("search", "ralph", "plan_mode"):
         assert (found[key]["state"], found[key]["detail"]) == ("off", "--no-extensions")
     assert found["step_limit"]["state"] == "on"
-    assert (found["base_tools"]["state"], found["base_tools"]["detail"]) == (
-        "off",
-        "--no-extensions",
-    )
+    assert found["base_tools"]["state"] == "on"
 
 
 def test_load_false_turns_an_installed_package_off(world: World) -> None:

@@ -83,7 +83,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | `find` (glob/regex file finder) | `tools/find.py` | **built** (changed) | `crates/tau-tools/src/find.rs`, `tau.FindTool`. One glob (`pattern`) on `grep`'s walk, so ignore rules apply (0.15 listed everything); hidden files and directories are listed, `.git` is not; sorted, limited like `grep`. No `regex` or `type` filter, and no directories (`bash` has `find`) |
 | `ls` | `tools/ls.py` | **dropped** | `bash` covers it (decided 2026-11-01) |
 | Output limit 10 kB + overflow file | `tool_output.py`, `docs/` | **built** (changed) | `max_output`, overflow file `<id>.out` in `/tmp/tau-<uid>` (0600), 64 MiB cap; pruning deferred (plan.md "Deferred 2026-10-29") |
-| Tool factories (`create_coding_tools`, `create_read_only_tools`) | `tools/__init__.py` | **built** (changed) | `base_tools(cwd)` returns all six; the shared start gets them from the built-in extension `base_tools` (off with `load` or `--no-extensions`); no read-only preset |
+| Tool factories (`create_coding_tools`, `create_read_only_tools`) | `tools/__init__.py` | **built** (changed) | `base_tools(cwd)` returns all six; the shared start gets them from the built-in extension `base_tools` (off with `load`); no read-only preset |
 | Function tools (`@tool`, schema from signature) | `tool_schema.py`, `tools/base.py` | **built** | `0.16: _functions.py`, `Annotated[T,"text"]` descriptions (D16 section 1) |
 | Parallel tool calls; sequential mode (`tool_execution_mode`) | `settings.py:48` | **planned** | Calls run in parallel; Q21 `exclusive` tool "not built yet" (`model.md:565`) |
 | Tool allow/deny lists: `--tools`, `--no-tools`, `--exclude-tools`, `--no-builtin-tools`, `tool_exposure`, `tool_declaration` | `cli.py`, `tool_catalog.py`, `session_log.CONFIG_KEYS` | **planned** (unspecified) | Library side: fixes D2 (`pre_sample` hook sets `subject.tools`; Stage D) and the program passes `tools=` to `Driver`. No CLI flag exists (see 2.8) |
@@ -207,9 +207,9 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | `-t`, `--tools` | **planned** (unspecified) | D2 / `Driver(tools=)` |
 | `-nt`, `--no-tools` | **planned** (unspecified) | same |
 | `-xt`, `--exclude-tools` | **planned** (unspecified) | same |
-| `-nbt`, `--no-builtin-tools` | **planned** (unspecified) | the `base_tools` extension is off with `load: {base_tools: false}` or `--no-extensions` |
+| `-nbt`, `--no-builtin-tools` | **planned** (unspecified) | `load: {base_tools: false}` (`tau ext disable base_tools`) turns the base tools off; `--no-extensions` does not |
 | `-e`, `--extension PATH|MODULE` | **planned** | `chat.py --extension` (C3); `tau` flag via trusted loader, unscheduled |
-| `-ne`, `--no-extensions` | **built** (changed) | D19: loads no package or drop-in, and not the `base_tools` built-in |
+| `-ne`, `--no-extensions` | **built** (changed) | D19: loads no package or drop-in; the built-ins (`base_tools`, `step_limit`) follow `load` |
 | `--bus` | **REGRESSION** | NATS extension not planned |
 | `--no-session` | **built** | D18: `session_flags`, `start_session` |
 | `--max-turns N` | **dropped** (changed) | `StepLimit` option (D1) |

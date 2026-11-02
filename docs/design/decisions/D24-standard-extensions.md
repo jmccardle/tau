@@ -1,12 +1,12 @@
 # D24: Standard extensions
 
-Status: proposed 2026-11-02. Phase 8, stage 8E, "Standard extensions" (`docs/plan.md`). Amends D3
+Status: accepted 2026-11-02. Phase 8, stage 8E, "Standard extensions" (`docs/plan.md`). Amends D3
 (the summary's sample; the cold summary), D13 (`ModelConfig` gains `context_window` and `price`),
 D15 (D3: retries ship in `tau`; normalized usage gains `written`; `cached` can be absent), D19
-(a built-in may be off by default; built-ins are built with the loaded config; §5:
-`--no-extensions` turns off these built-ins too, which D19's Alternatives rejects for every
-built-in but `base_tools`: "built-ins are τ's behaviour, switched in `load`") and
-model.md §7–§8 (an abort ends its hooks' `rest` waits, M7).
+(a built-in may be off by default; built-ins are built with the loaded config; `load` also holds
+the key `retry`) and model.md §7–§8 (an abort ends its hooks' `rest` waits, M7). D19 §5 stands:
+`--no-extensions` skips the discovered sources and affects no built-in. The 8A `_BARE` special
+case, which made it turn off `base_tools`, is removed.
 
 ## Context
 
@@ -38,14 +38,14 @@ those missing pieces in one table: that is the main result of this ADR.
 - Each is a built-in like `step_limit`: a class in `tau`, its key is its `name`, it can be turned
   off with `load: {KEY: false}` or `tau ext disable KEY`, and it is configured under
   `extensions.KEY` and with `/config KEY`. None of them has a config file of its own (`skills`
-  reads its template and skill files, §6). Retry (§4) is not an extension and has no key.
-  `--no-extensions` turns them off too, joining 8A's `_BARE` set with `base_tools`, so a bare run
-  is bare. `step_limit` stays on, because it is a guard.
+  reads its template and skill files, §6). Retry (§4) is not an extension: it has the `load` key
+  `retry` and no options. `--no-extensions` affects none of these, `base_tools` and `step_limit`
+  included: it skips the discovered sources only (D19 §5). Only `load` turns a built-in off.
 - **The prefix of a walk** is its root `Config` and the `System` nodes before the first other
   message. Compaction keeps it, and a sub-agent starts from it. It holds the system prompt, the
   context files and the skills list, so it is also the prompt-cache prefix every cursor shares.
 - Hook order is load order (sorted keys): `agents`, `attachments`, `base_tools`, `compaction`,
-  `permissions`, `skills`, `step_limit`, `usage`. No extension here depends on running before
+  `permissions`, `prune`, `skills`, `step_limit`, `usage`. No extension here depends on running before
   another, except that `attachments` must expand an input before any user extension's `pre_input`
   reads it, which load order already gives.
 
@@ -93,6 +93,12 @@ dropped.
    compaction's own `pre_tool` (`summarizing: no tools`). An earlier summary is just part of the
    head, and the prompt says to carry it forward, so 0.15's separate update prompt is dropped.
    Afterwards the summarizer cursor is closed. Its reply stays in the tree, so `usage` counts it.
+   **Compaction's `pre_sample` fires on the summarizer cursor too**, and must not compact it. The
+   extension remembers the ids of the cursors it opened, and its `pre_sample` returns at once
+   for those; it forgets an id when it closes the cursor. Prune (§9) opens no cursor, but its
+   automatic trigger is also a `pre_sample`. It acts only when the latest `User` node was written by
+   a person (D17's `Author`), so a summarizer cursor, whose input compaction wrote, is left alone
+   without prune knowing compaction's labels.
 3. **New line.** Under the prefix's last node: copies of the head's `Config` nodes, so the model
    and options at the cut stay the same; then the summary as a `User` node by
    `Extension("compaction")` with `derived_from` = the last head node; then a copy of every tail
@@ -111,7 +117,8 @@ cost: switching provider in the middle of a tool loop can be refused (D15, the G
 that is a visible failure.
 
 **Needs:** (a) `context_window` on `ModelConfig`; (b) `copied_from` and `derived_from` built
-(Rust); (c) a handle read of the resolved model (`model_config`); (d) abort ends a hook's `rest`.
+(Rust, in core); (c) a handle read of the resolved model (`resolved_model`); (d) abort ends a
+hook's `rest`.
 
 **Dropped from 0.15:** the soft limit, the split-turn prefix summary, the read and modified file
 lists appended to the summary, `/autocompact`, the calibrated counter, the summarizer
@@ -126,7 +133,8 @@ price shows no cost, never `$0`. `/usage` prints one row per model for the whole
 input, cached share, cache writes, output, cost) and a total. Summaries and sub-agents are
 included, since their replies are in the tree; copies are not counted twice.
 
-**Cache notice.** After a reply that reports `cached: 0` with at least 4,096 input tokens, when the
+**Cache notice.** (Built only if `cached` can be absent, Needs (c): the notice must tell a miss
+from an unreported count.) After a reply that reports `cached: 0` with at least 4,096 input tokens, when the
 previous reply on the walk (not a copy) used the same model less than 300 s earlier, the extension
 `tell`s every client, once per model per run: `anthropic:sonnet read nothing from the prompt cache
 (18.2k tokens sent at full price). Through a proxy's OpenAI endpoint nothing marks the cache; try
@@ -143,7 +151,8 @@ output`, with prices in USD per million tokens. A reply is priced by the model i
 at that node.
 
 **Needs:** (a) `price` on `ModelConfig`; (b) `usage.written`; (c) `cached` absent when the server
-does not report it; (d) `model_config(name)` and `model(at=node)` on a handle; (e) `copied_from`,
+does not report it, made so only after checking what LiteLLM sends; (d) `resolved_model(name)`
+and `model(at=node)` on a handle; (e) `copied_from`,
 so copies are skipped.
 
 **Dropped from 0.15:** the tokens-per-second readout, the per-exchange title (a TUI concern,
@@ -158,7 +167,8 @@ the failure after the reply is written, and abort never cancels a hook (model.md
 stays what D15 made it, a wrapper `Provider`, and D15 D3 is amended to say it ships in `tau`.
 
 - `RetryProvider` moves from `examples/retry.py` into `tau`, and `start_session` wraps every
-  provider in it, so `tau`, `tau -p` and `tau serve` all retry. A program that builds its own
+  provider in it unless `load` turns `retry` off, so `tau`, `tau -p` and `tau serve` all retry
+  by default. A program that builds its own
   `Driver` decides for itself.
 - The policy is fixed: 0.15's (`tau_llm/retry.py`), plus the example's 500-with-`Retry-After`.
   It retries only while nothing has been yielded, on 408, 429, 502, 503, 504, 529, a 500 that
@@ -171,9 +181,11 @@ stays what D15 made it, a wrapper `Provider`, and D15 D3 is amended to say it sh
   attempts, seconds, reason). The TUI shows `HTTP 529 overloaded: retry 1 of 3 in 2 s`, and Esc
   cancels, since the wait is part of the sample. A `Retrying` delta does not count as output for
   the "nothing yielded yet" rule.
-- **No key and no options** (Open 5).
+- **One switch, no options.** `load: {retry: false}` (or `tau ext disable retry`) turns the
+  wrapper off, for a proxy that already retries or a provider being debugged. `tau ext list`
+  shows `retry` beside the extensions. The policy has no options.
 
-**Needs:** the `Retrying` delta (D15's delta list).
+**Needs:** the `Retrying` delta (D15's delta list), and `load` accepting the key `retry` (M8).
 **Dropped from 0.15:** jitter, and the code-only `options["retry"]`.
 
 ### 5. `@file` attachments
@@ -218,7 +230,9 @@ the cursor samples.
   the cache stable. A skill added later reaches new sessions only, as with `AGENTS.md` (D20 §1).
 
 **Files.** `$TAU_HOME/prompts/*.md`, `$TAU_HOME/skills/*/SKILL.md`, and the same under the
-**trusted** project's `.tau/` (Open 7). They are read once, when extensions load. For one name the
+**trusted** project's `.tau/`, where trust **pins** them as it pins `.tau/SYSTEM.md` (D20,
+D19 §4): their hashes are in the trust record, they are read from the approved bytes, and a
+changed file asks for `tau trust` again. They are read once, when extensions load. For one name the
 project wins over the user, by D19's nearest-row rule. A template and a skill with one name in
 one directory are a load error naming both. A name must obey the extension-name rule (letters,
 digits, `_`, `-`). Frontmatter is `key: value` lines between `---` (`description`, `name`,
@@ -245,7 +259,8 @@ holds in every session (bash_guard's mechanism). `no` gives the call
 a refusal too. The questions of a batch are asked at once, and a sub-agent's are asked on its own
 cursor.
 
-**Key and options.** `permissions`, on by default, asking nothing until configured (Open 3).
+**Key and options.** `permissions`, on by default, asking nothing until configured: that is what 0.15 users and their `-p` scripts had, and
+turning it on is one `/config ... --save`, which the TUI's first-run text can mention.
 
 | option | default | meaning |
 |---|---|---|
@@ -284,8 +299,8 @@ closed, and abort cancels the tool, whose `finally` aborts its cursors (model.md
 `agent`, so there is no recursion and no depth counter. Several `agent` calls in one reply run
 at once. `StepLimit` bounds each agent, and `usage` counts each one.
 
-**Key and options.** `agents`, **off by default** (Open 4): the tool would be in every request,
-and 0.15 had it only as an example. Options: `model` (none: the branch's own) and `tools`
+**Key and options.** `agents`, **off by default**: the tool would be in every request,
+and 0.15 had it only as an example. It is the first thing cut if 8E runs long (§11). Options: `model` (none: the branch's own) and `tools`
 (default `[]`, meaning all but `agent`).
 
 **Needs:** a built-in that is off by default, which D19 deferred to "Phase 8's first". It would be
@@ -305,9 +320,11 @@ many, picked to start.
 Prune rewrites the walk deterministically, by the user's turns. A turn is a `User` node and
 everything under it up to the next `User` node. Number the turns `0..N`, where N is the latest:
 
-- **Turns 0 to N-2** become one `User` node, by the extension, holding a transcript. Each turn
-  is its user text, a count of what was left out, and the agent's last reply in that turn. Agents
-  usually sum up their work before they stop, so that last reply serves as the summary:
+- **Turns 0 to N-2** become a transcript. Each turn is its user text, a count of what was left
+  out, and the agent's last reply in that turn. Agents usually sum up their work before they
+  stop, so that last reply serves as the summary. The transcript is **prepended to the user text
+  of turn N-1**, in one derived `User` node, so two user messages never sit side by side (some
+  providers reject that or merge it silently):
 
   ```
   <pruned>
@@ -322,19 +339,23 @@ everything under it up to the next `User` node. Number the turns `0..N`, where N
 
 - **Turn N-1** keeps the agent's messages and its tool calls, with each call's outcome reduced
   to ok or error. It drops the reasoning text and the content of the tool results.
-- **Turn N** keeps its tool results. It drops the reasoning text.
-- **In turns N-1 and N**, a call's content arguments are left out, so a long `edit` or `write`
-  call shrinks to a reference to its file name.
+- **Turn N** keeps its tool calls and their results. It drops the reasoning text and, as in
+  N-1, long call arguments. The result (and `edit`'s diff) carries what changed.
+- **In turns N-1 and N**, any string argument of a call over 200 characters becomes `[pruned: N
+  chars]`, so a long `edit` or `write` call shrinks. Short ones (`path`, `pattern`, a one-line
+  `command`) stay. This needs no list per tool and works for extension tools too.
 
 The result is a new line built as compaction builds one (§2): copied nodes carry `copied_from`,
 and rewritten ones carry `derived_from` pointing at the node they replace. The cursor moves onto
 the new line. The old line stays in the tree.
 
+**Key and options.** `prune`, on by default. One option, `auto` (default `false`, below).
+
 **Triggers.**
 - `/prune` is the command. It is for switching tasks, and it is just as useful with a local
   model, where nothing is cached.
 - Automatic pruning, when the provider's prompt cache has gone cold, is an option and off by
-  default. Before the cache expires, rewriting the prefix throws away a cache that is still
+  default; it waits for a way to know the cache's state, so 8E ships `/prune` only. Before the cache expires, rewriting the prefix throws away a cache that is still
   paying for itself. After it expires, the next request costs the full price anyway, so that is
   when a shorter prefix is free.
 
@@ -349,14 +370,14 @@ the new line. The old line stays in the tree.
 
 | # | piece | where | for |
 |---|---|---|---|
-| M1 | `copied_from`, `derived_from` built: node fields, the log record (missing fields default, so old logs load), `append` and `write` take them, the codecs, the wire schema. No store `VERSION` or `PROTOCOL` bump: both mark released formats and 0.16.0 is the first release of each (D12, D21 §8) | Rust core, store, bindings, `_protocol` | compaction; usage skips copies |
+| M1 | `copied_from`, `derived_from` built in core: node fields, the log record (missing fields default, so old logs load), `append` and `write` take them, the codecs, the wire schema. No store `VERSION` or `PROTOCOL` bump: both mark released formats and 0.16.0 is the first release of each (D12, D21 §8) | Rust core, store, bindings, `_protocol` | compaction; usage skips copies |
 | M2 | `ModelConfig.context_window` (optional positive int) | `_config.py`, D13 | compaction, usage `ctx` |
 | M3 | `ModelConfig.price` `{input, output, cache_read, cache_write}`, USD per million, all four required | `_config.py`, D13 | usage |
-| M4 | `handle.model_config(name=None) -> ModelConfig` (the resolved model, as at a sample) | `_handles.py` | compaction, usage |
+| M4 | `handle.resolved_model(name=None) -> ModelConfig` (the resolved model, as at a sample) | `_handles.py` | compaction, usage |
 | M5 | `cursor.model(at=node)`: the model at any node, the fold the driver already has | `_handles.py` | usage |
-| M6 | normalized `usage.written` (cache writes; Anthropic's `cache_creation_input_tokens`), and `cached` absent when the server reports none (today `0` in `openai.py` and `anthropic.py`, which a cache notice cannot tell from a miss; Gemini omits zero counts, so there an absent count stays `0`) | providers, D15 §11 | usage |
-| M7 | abort of a cursor ends its hooks' `rest` waits (returns `None`), as it declines their questions | driver, `_handles.py` | compaction's Esc |
-| M8 | the live delta `Retrying`; `RetryProvider` public; `start_session` wraps | providers, D15 | retry |
+| M6 | normalized `usage.written` (cache writes; Anthropic's `cache_creation_input_tokens`) now; `cached` absent when the server reports none (today `0` in `openai.py` and `anthropic.py`, which a cache notice cannot tell from a miss; Gemini omits zero counts, so there an absent count stays `0`) only after checking what LiteLLM sends | providers, D15 §11 | usage |
+| M7 | abort of a cursor ends its hooks' `rest` waits, returning a distinct result, not `None` (the type is fixed when it is built), as abort declines their questions | driver, `_handles.py` | compaction's Esc |
+| M8 | the live delta `Retrying`; `RetryProvider` public; `start_session` wraps unless `load` has `retry: false` (`load`, `tau ext list`, `tau ext disable` know the key) | providers, D15 | retry |
 | M9 | built-in factories take the `LoadedConfig` | `_extensions.py`, D19 | skills |
 | M10 | a built-in that is off by default | `_extensions.py`, D19 | agents |
 | — | `--answer` | D22 | permissions under `-p` |
@@ -379,9 +400,8 @@ point or a node kind.
 8. **agents** (M10).
 
 **Cuts.** Automatic pruning on a cold cache waits for a way to know the cache's state. If 8E
-runs long, agents goes next: 0.15 had only an example, and
-gamemaster and forest already show the pattern. The other six cover regressions 0.15 users would
-notice.
+runs long, agents is the first cut: 0.15 had only an example, and gamemaster and forest already
+show the pattern. The other six cover regressions 0.15 users would notice.
 
 ## Alternatives
 
@@ -391,47 +411,37 @@ notice.
 | Copies recorded in a `Custom` map node instead of `copied_from` | Every reader (usage, the TUI, export, the estimate) would rebuild the map. D3 already accepted the fields. |
 | Retry as a `post_step` extension | It sees the failure after the reply is written, and its wait cannot be aborted (hooks are never cancelled). |
 | A `retry` key on `ModelConfig` | No one has asked for a different policy. Add it when someone does. |
+| Retry always on, with no switch | A proxy that already retries, or a provider being debugged, needs it off. `load: {retry: false}` is the switch every built-in already has. |
 | Cost stored in `meta` at sample time | Stored data that is derived. A price fixed in the config re-prices the whole session, which is what a user editing a price wants. |
 | Prompt templates as one `/prompt NAME` command | Typing `/prompt review` instead of `/review` is worse than 0.15. Generated commands cost nothing. |
 | `@file` expanded by the frontend | Each frontend would do it again, and a remote frontend would read its own disk, not the session's. |
 | Permissions as a mode (`ask`/`allow`/`auto`) | Rules cover a mode (`ask: [bash, write, edit]`) and also say which commands. |
 | Sub-agents with the parent's context (open at `at`) | It costs the whole context on every call, and the model writes better tasks for a fresh one. Open at `at` with your own extension if you want it. |
 
-## Open questions
+## Rulings (2026-11-02)
 
-1. **The summary's sample: a cursor or `handle.sample`?** Recommendation: a cursor (§2).
-   No new API, and it is visible and counted.
-2. **`copied_from` in core (M1), or no provenance?** Recommendation: core, as D3 accepted.
-   Without it, usage counts every compaction twice, and the estimate anchors on a copy's stale
-   `usage`.
-3. **Permissions' default: ask nothing, or ask for `bash`, `write` and `edit`?**
-   Recommendation: ask nothing. That is what 0.15 users and their `-p` scripts had. Turning it
-   on is one `/config ... --save`, which the TUI's first-run text can mention.
-4. **Agents: off by default, and in 0.16.0 at all?** Recommendation: off by default, built
-   last, and the first cut if 8E runs long.
-5. **A config key for retry?** Recommendation: none until someone asks (§4).
-6. **Price: units and missing fields.** Recommendation: USD per million tokens, matching 0.15's
-   `cost` block renamed to `price`, with all four fields required. A model that writes no cache
-   repeats its input price for `cache_write`. A missing field is a `ConfigError`, not a silent 0.
-7. **Project prompts and skills: pinned by trust?** Recommendation: read only from a trusted
-   project, not pinned. They are text, not code, with the same exposure as an `AGENTS.md` a
-   `git pull` changes, which is not pinned either. The other answer is to pin `.tau/skills/`
-   beside `.tau/SYSTEM.md` (D20 Open 2), since the skills list reaches every request.
-8. **Compact when a provider says the prompt is too long?** Recommendation: no. The trigger is
-   proactive only. A 400 is a visible failed sample, and `/compact` then a step recovers. Every
-   provider words that error differently.
-9. **Where `context_window` comes from.** Recommendation: the config only, for 0.16.0. Asking
-   the server (llama.cpp's `/props`) or a models.dev catalog comes later (plan, "After 0.16.0").
-10. **Which arguments of a call count as "content" for prune (§9).** Recommendation: any string
-    argument longer than 200 characters becomes `[pruned: 1234 chars]`. Short ones such as
-    `path`, `pattern` or a one-line `command` stay. This needs no list for each tool and works for
-    extension tools too. The alternative is a `content` mark on `@tool` parameters.
-11. **Where the `<pruned>` transcript goes.** It is a `User` node, and turn N-1 starts with the
-    user's own `User` node, so two user messages would sit next to each other. Recommendation:
-    prepend the transcript to turn N-1's user text in one derived `User` node. Some providers
-    reject two user messages in a row, or merge them silently.
-12. **Turn N's tool calls.** §9 drops their content arguments but keeps their results.
-    Recommendation: yes. The result (and `edit`'s diff) carries what changed.
+Decided as the drafts recommended, except where noted (the changes are in the sections above).
+
+1. **The summary's sample** is a summarizer cursor, not `handle.sample` (§2).
+2. **`copied_from` and `derived_from`** are built in core (M1), additive, with no store `VERSION`
+   or `PROTOCOL` bump.
+3. **Permissions** ask nothing until rules are configured (§7).
+4. **Agents** ship off by default and are the first cut (§8, §11).
+5. **Retry** is on by default with an off switch, `load: {retry: false}` (§4). Not "no key".
+6. **Price** is USD per million tokens, all four fields required; a model that writes no cache
+   repeats its input price for `cache_write`; a missing field is a `ConfigError`.
+7. **Project prompts and skills are pinned by trust**, like `.tau/SYSTEM.md` (§6). Not the
+   draft's "trusted but not pinned".
+8. **No compaction on a provider's "prompt too long"**: the trigger is proactive only; `/compact`
+   then a step recovers.
+9. **`context_window` comes from the config only** for 0.16.0.
+10. **Prune's content arguments:** any string over 200 characters becomes `[pruned: N chars]` (§9).
+11. **Prune's transcript** is prepended to turn N-1's user text in one derived `User` node (§9).
+12. **Prune's turn N** drops long arguments and keeps its tool results (§9).
+13. **`--no-extensions`** affects no built-in (§1). **`handle.model_config`** is renamed
+    `resolved_model`, since `tau.model_config` is public. **Compaction's `pre_sample`** skips its
+    own summarizer cursors (§2). **M7**'s abort is a distinct result. **`usage.written`** is
+    added now; `cached` absent-when-unreported only after checking LiteLLM (§3).
 
 ## Glossary entries proposed
 
@@ -444,15 +454,17 @@ notice.
 - **`price`**, **`Price`** (`ModelConfig`): `input`, `output`, `cache_read`, `cache_write`, in USD
   per million tokens.
 - **`written`** (normalized usage): prompt tokens written to the cache. And amend **meta**:
-  `cached` is absent when not reported.
-- **`model_config`** (handle): the resolved `ModelConfig` of a qualified name; and
+  `cached` is absent when not reported, once LiteLLM's behaviour is checked.
+- **`resolved_model`** (handle): the resolved `ModelConfig` of a qualified name; and
   `model(at=)`.
 - **`Usage`** (`usage`, option `cache_notice`); **cache notice**.
 - **`RetryProvider`** (moved from the example) and **`Retrying`** (live delta).
 - **`Attachments`** (`attachments`, option `limit`); **attachment** and **reference** (the two
   tags).
 - **`Skills`** (`skills`, option `advertise`); **template**, **skill**, **skills list**.
+- **`Prune`** (`prune`, option `auto`); the **pruned transcript**.
 - **`Permissions`** (`permissions`, options `ask`, `allow`, `deny`); **rule**.
 - **`Agents`** (`agents`, options `model`, `tools`); the **`agent`** tool; **sub-agent**
   (label `agent:N`).
 - **off by default** (a built-in that `load` must turn on).
+- Amended: **`load`** (the key `retry`).

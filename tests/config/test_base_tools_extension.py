@@ -1,6 +1,6 @@
 """`base_tools`, the built-in extension that gives a session the base tools: loaded like
-`step_limit`, off with `load` or `--no-extensions`, and rooted in the working directory the
-process was in when it loaded. Through `tau.load_extensions` and `tau ext` on real files."""
+`step_limit`, off with `load` (not by `--no-extensions`), and rooted in the working directory
+the process was in when it loaded. Through `tau.load_extensions` and `tau ext` on real files."""
 
 import asyncio
 import json
@@ -52,13 +52,14 @@ def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -
     assert found["tools"] == []
 
 
-def test_no_extensions_turns_it_off_and_a_named_key_brings_it_back(world: World) -> None:
+def test_no_extensions_leaves_it_on_and_load_false_still_turns_it_off(world: World) -> None:
     config = loaded(world)
-    assert [e.name for e in load_extensions(config, discover=False)] == ["step_limit"]
-    found = row(world, "--no-extensions")
-    assert (found["state"], found["detail"]) == ("off", "--no-extensions")
-    back = load_extensions(config, explicit=["base_tools"], discover=False)
-    assert [e.name for e in back] == ["base_tools", "step_limit"]
+    assert [e.name for e in load_extensions(config, discover=False)] == ["base_tools", "step_limit"]
+    assert row(world, "--no-extensions")["state"] == "on"
+    world.user_config({"load": {"base_tools": False}})
+    off = row(world, "--no-extensions")
+    assert off["state"] == "off"
+    assert str(off["detail"]).startswith("load.base_tools = false in ")
     assert row(world, "--no-extensions", "-e", "base_tools")["state"] == "on"
 
 

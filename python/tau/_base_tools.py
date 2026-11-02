@@ -6,8 +6,9 @@ calls run in parallel, even on free-threaded builds, and never block the event l
 
 A session started by `start_session` (`tau serve`, and later `tau` and `tau -p`) has these tools
 from the built-in extension `base_tools`, in the session's working directory: it is on unless the
-config says `load: {base_tools: false}` or the run is given `--no-extensions` (`tau ext list`
-shows it). A program that builds a `Driver` itself gives it the tools:
+config says `load: {base_tools: false}` (`tau ext disable base_tools`; `tau ext list` shows it).
+`--no-extensions` does not turn it off: that flag skips only the discovered sources. A program
+that builds a `Driver` itself gives it the tools:
 
     tools = base_tools(cwd="/work/project")
     driver = Driver(session, providers, catalog, tools=tools)

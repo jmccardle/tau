@@ -1076,8 +1076,8 @@ exit 1.
 The built-in extension that gives a session the base tools: `tools` is `base_tools()` (the six
 tools above), built when the extensions are loaded, in the process's working directory, which the
 shared start (`start_session`) has already changed to the session's. It is on like `step_limit`:
-off with `load: {base_tools: false}` in the config (`tau ext disable base_tools`) or with
-`--no-extensions` (`-e base_tools` brings it back), and `tau ext list` shows it. It has no options and no
+off with `load: {base_tools: false}` in the config (`tau ext disable base_tools`), not with
+`--no-extensions` (which skips only the discovered sources), and `tau ext list` shows it. It has no options and no
 commands and loads before `step_limit`. A user who wants fewer tools turns it off and loads their own
 extension (or a drop-in named `base_tools`, which shadows it). A program that builds a `Driver`
 itself has no base tools unless it passes `tools=base_tools(cwd)`.
@@ -1142,9 +1142,9 @@ fields). Exit 1 if any source failed. `tau ext enable KEY` / `tau ext disable KE
 `ConfigError` listing the keys and writes nothing; a project layer that sets the key the other way
 is said to win, and its file is never written. **`-e VALUE`** (also `--extension`, repeatable) and
 **`--no-extensions`** are `extension_flags()`, a parser a program passes as `parents=` and reads as
-`start_session` reads them from the parsed args: `-e` names a file, a package directory or a discovered key and loads it even
-if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages, drop-ins and the
-`base_tools` built-in (not `step_limit`); `-e x.pyc` is refused.
+`start_session` reads them from the parsed args: `-e` names a file, a package directory or the key of a source (discovered or built-in) and loads it
+even if `load` or `--no-extensions` turns it off; `--no-extensions` turns off packages and drop-ins
+only (the built-ins follow `load`); `-e x.pyc` is refused.
 
 ### Session catalog: sessions directory, session id, info.json, SessionInfo, ref
 module `tau._sessions` · D18 · new

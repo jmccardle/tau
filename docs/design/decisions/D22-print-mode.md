@@ -1,6 +1,6 @@
 # D22: `tau -p`: the one-shot client
 
-Status: proposed 2026-11-02. Phase 8, stage 8B. Depends on D16 (clients, questions), D18 §5 (the
+Status: accepted 2026-11-02. Phase 8, stage 8B. Depends on D16 (clients, questions), D18 §5 (the
 shared start), D21 (the wire's encoding; serve records). Answers `docs/from-0.15.md` §2.6
 (headless approval) and the `-p`, `--mode json`, `--version` and `--verbose` rows of §2.8.
 
@@ -59,8 +59,14 @@ one `Client`, one cursor, no person to ask.
   waits for it. Nothing in either place is a usage error (exit 2), checked before the start, so
   it creates no session.
 - **Flags** are D18's session flags, D19's `-e` and `--no-extensions`, D20's prompt flags, and
-  `-m/--model`, `--json`, `--answer RULE` (§5), `--verbose` (§7). `-r` with `-p` is a usage
-  error (D18).
+  `-m/--model`, `--json`, `--answer RULE` (§5), `--set EXTENSION.FIELD=VALUE` (§1), `--verbose`
+  (§7). `-r` with `-p` is a usage error (D18). `--no-extensions` skips the discovered sources
+  (packages, user, project) and leaves every built-in as `load` says, `base_tools` included
+  (D19 §5); only `load: {base_tools: false}` turns the tools off.
+- **Per-run options.** `--set EXTENSION.FIELD=VALUE`, repeatable, is the CLI layer of the
+  config (D13) for this run only, parsed as `tau config set` parses it. It replaces 0.15's
+  `--max-turns` (`--set step_limit.limit=5`) and `--ext-config`, and is a flag of `-p`, `tau`
+  and `tau serve` alike.
 - **No prompts.** `-p` passes no `prompts` to the start: an untrusted project fails with "run
   `tau trust`", and an ambiguous model fails listing the choices. A one-shot program asks nobody
   on its stdout.
@@ -87,11 +93,12 @@ one `Client`, one cursor, no person to ask.
 
 - **stdout is the answer**: the text parts of the **last** `Assistant` node the run added to the
   cursor's walk, printed when the cursor rests, ending with one newline. Earlier replies ("Let me
-  read the file") are progress, not the answer; `--verbose` shows them on stderr. A run that
+  read the file") are progress, not the answer; `--verbose` shows them on stderr. (0.15 printed
+  every reply, concatenated.) A run that
   ends without a final reply prints nothing on stdout.
 - It prints from the node (`Appended`), not from `Live`. `Live` is a preview a full buffer may
   drop (D16 §5); a pipe must get exactly what the log holds. Streaming text is `--json`'s and the
-  TUI's (Open 1).
+  TUI's, also when stdout is a terminal.
 - **stderr** gets, one line each, prefixed `tau: `: every `Notice`; a `hook_error`; each
   question declined or answered by a rule (§5); why the run stopped when it did not finish (§6);
   and the failure that ended it.
@@ -101,8 +108,9 @@ one `Client`, one cursor, no person to ask.
 One JSON object per line on stdout, nothing else there, in the wire's own encoding (D21 §4).
 
 1. **First, a `Welcome`**, the type `hello` answers, with `"kind": "Welcome"`: `protocol`,
-   `version`, `session` (the id; `null` with `--no-session`), `cwd`, `pid`. A script keeps the id
-   for `--session`.
+   `version`, `session` (the id), `cwd`, `pid`. A script keeps the id for `--session`. With
+   `--no-session` there is no id, so `-p --json --no-session` prints no `Welcome` line;
+   `Welcome.session` stays a non-null string on the wire.
 2. **Then every event the client hears**, each exactly as the wire's `event` notification
    params (`$defs/Event`): the snapshot, then `Appended`, every cursor's `CursorView`, `Labels`,
    `Notice`, and the watched cursor's `Live`. Nothing is filtered or summarised: a consumer that
@@ -124,8 +132,11 @@ someone does answer: the `-p` client, by rule or by declining.
 
 - **Which questions.** Every open question `-p` may answer (`to` is `None` or this client), on
   any cursor, while the run lasts. A sub-agent's permission question is on the sub-agent's
-  cursor, and the run waits on it. (Attached to a server, see Open 3.)
+  cursor, and the run waits on it. **Attached to a server** (§8), other clients, a person in the
+  TUI, may be connected, so `-p` answers or declines only questions on its own cursor. A question
+  elsewhere is left to the server's other clients, and `-p` says on stderr that it is waiting.
 - **A rule** is `--answer EXTENSION[:TEXT]=VALUE`, repeatable; the first that matches wins.
+  It is split at the last `=` (the value), then the rest at the first `:` (extension, text).
   `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the question's text
   (default `*`). `VALUE` is read by the question's schema with `commandline.value`, as a typed
   answer is: one of a `Literal`'s values (permissions asks `yes | always | no`, D24 §7), `yes`
@@ -157,8 +168,8 @@ someone does answer: the `-p` client, by rule or by declining.
 Exit 3 is new. 0.15 stopped silently at `--max-turns` and exited 0, so a script could not tell a
 cut-off answer from a whole one. Status 3 always comes with a stderr line saying which.
 
-`--max-turns N` is `StepLimit`'s option. For one run that is Open 4's `--set
-step_limit.limit=N`.
+`--max-turns N` is `StepLimit`'s option. For one run that is `--set
+step_limit.limit=N` (§1).
 
 ### 7. `--version` and `--verbose`
 
@@ -194,7 +205,8 @@ client, environ, cwd, ...) -> Opened`**:
    on both kinds of client, which `first_cursor(session, client)` cannot (gap 2).
 
 `Opened` holds the `client`, the `cursor`, the `snapshot` events (so the caller loses none),
-the `welcome` (a remote client's, or one built from the start for a local client) and `close()`
+the `welcome` (a remote client's, or one built from the start for a local client; none with
+`--no-session`) and `close()`
 (close the client; for a local start also `Started.stop()`). A new session or `--fork` never
 attaches.
 
@@ -213,10 +225,10 @@ from cron or another terminal.
 | `--mode repl` | dropped | plan, 2026-11-01 |
 | `-m/--model` | kept | a new session only (D18); `/model` switches a running one |
 | `--provider`, `--thinking` | dropped | the model's config and its provider `options` (D13, D15) |
-| `-t`, `-nt`, `-nbt`, `-xt` | deferred | tools come from extensions (`load`, `-e`, `--no-extensions`); a per-run tool list is Tectum's `--no-tools`, after 0.16.0 |
-| `-e`, `--no-extensions` | kept | D19; `-ne` dropped (D19 has the long form only) |
+| `-t`, `-nt`, `-nbt`, `-xt` | deferred | tools come from extensions (`load`, `-e`); `load: {base_tools: false}` turns the base tools off; a per-run tool list is Tectum's `--no-tools`, after 0.16.0 |
+| `-e`, `--no-extensions` | kept | D19; `--no-extensions` skips discovered sources only, never built-ins; `-ne` dropped (D19 has the long form only) |
 | `--bus` | dropped | the NATS bus is post-0.16 |
-| `--max-turns N`, `--ext-config` | replaced | `StepLimit`'s option; per run, Open 4's `--set` |
+| `--max-turns N`, `--ext-config` | replaced | `StepLimit`'s option; per run, `--set` (§1) |
 | `--ui-defaults METHOD=ANSWER` | renamed `--answer EXTENSION[:TEXT]=VALUE` | matches who asked and what, not a dialog kind; no rule declines (§5) |
 | `--system-prompt`, `--append-system-prompt`, `-nc` | kept | D20 |
 | `--prompt-template`, `--skill` and their `--no-` forms | moved | the skills and templates extension's options (8E) |
@@ -241,8 +253,6 @@ from cron or another terminal.
 3. **The start has no attach outcome.** `open_client` wraps it (§8); `start_session` is unchanged.
 4. **`Started` keeps too little for `--verbose`**: the loaded extensions' sources and the prompt's
    parts are computed by the start and dropped. `Started` gains `sources` and `prompt`.
-5. **`Welcome.session` becomes `str | None`**, for `--no-session` (§4). A server never sends
-   `null`.
 
 ## Alternatives
 
@@ -256,23 +266,20 @@ from cron or another terminal.
 | `-p` never attaches (0.15) | Then a served session cannot be scripted from the shell at all; `Leased` would say "use `tau serve`" for a session that is already served. |
 | `-p` asks trust and model questions on the terminal | Its stdout is the answer; a one-shot program should fail with the fix, not stop for input. |
 
-## Open questions
+## Rulings (2026-11-02)
 
-1. **Streaming in a terminal.** When stdout is a terminal, stream `Live` text and then reprint
-   the node if it differs? *Recommend:* no. One rule for terminals and pipes; `--verbose` gives
-   progress, and the TUI is the streaming frontend.
-2. **The final reply only, or every reply.** *Recommend:* the final reply on stdout, the others
-   under `--verbose` on stderr (§3). The alternative is 0.15's every reply, separated by blank
-   lines.
-3. **Questions while attached.** Other clients (a person in the TUI) may be connected, so a
-   decline by `-p` races a person's answer. *Recommend:* attached, `-p` answers by rule on any
-   cursor but declines only on its own cursor; a question elsewhere that no rule covers is left
-   to the server's other clients, and `-p` says on stderr that it is waiting for it.
-4. **A per-run options flag.** `--set EXTENSION.FIELD=VALUE` (repeatable), the CLI layer of the
-   config (D13) for this run only, parsed as `tau config set` parses it. It replaces
-   `--max-turns` (`--set step_limit.limit=5`) and `--ext-config`, for `-p`, `tau` and `tau serve`.
-   *Recommend:* yes, in 8B; it is a few lines over code that exists.
-5. **`-v` for `--version`.** *Recommend:* keep 0.15's `-v`; `--verbose` stays long-only.
+Decided as the drafts recommended, with the changes folded into the sections above.
+
+1. **Streaming in a terminal:** no. One rule for terminals and pipes (§3).
+2. **Final reply only** on stdout; the others under `--verbose` on stderr (§3).
+3. **Questions while attached:** `-p` answers or declines only questions on its own cursor (§5).
+   This is narrower than the draft, which let rules answer on any cursor.
+4. **`--set EXTENSION.FIELD=VALUE`:** yes, in 8B (§1).
+5. **`-v` is `--version`;** `--verbose` stays long-only (§7).
+6. **`--no-extensions`** skips discovered sources only; built-ins, `base_tools` included, stay as
+   `load` says (§1, §9).
+7. **`Welcome.session`** stays a non-null string; `--no-session` prints no `Welcome` line (§4).
+8. **`--answer`** splits the value at the last `=`, then the extension at the first `:` (§5).
 
 ## Glossary entries proposed
 
@@ -286,7 +293,7 @@ from cron or another terminal.
 - **start report**: what `--verbose` prints before the first message; `Started.sources`,
   `Started.prompt` (amended **shared start**).
 - **exit status 3**: stopped before finishing.
-- Amended: **first cursor** (computed from the snapshot), **Welcome** (`session` may be `null`).
+- Amended: **first cursor** (computed from the snapshot).
 
 ## Build (rough lines, tests separate)
 

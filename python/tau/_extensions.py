@@ -69,7 +69,6 @@ _BUILTINS: Mapping[str, Callable[[], object]] = {
     StepLimit.name: StepLimit,
 }
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
-_BARE = frozenset({BaseTools.name})  # the built-ins `--no-extensions` turns off too: the tools
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
 _PRIVATE_INIT = "__init__.py"
@@ -441,7 +440,7 @@ def _explicit_path(path: Path, value: str) -> _Candidate:
 
 
 def _reason_off(candidate: _Candidate, catalog: ModelCatalog, discover: bool) -> str | None:
-    if (candidate.kind in _DISCOVERED or candidate.key in _BARE) and not discover:
+    if candidate.kind in _DISCOVERED and not discover:
         return "--no-extensions"
     if catalog.load.get(candidate.key) is False:
         return f"load.{candidate.key} = false in {catalog.load_sources[candidate.key]}"
@@ -666,11 +665,11 @@ def load_extensions(
     packages and the user's and the trusted project's drop-ins that it leaves on; then
     `explicit` (`-e` values: paths, or the keys of sources, discovered or built-in, which load
     whatever `load` says; relative paths are taken against the working directory, see
-    `absolute_explicit`). Without `discover` (`--no-extensions`) every source is skipped except
-    `explicit`: no package, no drop-in and not `base_tools`; the other built-ins (`step_limit`)
-    stay as `load` says. `base_tools` is built when this runs and roots its tools at the
-    process's working directory then, so a program that calls this must change directory first, as
-    `start_session` does.
+    `absolute_explicit`). Without `discover` (`--no-extensions`) the packages and drop-ins are
+    skipped, `explicit` still loads, and the built-ins (`base_tools`, `step_limit`) stay as `load`
+    says. `base_tools` is built when this runs and roots its tools at the process's working
+    directory then, so a program that calls this must change directory first, as `start_session`
+    does.
     `ExtensionLoadError` naming every source that failed, with the one command that gets past
     each: nothing is started or written by then."""
     found = inspect_extensions(loaded, explicit=explicit, discover=discover)
