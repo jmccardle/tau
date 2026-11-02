@@ -245,8 +245,7 @@ async def test_with_no_client_connected_the_question_waits_then_unattended_decid
         extensions=[guard.BashGuard()],
         catalog=configured(wait=0.1),  # pyright: ignore[reportArgumentType]
     )
-    await h.client.close()  # overnight: auto-step, nobody attached
-    await h.send("go")
+    await h.send_unattended("go")  # overnight: auto-step, nobody attached
     await h.settle()
     assert h.session.cursor(h.cursor).busy, "asked, with no one to answer: it waits"
     await asyncio.sleep(0.3)  # real time: the extension's timeout is the loop's, not the clock's
@@ -268,8 +267,7 @@ async def test_unattended_truncate_runs_the_tail_when_nobody_answers(tmp_path: P
         extensions=[guard.BashGuard()],
         catalog=configured(unattended="truncate", wait=0.1),  # pyright: ignore[reportArgumentType]
     )
-    await h.client.close()
-    await h.send("go")
+    await h.send_unattended("go")
     await h.settle()
     await asyncio.sleep(0.3)
     await h.settle()

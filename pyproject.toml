@@ -8,7 +8,7 @@ description = "τ next (\"Trusty\"): Rust core, Python extensions."
 requires-python = ">=3.12"
 license = "MIT"
 dynamic = ["version"]
-dependencies = ["httpx>=0.28"]
+dependencies = ["httpx>=0.28", "websockets>=15"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
@@ -38,6 +38,7 @@ features = ["abi3"]
 testpaths = ["tests"]
 pythonpath = ["tests/behavior", "tests/providers", "tests"]
 addopts = ["--strict-markers"]
+markers = ["local_only(reason): a behavior test of something a wire cannot carry; it runs with local clients only"]
 faulthandler_timeout = 120  # a hung test dumps every thread's stack instead of hanging silently
 
 [tool.ruff]

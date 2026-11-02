@@ -461,8 +461,8 @@ detected: the user's abort is the way out. An item the receiving extension turns
 
 ## 9. Events and clients (built: D16)
 
-A frontend holds a **client** (`Client`; `LocalClient` in process, a remote one in Phase 6),
-never the driver or the session: async calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+A frontend holds a **client** (`Client`; `LocalClient` in process, `RemoteClient` over the wire
+of `tau serve`, D21), never the driver or the session: async calls (`input`, `send`, `step`, `go_to`, `set_auto`,
 `abort`, `open`, `set_label`, `remove_label`, `watch`, `answer`, `commands`, `run`, `options`,
 `configure`, `complete`, `parse_line`, `complete_line`), reads of the tree (`node`, `nodes`,
 `walk`, `children`), and one event stream,
@@ -471,6 +471,21 @@ which is the client itself. Every client has an id, stable across reconnects, an
 value; a remote client serializes them, with one codec each for the core's own values (`Node`,
 `Body`, `Author`, `Item`, `ItemData`, `Ending`). A stream that ends in error is a
 `ConnectionError`, and so is a call on a driver that has failed or stopped; a frontend reconnects.
+
+**The wire (D21).** `tau serve` serves one session (its extensions, context and model, in its
+working directory) on a Unix socket, `$TAU_HOME/serve/<session id>.sock`, whose directory's
+permissions are the access control. A connection is JSON-RPC 2.0, one message per WebSocket text
+message: `hello {protocol, client, buffer?}` first (a different `PROTOCOL` is `ProtocolMismatch`),
+answered with the session, its `cwd`, the τ version and the pid; then one request per `Client`
+call, same name, params by name, with the error table of `tau._protocol` mapping each exception to
+a code and back; events as `event` notifications; and last `end` (`{"error": null}` when the
+driver stopped, else `CutOff` or `Stopped` with the failure as `"Type: msg"`), after which the
+server closes. A connection is not a client: closing it closes its `LocalClient`, a `run` it began
+runs on, and nothing is resumed (a reconnect reads a fresh snapshot and `walk`). Order: calls
+begin in the order they arrive and run concurrently, and a response arrives after the events its
+call caused. The checked-in `docs/protocol.schema.json` is generated from `Client`, the events and
+the table. `RemoteClient` is the `Client` of such a server; the behavior suite passes with its
+clients local and remote.
 
 Small state is sent whole whenever it changes, never as a delta, and every client receives it for
 every cursor, so a frontend can show "cursor 3 is waiting on you" while it watches cursor 1.
@@ -503,7 +518,9 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 - **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped) and `buffer` of
   `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff`, a `ConnectionError`, and it
   reconnects to a snapshot), plus one `CursorView` (or `CursorGone`) per cursor and one `Labels`. The pump never
-  waits on a client.
+  waits on a client. A `RemoteClient` keeps its events in the same kind of buffer, so a remote
+  client that falls behind is cut off exactly as a local one; the server's own buffer for the
+  connection holds only what a slow socket has not yet taken.
 - **Client rules for `Live`** (D15, restated): ignore a `CallArgs` whose `CallNamed` you never
   saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
   or is not busy; drop a call's `ToolProgress` layer, keyed by `(node, call_id)`, when the

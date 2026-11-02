@@ -18,10 +18,10 @@ from harness import Harness, say, scenario
 from tau import (
     Author,
     Body,
+    Client,
     CursorView,
     Ending,
     Event,
-    LocalClient,
     Outcome,
     Part,
     Stop,
@@ -296,7 +296,7 @@ async def test_every_client_sees_the_question_and_the_mode(tmp_path: Path) -> No
     await h.close()
 
 
-async def _snapshot(client: LocalClient) -> AsyncIterator[Event]:
+async def _snapshot(client: Client) -> AsyncIterator[Event]:
     async for event in client:
         yield event
         if type(event).__name__ == "Labels":

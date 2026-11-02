@@ -13,9 +13,9 @@ from harness import Harness, say, scenario
 from tau import (
     Appended,
     Body,
+    Client,
     ConfigError,
     Event,
-    LocalClient,
     Notice,
     Part,
     Stop,
@@ -93,7 +93,7 @@ def story(h: Harness) -> list[str]:
     return out
 
 
-async def listen(client: LocalClient, heard: list[Event]) -> None:
+async def listen(client: Client, heard: list[Event]) -> None:
     async for event in client:
         heard.append(event)
 

@@ -109,3 +109,11 @@ def test_the_error_table_is_the_schemas_error_code_enum() -> None:
         "CutOff": -32014,
     }
     assert schema()["$defs"]["End"]["required"] == ["error"]
+
+
+def test_a_call_parts_replay_is_a_replay_or_absent_never_null() -> None:
+    """The log refuses `"replay": null` on a call, so the schema does not allow it."""
+    parts = schema()["$defs"]["Part"]["oneOf"]
+    (call,) = [p["properties"]["Call"] for p in parts if "Call" in p["properties"]]
+    assert call["properties"]["replay"] == {"$ref": "#/$defs/Replay"}
+    assert "replay" not in call["required"]

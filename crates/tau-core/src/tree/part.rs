@@ -278,6 +278,7 @@ mod wire {
                 skip_serializing_if = "Option::is_none",
                 deserialize_with = "replay_if_present"
             )]
+            #[cfg_attr(feature = "schema", schemars(with = "Replay"))]
             replay: Option<Replay>,
         },
     }

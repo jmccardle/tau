@@ -8,7 +8,7 @@ from typing import Literal
 
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
-from harness import Harness, scenario
+from harness import Connected, Harness, scenario
 
 from tau import (
     Appended,
@@ -24,7 +24,6 @@ from tau import (
     HookFailure,
     Labels,
     Live,
-    LocalClient,
     Notice,
     Part,
     Stop,
@@ -257,7 +256,7 @@ class Asks:
         return None
 
 
-async def asked(tmp_path: Path, asks: Asks, *clients: str) -> tuple[Harness, list[LocalClient]]:
+async def asked(tmp_path: Path, asks: Asks, *clients: str) -> tuple[Harness, list[Connected]]:
     h = await Harness.create(
         tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])] * 2), extensions=[asks]
     )
@@ -361,6 +360,7 @@ async def test_asking_a_client_that_is_not_connected_asks_everyone(tmp_path: Pat
     await h.close()
 
 
+@pytest.mark.local_only("a connection is dropped by closing it; tests/serve drops one")
 @scenario
 async def test_an_abandoned_client_is_no_longer_connected(tmp_path: Path) -> None:
     asks = Asks("anyone?", to="alice")
@@ -383,6 +383,7 @@ async def test_an_abandoned_client_is_no_longer_connected(tmp_path: Path) -> Non
     await h.close()
 
 
+@pytest.mark.local_only("a connection is dropped by closing it; tests/serve drops one")
 @scenario
 async def test_a_question_for_an_abandoned_client_is_answered_before_anything_syncs(
     tmp_path: Path,
@@ -654,3 +655,24 @@ def test_the_drivers_public_surface_is_small() -> None:
         "client",
         "add_item",
     }, "a frontend holds a Client; the driver's other calls are the Client's"
+
+
+# A client is its connection
+
+
+@scenario
+async def test_a_client_that_is_closed_raises_connection_error_on_every_call(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path)
+    client = await h.connect("leaver")
+    await client.close()
+    for call in (
+        lambda: client.node(0),
+        lambda: client.step(h.cursor),
+        lambda: client.open(SYS),
+        client.commands,
+    ):
+        with pytest.raises(ConnectionError, match="closed"):
+            await call()
+    await h.close()

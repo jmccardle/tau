@@ -11,13 +11,13 @@ from harness import Harness, say, scenario
 
 from tau import (
     Body,
+    Client,
     Cursor,
     CursorClosed,
     CursorGone,
     CursorView,
     Ending,
     Labels,
-    LocalClient,
     NodeHandle,
     NoSuchCursor,
     Outcome,
@@ -162,7 +162,7 @@ async def test_a_rest_waiting_on_a_cursor_that_is_closed_sees_the_abort(tmp_path
 # Every other call on it
 
 
-def after_close() -> dict[str, Callable[[LocalClient, int], Awaitable[object]]]:
+def after_close() -> dict[str, Callable[[Client, int], Awaitable[object]]]:
     return {
         "input": lambda c, k: c.input(k, "x"),
         "send": lambda c, k: c.send(k, "x"),

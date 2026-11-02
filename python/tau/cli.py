@@ -1,9 +1,8 @@
 """The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
-[--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), and `tau context
-[--show]` (D20). Starting a session
-(`tau`, `tau -p`, `tau serve`) is Phase 8's; `tau.session_start.start_session` is their shared
-start.
+[--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), `tau context
+[--show]` (D20) and `tau serve` (D21; `tau._serve_cli`). Starting a session for a person
+(`tau`, `tau -p`) is Phase 8's; `tau.session_start.start_session` is their shared start.
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
@@ -42,6 +41,7 @@ from tau._config_layers import (
 from tau._core import (
     BadRecord,
     Corrupt,
+    Leased,
     NoSuchNode,
     NotASession,
     Session,
@@ -58,7 +58,10 @@ from tau._extensions import (
     switch_source,
 )
 from tau._options import option_fields, save_options
+from tau._protocol import ProtocolError
 from tau._refs import absolute_ref, parse_ref
+from tau._serve_cli import error_line, serve
+from tau._serve_record import ServeFailed
 from tau._startup import LoadedConfig, load_config, prompts, select_model
 from tau._trust import (
     TAU_DIR,
@@ -103,6 +106,7 @@ class _Run:
     stdout: TextIO
     environ: Mapping[str, str]
     cwd: Path
+    argv: Sequence[str]  # after the command's name
 
 
 def _assignment(text: str) -> tuple[str, str, str]:
@@ -256,6 +260,28 @@ def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argpars
     context.add_argument(
         "--show", action="store_true", help="print the system prompt instead of its parts"
     )
+    served = sub.add_parser(
+        "serve",
+        parents=[session_flags(), extension_flags()],
+        help="serve a session on a Unix socket (D21)",
+    )
+    served.add_argument(
+        "--socket",
+        metavar="PATH",
+        help="listen here (default: $TAU_HOME/serve/<session id>.sock)",
+    )
+    mode = served.add_mutually_exclusive_group()
+    mode.add_argument(
+        "-d", "--detach", action="store_true", help="run in the background; print the server"
+    )
+    mode.add_argument(
+        "--stop", action="store_true", help="stop the server of the session SESSION-FLAGS name"
+    )
+    mode.add_argument("--schema", action="store_true", help="print the wire's JSON Schema and exit")
+    served.add_argument(
+        "--json", action="store_true", help="one JSON object per line: the record, or an error"
+    )
+    served.add_argument("--detached-log", help=argparse.SUPPRESS)
     trust = sub.add_parser("trust", help="approve a project directory's .tau/")
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
@@ -599,6 +625,18 @@ def _fail(err: TextIO, message: str) -> int:
     return 1
 
 
+def _failed(args: argparse.Namespace, out: TextIO, err: TextIO, error: BaseException) -> int:
+    """Report `error`: one message on stderr; for `tau serve`, one JSON line, on stdout for
+    `--json`, and on stderr (a detached server's log) where its parent reads it."""
+    if args.command == "serve" and args.detached_log is not None:
+        err.write(error_line(error) + "\n")
+        return 1
+    if args.command == "serve" and args.json:
+        out.write(error_line(error) + "\n")
+        return 1
+    return _fail(err, str(error))
+
+
 def _session_command(run: _Run, args: argparse.Namespace) -> int:
     if args.command == "export":
         return _export(run, args)
@@ -613,20 +651,26 @@ def _ext_command(run: _Run, args: argparse.Namespace) -> int:
     return _ext_switch(run, args.key, args.ext_command == "enable")
 
 
+def _config_command(run: _Run, args: argparse.Namespace) -> int:
+    if args.config_command == "set":
+        return _set(run, args.assignments)
+    return _check(run, args.show)
+
+
 def _dispatch(run: _Run, args: argparse.Namespace) -> int:
     match args.command:
         case "trust":
             return _trust(run, args.dir)
         case "context":
             return _context(run, args)
+        case "serve":
+            return serve(run, args)
         case "sessions" | "export":
             return _session_command(run, args)
         case "ext":
             return _ext_command(run, args)
         case _:
-            if args.config_command == "set":
-                return _set(run, args.assignments)
-            return _check(run, args.show)
+            return _config_command(run, args)
 
 
 def _needs_help(
@@ -658,14 +702,16 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     the process's streams, environment, and working directory. Returns the exit status."""
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    given = sys.argv[1:] if argv is None else list(argv)
     run = _Run(
         sys.stdin if stdin is None else stdin,
         out,
         os.environ if environ is None else environ,
         Path.cwd() if cwd is None else cwd,
+        given[1:],
     )
     parser, config, ext = _parser()
-    args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
+    args = parser.parse_args(given)
     wanted = _needs_help(args, parser, config, ext)
     if wanted is not None:
         wanted.print_help(err)
@@ -684,12 +730,15 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         Corrupt,
         Undecodable,
         BadRecord,
+        Leased,
+        ProtocolError,
+        ServeFailed,
     ) as e:
-        return _fail(err, str(e))
+        return _failed(args, out, err, e)
     except OSError as e:  # a session's files: missing, unreadable, or held (`Leased`)
-        if args.command not in ("sessions", "export"):
+        if args.command not in ("sessions", "export", "serve"):
             raise
-        return _fail(err, str(e))
+        return _failed(args, out, err, e)
     except KeyboardInterrupt:
         err.write("\ntau: interrupted\n")
         return _INTERRUPTED

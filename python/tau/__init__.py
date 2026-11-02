@@ -65,7 +65,8 @@ from tau._extensions import (
     list_extensions,
     load_extensions,
 )
-from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch
+from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
+from tau._serve import Server
 from tau._startup import (
     LoadedConfig,
     Prompts,
@@ -118,6 +119,7 @@ from tau.protocols import (
     replay_for,
 )
 from tau.providers import builtin_providers
+from tau.remote import RemoteClient
 from tau.session_start import Started, SystemText, start_session
 from tau.sessions import (
     ForkedFrom,
@@ -223,11 +225,13 @@ __all__ = [
     "Provider",
     "ProviderClosed",
     "ReadTool",
+    "RemoteClient",
     "Replay",
     "ResolvedModel",
     "RunCall",
     "SampleEnd",
     "SampleError",
+    "Server",
     "Session",
     "SessionFlags",
     "SessionInfo",
@@ -255,6 +259,7 @@ __all__ = [
     "UntrustedProject",
     "UserConfig",
     "Version",
+    "Welcome",
     "WriteTool",
     "WrongAnswer",
     "__version__",

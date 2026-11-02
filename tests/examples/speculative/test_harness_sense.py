@@ -373,8 +373,7 @@ async def test_a_headless_question_waits_and_a_probes_own_questions_wait_too(
 ) -> None:
     script = [use("probe", prompt="hello"), say("hi"), say("ok")]
     h, _ = await sensed(tmp_path, script, extras=[Nosy()])
-    await h.client.close()  # headless: no frontend is attached
-    await h.send("go")
+    await h.send_unattended("go")  # headless: no frontend is attached
     # `settle` cannot be used: the probe tool is a unit that waits on another cursor, which the
     # Harness does not count as parked
     while h.driver.state().open_questions == 0:
@@ -382,11 +381,12 @@ async def test_a_headless_question_waits_and_a_probes_own_questions_wait_too(
     assert [q.text for q in (await h.view(0)).questions] == ["go on?"], "it waits for someone"
     # Whoever comes along answers: the cursor's own steps (two), and the probe cursor's wake, the
     # wake its input causes, and its step (three).
+    late = await h.connect("late")  # `client` is closed: someone connects
     answered = 0
     while h.session.cursor(h.cursor).busy:
         for cursor in h.session.cursors():
-            if (await h.view(cursor)).questions:
-                await h.respond(True, cursor=cursor)
+            for question in (await h.view(cursor)).questions[:1]:
+                await late.answer(question.id, True)
                 answered += 1
         await asyncio.sleep(0)
     assert answered == 5

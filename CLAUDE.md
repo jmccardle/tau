@@ -56,7 +56,8 @@ holds it to the built module.
 | `crates/tau-tools` | The base tools (`read`, `write`, `grep`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
 | `crates/tau-py` | PyO3 bindings, built as `tau._core`. Conversion and error mapping only. |
 | `python/tau` | Python package. `_core.pyi` is the hand-written stub for the native module. |
-| `tests/behavior` | The behavior suite through the `Harness` protocol. |
+| `tests/behavior` | The behavior suite through the `Harness` protocol, run twice: clients local, then remote over a Unix socket (D21). |
+| `tests/serve` | What only a wire has: the handshake, bad messages, each way a stream ends, disconnects, and `tau serve` (`-d`, `--stop`, `--schema`) as real processes. |
 | `tests/core` | The native module through the public Python API: a hand-run job loop, errors, persistence, threads. |
 | `scripts/` | Gates: `check.sh` (everything, in CI order). |
 

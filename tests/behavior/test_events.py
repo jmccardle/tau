@@ -259,7 +259,8 @@ async def test_a_driver_that_fails_ends_every_stream_with_the_failure(tmp_path: 
 
     with pytest.raises(ConnectionError, match=r"^Closed: the session is closed$") as ended:
         await asyncio.wait_for(read(), 1)  # buffered events are delivered first, then the failure
-    assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
+    if not h.remote:  # a wire carries "Type: msg", not the exception
+        assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
     assert heard, "what was buffered came first"
     await h.driver.stop()
 
@@ -658,7 +659,8 @@ async def test_calls_on_a_failed_driver_raise_connection_error_chained_to_the_fa
     await h.dies()
     with pytest.raises(ConnectionError, match=r"^Closed: ") as ended:
         await h.client.send(h.cursor, "again")
-    assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
+    if not h.remote:  # a wire carries "Type: msg", not the exception
+        assert isinstance(ended.value.__cause__, Closed), "the failure, chained"
     with pytest.raises(ConnectionError, match="Closed"):
         h.driver.add_item(h.cursor, ItemData.Extension("x", "y"))
     with pytest.raises(ConnectionError, match="Closed"):

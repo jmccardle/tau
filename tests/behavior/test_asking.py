@@ -229,8 +229,7 @@ async def test_a_question_to_anyone_waits_when_no_client_is_connected(tmp_path: 
     tool = FakeTool("ta", "ran")
     provider = FakeProvider([calls("a"), Reply([Part.Text("done")])])
     h = await Harness.create(tmp_path, provider=provider, tools=[tool], extensions=[Permissions()])
-    await h.client.close()  # headless: nobody is connected
-    await h.send("go")
+    await h.send_unattended("go")  # headless: nobody is connected
     await h.settle()
     assert tool.calls == [], "the tool waits for an answer, however long"
     assert h.session.cursor(h.cursor).busy

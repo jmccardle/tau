@@ -44,7 +44,12 @@ class Feed:
     or, when the driver fails, one whose message is the failure's `"Type: msg"`, chained to it.
     """
 
-    def __init__(self, client: str, capacity: int, release: Callable[["Feed"], None]) -> None:
+    def __init__(
+        self,
+        client: str,
+        capacity: int,
+        release: Callable[["Feed"], None],
+    ) -> None:
         if capacity < 1:
             raise ValueError(f"an event buffer holds at least one event, not {capacity}")
         self.client = client
@@ -97,6 +102,26 @@ class Feed:
         self._ended = True
         self._failure = failure
         self._wake()
+
+    def ended(self) -> ConnectionError | None:
+        """Why a call by this stream's client is refused, if its stream has ended: the cut-off,
+        else "closed" (a driver that stopped or failed is told apart by the caller)."""
+        if not self._ended:
+            return None
+        failure = self._failure
+        return (
+            failure
+            if isinstance(failure, ConnectionError)
+            else ConnectionError("the client is closed")
+        )
+
+    def take(self) -> list[Event]:
+        """Every event held now, removed, without waiting: a server writes them as a batch. The
+        bounds apply to what is held, so a consumer that is slow to send a batch lets the next
+        one fill again."""
+        taken, self._buffer = self._buffer, []
+        self._lives = self._backlog = 0
+        return taken
 
     async def close(self) -> None:
         """Disconnect and drop what is buffered."""

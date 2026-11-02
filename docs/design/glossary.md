@@ -2188,7 +2188,8 @@ program holds: a `Client`, with an id.
 `tau.Client` (a `Protocol`), `tau.LocalClient` (made by `Driver.client(id, *,
 buffer=256)`; `client.py`) · D16 · new
 
-A frontend's whole view of a session; it never touches `Driver` or `Session`. Async calls that
+A frontend's whole view of a session (in process, or over the wire as a `RemoteClient`); it never
+touches `Driver` or `Session`. Async calls that
 act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`,
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
 the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
@@ -2205,14 +2206,17 @@ in-process implementation: creating one connects, taking the snapshot and subscr
 synchronous act on the loop. A client is **connected** while it has a stream open; `close()`,
 a cut-off, or dropping the `LocalClient` (the hub holds streams weakly) disconnects it. Every
 call raises `ConnectionError` once the driver has failed (its message the failure's `"Type: msg"`,
-chained) or stopped ("the driver is stopped"). A stream that ends in error raises
+chained) or stopped ("the driver is stopped"), or once the client was closed or cut off (a client is
+its connection). A stream that ends in error raises
 `ConnectionError`: **CutOff**, or one whose message is the `"Type: msg"` of the failure that ended
 the driver, chained to it; after a plain stop the stream ends cleanly, and a client connecting
 after either gets a stream already ended. A frontend's one rule is `except ConnectionError`,
 then reconnect: a new client with the same id, since the log is the truth and there is no
 resume. Its constructor is the driver's: `LocalClient` takes a private `Calls`, which holds the
 driver's side of each call (`_calls.py`) so `Driver`'s public surface is `start`, `stop`, `rest`,
-`use_catalog`, `reload`, `state`, `client` and `add_item`.
+`use_catalog`, `reload`, `state`, `client` and `add_item`. `LocalClient` also has `take()`: the
+events its stream holds now, removed, without waiting (a server writes a client's events as
+batches, and sends each response after the events its call caused).
 
 ### parse_line, complete_line, nodes
 `Client.parse_line(cursor, line) -> Parsed`, `Client.complete_line(cursor, line) -> list[str]`,
@@ -2257,6 +2261,45 @@ none), and a code to the class a remote client raises, so `except NoSuchCursor` 
 2020-12 generated from `Client`'s signatures, the event dataclasses, the table and the core values'
 `schemars` derives (tau-core's optional `schema` feature, which only tau-py turns on); it is checked
 in and compared by `scripts/schema.py --check`, so any wire change is a readable diff.
+
+### tau serve, wire, serve record
+`tau serve` (`cli.py`, `_serve_cli.py`), `$TAU_HOME/serve/` (`_serve_record.py`) · D21 §1-3, §9 · new
+
+**tau serve** serves exactly one session (the one the shared start opens, in its working
+directory) on a Unix socket; **the wire** is the `Client` contract as JSON-RPC 2.0 over WebSocket
+on that socket, one message per text message (not `providers._wire`). The server is the private
+`tau._serve`; `tau.Server` (`Server.start(driver, path, *, session, cwd, idle=None)`, `wait`,
+`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` and the Harness's remote mode.
+`tau serve [session flags] [-e ...] [--socket PATH]` runs in the foreground until SIGTERM or
+SIGINT (the driver stops, each stream gets `end`, the socket and record go, exit 0) or the driver
+fails (exit 1). `-d [--json]` starts it detached (its output in `<id>.log`) and prints the record
+once a `hello` answers; a server already serving the session is printed with `"started": false`,
+a record whose socket does not answer is stale and replaced, and two `-d` at once race for the lease
+(the loser prints the winner's record). A session held by a process that is not a server fails
+with the `Leased` error after 5 seconds. A detached server exits after 10 minutes with no client
+connected and every cursor at rest (a cursor with an open question is not at rest). `--stop`
+sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go;
+`--schema` prints `schema_text()`. `--json` prints one JSON object per line: the record, an error
+`{"error": {"type", "message"}}`, `--stop`'s `{session, pid, stopped}`. The **serve record**
+`<session id>.json` is `{socket, pid, session, cwd, protocol, version, since, log}` (`since` in
+milliseconds; the `-d` output adds `started`); a detached server's log is removed when it exits
+cleanly and kept when its driver failed; the serve directory is mode 700, refused if
+another user owns it or can write it, and there is no token. A served session must be kept
+(`--no-session` has no id to name its files). `python -m tau` is the `tau` command.
+
+### RemoteClient, hello, Welcome, end
+`tau.RemoteClient`, `tau.Welcome` (`remote.py`, `_protocol.py`) · D21 §3, §9 · new
+
+`await RemoteClient.connect(socket, client, *, buffer=256)` dials the Unix socket, says **hello**
+(`{protocol, client, buffer?}`; a different protocol is `ProtocolMismatch`, a `RuntimeError`, and
+the connection closes) and returns a `Client` held to the protocol by the type checker; its
+`welcome` is the **Welcome** the server answered: `{protocol, version, session, cwd, pid}`. Calls
+are concurrent, matched by id; the events arrive as notifications into a `Feed`. **end** is the
+last message, a notification whose params are `{"error": null}` when the driver stopped, or an
+error object (`CutOff`; `Stopped` with the failure's `"Type: msg"`); the stream then ends, raises
+`CutOff`, or raises `ConnectionError`, as a local stream does, and so does a connection that
+drops without an `end`. Every call on an ended client raises `ConnectionError`. `close()`
+disconnects; there is no `close` message.
 
 ### Calls
 `tau._calls.Calls`, `frontend` (private) · D16 · new
@@ -2372,7 +2415,9 @@ was published, so subscribing and the snapshot are one act. A **Feed** is one cl
 its buffer holds at most `buffer` `Live` and `buffer` of `Appended` and `Notice`, plus one state
 event per cursor (its `CursorView`, or the `CursorGone` that replaces it) and one `Labels`; a `Live` that finds its share full is dropped,
 and an `Appended` or `Notice` that finds its share full cuts the client off. One consumer: a
-second concurrent `anext` raises `RuntimeError`.
+second concurrent `anext` raises `RuntimeError`. `take()` removes and returns what it holds. A
+`RemoteClient` keeps its events in a Feed too, so a remote client that falls behind is cut off as a
+local one is.
 
 ### Delta, TextDelta, ThinkingDelta, CallNamed, CallArgs
 `tau.events` (exported) · D15 · new
@@ -2632,12 +2677,21 @@ writes and runs steps; a second open is `Error::Leased`.
 `tests/behavior/harness.py`
 
 What every behavior test drives, shaped like `tau serve`: a session in a
-directory with a `Driver` over the fakes, and a client (`Driver.client`) for client `term`.
+directory with a `Driver` over the fakes, and a client for client `term`.
 `Harness.create`/`load`; the client's calls (`input`, `send`, `step`, `abort`, `go_to`,
 `set_auto`, `respond`: answer the cursor's oldest open question); `connect(id)` for another
 client and `view(cursor)` for a cursor as a client connecting now is told of it; `settle`;
-`crash`; `dies` (wait for the driver's failure); snapshots (`snapshot`, `bodies`, `nodes`,
-`notices`: those the `term` client was sent).
+`crash`; `dies` (wait for the driver's failure); `send_unattended` (`send` with nobody connected: the
+host sends as `term` and leaves in one act);
+`until` (yield until a condition holds); snapshots (`snapshot`, `bodies`, `nodes`, `notices`:
+those the `term` client was sent). **Modes** (`Harness.mode`, set by an autouse fixture in
+`tests/behavior/conftest.py` that runs every behavior test twice): `local`, where the clients are
+`LocalClient`s of the driver, and `remote`, where the Harness serves the driver (`tau.Server`) on a
+Unix socket in a short temporary directory and `client`, `connect` and `view` are
+`RemoteClient`s of it. What reads the host (the session, `driver.state()`, snapshots, `add_item`,
+`crash`) stays the host's. A test of something a wire cannot carry is marked
+`local_only("why")` (an object dropped without `close`), and an assertion about an exception's
+`__cause__` or about a step still running when a call returns is made in `local` mode only.
 
 ### settle
 `Harness.settle` · new
@@ -2645,7 +2699,9 @@ client and `view(cursor)` for a cursor as a client connecting now is told of it;
 Yield to the loop until the driver is quiet (no report or poke queued, no busy
 cursor without an effect out) and every unit is **parked**, on two passes in a
 row. Never sleeps and never advances the clock; re-raises what a unit died of.
-Gives up with an error after 10,000 passes.
+Gives up with an error after 10,000 passes. In `remote` mode it then makes one round trip on each
+remote client: a response arrives after the events published before it (D21 section 3), so they
+are queued when it returns.
 
 ### parked
 A unit waiting on something only a test releases: a held `Gate` or an open

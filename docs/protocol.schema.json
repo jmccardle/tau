@@ -915,14 +915,7 @@
                   "type": "string"
                 },
                 "replay": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/Replay"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "$ref": "#/$defs/Replay"
                 },
                 "tool": {
                   "type": "string"

@@ -129,8 +129,7 @@ async def test_a_reload_is_refused_while_a_command_waits_for_its_step(tmp_path: 
     and it would run with the set it was started under."""
     h = await Harness.create(tmp_path, extensions=[Old()], provider=FakeProvider([]))
     waiting = asyncio.ensure_future(h.client.configure(h.cursor, "thing", {"size": 7}))
-    await asyncio.sleep(0)
-    assert h.session.cursor(h.cursor).busy
+    await h.until(lambda: h.session.cursor(h.cursor).busy)
     with pytest.raises(Busy, match=rf"cursors \[{h.cursor}\]"):
         h.driver.reload([New()])
     await waiting

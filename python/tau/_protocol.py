@@ -139,6 +139,9 @@ ERRORS: Final = (
 )
 """The error table (D21 section 5), in code order of appearance."""
 
+CODES: Final = {row.name: row.code for row in ERRORS}
+"""Each row's code by its name (`CODES["InvalidParams"]`): what a server sends on its own."""
+
 _BY_CODE: Final = {row.code: row for row in ERRORS}
 _SENT: Final = {row.raises: row for row in ERRORS if row.sent}
 _INTERNAL: Final = _BY_CODE[-32603]

@@ -2,8 +2,33 @@
 
 Status: accepted (2026-11-01), every Open question as recommended; proposed 2026-10-31. Phase 7, D16 stage 4. Amends D16 §5 (transport, calls on a
 stopped driver, three new calls) and `model.md` §9. Depends on D18 (session ids, opening a
-session, the shared start). Points marked "(review, 2026-10-31)" were decided in review; they
-stay proposals until the owner accepts the ADR.
+session, the shared start). Points marked "(review, 2026-10-31)" were decided in review.
+**Built 2026-11-01** (7B-1: the contract and its coding; 7B-2: the server and the client), with
+these differences from the text below, which stays as decided:
+- The serve record's `started` is `since` (milliseconds since the epoch); `started` is the
+  boolean `-d` adds when it prints the record (§9 used the name twice).
+- A `RemoteClient` keeps its events in a `Feed` (§6): the same bounds on the client side, so a
+  remote client that falls behind is cut off as a local one is (the server's buffer holds only what
+  the socket has not taken). `RemoteClient.welcome` is what `hello` answered.
+- A call on a client that was closed or cut off raises `ConnectionError`, local and remote alike
+  (D16 §5 again: a client is its connection). A probe that times out is an error, not a stale
+  record: only a missing or refusing socket is stale. A detached server's `.log` is removed on a
+  clean exit and kept when the driver failed.
+- `tau.Server` is public (`Server.start(driver, path, *, session, cwd, idle=None)`), because
+  the Harness's remote mode serves in process through the public API (CLAUDE.md rule 4).
+- `-d`'s wait is 5 seconds from the spawn, for the record to appear and answer (not only for a
+  held lease): a server that is slower is left running, and `-d` again finds it. The child's output
+  goes to a pending log until its id names `<id>.log`; a child that fails leaves
+  `{"error": {"type", "message"}}` there, which the parent prints. The child is `python -m tau
+  serve ... --detached-log FILE` (hidden flag; also what switches on the idle exit).
+- `--stop` for a session with no answering server prints `{session, pid: null, stopped: false}`
+  and exits 0 (a stale record is removed); it waits up to 5 seconds for the record to go.
+- `--no-session` is refused: a served session has no id to name its socket and record.
+- The schema no longer permits `"replay": null` on a `Call` part (the log refuses it): the field
+  is a `Replay` or absent.
+- Behavior suite: two tests that drop a client object without `close` are `local_only`; assertions
+  about an exception's `__cause__`, and that a step is still running when `run` returns, are made
+  in `local` mode only; `Harness.headless()` and `Harness.until()` are new.
 
 ## Context
 

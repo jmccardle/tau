@@ -9,8 +9,8 @@ protocol has no call that takes or returns a handle.
 A stream that ends in error raises `ConnectionError`: `CutOff` for a client that fell behind,
 or one whose message is the `"Type: msg"` of the failure that ended the driver. So does a call
 on a driver that has failed (the same message, the failure chained) or stopped ("the driver is
-stopped"). A frontend has one rule for all of them: `except ConnectionError`, then connect
-again.
+stopped"), and a call on a client that was closed or cut off: a client is its connection. A
+frontend has one rule for all of them: `except ConnectionError`, then connect again.
 """
 
 import asyncio
@@ -30,7 +30,7 @@ class Client(AsyncIterator[Event], Protocol):
     `CursorGone` per closed one, and `Labels` first, then changes as they happen, until the driver
     stops (the stream ends), or the driver fails or the client is `CutOff` for falling behind (it
     raises `ConnectionError`). Every call raises `ConnectionError` once the driver has failed or
-    stopped."""
+    stopped, or the client has been closed or cut off."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -183,6 +183,11 @@ class _Stream:
     async def __anext__(self) -> Event:
         return await anext(self._feed)
 
+    def take(self) -> list[Event]:
+        """The events the stream holds now, removed, without waiting. A server writes a
+        client's events as batches and sends each response after the events its call caused."""
+        return self._feed.take()
+
     async def close(self) -> None:
         await self._feed.close()
 
@@ -209,9 +214,13 @@ class LocalClient(_Stream):
     documented on `Client`."""
 
     def _up(self) -> Calls:
-        """The calls, if the driver is running: every call starts here, so each one raises the
-        same way once the driver has failed or stopped."""
+        """The calls, if the driver is running and this client is connected: every call starts
+        here, so each one raises `ConnectionError` the same way once the driver has failed or
+        stopped, or the client was closed or cut off."""
         self._calls.check()
+        gone = self._feed.ended()
+        if gone is not None:
+            raise gone
         return self._calls
 
     async def input(self, cursor: int, text: str) -> int:

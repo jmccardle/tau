@@ -2,15 +2,24 @@
 
 No test sleeps. `settle()` yields to the loop until the driver has nothing to do
 and every effect in flight is parked at something a test controls.
+
+A Harness has two modes (D21 section 9), set for a whole test by `tests/behavior/conftest.py`:
+`local`, where `client`, `connect` and `view` are `LocalClient`s of the driver, and `remote`,
+where the Harness serves the driver (`tau.Server`) on a Unix socket in a short temporary
+directory and they are `RemoteClient`s of it. What reads the host (the session, `driver.state()`,
+snapshots, `add_item`, `crash`) stays the host's. The behavior suite passes in both.
 """
 
 import asyncio
+import contextlib
 import functools
+import shutil
 import tempfile
+import weakref
 from collections.abc import Callable, Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, Reply, fake_catalog
 
@@ -30,11 +39,16 @@ from tau import (
     Notice,
     Outcome,
     Part,
+    RemoteClient,
+    Server,
     Session,
     Stop,
     Tool,
     UserConfig,
 )
+
+Connected = LocalClient | RemoteClient
+"""A client of the Harness's driver, whichever mode: both are a `Client` and a context manager."""
 
 CLIENT = "term"
 PASSES = 10_000
@@ -61,7 +75,10 @@ class Snapshot:
 
 class Harness:
     """A session, its driver, and `client` (id `term`): the calls below are its calls, and
-    `heard` is every event it has been sent. Tests that need another client `connect` one."""
+    `heard` is every event it has been sent. Tests that need another client `connect` one.
+    `Harness.mode` says whether the clients are local or remote (the module docstring)."""
+
+    mode: ClassVar[Literal["local", "remote"]] = "local"
 
     def __init__(  # noqa: PLR0913, PLR0917 - one parameter per thing the Harness holds
         self,
@@ -87,10 +104,16 @@ class Harness:
         self.cursor = session.cursors()[0]
         self.heard: list[Event] = []
         self.failure: Exception | None = None
-        self.driver = self._driver()
+        self.remote = self.mode == "remote"
+        self._remotes: list[RemoteClient] = []
+        self._server: Server | None = None
+        self._cleanup: Callable[[], object] = lambda: None
+        self.socket: Path | None = None
 
-    def _driver(self) -> Driver:
-        driver = Driver(
+    async def start(self) -> None:
+        """Start a driver on the session (`create` and `load` do), and in `remote` mode serve it
+        and dial `client`."""
+        self.driver = Driver(
             self.session,
             {self.provider.name: self.provider},
             self.catalog,
@@ -99,12 +122,39 @@ class Harness:
             clock=self.clock,
             user_config=self.user_config,
         )
-        driver.start()
-        self.client = driver.client(CLIENT)
+        self.driver.start()
+        if self.remote:
+            where = Path(tempfile.mkdtemp(prefix="tau"))  # short: a socket path has a limit
+            # Removed when the test closes the Harness, and at exit for one that never does.
+            self._cleanup = weakref.finalize(self, shutil.rmtree, where, True)
+            self.socket = where / "s"
+            self._server = await Server.start(
+                self.driver, self.socket, session=self.directory.name, cwd=self.directory
+            )
+        self.client = await self._dial(CLIENT)
         self._listener = asyncio.ensure_future(self._listen(self.client))
-        return driver
 
-    async def _listen(self, client: LocalClient) -> None:
+    async def _dial(self, client: str, buffer: int = 256, *, flushed: bool = True) -> Connected:
+        """A client of the driver: local, or remote (`flushed`: `settle` makes a round trip on
+        it)."""
+        if self.socket is None:
+            return self.driver.client(client, buffer=buffer)
+        dialed = await RemoteClient.connect(self.socket, client, buffer=buffer)
+        if flushed:
+            self._remotes.append(dialed)
+        return dialed
+
+    async def _stop_serving(self) -> None:
+        """Stop the driver (every stream ends, a remote one after what it holds), then the
+        server and the socket's directory."""
+        await self.driver.stop()
+        if self._server is not None and self.socket is not None:
+            await self._server.close()
+            self._cleanup()
+            self._server = self.socket = None
+            self._remotes = []
+
+    async def _listen(self, client: Connected) -> None:
         """Keep what the client is sent. A stream that ends with the driver's failure ends the
         listening, and `dies` reports the failure."""
         try:
@@ -133,7 +183,7 @@ class Harness:
         clock = clock or FakeClock()
         directory = tmp_path / "session"
         session = Session.create(config or FAKE_CONFIG, system, clock.now(), directory)
-        return cls(
+        h = cls(
             directory,
             session,
             provider or FakeProvider([]),
@@ -144,6 +194,8 @@ class Harness:
             gates,
             user_config,
         )
+        await h.start()
+        return h
 
     @classmethod
     async def load(  # noqa: PLR0913
@@ -161,7 +213,7 @@ class Harness:
         clock = clock or FakeClock()
         directory = tmp_path / "session"
         session = Session.load(directory)
-        return cls(
+        h = cls(
             directory,
             session,
             provider or FakeProvider([]),
@@ -171,6 +223,8 @@ class Harness:
             clock,
             gates,
         )
+        await h.start()
+        return h
 
     # The client's calls (client "term")
 
@@ -219,6 +273,16 @@ class Harness:
         inside a hook; this stands in for one whose timer fired while the cursor rests."""
         return self.driver.add_item(self._c(cursor), ItemData.Extension(name, data))
 
+    async def send_unattended(self, text: str, cursor: int | None = None) -> int:
+        """`send`, as a program that is not connected: `client` is closed, and the host sends
+        as `term` and leaves in one act on the loop, so nobody is connected when the cursor
+        wakes. (A closed client cannot call; over a wire, the host stands in.)"""
+        await self.client.close()
+        caller = self.driver.client(CLIENT)
+        item = await caller.send(self._c(cursor), text)  # does not yield: the pump has not run
+        await caller.close()
+        return item
+
     async def dies(self) -> Exception:
         """Wait until the driver fails (the client's stream ends with the failure); returns it."""
         await asyncio.wait_for(asyncio.shield(self._listener), 1)
@@ -228,9 +292,9 @@ class Harness:
 
     async def connect(
         self, client: str, *, buffer: int = 256, watching: Collection[int] = ()
-    ) -> LocalClient:
+    ) -> Connected:
         """Another client, connected now and watching `watching`. Close it to disconnect."""
-        connected = self.driver.client(client, buffer=buffer)
+        connected = await self._dial(client, buffer)
         if watching:
             await connected.watch(watching)
         return connected
@@ -238,10 +302,13 @@ class Harness:
     async def view(self, cursor: int | None = None) -> CursorView:
         """The cursor as a client connecting now is told of it."""
         target = self._c(cursor)
-        async with self.driver.client(f"{CLIENT}:view") as late:
+        late = await self._dial(f"{CLIENT}:view", flushed=False)
+        try:
             async for event in late:
                 if isinstance(event, CursorView) and event.cursor == target:
                     return event
+        finally:
+            await late.close()
         raise AssertionError(f"cursor {target}: no state in the snapshot")
 
     def _c(self, cursor: int | None) -> int:
@@ -262,9 +329,28 @@ class Harness:
             self.check()
             quiet = quiet + 1 if self._quiet() else 0
             if quiet == 2:
+                await self._flush()
                 return
             await asyncio.sleep(0)
         raise AssertionError(f"settle: not quiet after {PASSES} passes")
+
+    async def _flush(self) -> None:
+        """Remote clients have heard what the driver published: a response arrives after the
+        events published before it (D21 section 3), so one round trip each says they are
+        queued, and a pass lets `heard` take them."""
+        for remote in self._remotes:
+            with contextlib.suppress(ConnectionError):  # one that has ended has nothing more
+                await remote.node(0)
+        await asyncio.sleep(0)
+
+    async def until(self, ready: Callable[[], bool]) -> None:
+        """Yield until `ready()`: a call made without awaiting it begins after the loop turns
+        that a remote client's request needs (a local one begins in one)."""
+        for _ in range(PASSES):
+            if ready():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"until: not ready after {PASSES} passes")
 
     def check(self) -> None:
         """Raise what an effect or the pump died of."""
@@ -286,14 +372,15 @@ class Harness:
         """Drop memory, keep disk: cancel every task without answering, close the
         session unsynced, reopen it, and start a new driver on the same fakes."""
         self._listener.cancel()
-        await self.driver.stop()
+        await self._stop_serving()
         self.session.close()
         self.session = Session.load(self.directory)
-        self.driver = self._driver()
+        self.heard = []  # the new driver's clients hear it afresh
+        await self.start()
 
     async def close(self) -> None:
         self._listener.cancel()
-        await self.driver.stop()
+        await self._stop_serving()
         self.session.close()
 
     # Snapshots

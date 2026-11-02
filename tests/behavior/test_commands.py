@@ -304,7 +304,8 @@ async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step
     h = await Harness.create(tmp_path, extensions=[Explodes(), recorder])
     with pytest.raises(CommandFailed, match=r"^RuntimeError: boom$"):
         await h.run("explode")
-    assert h.session.cursor(h.cursor).busy, "it raises at once, before the step has ended"
+    if not h.remote:  # over a wire the step may end before the answer arrives
+        assert h.session.cursor(h.cursor).busy, "it raises at once, before the step has ended"
     await h.settle()
     assert not h.session.cursor(h.cursor).busy
     assert h.notices() == []
@@ -592,8 +593,7 @@ async def test_a_hooks_tell_goes_to_every_connected_client(tmp_path: Path) -> No
     await h.send("again")
     await h.settle()
     assert h.notices() == ["step started"] * 2, "a client that left is not told"
-    await h.client.close()
-    await h.send("headless")  # nobody is connected: the notice has nobody to reach
+    await h.send_unattended("headless")  # nobody is connected: the notice has nobody to reach
     await h.settle()
     assert (await h.view()).hook_error is None, "the hook did not fail"
     assert not h.session.cursor(h.cursor).busy
