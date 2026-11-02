@@ -116,7 +116,6 @@ from tau._protocols import (
 from tau._providers import builtin_providers
 from tau._providers.anthropic import AnthropicProvider
 from tau._providers.gemini import GeminiProvider
-from tau._providers.mock import MockProvider
 from tau._providers.openai import OpenAIProvider
 from tau._remote import RemoteClient
 from tau._serve import Server
@@ -144,7 +143,7 @@ from tau._startup import (
 )
 from tau._step_limit import StepLimit
 from tau._tools import ToolError
-from tau._trust import Trusted, TrustError, UntrustedProject, safe_block
+from tau._trust import Trusted, TrustError, UntrustedProject
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
 from tau.commandline import Parsed, UnknownCommand
@@ -218,7 +217,6 @@ __all__ = [
     "LiveDelta",
     "LoadedConfig",
     "LocalClient",
-    "MockProvider",
     "Model",
     "ModelCatalog",
     "ModelConfig",
@@ -309,7 +307,6 @@ __all__ = [
     "read_models",
     "rename_session",
     "replay_for",
-    "safe_block",
     "select_model",
     "start_session",
     "system_prompt",

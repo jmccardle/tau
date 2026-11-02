@@ -52,9 +52,8 @@ JUSTIFIED_TITLE = (
     '# Types over the method limit that are one concept: key = "the one concept it is".\n'
     "# Exempt from the count and printed on every run. Adding one needs a reviewer's yes."
 )
-# The most public names that may lack a docstring. None: report the count and do not gate (the
-# docstrings are written in Phase 7C-2, which sets this to 0 and from then on it only holds).
-DOCSTRING_BAR: int | None = None
+# The most public names that may lack a docstring: none. A new public name needs its docstring.
+DOCSTRING_BAR: int | None = 0
 I7_TESTS = [
     ("crates/tau-core/tests/replay.rs", "reload_at_any_sync_equals_the_state_at_that_sync"),
     ("crates/tau-store/tests/store.rs", "a_torn_tail_opens_as_the_last_sync_before_it"),

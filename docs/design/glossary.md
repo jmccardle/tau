@@ -547,7 +547,7 @@ handed out and not yet answered; which kind is `pos`'s), `draft`, `error`,
 ### asked
 *spike* `Step::asked` · new
 
-The step was a frontend's `Session.step`: its phases run with auto-step off.
+The step was a frontend's `Session.step`: its phases run whether or not auto-step is on (auto-step is left as it was).
 
 ### phase
 *spike* (positions of `Pos`) · new
@@ -1334,7 +1334,7 @@ on; a string stops. Hooks at a point run in `config_at(at)` order.
 `pre_step`, `pre_input`, `pre_sample`, `pre_reply`, `post_reply`,
 `post_result`, `post_step` (cursor hooks, each a `Job::Hooks`), and
 `pre_tool`, `pre_result` (tool hooks, run by the driver inside `RunCalls`). Python
-names them as strings: `protocols.CURSOR_POINTS` and `protocols.TOOL_POINTS`. An
+names them as strings: `tau.CURSOR_POINTS` and `tau.TOOL_POINTS`. An
 extension attribute named `pre_*` or `post_*` that is not one of these is refused when the
 driver is built (see **check_extensions**), so a misspelt hook cannot sit silent. The
 rule is on the name, not the kind: a dataclass field `pre_prompt` is refused too. Name such a
@@ -1987,19 +1987,19 @@ driver then runs `check_tools` over the whole.
 
 Raised as a `DefinitionError` by `Driver.__init__` for an object that is not an `Extension`,
 naming it: a missing, non-`str` or empty `name`, a `name` that is not letters, digits, `_` and `-`
-(`protocols.EXTENSION_NAME`; D19 §1), two extensions with one name, or any attribute
+(`_protocols.EXTENSION_NAME`; D19 §1), two extensions with one name, or any attribute
 (method, field, class attribute) named `pre_*` or `post_*` that is not a hook point or is not
 callable. A module with a `name` is an extension (D16 §6).
 
 ### ProgressTool
-`protocols.ProgressTool` · D15 · new
+`_protocols.ProgressTool` · D15 · new
 
 The `Protocol` of the `call` of a `Tool` that opted in to progress (see **progress
 callback**): `async call(args_raw, *, progress) -> Outcome`. The driver casts to it for the
 tools `check_tools` found taking progress.
 
 ### check_meta
-`protocols.check_meta(meta)` · new
+`_protocols.check_meta(meta)` · new
 
 What `Finish` and `SampleError` check `meta` with: `None`, or the text of a strict JSON
 object. `TypeError` for a non-`str`, `ValueError` for text that is not a JSON object
@@ -2691,7 +2691,7 @@ the surface. A public signature names only public types; `api_docs.py --check` f
 Both generated from the code by `scripts/api_docs.py` and compared by `check.sh`, so a change
 to the API is a diff. The manifest is every public name with its signature, sorted. The
 reference is one Markdown page per group, from the docstrings. A native type's docstring is its
-Rust `///`; `_core.pyi` carries the same text (`api_docs.py --sync-stub` copies it) and the check
+Rust `///`; `_core.pyi` carries the same text (`scripts/stub_docs.py` copies it) and the check
 holds the two equal. `scripts/ratchet.py` counts public names without a docstring.
 
 ## Testing

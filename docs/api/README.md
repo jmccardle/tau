@@ -20,9 +20,12 @@ Three files keep this honest, and CI checks them:
 - [`../reference/`](../reference/README.md) has one page per group, from the docstrings.
 
 A name is public when it is in `tau.__all__` and in a group. A class that tau makes and hands
-over (a handle, a client from `Driver.client`) is listed under `made_by_tau` in `groups.toml`;
-its constructor is not part of the surface. A public signature may name only public types; the
-check fails otherwise.
+over (a handle, a client from `Driver.client` or `RemoteClient.connect`) is listed under
+`made_by_tau` in `groups.toml`; its constructor is not part of the surface. A class lists no
+member that a public base class already declares: it is documented there, once. A public
+signature may name only tau's public types, the standard library's, and the packages on the
+`foreign_types` list of `groups.toml` (`httpx`, for the providers' `transport`); the check fails
+otherwise.
 
 ## Writing an extension
 
@@ -66,9 +69,11 @@ embedder.
 
 ## Providers
 
-The `Provider` contract and what it returns, and the four providers that ship. They are public
-because an embedder builds one with its own `transport` or `environ`, and because someone
-writing a fifth provider starts from them.
+The `Provider` contract and what it returns, and the three hosted providers (`OpenAIProvider`,
+`AnthropicProvider`, `GeminiProvider`). They are public because an embedder builds one with its
+own `transport` (an `httpx` transport) or `environ`, and because someone writing a fourth
+provider starts from them. The scripted mock provider is not a name: `builtin_providers()["mock"]`
+gives it.
 
 ## The step machine
 
@@ -97,9 +102,14 @@ What a session and its store raise. Every reader catches some of them.
 - `commandline` stays public: a frontend reads a typed answer with `value` and `values`, and
   the tests that cover the parser need it. `Parsed` and `UnknownCommand` are exported because
   `Client.parse_line` returns and raises them.
-- The four provider classes are exported (see Providers above).
+- The three hosted provider classes are exported (see Providers above); `MockProvider` is not.
 - Names that the signatures of public things showed but `tau` did not export are now exported
   (`Json`, `Layer`, `Origin`, `Severity`, `SourceKind`, `SourceState`, `Ask`, `Pick`,
   `DriverState`, `CURSOR_POINTS`, `TOOL_POINTS`) or are gone from the signature.
-- Nothing was removed from `tau.__all__`: every name there is one a reader's signature, a raise
-  or a test needs.
+- Review removed `MockProvider` and `safe_block` from `tau.__all__`. `Trusted` and `LayerText`
+  stay because public signatures name them (`LoadedConfig.project`, `Layer`,
+  `UserConfig.project`, `UntrustedProject`). Every other name in `tau.__all__` is one a reader's
+  signature, a raise or a test needs.
+- `RemoteClient` is `made_by_tau`: `RemoteClient.connect` builds one, so its constructor is not
+  part of the surface. `LocalClient` and `RemoteClient` subclass `Client`, and `Client` documents
+  every call once.

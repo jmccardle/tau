@@ -760,7 +760,7 @@
       "type": "object"
     },
     "Notice": {
-      "description": "A message for this client alone: `cursor.tell`, an input a hook refused.",
+      "description": "A message for one client, or for all of them: `cursor.tell` (to every client unless it\nnames one), or an input a hook refused (to its author).",
       "type": "object",
       "properties": {
         "kind": {
@@ -1104,7 +1104,7 @@
       }
     },
     "children": {
-      "description": "",
+      "description": "The ids of the children of node `id`, in append order.",
       "type": "object",
       "properties": {
         "id": {
@@ -1298,7 +1298,7 @@
       }
     },
     "node": {
-      "description": "",
+      "description": "The node with this id; `NoSuchNode` if there is none.",
       "type": "object",
       "properties": {
         "id": {
@@ -1476,7 +1476,7 @@
       }
     },
     "set_auto": {
-      "description": "",
+      "description": "Turn `cursor`'s auto-step on or off; on wakes it.",
       "type": "object",
       "properties": {
         "cursor": {

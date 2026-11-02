@@ -149,7 +149,8 @@ class Appended:
 
 @dataclass(frozen=True)
 class Notice:
-    """A message for this client alone: `cursor.tell`, an input a hook refused."""
+    """A message for one client, or for all of them: `cursor.tell` (to every client unless it
+    names one), or an input a hook refused (to its author)."""
 
     text: str
 

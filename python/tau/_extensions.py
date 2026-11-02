@@ -51,7 +51,11 @@ from tau._trust import (
 from tau._user_config import UserConfig
 
 SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
+"""Whether a source's extensions are loaded: `always` (`tau` and `session_name`), `on`, `off`,
+`shadowed` by another source, `failed`, or `untrusted`."""
 SourceKind = Literal["built-in", "package", "user", "project", "explicit", "load"]
+"""Where a source comes from: `built-in`, `package`, `user`, `project`, `explicit` (`-e`), or
+`load` (a `load` key no source has)."""
 
 GROUP = "tau.extensions"
 POINT = "entry point"  # rules: allow(entry): what Python packaging calls a registration

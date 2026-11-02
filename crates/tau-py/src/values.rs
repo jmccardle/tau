@@ -22,7 +22,10 @@ macro_rules! debug_repr {
 }
 pub(crate) use debug_repr;
 
-/// Python view of [`tree::Replay`]. Construction validates, so a `Part` never holds a bad one.
+/// Data only the provider that wrote a part can send back (a thinking signature, for one).
+/// `provider` names that provider; `data` is the text of a JSON object, kept exactly as given.
+/// Construction raises `BadReplay` for an empty or blank provider name, or `data` that is not
+/// a strict JSON object, so a `Part` never holds a bad one.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Replay {
@@ -38,11 +41,13 @@ impl Replay {
         Ok(Self { inner })
     }
 
+    /// The name of the provider that wrote the part.
     #[getter]
     fn provider(&self) -> &str {
         self.inner.provider()
     }
 
+    /// The text of the JSON object, exactly as the provider gave it.
     #[getter]
     fn data(&self) -> &str {
         self.inner.data()
@@ -58,25 +63,37 @@ impl Replay {
     }
 }
 
-/// Python view of [`tree::Part`].
+/// One piece of a reply, in the order the provider streamed it: `Text`, `Thinking` or `Call`.
+/// Each may carry a `Replay`.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
+    /// Words for the reader.
     #[pyo3(constructor = (text, replay = None))]
     Text {
+        /// The words.
         text: String,
+        /// Data only the writing provider can send back, or `None`.
         replay: Option<Replay>,
     },
+    /// The model's reasoning. `text` may be empty when `replay` holds a redacted block.
     #[pyo3(constructor = (text, replay = None))]
     Thinking {
+        /// The reasoning, possibly empty.
         text: String,
+        /// Data only the writing provider can send back, or `None`.
         replay: Option<Replay>,
     },
+    /// A request to run one tool. A call is never a node of its own.
     #[pyo3(constructor = (id, tool, args_raw, replay = None))]
     Call {
+        /// The provider's id for the call, unique within its node.
         id: String,
+        /// The name of the tool to run.
         tool: String,
+        /// The arguments exactly as the model produced them, never re-serialised.
         args_raw: String,
+        /// Data only the writing provider can send back, or `None`.
         replay: Option<Replay>,
     },
 }
@@ -135,14 +152,20 @@ impl From<Part> for tree::Part {
     }
 }
 
-/// Python view of [`tree::Stop`].
+/// Why a reply ended. Only `Tools` makes its calls runnable. It is not an integer:
+/// `Stop.Tools != 1`.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stop {
+    /// The reply is complete (a refusal is an `End` with the provider's reason kept).
     End,
+    /// The reply asks for tool calls.
     Tools,
+    /// The reply hit a length limit.
     Length,
+    /// An abort cut the reply off.
     Interrupted,
+    /// The sample failed after producing output.
     Error,
 }
 
@@ -170,12 +193,21 @@ impl From<Stop> for tree::Stop {
     }
 }
 
-/// Python view of [`tree::Outcome`].
+/// How one tool call ended: `Ok`, `Err` or `Interrupted`.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Outcome {
-    Ok { value: String },
-    Err { error: String },
+    /// The call succeeded.
+    Ok {
+        /// What the tool returned.
+        value: String,
+    },
+    /// The call failed.
+    Err {
+        /// Why, as the model will read it.
+        error: String,
+    },
+    /// An abort stopped the call or kept it from starting; the tool may or may not have run.
     Interrupted {},
 }
 
@@ -199,15 +231,26 @@ impl From<Outcome> for tree::Outcome {
     }
 }
 
-/// Python view of [`tree::Author`].
+/// Who wrote a node, or asked for a move. It is recorded and never used to decide anything.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Author {
-    Frontend { client: String },
+    /// A frontend, named by its client name.
+    Frontend {
+        /// The client name the frontend gave.
+        client: String,
+    },
+    /// The model's provider.
     Provider {},
+    /// The tools that ran a call.
     Tools {},
+    /// The core itself.
     Core {},
-    Extension { name: String },
+    /// An extension.
+    Extension {
+        /// The extension's name.
+        name: String,
+    },
 }
 
 impl From<tree::Author> for Author {
@@ -234,10 +277,13 @@ impl From<Author> for tree::Author {
     }
 }
 
-/// Python view of [`tree::Config`].
+/// How a step runs from this node on: the text of a JSON object with at most two keys, `"model"`
+/// and `"extensions"` (the options). The constructor does not check the text, and core stores it
+/// without reading it.
 #[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Config {
+    /// The JSON object text, as given.
     data: String,
 }
 
@@ -265,31 +311,49 @@ impl From<Config> for tree::Config {
     }
 }
 
-/// Python view of [`tree::Body`].
+/// What a node holds. `System`, `User`, `Assistant` and `Results` are what the model reads;
+/// `Config` and `Custom` never reach it.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Body {
+    /// The system text a session starts with.
     System {
+        /// The system text.
         text: String,
     },
+    /// A message from the person (or an extension) using the session.
     User {
+        /// The message.
         text: String,
     },
+    /// The model's reply.
     #[pyo3(constructor = (parts, stop, finish_reason = None, meta = None))]
     Assistant {
+        /// The reply's pieces, in stream order.
         parts: Vec<Part>,
+        /// Why the reply ended.
         stop: Stop,
+        /// The provider's own finish string, or `None`.
         finish_reason: Option<String>,
+        /// What the response carried besides its parts (usage, for one), as JSON object text,
+        /// or `None`.
         meta: Option<String>,
     },
+    /// The answer to a batch of calls: one `(call id, outcome, author)` per call, in call order.
     Results {
+        /// The outcomes, one per call.
         outcomes: Vec<(String, Outcome, Author)>,
     },
+    /// A change of how steps run from here on.
     Config {
+        /// The new configuration.
         config: Config,
     },
+    /// A record an extension (or core) keeps in the tree that the model never reads.
     Custom {
+        /// What kind of record this is; core writes `sample_error`.
         kind: String,
+        /// The record's data, as text.
         data: String,
     },
 }
@@ -358,11 +422,17 @@ impl From<Body> for tree::Body {
 #[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
+    /// The node's id; ids are dense from 0.
     id: u64,
+    /// The node it follows, or `None` for a root.
     parent: Option<u64>,
+    /// The time the driver gave it, in milliseconds.
     time: u64,
+    /// Who wrote it.
     by: Author,
+    /// What it holds.
     body: Body,
+    /// The ids of the scratchpad items it consumed.
     delivers: Vec<u64>,
 }
 
@@ -392,18 +462,23 @@ impl From<Node> for tree::Node {
     }
 }
 
-/// Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`.
+/// The record of a cursor changing node. `from` is a Python keyword, so `from_`.
 #[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
+    /// The cursor that moved.
     #[pyo3(get)]
     cursor: u64,
+    /// The node it left, or `None` when the move opened the cursor.
     #[pyo3(get, name = "from_")]
     from: Option<u64>,
+    /// The node it moved to.
     #[pyo3(get)]
     to: u64,
+    /// Who asked for the move.
     #[pyo3(get)]
     by: Author,
+    /// The time the driver gave it, in milliseconds.
     #[pyo3(get)]
     time: u64,
 }
@@ -420,12 +495,24 @@ impl From<tree::Move> for Move {
     }
 }
 
-/// Python view of [`tree::ItemData`].
+/// What a scratchpad item holds: an `Input`, or an `Extension`'s own data.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemData {
-    Input { by: Author, text: String },
-    Extension { name: String, data: String },
+    /// A line for the cursor to take as a `User` message.
+    Input {
+        /// Who wrote it.
+        by: Author,
+        /// The line.
+        text: String,
+    },
+    /// Data an extension keeps in the scratchpad; core does not read it.
+    Extension {
+        /// The extension's name.
+        name: String,
+        /// The extension's data, as text.
+        data: String,
+    },
 }
 
 impl From<tree::ItemData> for ItemData {
@@ -452,12 +539,15 @@ impl From<ItemData> for tree::ItemData {
     }
 }
 
-/// Python view of [`tree::Item`].
+/// One item in a cursor's scratchpad. Ids are never reused.
 #[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Item {
+    /// The item's id.
     id: u64,
+    /// The cursor it is addressed to.
     to: u64,
+    /// What it holds.
     data: ItemData,
 }
 
@@ -481,12 +571,15 @@ impl From<Item> for tree::Item {
     }
 }
 
-/// Python view of [`tree::Next`].
+/// What a cursor's walk needs next.
 #[pyclass(frozen, eq, hash, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Next {
+    /// Nothing: no `User` message or batch of calls is waiting.
     Wait,
+    /// A sample: the last message is a `User` or `Results` node.
     Sample,
+    /// The tools: the last message is a reply whose calls have not been answered.
     RunTools,
 }
 

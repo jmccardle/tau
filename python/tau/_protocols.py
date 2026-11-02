@@ -199,10 +199,14 @@ class Tool(Protocol):
     """
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """The name the model calls the tool by; unique among a driver's tools."""
+        ...
 
     @property
-    def description(self) -> str: ...
+    def description(self) -> str:
+        """What the tool does, as the model reads it."""
+        ...
 
     @property
     def parameters(self) -> Mapping[str, object]:
@@ -267,10 +271,12 @@ class CallDraft:
 
     @property
     def id(self) -> str:
+        """The provider's id for the call. Read-only."""
         return self._id
 
     @property
     def tool(self) -> str:
+        """The name of the tool being called. Read-only."""
         return self._tool
 
     def __repr__(self) -> str:
@@ -293,7 +299,10 @@ class Extension(Protocol):
     """
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """The extension's name: letters, digits, `_` and `-`, unique among a driver's
+        extensions."""
+        ...
 
 
 EXTENSION_NAME = re.compile(r"[A-Za-z0-9_-]+")

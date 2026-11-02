@@ -322,7 +322,7 @@ and `pre_step` and turns auto-step off in `post_step`. Core keeps no count.
 | `pre_input` | cursor | `Hooks(PreInput, draft)`, per item | the input draft |
 | `pre_sample` | cursor | `Hooks(PreSample)` | the sample draft; a reply answers it; `subject.tools` names the tools this sample is offered (the driver filters, core never sees it) |
 | `pre_reply` | cursor | `Hooks(PreReply, draft)` | the reply draft |
-| `post_reply` | cursor | `Hooks(PostReply)` | the `Assistant` node |
+| `post_reply` | cursor | `Hooks(PostReply)` | the `Assistant` node just committed; not run when `pre_reply` left no draft, since nothing was committed |
 | `pre_tool` | tool | inside `RunCalls` | the call draft; setting an outcome answers it (later `pre_tool` hooks still run and may change it) |
 | `pre_result` | tool | inside `RunCalls` | the call draft with its outcome |
 | `post_result` | cursor | `Hooks(PostResult)` | the `Results` node |

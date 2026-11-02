@@ -21,6 +21,7 @@ pub struct Tree {
 
 #[pymethods]
 impl Tree {
+    /// The node with this id. `NoSuchNode` if there is none.
     fn node(&self, py: Python<'_>, id: u64) -> PyResult<Node> {
         self.shared
             .read(py, tracing::info_span!("py.tree.node"), |i| {
@@ -59,6 +60,7 @@ impl Tree {
             })
     }
 
+    /// The `Config` in force at `node`: the nearest one on its walk. `NoSuchNode` if absent.
     fn config_at(&self, py: Python<'_>, node: u64) -> PyResult<Config> {
         self.shared
             .read(py, tracing::info_span!("py.tree.config_at"), |i| {
@@ -89,6 +91,7 @@ pub struct CursorState {
     /// The node the cursor is on.
     #[pyo3(get)]
     at: u64,
+    /// Whether auto-step is on.
     #[pyo3(get)]
     auto: bool,
     /// A step is running.

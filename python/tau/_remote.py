@@ -22,6 +22,7 @@ from typing import Final, Self, cast
 from websockets.asyncio.client import ClientConnection, unix_connect
 from websockets.exceptions import ConnectionClosed
 
+from tau._client import Client
 from tau._core import Node
 from tau._events import Event
 from tau._hub import Feed
@@ -212,7 +213,7 @@ class _Channel:
         return await self.request(method, encode_params(method, args))
 
 
-class RemoteClient(_Channel):
+class RemoteClient(_Channel, Client):
     """A `Client` of a session served by `tau serve`: build one with `RemoteClient.connect`. Each
     call is documented once, on `Client`. It is also an async context manager that closes."""
 

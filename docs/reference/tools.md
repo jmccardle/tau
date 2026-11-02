@@ -21,24 +21,6 @@ before the `CancelledError` propagates, however often it is cancelled meanwhile:
 is left running. Each call has a thread
 of its own.
 
-### BashTool.name
-
-```python
-property name: str
-```
-
-### BashTool.description
-
-```python
-property description: str
-```
-
-### BashTool.parameters
-
-```python
-property parameters: Mapping[str, object]
-```
-
 ### BashTool.__init__
 
 ```python
@@ -69,6 +51,30 @@ a slow one loses the oldest output it has not yet been given (the answer keeps i
 already running and for the final flush, one more call, so a slow `progress` delays
 the answer by that much. Calls stop for good when the interpreter begins to exit.
 
+### BashTool.name
+
+```python
+property name: str
+```
+
+The tool's name: `read`, `write`, `grep` or `bash`.
+
+### BashTool.description
+
+```python
+property description: str
+```
+
+What the tool does, as the model reads it.
+
+### BashTool.parameters
+
+```python
+property parameters: Mapping[str, object]
+```
+
+A JSON Schema object describing the tool's arguments.
+
 ## GrepTool
 
 ```python
@@ -76,30 +82,6 @@ class GrepTool
 ```
 
 `grep`: a regex over a file or a directory tree, honoring .gitignore. Keeps the head.
-
-### GrepTool.name
-
-```python
-property name: str
-```
-
-### GrepTool.description
-
-```python
-property description: str
-```
-
-### GrepTool.parameters
-
-```python
-property parameters: Mapping[str, object]
-```
-
-### GrepTool.call
-
-```python
-async def call(self, args_raw: str) -> Outcome
-```
 
 ### GrepTool.__init__
 
@@ -113,6 +95,39 @@ def __init__(
     max_overflow: int = 64 * 1024 * 1024,
 ) -> None
 ```
+
+### GrepTool.call
+
+```python
+async def call(self, args_raw: str) -> Outcome
+```
+
+Run the call in `args_raw`, stopping early if the call is cancelled. `Ok` with the
+output, or `Err`.
+
+### GrepTool.name
+
+```python
+property name: str
+```
+
+The tool's name: `read`, `write`, `grep` or `bash`.
+
+### GrepTool.description
+
+```python
+property description: str
+```
+
+What the tool does, as the model reads it.
+
+### GrepTool.parameters
+
+```python
+property parameters: Mapping[str, object]
+```
+
+A JSON Schema object describing the tool's arguments.
 
 ## Progress
 
@@ -132,22 +147,10 @@ class ReadTool
 
 `read`: a text file, from line `offset` for `limit` lines. Keeps the head of long output.
 
-### ReadTool.name
+### ReadTool.__init__
 
 ```python
-property name: str
-```
-
-### ReadTool.description
-
-```python
-property description: str
-```
-
-### ReadTool.parameters
-
-```python
-property parameters: Mapping[str, object]
+def __init__(self, cwd: str | os.PathLike[str] | None = None, *, max_output: int = 10000) -> None
 ```
 
 ### ReadTool.call
@@ -156,11 +159,32 @@ property parameters: Mapping[str, object]
 async def call(self, args_raw: str) -> Outcome
 ```
 
-### ReadTool.__init__
+Run the call in `args_raw`, stopping early if the call is cancelled. `Ok` with the
+output, or `Err`.
+
+### ReadTool.name
 
 ```python
-def __init__(self, cwd: str | os.PathLike[str] | None = None, *, max_output: int = 10000) -> None
+property name: str
 ```
+
+The tool's name: `read`, `write`, `grep` or `bash`.
+
+### ReadTool.description
+
+```python
+property description: str
+```
+
+What the tool does, as the model reads it.
+
+### ReadTool.parameters
+
+```python
+property parameters: Mapping[str, object]
+```
+
+A JSON Schema object describing the tool's arguments.
 
 ## Tool
 
@@ -186,11 +210,15 @@ is called with `args_raw` alone, as before.
 property name: str
 ```
 
+The name the model calls the tool by; unique among a driver's tools.
+
 ### Tool.description
 
 ```python
 property description: str
 ```
+
+What the tool does, as the model reads it.
 
 ### Tool.parameters
 
@@ -226,24 +254,6 @@ class WriteTool
 
 `write`: a whole file, atomically, creating parent directories.
 
-### WriteTool.name
-
-```python
-property name: str
-```
-
-### WriteTool.description
-
-```python
-property description: str
-```
-
-### WriteTool.parameters
-
-```python
-property parameters: Mapping[str, object]
-```
-
 ### WriteTool.__init__
 
 ```python
@@ -255,6 +265,32 @@ def __init__(self, cwd: str | os.PathLike[str] | None = None) -> None
 ```python
 async def call(self, args_raw: str) -> Outcome
 ```
+
+Write the file named in `args_raw`. `Ok` with a short confirmation, or `Err`.
+
+### WriteTool.name
+
+```python
+property name: str
+```
+
+The tool's name: `read`, `write`, `grep` or `bash`.
+
+### WriteTool.description
+
+```python
+property description: str
+```
+
+What the tool does, as the model reads it.
+
+### WriteTool.parameters
+
+```python
+property parameters: Mapping[str, object]
+```
+
+A JSON Schema object describing the tool's arguments.
 
 ## base_tools
 

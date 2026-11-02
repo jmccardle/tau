@@ -83,14 +83,17 @@ class _Described:
 
     @property
     def name(self) -> str:
+        """The tool's name: `read`, `write`, `grep` or `bash`."""
         return self._described.name
 
     @property
     def description(self) -> str:
+        """What the tool does, as the model reads it."""
         return self._described.description
 
     @property
     def parameters(self) -> Mapping[str, object]:
+        """A JSON Schema object describing the tool's arguments."""
         return self._parameters
 
 
@@ -131,6 +134,8 @@ class _Cancellable(_Described):
         self._engine = engine
 
     async def call(self, args_raw: str) -> Outcome:
+        """Run the call in `args_raw`, stopping early if the call is cancelled. `Ok` with the
+        output, or `Err`."""
         cancel = _core.Cancel()
         work = asyncio.ensure_future(
             asyncio.to_thread(self._engine.run, args_raw, cancel)  # pyright: ignore[reportArgumentType]
@@ -180,6 +185,7 @@ class WriteTool(_Described):
         self._engine = engine
 
     async def call(self, args_raw: str) -> Outcome:
+        """Write the file named in `args_raw`. `Ok` with a short confirmation, or `Err`."""
         return await asyncio.to_thread(self._engine.run, args_raw)
 
 

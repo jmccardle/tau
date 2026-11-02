@@ -94,7 +94,9 @@ The machine already refuses a feed that does not answer the job that is out
   the graph.
 - A plain `Hooks` answer, by position, becomes `on_hooks`. `pre_step` goes to
   input. Input and `pre_reply` commit the draft. `pre_sample` goes to sample.
-  `post_reply` goes to tools, or fails if the sample had an error.
+  `post_reply` goes to tools, or fails if the sample had an error. A `pre_reply` that
+  leaves no draft commits nothing, so `post_reply` is skipped (to tools, or to a failed
+  `post_step` if the sample had an error).
   `post_result` goes to `post_step`. `post_step` calls `after`.
 - `Sampled` becomes `on_sampled` (reply, error, both, or neither).
 - `CallDone` becomes `on_call`, and `Waited` becomes `on_waited`.

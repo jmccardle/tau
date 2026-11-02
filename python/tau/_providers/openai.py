@@ -367,6 +367,7 @@ class OpenAIProvider:
 
     @property
     def name(self) -> str:
+        """`"openai"`: what a model's `provider` setting calls it."""
         return "openai"
 
     def check(self, model: ModelConfig) -> list[str]:

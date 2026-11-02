@@ -13,11 +13,11 @@ class Client(AsyncIterator[Event], Protocol)
     id: str
 ```
 
-What a frontend holds. Iterating it yields the events: a `CursorView` per open cursor, a
-`CursorGone` per closed one, and `Labels` first, then changes as they happen, until the driver
-stops (the stream ends), or the driver fails or the client is `CutOff` for falling behind (it
-raises `ConnectionError`). Every call raises `ConnectionError` once the driver has failed or
-stopped, or the client has been closed or cut off.
+What a frontend holds. Iterating it yields the events: first a snapshot (a `CursorView` per
+open cursor, a `CursorGone` per closed one, then `Labels`), then changes as they happen,
+until the driver stops (the stream ends), or the driver fails or the client is `CutOff` for
+falling behind (it raises `ConnectionError`). Every call raises `ConnectionError` once the
+driver has failed or stopped, or the client has been closed or cut off.
 
 ### Client.input
 
@@ -57,6 +57,8 @@ questions).
 ```python
 async def set_auto(self, cursor: int, on: bool) -> None
 ```
+
+Turn `cursor`'s auto-step on or off; on wakes it.
 
 ### Client.abort
 
@@ -224,6 +226,8 @@ word, in one call.
 async def node(self, id: int) -> Node
 ```
 
+The node with this id; `NoSuchNode` if there is none.
+
 ### Client.nodes
 
 ```python
@@ -248,6 +252,8 @@ The nodes from the root to `id`.
 async def children(self, id: int) -> list[int]
 ```
 
+The ids of the children of node `id`, in append order.
+
 ### Client.close
 
 ```python
@@ -269,7 +275,7 @@ it too.
 ## LocalClient
 
 ```python
-class LocalClient
+class LocalClient(Client)
 ```
 
 A `Client` in the driver's process, made by `Driver.client`: its stream opens with the
@@ -297,12 +303,6 @@ def take(self) -> list[Event]
 The events the stream holds now, removed, without waiting. A server writes a
 client's events as batches and sends each response after the events its call caused.
 
-### LocalClient.close
-
-```python
-async def close(self) -> None
-```
-
 ### LocalClient.__aenter__
 
 ```python
@@ -313,157 +313,6 @@ async def __aenter__(self) -> Self
 
 ```python
 async def __aexit__(self, *exc: object) -> None
-```
-
-### LocalClient.input
-
-```python
-async def input(self, cursor: int, text: str) -> int
-```
-
-### LocalClient.send
-
-```python
-async def send(self, cursor: int, text: str) -> int
-```
-
-### LocalClient.step
-
-```python
-async def step(self, cursor: int) -> None
-```
-
-### LocalClient.go_to
-
-```python
-async def go_to(self, cursor: int, to: int) -> None
-```
-
-### LocalClient.set_auto
-
-```python
-async def set_auto(self, cursor: int, on: bool) -> None
-```
-
-### LocalClient.abort
-
-```python
-async def abort(self, cursor: int) -> None
-```
-
-### LocalClient.open
-
-```python
-async def open(self, at: int) -> int
-```
-
-### LocalClient.close_cursor
-
-```python
-async def close_cursor(self, cursor: int) -> None
-```
-
-### LocalClient.reopen
-
-```python
-async def reopen(self, cursor: int) -> int
-```
-
-### LocalClient.set_label
-
-```python
-async def set_label(self, cursor: int, label: str) -> None
-```
-
-### LocalClient.remove_label
-
-```python
-async def remove_label(self, label: str) -> None
-```
-
-### LocalClient.watch
-
-```python
-async def watch(self, cursors: Collection[int]) -> None
-```
-
-### LocalClient.answer
-
-```python
-async def answer(self, question: int, value: object) -> None
-```
-
-### LocalClient.commands
-
-```python
-async def commands(self) -> tuple[Form, ...]
-```
-
-### LocalClient.run
-
-```python
-async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
-```
-
-### LocalClient.options
-
-```python
-async def options(self, cursor: int, extension: str) -> Form
-```
-
-### LocalClient.configure
-
-```python
-async def configure(
-    self,
-    cursor: int,
-    extension: str,
-    values: Mapping[str, object],
-    *,
-    save: bool = False,
-) -> None
-```
-
-### LocalClient.complete
-
-```python
-async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
-```
-
-### LocalClient.parse_line
-
-```python
-async def parse_line(self, cursor: int, line: str) -> Parsed
-```
-
-### LocalClient.complete_line
-
-```python
-async def complete_line(self, cursor: int, line: str) -> list[str]
-```
-
-### LocalClient.node
-
-```python
-async def node(self, id: int) -> Node
-```
-
-### LocalClient.nodes
-
-```python
-async def nodes(self, start: int, limit: int) -> list[Node]
-```
-
-### LocalClient.walk
-
-```python
-async def walk(self, id: int) -> list[Node]
-```
-
-### LocalClient.children
-
-```python
-async def children(self, id: int) -> list[int]
 ```
 
 ## Parsed
@@ -496,19 +345,12 @@ command's result.
 ## RemoteClient
 
 ```python
-class RemoteClient
-    id: str
+class RemoteClient(Client)
     welcome: Welcome
 ```
 
 A `Client` of a session served by `tau serve`: build one with `RemoteClient.connect`. Each
 call is documented once, on `Client`. It is also an async context manager that closes.
-
-### RemoteClient.__init__
-
-```python
-def __init__(self, socket: ClientConnection, client: str, buffer: int) -> None
-```
 
 ### RemoteClient.connect
 
@@ -545,15 +387,6 @@ async def __aenter__(self) -> Self
 async def __aexit__(self, *exc: object) -> None
 ```
 
-### RemoteClient.close
-
-```python
-async def close(self) -> None
-```
-
-Disconnect: the stream ends, what it holds is dropped, and later calls raise
-`ConnectionError`.
-
 ### RemoteClient.request
 
 ```python
@@ -572,157 +405,6 @@ async def call(self, method: str, **args: object) -> object
 
 `request` for a call's arguments: they are encoded by the call's signature, so a
 value that is not JSON is a `TypeError` here, before anything is sent.
-
-### RemoteClient.input
-
-```python
-async def input(self, cursor: int, text: str) -> int
-```
-
-### RemoteClient.send
-
-```python
-async def send(self, cursor: int, text: str) -> int
-```
-
-### RemoteClient.step
-
-```python
-async def step(self, cursor: int) -> None
-```
-
-### RemoteClient.go_to
-
-```python
-async def go_to(self, cursor: int, to: int) -> None
-```
-
-### RemoteClient.set_auto
-
-```python
-async def set_auto(self, cursor: int, on: bool) -> None
-```
-
-### RemoteClient.abort
-
-```python
-async def abort(self, cursor: int) -> None
-```
-
-### RemoteClient.open
-
-```python
-async def open(self, at: int) -> int
-```
-
-### RemoteClient.close_cursor
-
-```python
-async def close_cursor(self, cursor: int) -> None
-```
-
-### RemoteClient.reopen
-
-```python
-async def reopen(self, cursor: int) -> int
-```
-
-### RemoteClient.set_label
-
-```python
-async def set_label(self, cursor: int, label: str) -> None
-```
-
-### RemoteClient.remove_label
-
-```python
-async def remove_label(self, label: str) -> None
-```
-
-### RemoteClient.watch
-
-```python
-async def watch(self, cursors: Collection[int]) -> None
-```
-
-### RemoteClient.answer
-
-```python
-async def answer(self, question: int, value: object) -> None
-```
-
-### RemoteClient.commands
-
-```python
-async def commands(self) -> tuple[Form, ...]
-```
-
-### RemoteClient.run
-
-```python
-async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
-```
-
-### RemoteClient.options
-
-```python
-async def options(self, cursor: int, extension: str) -> Form
-```
-
-### RemoteClient.configure
-
-```python
-async def configure(
-    self,
-    cursor: int,
-    extension: str,
-    values: Mapping[str, object],
-    *,
-    save: bool = False,
-) -> None
-```
-
-### RemoteClient.complete
-
-```python
-async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
-```
-
-### RemoteClient.parse_line
-
-```python
-async def parse_line(self, cursor: int, line: str) -> Parsed
-```
-
-### RemoteClient.complete_line
-
-```python
-async def complete_line(self, cursor: int, line: str) -> list[str]
-```
-
-### RemoteClient.node
-
-```python
-async def node(self, id: int) -> Node
-```
-
-### RemoteClient.nodes
-
-```python
-async def nodes(self, start: int, limit: int) -> list[Node]
-```
-
-### RemoteClient.walk
-
-```python
-async def walk(self, id: int) -> list[Node]
-```
-
-### RemoteClient.children
-
-```python
-async def children(self, id: int) -> list[int]
-```
 
 ## UnknownCommand
 

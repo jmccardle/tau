@@ -22,6 +22,7 @@ from tau._protocols import Provider
 from tau._values import Context, DefinitionError
 
 Severity = Literal["error", "warning"]
+"""How bad a `ConfigProblem` is: an `error` fails the check, a `warning` does not."""
 
 CLI = "cli"
 _MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
@@ -44,6 +45,7 @@ class LayerText:
 
 
 Layer = Path | LayerText
+"""One config layer: the `Path` of a file, or a `LayerText` already read."""
 
 
 @dataclass(frozen=True)

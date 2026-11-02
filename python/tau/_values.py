@@ -49,6 +49,7 @@ if TYPE_CHECKING:  # _config_layers imports protocols, which imports handles, wh
     from tau._config_layers import ModelCatalog
 
 Json = dict[str, object]
+"""A JSON object as Python holds it: what a schema or a decoded JSON object is typed as."""
 
 Model = NewType("Model", str)
 """A model name that is configured; a frontend offers the catalog."""

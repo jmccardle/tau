@@ -167,18 +167,17 @@ impl Shared {
     }
 }
 
-/// One session: its tree, cursors, scratchpad, and every cursor's step.
+/// One session: its tree, cursors, scratchpad, and every cursor's step. It does no IO of its
+/// own: a program asks it for each cursor's next `Job` and gives back an `Answer`.
 ///
-/// `frozen`: the state lives behind a `Mutex`, so the class has no mutable
-/// Python attributes and is shared across threads on free-threaded builds
-/// without further locking. Each call that changes the session hands its
-/// queued records to the store (when there is one) before it returns; Python
-/// never saves. `tree` is the read view of the nodes; `cursor` snapshots one
-/// cursor.
+/// A call that changes the session hands its records to the store (when there is one) before
+/// it returns, so a program never saves. Every call takes the session's one lock, so a
+/// session may be shared across threads. A closed session raises `Closed`.
 #[pyclass(frozen, module = "tau._core")]
 #[derive(Debug)]
 pub struct Session {
     shared: Arc<Shared>,
+    /// The session's nodes.
     #[pyo3(get)]
     tree: Py<Tree>,
 }
@@ -311,18 +310,25 @@ impl Session {
 
     // Frontend calls.
 
+    /// Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
+    /// Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
     fn input(&self, py: Python<'_>, cursor: u64, by: Author, text: &str) -> PyResult<u64> {
         self.shared.write(py, tracing::info_span!("py.input"), |m| {
             Ok(m.input(cursor, by.into(), text)?)
         })
     }
 
+    /// Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.
+    /// `Busy` if a step is already running.
     fn step(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
         self.shared
             .write(py, tracing::info_span!("py.step"), |m| Ok(m.step(cursor)?))
     }
 
-    /// Returns whether the driver must cancel the effect in flight.
+    /// Move `cursor` to node `to` for the frontend named `client`, turn auto-step off and wake
+    /// the cursor. On a busy cursor the step is aborted and the move applies when it rests.
+    /// Returns whether the driver must cancel the effect in flight. `NoSuchNode` if `to`
+    /// is absent.
     fn go_to(
         &self,
         py: Python<'_>,
@@ -336,6 +342,7 @@ impl Session {
         })
     }
 
+    /// Turn auto-step on or off for `cursor`; on wakes it.
     fn set_auto(&self, py: Python<'_>, cursor: u64, on: bool) -> PyResult<()> {
         self.shared
             .write(py, tracing::info_span!("py.set_auto"), |m| {
@@ -343,6 +350,7 @@ impl Session {
             })
     }
 
+    /// Stop `cursor`'s step: auto-step goes off and no later phase runs. A running hook finishes.
     /// Returns whether the driver must cancel the effect in flight.
     fn abort(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
         self.shared.write(
@@ -363,14 +371,17 @@ impl Session {
     // Extension and driver calls. These sync before they return. The handles
     // of a running hook write through `HandleWrites` instead.
 
+    /// Open a new cursor at node `at` and wake it. Returns its id. `NoSuchNode` if `at` is absent.
     fn open(&self, py: Python<'_>, at: u64, by: Author, now: u64) -> PyResult<u64> {
         self.shared.open(py, at, by, now, None)
     }
 
+    /// Add an item to cursor `to`'s scratchpad and wake it. Returns the item's id.
     fn add_item(&self, py: Python<'_>, to: u64, data: ItemData) -> PyResult<u64> {
         self.shared.add_item(py, to, data, None)
     }
 
+    /// Remove an item from the scratchpad. `NoSuchItem` if it is not there.
     fn remove_item(&self, py: Python<'_>, id: u64) -> PyResult<()> {
         self.shared.remove_item(py, id, None)
     }
@@ -392,10 +403,13 @@ impl Session {
         self.shared.append_root(py, config, by, now, None)
     }
 
+    /// Put `label` on `cursor`; a label already on another cursor moves. `CursorClosed` if the
+    /// cursor is closed.
     fn set_label(&self, py: Python<'_>, label: &str, cursor: u64) -> PyResult<()> {
         self.shared.set_label(py, label, cursor, None)
     }
 
+    /// Remove `label`. `NoSuchLabel` if it is not set.
     fn remove_label(&self, py: Python<'_>, label: &str) -> PyResult<()> {
         self.shared.remove_label(py, label, None)
     }
@@ -403,6 +417,8 @@ impl Session {
     // A cursor hook's calls on its own cursor: refused (`NotInHook`) unless a
     // cursor hook job is out for it.
 
+    /// A cursor hook's move of its own cursor to node `to`. `NotInHook` unless a cursor hook
+    /// job is out for `cursor`.
     fn hook_move(
         &self,
         py: Python<'_>,
@@ -417,6 +433,9 @@ impl Session {
             })
     }
 
+    /// A cursor hook's write: append a node under the cursor's node, move onto it and consume
+    /// the `delivers` items. Returns the new node's id. `NotInHook` unless a cursor hook job is
+    /// out for `cursor`; `NotPending` if an item is not pending for it.
     fn hook_write(
         &self,
         py: Python<'_>,
@@ -432,6 +451,8 @@ impl Session {
             })
     }
 
+    /// A cursor hook's change of its own cursor's auto-step. `NotInHook` unless a cursor hook
+    /// job is out for `cursor`.
     fn hook_set_auto(&self, py: Python<'_>, cursor: u64, on: bool) -> PyResult<()> {
         self.shared
             .write(py, tracing::info_span!("py.hook_set_auto"), |m| {

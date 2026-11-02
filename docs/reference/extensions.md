@@ -38,11 +38,15 @@ def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = 
 property id: str
 ```
 
+The provider's id for the call. Read-only.
+
 ### CallDraft.tool
 
 ```python
 property tool: str
 ```
+
+The name of the tool being called. Read-only.
 
 ## Cursor
 
@@ -64,11 +68,15 @@ tree stays valid (no hook edit limits).
 def node(self, id: int | None = None) -> Node
 ```
 
+The node `id`, or the node this cursor is on when `id` is `None`.
+
 ### Cursor.walk
 
 ```python
 def walk(self) -> list[Node]
 ```
+
+The nodes from the root to the node this cursor is on.
 
 ### Cursor.options
 
@@ -274,6 +282,9 @@ field for what it holds (`prompt_prefix`, `before_prompt`), never with those two
 property name: str
 ```
 
+The extension's name: letters, digits, `_` and `-`, unique among a driver's
+extensions.
+
 ## Form
 
 ```python
@@ -333,6 +344,8 @@ and `ask`, which goes to that cursor. Has none of the cursor's own operations.
 property node: Node
 ```
 
+The `Assistant` node that holds the batch being run.
+
 ### NodeHandle.options
 
 ```python
@@ -363,6 +376,8 @@ def saved_options(self) -> Mapping[str, object]
 ```python
 def walk(self) -> list[Node]
 ```
+
+The nodes from the root to the batch's node.
 
 ### NodeHandle.ask
 
@@ -433,17 +448,23 @@ def __init__(self) -> None
 async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
+Start the cursor's count at 1: the step that takes an input is the first.
+
 ### StepLimit.pre_step
 
 ```python
 async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
+Count this step if auto-step is on. A bad `limit` option fails the step here.
+
 ### StepLimit.post_step
 
 ```python
 async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
 ```
+
+Turn auto-step off once the count reaches `limit`, then start the count over.
 
 ## Subject
 
@@ -510,6 +531,8 @@ Every call goes into Rust at once. Nothing here moves a cursor.
 property by: Author
 ```
 
+The `Author` this handle's writes carry: `Author.Extension` with the extension's name.
+
 ### TreeHandle.retire
 
 ```python
@@ -540,6 +563,8 @@ def cursor(self, cursor: int) -> CursorState
 ```python
 def cursors(self) -> list[int]
 ```
+
+The ids of every open cursor.
 
 ### TreeHandle.closed
 

@@ -308,44 +308,12 @@ class Client(AsyncIterator[Event], Protocol)
     async def walk(self, id: int) -> list[Node]
     async def watch(self, cursors: Collection[int]) -> None
 class CommandFailed(RuntimeError)
-class LocalClient
+class LocalClient(Client)
     async def __aenter__(self) -> Self
     async def __aexit__(self, *exc: object) -> None
     def __aiter__(self) -> Self
     async def __anext__(self) -> Event
-    async def abort(self, cursor: int) -> None
-    async def answer(self, question: int, value: object) -> None
-    async def children(self, id: int) -> list[int]
-    async def close(self) -> None
-    async def close_cursor(self, cursor: int) -> None
-    async def commands(self) -> tuple[Form, ...]
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
-    async def complete_line(self, cursor: int, line: str) -> list[str]
-    async def configure(
-        self,
-        cursor: int,
-        extension: str,
-        values: Mapping[str, object],
-        *,
-        save: bool = False,
-    ) -> None
-    async def go_to(self, cursor: int, to: int) -> None
-    async def input(self, cursor: int, text: str) -> int
-    async def node(self, id: int) -> Node
-    async def nodes(self, start: int, limit: int) -> list[Node]
-    async def open(self, at: int) -> int
-    async def options(self, cursor: int, extension: str) -> Form
-    async def parse_line(self, cursor: int, line: str) -> Parsed
-    async def remove_label(self, label: str) -> None
-    async def reopen(self, cursor: int) -> int
-    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
-    async def send(self, cursor: int, text: str) -> int
-    async def set_auto(self, cursor: int, on: bool) -> None
-    async def set_label(self, cursor: int, label: str) -> None
-    async def step(self, cursor: int) -> None
     def take(self) -> list[Event]
-    async def walk(self, id: int) -> list[Node]
-    async def watch(self, cursors: Collection[int]) -> None
 @dataclass(frozen=True)
 class Parsed
     args: dict[str, object]
@@ -354,49 +322,15 @@ class Parsed
     missing: tuple[str, ...]
     async def run(self, client: 'Client', cursor: int) -> str | None
     save: bool = False
-class RemoteClient
+class RemoteClient(Client)
     async def __aenter__(self) -> Self
     async def __aexit__(self, *exc: object) -> None
     def __aiter__(self) -> Self
     async def __anext__(self) -> Event
-    def __init__(self, socket: ClientConnection, client: str, buffer: int) -> None
-    async def abort(self, cursor: int) -> None
-    async def answer(self, question: int, value: object) -> None
     async def call(self, method: str, **args: object) -> object
-    async def children(self, id: int) -> list[int]
-    async def close(self) -> None
-    async def close_cursor(self, cursor: int) -> None
-    async def commands(self) -> tuple[Form, ...]
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
-    async def complete_line(self, cursor: int, line: str) -> list[str]
-    async def configure(
-        self,
-        cursor: int,
-        extension: str,
-        values: Mapping[str, object],
-        *,
-        save: bool = False,
-    ) -> None
     @classmethod
     async def connect(cls, socket: str | PathLike[str], client: str, *, buffer: int = 256) -> Self
-    async def go_to(self, cursor: int, to: int) -> None
-    id: str
-    async def input(self, cursor: int, text: str) -> int
-    async def node(self, id: int) -> Node
-    async def nodes(self, start: int, limit: int) -> list[Node]
-    async def open(self, at: int) -> int
-    async def options(self, cursor: int, extension: str) -> Form
-    async def parse_line(self, cursor: int, line: str) -> Parsed
-    async def remove_label(self, label: str) -> None
-    async def reopen(self, cursor: int) -> int
     async def request(self, method: str, params: Json) -> object
-    async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
-    async def send(self, cursor: int, text: str) -> int
-    async def set_auto(self, cursor: int, on: bool) -> None
-    async def set_label(self, cursor: int, label: str) -> None
-    async def step(self, cursor: int) -> None
-    async def walk(self, id: int) -> list[Node]
-    async def watch(self, cursors: Collection[int]) -> None
     welcome: Welcome
 class UnknownCommand(LookupError)
     def __init__(self, name: str) -> None
@@ -661,16 +595,6 @@ class GeminiProvider
         environ: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> None
-    async def aclose(self) -> None
-    def check(self, model: ModelConfig) -> list[str]
-    property name: str
-    async def sample(
-        self,
-        walk: Sequence[Node],
-        model: ModelConfig,
-        tools: Sequence[Tool],
-    ) -> AsyncGenerator[Part | Finish | Delta, None]
-class MockProvider
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
     property name: str
@@ -1000,7 +924,6 @@ def read_models(
     project: Layer | None = None,
     cli: Mapping[str, object] | None = None,
 ) -> ModelCatalog
-def safe_block(text: str) -> str
 def select_model(catalog: ModelCatalog, requested: str | None = None, *, pick: Pick | None) -> str
 def system_prompt(
     cwd: Path,

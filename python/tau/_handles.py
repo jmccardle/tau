@@ -183,6 +183,7 @@ class TreeHandle:
 
     @property
     def by(self) -> Author:
+        """The `Author` this handle's writes carry: `Author.Extension` with the extension's name."""
         return Author.Extension(self.extension)
 
     def retire(self) -> None:
@@ -206,6 +207,7 @@ class TreeHandle:
         return self._session.cursor(cursor)
 
     def cursors(self) -> list[int]:
+        """The ids of every open cursor."""
         return self._session.cursors()
 
     def closed(self) -> list[tuple[int, int]]:
@@ -354,6 +356,7 @@ class NodeHandle(TreeHandle):
 
     @property
     def node(self) -> Node:
+        """The `Assistant` node that holds the batch being run."""
         return self.tree.node(self.id)
 
     def options(self) -> Any:
@@ -372,6 +375,7 @@ class NodeHandle(TreeHandle):
         return self._options.saved(self.extension)
 
     def walk(self) -> list[Node]:
+        """The nodes from the root to the batch's node."""
         return self.tree.walk(self.id)
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
@@ -422,9 +426,11 @@ class Cursor(TreeHandle):
         self.id = id
 
     def node(self, id: int | None = None) -> Node:
+        """The node `id`, or the node this cursor is on when `id` is `None`."""
         return self.tree.node(self.cursor(self.id).at if id is None else id)
 
     def walk(self) -> list[Node]:
+        """The nodes from the root to the node this cursor is on."""
         return self.tree.walk(self.cursor(self.id).at)
 
     def options(self) -> Any:

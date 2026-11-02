@@ -8,10 +8,18 @@ extensions and frontends live.
 of **Py** sticking out. It is a ground-up rewrite of 0.15, which is tag
 `v0.15.0` and is maintained on the `0.15.x` branch.
 
-Status: **0.16 in development.** The library runs agents: see `examples/`, for
-example `examples/chat.py`. The `tau` command currently offers only
-`config check` and `trust`. The frontends (the TUI, `tau serve`) are not built
-yet.
+Status: **0.16 in development.** What exists now:
+
+- the library: sessions, cursors, hooks, extensions, providers (OpenAI-compatible,
+  Anthropic, Gemini) and the base tools. `examples/chat.py` is a small frontend;
+- the `tau` command: `config`, `ext`, `sessions`, `export`, `context`, `trust`, and
+  `serve`, which shares a session over a Unix socket with any number of clients;
+- a wire protocol and `RemoteClient` for those clients.
+
+The terminal UI and `tau -p` (print one answer and exit) come in Phase 8.
+
+Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
+write an extension or a frontend.
 
 - [`docs/design/`](docs/design/): the model, its invariants and the decisions behind them.
 - [`docs/plan.md`](docs/plan.md): the phases and where we are.

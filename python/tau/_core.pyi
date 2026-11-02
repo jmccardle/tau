@@ -156,7 +156,9 @@ def trace_clock() -> float:
 
 @final
 class Stop:
-    """Python view of [`tree::Stop`]."""
+    """Why a reply ended. Only `Tools` makes its calls runnable. It is not an integer:
+    `Stop.Tools != 1`.
+    """
 
     End: ClassVar[Stop]
     Tools: ClassVar[Stop]
@@ -170,7 +172,7 @@ class Stop:
 
 @final
 class Hook:
-    """Python view of [`step::Hook`]: the seven cursor hook points."""
+    """The seven cursor hook points, in the order a step reaches them. It is not an integer."""
 
     PreStep: ClassVar[Hook]
     PreInput: ClassVar[Hook]
@@ -189,7 +191,7 @@ class Hook:
 
 @final
 class Next:
-    """Python view of [`tree::Next`]."""
+    """What a cursor's walk needs next."""
 
     Wait: ClassVar[Next]
     Sample: ClassVar[Next]
@@ -201,11 +203,15 @@ class Next:
 
 @final
 class Config:
-    """Python view of [`tree::Config`]."""
+    """How a step runs from this node on: the text of a JSON object with at most two keys, `"model"`
+    and `"extensions"` (the options). The constructor does not check the text, and core stores it
+    without reading it.
+    """
 
     def __new__(cls, data: str) -> Config: ...
     @property
-    def data(self) -> str: ...
+    def data(self) -> str:
+        """The JSON object text, as given."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -218,98 +224,128 @@ class Node:
     """
 
     @property
-    def id(self) -> int: ...
+    def id(self) -> int:
+        """The node's id; ids are dense from 0."""
     @property
-    def parent(self) -> int | None: ...
+    def parent(self) -> int | None:
+        """The node it follows, or `None` for a root."""
     @property
-    def time(self) -> int: ...
+    def time(self) -> int:
+        """The time the driver gave it, in milliseconds."""
     @property
-    def by(self) -> Author: ...
+    def by(self) -> Author:
+        """Who wrote it."""
     @property
-    def body(self) -> Body: ...
+    def body(self) -> Body:
+        """What it holds."""
     @property
-    def delivers(self) -> list[int]: ...
+    def delivers(self) -> list[int]:
+        """The ids of the scratchpad items it consumed."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
 
 @final
 class Move:
-    """Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`."""
+    """The record of a cursor changing node. `from` is a Python keyword, so `from_`."""
 
     @property
-    def cursor(self) -> int: ...
+    def cursor(self) -> int:
+        """The cursor that moved."""
     @property
-    def from_(self) -> int | None: ...
+    def from_(self) -> int | None:
+        """The node it left, or `None` when the move opened the cursor."""
     @property
-    def to(self) -> int: ...
+    def to(self) -> int:
+        """The node it moved to."""
     @property
-    def by(self) -> Author: ...
+    def by(self) -> Author:
+        """Who asked for the move."""
     @property
-    def time(self) -> int: ...
+    def time(self) -> int:
+        """The time the driver gave it, in milliseconds."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
 
 @final
 class Item:
-    """Python view of [`tree::Item`]."""
+    """One item in a cursor's scratchpad. Ids are never reused."""
 
     @property
-    def id(self) -> int: ...
+    def id(self) -> int:
+        """The item's id."""
     @property
-    def to(self) -> int: ...
+    def to(self) -> int:
+        """The cursor it is addressed to."""
     @property
-    def data(self) -> ItemData: ...
+    def data(self) -> ItemData:
+        """What it holds."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
 
 @final
 class Draft:
-    """Python view of [`step::Draft`]."""
+    """What the current phase will commit as a node. A hook may edit it; none (`None`) commits
+    nothing. Built as `Draft(body, delivers, by)`.
+    """
 
     def __new__(cls, body: Body, delivers: Sequence[int], by: Author) -> Draft: ...
     @property
-    def body(self) -> Body: ...
+    def body(self) -> Body:
+        """What the node will hold."""
     @property
-    def delivers(self) -> list[int]: ...
+    def delivers(self) -> list[int]:
+        """The ids of the scratchpad items the node will consume."""
     @property
-    def by(self) -> Author: ...
+    def by(self) -> Author:
+        """Who the node will be written by."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
 
 @final
 class RunCall:
-    """Python view of [`step::RunCall`]."""
+    """One call of a batch, handed out in `Job.RunCalls` to be run."""
 
     @property
-    def id(self) -> str: ...
+    def id(self) -> str:
+        """The call's id, as in the reply."""
     @property
-    def tool(self) -> str: ...
+    def tool(self) -> str:
+        """The name of the tool to run."""
     @property
-    def args_raw(self) -> str: ...
+    def args_raw(self) -> str:
+        """The arguments exactly as the model produced them."""
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
 
 @final
 class Replay:
-    """Python view of [`tree::Replay`]. Construction validates, so a `Part` never holds a bad one."""
+    """Data only the provider that wrote a part can send back (a thinking signature, for one).
+    `provider` names that provider; `data` is the text of a JSON object, kept exactly as given.
+    Construction raises `BadReplay` for an empty or blank provider name, or `data` that is not
+    a strict JSON object, so a `Part` never holds a bad one.
+    """
 
     def __new__(cls, provider: str, data: str) -> Replay: ...
     @property
-    def provider(self) -> str: ...
+    def provider(self) -> str:
+        """The name of the provider that wrote the part."""
     @property
-    def data(self) -> str: ...
+    def data(self) -> str:
+        """The text of the JSON object, exactly as the provider gave it."""
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
     def __hash__(self) -> int: ...
 
 @disjoint_base
 class Part:
-    """Python view of [`tree::Part`]."""
+    """One piece of a reply, in the order the provider streamed it: `Text`, `Thinking` or `Call`.
+    Each may carry a `Replay`.
+    """
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -317,40 +353,54 @@ class Part:
 
     @final
     class Text(Part):
+        """Words for the reader."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, text: str, replay: Replay | None = None) -> Part.Text: ...
         @property
-        def text(self) -> str: ...
+        def text(self) -> str:
+            """The words."""
         @property
-        def replay(self) -> Replay | None: ...
+        def replay(self) -> Replay | None:
+            """Data only the writing provider can send back, or `None`."""
 
     @final
     class Thinking(Part):
+        """The model's reasoning. `text` may be empty when `replay` holds a redacted block."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, text: str, replay: Replay | None = None) -> Part.Thinking: ...
         @property
-        def text(self) -> str: ...
+        def text(self) -> str:
+            """The reasoning, possibly empty."""
         @property
-        def replay(self) -> Replay | None: ...
+        def replay(self) -> Replay | None:
+            """Data only the writing provider can send back, or `None`."""
 
     @final
     class Call(Part):
+        """A request to run one tool. A call is never a node of its own."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(
             cls, id: str, tool: str, args_raw: str, replay: Replay | None = None
         ) -> Part.Call: ...
         @property
-        def id(self) -> str: ...
+        def id(self) -> str:
+            """The provider's id for the call, unique within its node."""
         @property
-        def tool(self) -> str: ...
+        def tool(self) -> str:
+            """The name of the tool to run."""
         @property
-        def args_raw(self) -> str: ...
+        def args_raw(self) -> str:
+            """The arguments exactly as the model produced them, never re-serialised."""
         @property
-        def replay(self) -> Replay | None: ...
+        def replay(self) -> Replay | None:
+            """Data only the writing provider can send back, or `None`."""
 
 @disjoint_base
 class Outcome:
-    """Python view of [`tree::Outcome`]."""
+    """How one tool call ended: `Ok`, `Err` or `Interrupted`."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -358,26 +408,34 @@ class Outcome:
 
     @final
     class Ok(Outcome):
+        """The call succeeded."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, value: str) -> Outcome.Ok: ...
         @property
-        def value(self) -> str: ...
+        def value(self) -> str:
+            """What the tool returned."""
 
     @final
     class Err(Outcome):
+        """The call failed."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, error: str) -> Outcome.Err: ...
         @property
-        def error(self) -> str: ...
+        def error(self) -> str:
+            """Why, as the model will read it."""
 
     @final
     class Interrupted(Outcome):
+        """An abort stopped the call or kept it from starting; the tool may or may not have run."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Outcome.Interrupted: ...
 
 @disjoint_base
 class Author:
-    """Python view of [`tree::Author`]."""
+    """Who wrote a node, or asked for a move. It is recorded and never used to decide anything."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -385,36 +443,50 @@ class Author:
 
     @final
     class Frontend(Author):
+        """A frontend, named by its client name."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, client: str) -> Author.Frontend: ...
         @property
-        def client(self) -> str: ...
+        def client(self) -> str:
+            """The client name the frontend gave."""
 
     @final
     class Provider(Author):
+        """The model's provider."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Author.Provider: ...
 
     @final
     class Tools(Author):
+        """The tools that ran a call."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Author.Tools: ...
 
     @final
     class Core(Author):
+        """The core itself."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Author.Core: ...
 
     @final
     class Extension(Author):
+        """An extension."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, name: str) -> Author.Extension: ...
         @property
-        def name(self) -> str: ...
+        def name(self) -> str:
+            """The extension's name."""
 
 @disjoint_base
 class Body:
-    """Python view of [`tree::Body`]."""
+    """What a node holds. `System`, `User`, `Assistant` and `Results` are what the model reads;
+    `Config` and `Custom` never reach it.
+    """
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -422,20 +494,28 @@ class Body:
 
     @final
     class System(Body):
+        """The system text a session starts with."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, text: str) -> Body.System: ...
         @property
-        def text(self) -> str: ...
+        def text(self) -> str:
+            """The system text."""
 
     @final
     class User(Body):
+        """A message from the person (or an extension) using the session."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, text: str) -> Body.User: ...
         @property
-        def text(self) -> str: ...
+        def text(self) -> str:
+            """The message."""
 
     @final
     class Assistant(Body):
+        """The model's reply."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(
             cls,
@@ -445,40 +525,56 @@ class Body:
             meta: str | None = None,
         ) -> Body.Assistant: ...
         @property
-        def parts(self) -> list[Part]: ...
+        def parts(self) -> list[Part]:
+            """The reply's pieces, in stream order."""
         @property
-        def stop(self) -> Stop: ...
+        def stop(self) -> Stop:
+            """Why the reply ended."""
         @property
-        def finish_reason(self) -> str | None: ...
+        def finish_reason(self) -> str | None:
+            """The provider's own finish string, or `None`."""
         @property
-        def meta(self) -> str | None: ...
+        def meta(self) -> str | None:
+            """What the response carried besides its parts (usage, for one), as JSON object text,
+            or `None`.
+            """
 
     @final
     class Results(Body):
+        """The answer to a batch of calls: one `(call id, outcome, author)` per call, in call order."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, outcomes: Sequence[tuple[str, Outcome, Author]]) -> Body.Results: ...
         @property
-        def outcomes(self) -> list[tuple[str, Outcome, Author]]: ...
+        def outcomes(self) -> list[tuple[str, Outcome, Author]]:
+            """The outcomes, one per call."""
 
     @final
     class Config(Body):
+        """A change of how steps run from here on."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, config: Config) -> Body.Config: ...
         @property
-        def config(self) -> Config: ...
+        def config(self) -> Config:
+            """The new configuration."""
 
     @final
     class Custom(Body):
+        """A record an extension (or core) keeps in the tree that the model never reads."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, kind: str, data: str) -> Body.Custom: ...
         @property
-        def kind(self) -> str: ...
+        def kind(self) -> str:
+            """What kind of record this is; core writes `sample_error`."""
         @property
-        def data(self) -> str: ...
+        def data(self) -> str:
+            """The record's data, as text."""
 
 @disjoint_base
 class ItemData:
-    """Python view of [`tree::ItemData`]."""
+    """What a scratchpad item holds: an `Input`, or an `Extension`'s own data."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -486,25 +582,33 @@ class ItemData:
 
     @final
     class Input(ItemData):
+        """A line for the cursor to take as a `User` message."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, by: Author, text: str) -> ItemData.Input: ...
         @property
-        def by(self) -> Author: ...
+        def by(self) -> Author:
+            """Who wrote it."""
         @property
-        def text(self) -> str: ...
+        def text(self) -> str:
+            """The line."""
 
     @final
     class Extension(ItemData):
+        """Data an extension keeps in the scratchpad; core does not read it."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, name: str, data: str) -> ItemData.Extension: ...
         @property
-        def name(self) -> str: ...
+        def name(self) -> str:
+            """The extension's name."""
         @property
-        def data(self) -> str: ...
+        def data(self) -> str:
+            """The extension's data, as text."""
 
 @disjoint_base
 class Ending:
-    """Python view of [`step::Ending`]."""
+    """How a step ended; the subject of the `post_step` hook."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -512,31 +616,41 @@ class Ending:
 
     @final
     class Done(Ending):
+        """The step ran to its end."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Ending.Done: ...
 
     @final
     class Halted(Ending):
+        """A cursor hook halted it."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, reason: str) -> Ending.Halted: ...
         @property
-        def reason(self) -> str: ...
+        def reason(self) -> str:
+            """The reason the hook gave."""
 
     @final
     class Failed(Ending):
+        """A hook or the sample failed."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, error: str) -> Ending.Failed: ...
         @property
-        def error(self) -> str: ...
+        def error(self) -> str:
+            """What went wrong."""
 
     @final
     class Aborted(Ending):
+        """An abort ended it."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Ending.Aborted: ...
 
 @disjoint_base
 class Job:
-    """Python view of [`step::Job`]."""
+    """What a step asks the driver to do next, from `Session.next_job`. Answer it with `Session.answer`."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -544,46 +658,62 @@ class Job:
 
     @final
     class Hooks(Job):
+        """Run the extensions' hooks for one hook point."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(
             cls, point: Hook, draft: Draft | None, node: int | None, ending: Ending | None
         ) -> Job.Hooks: ...
         @property
-        def point(self) -> Hook: ...
+        def point(self) -> Hook:
+            """The hook point."""
         @property
-        def draft(self) -> Draft | None: ...
+        def draft(self) -> Draft | None:
+            """The subject at `pre_input`, `pre_sample` and `pre_reply`; otherwise `None`."""
         @property
-        def node(self) -> int | None: ...
+        def node(self) -> int | None:
+            """The subject at `post_reply` and `post_result`: the node just committed; otherwise `None`."""
         @property
-        def ending(self) -> Ending | None: ...
+        def ending(self) -> Ending | None:
+            """The subject at `post_step`; otherwise `None`."""
 
     @final
     class Sample(Job):
+        """Ask the provider for a reply to the cursor's walk."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Job.Sample: ...
 
     @final
     class RunCalls(Job):
+        """Run a batch of calls and answer each with `Answer.CallDone`."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, node: int, calls: Sequence[RunCall]) -> Job.RunCalls: ...
         @property
-        def node(self) -> int: ...
+        def node(self) -> int:
+            """The `Assistant` node holding the batch."""
         @property
-        def calls(self) -> list[RunCall]: ...
+        def calls(self) -> list[RunCall]:
+            """The calls, in call order."""
 
     @final
     class Pending(Job):
+        """Calls are still out; nothing to do until they are answered."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Job.Pending: ...
 
     @final
     class Rest(Job):
+        """The step is over and the cursor is at rest."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> Job.Rest: ...
 
 @disjoint_base
 class SampleEnd:
-    """Python view of [`step::SampleEnd`]: how a sample ended."""
+    """How a sample ended, as the driver saw it. Core decides what the tree records."""
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -591,34 +721,47 @@ class SampleEnd:
 
     @final
     class Finished(SampleEnd):
+        """The provider finished the reply."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(
             cls, stop: Stop, reason: str | None = None, meta: str | None = None
         ) -> SampleEnd.Finished: ...
         @property
-        def stop(self) -> Stop: ...
+        def stop(self) -> Stop:
+            """Why the reply ended."""
         @property
-        def reason(self) -> str | None: ...
+        def reason(self) -> str | None:
+            """The provider's own finish string, or `None`."""
         @property
-        def meta(self) -> str | None: ...
+        def meta(self) -> str | None:
+            """What the response carried besides its parts, as JSON object text, or `None`."""
 
     @final
     class Failed(SampleEnd):
+        """The sample failed."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, error: str, meta: str | None = None) -> SampleEnd.Failed: ...
         @property
-        def error(self) -> str: ...
+        def error(self) -> str:
+            """What went wrong."""
         @property
-        def meta(self) -> str | None: ...
+        def meta(self) -> str | None:
+            """The failure's details as JSON object text, or `None`."""
 
     @final
     class Cancelled(SampleEnd):
+        """The cursor was aborted before the sample finished."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls) -> SampleEnd.Cancelled: ...
 
 @disjoint_base
 class Answer:
-    """Python view of [`step::Answer`]."""
+    """What the driver answers a `Job` with. `Session.answer` accepts one only while the job it
+    answers is out; any other raises `WrongAnswer`.
+    """
 
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -626,39 +769,57 @@ class Answer:
 
     @final
     class Hooks(Answer):
+        """The hooks ran."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, stop: str | None = None, draft: Draft | None = None) -> Answer.Hooks: ...
         @property
-        def stop(self) -> str | None: ...
+        def stop(self) -> str | None:
+            """A halt reason if a hook halted the step, else `None`."""
         @property
-        def draft(self) -> Draft | None: ...
+        def draft(self) -> Draft | None:
+            """The draft after the hooks edited it; `None` commits nothing. At `pre_sample`, a
+            reply here stands in for the sample.
+            """
 
     @final
     class HookFailed(Answer):
+        """A hook raised."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, error: str) -> Answer.HookFailed: ...
         @property
-        def error(self) -> str: ...
+        def error(self) -> str:
+            """What went wrong."""
 
     @final
     class Sampled(Answer):
+        """The sample ended."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, parts: Sequence[Part], end: SampleEnd) -> Answer.Sampled: ...
         @property
-        def parts(self) -> list[Part]: ...
+        def parts(self) -> list[Part]:
+            """What streamed before it ended."""
         @property
-        def end(self) -> SampleEnd: ...
+        def end(self) -> SampleEnd:
+            """How it ended."""
 
     @final
     class CallDone(Answer):
+        """One call of the batch ended."""
+
         __match_args__: ClassVar[tuple[str, ...]]
         def __new__(cls, call: str, outcome: Outcome, by: Author) -> Answer.CallDone: ...
         @property
-        def call(self) -> str: ...
+        def call(self) -> str:
+            """The call's id."""
         @property
-        def outcome(self) -> Outcome: ...
+        def outcome(self) -> Outcome:
+            """How it ended."""
         @property
-        def by(self) -> Author: ...
+        def by(self) -> Author:
+            """`Tools` if the tool ran unedited, else the extension that answered or last edited it."""
 
 @final
 class Tree:
@@ -667,13 +828,15 @@ class Tree:
     `Closed` here too.
     """
 
-    def node(self, id: int) -> Node: ...
+    def node(self, id: int) -> Node:
+        """The node with this id. `NoSuchNode` if there is none."""
     def walk(self, node: int) -> list[Node]:
         """The nodes root to `node`, inclusive."""
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
     def __len__(self) -> int: ...
-    def config_at(self, node: int) -> Config: ...
+    def config_at(self, node: int) -> Config:
+        """The `Config` in force at `node`: the nearest one on its walk. `NoSuchNode` if absent."""
     def lca(self, a: int, b: int) -> int | None:
         """The deepest node on both walks; `None` across trees."""
 
@@ -691,7 +854,8 @@ class CursorState:
     def at(self) -> int:
         """The node the cursor is on."""
     @property
-    def auto(self) -> bool: ...
+    def auto(self) -> bool:
+        """Whether auto-step is on."""
     @property
     def busy(self) -> bool:
         """A step is running."""
@@ -733,14 +897,12 @@ class HandleWrites:
 
 @final
 class Session:
-    """One session: its tree, cursors, scratchpad, and every cursor's step.
+    """One session: its tree, cursors, scratchpad, and every cursor's step. It does no IO of its
+    own: a program asks it for each cursor's next `Job` and gives back an `Answer`.
 
-    `frozen`: the state lives behind a `Mutex`, so the class has no mutable
-    Python attributes and is shared across threads on free-threaded builds
-    without further locking. Each call that changes the session hands its
-    queued records to the store (when there is one) before it returns; Python
-    never saves. `tree` is the read view of the nodes; `cursor` snapshots one
-    cursor.
+    A call that changes the session hands its records to the store (when there is one) before
+    it returns, so a program never saves. Every call takes the session's one lock, so a
+    session may be shared across threads. A closed session raises `Closed`.
     """
 
     @staticmethod
@@ -771,30 +933,61 @@ class Session:
         close is `Closed` too.
         """
     @property
-    def tree(self) -> Tree: ...
-    def input(self, cursor: int, by: Author, text: str) -> int: ...
-    def step(self, cursor: int) -> None: ...
+    def tree(self) -> Tree:
+        """The session's nodes."""
+    def input(self, cursor: int, by: Author, text: str) -> int:
+        """Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
+        Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
+        """
+    def step(self, cursor: int) -> None:
+        """Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.
+        `Busy` if a step is already running.
+        """
     def go_to(self, cursor: int, to: int, client: str, now: int) -> bool:
-        """Returns whether the driver must cancel the effect in flight."""
-    def set_auto(self, cursor: int, on: bool) -> None: ...
+        """Move `cursor` to node `to` for the frontend named `client`, turn auto-step off and wake
+        the cursor. On a busy cursor the step is aborted and the move applies when it rests.
+        Returns whether the driver must cancel the effect in flight. `NoSuchNode` if `to`
+        is absent.
+        """
+    def set_auto(self, cursor: int, on: bool) -> None:
+        """Turn auto-step on or off for `cursor`; on wakes it."""
     def abort(self, cursor: int) -> bool:
-        """Returns whether the driver must cancel the effect in flight."""
+        """Stop `cursor`'s step: auto-step goes off and no later phase runs. A running hook finishes.
+        Returns whether the driver must cancel the effect in flight.
+        """
     def close_cursor(self, cursor: int) -> None:
         """Close a cursor at rest (`Busy` otherwise): the driver aborts and waits first."""
-    def open(self, at: int, by: Author, now: int) -> int: ...
-    def add_item(self, to: int, data: ItemData) -> int: ...
-    def remove_item(self, id: int) -> None: ...
+    def open(self, at: int, by: Author, now: int) -> int:
+        """Open a new cursor at node `at` and wake it. Returns its id. `NoSuchNode` if `at` is absent."""
+    def add_item(self, to: int, data: ItemData) -> int:
+        """Add an item to cursor `to`'s scratchpad and wake it. Returns the item's id."""
+    def remove_item(self, id: int) -> None:
+        """Remove an item from the scratchpad. `NoSuchItem` if it is not there."""
     def append(self, parent: int, body: Body, by: Author, now: int) -> int:
         """Append a node under `parent` without moving any cursor."""
     def append_root(self, config: Config, by: Author, now: int) -> int:
         """Append a root `Config` (a detached tree) without moving any cursor."""
-    def set_label(self, label: str, cursor: int) -> None: ...
-    def remove_label(self, label: str) -> None: ...
-    def hook_move(self, cursor: int, to: int, by: Author, now: int) -> None: ...
+    def set_label(self, label: str, cursor: int) -> None:
+        """Put `label` on `cursor`; a label already on another cursor moves. `CursorClosed` if the
+        cursor is closed.
+        """
+    def remove_label(self, label: str) -> None:
+        """Remove `label`. `NoSuchLabel` if it is not set."""
+    def hook_move(self, cursor: int, to: int, by: Author, now: int) -> None:
+        """A cursor hook's move of its own cursor to node `to`. `NotInHook` unless a cursor hook
+        job is out for `cursor`.
+        """
     def hook_write(
         self, cursor: int, body: Body, delivers: Sequence[int], by: Author, now: int
-    ) -> int: ...
-    def hook_set_auto(self, cursor: int, on: bool) -> None: ...
+    ) -> int:
+        """A cursor hook's write: append a node under the cursor's node, move onto it and consume
+        the `delivers` items. Returns the new node's id. `NotInHook` unless a cursor hook job is
+        out for `cursor`; `NotPending` if an item is not pending for it.
+        """
+    def hook_set_auto(self, cursor: int, on: bool) -> None:
+        """A cursor hook's change of its own cursor's auto-step. `NotInHook` unless a cursor hook
+        job is out for `cursor`.
+        """
     def next_job(self, cursor: int) -> Job:
         """The cursor's next job; `Job.Rest` when it has no step."""
     def answer(self, cursor: int, answer: Answer, now: int) -> None:

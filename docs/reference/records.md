@@ -12,13 +12,15 @@ Names: `Author`, `Body`, `Config`, `CursorState`, `Draft`, `Item`, `ItemData`, `
 class Author
 ```
 
-Python view of [`tree::Author`].
+Who wrote a node, or asked for a move. It is recorded and never used to decide anything.
 
 ### Author.Frontend
 
 ```python
 class Frontend(Author)
 ```
+
+A frontend, named by its client name.
 
 #### Author.Frontend.__new__
 
@@ -32,11 +34,15 @@ def __new__(cls, client: str) -> Author.Frontend
 property client: str
 ```
 
+The client name the frontend gave.
+
 ### Author.Provider
 
 ```python
 class Provider(Author)
 ```
+
+The model's provider.
 
 #### Author.Provider.__new__
 
@@ -50,6 +56,8 @@ def __new__(cls) -> Author.Provider
 class Tools(Author)
 ```
 
+The tools that ran a call.
+
 #### Author.Tools.__new__
 
 ```python
@@ -61,6 +69,8 @@ def __new__(cls) -> Author.Tools
 ```python
 class Core(Author)
 ```
+
+The core itself.
 
 #### Author.Core.__new__
 
@@ -74,6 +84,8 @@ def __new__(cls) -> Author.Core
 class Extension(Author)
 ```
 
+An extension.
+
 #### Author.Extension.__new__
 
 ```python
@@ -86,19 +98,24 @@ def __new__(cls, name: str) -> Author.Extension
 property name: str
 ```
 
+The extension's name.
+
 ## Body
 
 ```python
 class Body
 ```
 
-Python view of [`tree::Body`].
+What a node holds. `System`, `User`, `Assistant` and `Results` are what the model reads;
+`Config` and `Custom` never reach it.
 
 ### Body.System
 
 ```python
 class System(Body)
 ```
+
+The system text a session starts with.
 
 #### Body.System.__new__
 
@@ -112,11 +129,15 @@ def __new__(cls, text: str) -> Body.System
 property text: str
 ```
 
+The system text.
+
 ### Body.User
 
 ```python
 class User(Body)
 ```
+
+A message from the person (or an extension) using the session.
 
 #### Body.User.__new__
 
@@ -130,11 +151,15 @@ def __new__(cls, text: str) -> Body.User
 property text: str
 ```
 
+The message.
+
 ### Body.Assistant
 
 ```python
 class Assistant(Body)
 ```
+
+The model's reply.
 
 #### Body.Assistant.__new__
 
@@ -154,11 +179,15 @@ def __new__(
 property parts: list[Part]
 ```
 
+The reply's pieces, in stream order.
+
 #### Body.Assistant.stop
 
 ```python
 property stop: Stop
 ```
+
+Why the reply ended.
 
 #### Body.Assistant.finish_reason
 
@@ -166,17 +195,24 @@ property stop: Stop
 property finish_reason: str | None
 ```
 
+The provider's own finish string, or `None`.
+
 #### Body.Assistant.meta
 
 ```python
 property meta: str | None
 ```
 
+What the response carried besides its parts (usage, for one), as JSON object text,
+or `None`.
+
 ### Body.Results
 
 ```python
 class Results(Body)
 ```
+
+The answer to a batch of calls: one `(call id, outcome, author)` per call, in call order.
 
 #### Body.Results.__new__
 
@@ -190,11 +226,15 @@ def __new__(cls, outcomes: Sequence[tuple[str, Outcome, Author]]) -> Body.Result
 property outcomes: list[tuple[str, Outcome, Author]]
 ```
 
+The outcomes, one per call.
+
 ### Body.Config
 
 ```python
 class Config(Body)
 ```
+
+A change of how steps run from here on.
 
 #### Body.Config.__new__
 
@@ -208,11 +248,15 @@ def __new__(cls, config: Config) -> Body.Config
 property config: Config
 ```
 
+The new configuration.
+
 ### Body.Custom
 
 ```python
 class Custom(Body)
 ```
+
+A record an extension (or core) keeps in the tree that the model never reads.
 
 #### Body.Custom.__new__
 
@@ -226,11 +270,15 @@ def __new__(cls, kind: str, data: str) -> Body.Custom
 property kind: str
 ```
 
+What kind of record this is; core writes `sample_error`.
+
 #### Body.Custom.data
 
 ```python
 property data: str
 ```
+
+The record's data, as text.
 
 ## Config
 
@@ -238,7 +286,9 @@ property data: str
 class Config
 ```
 
-Python view of [`tree::Config`].
+How a step runs from this node on: the text of a JSON object with at most two keys, `"model"`
+and `"extensions"` (the options). The constructor does not check the text, and core stores it
+without reading it.
 
 ### Config.__new__
 
@@ -251,6 +301,8 @@ def __new__(cls, data: str) -> Config
 ```python
 property data: str
 ```
+
+The JSON object text, as given.
 
 ## CursorState
 
@@ -278,6 +330,8 @@ The node the cursor is on.
 ```python
 property auto: bool
 ```
+
+Whether auto-step is on.
 
 ### CursorState.busy
 
@@ -333,7 +387,8 @@ Its moves since the running step woke, other hooks' included; none at rest.
 class Draft
 ```
 
-Python view of [`step::Draft`].
+What the current phase will commit as a node. A hook may edit it; none (`None`) commits
+nothing. Built as `Draft(body, delivers, by)`.
 
 ### Draft.__new__
 
@@ -347,11 +402,15 @@ def __new__(cls, body: Body, delivers: Sequence[int], by: Author) -> Draft
 property body: Body
 ```
 
+What the node will hold.
+
 ### Draft.delivers
 
 ```python
 property delivers: list[int]
 ```
+
+The ids of the scratchpad items the node will consume.
 
 ### Draft.by
 
@@ -359,13 +418,15 @@ property delivers: list[int]
 property by: Author
 ```
 
+Who the node will be written by.
+
 ## Item
 
 ```python
 class Item
 ```
 
-Python view of [`tree::Item`].
+One item in a cursor's scratchpad. Ids are never reused.
 
 ### Item.id
 
@@ -373,11 +434,15 @@ Python view of [`tree::Item`].
 property id: int
 ```
 
+The item's id.
+
 ### Item.to
 
 ```python
 property to: int
 ```
+
+The cursor it is addressed to.
 
 ### Item.data
 
@@ -385,19 +450,23 @@ property to: int
 property data: ItemData
 ```
 
+What it holds.
+
 ## ItemData
 
 ```python
 class ItemData
 ```
 
-Python view of [`tree::ItemData`].
+What a scratchpad item holds: an `Input`, or an `Extension`'s own data.
 
 ### ItemData.Input
 
 ```python
 class Input(ItemData)
 ```
+
+A line for the cursor to take as a `User` message.
 
 #### ItemData.Input.__new__
 
@@ -411,17 +480,23 @@ def __new__(cls, by: Author, text: str) -> ItemData.Input
 property by: Author
 ```
 
+Who wrote it.
+
 #### ItemData.Input.text
 
 ```python
 property text: str
 ```
 
+The line.
+
 ### ItemData.Extension
 
 ```python
 class Extension(ItemData)
 ```
+
+Data an extension keeps in the scratchpad; core does not read it.
 
 #### ItemData.Extension.__new__
 
@@ -435,11 +510,15 @@ def __new__(cls, name: str, data: str) -> ItemData.Extension
 property name: str
 ```
 
+The extension's name.
+
 #### ItemData.Extension.data
 
 ```python
 property data: str
 ```
+
+The extension's data, as text.
 
 ## Move
 
@@ -447,7 +526,7 @@ property data: str
 class Move
 ```
 
-Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`.
+The record of a cursor changing node. `from` is a Python keyword, so `from_`.
 
 ### Move.cursor
 
@@ -455,11 +534,15 @@ Python view of [`tree::Move`]. `from` is a Python keyword, so `from_`.
 property cursor: int
 ```
 
+The cursor that moved.
+
 ### Move.from_
 
 ```python
 property from_: int | None
 ```
+
+The node it left, or `None` when the move opened the cursor.
 
 ### Move.to
 
@@ -467,17 +550,23 @@ property from_: int | None
 property to: int
 ```
 
+The node it moved to.
+
 ### Move.by
 
 ```python
 property by: Author
 ```
 
+Who asked for the move.
+
 ### Move.time
 
 ```python
 property time: int
 ```
+
+The time the driver gave it, in milliseconds.
 
 ## Node
 
@@ -495,11 +584,15 @@ it holds (`body`), and the scratchpad items it consumed (`delivers`).
 property id: int
 ```
 
+The node's id; ids are dense from 0.
+
 ### Node.parent
 
 ```python
 property parent: int | None
 ```
+
+The node it follows, or `None` for a root.
 
 ### Node.time
 
@@ -507,11 +600,15 @@ property parent: int | None
 property time: int
 ```
 
+The time the driver gave it, in milliseconds.
+
 ### Node.by
 
 ```python
 property by: Author
 ```
+
+Who wrote it.
 
 ### Node.body
 
@@ -519,11 +616,15 @@ property by: Author
 property body: Body
 ```
 
+What it holds.
+
 ### Node.delivers
 
 ```python
 property delivers: list[int]
 ```
+
+The ids of the scratchpad items it consumed.
 
 ## Outcome
 
@@ -531,13 +632,15 @@ property delivers: list[int]
 class Outcome
 ```
 
-Python view of [`tree::Outcome`].
+How one tool call ended: `Ok`, `Err` or `Interrupted`.
 
 ### Outcome.Ok
 
 ```python
 class Ok(Outcome)
 ```
+
+The call succeeded.
 
 #### Outcome.Ok.__new__
 
@@ -551,11 +654,15 @@ def __new__(cls, value: str) -> Outcome.Ok
 property value: str
 ```
 
+What the tool returned.
+
 ### Outcome.Err
 
 ```python
 class Err(Outcome)
 ```
+
+The call failed.
 
 #### Outcome.Err.__new__
 
@@ -569,11 +676,15 @@ def __new__(cls, error: str) -> Outcome.Err
 property error: str
 ```
 
+Why, as the model will read it.
+
 ### Outcome.Interrupted
 
 ```python
 class Interrupted(Outcome)
 ```
+
+An abort stopped the call or kept it from starting; the tool may or may not have run.
 
 #### Outcome.Interrupted.__new__
 
@@ -587,13 +698,16 @@ def __new__(cls) -> Outcome.Interrupted
 class Part
 ```
 
-Python view of [`tree::Part`].
+One piece of a reply, in the order the provider streamed it: `Text`, `Thinking` or `Call`.
+Each may carry a `Replay`.
 
 ### Part.Text
 
 ```python
 class Text(Part)
 ```
+
+Words for the reader.
 
 #### Part.Text.__new__
 
@@ -607,17 +721,23 @@ def __new__(cls, text: str, replay: Replay | None = None) -> Part.Text
 property text: str
 ```
 
+The words.
+
 #### Part.Text.replay
 
 ```python
 property replay: Replay | None
 ```
 
+Data only the writing provider can send back, or `None`.
+
 ### Part.Thinking
 
 ```python
 class Thinking(Part)
 ```
+
+The model's reasoning. `text` may be empty when `replay` holds a redacted block.
 
 #### Part.Thinking.__new__
 
@@ -631,17 +751,23 @@ def __new__(cls, text: str, replay: Replay | None = None) -> Part.Thinking
 property text: str
 ```
 
+The reasoning, possibly empty.
+
 #### Part.Thinking.replay
 
 ```python
 property replay: Replay | None
 ```
 
+Data only the writing provider can send back, or `None`.
+
 ### Part.Call
 
 ```python
 class Call(Part)
 ```
+
+A request to run one tool. A call is never a node of its own.
 
 #### Part.Call.__new__
 
@@ -655,11 +781,15 @@ def __new__(cls, id: str, tool: str, args_raw: str, replay: Replay | None = None
 property id: str
 ```
 
+The provider's id for the call, unique within its node.
+
 #### Part.Call.tool
 
 ```python
 property tool: str
 ```
+
+The name of the tool to run.
 
 #### Part.Call.args_raw
 
@@ -667,11 +797,15 @@ property tool: str
 property args_raw: str
 ```
 
+The arguments exactly as the model produced them, never re-serialised.
+
 #### Part.Call.replay
 
 ```python
 property replay: Replay | None
 ```
+
+Data only the writing provider can send back, or `None`.
 
 ## Replay
 
@@ -679,7 +813,10 @@ property replay: Replay | None
 class Replay
 ```
 
-Python view of [`tree::Replay`]. Construction validates, so a `Part` never holds a bad one.
+Data only the provider that wrote a part can send back (a thinking signature, for one).
+`provider` names that provider; `data` is the text of a JSON object, kept exactly as given.
+Construction raises `BadReplay` for an empty or blank provider name, or `data` that is not
+a strict JSON object, so a `Part` never holds a bad one.
 
 ### Replay.__new__
 
@@ -693,11 +830,15 @@ def __new__(cls, provider: str, data: str) -> Replay
 property provider: str
 ```
 
+The name of the provider that wrote the part.
+
 ### Replay.data
 
 ```python
 property data: str
 ```
+
+The text of the JSON object, exactly as the provider gave it.
 
 ## Stop
 
@@ -710,7 +851,8 @@ class Stop
     Error: ClassVar[Stop]
 ```
 
-Python view of [`tree::Stop`].
+Why a reply ended. Only `Tools` makes its calls runnable. It is not an integer:
+`Stop.Tools != 1`.
 
 ## Tree
 
@@ -727,6 +869,8 @@ read is as current as the call that made it, and a closed session raises
 ```python
 def node(self, id: int) -> Node
 ```
+
+The node with this id. `NoSuchNode` if there is none.
 
 ### Tree.walk
 
@@ -755,6 +899,8 @@ def __len__(self) -> int
 ```python
 def config_at(self, node: int) -> Config
 ```
+
+The `Config` in force at `node`: the nearest one on its walk. `NoSuchNode` if absent.
 
 ### Tree.lca
 

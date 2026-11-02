@@ -28,7 +28,9 @@ from tau._trust import (
 from tau._user_config import UserConfig
 
 Ask = Callable[[str], bool]
+"""A yes-or-no question put to the person: takes the question, returns the answer."""
 Pick = Callable[[tuple[str, ...]], str]
+"""A choice put to the person: takes the qualified model names, returns one of them."""
 
 
 @dataclass(frozen=True)

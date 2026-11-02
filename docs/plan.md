@@ -22,7 +22,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 4 driver, provider, tools | **done** (signed off 2026-10-30): driver, `@tool`, base tools, D13 config, D15 providers and events. Exit review `docs/as-built/phase4/`; the ratchet covers `python/`. |
 | 5 extensions | **done** (2026-10-31): D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage and signed off 2026-10-31 (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
-| 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built, reviewed and signed off 2026-11-01. Stage 7B (D21, the wire) built and reviewed 2026-11-01, stopped for review; then 7C (API docs, in full), then Phase 8. |
+| 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built, reviewed and signed off 2026-11-01. Stage 7B (D21, the wire) built, reviewed and signed off 2026-11-01. Stage 7C (API docs: surface, reference, docstrings, guides) built and reviewed 2026-11-01, stopped for review; then Phase 8. |
 | 8–9 | not started; see Phases. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -289,10 +289,15 @@ Every frontend needs these before it can start a session.
 - **The API documentation:**
   - **Surface manifest.** A generated, checked-in list of every public name
     and signature, compared in CI the way the diagrams are, so any API change
-    is a readable diff in review. The first pass decides what is public.
-    `effects`, `events`, `handles`, `protocols` and `clock` are public by name
-    but internal in practice; `commandline` and the provider classes are not
-    exported.
+    is a readable diff in review. What is public (decided in 7C-1, reasons in
+    `docs/api/README.md`): `effects`, `events`, `handles`, `protocols`, `clock`
+    and the rest are internal modules (underscore names) whose public contents
+    `tau` exports; `tau.cli`, `tau.commandline` and `tau.trace` are the only
+    public modules (`commandline` is public because its `value` and `values`
+    are how a frontend reads an answer); the three hosted provider classes are
+    exported, `MockProvider` is not (`builtin_providers()["mock"]`). A public
+    signature names only public tau types, the standard library's, and an
+    allow list (`httpx`).
   - **Reference.** Generated from docstrings, with a ratchet check that every
     public name has one. The native types' docs live in Rust, so `help()`
     works at runtime, and the stub is checked against them. Today 2 of 224
@@ -301,7 +306,7 @@ Every frontend needs these before it can start a session.
     model in ten minutes; writing an extension; writing a frontend;
     configuration; the wire protocol, generated from the schema.
   - **7C-1 built** (2026-11-01): `docs/api/` (groups, README, `surface.txt`), `docs/reference/`,
-    `scripts/api_docs.py` (with `--sync-stub`), and the docstring count in the ratchet (report
+    `scripts/api_docs.py` and `scripts/stub_docs.py`, and the docstring count in the ratchet (report
     only until 7C-2 sets the bar to 0).
 - **Exit:**
   - a remote client passes the same behavior tests as a local one;

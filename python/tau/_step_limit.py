@@ -54,16 +54,19 @@ class StepLimit:
         self._counts: dict[int, int] = {}
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Start the cursor's count at 1: the step that takes an input is the first."""
         self._counts[cursor.id] = 1
         return None
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Count this step if auto-step is on. A bad `limit` option fails the step here."""
         cursor.options()  # a bad limit fails the step before it samples
         if cursor.cursor(cursor.id).auto:
             self._counts[cursor.id] = self._counts.get(cursor.id, 0) + 1
         return None
 
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Turn auto-step off once the count reaches `limit`, then start the count over."""
         auto = cursor.cursor(cursor.id).auto
         if auto and self._counts.get(cursor.id, 0) >= cursor.options().limit:
             cursor.set_auto(False)

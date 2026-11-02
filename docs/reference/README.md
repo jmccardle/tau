@@ -12,8 +12,8 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [Starting and finding sessions](sessions.md): 17 names
 - [The wire](wire.md): 6 names
 - [Embedding tau](driver.md): 5 names
-- [Providers](providers.md): 10 names
+- [Providers](providers.md): 9 names
 - [The step machine](machine.md): 8 names
-- [Configuration and context](config.md): 35 names
+- [Configuration and context](config.md): 34 names
 - [Errors](errors.md): 22 names
 - [Tracing](diagnostics.md): 4 names

@@ -34,6 +34,7 @@ from tau import (
     Part,
     SampleError,
     Stop,
+    Subject,
     TextDelta,
     ThinkingDelta,
     Tool,
@@ -481,6 +482,33 @@ async def test_a_provider_that_raises_mid_stream_fails_that_sample_and_no_other(
     await h.client.send(other, "hello")
     await h.settle()
     assert [r.parts for r in replies(h, other)] == [[Part.Text("fine")]], "the driver lives on"
+    await h.close()
+
+
+@scenario
+async def test_a_dropped_partial_reply_still_fails_the_step_without_post_reply(
+    tmp_path: Path,
+) -> None:
+    """A pre_reply hook that drops a reply a provider error cut short: nothing is committed and
+    `post_reply` is skipped, but the step still ends `Failed` with the provider's error."""
+
+    async def script(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+        yield TextDelta("he")
+        yield Part.Text("he")
+        raise RuntimeError("bug")
+
+    def drop(subject: object) -> None:
+        assert isinstance(subject, Subject)
+        subject.draft = None
+
+    rec = Recorder(on={"pre_reply": drop})
+    h = await Harness.create(tmp_path, provider=Rogue(script), extensions=[rec])
+    await h.send("hi")
+    await h.settle()
+    assert replies(h) == []
+    assert "post_reply" not in rec.points
+    (ending,) = [e for e in rec.endings if isinstance(e, Ending.Failed)]
+    assert "RuntimeError: bug" in ending.error
     await h.close()
 
 

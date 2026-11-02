@@ -441,6 +441,7 @@ class AnthropicProvider:
 
     @property
     def name(self) -> str:
+        """`"anthropic"`: what a model's `provider` setting calls it."""
         return NAME
 
     def check(self, model: ModelConfig) -> list[str]:

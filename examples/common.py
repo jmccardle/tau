@@ -26,11 +26,18 @@ from tau import (
     UnknownSession,
     load_config,
     prompts,
-    safe_block,
     select_model,
 )
 
 _INTERRUPTED = 130
+
+
+def _printable(text: str) -> str:
+    """`text` with each character a terminal would act on (a control, an escape) written as an
+    escape, so an error naming a file or a project line cannot repaint the terminal."""
+    return "".join(
+        c if c.isprintable() or c == "\n" else c.encode("unicode_escape").decode() for c in text
+    )
 
 
 class SampleFailed(Exception):
@@ -125,7 +132,7 @@ def exit_on_failure(program: Callable[[], None]) -> None:
         Leased,
         FileNotFoundError,
     ) as e:
-        sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")
+        sys.exit(f"{Path(sys.argv[0]).name}: {_printable(str(e))}")
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         sys.exit(_INTERRUPTED)

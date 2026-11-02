@@ -12,6 +12,8 @@ Names: `Json`, `PROTOCOL`, `ProtocolError`, `ProtocolMismatch`, `Server`, `Welco
 Json = dict[str, object]
 ```
 
+A JSON object as Python holds it: what a schema or a decoded JSON object is typed as.
+
 ## PROTOCOL
 
 ```python

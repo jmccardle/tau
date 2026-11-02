@@ -3,35 +3,45 @@
     scripts/api_docs.py                 rewrite docs/api/surface.txt and docs/reference/
     scripts/api_docs.py --check         fail (with a diff) if either differs from the code
     scripts/api_docs.py --undocumented  list the public names that have no docstring
-    scripts/api_docs.py --sync-stub     copy the built module's docstrings into _core.pyi
 
 What is public is `docs/api/groups.toml`: ordered groups, each a reader's reason to open it and
 the names in it. A name is `Name` (as `tau.Name`) or `module.name` (as `tau.module.name`, for the
 few public modules). The check fails when `tau.__all__` and the groups disagree, when a module
 is public by name but holds no public name, when a public module defines a public-looking name
-no group lists, when a public signature mentions a name that is not public, and when
+no group lists, when a public signature mentions a type that is neither public, the standard
+library's nor on the `foreign_types` list of groups.toml, and (scripts/stub_docs.py) when
 `python/tau/_core.pyi`'s docstrings differ from the built module's `__doc__`.
 
-The code is read as syntax (`ast`), never imported, except for the stub check: a signature is
-what was written, and the manifest does not depend on a build. Native types are read from the
-stub, which stubtest holds to the built module. Everything under docs/reference/ is generated;
-a file there that no group makes is stale.
+The package is imported (`__module__` says where a definition is, `__mro__` what it inherits),
+and `ast` reads only what the runtime does not keep: a signature as written, the string after an
+assignment. Native types are read from the stub, which stubtest holds to the built module, and
+the check holds its docstrings equal to the built module's. A class lists its own members and
+those of its underscore bases, and none that a public base already declares: they are
+documented there, once. Everything under docs/reference/ is generated; a file there that no
+group makes is stale.
 
-Other generators reuse `sync`: it writes or checks a set of files and reports them the same way
-(the wire protocol guide of 7C-3 is one).
+Writing and checking the generated files is scripts/generated.py, shared with the other
+generators.
 """
 
 import ast
+import builtins
 import contextlib
-import difflib
+import importlib
 import inspect
 import sys
 import tomllib
+import typing
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
-ROOT = Path(__file__).parents[1]
+import stub_docs
+from generated import ROOT, sync
+
+import tau
+
 PKG = ROOT / "python" / "tau"
 GROUPS = ROOT / "docs" / "api" / "groups.toml"
 README = ROOT / "docs" / "api" / "README.md"
@@ -40,24 +50,11 @@ REFERENCE = ROOT / "docs" / "reference"
 
 # Dunders that are part of how a thing is used; the rest (`__eq__`, `__repr__`, ...) are not listed.
 USED_DUNDERS = {
-    "__init__",
-    "__new__",
-    "__call__",
-    "__enter__",
-    "__exit__",
-    "__aenter__",
-    "__aexit__",
-    "__iter__",
-    "__next__",
-    "__aiter__",
-    "__anext__",
-    "__len__",
-    "__getitem__",
-    "__contains__",
+    *("__init__", "__new__", "__call__", "__enter__", "__exit__", "__aenter__", "__aexit__"),
+    *("__iter__", "__next__", "__aiter__", "__anext__", "__len__", "__getitem__", "__contains__"),
 }
 # Decorators that only help a type checker; the manifest leaves them out.
 TYPING_DECORATORS = {"final", "disjoint_base", "runtime_checkable", "override", "overload"}
-SHORT = 40  # characters of a docstring shown in a mismatch message
 WRAP = 100  # a signature longer than this has one parameter per line
 HEADING_DEPTH = 6  # Markdown stops at six
 
@@ -67,30 +64,18 @@ class SurfaceError(Exception):
 
 
 # ---- reading the code ---------------------------------------------------------------------
+# The package is imported: `__module__` says where a class or function is defined, `__mro__` what
+# it inherits. `ast` reads only what the runtime does not keep: a signature as written, the
+# string after an assignment, the order of a class body.
 
 
-def module_path(module: str) -> Path | None:
-    """The file of a dotted module under tau, or None."""
-    parts = module.split(".")
-    if parts[0] != "tau":
-        return None
-    base = PKG.joinpath(*parts[1:])
-    for candidate in (base / "__init__.py", base.with_suffix(".py"), base.with_suffix(".pyi")):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-_trees: dict[str, ast.Module] = {}
-
-
+@cache
 def tree_of(module: str) -> ast.Module:
-    if module not in _trees:
-        path = module_path(module)
-        if path is None:
-            raise SurfaceError(f"no module {module}")
-        _trees[module] = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return _trees[module]
+    """The syntax of a module; a native module's is its stub."""
+    path = Path(importlib.import_module(module).__file__ or "")
+    if path.suffix != ".py":
+        path = PKG / f"{module.rpartition('.')[2]}.pyi"
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def attribute_doc(body: Sequence[ast.stmt], index: int) -> str | None:
@@ -106,30 +91,6 @@ def attribute_doc(body: Sequence[ast.stmt], index: int) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class Defn:
-    """Where a name is defined: its module, its syntax, and the doc after an assignment."""
-
-    module: str
-    name: str
-    node: ast.stmt
-    doc: str | None = None
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.module, self.name)
-
-
-def imports_of(module: str) -> dict[str, tuple[str, str]]:
-    """Names a module takes from other tau modules: local name -> (module, name)."""
-    found: dict[str, tuple[str, str]] = {}
-    for node in tree_of(module).body:
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "tau":
-            for alias in node.names:
-                found[alias.asname or alias.name] = (node.module, alias.name)
-    return found
-
-
 def assigned_names(node: ast.stmt) -> list[str]:
     match node:
         case ast.Assign(targets=targets):
@@ -140,32 +101,64 @@ def assigned_names(node: ast.stmt) -> list[str]:
             return []
 
 
-def find(module: str, name: str, seen: frozenset[tuple[str, str]] = frozenset()) -> Defn | None:
-    """The definition `name` means in `module`, following imports from other tau modules."""
-    if (module, name) in seen:
-        raise SurfaceError(f"{module}.{name} imports itself")
-    seen |= {(module, name)}
+def defined(module: str, name: str) -> tuple[ast.stmt, str | None]:
+    """The statement that defines `name` in `module`, and the doc after an assignment."""
     body = tree_of(module).body
     for i, node in enumerate(body):
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            if node.name == name:
+                return node, None
+        elif name in assigned_names(node):
+            return node, attribute_doc(body, i)
+    raise SurfaceError(f"{module} does not define {name}")
+
+
+def resolve(name: str) -> object:
+    """The object a group's name means: `Name` is `tau.Name`, `module.name` is in that module."""
+    module, _, attr = name.rpartition(".")
+    owner = importlib.import_module(f"tau.{module}") if module else tau
+    if not hasattr(owner, attr):
+        raise SurfaceError(f"{GROUPS.name}: {name} is not defined where it says")
+    return getattr(owner, attr)
+
+
+def home(name: str) -> tuple[str, str]:
+    """(module, name) of the definition behind a group's name. A class or function says where it
+    is defined; an alias or constant is where `tau` (or the public module) takes it from."""
+    obj = resolve(name)
+    module, _, attr = name.rpartition(".")
+    owner = getattr(obj, "__module__", "")
+    if owner.startswith("tau.") and hasattr(obj, "__name__"):
+        return owner, obj.__name__
+    package = f"tau.{module}" if module else "tau"
+    for node in tree_of(package).body:
         if (
-            isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-            and node.name == name
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and attr in [a.asname or a.name for a in node.names]
         ):
-            return Defn(module, name, node)
-        if name in assigned_names(node):
-            value = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
-            # `TraceError = _core.TraceError`: the name is the other module's
-            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
-                source = imports_of(module).get(value.value.id)
-                if source and module_path(f"{source[0]}.{source[1]}"):
-                    return find(f"{source[0]}.{source[1]}", value.attr, seen)
-            return Defn(module, name, node, attribute_doc(body, i))
-    source = imports_of(module).get(name)
-    if source is None:
-        return None
-    if module_path(f"{source[0]}.{source[1]}"):  # a submodule, not a name in one
-        return None
-    return find(source[0], source[1], seen)
+            return node.module, attr
+    return package, attr
+
+
+def bound(module: str, name: str) -> tuple[str, object]:
+    """(module it comes from, object) of a name written in `module`, imports under
+    `if TYPE_CHECKING:` included."""
+    for node in ast.walk(tree_of(module)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if (alias.asname or alias.name) == name:
+                    return node.module, getattr(importlib.import_module(node.module), alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if (alias.asname or alias.name.split(".")[0]) == name:
+                    return alias.name, importlib.import_module(alias.name.split(".")[0])
+    here = importlib.import_module(module)
+    if hasattr(here, name):
+        return module, getattr(here, name)
+    if hasattr(builtins, name):
+        return "builtins", getattr(builtins, name)
+    raise SurfaceError(f"{module}: cannot tell what {name} means")
 
 
 # ---- the model of one public name ---------------------------------------------------------
@@ -210,13 +203,10 @@ def default_text(default: ast.expr, module: str) -> str:
     """A default as written, except that a module constant of plain numbers or text is replaced
     by its value, so a changed default shows in the manifest."""
     if isinstance(default, ast.Name):
-        defn = find(module, default.id)
-        value = getattr(defn.node, "value", None) if defn else None
-        if value is not None and all(
-            isinstance(n, ast.Constant | ast.BinOp | ast.UnaryOp | ast.operator | ast.unaryop)
-            for n in ast.walk(value)
-        ):
-            return ast.unparse(value)
+        source, value = bound(module, default.id)
+        if type(value) in (int, float, str):
+            written = getattr(defined(source, default.id)[0], "value", None)
+            return ast.unparse(written) if written is not None else repr(value)
     return ast.unparse(default)
 
 
@@ -267,145 +257,112 @@ def function_item(node: ast.FunctionDef | ast.AsyncFunctionDef, module: str) -> 
     decorators = decorator_names(node)
     if any(d.endswith((".setter", ".deleter")) for d in decorators):
         return None
+    args = node.args
     exprs = [
-        a.annotation
-        for a in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
-        if a.annotation
+        a.annotation for a in (*args.posonlyargs, *args.args, *args.kwonlyargs) if a.annotation
     ]
-    for star in (node.args.vararg, node.args.kwarg):
-        if star and star.annotation:
-            exprs.append(star.annotation)
-    if node.returns:
-        exprs.append(node.returns)
-    doc = ast.get_docstring(node)
+    exprs += [s.annotation for s in (args.vararg, args.kwarg) if s and s.annotation]
+    exprs += [node.returns] if node.returns else []
     counted = not node.name.startswith("__")
+    doc = ast.get_docstring(node)
     if "property" in decorators:
-        ret = unparse(node.returns) or "..."
+        head = f"property {node.name}: {unparse(node.returns) or '...'}"
         return Item(
-            "property",
-            node.name,
-            f"property {node.name}: {ret}",
-            [],
-            doc,
-            [],
-            counted,
-            exprs,
-            module,
+            "property", node.name, head, doc=doc, counted=counted, exprs=exprs, module=module
         )
     keyword = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
     ret = f" -> {unparse(node.returns)}" if node.returns else ""
     head = signature(keyword, node.name, render_args(node.args, module), ret)
-    return Item("def", node.name, head, decorators, doc, [], counted, exprs, module)
+    return Item(
+        "def", node.name, head, decorators, doc, counted=counted, exprs=exprs, module=module
+    )
 
 
 def public_member(name: str) -> bool:
     return not name.startswith("_") or name in USED_DUNDERS
 
 
-def private_bases(node: ast.ClassDef, module: str) -> list[Defn]:
-    """The classes in tau this one inherits from whose names start with an underscore."""
-    found = []
-    for base in node.bases:
-        if isinstance(base, ast.Name) and base.id.startswith("_"):
-            defn = find(module, base.id)
-            if defn and isinstance(defn.node, ast.ClassDef):
-                found.append(defn)
-    return found
+def member_item(
+    stmt: ast.stmt, body: Sequence[ast.stmt], module: str, cls: type | None
+) -> Item | None:
+    """The documented member a statement of a class body makes, if it makes one."""
+    after = attribute_doc(body, body.index(stmt))
+    match stmt:
+        case ast.FunctionDef() | ast.AsyncFunctionDef() if public_member(stmt.name):
+            return function_item(stmt, module)
+        case ast.ClassDef() if public_member(stmt.name):
+            return class_item(stmt, module, getattr(cls, stmt.name, None))
+        case ast.AnnAssign(target=ast.Name(id=name)) if public_member(name):
+            head = f"{name}: {unparse(stmt.annotation)}"
+            head += f" = {unparse(stmt.value)}" if stmt.value is not None else ""
+            return Item("field", name, head, doc=after, exprs=[stmt.annotation], module=module)
+        case ast.Assign(targets=[ast.Name(id=name)]) if public_member(name):
+            return Item("field", name, f"{name} = {unparse(stmt.value)}", doc=after, module=module)
+        case _:
+            return None
 
 
-def class_members(node: ast.ClassDef, module: str) -> list[Item]:
-    own: list[Item] = []
-    body = node.body
-    for i, stmt in enumerate(body):
-        item: Item | None = None
-        match stmt:
-            case ast.FunctionDef() | ast.AsyncFunctionDef():
-                if public_member(stmt.name):
-                    item = function_item(stmt, module)
-            case ast.ClassDef():
-                if public_member(stmt.name):
-                    item = class_item(stmt, module)
-            case ast.AnnAssign(target=ast.Name(id=name)) if public_member(name):
-                head = f"{name}: {unparse(stmt.annotation)}"
-                if stmt.value is not None:
-                    head += f" = {unparse(stmt.value)}"
-                doc = attribute_doc(body, i)
-                item = Item("field", name, head, [], doc, [], False, [stmt.annotation], module)
-            case ast.Assign(targets=[ast.Name(id=name)]) if public_member(name):
-                head = f"{name} = {unparse(stmt.value)}"
-                item = Item("field", name, head, [], attribute_doc(body, i), [], False, [], module)
-            case _:
-                pass
-        if item is not None:
-            own.append(item)
-    taken = {m.name for m in own}
-    inherited: list[Item] = []  # a private base's public members are this class's own
-    for base in private_bases(node, module):
-        assert isinstance(base.node, ast.ClassDef)
-        inherited += [m for m in class_members(base.node, base.module) if m.name not in taken]
-    return [*inherited, *own]
+def class_members(cls: type | None, node: ast.ClassDef, module: str) -> list[Item]:
+    """The class's own members, then those of its underscore bases that it does not override.
+    A name that a public base of tau declares is that base's to document."""
+    bases = cls.__mro__[1:] if cls else ()
+    declared = {
+        n
+        for b in bases
+        if id(b) in PUBLIC_IDS
+        for n in (*vars(b), *vars(b).get("__annotations__", {}))
+        if n not in ("__init__", "__new__")  # a subclass's constructor is its own signature
+    }
+    sources = [(cls, node, module)]
+    for base in bases:
+        if base.__module__.startswith("tau.") and base.__name__.startswith("_"):
+            base_node, _ = defined(base.__module__, base.__name__)
+            assert isinstance(base_node, ast.ClassDef)
+            sources.append((base, base_node, base.__module__))
+    members: dict[str, Item] = {}
+    for owner, owner_node, owner_module in sources:
+        for stmt in owner_node.body:
+            item = member_item(stmt, owner_node.body, owner_module, owner)
+            if item and item.name not in declared:
+                members.setdefault(item.name, item)
+    return list(members.values())
 
 
-def class_item(node: ast.ClassDef, module: str) -> Item:
-    bases = [
-        ast.unparse(b) for b in node.bases if not (isinstance(b, ast.Name) and b.id.startswith("_"))
-    ]
+def class_item(node: ast.ClassDef, module: str, cls: type | None) -> Item:
+    shown = [b for b in node.bases if not (isinstance(b, ast.Name) and b.id.startswith("_"))]
+    bases = [ast.unparse(b) for b in shown]
     bases += [f"{k.arg}={ast.unparse(k.value)}" for k in node.keywords if k.arg]
     head = f"class {node.name}" + (f"({', '.join(bases)})" if bases else "")
-    exprs = [b for b in node.bases if not (isinstance(b, ast.Name) and b.id.startswith("_"))]
+    decorators = decorator_names(node)
     item = Item(
-        "class",
-        node.name,
-        head,
-        decorator_names(node),
-        ast.get_docstring(node),
-        [],
-        True,
-        exprs,
-        module,
+        "class", node.name, head, decorators, ast.get_docstring(node), [], True, shown, module
     )
-    item.members = class_members(node, module)
+    item.members = class_members(cls, node, module)
     return item
 
 
-def item_of(defn: Defn) -> Item:
-    node = defn.node
+def item_of(module: str, name: str) -> Item:
+    node, doc = defined(module, name)
+    counted = not name.startswith("__")
     match node:
         case ast.ClassDef():
-            return class_item(node, defn.module)
+            return class_item(node, module, getattr(importlib.import_module(module), name, None))
         case ast.FunctionDef() | ast.AsyncFunctionDef():
-            item = function_item(node, defn.module)
+            item = function_item(node, module)
             assert item is not None
             return item
         case ast.AnnAssign(annotation=annotation, value=value):
-            head = f"{defn.name}: {unparse(annotation)}" + (f" = {unparse(value)}" if value else "")
+            head = f"{name}: {unparse(annotation)}" + (f" = {unparse(value)}" if value else "")
             return Item(
-                "alias",
-                defn.name,
-                head,
-                [],
-                defn.doc,
-                [],
-                not defn.name.startswith("__"),
-                [annotation],
-                defn.module,
+                "alias", name, head, doc=doc, counted=counted, exprs=[annotation], module=module
             )
         case ast.Assign(value=value):
-            return Item(
-                "alias",
-                defn.name,
-                f"{defn.name} = {unparse(value)}",
-                [],
-                defn.doc,
-                [],
-                not defn.name.startswith("__"),
-                [value],
-                defn.module,
-            )
+            head = f"{name} = {unparse(value)}"
+            # data (a tuple of hook names, a number) is not a type: its strings are not names
+            exprs = [] if isinstance(value, ast.Constant | ast.Tuple | ast.Call) else [value]
+            return Item("alias", name, head, doc=doc, counted=counted, exprs=exprs, module=module)
         case _:
-            raise SurfaceError(
-                f"{defn.module}.{defn.name}: cannot document a {type(node).__name__}"
-            )
+            raise SurfaceError(f"{module}.{name}: cannot document a {type(node).__name__}")
 
 
 # ---- the groups ----------------------------------------------------------------------------
@@ -419,10 +376,15 @@ class Group:
     names: tuple[str, ...]
 
 
+@cache
+def config() -> dict[str, typing.Any]:
+    return tomllib.loads(GROUPS.read_text(encoding="utf-8"))
+
+
 def load_groups() -> list[Group]:
-    data = tomllib.loads(GROUPS.read_text(encoding="utf-8"))
     groups = [
-        Group(g["id"], g["title"], g["reader"].strip(), tuple(g["names"])) for g in data["group"]
+        Group(g["id"], g["title"], g["reader"].strip(), tuple(g["names"]))
+        for g in config()["group"]
     ]
     ids = [g.id for g in groups]
     if len(set(ids)) != len(ids):
@@ -430,35 +392,17 @@ def load_groups() -> list[Group]:
     return groups
 
 
-def dunder_all() -> list[str]:
-    for node in tree_of("tau").body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
-        ):
-            return list(ast.literal_eval(node.value))
-    raise SurfaceError("python/tau/__init__.py has no __all__")
-
-
-def locate(name: str) -> Defn:
-    """The definition of a group's name: `Name` is `tau.Name`, `module.name` is in that module."""
-    if "." in name:
-        module, _, attr = name.rpartition(".")
-        defn = find(f"tau.{module}", attr)
-    else:
-        defn = find("tau", name)
-    if defn is None:
-        raise SurfaceError(f"{GROUPS.name}: {name} is not defined where it says")
-    return defn
-
-
-def made_by_tau() -> list[str]:
-    """Classes tau makes and hands over: their constructors are not part of the surface."""
-    return list(tomllib.loads(GROUPS.read_text(encoding="utf-8")).get("made_by_tau", []))
+PUBLIC_IDS: set[int] = (
+    set()
+)  # id() of every public object: a base in this set documents its members
 
 
 def public_items(groups: Sequence[Group]) -> dict[str, Item]:
-    items = {name: item_of(locate(name)) for g in groups for name in g.names}
-    for name in made_by_tau():
+    """Every public name's item. `made_by_tau` classes are tau's to construct: no `__init__`."""
+    names = [name for g in groups for name in g.names]
+    PUBLIC_IDS.update(id(resolve(name)) for name in names)
+    items = {name: item_of(*home(name)) for name in names}
+    for name in config().get("made_by_tau", []):
         if name not in items or items[name].kind != "class":
             raise SurfaceError(
                 f"{GROUPS.name}: made_by_tau lists {name}, which is not a public class"
@@ -475,7 +419,7 @@ def check_groups(groups: Sequence[Group]) -> list[str]:
     listed = [n for g in groups for n in g.names]
     for name in sorted({n for n in listed if listed.count(n) > 1}):
         problems.append(f"{name} is in more than one group")
-    exported = set(dunder_all())
+    exported = set(tau.__all__)
     top = {n for n in listed if "." not in n}
     problems += [f"{n} is in tau.__all__ but in no group" for n in sorted(exported - top)]
     problems += [f"{n} is in a group but not in tau.__all__" for n in sorted(top - exported)]
@@ -520,13 +464,18 @@ def check_readme(groups: Sequence[Group]) -> list[str]:
 # ---- what a public signature may name -----------------------------------------------------
 
 
-def named_in(expr: ast.expr) -> Iterator[str]:
-    for node in ast.walk(expr):
-        if isinstance(node, ast.Name):
-            yield node.id
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            with contextlib.suppress(SyntaxError):  # not every string is a type
-                yield from named_in(ast.parse(node.value, mode="eval").body)
+def named_in(expr: ast.AST) -> Iterator[str]:
+    """The names an annotation uses, including those in string annotations (not in a Literal)."""
+    if isinstance(expr, ast.Name):
+        yield expr.id
+    elif isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        with contextlib.suppress(SyntaxError):  # not every string is a type
+            yield from named_in(ast.parse(expr.value, mode="eval").body)
+    elif isinstance(expr, ast.Subscript) and ast.unparse(expr.value).endswith("Literal"):
+        yield from named_in(expr.value)
+    else:
+        for child in ast.iter_child_nodes(expr):
+            yield from named_in(child)
 
 
 def walk_items(item: Item) -> Iterator[Item]:
@@ -535,167 +484,33 @@ def walk_items(item: Item) -> Iterator[Item]:
         yield from walk_items(member)
 
 
-def private_names_in_signatures(groups: Sequence[Group], items: Mapping[str, Item]) -> list[str]:
-    """Names a public signature uses that tau defines but does not publish."""
-    public_keys = {locate(n).key for g in groups for n in g.names}
-    problems: list[str] = []
+def refusal(source: str, obj: object) -> str | None:
+    """Why a public signature may not name `obj`, bound from module `source`; None if it may.
+    A name is fine if it is public in tau, the standard library's, or on the allow list."""
+    top = source.split(".", maxsplit=1)[0]
+    if top == "tau":
+        if isinstance(obj, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
+            return None
+        if id(obj) in PUBLIC_IDS:
+            return None
+        return f"which tau defines ({source}) but does not publish"
+    if top in sys.stdlib_module_names or top == "builtins" or top in config()["foreign_types"]:
+        return None
+    return f"which comes from {top}, neither tau, the standard library nor `foreign_types`"
+
+
+def unpublished_names(items: Mapping[str, Item]) -> list[str]:
+    """The names a public signature uses that it may not (see `refusal`)."""
+    problems: set[str] = set()
     for name, item in sorted(items.items()):
         for sub in walk_items(item):
-            for expr in sub.exprs:
-                for used in sorted(set(named_in(expr))):
-                    defn = find(sub.module, used)
-                    if defn is None or defn.key in public_keys or is_type_variable(defn):
-                        continue
+            for used in sorted({n for expr in sub.exprs for n in named_in(expr)}):
+                source, obj = bound(sub.module, used)
+                why = refusal(source, obj)
+                if why:
                     where = f"{name}.{sub.name}" if sub is not item else name
-                    problems.append(
-                        f"{where} names {used}, which is defined in tau ({defn.module}) "
-                        "but not public"
-                    )
-    return sorted(set(problems))
-
-
-def is_type_variable(defn: Defn) -> bool:
-    value = getattr(defn.node, "value", None)
-    return (
-        isinstance(value, ast.Call)
-        and isinstance(value.func, ast.Name)
-        and value.func.id in {"TypeVar", "ParamSpec", "TypeVarTuple"}
-    )
-
-
-# ---- the stub's docstrings against the built module -----------------------------------------
-
-
-StubNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-
-
-def stub_nodes() -> dict[str, StubNode]:
-    """Dotted path under tau._core -> its node, for every class, nested class, function, method
-    and property the stub declares (underscore names are not documented)."""
-    out: dict[str, StubNode] = {}
-
-    def visit(body: Sequence[ast.stmt], prefix: str) -> None:
-        for node in body:
-            if isinstance(node, StubNode) and not node.name.startswith("_"):
-                if any(ast.unparse(d).endswith(".setter") for d in node.decorator_list):
-                    continue
-                out[f"{prefix}{node.name}"] = node
-                if isinstance(node, ast.ClassDef):
-                    visit(node.body, f"{prefix}{node.name}.")
-
-    visit(tree_of("tau._core").body, "")
-    return out
-
-
-def runtime_doc(root: object, path: str) -> tuple[bool, str | None]:
-    """(exists, cleaned `__doc__`) of a dotted path under the built module."""
-    obj: object = root
-    for part in path.split("."):
-        raw = obj.__dict__.get(part) if isinstance(obj, type) else None
-        if raw is not None and not isinstance(raw, staticmethod | classmethod):
-            obj = raw  # a property's descriptor, not the value it would give
-        elif hasattr(obj, part):
-            obj = getattr(obj, part)
-        else:
-            return False, None
-    doc = getattr(obj, "__doc__", None)
-    return True, inspect.cleandoc(doc) if doc else None
-
-
-def built_module() -> object:
-    sys.path.insert(0, str(ROOT / "python"))
-    try:
-        from tau import _core  # noqa: PLC0415 - only the stub check needs the build
-    except ImportError as e:
-        raise SurfaceError(
-            f"cannot import tau._core to compare docstrings ({e}); run maturin develop"
-        ) from e
-    return _core
-
-
-def stub_doc_mismatches() -> list[str]:
-    """Docstrings in `_core.pyi` that differ from the built module's `__doc__`."""
-    built = built_module()
-    problems = []
-    for path, node in sorted(stub_nodes().items()):
-        stub = ast.get_docstring(node)
-        exists, runtime = runtime_doc(built, path)
-        if not exists:
-            problems.append(f"_core.pyi declares {path}, which the built module lacks")
-        elif (stub or None) != (runtime or None):
-            problems.append(
-                f"_core.pyi: the docstring of {path} differs from the built module's __doc__ "
-                f"(stub: {_short(stub)}; runtime: {_short(runtime)})"
-            )
-    return problems
-
-
-def docstring_lines(doc: str, indent: str) -> list[str]:
-    """`doc` as a triple-quoted docstring statement, `indent`ed."""
-    text = doc.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-    if text.endswith('"'):
-        text = text[:-1] + '\\"'
-    first, *rest = text.split("\n")
-    if not rest:
-        return [f'{indent}"""{first}"""']
-    return [f'{indent}"""{first}', *(f"{indent}{r}" if r else "" for r in rest), f'{indent}"""']
-
-
-def stub_edit(node: StubNode, doc: str, lines: list[str]) -> tuple[int, int, list[str]]:
-    """(first line, last line, replacement), 0-based and inclusive, giving `node` the docstring."""
-    body = node.body
-    first = body[0]
-    has_doc = (
-        isinstance(first, ast.Expr)
-        and isinstance(first.value, ast.Constant)
-        and isinstance(first.value.value, str)
-    )
-    is_ellipsis = (
-        len(body) == 1
-        and isinstance(first, ast.Expr)
-        and isinstance(first.value, ast.Constant)
-        and first.value.value is Ellipsis
-    )
-    if has_doc or is_ellipsis:
-        assert first.end_lineno is not None
-        lead = lines[first.lineno - 1].encode()[: first.col_offset].decode()
-        if lead.strip():  # `def f(): ...`: the body moves to a line of its own
-            indent = " " * (node.col_offset + 4)
-            return (
-                first.lineno - 1,
-                first.end_lineno - 1,
-                [lead.rstrip(), *docstring_lines(doc, indent)],
-            )
-        return (first.lineno - 1, first.end_lineno - 1, docstring_lines(doc, lead))
-    start = min([first.lineno, *(d.lineno for d in getattr(first, "decorator_list", []))])
-    indent = " " * first.col_offset
-    return (start - 1, start - 2, [*docstring_lines(doc, indent), ""])  # an insertion
-
-
-def sync_stub() -> int:
-    """Copy the built module's docstrings into `_core.pyi` wherever the stub's differ. The Rust
-    `///` is the source; this only copies it. Returns how many docstrings changed."""
-    built = built_module()
-    path = module_path("tau._core")
-    assert path is not None
-    lines = path.read_text(encoding="utf-8").split("\n")
-    edits = []
-    for name, node in stub_nodes().items():
-        exists, runtime = runtime_doc(built, name)
-        if exists and runtime and runtime != ast.get_docstring(node):
-            edits.append(stub_edit(node, runtime, lines))
-    for first, last, replacement in sorted(edits, reverse=True):
-        lines[first : last + 1] = replacement
-    path.write_text("\n".join(lines), encoding="utf-8")
-    _trees.pop("tau._core", None)
-    return len(edits)
-
-
-def _short(doc: str | None) -> str:
-    if not doc:
-        return "none"
-    first = doc.splitlines()[0]
-    return repr(first if len(first) <= SHORT else first[: SHORT - 3] + "...")
+                    problems.add(f"{where} names {used}, {why}")
+    return sorted(problems)
 
 
 # ---- the outputs ---------------------------------------------------------------------------
@@ -760,7 +575,7 @@ def outputs() -> dict[Path, str]:
     groups = load_groups()
     problems = check_groups(groups) + check_readme(groups)
     items = public_items(groups)
-    problems += private_names_in_signatures(groups, items)
+    problems += unpublished_names(items)
     if problems:
         raise SurfaceError("\n".join(problems))
     files = {MANIFEST: manifest(groups, items) + "\n"}
@@ -787,62 +602,11 @@ def prefix_of(name: str) -> str:
 # ---- writing and checking ------------------------------------------------------------------
 
 
-def sync(files: Mapping[Path, str], *, check: bool, label: str, owned: Sequence[Path] = ()) -> int:
-    """Write `files`, or with `check` compare them with what is on disk and print a diff.
-
-    `owned` are directories every file of which is generated: one not in `files` is stale.
-    Returns the exit status."""
-    stale = [
-        p
-        for d in owned
-        if d.is_dir()
-        for p in sorted(d.rglob("*"))
-        if p.is_file() and p not in files
-    ]
-    if not check:
-        for path, text in files.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if not path.exists() or path.read_text(encoding="utf-8") != text:
-                path.write_text(text, encoding="utf-8")
-        for path in stale:
-            path.unlink()
-        return 0
-    status = 0
-    for path, text in sorted(files.items()):
-        have = path.read_text(encoding="utf-8") if path.exists() else ""
-        if have != text:
-            status = 1
-            sys.stderr.writelines(
-                difflib.unified_diff(
-                    have.splitlines(keepends=True),
-                    text.splitlines(keepends=True),
-                    str(path.relative_to(ROOT)),
-                    "generated",
-                )
-            )
-    for path in stale:
-        status = 1
-        print(
-            f"{label}: {path.relative_to(ROOT)} is not generated any more; remove it",
-            file=sys.stderr,
-        )
-    if status:
-        print(f"{label}: stale; run scripts/{Path(sys.argv[0]).name}", file=sys.stderr)
-    else:
-        print(f"{label}: up to date")
-    return status
-
-
 def main(args: list[str]) -> int:
-    if args not in ([], ["--check"], ["--undocumented"], ["--sync-stub"]):
-        print(
-            "usage: scripts/api_docs.py [--check | --undocumented | --sync-stub]", file=sys.stderr
-        )
+    if args not in ([], ["--check"], ["--undocumented"]):
+        print("usage: scripts/api_docs.py [--check | --undocumented]", file=sys.stderr)
         return 2
     try:
-        if args == ["--sync-stub"]:
-            print(f"api_docs: {sync_stub()} docstring(s) copied into _core.pyi")
-            return 0
         if args == ["--undocumented"]:
             for group, names in undocumented().items():
                 print(f"{group}: {len(names)}")
@@ -852,7 +616,7 @@ def main(args: list[str]) -> int:
         files = outputs()
         status = sync(files, check=args == ["--check"], label="api_docs", owned=[REFERENCE])
         if args == ["--check"]:
-            problems = stub_doc_mismatches()
+            problems = stub_docs.mismatches()
             for problem in problems:
                 print(f"api_docs: {problem}", file=sys.stderr)
             status = status or int(bool(problems))

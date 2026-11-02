@@ -2,9 +2,13 @@
 # exactly the names without a dot, and docs/api/README.md must have a `## <title>` heading per
 # group. A name is `Name` (`tau.Name`) or `module.name` (`tau.module.name`, for a public module).
 
-# Classes tau makes and hands to a program (a handle, a client from `Driver.client`): their
-# constructors are tau's own and are not part of the surface.
-made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient"]
+# Classes tau makes and hands to a program (a handle, a client from `Driver.client` or
+# `RemoteClient.connect`): their constructors are tau's own and are not part of the surface.
+made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient", "RemoteClient"]
+
+# Packages other than tau and the standard library that a public signature may name. `httpx`: the
+# provider classes take an `httpx` transport and timeout.
+foreign_types = ["httpx"]
 
 [[group]]
 id = "extensions"
@@ -79,10 +83,10 @@ names = ["__version__", "Driver", "DriverState", "Clock", "SystemClock"]
 [[group]]
 id = "providers"
 title = "Providers"
-reader = "The model APIs: the contract a provider keeps, and the four that ship."
+reader = "The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()[\"mock\"]`)."
 names = [
     "Provider", "Finish", "SampleError", "ProviderClosed", "replay_for", "builtin_providers",
-    "OpenAIProvider", "AnthropicProvider", "GeminiProvider", "MockProvider",
+    "OpenAIProvider", "AnthropicProvider", "GeminiProvider",
 ]
 
 [[group]]
@@ -99,7 +103,7 @@ names = [
     "ModelConfig", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
     "LayerText", "read_models", "check_config", "LoadedConfig", "load_config", "UserConfig",
     "Prompts", "prompts", "select_model", "Trusted", "TrustError", "UntrustedProject",
-    "safe_block", "DotenvError", "Ask", "Pick", "Layer", "Origin", "Severity", "SourceKind", "SourceState", "ExtensionSource", "ExtensionLoadError", "list_extensions",
+    "DotenvError", "Ask", "Pick", "Layer", "Origin", "Severity", "SourceKind", "SourceState", "ExtensionSource", "ExtensionLoadError", "list_extensions",
     "load_extensions", "SystemPrompt", "PromptSource", "ContextFileError", "system_prompt",
 ]
 

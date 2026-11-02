@@ -815,6 +815,25 @@ async def test_a_pre_reply_hook_that_clears_the_draft_drops_the_reply(tmp_path: 
 
 
 @scenario
+async def test_post_reply_does_not_run_when_pre_reply_dropped_the_reply(tmp_path: Path) -> None:
+    """`post_reply` is about the `Assistant` node just committed, so it is skipped when none was."""
+
+    def drop(subject: Subject | CallDraft) -> None:
+        assert isinstance(subject, Subject)
+        subject.draft = None
+
+    recorder = Recorder(on={"pre_reply": drop})
+    h = await Harness.create(tmp_path, provider=FakeProvider([text("lost")]), extensions=[recorder])
+    await h.input("hi")
+    await h.settle()
+    await h.step()
+    await h.settle()
+    assert "pre_reply" in recorder.points
+    assert "post_reply" not in recorder.points
+    assert recorder.endings[-1] == Ending.Done()
+
+
+@scenario
 async def test_a_hook_appends_a_detached_root_without_moving_any_cursor(tmp_path: Path) -> None:
     """A root is made only by `append_root`, which takes a `Config`: it has no parent and
     leaves the cursor where it was. There is no way to ask for a root of another kind."""

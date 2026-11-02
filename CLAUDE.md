@@ -47,7 +47,7 @@ ruff banned-api (`unittest.mock`), and `tests/conftest.py` (`monkeypatch`).
 `python/tau/_core.pyi` is hand-written; `mypy.stubtest` (in `check.sh`)
 holds it to the built module, and `scripts/api_docs.py --check` holds its docstrings equal
 to the built module's `__doc__`. The Rust `///` is the source: after changing one, rebuild and run
-`scripts/api_docs.py --sync-stub`.
+`scripts/stub_docs.py`.
 
 The public API is documented from code. `docs/api/groups.toml` says what is public;
 `scripts/api_docs.py` generates `docs/api/surface.txt` (every public name with its signature: any

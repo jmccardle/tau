@@ -62,6 +62,8 @@ def _allowed() -> set[tuple[str, str, str]]:
         a.add(("Sample", f"answer Sampled({none})", "PostStep"))
     a.add(("PreReply", "answer Hooks", "PostReply"))
     a.add(("PreReply", "commit refused", "PostStep"))
+    a.add(("PreReply", "reply dropped", "Tools"))  # no reply committed: no post_reply
+    a.add(("PreReply", "reply dropped", "PostStep"))  # the sample had failed: the step fails
     a.add(("PostReply", "answer Hooks", "Tools"))
     a.add(("PostReply", "answer Hooks", "PostStep"))  # the sample had failed after a reply
     a.add(("Tools", "tools apply", "Calls"))

@@ -26,11 +26,11 @@ from tau.commandline import Parsed, completions
 
 
 class Client(AsyncIterator[Event], Protocol):
-    """What a frontend holds. Iterating it yields the events: a `CursorView` per open cursor, a
-    `CursorGone` per closed one, and `Labels` first, then changes as they happen, until the driver
-    stops (the stream ends), or the driver fails or the client is `CutOff` for falling behind (it
-    raises `ConnectionError`). Every call raises `ConnectionError` once the driver has failed or
-    stopped, or the client has been closed or cut off."""
+    """What a frontend holds. Iterating it yields the events: first a snapshot (a `CursorView` per
+    open cursor, a `CursorGone` per closed one, then `Labels`), then changes as they happen,
+    until the driver stops (the stream ends), or the driver fails or the client is `CutOff` for
+    falling behind (it raises `ConnectionError`). Every call raises `ConnectionError` once the
+    driver has failed or stopped, or the client has been closed or cut off."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -52,7 +52,9 @@ class Client(AsyncIterator[Event], Protocol):
         questions)."""
         ...
 
-    async def set_auto(self, cursor: int, on: bool) -> None: ...
+    async def set_auto(self, cursor: int, on: bool) -> None:
+        """Turn `cursor`'s auto-step on or off; on wakes it."""
+        ...
 
     async def abort(self, cursor: int) -> None:
         """Abort the cursor's step and decline its open questions."""
@@ -149,7 +151,9 @@ class Client(AsyncIterator[Event], Protocol):
         word, in one call."""
         ...
 
-    async def node(self, id: int) -> Node: ...
+    async def node(self, id: int) -> Node:
+        """The node with this id; `NoSuchNode` if there is none."""
+        ...
 
     async def nodes(self, start: int, limit: int) -> list[Node]:
         """Up to `limit` nodes from id `start`, in id order; none past the end. Ids are dense
@@ -161,7 +165,9 @@ class Client(AsyncIterator[Event], Protocol):
         """The nodes from the root to `id`."""
         ...
 
-    async def children(self, id: int) -> list[int]: ...
+    async def children(self, id: int) -> list[int]:
+        """The ids of the children of node `id`, in append order."""
+        ...
 
     async def close(self) -> None:
         """Disconnect: the stream ends and the client is no longer connected."""
@@ -189,6 +195,7 @@ class _Stream:
         return self._feed.take()
 
     async def close(self) -> None:
+        """Disconnect: the stream ends and the client is no longer connected."""
         await self._feed.close()
 
     async def __aenter__(self) -> Self:
@@ -208,7 +215,7 @@ async def _finished(calls: Calls, outcome: "asyncio.Future[str | None]") -> str 
         raise
 
 
-class LocalClient(_Stream):
+class LocalClient(_Stream, Client):
     """A `Client` in the driver's process, made by `Driver.client`: its stream opens with the
     snapshot, in one act on the loop, so make it inside the running loop. Each call is
     documented on `Client`."""

@@ -4,13 +4,15 @@
 
 Models, the config files, trust, extension loading, the system prompt.
 
-Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `safe_block`, `select_model`, `system_prompt`
+Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `select_model`, `system_prompt`
 
 ## Ask
 
 ```python
 Ask = Callable[[str], bool]
 ```
+
+A yes-or-no question put to the person: takes the question, returns the answer.
 
 ## ConfigError
 
@@ -102,6 +104,8 @@ commands' qualified names and `tools` their tools' names; all empty unless it is
 ```python
 Layer = Path | LayerText
 ```
+
+One config layer: the `Path` of a file, or a `LayerText` already read.
 
 ## LayerText
 
@@ -245,6 +249,8 @@ the qualified name of the group that set it (`None`: the model itself).
 Pick = Callable[[tuple[str, ...]], str]
 ```
 
+A choice put to the person: takes the qualified model names, returns one of them.
+
 ## PromptSource
 
 ```python
@@ -289,17 +295,25 @@ A model by qualified name: its `ModelConfig` and the `Origin` of each key.
 Severity = Literal['error', 'warning']
 ```
 
+How bad a `ConfigProblem` is: an `error` fails the check, a `warning` does not.
+
 ## SourceKind
 
 ```python
 SourceKind = Literal['built-in', 'package', 'user', 'project', 'explicit', 'load']
 ```
 
+Where a source comes from: `built-in`, `package`, `user`, `project`, `explicit` (`-e`), or
+`load` (a `load` key no source has).
+
 ## SourceState
 
 ```python
 SourceState = Literal['always', 'on', 'off', 'shadowed', 'failed', 'untrusted']
 ```
+
+Whether a source's extensions are loaded: `always` (`tau` and `session_name`), `on`, `off`,
+`shadowed` by another source, `failed`, or `untrusted`.
 
 ## SystemPrompt
 
@@ -566,15 +580,6 @@ def read_models(
 Merge the layers (`user` < `project` < `cli`; each may be absent) and resolve.
 
 Raises `ConfigError` listing every error; warnings ride on the catalog.
-
-## safe_block
-
-```python
-def safe_block(text: str) -> str
-```
-
-`text` split on `"\n"` only, each line through `safe_text`, joined again: the lines a
-caller wrote stay lines, and nothing in the data can start another.
 
 ## select_model
 

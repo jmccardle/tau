@@ -169,7 +169,8 @@ pub struct Step {
 }
 
 impl Step {
-    /// A wake. `asked`: a frontend's `Session.step`, which runs phases with auto-step off.
+    /// A wake. `asked`: a frontend's `Session.step`, whose phases run whether or not auto-step is
+    /// on.
     #[must_use]
     pub fn wake(s: &Session, cursor: CursorId, asked: bool) -> Self {
         let seen = s.changes.get(&cursor).copied().unwrap_or(0);
@@ -537,12 +538,25 @@ impl Step {
     /// `write` (it changes nothing when it refuses) fails the step, its reason
     /// the error's text.
     fn commit(&mut self, s: &mut Session, draft: Option<Draft>, now: u64) {
-        if let Some(d) = draft
-            && let Err(e) = s.write(self.cursor, d.body, d.delivers, d.by, now)
-        {
-            transitions::event("commit refused");
-            self.end(s, Ending::Failed(e.to_string()));
-            return;
+        match draft {
+            Some(d) => {
+                if let Err(e) = s.write(self.cursor, d.body, d.delivers, d.by, now) {
+                    transitions::event("commit refused");
+                    self.end(s, Ending::Failed(e.to_string()));
+                    return;
+                }
+            }
+            // A dropped reply: nothing is committed, so `post_reply` (about the node just
+            // committed) does not run. A sample error the reply carried still fails the step.
+            None if self.pos == Pos::PreReply => {
+                transitions::event("reply dropped");
+                match self.error.take() {
+                    Some(e) => self.end(s, Ending::Failed(e)),
+                    None => self.go(Pos::Tools),
+                }
+                return;
+            }
+            None => {}
         }
         self.go(if self.pos == Pos::PreReply {
             Pos::PostReply
