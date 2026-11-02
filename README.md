@@ -12,11 +12,13 @@ Status: **0.16 in development.** What exists now:
 
 - the library: sessions, cursors, hooks, extensions, providers (OpenAI-compatible,
   Anthropic, Gemini) and the base tools. `examples/chat.py` is a small frontend;
-- the `tau` command: `config`, `ext`, `sessions`, `export`, `context`, `trust`, and
-  `serve`, which shares a session over a Unix socket with any number of clients;
+- the `tau` command: `tau -p MESSAGE` (send one message, print the answer, exit with a status
+  that says how it ended; `--json` for the events, `--answer` for questions, `--verbose`,
+  `--version`), `config`, `ext`, `sessions`, `export`, `context`, `trust`, and `serve`, which
+  shares a session over a Unix socket with any number of clients (`tau -p` attaches to it);
 - a wire protocol and `RemoteClient` for those clients.
 
-The terminal UI and `tau -p` (print one answer and exit) come in Phase 8.
+The terminal UI comes in Phase 8.
 
 Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
 write an extension or a frontend.

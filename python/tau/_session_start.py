@@ -10,9 +10,11 @@ and:
    the project search, trust, extensions and path completion all answer "where am I" alike, and
    for an existing session takes its lease at once (`Leased` is said before a trust question or
    an extension's import);
-2. loads the config, loads the extensions, adds the built-in `session_name`, and for a new session
-   selects the model (an existing session or a fork already records its model in its `Config` node,
-   so `--model` is refused for them: `/model` switches a running session);
+2. loads the config, loads the extensions, adds the built-in `session_name`, applies the run's
+   `--set EXTENSION.FIELD=VALUE` options (the config's `cli` layer, checked against the loaded
+   extensions' options), and for a new session selects the model (an existing session or a fork
+   already records its model in its `Config` node, so `--model` is refused for them: `/model`
+   switches a running session);
 3. asks `system` for the text of the `System` node, for a new session only: by default
    `tau.system_prompt` (D20) with the prompt flags (`--append-system-prompt`, `-nc`;
    `--system-prompt` is a layer of the config, given to `load_config`), so an unreadable context
@@ -21,8 +23,9 @@ and:
 4. creates or forks the session, names an opened one (`-n`), builds the providers and starts the
    `Driver`.
 
-The result is a `Started`; `stop` ends it, and removes a session that was never used. A session
-another process holds is `Leased`, never replaced by another one.
+The result is a `Started`, which keeps what `--verbose`'s start report tells; `stop` ends it, and
+removes a session that was never used. A session another process holds is `Leased`, never replaced
+by another one.
 """
 
 import os
@@ -35,10 +38,11 @@ from tau._builtin import SessionName
 from tau._choice import SessionChoice, choose_session
 from tau._clock import SystemClock
 from tau._config import ConfigError, config_fields, model_config
-from tau._context import system_prompt
+from tau._context import SystemPrompt, system_prompt
 from tau._core import Leased, Session
 from tau._driver import Driver
-from tau._extensions import absolute_explicit, load_extensions
+from tau._extensions import ExtensionSource, absolute_explicit, inspect_extensions
+from tau._options import make_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
 from tau._sessions import (
@@ -49,27 +53,33 @@ from tau._sessions import (
     make_session_directory,
     read_name,
     rename_session,
+    session_info,
 )
-from tau._startup import LoadedConfig, Prompts, load_config, select_model
-from tau._trust import tau_home
+from tau._startup import LoadedConfig, Prompts, load_config, option_changes, select_model
+from tau._trust import tau_home, user_config_path
+from tau._values import Context, Json
 
 SystemText = Callable[[Path, LoadedConfig], str]
 """What a new session's `System` node says: given the session's working directory and the loaded
 config. Called once, for a new session only."""
 
 
-def _assembled(flags: SessionFlags) -> SystemText:
-    """D20's assembly, with the flags' appended sections and `-nc`."""
+class _Assembled:
+    """D20's assembly, with the flags' appended sections and `-nc`; keeps what it assembled for
+    the start report."""
 
-    def assemble(cwd: Path, loaded: LoadedConfig) -> str:
-        return system_prompt(
+    def __init__(self, flags: SessionFlags) -> None:
+        self._flags = flags
+        self.prompt: SystemPrompt | None = None
+
+    def __call__(self, cwd: Path, loaded: LoadedConfig) -> str:
+        self.prompt = system_prompt(
             cwd,
             loaded,
-            append=flags.append_system_prompt,
-            context_files=not flags.no_context_files,
-        ).text
-
-    return assemble
+            append=self._flags.append_system_prompt,
+            context_files=not self._flags.no_context_files,
+        )
+        return self.prompt.text
 
 
 @dataclass
@@ -78,7 +88,10 @@ class Started:
     closes through `stop`, the `loaded` config and the `model` (selected for a new session, else
     the one recorded at the first cursor), the session's working directory `cwd` (the process is
     in it), the session's `directory` (`None`: in memory) and whether this run `created` it (a new
-    session or a fork). A session named during the run counts as used."""
+    session or a fork). `sources` are the extension sources the start planned, one per row of
+    `tau ext list`, and `prompt` the parts of the system prompt it assembled (`None`: the session
+    already had one, or the program supplied the text). A session named during the run counts as
+    used."""
 
     session: Session
     driver: Driver
@@ -88,6 +101,8 @@ class Started:
     cwd: Path
     directory: Path | None
     created: bool
+    sources: tuple[ExtensionSource, ...]
+    prompt: SystemPrompt | None
     _nodes: int
     _name: str | None
 
@@ -111,6 +126,44 @@ class Started:
         finally:
             self.session.close()
             await _close(self.providers)
+
+
+def start_report(started: Started) -> list[str]:
+    """What `--verbose` says before the first message, one line each: the session (its id and
+    directory, or in memory; new, opened or forked), the working directory, the model, the
+    config files read, each extension loaded with its source key and origin, and for a new
+    session the parts of the system prompt with their sizes in bytes."""
+    lines = [_session_line(started), f"working directory {started.cwd}", f"model {started.model}"]
+    loaded = started.loaded
+    files = [user_config_path(loaded.home)]
+    if loaded.project is not None:
+        root = loaded.project.root
+        files += [root / ".tau" / "config.json"] * (loaded.project.config_text is not None)
+        files += [root / ".env"] * (loaded.project.env_text is not None)
+    lines += [f"config {path}" for path in files if path is not None]
+    for source in started.sources:
+        if source.state in ("on", "always"):
+            where = (
+                source.origin
+                if source.origin.startswith(source.kind)
+                else f"{source.kind}: {source.origin}"
+            )
+            if where.endswith(")"):  # "built-in (added by the startup)": no parentheses in them
+                where = where.replace(" (", ", ")[:-1]
+            lines.append(f"extension {source.key} ({where})")
+    if started.prompt is not None:
+        lines += [f"system prompt {part.size:>8} {part.origin}" for part in started.prompt.sources]
+    return lines
+
+
+def _session_line(started: Started) -> str:
+    if started.directory is None:
+        return "session in memory (new)"
+    how = "opened"
+    if started.created:
+        forked = session_info(started.directory).forked_from
+        how = "new" if forked is None else f"forked from {forked.session} at node {forked.node}"
+    return f"session {started.directory.name} ({how}) in {started.directory}"
 
 
 async def _close(providers: Mapping[str, Provider]) -> None:
@@ -227,6 +280,30 @@ def _session(  # noqa: PLR0913 - the pieces of one start
             return held, choice.source.path, selected
 
 
+def _overridden(  # noqa: PLR0913, PLR0917 - the start's inputs, passed on
+    loaded: LoadedConfig,
+    cwd: Path,
+    environ: Mapping[str, str],
+    prompts: Prompts,
+    cli: Mapping[str, object] | None,
+    extensions: Sequence[object],
+    assignments: Sequence[tuple[str, str, str]],
+) -> LoadedConfig:
+    """`loaded` again with `--set` as the `cli` layer's `extensions`: every value is read by its
+    option's type, and every extension's options are built from the layers as they are now
+    (`ConfigError` otherwise), so a bad `--set` fails before a session exists."""
+    changes = option_changes(extensions, assignments)
+    layer: dict[str, object] = {
+        **(cli or {}),
+        "extensions": {name: values for name, (_, _, values) in changes.items()},
+    }
+    again = load_config(cwd, environ, ask=prompts.ask, cli=layer)
+    for name, (options, fields, _) in changes.items():
+        raw: Json = dict(again.catalog.extensions.get(name, {}))
+        make_options(name, options, fields, raw, Context(again.catalog))
+    return again
+
+
 def _refuse_ignored_prompt_flags(flags: SessionFlags, system: SystemText | None) -> None:
     """A program with its own `system` text would silently drop the flags that shape D20's."""
     if system is not None and (
@@ -238,7 +315,7 @@ def _refuse_ignored_prompt_flags(flags: SessionFlags, system: SystemText | None)
         )
 
 
-def _refuse_model(choice: SessionChoice, model: str | None) -> None:
+def refuse_model(choice: SessionChoice, model: str | None) -> None:
     if choice.kind != "new" and model is not None:
         raise ConfigError(
             "--model names the model of a new session; this session records its own: "
@@ -274,16 +351,24 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     _refuse_ignored_prompt_flags(flags, system)
     explicit = absolute_explicit(getattr(args, "extension"), cwd)  # noqa: B009
     discover = not getattr(args, "no_extensions")  # noqa: B009
+    assignments = getattr(args, "set_options", None) or ()
     choice = choose_session(flags, home=tau_home(environ), cwd=cwd, pick=pick_session)
-    _refuse_model(choice, model)
+    refuse_model(choice, model)
     os.chdir(choice.cwd)
     new = choice.kind == "new"
     held = _lease(choice)
     try:
         cli = None if flags.system_prompt is None else {"system_prompt": flags.system_prompt}
         loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
-        added = load_extensions(loaded, explicit=explicit, discover=discover)
-        text = system if system is not None else _assembled(flags)
+        found = inspect_extensions(loaded, explicit=explicit, discover=discover)
+        found.raise_failures()
+        added = list(found.extensions)
+        if assignments:
+            loaded = _overridden(
+                loaded, choice.cwd, environ, prompts, cli, [*own, *added], assignments
+            )
+        assembled = _Assembled(flags)
+        text = system if system is not None else assembled
         selected = select_model(loaded.catalog, model, pick=prompts.pick) if new else None
         session, directory, selected = _session(
             choice, held, loaded, text, selected=selected, now=clock.now()
@@ -313,6 +398,8 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
         choice.cwd,
         directory,
         created,
+        found.sources,
+        assembled.prompt,
         len(session.tree),
         None if directory is None else read_name(directory),
     )

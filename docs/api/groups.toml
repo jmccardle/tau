@@ -62,9 +62,9 @@ id = "sessions"
 title = "Starting and finding sessions"
 reader = "What a frontend does before it has a client: start or reopen a session, list the others, export one."
 names = [
-    "start_session", "Started", "SystemText", "SessionFlags", "PickSession", "SessionInfo",
+    "start_session", "Started", "SystemText", "open_client", "Opened", "SessionFlags", "PickSession", "SessionInfo",
     "ForkedFrom", "UnknownSession", "list_sessions", "find_session", "rename_session",
-    "first_cursor", "first_cursor_node", "to_markdown", "cli.main", "cli.session_flags",
+    "first_cursor_node", "to_markdown", "cli.main", "cli.session_flags", "cli.option_flags",
     "cli.extension_flags",
 ]
 

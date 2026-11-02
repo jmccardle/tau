@@ -4,7 +4,7 @@
 
 What a frontend does before it has a client: start or reopen a session, list the others, export one.
 
-Names: `ForkedFrom`, `PickSession`, `SessionFlags`, `SessionInfo`, `Started`, `SystemText`, `UnknownSession`, `cli.extension_flags`, `cli.main`, `cli.session_flags`, `find_session`, `first_cursor`, `first_cursor_node`, `list_sessions`, `rename_session`, `start_session`, `to_markdown`
+Names: `ForkedFrom`, `Opened`, `PickSession`, `SessionFlags`, `SessionInfo`, `Started`, `SystemText`, `UnknownSession`, `cli.extension_flags`, `cli.main`, `cli.option_flags`, `cli.session_flags`, `find_session`, `first_cursor_node`, `list_sessions`, `open_client`, `rename_session`, `start_session`, `to_markdown`
 
 ## ForkedFrom
 
@@ -17,6 +17,32 @@ class ForkedFrom
 
 Where a forked session's walk was copied from: the source's `session` id and the `node` of
 its tree the copy ends at.
+
+## Opened
+
+```python
+@dataclass
+class Opened
+    client: Client
+    cursor: int
+    snapshot: tuple[Event, ...]
+    welcome: Welcome | None
+    started: Started | None
+```
+
+A session opened for a client: the `client`, the first `cursor`, the `snapshot` (every
+event the client's stream held up to and including its first `Labels`, and for a reopened
+cursor the events up to its view), the `welcome` (the server's if attached; for a local start
+one built from it, `None` for a session kept in memory, which has no id) and the `started`
+session (`None` when attached: the server owns it).
+
+### Opened.close
+
+```python
+async def close(self) -> None
+```
+
+Close the client; for a session this process started, then `Started.stop`.
 
 ## PickSession
 
@@ -106,13 +132,18 @@ class Started
     cwd: Path
     directory: Path | None
     created: bool
+    sources: tuple[ExtensionSource, ...]
+    prompt: SystemPrompt | None
 ```
 
 A running session: its `session` and `driver` (started), the `providers` the program
 closes through `stop`, the `loaded` config and the `model` (selected for a new session, else
 the one recorded at the first cursor), the session's working directory `cwd` (the process is
 in it), the session's `directory` (`None`: in memory) and whether this run `created` it (a new
-session or a fork). A session named during the run counts as used.
+session or a fork). `sources` are the extension sources the start planned, one per row of
+`tau ext list`, and `prompt` the parts of the system prompt it assembled (`None`: the session
+already had one, or the program supplied the text). A session named during the run counts as
+used.
 
 ### Started.never_used
 
@@ -178,6 +209,17 @@ def main(
 Run `tau` with `argv` (default `sys.argv[1:]`); the other arguments default to
 the process's streams, environment, and working directory. Returns the exit status.
 
+## tau.cli.option_flags
+
+```python
+def option_flags() -> argparse.ArgumentParser
+```
+
+A parser (`add_help=False`, for `parents=`) with `--set EXTENSION.FIELD=VALUE`
+(repeatable): the config's command-line layer, for this run only (D22). A value is read as
+`/config` reads it; `tau.start_session` applies and checks them against the loaded
+extensions' options.
+
 ## tau.cli.session_flags
 
 ```python
@@ -201,16 +243,6 @@ The session `session` names, tried in this order: a path (it contains `/`), an i
 exact name, a unique id prefix. The whole of `sessions` is searched. A name or prefix of
 several sessions, or of none, is `UnknownSession`. With `first`, the row also has `first`.
 
-## first_cursor
-
-```python
-async def first_cursor(session: Session, client: 'Client') -> int
-```
-
-The cursor a frontend shows, or `-p` sends to: the open cursor with the lowest id; if none
-is open, the closed cursor with the lowest id, which `client` reopens (a new id with the old
-labels). The choice among other cursors is the frontend's (D16, D17).
-
 ## first_cursor_node
 
 ```python
@@ -232,6 +264,31 @@ exactly, or all with `cwd=None`. A directory that is not a readable session is a
 `error` and is listed either way. Reads `info.json` and stats `log` per session, and the
 start of the log of a session with no name (its `first`). Anything that is not a directory is
 ignored.
+
+## open_client
+
+```python
+async def open_client(
+    args: object,
+    *,
+    client: str,
+    environ: Mapping[str, str],
+    cwd: Path,
+    system: SystemText | None = None,
+    prompts: Prompts | None = None,
+    pick_session: PickSession | None = None,
+    own: Sequence[Extension] = (),
+    model: str | None = None,
+    clock: Clock | None = None,
+) -> Opened
+```
+
+Open the session `args` choose (see `start_session` for the arguments and what it
+raises) and a client named `client` of it, as the module says: attached to the `tau serve`
+that holds it, else started here. `ConfigError` when attached and `-e`, `--no-extensions`,
+`--set`, `-n`, `own` or `--model` ask for what the server's loaded session cannot take;
+`Leased` for a session another process holds that is no server;
+`LookupError` for a session with no cursor. Close the result with `Opened.close`.
 
 ## rename_session
 

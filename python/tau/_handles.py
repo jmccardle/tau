@@ -51,7 +51,7 @@ Show = Callable[[int, str, str | None], None]
 Tools = Callable[[], tuple[str, ...]]
 """The driver's show of text on a cursor: `(cursor, extension, text or None)`."""
 
-Asker = Callable[[str, Kind, str | None, Callable[[], int]], Awaitable[object]]
+Asker = Callable[[str, str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
 converted answer, or None`. `new_cursor` opens the cursor a `CursorId` answer of `"new"` means."""
 
@@ -110,8 +110,9 @@ def reopened(
     return new
 
 
-async def _ask(
+async def _ask(  # noqa: PLR0913, PLR0917 - a question's whole description
     asker: Asker,
+    extension: str,
     text: str,
     expect: object,
     to: str | None,
@@ -122,7 +123,7 @@ async def _ask(
     kind = kind_of(expect)
     if kind is None:
         raise DefinitionError(f"cannot ask for {expect!r}: not a type the driver can check")
-    return await asker(text, kind, to, new_cursor)
+    return await asker(extension, text, kind, to, new_cursor)
 
 
 @dataclass
@@ -386,7 +387,7 @@ class NodeHandle(TreeHandle):
         whoever is connected, so the cursor is busy; an abort or go-to declines it (and any asked
         later in that step). A `CursorId` answer of `"new"` opens a cursor at the batch's node."""
         self._check()
-        return await _ask(self._asker, text, expect, to, lambda: self.open(self.id))
+        return await _ask(self._asker, self.extension, text, expect, to, lambda: self.open(self.id))
 
 
 class Cursor(TreeHandle):
@@ -542,7 +543,14 @@ class Cursor(TreeHandle):
         is connected, so the cursor is busy; an abort or go-to declines it (and any asked later
         in that step). A `CursorId` answer of `"new"` opens a cursor at the cursor's `at`."""
         self._check()
-        return await _ask(self._asker, text, expect, to, lambda: self.open(self.cursor(self.id).at))
+        return await _ask(
+            self._asker,
+            self.extension,
+            text,
+            expect,
+            to,
+            lambda: self.open(self.cursor(self.id).at),
+        )
 
 
 @dataclass(frozen=True)

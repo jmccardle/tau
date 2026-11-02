@@ -79,11 +79,12 @@ class Live:
 @dataclass(frozen=True)
 class OpenQuestion:
     """A question an extension asked and nobody has answered: `id` (what `answer` names), whom
-    it is for (`to`: a client id, `None` for anyone), what it asks, and the JSON Schema of the
-    answer."""
+    it is for (`to`: a client id, `None` for anyone), the `extension` that asked, what it asks,
+    and the JSON Schema of the answer."""
 
     id: int
     to: str | None
+    extension: str
     text: str
     schema: Json
 

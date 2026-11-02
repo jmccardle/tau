@@ -7,7 +7,8 @@ rules about performing one effect:
 
 - Hooks run in extension order; the first string a hook returns halts the
   rest, and a hook that raises (or breaks its contract) fails the job (a cursor
-  hook) or makes the call `Err("Type: msg")` (a tool hook), its traceback on stderr.
+  hook) or makes the call `Err("Type: msg")` (a tool hook), its traceback on stderr (`tau -p`
+  shows it only with `--verbose`).
 - A call's `pre_tool` hooks may answer it before the tool runs, and every
   `pre_tool` hook runs even then; a call that names no tool is
   `Err("unknown tool: ...")`.
@@ -392,16 +393,19 @@ class Driver:
             if not self._waits[effect]:
                 del self._waits[effect]
 
-    async def _ask(
+    async def _ask(  # noqa: PLR0913, PLR0917 - a question's whole description
         self,
         cursor: int,
+        extension: str,
         text: str,
         expect: Kind,
         to: str | None,
         new_cursor: Callable[[], int],
     ) -> object:
         """A handle's question (`Questions.ask`), for the running effect."""
-        return await self._questions.ask(cursor, text, expect, to, new_cursor, self._effect())
+        return await self._questions.ask(
+            cursor, extension, text, expect, to, new_cursor, self._effect()
+        )
 
     async def _ending_at_rest(self, cursor: int) -> Ending | None:
         """`rest`, then how the cursor's last step ended (`None` if not known): what a handle's

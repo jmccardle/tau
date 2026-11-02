@@ -1,15 +1,18 @@
 # Writing a frontend
 
 A frontend shows a session and takes input: a terminal UI, an editor panel, a script, a bot.
-It holds a **`Client`**, one object that does everything a frontend may do. Apart from starting
-a session and taking a client from it, a frontend never touches the driver, the session or the
-providers. There are two ways to get a client, and the code that uses it is the same for both:
+It holds a **`Client`**, one object that does everything a frontend may do. Apart from opening a
+session and taking a client from it, a frontend never touches the driver, the session or the
+providers. There are two kinds of client, and the code that uses one is the same for both:
 
 - **local**: your program starts the session itself, and `driver.client(id)` makes a
   `LocalClient`;
 - **remote**: another process runs `tau serve`, and `RemoteClient.connect(socket, id)` makes a
   `RemoteClient` over its Unix socket. A client in another language speaks
   [the wire protocol](protocol.md) instead.
+
+`open_client` picks for you: it opens the session the flags name, as a remote client of the
+`tau serve` that holds it, else as a local one.
 
 [`examples/chat.py`](../../examples/chat.py) is a whole small frontend (a line chat, with
 commands, questions and Tab completion) over a local client. The examples here use the mock
@@ -22,12 +25,15 @@ model, which echoes what it is sent, so they need no server:
 }
 ```
 
-## Start a session and get a client
+## Open a session and get a client
 
-`start_session` is the start `tau` itself uses. It reads the same flags (`-c`, `--session`, `-e`,
-`--append-system-prompt`...), loads the config, the extensions and the system prompt, creates or
-opens the session, and starts the driver. Add the flags to your own parser with the two parent
-parsers `session_flags()` and `extension_flags()`, and pass what it parsed.
+`open_client` is the start `tau` itself uses. It reads the same flags (`-c`, `--session`, `-e`,
+`--append-system-prompt`...). If the session they choose is held by a running `tau serve`, it
+**attaches**: the client is a `RemoteClient` of that server. Otherwise it runs `start_session`,
+which loads the config, the extensions and the system prompt, creates or opens the session and
+starts the driver, and the client is a local one. Add the flags to your own parser with the
+parent parsers `session_flags()` and `extension_flags()` (and `option_flags()` for `--set`), and
+pass what it parsed.
 
 ```python
 import argparse
@@ -35,20 +41,18 @@ import asyncio
 import os
 from pathlib import Path
 
-from tau import first_cursor, start_session
+from tau import open_client
 from tau.cli import extension_flags, session_flags
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
     args = parser.parse_args(["--no-session"])  # a real program passes sys.argv[1:]
-    started = await start_session(args, environ=os.environ, cwd=Path.cwd())
-    client = started.driver.client("me@here:guide")
-    cursor = await first_cursor(started.session, client)
-    print("client", client.id, "is on cursor", cursor, "of session in", started.cwd)
+    opened = await open_client(args, client="me@here:guide", environ=os.environ, cwd=Path.cwd())
+    client, cursor = opened.client, opened.cursor
+    print("client", client.id, "is on cursor", cursor, "of session in", opened.started.cwd)
 
-    await client.close()
-    await started.stop()
+    await opened.close()
 
 
 asyncio.run(main())
@@ -58,17 +62,25 @@ What to know:
 
 - **The id** of a client (`john@laptop:tui`) says who is acting. Nodes you write are authored
   `Frontend(id)`. Keep it stable across reconnects.
-- **`start_session` changes the process's working directory** to the session's, so the base
-  tools, path completion and relative paths all agree with it.
-- **`first_cursor`** is the cursor to show. Every cursor of a session may have been closed, and
+- **A local start changes the process's working directory** to the session's, so the base
+  tools, path completion and relative paths all agree with it. An attached client does not: the
+  server's directory is `opened.welcome.cwd`.
+- **`opened.cursor`** is the cursor to show. Every cursor of a session may have been closed, and
   this reopens the first one if so: a new cursor at its last node, with its labels.
+  `opened.snapshot` holds the events that were read to find it (the snapshot, up to `Labels`), so
+  you can draw from them. `opened.welcome` is the server's `Welcome`, or for a local start the
+  same fact (session id, directory, pid); it is `None` for a session kept in memory.
+- **Attaching has limits.** The server's extensions and options are loaded already, so `-e`,
+  `--no-extensions` and `--set` are a `ConfigError` for a session a server holds, as are `--model`
+  and the prompt flags (as for any existing session). A `--fork` or a new session never attaches.
 - **It can refuse**, and a frontend should print the message and stop: `ConfigError`,
   `TrustError` (an untrusted project: run `tau trust`), `ExtensionLoadError`, `UnknownSession`,
-  `Leased` (another process holds that session; `tau serve` is the way to share one). Pass
+  `Leased` (another process holds that session and is no server; `tau --fork` copies it). Pass
   `prompts=tau.prompts(stdin, stdout)` and a terminal gets asked to trust a project or pick among
   several models, instead of failing.
-- **`started.stop()`** stops the driver and releases the session. A session that was never used is
-  deleted. The client is closed first, with `await client.close()`.
+- **`opened.close()`** closes the client, and for a local start stops the driver and releases the
+  session. A session that was never used is deleted. `opened.started` is the `Started` of a local
+  start (`None` when attached) if you need the driver or the session.
 - A program with its own extensions passes `own=[MyExtension()]`. A program with its own system
   prompt passes `system=`, a function that is given the working directory and the loaded config
   and returns the text; the prompt flags are then an error, since they would be ignored.
@@ -102,7 +114,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from tau import Appended, CursorView, Live, Notice, TextDelta, first_cursor, start_session
+from tau import Appended, CursorView, Live, Notice, TextDelta, open_client
 from tau.cli import extension_flags, session_flags
 
 
@@ -130,11 +142,13 @@ async def listen(client, cursor, rested: asyncio.Event) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
-    started = await start_session(
-        parser.parse_args(["--no-session"]), environ=os.environ, cwd=Path.cwd()
+    opened = await open_client(
+        parser.parse_args(["--no-session"]),
+        client="me@here:transcript",
+        environ=os.environ,
+        cwd=Path.cwd(),
     )
-    client = started.driver.client("me@here:transcript")
-    cursor = await first_cursor(started.session, client)
+    client, cursor = opened.client, opened.cursor
     await client.watch([cursor])
     rested = asyncio.Event()
     listener = asyncio.create_task(listen(client, cursor, rested))
@@ -142,9 +156,8 @@ async def main() -> None:
     await client.send(cursor, "What is 2 + 2?")  # input, with auto-step on
     await rested.wait()
 
-    await client.close()  # ends the stream, so the listener ends
+    await opened.close()  # ends the stream, so the listener ends
     await listener
-    await started.stop()
 
 
 asyncio.run(main())
@@ -218,7 +231,8 @@ is read as an extension's options (`client.options(cursor, extension)` is the fo
 ## Questions
 
 An extension that calls `cursor.ask(...)` puts an `OpenQuestion` in that cursor's `CursorView`:
-an `id`, the `text`, `to` (a client id, or `None` for anyone) and the `schema` of the answer.
+an `id`, the `text`, the `extension` that asked, `to` (a client id, or `None` for anyone) and the
+`schema` of the answer.
 It stays there until someone answers, and the cursor is busy meanwhile.
 
 - `await client.answer(question.id, value)` answers it. `value` is JSON: a string, number,
@@ -266,7 +280,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from tau import CursorView, first_cursor, start_session
+from tau import CursorView, open_client
 from tau.cli import extension_flags, session_flags
 from tau.commandline import value
 
@@ -283,9 +297,8 @@ async def answer_questions(client) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
     args = parser.parse_args(["--no-session", "-e", "greeter.py"])
-    started = await start_session(args, environ=os.environ, cwd=Path.cwd())
-    client = started.driver.client("me@here:commands")
-    cursor = await first_cursor(started.session, client)
+    opened = await open_client(args, client="me@here:commands", environ=os.environ, cwd=Path.cwd())
+    client, cursor = opened.client, opened.cursor
     answering = asyncio.create_task(answer_questions(client))
 
     print(await client.complete_line(cursor, "/gr"))
@@ -293,9 +306,8 @@ async def main() -> None:
     print(parsed.command.name, parsed.missing)  # nothing is missing: it takes no arguments
     print(await parsed.run(client, cursor))
 
-    await client.close()
+    await opened.close()
     await answering
-    await started.stop()
 
 
 asyncio.run(main())

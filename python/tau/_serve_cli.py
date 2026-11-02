@@ -51,10 +51,10 @@ from tau._serve_record import (
     socket_path,
     write_record,
 )
-from tau._session_start import Started, start_session
+from tau._session_start import Started, start_report, start_session
 from tau._sessions import SessionFlags
 from tau._startup import load_config, prompts
-from tau._trust import safe_text, tau_home
+from tau._trust import safe_block, safe_text, tau_home
 
 IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""
@@ -71,6 +71,8 @@ class Process(Protocol):
     def stdin(self) -> TextIO: ...
     @property
     def stdout(self) -> TextIO: ...
+    @property
+    def stderr(self) -> TextIO: ...
     @property
     def environ(self) -> Mapping[str, str]: ...
     @property
@@ -122,6 +124,9 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     started = await start_session(
         args, environ=run.environ, cwd=run.cwd, prompts=prompts(run.stdin, run.stdout)
     )
+    if args.verbose:
+        for line in start_report(started):
+            run.stderr.write("tau: " + safe_block(line) + "\n")
     session = None if started.directory is None else started.directory.name
     assert session is not None  # `--no-session` was refused above
     try:

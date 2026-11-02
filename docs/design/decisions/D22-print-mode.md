@@ -1,6 +1,6 @@
 # D22: `tau -p`: the one-shot client
 
-Status: accepted 2026-11-02. Phase 8, stage 8B. Depends on D16 (clients, questions), D18 §5 (the
+Status: accepted 2026-11-02; built in stage 8B (see *As built* at the end). Phase 8, stage 8B. Depends on D16 (clients, questions), D18 §5 (the
 shared start), D21 (the wire's encoding; serve records). Answers `docs/from-0.15.md` §2.6
 (headless approval) and the `-p`, `--mode json`, `--version` and `--verbose` rows of §2.8.
 
@@ -75,7 +75,7 @@ one `Client`, one cursor, no person to ask.
 
 1. Open the session (§8: start it, or attach to the server that holds it). The client id is
    `<user>@<host>:print`.
-2. Take the first cursor (D18 §5), and `watch` only it.
+2. Take the first cursor (D18 §5). Under `--json`, `watch` only it (the text output never uses `Live`).
 3. Send the message: `send(cursor, text)`. A message that starts with `/` is a command line
    instead: `parse_line`; an `UnknownCommand` is sent as text with a warning on stderr (as every
    built-in frontend does); missing required arguments are a usage error naming them; otherwise
@@ -92,7 +92,8 @@ one `Client`, one cursor, no person to ask.
 ### 3. Text output
 
 - **stdout is the answer**: the text parts of the **last** `Assistant` node the run added to the
-  cursor's walk, printed when the cursor rests, ending with one newline. Earlier replies ("Let me
+  cursor's walk, if that node makes no calls, printed when the cursor rests (status 0 or 3),
+  ending with one newline. Earlier replies ("Let me
   read the file") are progress, not the answer; `--verbose` shows them on stderr. (0.15 printed
   every reply, concatenated.) A run that
   ends without a final reply prints nothing on stdout.
@@ -133,8 +134,9 @@ someone does answer: the `-p` client, by rule or by declining.
 - **Which questions.** Every open question `-p` may answer (`to` is `None` or this client), on
   any cursor, while the run lasts. A sub-agent's permission question is on the sub-agent's
   cursor, and the run waits on it. **Attached to a server** (§8), other clients, a person in the
-  TUI, may be connected, so `-p` answers or declines only questions on its own cursor. A question
-  elsewhere is left to the server's other clients, and `-p` says on stderr that it is waiting.
+  TUI, may be connected, so `-p` handles only the questions that open after its send, on the
+  cursor it sent to. Every other question, one on another cursor or one open before the send, is
+  left to the server's other clients, and `-p` says on stderr that it is. It never rules on them.
 - **A rule** is `--answer EXTENSION[:TEXT]=VALUE`, repeatable; the first that matches wins.
   It is split at the last `=` (the value), then the rest at the first `:` (extension, text).
   `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the question's text
@@ -149,7 +151,7 @@ someone does answer: the `-p` client, by rule or by declining.
   question 4 from permissions: "bash: rm -rf build"`. Declining is safe by D16 §3: the asker
   does as little as possible.
 - **A rule whose value the schema refuses** is the person's mistake, not the extension's: `-p`
-  aborts the cursor and exits 1, naming the rule, the question and the schema's complaint. It
+  aborts its own cursor (attached, never another client's) and exits 1, naming the rule, the question and the schema's complaint. It
   does not decline in its place.
 - Standing policy ("always allow `read`") belongs in the asking extension's options (`tau config
   set permissions.allow=...`), not in a `-p` config key. `--answer` is per run.
@@ -166,7 +168,10 @@ someone does answer: the `-p` client, by rule or by declining.
 | 130 | interrupted |
 
 Exit 3 is new. 0.15 stopped silently at `--max-turns` and exited 0, so a script could not tell a
-cut-off answer from a whole one. Status 3 always comes with a stderr line saying which.
+cut-off answer from a whole one. Status 3 always comes with a stderr line saying why: a halt's
+reason, an abort, the message still pending, or auto-step off. For the last the cursor's view does
+not say which of its causes (a step limit, a hook, a step that did not move), so the line names
+them all.
 
 `--max-turns N` is `StepLimit`'s option. For one run that is `--set
 step_limit.limit=N` (§1).
@@ -195,19 +200,19 @@ client, environ, cwd, ...) -> Opened`**:
 1. Resolve the session flags (D18 §5 step 0; writes nothing).
 2. **If the choice is an existing session and a live `tau serve` holds it** (its serve record
    answers `hello`, D21 §9), connect a `RemoteClient` to it instead of starting: **attach**.
-   `-e` and `--no-extensions` are then a `ConfigError` (the server's extensions are loaded; these
-   would be ignored); `-m` and the prompt flags are refused already for an existing session
-   (D18, D20); `-n` renames, which needs no lease. A session held by a process that is not a
+   `-e`, `--no-extensions`, `--set`, `-n` and `open_client`'s `own=` are then a `ConfigError` (the
+   server's extensions, options and name are set; these would be ignored); `-m` and the prompt flags
+   are refused already for an existing session (D18, D20). A session held by a process that is not a
    server is still `Leased`, suggesting `--fork`.
 3. Otherwise `start_session` and `driver.client(client)`.
 4. **Read the snapshot** from the client's stream (every event up to the first `Labels`) and
    pick the first cursor from it, reopening a closed one through the client. This works the same
    on both kinds of client, which `first_cursor(session, client)` cannot (gap 2).
 
-`Opened` holds the `client`, the `cursor`, the `snapshot` events (so the caller loses none),
-the `welcome` (a remote client's, or one built from the start for a local client; none with
-`--no-session`) and `close()`
-(close the client; for a local start also `Started.stop()`). A new session or `--fork` never
+`Opened` holds the `client`, the `cursor`, the `snapshot` events (so the caller loses none; for a
+reopened cursor they run up to its view), the `welcome` (a remote client's, or one built from the
+start for a local client; none with `--no-session`), the `started` (the local start's `Started`;
+`None` when attached) and `close()` (close the client; for a local start also `Started.stop()`). A new session or `--fork` never
 attaches.
 
 Attaching gives `-p` a real use: `tau serve -d` an agent once, then `tau -p --session NAME "status?"`
@@ -249,10 +254,16 @@ from cron or another terminal.
    event is a wire change: one line in the schema, before the protocol's first release, so no
    `PROTOCOL` bump (D21 §8: 0.16.0 ships 1).
 2. **The first cursor without a `Session`** (§8 step 4). Today's function takes the session, so a
-   remote client cannot use it. `first_cursor` moves to `open_client`, computed from the snapshot.
+   remote client cannot use it. `first_cursor` moves to `open_client`, computed from the snapshot,
+   and is no longer a separate public name.
 3. **The start has no attach outcome.** `open_client` wraps it (§8); `start_session` is unchanged.
 4. **`Started` keeps too little for `--verbose`**: the loaded extensions' sources and the prompt's
    parts are computed by the start and dropped. `Started` gains `sources` and `prompt`.
+5. **`--set` needs the extensions loaded** before its values can be read (the option's type decides
+   how `5` or `a,b` is read), and the options are part of the config the extensions are loaded
+   from. `start_session` loads the config, loads the extensions, reads the `--set` values against
+   their options, and loads the config again with them as the `cli` layer (so a bad value fails
+   before a session exists). A program takes the flag from `tau.cli.option_flags()`.
 
 ## Alternatives
 
@@ -299,7 +310,7 @@ Decided as the drafts recommended, with the changes folded into the sections abo
 
 | item | lines |
 |---|---|
-| launch parser (first-argument rule, `-p`, `-m`, `--json`, `--answer`, `--verbose`, `-v`); message and stdin | ~120 |
+| launch parser (first-argument rule, `-p`, `-m`, `--json`, `--answer`, `--verbose`, `-v`, `--set`); message and stdin | ~120 |
 | `open_client`, `Opened`, attach, first cursor from the snapshot; `Started.sources`/`prompt` | ~150 |
 | the run: send or command line, rest, questions and rules, exit status, SIGINT | ~200 |
 | text and JSON output; the start report and `--verbose` lines | ~120 |
@@ -308,3 +319,51 @@ Decided as the drafts recommended, with the changes folded into the sections abo
 
 **Not verified, inferred:** that the view `send` publishes is always busy when the cursor was
 already busy from a load wake (it should be: the item is work); the line counts.
+
+## As built (2026-11-02, stage 8B)
+
+Where the code differs from the text above, or the text left a choice:
+
+- **Modules.** `tau._launch` (the launch parser, `--answer` rules, the message), `tau._open`
+  (`open_client`, `Opened`), `tau._print_mode` (the run). `tau.cli` dispatches on the first
+  argument. `tau.cli.option_flags()` is `--set`; `tau.cli.session_flags()` and `extension_flags()`
+  are unchanged.
+- **`first_cursor` is gone** from the public names; `open_client` is where a frontend gets its
+  cursor, local or remote. `first_cursor_node` stays (forks and exports use it without a client).
+- **Rest** is found by reading the stream only after `send` returned (the view `send` published is
+  busy, and a stream keeps one view per cursor, so no stale idle view precedes it). A command line
+  is run while the stream is read, and after it returns the events it published are drained before
+  the cursor's state is judged.
+- **Status 3 prints the answer** when the last reply is whole (a step limit that turned auto-step
+  off after the model's final reply still prints it); only the exit status and the stderr line say
+  the run was cut. A last reply that makes calls is not an answer, so a run cut off mid-work
+  prints nothing.
+- **A command line's result** is printed on stdout (text) with a newline; under `--json`, where
+  stdout is events only, it goes to stderr. `/config EXTENSION` with nothing to change is a usage
+  error.
+- **`--json` errors.** Every failure that exits 1 ends stdout with `{"error": {"type",
+  "message"}}`: a start error by its exception's name, a failed step `Failed`, a refused rule
+  `RuleRefused`, a failed command `CommandFailed`, a lost server `ConnectionError`.
+- **Questions.** Local, the snapshot's open questions are dealt with too. Attached, `-p` handles
+  only the questions that open after its send, on the cursor it sent to (the lowest open cursor,
+  which a TUI may share): a question open in the snapshot, or on another cursor, is announced once
+  on stderr and left, never answered or declined, and a refused `--answer` value aborts only the
+  cursor `-p` sent to. A question `to` another client is left alone. A question that opened
+  between the snapshot and the send is taken as opened after it.
+- **A rule for an extension this process did not load** is a usage error (exit 2) after the start,
+  naming the extensions loaded (not only those that ask: nothing says which do). Attached it is
+  not checked: the wire does not carry a server's extension names.
+- **Second SIGINT** writes `tau: interrupted` and calls `os._exit(130)` at once, running no
+  cleanup, since hooks are never cancelled (model.md §8) and an abort waits for the one in flight.
+- **A closed stdout** (`| head -1`) is exit 141 with no message; its descriptor is pointed at
+  /dev/null so the interpreter's own flush at exit stays quiet.
+- **Tracebacks.** A failed hook, tool or command prints its traceback to the process's stderr
+  (`describe_failure`); under `-p` that stream is /dev/null unless `--verbose`, so stderr holds
+  `tau: ` lines. This also hides anything else an extension prints to stderr during the run.
+- **`--json` and usage errors** also end with the `{"error": ...}` line (`UsageError`).
+- **Known:** `tau serve` removes its socket before its record on shutdown, so a `-p` in that
+  instant may see a stale record (it then starts the session itself or fails `Leased`).
+- **A message of only white space**, in the words and on stdin, is nothing to send (exit 2).
+- **`--version`** prints the installed package's version, which is `0.16.0.dev0` in development.
+- **`--verbose` for `tau serve`** writes the start report on stderr, which a detached server's log
+  collects. For an attached `-p` the report is the server's `Welcome` and the cursor's model.

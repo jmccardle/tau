@@ -672,13 +672,14 @@ sees in `Ending.Failed`.
 ### OpenQuestion
 
 A question an extension asked and nobody has answered: `id` (what `answer` names), whom
-it is for (`to`: a client id, `null` for anyone), what it asks, and the JSON Schema of the
-answer.
+it is for (`to`: a client id, `null` for anyone), the `extension` that asked, what it asks,
+and the JSON Schema of the answer.
 
 | field | type | notes |
 |---|---|---|
 | `id` | `integer` |  |
 | `to` | `string` or `null` |  |
+| `extension` | `string` |  |
 | `text` | `string` |  |
 | `schema` | `object` |  |
 

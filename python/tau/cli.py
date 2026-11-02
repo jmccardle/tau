@@ -1,8 +1,10 @@
 """The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
 [--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), `tau context
-[--show]` (D20) and `tau serve` (D21; `tau._serve_cli`). Starting a session for a person
-(`tau`, `tau -p`) is Phase 8's; `tau._session_start.start_session` is their shared start.
+[--show]` (D20), `tau serve` (D21; `tau._serve_cli`) and the launch command line: `tau -p
+[MESSAGE...]` (D22; `tau._print_mode`) and `tau --version`. A first argument that names none of the
+commands is the launch command line (`tau._launch`). `tau._session_start.start_session` is the
+shared start of `tau -p`, `tau serve` and the programs that follow.
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
@@ -10,7 +12,8 @@ drives it with real files and real streams. Exit status: 0 success, 1 a problem
 Everything printed from config data goes through `safe_text`. `config set` and `ext enable` /
 `disable` write the user's `<TAU_HOME>/config.json` and never the project's `.tau/config.json`.
 `extension_flags` is the `-e` and `--no-extensions` parser a program that starts a session adds
-(`parents=[extension_flags()]`), and gives `load_extensions` (D19 section 5); `session_flags` is
+(`parents=[extension_flags()]`), and gives `load_extensions` (D19 section 5); `option_flags` is
+`--set EXTENSION.FIELD=VALUE`, the options of one run (D22); `session_flags` is
 the one for the session (`-c`, `-r`, `--session`, `--fork`, `--no-session`, `-n`, `--session-dir`;
 D18 section 5), which `start_session` reads; it carries the prompt flags (`--system-prompt`,
 `--append-system-prompt`, `-nc`; D20) too.
@@ -26,8 +29,9 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from importlib.metadata import version
 from pathlib import Path
-from typing import TextIO, cast
+from typing import NamedTuple, TextIO
 
 from tau._config import ConfigError
 from tau._config_layers import (
@@ -58,10 +62,12 @@ from tau._extensions import (
     list_extensions,
     switch_source,
 )
+from tau._launch import UsageError, launch_parser, verbose_flag
 from tau._markdown import to_markdown
-from tau._options import option_fields, save_options
-from tau._protocol import ProtocolError
-from tau._protocols import Extension, Provider
+from tau._options import save_options
+from tau._print_mode import print_mode
+from tau._protocol import PROTOCOL, ProtocolError
+from tau._protocols import Provider
 from tau._providers import builtin_providers
 from tau._refs import absolute_ref, parse_ref
 from tau._serve_cli import error_line, serve
@@ -76,7 +82,7 @@ from tau._sessions import (
     rename_session,
     sessions_directory,
 )
-from tau._startup import LoadedConfig, load_config, prompts, select_model
+from tau._startup import LoadedConfig, load_config, option_changes, prompts, select_model
 from tau._trust import (
     TAU_DIR,
     TrustError,
@@ -92,8 +98,6 @@ from tau._trust import (
     user_config_path,
 )
 from tau._user_config import UserConfig
-from tau._values import Field, Json, object_schema
-from tau.commandline import value
 
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
@@ -104,6 +108,7 @@ _UNTRUSTED = " [untrusted project: not used until `tau trust`]"
 class _Run:
     stdin: TextIO
     stdout: TextIO
+    stderr: TextIO
     environ: Mapping[str, str]
     cwd: Path
     argv: Sequence[str]  # after the command's name
@@ -138,6 +143,25 @@ def extension_flags() -> argparse.ArgumentParser:
         action="store_true",
         help="skip every discovered extension source except -e: no installed package or drop-in "
         "(the built-ins, base_tools and step_limit, still follow `load`)",
+    )
+    return flags
+
+
+def option_flags() -> argparse.ArgumentParser:
+    """A parser (`add_help=False`, for `parents=`) with `--set EXTENSION.FIELD=VALUE`
+    (repeatable): the config's command-line layer, for this run only (D22). A value is read as
+    `/config` reads it; `tau.start_session` applies and checks them against the loaded
+    extensions' options."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        dest="set_options",
+        type=_assignment,
+        metavar="EXTENSION.FIELD=VALUE",
+        help="set an extension's option for this run only (repeatable), as `tau config set` "
+        "would for every run",
     )
     return flags
 
@@ -211,7 +235,14 @@ def session_flags() -> argparse.ArgumentParser:
     return flags
 
 
-def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argparse.ArgumentParser]:
+class _Parsers(NamedTuple):
+    top: argparse.ArgumentParser
+    config: argparse.ArgumentParser
+    ext: argparse.ArgumentParser
+    commands: tuple[str, ...]
+
+
+def _parser() -> _Parsers:
     parser = argparse.ArgumentParser(prog="tau", description="τ next (Trusty).")
     sub = parser.add_subparsers(dest="command")
     config = sub.add_parser("config", help="inspect configuration")
@@ -264,7 +295,7 @@ def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argpars
     )
     served = sub.add_parser(
         "serve",
-        parents=[session_flags(), extension_flags()],
+        parents=[session_flags(), extension_flags(), option_flags(), verbose_flag()],
         help="serve a session on a Unix socket (D21)",
     )
     served.add_argument(
@@ -288,7 +319,7 @@ def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argpars
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
     )
-    return parser, config, ext
+    return _Parsers(parser, config, ext, tuple(sub.choices))
 
 
 @dataclass
@@ -400,33 +431,10 @@ def _set(run: _Run, assignments: Sequence[tuple[str, str, str]]) -> int:
     loaded = _user_only(run)
     extensions = inspect_extensions(loaded)
     extensions.raise_failures()
-    known = {cast("str", getattr(e, "name")): e for e in extensions.extensions}  # noqa: B009
-    saving: dict[str, tuple[type, tuple[Field, ...], Json]] = {}
-    for extension, name, given in assignments:
-        options = getattr(known.get(extension), "options", None)
-        if options is None:
-            raise ConfigError(
-                f"extension {extension!r} has no options; those that do: {_with_options(known)}"
-            )
-        fields = option_fields(extension, options)
-        properties = cast("Json", object_schema(fields, model=False)["properties"])
-        if name not in properties:
-            raise ConfigError(
-                f"extension {extension!r} has no option {name!r}; its options: {list(properties)}"
-            )
-        try:
-            decoded = value(given, cast("Json", properties[name]))
-        except ValueError as e:
-            raise ConfigError(f"{extension}.{name}: {e}") from None
-        saving.setdefault(extension, (options, fields, {}))[2][name] = decoded
-    save_options(UserConfig(loaded.home), saving)
+    save_options(UserConfig(loaded.home), option_changes(extensions.extensions, assignments))
     shown = " ".join(f"{e}.{n}={g}" for e, n, g in assignments)
     run.stdout.write(safe_text(f"set {shown} in {loaded.home / 'config.json'}") + "\n")
     return 0
-
-
-def _with_options(known: Mapping[str, Extension]) -> list[str]:
-    return [name for name, e in known.items() if getattr(e, "options", None) is not None]
 
 
 def _commands_shown(source: ExtensionSource, sources: Sequence[ExtensionSource]) -> str:
@@ -636,6 +644,8 @@ def _failed(args: argparse.Namespace, out: TextIO, err: TextIO, error: BaseExcep
     if args.command == "serve" and args.json:
         out.write(error_line(error) + "\n")
         return 1
+    if args.command == "print" and args.json:
+        out.write(error_line(error) + "\n")
     return _fail(err, str(error))
 
 
@@ -665,8 +675,8 @@ def _dispatch(run: _Run, args: argparse.Namespace) -> int:
             return _trust(run, args.dir)
         case "context":
             return _context(run, args)
-        case "serve":
-            return serve(run, args)
+        case "serve" | "print":
+            return (serve if args.command == "serve" else print_mode)(run, args)
         case "sessions" | "export":
             return _session_command(run, args)
         case "ext":
@@ -675,20 +685,49 @@ def _dispatch(run: _Run, args: argparse.Namespace) -> int:
             return _config_command(run, args)
 
 
-def _needs_help(
-    args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
-    config: argparse.ArgumentParser,
-    ext: argparse.ArgumentParser,
-) -> argparse.ArgumentParser | None:
+def _needs_help(args: argparse.Namespace, parsers: _Parsers) -> argparse.ArgumentParser | None:
     """The parser whose help to print because the command line stops at a group of commands."""
     if args.command is None:
-        return parser
+        return parsers.top
     if args.command == "config" and args.config_command is None:
-        return config
+        return parsers.config
     if args.command == "ext" and args.ext_command is None:
-        return ext
+        return parsers.ext
     return None
+
+
+def _launch(
+    run: _Run, given: Sequence[str], commands: Sequence[str]
+) -> tuple[argparse.Namespace, int | None]:
+    """The launch command line (`tau -p`, `tau --version`) and, if it is all done, its status:
+    only `-p` runs anything yet, so a line without it shows help (2), and a message without it
+    names no command."""
+    launcher = launch_parser([session_flags(), extension_flags(), option_flags()], commands)
+    args = launcher.parse_intermixed_args(list(given))
+    if args.version:
+        run.stdout.write(f"tau {version('ffwf-tau')} (protocol {PROTOCOL})\n")
+        return args, 0
+    if args.message and not args.print:
+        launcher.error(f"{args.message[0]!r} is not a command; to send a message: tau -p MESSAGE")
+    if not args.print:
+        launcher.print_help(run.stderr)
+        return args, _USAGE_ERROR
+    args.command = "print"
+    return args, None
+
+
+def _parse(
+    run: _Run, given: Sequence[str], parsers: _Parsers
+) -> tuple[argparse.Namespace, int | None]:
+    """The parsed command line and, if there is nothing to run, the status to leave with."""
+    if not given or given[0] not in parsers.commands:
+        return _launch(run, given, parsers.commands)
+    args = parsers.top.parse_args(given)
+    wanted = _needs_help(args, parsers)
+    if wanted is None:
+        return args, None
+    wanted.print_help(run.stderr)
+    return args, _USAGE_ERROR
 
 
 def main(  # noqa: PLR0913 - the process, injected so a test can supply real ones
@@ -708,16 +747,14 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     run = _Run(
         sys.stdin if stdin is None else stdin,
         out,
+        err,
         os.environ if environ is None else environ,
         Path.cwd() if cwd is None else cwd,
         given[1:],
     )
-    parser, config, ext = _parser()
-    args = parser.parse_args(given)
-    wanted = _needs_help(args, parser, config, ext)
-    if wanted is not None:
-        wanted.print_help(err)
-        return _USAGE_ERROR
+    args, status = _parse(run, given, _parser())
+    if status is not None:
+        return status
     try:
         return _dispatch(run, args)
     except (
@@ -737,8 +774,13 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         ServeFailed,
     ) as e:
         return _failed(args, out, err, e)
+    except UsageError as e:
+        if args.command == "print" and args.json:
+            out.write(error_line(e) + "\n")
+        _fail(err, str(e))
+        return _USAGE_ERROR
     except OSError as e:  # a session's files: missing, unreadable, or held (`Leased`)
-        if args.command not in ("sessions", "export", "serve"):
+        if args.command not in ("sessions", "export", "serve", "print"):
             raise
         return _failed(args, out, err, e)
     except KeyboardInterrupt:

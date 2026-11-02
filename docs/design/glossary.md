@@ -1199,14 +1199,34 @@ Helpers in the module: `make_session_directory(sessions, now, cwd, name, forked_
 `mkdir` and the first `info.json`), `read_name(path)` and `age_of(row)`
 (`now`, `5m`, `3h`, `2d`: the age `tau sessions` prints).
 
-### first cursor, first_cursor, first_cursor_node
-`tau._sessions` · D18 · new
+### first cursor, first_cursor_node
+`tau._open`, `tau._sessions` · D18, D22 · new
 
 Which cursor a frontend shows, or `-p` sends to: the open cursor with the lowest id; if none is
-open, the closed cursor with the lowest id, which `first_cursor(session, client)` reopens (a new
-id with the old labels), as `examples/chat.py` did by hand. `first_cursor_node(session)` makes the
-same choice without writing: the open cursor's `at`, or the closed one's last node; a fork and an
-export with no node given use it. The choice among other cursors is the frontend's (D16, D17).
+open, the closed cursor with the lowest id, which the client reopens (a new id with the old
+labels). `open_client` makes the choice from the snapshot its client's stream opens with (a
+`CursorView` per open cursor, a `CursorGone` per closed one), so it works on a local and a remote
+client alike; D18 had `first_cursor(session, client)`, which needed the `Session` and is gone.
+`first_cursor_node(session)` makes the same choice without writing: the open cursor's `at`, or the
+closed one's last node; a fork and an export with no node given use it. The choice among other
+cursors is the frontend's (D16, D17).
+
+### open_client, Opened, attach
+`tau._open` · D22 §8 · new
+
+**`open_client(args, *, client, environ, cwd, system=None, prompts=None, pick_session=None, own=(),
+model=None, clock=None)`** (async) opens the session the session flags choose and a client named
+`client` of it, for a frontend. If the choice is an existing session and a live `tau serve` holds
+it (its serve record answers `hello`, D21 §9), the client is a `RemoteClient` of that server: it
+**attaches**. `-e`, `--no-extensions`, `--set`, `-n`, `own` and `--model` are then a `ConfigError` (the
+server's session is loaded), and a session held by a process that is no
+server is `Leased`. A new session, a fork and a session nobody serves are started here
+(`start_session`) and the client is `driver.client(client)`. It reads the client's stream up to
+the first `Labels`, picks the first cursor from it (reopening a closed one), and returns an
+**`Opened`**: `client`, `cursor`, `snapshot` (the events read, so the caller loses none), `welcome`
+(the server's; for a local start one built from it; `None` for `--no-session`), `started` (the
+local `Started`; `None` when attached) and `close()` (close the client; a local start is also
+stopped).
 
 ### shared start: start_session, Started, SessionFlags, session_flags
 modules `tau._session_start`, `tau._sessions`, `tau.cli` · D18 §5 · new
@@ -1238,11 +1258,59 @@ with its `info.json`), use the one leased in (1) (`-n` names it), or fork it (`S
 lease, written with one sync, `forked_from` recorded once; `-n` names it), build the providers and
 start the `Driver`. A failure before step 4 creates nothing; a session this call created is removed
 and the lease given back if a later step fails. It returns **`Started`**: `session`, `driver`, `providers`, `loaded`,
-`model`, `cwd`, `directory`, `created`, and `never_used`. `Started.stop()` stops the driver, deletes
+`model`, `cwd`, `directory`, `created`, `sources` (the extension sources the start planned, one
+`ExtensionSource` per row of `tau ext list`), `prompt` (the parts of the system prompt it
+assembled, for a new session whose text the start made; else `None`) and `never_used`. `sources`
+and `prompt` exist for the **start report** (D22 §7; below). `--set EXTENSION.FIELD=VALUE`
+(`tau.cli.option_flags()`, read as `args.set_options`) is applied between (2)'s loads: the values
+are read by the loaded extensions' options and the config is loaded again with them as the `cli`
+layer, which is checked (a bad one is a `ConfigError` before a session exists). `Started.stop()` stops the driver, deletes
 a **never-used session** (created by this run, still only its created nodes and no pending item)
 while the lease is held, then closes the session and the providers; a session named during the
 run (`/name`) counts as used; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
+
+### print mode, tau -p, rest, exit status 3
+modules `tau._launch`, `tau._print_mode`, `tau.cli` · D22 · new
+
+**`tau -p [flags] [MESSAGE...]`** is the one-shot client: one `Client`, one cursor, nobody to ask.
+The message is the words joined with spaces, then (stdin not a terminal) a blank line and stdin;
+a message that starts with `/` is a command line (`parse_line`; an unknown command is sent as
+text). It opens the session as a frontend does (**open_client**), sends, and waits for **rest**:
+the first `CursorView` of the cursor, read after the call returned, that is not busy. stdout is the
+text of the last `Assistant` node it added when that node makes no calls (`--json`: instead a
+`Welcome` line and every event the client hears, one object per line, as the wire sends them);
+stderr gets `tau: ` lines (notices, a hook's failure, questions answered or declined, why it
+stopped, the failure; with `--verbose` the **start report** and a line per node, step ending and
+question). The exit status: 0 the model finished, 1 a failure, 2 usage, **3 stopped before
+finishing** (the cursor rested with auto-step off, ended `Halted` or `Aborted`, or the message is
+still pending; always with a stderr line saying why), 130 interrupted (the first SIGINT aborts
+the cursor and waits for it to rest; the second leaves at once). `-m/--model`, `--json`, `--answer`,
+`--set`, `--verbose` and `-v/--version` (`tau VERSION (protocol N)`) are its flags; the first
+argument decides the parser, so `tau -p sessions` sends the word "sessions".
+
+### answer rule, --answer
+`tau._launch.AnswerRule` · D22 §5 · new
+
+**`--answer EXTENSION[:TEXT]=VALUE`** (repeatable) tells `tau -p` how to answer a question. The
+value is after the last `=`, the extension (the asker's name, or `*`) before the first `:` of the
+rest, and `TEXT` is a glob over the question's text (default `*`). The first rule that matches
+answers, with `VALUE` read by the question's schema as a typed answer is (`commandline.value`).
+No rule matches: the question is declined (`answer(id, None)`) and stderr says so. A rule whose
+value the schema refuses aborts the run and exits 1, naming the rule and the question. Attached to
+a server, `-p` handles only the questions that open after its send, on the cursor it sent to;
+the others are the server's other clients' and it never rules on them. A rule naming an extension
+that is not loaded is a usage error (exit 2).
+
+### start report
+`tau._session_start.start_report` · D22 §7 · new
+
+What `--verbose` prints, on stderr, before the first message, for `tau -p` and `tau serve`: the
+session (id and directory, or in memory; new, opened or forked), the working directory, the model,
+the config files read, each extension loaded with its source key and origin, and for a new session
+the parts of the system prompt with their sizes. Built from `Started` (`sources`, `prompt`); an
+attached `tau -p` reports the server's `Welcome` and the cursor's model. It is a report of what
+happened, not a debug log (`tau.trace` is the profiler).
 
 ### system prompt, base text, context file, system_prompt
 modules `tau._context`, `tau._config_layers`, `tau._sessions`, `tau.cli` · D20 · new
@@ -1482,10 +1550,12 @@ and core's busy rules apply (model.md §7). A question lives only while its `ask
 that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it.
 
 ### OpenQuestion
-`tau.OpenQuestion(id, to, text, schema)` (`_events.py`) · D16 · new
+`tau.OpenQuestion(id, to, extension, text, schema)` (`_events.py`) · D16, D22 · new
 
-What a client sees of an open question (see **question**): `schema` is the JSON Schema of the
-answer with the named types' `"format"`. A plain frozen value.
+What a client sees of an open question (see **question**): `extension` is the name of the
+extension whose handle asked (an `--answer` rule matches on it, and a frontend can say "permissions
+asks"), `schema` is the JSON Schema of the answer with the named types' `"format"`. A plain frozen
+value. `extension` was added before the protocol's first release, so no `PROTOCOL` bump (D21 §8).
 
 
 ## Effects and edges

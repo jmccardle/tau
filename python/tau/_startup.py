@@ -7,13 +7,14 @@ can be asked, and how.
 """
 
 import difflib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
+from tau._options import option_fields
 from tau._trust import (
     Trusted,
     ensure_trusted,
@@ -26,6 +27,8 @@ from tau._trust import (
     user_config_path,
 )
 from tau._user_config import UserConfig
+from tau._values import Field, Json, object_schema
+from tau.commandline import value
 
 Ask = Callable[[str], bool]
 """A yes-or-no question put to the person: takes the question, returns the answer."""
@@ -68,6 +71,34 @@ def load_config(
     catalog = project.read_models(user, cli) if project else read_models(user, cli=cli)
     user_layers = UserConfig(home, None if project is None else project.layer(), cli)
     return LoadedConfig(catalog, project_environment(project, environ), project, home, user_layers)
+
+
+def option_changes(
+    extensions: Sequence[object], assignments: Sequence[tuple[str, str, str]]
+) -> dict[str, tuple[type, tuple[Field, ...], Json]]:
+    """`EXTENSION.FIELD=VALUE` assignments (as `(extension, field, text)`) read against the
+    `extensions`' options: per extension, its options type, its fields and the JSON values set,
+    each text read as `/config` reads it (`tau.commandline.value`). `ConfigError` for an
+    extension without options, a field it does not have, or a text its field refuses."""
+    known = {cast("str", getattr(e, "name")): e for e in extensions}  # noqa: B009
+    changes: dict[str, tuple[type, tuple[Field, ...], Json]] = {}
+    for extension, name, given in assignments:
+        options = getattr(known.get(extension), "options", None)
+        if options is None:
+            having = [n for n, e in known.items() if getattr(e, "options", None) is not None]
+            raise ConfigError(f"extension {extension!r} has no options; those that do: {having}")
+        fields = option_fields(extension, options)
+        properties = cast("Json", object_schema(fields, model=False)["properties"])
+        if name not in properties:
+            raise ConfigError(
+                f"extension {extension!r} has no option {name!r}; its options: {list(properties)}"
+            )
+        try:
+            decoded = value(given, cast("Json", properties[name]))
+        except ValueError as e:
+            raise ConfigError(f"{extension}.{name}: {e}") from None
+        changes.setdefault(extension, (options, fields, {}))[2][name] = decoded
+    return changes
 
 
 def _close(catalog: ModelCatalog, name: str) -> list[str]:

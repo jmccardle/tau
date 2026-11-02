@@ -295,6 +295,28 @@ def test_stopping_a_server_tells_its_clients_end(home: World) -> None:
 # The server in the foreground
 
 
+def test_verbose_reports_the_start_on_stderr_and_set_is_checked(home: World) -> None:
+    existing(home)
+    bad = serve(home, "--set", "step_limit.limit=0", "--session", OLD)
+    assert bad.code == 1
+    assert "at least 1" in bad.err
+    server = start_foreground(
+        home, "--json", "--verbose", "--set", "step_limit.limit=3", "--session", OLD
+    )
+    try:
+        assert server.stdout is not None
+        json.loads(server.stdout.readline())
+        server.send_signal(signal.SIGTERM)
+        assert server.wait(timeout=10) == 0
+        assert server.stderr is not None
+        report = server.stderr.read()
+    finally:
+        server.kill()
+        server.communicate()
+    assert f"tau: session {OLD} (opened)" in report
+    assert "tau: extension step_limit" in report
+
+
 def start_foreground(world: World, *argv: str) -> subprocess.Popen[str]:
     env = {**world.environ, "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(

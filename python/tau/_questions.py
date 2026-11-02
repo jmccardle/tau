@@ -59,6 +59,7 @@ class Questions:
     async def ask(  # noqa: PLR0913, PLR0917 - a question's whole description
         self,
         cursor: int,
+        extension: str,
         text: str,
         expect: Kind,
         to: str | None,
@@ -74,7 +75,7 @@ class Questions:
         if to is not None and not self._connected(to):
             to = None
         future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
-        view = OpenQuestion(next(self._ids), to, text, expect.schema)
+        view = OpenQuestion(next(self._ids), to, extension, text, expect.schema)
         question = Question(view, future, expect, new_cursor, asker)
         asked = self._by_cursor.setdefault(cursor, [])
         asked.append(question)

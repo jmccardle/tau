@@ -47,7 +47,7 @@ import readline
 import shlex
 import sys
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -65,6 +65,7 @@ from tau import (
     CommandFailed,
     Cursor,
     CursorView,
+    Event,
     Form,
     Live,
     Node,
@@ -73,9 +74,8 @@ from tau import (
     Notice,
     OpenQuestion,
     TextDelta,
-    first_cursor,
+    open_client,
     prompts,
-    start_session,
 )
 from tau.cli import extension_flags, session_flags
 from tau.commandline import Parsed, UnknownCommand, completions, parse, value, values
@@ -136,24 +136,30 @@ class Chat:
         names = config.schema["properties"]["extension"]["enum"] if config else []  # type: ignore[index]
         self.options = {n: await self.client.options(self.cursor, n) for n in names}
 
-    async def listen(self) -> None:
-        """Show what the client is sent, until its stream ends."""
+    async def listen(self, snapshot: Sequence[Event] = ()) -> None:
+        """Show the snapshot the client opened with, then what it is sent, until its stream
+        ends."""
+        for event in snapshot:
+            await self.hear(event)
         async for event in self.client:
-            match event:
-                case Live(cursor=c, delta=TextDelta(text=t)) if c == self.cursor:
-                    self.out(t)
-                case Live(cursor=c, delta=CallNamed(tool=t)) if c == self.cursor:
-                    self.out(f"\n[calling {t}]\n")
-                case Notice(text=t):
-                    self.out(f"\n[{t}]\n")
-                case Appended(nodes=nodes):
-                    for n in nodes:
-                        self.show_node(n)
-                case CursorView(cursor=c) if c == self.cursor:
-                    await self.place(event.at)
-                    self.show(event)
-                case _:
-                    pass
+            await self.hear(event)
+
+    async def hear(self, event: Event) -> None:
+        match event:
+            case Live(cursor=c, delta=TextDelta(text=t)) if c == self.cursor:
+                self.out(t)
+            case Live(cursor=c, delta=CallNamed(tool=t)) if c == self.cursor:
+                self.out(f"\n[calling {t}]\n")
+            case Notice(text=t):
+                self.out(f"\n[{t}]\n")
+            case Appended(nodes=nodes):
+                for n in nodes:
+                    self.show_node(n)
+            case CursorView(cursor=c) if c == self.cursor:
+                await self.place(event.at)
+                self.show(event)
+            case _:
+                pass
 
     def show_node(self, node: Node) -> None:
         """A failed sample is shown; a message somebody else wrote waits in `unplaced` until the
@@ -313,21 +319,22 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def main(args: argparse.Namespace) -> None:
-    started = await start_session(
+    # Every cursor may have been closed (D17): `open_client` restarts the first, keeping its
+    # labels. A session another `tau serve` holds is attached to, not refused.
+    opened = await open_client(
         args,
+        client="chat:line",
         environ=os.environ,
         cwd=Path.cwd(),
         prompts=prompts(sys.stdin, sys.stdout),
         own=[Demo()],
         model=args.model,
     )
-    client = started.driver.client("chat:line")
-    # Every cursor may have been closed (D17): the library restarts the first, keeping its labels.
-    cursor = await first_cursor(started.session, client)
-    chat = Chat(client, cursor, partial(print, end="", flush=True), prompt)
+    client = opened.client
+    chat = Chat(client, opened.cursor, partial(print, end="", flush=True), prompt)
     await chat.refresh()
     await client.watch([chat.cursor])
-    listener = asyncio.create_task(chat.listen())
+    listener = asyncio.create_task(chat.listen(opened.snapshot))
     tab_completion(chat, asyncio.get_running_loop())
     try:
         while True:
@@ -340,8 +347,7 @@ async def main(args: argparse.Namespace) -> None:
         for task in chat.running:
             task.cancel()
         listener.cancel()
-        await client.close()
-        await started.stop()
+        await opened.close()
 
 
 async def prompt(text: str) -> str:

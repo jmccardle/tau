@@ -429,6 +429,7 @@ class Notice
     text: str
 @dataclass(frozen=True)
 class OpenQuestion
+    extension: str
     id: int
     schema: Json
     text: str
@@ -450,6 +451,14 @@ class ToolProgress
 class ForkedFrom
     node: int
     session: str
+@dataclass
+class Opened
+    client: Client
+    async def close(self) -> None
+    cursor: int
+    snapshot: tuple[Event, ...]
+    started: Started | None
+    welcome: Welcome | None
 PickSession = Callable[[Sequence[SessionInfo], Sequence[SessionInfo]], SessionInfo]
 @dataclass(frozen=True)
 class SessionFlags
@@ -485,8 +494,10 @@ class Started
     loaded: LoadedConfig
     model: str
     property never_used: bool
+    prompt: SystemPrompt | None
     providers: Mapping[str, Provider]
     session: Session
+    sources: tuple[ExtensionSource, ...]
     async def stop(self) -> None
 SystemText = Callable[[Path, LoadedConfig], str]
 class UnknownSession(LookupError)
@@ -503,11 +514,25 @@ def main(
     cwd: Path | None = None,
 ) -> int
 # tau.cli
+def option_flags() -> argparse.ArgumentParser
+# tau.cli
 def session_flags() -> argparse.ArgumentParser
 def find_session(sessions: Path, session: str, *, first: bool = False) -> SessionInfo
-async def first_cursor(session: Session, client: 'Client') -> int
 def first_cursor_node(session: Session) -> int
 def list_sessions(sessions: Path, *, cwd: Path | None = None) -> list[SessionInfo]
+async def open_client(
+    args: object,
+    *,
+    client: str,
+    environ: Mapping[str, str],
+    cwd: Path,
+    system: SystemText | None = None,
+    prompts: Prompts | None = None,
+    pick_session: PickSession | None = None,
+    own: Sequence[Extension] = (),
+    model: str | None = None,
+    clock: Clock | None = None,
+) -> Opened
 def rename_session(path: Path, name: str) -> None
 async def start_session(
     args: object,

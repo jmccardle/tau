@@ -139,7 +139,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from tau import Cursor, Subject, first_cursor, start_session
+from tau import Cursor, Subject, open_client
 from tau.cli import extension_flags, session_flags
 
 
@@ -165,19 +165,17 @@ class Tracer:
 async def main() -> None:
     parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
     args = parser.parse_args(["--no-session"])  # keep it in memory
-    started = await start_session(
-        args, environ=os.environ, cwd=Path.cwd(), model="mock:echo", own=[Tracer()]
+    opened = await open_client(
+        args, client="guide", environ=os.environ, cwd=Path.cwd(), model="mock:echo", own=[Tracer()]
     )
-    client = started.driver.client("guide")
-    cursor = await first_cursor(started.session, client)
+    client, cursor, started = opened.client, opened.cursor, opened.started
 
     await client.send(cursor, "What is 2 + 2?")  # input, with auto-step on
     await started.driver.rest(cursor)  # wait for the cursor to come to rest
     here = started.session.cursor(cursor).at
     print("branch:", [n.id for n in started.session.tree.walk(here)])
 
-    await client.close()
-    await started.stop()
+    await opened.close()
 
 
 asyncio.run(main())

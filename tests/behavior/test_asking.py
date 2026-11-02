@@ -71,6 +71,16 @@ async def test_a_tool_hook_asks_on_its_batchs_cursor(tmp_path: Path) -> None:
 
 
 @scenario
+async def test_a_question_says_which_extension_asked_from_a_tool_hook(tmp_path: Path) -> None:
+    h, _ = await permissions_harness(tmp_path, [calls("a"), Reply([Part.Text("done")])])
+    (question,) = (await h.view()).questions
+    assert question.extension == "permissions"
+    await h.respond("allow")
+    await h.settle()
+    await h.close()
+
+
+@scenario
 async def test_deny_is_the_hooks_refusal(tmp_path: Path) -> None:
     h, tool = await permissions_harness(tmp_path, [calls("a"), Reply([Part.Text("done")])])
     await h.respond("deny")
@@ -320,4 +330,15 @@ async def test_an_abort_right_after_a_send_leaves_nothing_to_answer(tmp_path: Pa
     await h.respond("yes")
     await h.settle()
     assert asks.before == [None, "yes"]
+    await h.close()
+
+
+@scenario
+async def test_a_question_says_which_extension_asked_from_a_cursor_hook(tmp_path: Path) -> None:
+    asks = Asks("which?", str)
+    h = await asked(tmp_path, asks)
+    (question,) = (await h.view()).questions
+    assert (question.extension, question.text) == ("asks", "which?")
+    await h.respond("this")
+    await h.settle()
     await h.close()

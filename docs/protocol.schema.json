@@ -776,7 +776,7 @@
       ]
     },
     "OpenQuestion": {
-      "description": "A question an extension asked and nobody has answered: `id` (what `answer` names), whom\nit is for (`to`: a client id, `None` for anyone), what it asks, and the JSON Schema of the\nanswer.",
+      "description": "A question an extension asked and nobody has answered: `id` (what `answer` names), whom\nit is for (`to`: a client id, `None` for anyone), the `extension` that asked, what it asks,\nand the JSON Schema of the answer.",
       "type": "object",
       "properties": {
         "id": {
@@ -792,6 +792,9 @@
             }
           ]
         },
+        "extension": {
+          "type": "string"
+        },
         "text": {
           "type": "string"
         },
@@ -802,6 +805,7 @@
       "required": [
         "id",
         "to",
+        "extension",
         "text",
         "schema"
       ]

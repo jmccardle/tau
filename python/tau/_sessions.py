@@ -10,8 +10,9 @@ store never read it. `info.json` is replaced whole and atomically.
 Listing is a scan, with no index: `list_sessions` returns a `SessionInfo` per directory, a row
 with an `error` for one that is not a readable session. `find_session` resolves a ref: a path, an
 id, an exact unique name, or a unique id prefix. `SessionFlags` are the session flags, checked.
-`first_cursor` and `first_cursor_node` are the rule for which cursor a frontend shows. Which
-session a program opens, and how it starts, is `tau._session_start`.
+`first_cursor_node` is the rule for which cursor a frontend shows, without writing (the client
+side of it is `tau.open_client`). Which session a program opens, and how it starts, is
+`tau._session_start`.
 """
 
 import json
@@ -23,14 +24,11 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from tau._config import ConfigError
 from tau._core import Exists, Session, first_message
 from tau._refs import absolute_ref
-
-if TYPE_CHECKING:
-    from tau._client import Client
 
 SESSIONS = "sessions"
 INFO = "info.json"
@@ -337,19 +335,6 @@ def first_cursor_node(session: Session) -> int:
     if not closed:
         raise LookupError("the session has no cursor")
     return closed[0][1]
-
-
-async def first_cursor(session: Session, client: "Client") -> int:
-    """The cursor a frontend shows, or `-p` sends to: the open cursor with the lowest id; if none
-    is open, the closed cursor with the lowest id, which `client` reopens (a new id with the old
-    labels). The choice among other cursors is the frontend's (D16, D17)."""
-    opened = session.cursors()
-    if opened:
-        return min(opened)
-    closed = session.closed()
-    if not closed:
-        raise LookupError("the session has no cursor")
-    return await client.reopen(closed[0][0])
 
 
 # -- the session flags, resolved

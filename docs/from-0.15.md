@@ -169,7 +169,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 |---|---|---|---|
 | Built-in permission system | none; example extensions only | **planned** | Phase 8 standard extension; `ask` is built (D16, `_questions.py`) |
 | Protected paths / sandbox | `examples/31_protected_paths.py` | **planned** (unspecified) | falls under permissions extension if it covers paths; today bash_guard only matches commands |
-| Headless approval (`--ui-defaults confirm=yes,...`) | `cli.py:--ui-defaults`, `headless.py` | **REGRESSION** | D16 ruling 1: a question with nobody connected stays open and blocks. Nothing says how `tau -p` answers one; a permissions extension plus `-p` would hang |
+| Headless approval (`--ui-defaults confirm=yes,...`) | `cli.py:--ui-defaults`, `headless.py` | **built** (changed) | D22: `tau -p --answer EXTENSION[:TEXT]=VALUE`. Rules match who asked and what, not a dialog kind; a question no rule matches is declined (stderr says so), and a value the question's schema refuses aborts the run (exit 1). D16 ruling 1 holds: `-p` is the client that answers |
 
 ### 2.7 Config and trust
 
@@ -189,49 +189,48 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 ### 2.8 CLI: every 0.15 flag and subcommand (`tau --help`, `tau_coding_agent/cli.py:132-470`)
 
-0.16's whole CLI is `tau config check [--show MODEL]` and `tau trust [DIR]` (`0.16: python/tau/cli.py`).
-There is no `tau` launch command yet: `tau` alone prints help. Statuses below are about the capability.
+0.16's CLI is `tau -p`, `tau --version` and the subcommands `config`, `ext`, `sessions`, `export`, `context`, `trust` and `serve` (`0.16: python/tau/cli.py`). The first argument decides: a subcommand's name runs it, anything else is the launch command line, so `tau -p sessions` sends the word "sessions". `tau` alone prints help until the terminal UI (8C). D22 §9 is the table of what became of each flag. Statuses below are about the capability.
 
 | 0.15 flag / subcommand | 0.16 status | note |
 |---|---|---|
 | `tau` (no args) -> Textual TUI | **planned** | Phase 8 |
-| `MESSAGES...` with `@file` references | **planned** (unspecified) / **REGRESSION** for `@file` | `@file` attachments see 2.9 |
-| `-p`, `--print` | **planned** | Phase 8 "`tau -p`, with text or JSON output" |
-| `--mode text` / `json` | **planned** | same sentence |
-| `--mode rpc` (JSON-RPC 2.0 over stdio, ~45 verbs, Tectum contract) | **planned** (changed) | replaced by `tau serve` JSON-RPC over WebSocket (Phase 7); stdio transport not mentioned |
+| `MESSAGES...` with `@file` references | **built** (changed) / **REGRESSION** for `@file` | D22: the words are joined with spaces (0.15: newlines), then standard input after a blank line when it is not a terminal. `@file` waits for the 8E extension (2.9); `-p` sends text as typed |
+| `-p`, `--print` | **built** (changed) | D22: a switch, not a flag that takes the message. Prints only the last reply on stdout; exit 0/1/2/3/130 (3, stopped before finishing, is new); `-p` attaches to the `tau serve` that holds the session |
+| `--mode text` / `json` | **built** (changed) | `text` is the default and the flag is dropped; `json` is `--json`: the wire's own events, one object per line after a `Welcome` line (not 0.15's bus events) |
+| `--mode rpc` (JSON-RPC 2.0 over stdio, ~45 verbs, Tectum contract) | **built** (changed) | replaced by `tau serve` JSON-RPC over WebSocket (D21); stdio is Tectum's, after 0.16.0 |
 | `--mode repl` | **REGRESSION** | Phase 8 lists TUI, `-p`, ratatui example, tau-code; no REPL. 154 0.15 tests |
-| `-v`, `--version` | **REGRESSION** (trivial) | `tau.__version__` exists; no flag |
-| `-m`, `--model` | **planned** (unspecified) | library: `select_model`, `Cursor.set_model`, `/model`; CLI layer `read_models(cli=...)` exists (D13 "CLI flags" layer) |
-| `--provider` | **dropped** | model's `provider` key in config |
+| `-v`, `--version` | **built** | D22: prints `tau VERSION (protocol N)`, the τ version and the wire protocol a client must speak; a flag of the launch command line only |
+| `-m`, `--model` | **built** | D22: the model of a new session (D18: an existing session records its own; `/model` switches a running one) |
+| `--provider` | **dropped** | the model's `provider` key in config (D22 §9) |
 | `--theme` | **planned** | Phase 8 themes |
-| `-t`, `--tools` | **planned** (unspecified) | D2 / `Driver(tools=)` |
-| `-nt`, `--no-tools` | **planned** (unspecified) | same |
-| `-xt`, `--exclude-tools` | **planned** (unspecified) | same |
-| `-nbt`, `--no-builtin-tools` | **planned** (unspecified) | `load: {base_tools: false}` (`tau ext disable base_tools`) turns the base tools off; `--no-extensions` does not |
-| `-e`, `--extension PATH|MODULE` | **planned** | `chat.py --extension` (C3); `tau` flag via trusted loader, unscheduled |
-| `-ne`, `--no-extensions` | **built** (changed) | D19: loads no package or drop-in; the built-ins (`base_tools`, `step_limit`) follow `load` |
+| `-t`, `--tools` | **deferred** | tools come from extensions (`load`, `-e`); a per-run tool list is Tectum's `--no-tools`, after 0.16.0 (D22 §9) |
+| `-nt`, `--no-tools` | **deferred** | same |
+| `-xt`, `--exclude-tools` | **deferred** | same |
+| `-nbt`, `--no-builtin-tools` | **deferred** | `load: {base_tools: false}` (`tau ext disable base_tools`) turns the base tools off; `--no-extensions` does not |
+| `-e`, `--extension PATH|KEY` | **built** (changed) | D19: a path, or the key of a source; naming it is the consent. `tau -p` and `tau serve` take it; not for a session a server holds (D22 §8) |
+| `--no-extensions` | **built** (changed); `-ne` **dropped** | D19 has the long form only (D22 §9): loads no package or drop-in; the built-ins (`base_tools`, `step_limit`) follow `load` |
 | `--bus` | **REGRESSION** | NATS extension not planned |
 | `--no-session` | **built** | D18: `session_flags`, `start_session` |
-| `--max-turns N` | **dropped** (changed) | `StepLimit` option (D1) |
-| `--ext-config NAME:KEY=VALUE` | **planned** (unspecified) | the CLI layer of D13 |
-| `--ui-defaults METHOD=ANSWER,...` | **REGRESSION** | see 2.6 |
+| `--max-turns N` | **dropped** (changed) | `StepLimit`'s option; for one run `--set step_limit.limit=N` (D22). A run that stops there exits 3 and says so (0.15 stopped silently and exited 0) |
+| `--ext-config NAME:KEY=VALUE` | **built** (changed) | `--set EXTENSION.FIELD=VALUE` (D22), repeatable: the CLI layer of D13, read and checked as `tau config set` does, for one run; `-p`, `tau` and `tau serve` take it |
+| `--ui-defaults METHOD=ANSWER,...` | **built** (changed) | `--answer EXTENSION[:TEXT]=VALUE` (D22); see 2.6 |
 | `--append-system-prompt TEXT` | **built** | D20: `session_flags`; an error with `-c`, `-r`, `--session`, `--fork` (0.15 ignored it) |
 | `--system-prompt TEXT` | **built** | D20: the CLI layer of the `system_prompt` config key; no `{{fields}}` |
 | `-nc`, `--no-context-files` | **built** | D20: `session_flags`; accepted when continuing or forking (nothing is read then) |
 | `--prompt-template PATH`, `--no-prompt-templates` | **REGRESSION** | see 2.5 |
 | `--skill PATH`, `--no-skills` | **REGRESSION** | see 2.5 |
-| `-c`, `--continue` | **built** | D18: the newest session of the working directory, with any frontend (the `tau` program is Phase 8) |
-| `-r`, `--resume` | **planned** | D18: parsed and resolved by the start; the picker is Phase 8 |
+| `-c`, `--continue` | **built** | D18: the newest session of the working directory; `tau -p` takes it (0.15: `-p` only), and attaches if a server holds the session |
+| `-r`, `--resume` | **planned** | D18: parsed and resolved by the start; the picker is Phase 8. A usage error with `-p` (exit 2): name the session with `--session REF` or `-c` |
 | `--session REF` | **built** | D18: a path, an id, a name or a unique id prefix, searched over the whole sessions directory |
 | `--fork REF` | **built** (changed) | D18: `REF[:NODE]`; see 2.3 |
 | `-n`, `--name` | **built** | D18 |
 | `--thinking LEVEL` | **dropped** (changed) | provider `options` (2.1) |
 | `--store file|jmfts` | **post-0.16** | JMFTS |
-| `--connect ADDR`, `--cwd PATH` | **planned** | Phase 7 `RemoteClient`, `tau serve` |
+| `--connect ADDR`, `--cwd PATH` | **dropped** (changed) | attaching is automatic: `tau -p --session NAME` connects to the `tau serve` that holds the session (D22 §8); `cd` sets the directory |
 | `--session-dir DIR` | **built** | D18: a flag only; `TAU_HOME` already moves everything |
 | `--import-session PATH` / `--export-session REF PATH` | **post-0.16** | JMFTS |
 | `--export-html REF [OUT]` | **post-0.16** | see 2.3; Markdown is `tau export` |
-| `--verbose` | **REGRESSION** (minor) | `tau.trace` (Chrome trace) is new; no log verbosity |
+| `--verbose` | **built** (changed) | D22: on stderr, a report of the start (session, directory, model, config files, extensions, system prompt parts) and under `-p` a line per node, step ending and question; not an arguments dump or a debug log (`tau.trace` is the profiler). `tau serve` takes it too |
 | `--fun` / `--no-fun` (random tagline) | **REGRESSION** (cosmetic) | |
 | `tau serve` (default 127.0.0.1) | **planned** | Phase 7 |
 | `tau serve --listen ADDR` | **planned** (unspecified) | Phase 7 |
@@ -258,8 +257,8 @@ There is no `tau` launch command yet: `tau` alone prints help. Statuses below ar
 | Typing while the model runs (steer / enqueue strategies, `TUI-STEERING.md`) | `steering.py`, `follow_ups.py` | **dropped** | D2: input is a scratchpad item delivered by the next step; "queueing is an extension's"; Retired terms: steering queue, follow-up queue |
 | Enter-key mode, editor widgets, slash-command completion in editor | `editor_widgets.py`, `ENTER-KEY.md` | **planned** (unspecified) | `Client.complete` + `commandline` are the library half (D16) |
 | `@file` attachments (inline limit, TUI chips) | `attachments.py`, `docs/FILE-ATTACHMENTS.md` | **REGRESSION** | Not built, not planned |
-| `-p` headless printing | `headless.py` | **planned** | Phase 8 |
-| JSONL event stream (`--mode json`, deltas) | `JSON-MODE-DELTAS.md` | **planned** | Phase 8; events are `tau._events` plain frozen values (D15/D16) |
+| `-p` headless printing | `headless.py` | **built** (changed) | D22 (8B) |
+| JSONL event stream (`--mode json`, deltas) | `JSON-MODE-DELTAS.md` | **built** (changed) | `tau -p --json` (D22): the wire's events, with `Live` deltas for the cursor `-p` sends to; one format with `tau serve` and the schema |
 | REPL head (scrollback prompt loop) | `repl.py`, `repl_input.py`, `repl_theme.py` | **REGRESSION** | see 2.8 |
 | RPC (stdio JSON-RPC) | `tau_agent_core/rpc/`, `rpc_mode.py` | **planned** (changed) | Phase 7 `tau serve` (WebSocket); same `Client` contract serialized |
 | `tau serve` multiplexer daemon, `RemoteClient` | `serve/` (8 files) | **planned** | Phase 7 (D16 stage 4) |
@@ -316,10 +315,10 @@ By impact on a coding agent session:
 4. **Cost, session stats, cache-miss notice, context window** (2.1, 2.4, 2.10). Usage tokens are recorded; nothing reads them.
 5. **Extension management without a program**: `tau ext *`, drop-in discovery, authorization; there is no way to run an extension from the `tau` command except an unscheduled "trusted loader" (2.5).
 6. **Session leftovers**: `--fork`, HTML export, tree browser, `--session-dir`, session stats (2.3).
-7. **Headless approval**: `--ui-defaults`; with D16 ruling 1 a `-p` run hitting a permissions question would block forever (2.6).
+7. ~~**Headless approval**~~ built (Stage 8B): `--answer` (2.6).
 8. **REPL head, web client, `serve --tail`** (2.8, 2.9).
 9. **Token counter, constrained decoding, models.dev catalog, codemode, background tools, NATS bus** (2.1, 2.2, 2.5): extension-shaped or tooling; each can be a later extension but none is listed.
-10. Cosmetic/minor: `--version`, `--verbose`, `--fun`, telemetry strip, devshot, Docker.
+10. Cosmetic/minor: ~~`--version`, `--verbose`~~ built (8B), `--fun`, telemetry strip, devshot, Docker.
 
 Accepted by design (not regressions, but behavior changes users will feel): provider retries (example only),
 implicit per-vendor API key discovery, unified `--thinking` levels, steering/enqueue, suspension step-debugger,

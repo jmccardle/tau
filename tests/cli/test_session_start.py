@@ -8,7 +8,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Coroutine, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -17,13 +17,17 @@ from world import World, tau, trust
 from tau import (
     Author,
     Body,
+    Client,
     CommandFailed,
     Config,
     ConfigError,
+    CursorView,
     ExtensionLoadError,
+    Labels,
     Leased,
     NoSuchNode,
     NotASession,
+    Opened,
     Part,
     PickSession,
     Session,
@@ -31,10 +35,10 @@ from tau import (
     Started,
     Stop,
     UnknownSession,
-    first_cursor,
     first_cursor_node,
     list_sessions,
     model_config,
+    open_client,
     start_session,
 )
 from tau.cli import extension_flags, session_flags
@@ -686,45 +690,101 @@ def test_load_false_beats_no_extensions_for_them(configured: World) -> None:
 # -- the first cursor
 
 
-def test_the_first_cursor_is_the_lowest_open_one(configured: World) -> None:
-    started = start(configured, "--no-session")
+def prepared(world: World, work: Callable[[Client], Coroutine[object, object, None]]) -> None:
+    """The session `OLD`, with what `work` does to it through a client of its running driver."""
+    world.session(OLD, cwd=world.home)
+    started = start(world, "--session", OLD)
     client = started.driver.client("t")
-
-    async def cursors() -> int:
-        await client.open(0)
-        await client.open(0)
-        await client.close_cursor(0)
-        return await first_cursor(started.session, client)
-
     try:
-        assert started.session.cursors() == [0]
-        assert run(cursors()) == 1
-        assert first_cursor_node(started.session) == 0
+        run(work(client))
     finally:
         run(client.close())
         stop(started)
 
 
+def opened_session(world: World, *argv: str, session: str = OLD) -> tuple[Opened, Session]:
+    """`open_client` on the session `session`, and the session it started."""
+    found = run(
+        open_client(
+            parse("--session", session, *argv),
+            client="t",
+            environ=world.environ,
+            cwd=world.home,
+            system=system,
+        )
+    )
+    assert found.started is not None
+    return found, found.started.session
+
+
+def test_the_first_cursor_is_the_lowest_open_one(configured: World) -> None:
+    async def branch(client: Client) -> None:
+        await client.open(0)
+        await client.open(0)
+        await client.close_cursor(0)
+
+    prepared(configured, branch)
+    found, session = opened_session(configured)
+    try:
+        assert session.cursors() == [1, 2]
+        assert found.cursor == 1
+        assert first_cursor_node(session) == found.started.session.cursor(1).at  # type: ignore[union-attr]
+        assert isinstance(found.snapshot[0], CursorView)
+        assert isinstance(found.snapshot[-1], Labels), "every event up to the first Labels"
+        assert found.welcome is not None
+        assert (found.welcome.session, found.welcome.pid) == (OLD, os.getpid())
+        assert found.welcome.cwd == str(configured.home.resolve())
+    finally:
+        run(found.close())
+
+
 def test_with_every_cursor_closed_the_lowest_is_reopened_with_its_labels(
     configured: World,
 ) -> None:
-    started = start(configured, "--no-session")
-    client = started.driver.client("t")
-
-    async def close_and_reopen() -> int:
+    async def close(client: Client) -> None:
         await client.set_label(0, "main")
         await client.close_cursor(0)
-        assert started.session.cursors() == []
-        assert first_cursor_node(started.session) == 1
-        return await first_cursor(started.session, client)
 
+    prepared(configured, close)
+    found, session = opened_session(configured)
     try:
-        reopened = run(close_and_reopen())
-        assert reopened == 1
-        assert started.session.cursor(reopened).labels == ["main"]
-        assert started.session.cursor(reopened).at == 1
+        assert found.cursor == 1, "a new cursor with the closed one's last node and labels"
+        assert session.cursor(found.cursor).labels == ["main"]
+        assert session.cursor(found.cursor).at == first_cursor_node(session)
+        views = [e for e in found.snapshot if isinstance(e, CursorView)]
+        assert [v.cursor for v in views] == [1], "the reopened cursor's view is in the snapshot"
     finally:
-        run(client.close())
+        run(found.close())
+
+
+def test_a_no_session_open_has_no_welcome(configured: World) -> None:
+    found = run(
+        open_client(
+            parse("--no-session"), client="t", environ=configured.environ, cwd=configured.home
+        )
+    )
+    try:
+        assert found.welcome is None
+        assert found.cursor == 0
+    finally:
+        run(found.close())
+    assert sessions_of(configured) == []
+
+
+def test_close_stops_the_start_and_removes_a_session_never_used(configured: World) -> None:
+    found = run(open_client(parse(), client="t", environ=configured.environ, cwd=configured.home))
+    assert len(sessions_of(configured)) == 1
+    run(found.close())
+    assert sessions_of(configured) == []
+
+
+def test_the_start_report_inputs_are_kept(configured: World) -> None:
+    started = start(configured, "--no-session")
+    try:
+        keys = [s.key for s in started.sources if s.state in ("on", "always")]
+        assert {"base_tools", "step_limit", "session_name"} <= set(keys)
+        assert started.prompt is None, "this program supplied its own system text"
+    finally:
         stop(started)
 
 

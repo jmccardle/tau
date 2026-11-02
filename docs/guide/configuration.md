@@ -29,7 +29,8 @@ There are three layers, and the nearest wins:
 
 1. **user**: `$TAU_HOME/config.json`;
 2. **project**: `.tau/config.json` in a trusted project (below);
-3. **command line**: the few flags that are config, such as `--system-prompt`.
+3. **command line**: the few flags that are config: `--system-prompt`, and `--set` for an
+   extension's options (below).
 
 Layers merge as JSON: objects merge by key, and lists and scalars replace. A `null` removes a key
 inherited from a lower layer. So a project can change one setting of one of your models and leave
@@ -125,6 +126,19 @@ value is checked by the extension's own option type first, and nothing is writte
 It never writes a project's file. `tau ext enable KEY` and `tau ext disable KEY` write the `load`
 key the same way.
 
+### `--set`
+
+```bash skip
+tau -p --set step_limit.limit=5 "tidy the imports"
+```
+
+`--set EXTENSION.FIELD=VALUE` is the command-line layer for extension options: the same assignment
+as `tau config set`, read the same way and checked by the same option type, but for this run only
+and written nowhere. It may be repeated, and it takes `tau -p` and `tau serve` (the TUI, 8C, will too). It
+replaces 0.15's `--max-turns` and `--ext-config`. A mistake (an extension that has no options, a
+field it lacks, a value its type refuses) stops the start before a session is made. For a session
+a `tau serve` already holds, `--set` is an error: the server's options are loaded.
+
 ## Projects and trust
 
 A **project** is the nearest directory with a `.tau/`, starting at the working directory itself and
@@ -214,6 +228,8 @@ These are not config, and they last for one run:
 |---|---|
 | `--session-dir DIR` | keep and find sessions in `DIR` instead of `$TAU_HOME/sessions` |
 | `-e PATH\|KEY` | load this extension, even if it is off |
+| `--set EXTENSION.FIELD=VALUE` | an extension's option for this run (above) |
+| `-m NAME`, `--model NAME` | the model of a new session (`tau -p`) |
 | `--no-extensions` | load no package or drop-in (the built-ins, `base_tools` and `step_limit`, still follow `load`) |
 | `-c`, `-r`, `--session REF`, `--fork REF`, `--no-session`, `-n NAME` | which session, and its name ([Quickstart](quickstart.md)) |
 

@@ -2,9 +2,9 @@
 
 Install τ, write a config with one model, talk to it, and look at what you did.
 
-The `tau` program is not finished. `tau` with no command prints its help, and the terminal UI and
-`tau -p` (print one answer and exit) arrive in Phase 8. Today you chat with `examples/chat.py`,
-and `tau` itself inspects, configures and serves sessions.
+The `tau` program is not finished. `tau -p` sends one message and prints the answer, and `tau`
+also inspects, configures and serves sessions. `tau` alone prints its help: the terminal UI
+arrives in Phase 8, and until then you chat with `examples/chat.py`.
 
 ## Install
 
@@ -57,6 +57,38 @@ tau config check --show local:qwen
 
 The second command shows each resolved value and the file it came from.
 
+## Ask once
+
+`tau -p` sends one message, waits for the model to finish, prints the answer on standard output
+and exits. `-m` picks the model of a new session (the config's `default_model` is used without
+it), `-n` names the session, and the session is kept, so `tau sessions` lists it.
+
+```bash
+tau -p -m mock:echo -n quickstart "hello from a script"
+```
+
+```text expect
+mock: hello from a script
+```
+
+The words are the message. If standard input is not a terminal, what it holds follows them after a
+blank line, so `git diff | tau -p "review this"` works. A program that runs `tau -p` with a pipe it
+never closes passes `</dev/null`.
+
+Only the answer is on standard output, so `answer=$(tau -p "...")` holds it. The exit status says
+how the run ended: `0` the model finished, `1` a failure (a bad config, a provider error, a
+command that failed), `2` a usage error, `3` it stopped before finishing (a step limit, a hook
+that halted it, a message that was refused) and `130` interrupted. Anything else it has to say
+goes to standard error, one line each, starting `tau: `. `--verbose` adds a report of the
+start (the session, the model, the config files, the extensions, the parts of the system prompt)
+and a line per message the run adds.
+
+`--json` prints the session's events instead, one JSON object per line, the same objects
+[the wire](protocol.md) sends, after a `Welcome` line that holds the session's id.
+`--set step_limit.limit=5` changes an option for this run only ([Configuration](configuration.md)).
+A question an extension asks has no one to answer it under `-p`, so `tau -p` declines it unless a
+rule answers: `--answer permissions=yes`. [Frontends](frontends.md#questions) explain questions.
+
 ## Chat
 
 From a checkout, `examples/chat.py` is a line-by-line chat over the same library a terminal UI
@@ -73,34 +105,8 @@ Ctrl-D leaves.
 
 ## Look at what you did
 
-The commands below work on sessions on disk. The script makes one the way `chat.py` does, with
-the mock model, and names it `quickstart`; skip it if you have chatted already and use your own
-session's id.
-
-```python
-import argparse
-import asyncio
-import os
-from pathlib import Path
-
-from tau import first_cursor, start_session
-from tau.cli import extension_flags, session_flags
-
-
-async def main() -> None:
-    parser = argparse.ArgumentParser(parents=[extension_flags(), session_flags()])
-    args = parser.parse_args(["--name", "quickstart"])
-    started = await start_session(args, environ=os.environ, cwd=Path.cwd(), model="mock:echo")
-    client = started.driver.client("quickstart")
-    cursor = await first_cursor(started.session, client)
-    await client.send(cursor, "hello from a script")
-    await started.driver.rest(cursor)
-    await client.close()
-    await started.stop()
-
-
-asyncio.run(main())
-```
+The commands below work on sessions on disk. The session `quickstart` is the one `tau -p` made
+above; use your own session's id if you chatted instead.
 
 `tau sessions` lists the sessions of the current directory, newest first: id, age, and your first
 message or the name you gave. `--all` adds the directory; `--json` prints one object per line.

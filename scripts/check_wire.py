@@ -78,7 +78,10 @@ def events(values: list[object]) -> list[tau.Event]:
         1,
         False,
         True,
-        (OpenQuestion(3, "c", "q?", {"type": "string"}), OpenQuestion(4, None, "r?", {})),
+        (
+            OpenQuestion(3, "c", "ext", "q?", {"type": "string"}),
+            OpenQuestion(4, None, "ext", "r?", {}),
+        ),
         (item,),
         tau.Ending.Failed("E: x"),
         HookFailure("e", "pre_step", "E: x"),

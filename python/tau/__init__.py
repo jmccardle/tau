@@ -104,6 +104,7 @@ from tau._extensions import (
 )
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._markdown import to_markdown
+from tau._open import Opened, open_client
 from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
 from tau._protocols import (
     CURSOR_POINTS,
@@ -135,7 +136,6 @@ from tau._sessions import (
     SessionInfo,
     UnknownSession,
     find_session,
-    first_cursor,
     first_cursor_node,
     list_sessions,
     rename_session,
@@ -245,6 +245,7 @@ __all__ = [
     "Notice",
     "OpenAIProvider",
     "OpenQuestion",
+    "Opened",
     "Origin",
     "Outcome",
     "Parsed",
@@ -306,13 +307,13 @@ __all__ = [
     "builtin_providers",
     "check_config",
     "find_session",
-    "first_cursor",
     "first_cursor_node",
     "list_extensions",
     "list_sessions",
     "load_config",
     "load_extensions",
     "model_config",
+    "open_client",
     "prompts",
     "read_models",
     "rename_session",
