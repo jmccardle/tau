@@ -13,7 +13,7 @@ model.md §7–§8 (an abort ends its hooks' `rest` waits, M7).
 The plan ships eight extensions built in: compaction, permissions, sub-agent, prune, retry,
 skills and prompt templates, `@file` attachments, and usage. 0.15 had most of these as features,
 so their absence is a regression (`docs/from-0.15.md` §2.4–2.10). Permissions and sub-agents were
-examples only in 0.15, and prune had no 0.15 counterpart.
+examples only in 0.15, and prune had no 0.15 counterpart (§9 defines it).
 
 What exists today, and is enough for most of them:
 
@@ -295,14 +295,55 @@ labels serve for 0.16.0.
 **Dropped from 0.15's `delegate` example:** child processes, chain mode, `tasks[]` (several calls
 do the same), `max_usd` and `max_seconds`, and forcing parallel children read-only.
 
-### 9. Prune: cut from 0.16.0
+### 9. Prune: compaction without a model
 
-Prune has no 0.15 counterpart and no definition in the docs (`from-0.15.md` §2.4). Its likely
-meaning is to replace old tool outputs in the context with stubs. That is compaction without a
-model: the same new line, `Results` copied with outcomes shortened, `derived_from` instead of
-`copied_from`. The base tools already cap output at 10 kB with an overflow file, which removes
-most of the need. If someone asks, it becomes a compaction option (`prune_after` turns) rather
-than an extension of its own.
+Prune has no 0.15 counterpart. Phase 0's plan and Phase 1's model.md defined it ("post-expiry
+deterministic rewrite: old tool outputs, old thinking, branch from the LCA"); that text was lost
+when the docs were cut to size. John's design (2026-11-02) makes it concrete. It is one way of
+many, picked to start.
+
+Prune rewrites the walk deterministically, by the user's turns. A turn is a `User` node and
+everything under it up to the next `User` node. Number the turns `0..N`, where N is the latest:
+
+- **Turns 0 to N-2** become one `User` node, by the extension, holding a transcript. Each turn
+  is its user text, a count of what was left out, and the agent's last reply in that turn. Agents
+  usually sum up their work before they stop, so that last reply serves as the summary:
+
+  ```
+  <pruned>
+  User: let's do task one
+  [pruned: 10 messages, 44 tool calls]
+  Assistant: Done. I did task one. Summary: ....
+  User: let's do task two
+  [pruned: 14 messages, 52 tool calls]
+  Assistant: Finished. Here's what was changed: ...
+  </pruned>
+  ```
+
+- **Turn N-1** keeps the agent's messages and its tool calls, with each call's outcome reduced
+  to ok or error. It drops the reasoning text and the content of the tool results.
+- **Turn N** keeps its tool results. It drops the reasoning text.
+- **In turns N-1 and N**, a call's content arguments are left out, so a long `edit` or `write`
+  call shrinks to a reference to its file name.
+
+The result is a new line built as compaction builds one (§2): copied nodes carry `copied_from`,
+and rewritten ones carry `derived_from` pointing at the node they replace. The cursor moves onto
+the new line. The old line stays in the tree.
+
+**Triggers.**
+- `/prune` is the command. It is for switching tasks, and it is just as useful with a local
+  model, where nothing is cached.
+- Automatic pruning, when the provider's prompt cache has gone cold, is an option and off by
+  default. Before the cache expires, rewriting the prefix throws away a cache that is still
+  paying for itself. After it expires, the next request costs the full price anyway, so that is
+  when a shorter prefix is free.
+
+**Needs:**
+- M1 (`copied_from` and `derived_from`), which compaction needs too.
+- A way to know the cache has expired, for automatic pruning only. The candidates are the
+  provider's `cache_state(walk)` (planned in Phase 5, never built) or the time since the last
+  reply compared with a per-provider cache lifetime. `/prune` needs neither.
+- No model, no `context_window`, no token estimate.
 
 ### 10. What is missing today
 
@@ -330,11 +371,15 @@ point or a node kind.
 2. **attachments**: needs nothing.
 3. **skills** (M9).
 4. **usage** (M2–M6): this lands the `ModelConfig` and provider changes compaction also uses.
-5. **compaction** (M1, M7): the largest, and the only Rust.
-6. **permissions**, once D22's `--answer` exists.
-7. **agents** (M10).
+5. **prune** `/prune` (M1): it lands the provenance fields and the new-line building that
+   compaction reuses, with nothing about the result left to a model, so the line building is
+   tested on its own.
+6. **compaction** (M7, on prune's line building): the largest.
+7. **permissions**, once D22's `--answer` exists.
+8. **agents** (M10).
 
-**Cuts.** Prune is cut now (§9). If 8E runs long, agents goes next: 0.15 had only an example, and
+**Cuts.** Automatic pruning on a cold cache waits for a way to know the cache's state. If 8E
+runs long, agents goes next: 0.15 had only an example, and
 gamemaster and forest already show the pattern. The other six cover regressions 0.15 users would
 notice.
 
@@ -377,6 +422,16 @@ notice.
    provider words that error differently.
 9. **Where `context_window` comes from.** Recommendation: the config only, for 0.16.0. Asking
    the server (llama.cpp's `/props`) or a models.dev catalog comes later (plan, "After 0.16.0").
+10. **Which arguments of a call count as "content" for prune (§9).** Recommendation: any string
+    argument longer than 200 characters becomes `[pruned: 1234 chars]`. Short ones such as
+    `path`, `pattern` or a one-line `command` stay. This needs no list for each tool and works for
+    extension tools too. The alternative is a `content` mark on `@tool` parameters.
+11. **Where the `<pruned>` transcript goes.** It is a `User` node, and turn N-1 starts with the
+    user's own `User` node, so two user messages would sit next to each other. Recommendation:
+    prepend the transcript to turn N-1's user text in one derived `User` node. Some providers
+    reject two user messages in a row, or merge them silently.
+12. **Turn N's tool calls.** §9 drops their content arguments but keeps their results.
+    Recommendation: yes. The result (and `edit`'s diff) carries what changed.
 
 ## Glossary entries proposed
 
