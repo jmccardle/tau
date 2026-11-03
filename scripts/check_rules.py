@@ -26,7 +26,6 @@ ROOT = Path(__file__).parents[1]
 SCANNED = ["crates", "python", "tests", "scripts", "examples"]
 SUFFIXES = {".rs", ".py", ".pyi", ".toml"}
 SELF = Path(__file__).resolve()
-BUILD_DIR = ROOT / "target"
 
 # Each term with its inflections spelled out. A generic suffix wildcard would
 # also match legitimate words (`framework`, `entryway`).
@@ -55,12 +54,19 @@ CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 ALLOW_RE = re.compile(r"rules: allow\((\w+)\): \S")
 
 
+def is_build_output(path: Path) -> bool:
+    """Cargo's `target/` of the root, or of a package under `crates/` or `examples/`: generated."""
+    parts = path.relative_to(ROOT).parts
+    package = parts[0] in ("crates", "examples") and parts[2:3] == ("target",)
+    return parts[0] == "target" or package
+
+
 def files() -> list[Path]:
     out: list[Path] = []
     for top in SCANNED:
         out += [p for p in (ROOT / top).rglob("*") if p.suffix in SUFFIXES and p.is_file()]
     out += [ROOT / "pyproject.toml", ROOT / "Cargo.toml"]
-    return [p for p in out if p.resolve() != SELF and not p.is_relative_to(BUILD_DIR)]
+    return [p for p in out if p.resolve() != SELF and not is_build_output(p)]
 
 
 def banned_terms(line: str) -> list[str]:

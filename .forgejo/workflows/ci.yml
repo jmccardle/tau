@@ -7,7 +7,8 @@
 # `gate` runs scripts/check.sh, the same file developers run locally, with
 # only the dev group installed: the test suite must pass without τ 0.15. It
 # includes the wire steps: `scripts/schema.py --check` fails when
-# docs/protocol.schema.json is not what the code generates (D21 §8).
+# docs/protocol.schema.json is not what the code generates (D21 §8), and the Rust example
+# examples/ratatui (fmt, clippy -D warnings, cargo test; pytest builds and drives its binary).
 # `wheels` builds portable manylinux2014 wheels (zig as the linker; no
 # docker) and tests each installed in a clean venv.
 
@@ -84,7 +85,10 @@ jobs:
         run: |
           set -euo pipefail
           uv venv --seed --python ${{ matrix.python }} /tmp/clean
-          /tmp/clean/bin/pip install pytest dist/*.whl
+          # pytest and the test-only pins (pyte, one version in pyproject.toml's dev group)
+          # come from that group; pip >= 25.1 reads a group from a pyproject path.
+          /tmp/clean/bin/pip install --upgrade pip
+          /tmp/clean/bin/pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
           cd /tmp
           /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
       # No artifact upload. Job containers on this runner cannot reach the

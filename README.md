@@ -23,7 +23,9 @@ Status: **0.16 in development.** What exists now:
   switching between cursors, Ctrl+Z to edit the last message, the tree screen (go to a node,
   open a cursor there, label), the session picker (`tau -r`, Ctrl+O) and Ctrl+N for a new session;
   `/config` forms (apply to this branch or save for every session), a `/model` picker, a theme
-  picker (Ctrl+P) that remembers your choice, and a window over long sessions.
+  picker (Ctrl+P) that remembers your choice, and a window over long sessions;
+- `examples/ratatui`: a chat client of `tau serve` in Rust (its own package; wire types generated
+  from the schema), the first client outside Python.
 
 Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
 write an extension or a frontend.

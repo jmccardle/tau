@@ -25,6 +25,12 @@ step() { printf '\n== %s\n' "$*"; }
 step "rustfmt";      cargo fmt --all --check
 step "clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 step "cargo test";   cargo test --workspace --locked
+# examples/ratatui is its own package (own lockfile, outside the workspace); pytest builds and
+# drives the binary (tests/serve/test_ratatui.py).
+step "ratatui example"
+cargo fmt --check --manifest-path examples/ratatui/Cargo.toml
+cargo clippy --manifest-path examples/ratatui/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path examples/ratatui/Cargo.toml --locked
 step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop --release --locked
 step "rules";        "$PY" scripts/check_rules.py
 step "ratchet";      "$PY" scripts/ratchet.py          # rule 7, Rust and Python; needs rust-code-analysis-cli, radon

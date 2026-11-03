@@ -431,6 +431,16 @@ starting the other is the embedder's, as `tau` does it by replacing its own proc
 What the person sees and types is [The terminal UI](tui.md): the screen, the keys, the cursor bar,
 the tree, the pickers, themes, and how it attaches to a server.
 
+## A client in another language
+
+[`examples/ratatui`](../../examples/ratatui/README.md) is a chat client of `tau serve` in Rust,
+with ratatui: the first cursor's conversation with live text, a line to type, Esc to abort,
+questions answered or declined, and a fresh `hello` after a cut-off. It shares no code with τ and
+its wire types are generated from [`protocol.schema.json`](../protocol.schema.json) at build
+time, so it is the proof that the schema, [the protocol page](protocol.md) and nothing else are
+enough to write a frontend. Read its README for how the types are generated and which parts of the
+envelope a client writes by hand.
+
 ## What to build on
 
 - `tau.commandline` (`parse`, `completions`, `value`, `values`) is the pure line-reading library

@@ -25,6 +25,7 @@ dev = [
     # tests/tui/test_snapshots.py compares SVGs of Textual's own drawing, so the drawing is pinned
     "textual==8.2.8",
     "rich==15.0.0",
+    "pyte==0.8.2",  # tests/ptykit.py reads a screen back from a program that draws with cursor moves (examples/ratatui)
     "ruff>=0.14",
     "pyright>=1.1.400",
     "mypy>=2.4",  # stubtest only; pyright is the type checker

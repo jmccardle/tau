@@ -202,7 +202,8 @@
           "const": "CallArgs"
         },
         "index": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "text": {
           "type": "string"
@@ -222,7 +223,8 @@
           "const": "CallNamed"
         },
         "index": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "id": {
           "type": "string"
@@ -258,10 +260,12 @@
           "const": "CursorGone"
         },
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "at": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -278,10 +282,12 @@
           "const": "CursorView"
         },
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "at": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "busy": {
           "type": "boolean"
@@ -438,6 +444,7 @@
     },
     "ErrorCode": {
       "description": "The error table (D21 section 5).",
+      "type": "integer",
       "enum": [
         -32700,
         -32600,
@@ -526,7 +533,7 @@
       ]
     },
     "Form": {
-      "description": "What a client knows of something it fills in: a command (its `name`, typed as `/name`,\nits `description` and the `schema` of its arguments, with the named types' `\"format\"` and\neach default, and the `extension` that owns it) or an extension's options (the `name` of the\nextension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is\nfor `/config`). Frozen, compared by value, and not hashable: the schema is a dict.",
+      "description": "What a client knows of something it fills in: a command (its `name`, typed as `/name`,\nits `description` and the `schema` of its arguments, with the named types' `\"format\"` and\neach default, and the `extension` that owns it) or an extension's options (the `name` of the\nextension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is\nfor `/config`). A command is called by its `qualified` name, `extension:name`, which on the\nwire a client writes itself from the two fields. Frozen, compared by value, and not hashable:\nthe schema is a dict.",
       "type": "object",
       "properties": {
         "name": {
@@ -666,7 +673,8 @@
                 "type": "string"
               },
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0
               }
             ],
             "minItems": 2,
@@ -687,7 +695,8 @@
           "const": "Live"
         },
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "delta": {
           "anyOf": [
@@ -780,7 +789,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "to": {
           "anyOf": [
@@ -1029,7 +1039,8 @@
           "const": "ToolProgress"
         },
         "node": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "call_id": {
           "type": "string"
@@ -1078,7 +1089,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1094,7 +1106,8 @@
       "type": "object",
       "properties": {
         "question": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "value": {}
       },
@@ -1112,7 +1125,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1122,7 +1136,8 @@
       "x-result": {
         "type": "array",
         "items": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -1131,7 +1146,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1159,7 +1175,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "named": {
           "type": "string"
@@ -1186,7 +1203,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "line": {
           "type": "string"
@@ -1209,7 +1227,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "extension": {
           "type": "string"
@@ -1236,10 +1255,12 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "to": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1286,7 +1307,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "text": {
           "type": "string"
@@ -1298,7 +1320,8 @@
       ],
       "additionalProperties": false,
       "x-result": {
-        "type": "integer"
+        "type": "integer",
+        "minimum": 0
       }
     },
     "node": {
@@ -1306,7 +1329,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1322,10 +1346,12 @@
       "type": "object",
       "properties": {
         "start": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "limit": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1345,7 +1371,8 @@
       "type": "object",
       "properties": {
         "at": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1353,7 +1380,8 @@
       ],
       "additionalProperties": false,
       "x-result": {
-        "type": "integer"
+        "type": "integer",
+        "minimum": 0
       }
     },
     "options": {
@@ -1361,7 +1389,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "extension": {
           "type": "string"
@@ -1381,7 +1410,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "line": {
           "type": "string"
@@ -1401,10 +1431,12 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "item": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1437,7 +1469,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1445,7 +1478,8 @@
       ],
       "additionalProperties": false,
       "x-result": {
-        "type": "integer"
+        "type": "integer",
+        "minimum": 0
       }
     },
     "run": {
@@ -1453,7 +1487,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "command": {
           "type": "string"
@@ -1484,7 +1519,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "text": {
           "type": "string"
@@ -1496,7 +1532,8 @@
       ],
       "additionalProperties": false,
       "x-result": {
-        "type": "integer"
+        "type": "integer",
+        "minimum": 0
       }
     },
     "set_auto": {
@@ -1504,7 +1541,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "on": {
           "type": "boolean"
@@ -1524,7 +1562,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         },
         "label": {
           "type": "string"
@@ -1544,7 +1583,8 @@
       "type": "object",
       "properties": {
         "cursor": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1560,7 +1600,8 @@
       "type": "object",
       "properties": {
         "id": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
@@ -1581,7 +1622,8 @@
         "cursors": {
           "type": "array",
           "items": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

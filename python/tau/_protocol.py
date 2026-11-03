@@ -525,6 +525,42 @@ def _ref(name: str) -> Json:
     return {"$ref": f"#/$defs/{name}"}
 
 
+ID_FIELDS: Final = frozenset(
+    {
+        "cursor",
+        "at",
+        "node",
+        "id",
+        "to",
+        "question",
+        "item",
+        "index",
+        "start",
+        "limit",
+        "labels",
+        "cursors",
+    }
+)
+"""The names of the fields and parameters that hold a node, cursor, item or question id (or a
+position or count): never negative. `to` is `go_to`'s node; the other `to`s are not integers."""
+ID_RESULTS: Final = frozenset({"open", "reopen", "input", "send", "children"})
+"""The calls that answer an id, or a list of them."""
+
+
+def non_negative(schema: Json) -> Json:
+    """`schema` with `minimum: 0` on every integer in it: for an id, or a list or tuple of them."""
+    out = dict(schema)
+    if out.get("type") == "integer":
+        out["minimum"] = 0
+    items = out.get("items")
+    if isinstance(items, dict):
+        out["items"] = non_negative(cast("Json", items))
+    for key in ("anyOf", "prefixItems"):
+        if key in out:
+            out[key] = [non_negative(item) for item in cast("list[Json]", out[key])]
+    return out
+
+
 class _Defs:
     """The `$defs` being collected: a dataclass is defined where a hint first reaches it."""
 
@@ -586,7 +622,8 @@ class _Defs:
                 properties["kind"] = {"const": cls.__name__}
                 required.append("kind")
             for field in dataclasses.fields(cast("Any", cls)):
-                properties[field.name] = self.hint(hints[field.name])
+                found = self.hint(hints[field.name])
+                properties[field.name] = non_negative(found) if field.name in ID_FIELDS else found
                 if (
                     field.default is dataclasses.MISSING
                     and field.default_factory is dataclasses.MISSING
@@ -608,10 +645,22 @@ class _Defs:
             {
                 "description": method.doc,
                 "type": "object",
-                "properties": {p.name: self.hint(p.hint) for p in method.params},
+                "properties": {
+                    p.name: non_negative(self.hint(p.hint))
+                    if p.name in ID_FIELDS
+                    else self.hint(p.hint)
+                    for p in method.params
+                },
             }
             | ({"required": required} if required else {})
-            | {"additionalProperties": False, "x-result": self.hint(method.result)},
+            | {
+                "additionalProperties": False,
+                "x-result": (
+                    non_negative(self.hint(method.result))
+                    if method.name in ID_RESULTS
+                    else self.hint(method.result)
+                ),
+            },
         )
 
 
@@ -620,6 +669,7 @@ def _error_defs() -> dict[str, Json]:
     return {
         "ErrorCode": {
             "description": "The error table (D21 section 5).",
+            "type": "integer",
             "enum": codes,
             "x-names": [row.name for row in ERRORS],
             "x-raises": [row.raises.__name__ for row in ERRORS],

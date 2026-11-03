@@ -13,6 +13,7 @@ import termios
 import time
 from pathlib import Path
 
+import pyte
 from world import World
 
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
@@ -26,40 +27,63 @@ _TAKE_THE_TERMINAL = (
 
 
 class Screen:
-    """A `tau` process on a pseudo-terminal, and what it has drawn."""
+    """A program on a pseudo-terminal, and what it has drawn: `tau` with `argv`, or, given
+    `program`, that program (and `quit_key` is what leaves it)."""
 
-    def __init__(self, world: World, *argv: str, cwd: Path) -> None:
-        env = {
+    def __init__(
+        self,
+        world: World,
+        *argv: str,
+        cwd: Path,
+        program: Path | None = None,
+        quit_key: str = "\x11",
+        env: dict[str, str] | None = None,
+    ) -> None:
+        self.quit_key = quit_key
+        command = [sys.executable, "-m", "tau"] if program is None else [str(program)]
+        environ = {
             **world.environ,
             "TAU_HOME": str(world.tau),
             "TERM": "xterm-256color",
             "COLORTERM": "truecolor",
+            **(env or {}),
         }
         self.fd, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         # No fork of this (threaded) process: a new session whose first act is to take the
         # terminal as its controlling one, then become `tau`.
         self.process = subprocess.Popen(
-            [sys.executable, "-c", _TAKE_THE_TERMINAL, sys.executable, "-m", "tau", *argv],
+            [sys.executable, "-c", _TAKE_THE_TERMINAL, *command, *argv],
             stdin=slave,
             stdout=slave,
             stderr=slave,
             cwd=cwd,
-            env=env,
+            env=environ,
             start_new_session=True,
         )
         os.close(slave)
         self.pid = self.process.pid
         self.seen = b""
+        self._terminal = pyte.Screen(120, 40)
+        self._stream = pyte.ByteStream(self._terminal)
+        self._fed = 0
 
     def text(self) -> str:
         return ANSI.sub(b"", self.seen).decode("utf-8", "replace")
 
-    def wait_for(self, text: str, seconds: float = 20) -> None:
+    def display(self) -> str:
+        """The screen as it looks now, one line per row: for a program that draws by moving the
+        cursor and rewriting only what changed, whose output is no text (`text` is for `tau`)."""
+        self._stream.feed(self.seen[self._fed :])
+        self._fed = len(self.seen)
+        return "\n".join(line.rstrip() for line in self._terminal.display)
+
+    def wait_for(self, text: str, seconds: float = 20, *, on_screen: bool = False) -> None:
+        """Wait until `text` has been drawn; with `on_screen`, until it is on the screen now."""
         deadline = time.monotonic() + seconds
-        while text not in self.text():
+        while text not in (self.display() if on_screen else self.text()):
             if time.monotonic() >= deadline:
-                shown = self.text()[-600:]
+                shown = (self.display() if on_screen else self.text())[-600:]
                 self.close()
                 raise AssertionError(f"{text!r} never drawn:\n{shown}")
             if not self._drain():
@@ -74,6 +98,10 @@ class Screen:
                 return False
         return True
 
+    def pump(self, seconds: float = 0.1) -> None:
+        """Read what the program draws for up to `seconds`."""
+        self._drain(seconds)
+
     def close(self) -> None:
         """End the process if it is still running, reap it, and close the terminal."""
         if self.process.poll() is None:
@@ -86,16 +114,24 @@ class Screen:
         os.write(self.fd, keys.encode())
 
     def quit(self) -> int:
-        self.type("\x11")  # Ctrl+Q
-        deadline = time.monotonic() + 20
+        self.type(self.quit_key)
+        try:
+            return self.exit_code()
+        except AssertionError:
+            raise AssertionError(f"the program did not leave on {self.quit_key!r}") from None
+
+    def exit_code(self, seconds: float = 20) -> int:
+        """Wait for the program to exit, reading what it draws meanwhile; its exit code."""
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             code = self.process.poll()
             if code is not None:
+                self._drain(0.05)  # what it wrote last
                 self.close()
                 return code
-            self._drain(0.05)  # a terminal nobody reads fills up, and `tau` blocks writing to it
+            self._drain(0.05)  # a terminal nobody reads fills up, and the program blocks writing
         self.close()
-        raise AssertionError("tau did not leave on Ctrl+Q")
+        raise AssertionError("the program did not exit")
 
 
 def lock_holder(log: Path) -> int | None:

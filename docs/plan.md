@@ -23,7 +23,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 5 extensions | **done** (2026-10-31): D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage and signed off 2026-10-31 (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
 | 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built, reviewed and signed off 2026-11-01. Stage 7B (D21, the wire) built, reviewed and signed off 2026-11-01. Stage 7C (API docs: surface, reference, docstrings, guides) built, reviewed and signed off 2026-11-02. Exit gap: tau-search's own extension cannot load until its port after 0.16.0; the entry point is tested with fixture packages. |
-| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. D22–D24 accepted 2026-11-02; 8A signed off 2026-11-02; 8B built and reviewed 2026-11-03; 8C built and reviewed 2026-11-03 in three cuts (8C-1 `tau` opens the TUI: transcript, editor, commands, forms, questions, themes; 8C-2 cursor bar and switching, Ctrl+Z, `Client.remove_item`, the tree screen, the session picker, re-exec; 8C-3 `/config` forms with save, `/model` picker, saved theme, render window, snapshots, TUI guide page), stopped for review; 8D next. |
+| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. D22–D24 accepted 2026-11-02; 8A signed off 2026-11-02; 8B built and reviewed 2026-11-03; 8C built and reviewed 2026-11-03 in three cuts (8C-1 `tau` opens the TUI: transcript, editor, commands, forms, questions, themes; 8C-2 cursor bar and switching, Ctrl+Z, `Client.remove_item`, the tree screen, the session picker, re-exec; 8C-3 `/config` forms with save, `/model` picker, saved theme, render window, snapshots, TUI guide page), signed off 2026-11-03; 8D built and reviewed 2026-11-03 (the ratatui example: a Rust client of `tau serve`, wire types generated from the schema; the schema gained `minimum: 0` on every id and an integer `ErrorCode`), stopped for review. Open: the hub's `Feed.offer` moves a replacing `CursorView` to the end of the buffer, so it can arrive after the snapshot's `Labels` or after `Live` deltas (affects `tau` and every client). TUI follow-ups after 8D (owner, 2026-11-03): a tree view that follows the active cursor beside the other branches and cursors; extension and tool lists with load/unload written as config; compaction and pruning (8E) checked through that tree view. |
 | 9 | not started; see Phases. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -328,7 +328,16 @@ Every frontend needs these before it can start a session.
 - `--version` and `--verbose`.
 - A ratatui example TUI, a Rust client of `tau serve` in `examples/ratatui/`
   (its own Cargo package, outside the workspace and the ratchet). It is the
-  first client outside Python, and proof that the schema is enough.
+  first client outside Python, and proof that the schema is enough. Decided 2026-11-03:
+  - scope is a usable chat client: find the session from `$TAU_HOME/serve/*.json` or
+    `--socket`; the first cursor's walk (messages, thinking, tools) with live text; send, Esc
+    abort, questions answered or declined inline, `/` lines through the server's parser,
+    reconnect after `CutOff`. Not the tree, picker, cursor switching, forms, themes or Ctrl+Z;
+  - its wire types are generated from `docs/protocol.schema.json`, not hand-written; where the
+    schema is not enough, the schema is fixed;
+  - one end-to-end test drives the built binary in a pty against a `tau serve` (pytest,
+    `tests/ptykit.py`), and a CI job builds, lints and runs it;
+  - it speaks one protocol number exactly; a mismatch exits with the server's error.
 
 **Base tools:** the shared start (`tau.start_session`, D18 §5) gets them from a built-in
 extension, `base_tools`, loaded like `step_limit` and turned off with `load: {base_tools: false}`

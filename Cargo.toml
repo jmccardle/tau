@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/tau-core", "crates/tau-store", "crates/tau-tools", "crates/tau-py"]
-# Its own workspace and lockfile: encoders τ does not depend on.
-exclude = ["crates/bench-formats"]
+# Their own workspaces and lockfiles: encoders τ does not depend on, and the Rust example client.
+exclude = ["crates/bench-formats", "examples/ratatui"]
 
 [workspace.package]
 version = "0.16.0-dev.0"

@@ -640,7 +640,9 @@ What a client knows of something it fills in: a command (its `name`, typed as `/
 its `description` and the `schema` of its arguments, with the named types' `"format"` and
 each default, and the `extension` that owns it) or an extension's options (the `name` of the
 extension, and a `schema` whose defaults are the values now; `extension` is `null`, as it is
-for `/config`). Frozen, compared by value, and not hashable: the schema is a dict.
+for `/config`). A command is called by its `qualified` name, `extension:name`, which on the
+wire a client writes itself from the two fields. Frozen, compared by value, and not hashable:
+the schema is a dict.
 
 | field | type | notes |
 |---|---|---|

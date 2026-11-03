@@ -88,6 +88,7 @@ def test_the_core_values_are_defined_by_the_logs_own_encoding() -> None:
 
 def test_the_error_table_is_the_schemas_error_code_enum() -> None:
     codes = schema()["$defs"]["ErrorCode"]
+    assert codes["type"] == "integer", "a generator types the code from this, not from the enum"
     assert dict(zip(codes["x-names"], codes["enum"], strict=True)) == {
         "ParseError": -32700,
         "InvalidRequest": -32600,
@@ -118,3 +119,55 @@ def test_a_call_parts_replay_is_a_replay_or_absent_never_null() -> None:
     (call,) = [p["properties"]["Call"] for p in parts if "Call" in p["properties"]]
     assert call["properties"]["replay"] == {"$ref": "#/$defs/Replay"}
     assert "replay" not in call["required"]
+
+
+ID_NAMES = {
+    "cursor",
+    "cursors",
+    "at",
+    "node",
+    "id",
+    "to",
+    "question",
+    "item",
+    "index",
+    "start",
+    "limit",
+    "labels",
+}
+ID_RESULTS = {"open", "reopen", "input", "send", "children"}
+
+
+def integers_without_minimum(name: str, schema: object) -> list[str]:
+    """Where, in `schema`, an integer has no `minimum` of 0."""
+    if isinstance(schema, list):
+        return [p for item in schema for p in integers_without_minimum(name, item)]
+    if not isinstance(schema, dict):
+        return []
+    found = [name] if schema.get("type") == "integer" and schema.get("minimum") != 0 else []
+    for key in ("items", "anyOf", "prefixItems"):
+        found += integers_without_minimum(name, schema.get(key))
+    return found
+
+
+def id_problems(defs: dict[str, typing.Any]) -> list[str]:
+    """Every integer that holds a node, cursor, item or question id and may be negative."""
+    problems: list[str] = []
+    for owner, definition in defs.items():
+        for field, schema in definition.get("properties", {}).items():
+            if field in ID_NAMES:
+                problems += integers_without_minimum(f"{owner}.{field}", schema)
+        if owner in ID_RESULTS:
+            problems += integers_without_minimum(f"{owner} result", definition["x-result"])
+    return problems
+
+
+def test_every_id_in_the_schema_is_non_negative() -> None:
+    assert id_problems(schema()["$defs"]) == []
+
+
+def test_an_id_without_a_minimum_is_found() -> None:
+    defs = {"Live": {"properties": {"cursor": {"type": "integer"}, "text": {"type": "integer"}}}}
+    assert id_problems(defs) == ["Live.cursor"]
+    result = {"children": {"x-result": {"type": "array", "items": {"type": "integer"}}}}
+    assert id_problems(result) == ["children result"]
