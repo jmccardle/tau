@@ -5,11 +5,18 @@ asked before the screen opens, the start report of `--verbose` goes to standard 
 too), then `await TauApp(...).run_async()` on the same loop as the driver, then `Opened.close`.
 Everything that can refuse the launch (usage, an unknown theme, a session another process holds,
 flags a server would ignore) does so before the screen is taken.
+
+`-r` runs the session picker first, as a small app of its own (`PickerApp`), and becomes
+`--session ID`. When the person leaves the screen for another session (Ctrl+O, Ctrl+N) the launch
+returns the `Switch` after closing the session, and `tui_mode` replaces the process with `tau`
+started for it (D23 section 5).
 """
 
 import asyncio
 import getpass
+import os
 import socket
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, TextIO
@@ -19,9 +26,11 @@ from tau._events import CursorView
 from tau._launch import UsageError
 from tau._open import Opened, open_client
 from tau._session_start import start_report
+from tau._sessions import SessionFlags, UnknownSession, list_sessions, sessions_directory
 from tau._startup import prompts
 from tau._trust import safe_block, tau_home, user_config_path
 from tau.tui._app import TauApp
+from tau.tui._switch import PickerApp, Switch, session_holders, switch_argv
 from tau.tui._themes import ThemeError, build_theme_registry, resolve_theme
 
 
@@ -77,8 +86,11 @@ def report(opened: Opened) -> list[str]:
     return lines
 
 
-async def launch(process: Process, args: object, theme: str | None, home: Path) -> int:
-    """Open the session, run the app on this loop, close the session; the exit status."""
+async def launch(
+    process: Process, args: object, theme: str | None, home: Path
+) -> tuple[int, Switch | None]:
+    """Open the session, run the app on this loop, close the session; the exit status and where
+    the person asked to go next, if they did."""
     me = client_id()
     opened = await open_client(
         args,
@@ -92,6 +104,7 @@ async def launch(process: Process, args: object, theme: str | None, home: Path) 
         if getattr(args, "verbose"):  # noqa: B009
             for line in report(opened):
                 process.stderr.write("tau: " + safe_block(line) + "\n")
+        flags = SessionFlags.of(args, process.cwd)
         app = TauApp(
             opened.client,
             opened.cursor,
@@ -101,16 +114,45 @@ async def launch(process: Process, args: object, theme: str | None, home: Path) 
             cwd=process.cwd if opened.started is None else opened.started.cwd,
             theme=theme,
             reconnect=opened.reconnect if opened.started is None else None,
+            sessions=sessions_directory(home, flags.directory),
         )
         await app.run_async()
-        return app.return_code or 0
+        return app.return_code or 0, app.switch
     finally:
         await opened.close()
 
 
+def choose_session(process: Process, args: object, theme: str | None, home: Path) -> bool:
+    """`-r`: show the picker (before the session starts) and make `args` name the session picked,
+    as `--session ID`. False when the person cancelled. `UnknownSession` when there is none."""
+    flags = SessionFlags.of(args, process.cwd)
+    sessions = sessions_directory(home, flags.directory)
+    rows = list_sessions(sessions)
+    if not rows:
+        raise UnknownSession(f"no session in {sessions} to resume")
+    held = asyncio.run(session_holders(home, rows, None))
+    picker = PickerApp(rows, process.cwd, held, home=home, theme=theme)
+    picked = picker.run()
+    if picked is None:
+        return False
+    setattr(args, "resume", False)  # noqa: B010
+    setattr(args, "session", picked.id)  # noqa: B010
+    return True
+
+
+def replace_process(process: Process, args: object, theme: str | None, switch: Switch) -> None:
+    """Become `tau` started for `switch`: in the directory this one was typed in, so the flags
+    that name paths mean what they meant. Does not return."""
+    argv = switch_argv(args, process.cwd, theme, switch)
+    os.chdir(process.cwd)
+    process.stdout.flush()
+    os.execve(sys.executable, argv, dict(process.environ))
+
+
 def tui_mode(process: Process, args: object) -> int:
     """`tau` as `args` (parsed by `tau.cli`) say: returns the exit status. `UsageError` without a
-    terminal on standard input and output; `ThemeError` for an unknown theme."""
+    terminal on standard input and output; `ThemeError` for an unknown theme. When the person
+    leaves the screen for another session, this process is replaced by `tau` started for it."""
     if not (process.stdin.isatty() and process.stdout.isatty()):
         raise UsageError(
             "the terminal UI needs a terminal on standard input and output; "
@@ -118,4 +160,10 @@ def tui_mode(process: Process, args: object) -> int:
         )
     home = tau_home(process.environ)
     theme = chosen_theme(home, getattr(args, "theme"))  # noqa: B009
-    return asyncio.run(launch(process, args, theme, home))
+    if getattr(args, "resume") and not choose_session(process, args, theme, home):  # noqa: B009
+        process.stderr.write("tau: no session chosen\n")
+        return 1
+    status, switch = asyncio.run(launch(process, args, theme, home))
+    if switch is not None:
+        replace_process(process, args, theme, switch)
+    return status

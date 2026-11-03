@@ -10,7 +10,7 @@ from fakes import Reply
 from harness import Harness
 from textual.pilot import Pilot
 
-from tau import CallDraft, Cursor, NodeHandle, Part, Progress, Subject
+from tau import CallDraft, Cursor, NodeHandle, Part, Progress, Subject, Welcome
 from tau.tui import TauApp
 
 SIZE = (120, 40)
@@ -22,13 +22,27 @@ def say(text: str) -> Reply:
 
 
 @asynccontextmanager
-async def running(
-    h: Harness, tmp_path: Path, *, client: str = "me:tui", theme: str | None = None
+async def running(  # noqa: PLR0913 - what a test may vary of the app
+    h: Harness,
+    tmp_path: Path,
+    *,
+    client: str = "me:tui",
+    theme: str | None = None,
+    home: Path | None = None,
+    sessions: Path | None = None,
+    welcome: Welcome | None = None,
 ) -> AsyncIterator[tuple[TauApp, Pilot[None]]]:
-    """The app over a new client of the Harness, running headless; the client is closed after."""
+    """The app over a new client of the Harness, running headless; the client is closed after.
+    `sessions` is the sessions directory Ctrl+O lists, with `home` the `TAU_HOME` beside it."""
     connected = await h.connect(client)
     app = TauApp(
-        connected, h.cursor, welcome=None, home=tmp_path / "home", cwd=tmp_path, theme=theme
+        connected,
+        h.cursor,
+        welcome=welcome,
+        home=tmp_path / "home" if home is None else home,
+        cwd=tmp_path,
+        theme=theme,
+        sessions=sessions,
     )
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: "idle" in app.screen_text() or "working…" in app.screen_text())

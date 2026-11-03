@@ -216,3 +216,79 @@ Markdown CodeBlock {
 .form-input:focus { border: solid $tau-accent; }
 .form-choice, .form-multi { height: auto; background: $tau-bg; border: solid $tau-border; }
 #form-dialog { width: 80; max-height: 90%; }
+
+/* === Composer, cursor bar === */
+
+#composer { height: auto; }
+
+#cursor-bar {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $tau-role-foreign;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* === Small dialogs === */
+
+#confirm-dialog, #text-dialog { width: 60; }
+
+/* === Session picker (carried from 0.15) === */
+
+#session-picker-dialog {
+    width: 80%;
+    max-width: 100;
+    height: 80%;
+    padding: 0 1;
+}
+
+#session-picker-filter { background: $tau-bg; border: solid $tau-border; color: $tau-text; }
+#session-picker-filter:focus { border: solid $tau-accent; }
+
+#session-picker-table {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    color: $tau-text;
+}
+
+#session-picker-status {
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $tau-text-muted;
+}
+
+/* === Tree screen (carried from 0.15's tree browser) === */
+
+#tree-browser-dialog { width: 100%; height: 100%; padding: 0 1; }
+#tree-browser-body { height: 1fr; }
+
+#tree-browser-tree {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+#tree-browser-tree:focus { border: solid $tau-accent; }
+
+ZoneTree > .tree--zone-path { color: $tau-zone-path; }
+ZoneTree > .tree--kind-user { color: $tau-role-user; }
+ZoneTree > .tree--kind-assistant { color: $tau-role-assistant; }
+ZoneTree > .tree--kind-tool { color: $tau-role-tool; }
+ZoneTree > .tree--kind-system { color: $tau-role-system; }
+ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; }
+
+#tree-detail {
+    width: 100%;
+    height: 1fr;
+    background: $tau-bg;
+    border: solid $tau-border;
+    padding: 0 1;
+}
+
+#tree-browser-help { text-align: center; color: $tau-text-muted; }

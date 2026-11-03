@@ -4,7 +4,7 @@
 
 `tau.tui`: the Textual app `tau` opens, which a program can embed or drive, and the picture of the session it draws from.
 
-Names: `tui.FormingCall`, `tui.LiveLayer`, `tui.SessionView`, `tui.TauApp`
+Names: `tui.FormingCall`, `tui.Holder`, `tui.LiveLayer`, `tui.SessionPicker`, `tui.SessionView`, `tui.Switch`, `tui.TauApp`, `tui.TauDialog`
 
 ## tau.tui.FormingCall
 
@@ -18,6 +18,28 @@ class FormingCall
 
 A call the model is still writing: its provider `id`, the `tool` and the `args` text so far
 (`args_raw` once it is a node).
+
+## tau.tui.Holder
+
+```python
+@dataclass(frozen=True)
+class Holder
+    state: str
+    detail: str = ''
+```
+
+Who has a session, as the picker shows it: a `state` (`served`: a live `tau serve`, which
+opening attaches to; `current`: this very session; `in use`: another process holds its lease;
+`no reply`: a serve record whose server did not answer `hello`) and the `detail` that says
+more.
+
+### tau.tui.Holder.pickable
+
+```python
+property pickable: bool
+```
+
+Whether opening it can work: not a session in use, nor one whose server is silent.
 
 ## tau.tui.LiveLayer
 
@@ -52,6 +74,130 @@ def drop_reply(self) -> None
 
 Forget the reply's text, thinking and calls (the node arrived, or the step ended).
 
+## tau.tui.SessionPicker
+
+```python
+class SessionPicker(TauDialog[SessionInfo | None])
+    AGE_WIDTH = 5
+    STATE_WIDTH = 6
+    CWD_WIDTH = 26
+    MIN_TITLE_WIDTH = 20
+    scope: reactive[Literal['here', 'all']] = reactive('here', init=False)
+    filter_text: reactive[str] = reactive('', init=False)
+```
+
+Pick a saved session, newest first. `rows` are `tau.list_sessions` of the sessions
+directory (all of them); `here` is the working directory the "this directory" scope keeps
+(rows with an `error` are always listed); `held` says who holds some of the sessions, by id
+(`session_holders`): `served`, `current`, `in use`, `no reply`. Tab toggles this directory
+and all; `/` filters; Enter picks; Esc leaves the filter, then cancels. Dismissed with the
+row, or `None`. A row with an `error`, one in use or one whose server does not answer cannot
+be picked: the status line says why. The current session can be (it dismisses
+with its row; the caller does nothing).
+
+### tau.tui.SessionPicker.__init__
+
+```python
+def __init__(
+    self,
+    rows: Sequence[SessionInfo],
+    here: Path,
+    *,
+    held: Mapping[str, Holder] | None = None,
+    scope: Literal['here', 'all'] = 'here',
+    title: str | None = None,
+) -> None
+```
+
+### tau.tui.SessionPicker.on_mount
+
+```python
+def on_mount(self) -> None
+```
+
+List the rows and put the keyboard on the table.
+
+### tau.tui.SessionPicker.shown
+
+```python
+def shown(self) -> list[SessionInfo]
+```
+
+The rows the scope and the filter admit, newest first.
+
+### tau.tui.SessionPicker.watch_scope
+
+```python
+def watch_scope(self) -> None
+```
+
+The scope changed: list again.
+
+### tau.tui.SessionPicker.watch_filter_text
+
+```python
+def watch_filter_text(self) -> None
+```
+
+The filter changed: list again.
+
+### tau.tui.SessionPicker.on_resize
+
+```python
+def on_resize(self) -> None
+```
+
+The table's width changed: the title column takes what is left.
+
+### tau.tui.SessionPicker.action_toggle_scope
+
+```python
+def action_toggle_scope(self) -> None
+```
+
+Tab: this directory, or every directory.
+
+### tau.tui.SessionPicker.action_focus_filter
+
+```python
+def action_focus_filter(self) -> None
+```
+
+`/`: type a filter.
+
+### tau.tui.SessionPicker.on_input_changed
+
+```python
+def on_input_changed(self, event: Input.Changed) -> None
+```
+
+Typing in the filter narrows the rows.
+
+### tau.tui.SessionPicker.on_input_submitted
+
+```python
+def on_input_submitted(self, event: Input.Submitted) -> None
+```
+
+Enter in the filter returns to the list: picking is a second, deliberate Enter, so a
+half-typed filter never opens whatever sorts first.
+
+### tau.tui.SessionPicker.on_data_table_row_highlighted
+
+```python
+def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None
+```
+
+Say which session the highlighted row is, or why it cannot be opened.
+
+### tau.tui.SessionPicker.on_data_table_row_selected
+
+```python
+def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None
+```
+
+Enter on a row: pick its session, unless it cannot be opened.
+
 ## tau.tui.SessionView
 
 ```python
@@ -76,6 +222,15 @@ def hear(self, event: Event) -> None
 
 Take one event into the picture.
 
+### tau.tui.SessionView.forget_live
+
+```python
+def forget_live(self, cursor: int) -> None
+```
+
+Drop `cursor`'s live layer: the client stopped watching it, so what the layer holds
+would be heard again, from the start, if it is watched again.
+
 ### tau.tui.SessionView.labels_of
 
 ```python
@@ -94,13 +249,26 @@ The nodes after `tip` down to `at`, oldest first, if `at` descends from `tip` th
 nodes this view holds (`[]` when they are the same node). `None` if it does not, or a node
 on the way was never carried: the caller reads `walk(at)` instead.
 
+## tau.tui.Switch
+
+```python
+@dataclass(frozen=True)
+class Switch
+    session: str | None
+    served: bool = False
+```
+
+Where the person asked to go: the `session` id to open, or `None` for a new session.
+`served` says that a live `tau serve` holds it, so the extensions and options of this run do
+not carry (the server's are loaded already).
+
 ## tau.tui.TauApp
 
 ```python
 class TauApp(App[None])
     CSS_PATH = 'tau.tcss'
     ENABLE_COMMAND_PALETTE = False
-    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False)]
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False)]
 ```
 
 The terminal UI of one session, over `client`, viewing `cursor`.
@@ -133,6 +301,7 @@ def __init__(
     snapshot: Sequence[Event] = (),
     theme: str | None = None,
     reconnect: Callable[[], Awaitable[Client]] | None = None,
+    sessions: Path | None = None,
 ) -> None
 ```
 
@@ -142,8 +311,8 @@ def __init__(
 def compose(self) -> ComposeResult
 ```
 
-The screen, top to bottom: header, transcript, open questions, pending lines, popup,
-editor, status bar.
+The screen, top to bottom: header, cursor bar, transcript, open questions, pending
+lines, popup and editor, status bar.
 
 ### tau.tui.TauApp.draft
 
@@ -198,8 +367,17 @@ Show a toast, and keep it in `toasts`.
 def screen_text(self) -> str
 ```
 
-What the screen says, without its styling: the header, the transcript, the open
-questions, the pending lines, the popup and the status bar.
+What the screen says, without its styling: the header, the cursor bar, the transcript,
+the open questions, the pending lines, the popup and the status bar.
+
+### tau.tui.TauApp.view
+
+```python
+async def view(self, cursor: int) -> None
+```
+
+View `cursor`, an open one: watch it (and so stop hearing the last one's `Live`), read
+its walk again and show its state. `LookupError` for a cursor that is not open.
 
 ### tau.tui.TauApp.action_abort
 
@@ -225,6 +403,15 @@ async def action_quit(self) -> None
 
 Leave. The exit status is 1 if the session was lost.
 
+### tau.tui.TauApp.action_move
+
+```python
+def action_move(self, what: str) -> None
+```
+
+Alt+Left, Alt+Right, Ctrl+Z, Ctrl+G, Ctrl+O, Ctrl+N: a move (`tau.tui._moves`), a task
+of its own because it may ask a question.
+
 ### tau.tui.TauApp.action_fold
 
 ```python
@@ -232,3 +419,90 @@ def action_fold(self, what: str) -> None
 ```
 
 Fold or unfold the thinking regions, or the tool boxes.
+
+## tau.tui.TauDialog
+
+```python
+class TauDialog(ModalScreen[_T])
+    DIALOG_ID: ClassVar[str] = 'tau-dialog'
+    TITLE_TEXT: ClassVar[str] = ''
+    CANCEL_VALUE: ClassVar[Any] = None
+    BODY_ID: ClassVar[str | None] = None
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'cancel', 'Cancel', show=False)]
+```
+
+A centred modal with a title, a body, and ``escape`` meaning cancel.
+
+Subclasses supply :meth:`compose_body` and, usually, :attr:`TITLE_TEXT`. What
+they do NOT supply is the shell, the centering, the title styling or the cancel
+binding — those are the things every dialog agreed on by accident before, and
+the things a new dialog now gets without asking.
+
+Attributes:
+    DIALOG_ID: The shell's widget id. Carries the two properties that genuinely
+        differ between dialogs (``width``, ``height``); everything else comes
+        from the ``tau-dialog`` class.
+    TITLE_TEXT: The title, for a dialog whose title never varies. A dialog whose
+        title is supplied per instance passes it to ``__init__`` instead.
+    CANCEL_VALUE: What ``escape`` dismisses with. ``None`` for a dialog returning
+        an optional value, ``False`` for a confirmation — a cancelled question is
+        never a hidden yes.
+    BODY_ID: Set it to give the dialog a scrolling body with that id between a
+        header (the title plus :meth:`compose_header`) and a footer
+        (:meth:`compose_footer`), both pinned, so the buttons stay on screen
+        however long the body is . ``None`` keeps the
+        plain stack.
+
+### tau.tui.TauDialog.__init__
+
+```python
+def __init__(self, title: str | None = None) -> None
+```
+
+### tau.tui.TauDialog.dialog_title
+
+```python
+def dialog_title(self) -> str
+```
+
+The text of the title row.
+
+### tau.tui.TauDialog.compose_body
+
+```python
+def compose_body(self) -> ComposeResult
+```
+
+Everything between the title and the bottom of the shell.
+
+### tau.tui.TauDialog.compose_header
+
+```python
+def compose_header(self) -> ComposeResult
+```
+
+What stays pinned under the title when :attr:`BODY_ID` is set.
+
+### tau.tui.TauDialog.compose_footer
+
+```python
+def compose_footer(self) -> ComposeResult
+```
+
+What stays pinned at the bottom when :attr:`BODY_ID` is set: hints, buttons.
+
+### tau.tui.TauDialog.compose
+
+```python
+def compose(self) -> ComposeResult
+```
+
+The shell: a title and the body, pinned header and footer if `BODY_ID` is set.
+
+### tau.tui.TauDialog.action_cancel
+
+```python
+def action_cancel(self) -> None
+```
+
+Esc: dismiss with `CANCEL_VALUE`.

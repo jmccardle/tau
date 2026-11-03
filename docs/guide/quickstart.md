@@ -105,8 +105,10 @@ Type a message and press Enter: the reply streams in above the editor. What you 
 model is busy waits above the editor until the next step takes it. Esc aborts the step. `/` alone
 lists the commands, Tab completes them, and a command typed without its arguments asks for them in
 a form. A question an extension asks (a permission, say) is a box above the editor with a button
-for each answer; Esc declines it. Ctrl+Q leaves, and so does Ctrl+C twice. [Frontends](frontends.md#the-terminal-ui)
-lists the keys.
+for each answer; Esc declines it. Ctrl+Z on an empty editor puts your last message back in it to change and
+send again (with text typed, it undoes); Ctrl+G shows the whole tree of the session; Ctrl+O and `tau -r` choose another session
+to open, Ctrl+N starts a new one. Ctrl+Q leaves, and so does Ctrl+C twice.
+[Frontends](frontends.md#the-terminal-ui) lists the keys.
 
 From a checkout, `examples/chat.py` is a line-by-line chat over the same library, small enough to
 read.

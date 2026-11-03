@@ -189,6 +189,10 @@ All calls are `async` and act for the client's id. In groups:
 - **Conversation**: `send(cursor, text)` adds input and turns auto-step on; `input` adds without
   turning it on, and `step(cursor)` runs one step of a cursor at rest (`Busy` otherwise).
   `abort(cursor)` aborts the step and declines its open questions. `set_auto(cursor, on)`.
+  `remove_item(cursor, item)` takes back an input you added (the id `input` or `send` returned)
+  while the cursor has not taken it: `LookupError` once it has (or while a `pre_input` hook is
+  being offered it), `PermissionError` for another
+  client's or an extension's item. It wakes nothing.
 - **Moving**: `go_to(cursor, node)` moves the cursor, aborting a busy step, and turns auto-step
   off. Going to an earlier node and sending is how you branch. `open(node)` makes a new cursor
   there; `close_cursor` and `reopen`; `set_label` and `remove_label`.
@@ -411,13 +415,22 @@ transcript readable, and `tau` exits 1 when you quit.
 You can embed it, and test one with Textual's pilot:
 
 ```python skip
-app = TauApp(client, cursor, welcome=opened.welcome, home=tau_home, snapshot=opened.snapshot)
+app = TauApp(
+    client, cursor, welcome=opened.welcome, home=tau_home, cwd=cwd, snapshot=opened.snapshot
+)
 async with app.run_test(size=(120, 40)) as pilot:
     await pilot.press(*"hello", "enter")
     print(app.screen_text())
 ```
 
+When the person asks for another session (Ctrl+O, Ctrl+N), `run_async` returns with `app.switch`
+set to a `tau.tui.Switch` (the session id, or `None` for a new one): closing this session and
+starting the other is the embedder's, as `tau` does it by replacing its own process. Give the app
+`sessions=` (the sessions directory) for Ctrl+O to list.
+
 The screen, top to bottom: the header (the first message, the session id, the working directory),
+the **cursor bar** (when there is more than one cursor, or a label: a tab per open cursor with its
+labels, `…` while it works, `?` while it has an open question, the **viewed** cursor in brackets),
 the **transcript** of the cursor it views, the open **questions**, the **pending** lines, the
 command popup, the editor and the status bar (the cursor's model, whether it is working,
 auto-step, how the last step ended, a failed hook, and a line for each extension that shows
@@ -431,6 +444,8 @@ something).
   Ctrl+J starts a new line. Up and Down at the first and last line walk the lines you sent.
 - Esc aborts the step. Ctrl+C aborts if the cursor is busy, else empties the editor, else quits
   when pressed twice; Ctrl+Q quits. Ctrl+R folds the thinking, Ctrl+T the tool boxes.
+  Alt+Left and Alt+Right change the viewed cursor, Ctrl+Z on an empty editor edits the last message (otherwise it undoes typing), Ctrl+G is the
+  tree, Ctrl+O the session picker and Ctrl+N a new session.
 - `/` lists the commands; Tab completes the name, then each argument by what it is (models,
   cursors, nodes, paths). A command typed without its arguments opens a form for them. An
   unknown `/name` is sent as text, and a bare name two extensions share is refused (type
@@ -440,6 +455,28 @@ something).
   Answer button. Decline, or Esc inside the box, answers nothing. An answer the session refuses
   stays in the box with the reason.
 - Notices (`cursor.tell`, a command's progress) are toasts.
+- **Cursors.** Alt+Left and Alt+Right view the previous or next open cursor. The app watches the
+  viewed cursor only, so switching reads the new cursor's walk again and starts hearing its live
+  text (a reply already in flight is caught up). Someone else's branch of the cursor you view, or
+  a go-to, redraws the walk the same way.
+- **Ctrl+Z on an empty editor edits your last message** (with text typed it is the editor's undo): the cursor goes to the node before the last user message of
+  its walk and the message's text is in the editor, so sending it again makes a branch (the old
+  turn stays in the tree). On a busy cursor it asks before aborting the step.
+- **Up on an empty editor takes back** the last line you sent that the cursor has not taken yet
+  (`remove_item`), and puts it in the editor. If the cursor has taken it, Up is the history.
+- **Ctrl+G is the tree**: every node, a branch opening a level and each turn a fold (Left and
+  Right), the cursors marked where they are (`◀ [1] main`, the viewed one in brackets), and the
+  highlighted node whole beside the rows. Enter goes there (the viewed cursor moves; on a busy
+  cursor it asks before aborting), `o` opens a new cursor there (Alt+Right views it), `l` puts a
+  label on the viewed cursor, Esc leaves.
+- **Sessions.** `tau -r` and Ctrl+O open the picker: this directory's sessions, newest first, by
+  name or first message; Tab widens it to every directory, `/` filters (every word, any order),
+  Enter opens, Esc cancels. The session you are in says `current` (picking it does nothing). A session a `tau serve`
+  holds says `served`; one another `tau` process holds says `in use`, and one whose server does not
+  answer says `no reply` with the reason: neither can be picked. One that cannot be read is
+  dimmed and says why. Opening one, and Ctrl+N for a new one, close this session (one never used is
+  removed) and start `tau` again in the same terminal and process, with the same extension flags,
+  sessions directory and theme: one process holds one session and one working directory.
 
 ## What to build on
 

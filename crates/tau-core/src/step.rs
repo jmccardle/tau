@@ -168,6 +168,17 @@ pub struct Step {
     batch: Vec<(String, Option<(Outcome, Author)>)>,
 }
 
+/// Whether `id` is the input `step` is offering to the `pre_input` hooks: it is about to be
+/// delivered by the node the step commits, so it can no longer be taken from the scratchpad.
+#[must_use]
+pub fn offers(step: &Step, id: ItemId) -> bool {
+    step.pos == Pos::Input
+        && step
+            .draft
+            .as_ref()
+            .is_some_and(|d| d.delivers.contains(&id))
+}
+
 impl Step {
     /// A wake. `asked`: a frontend's `Session.step`, whose phases run whether or not auto-step is
     /// on.

@@ -12,6 +12,7 @@ from harness import Connected, Harness, scenario
 
 from tau import (
     Appended,
+    Body,
     CallArgs,
     CallNamed,
     Client,
@@ -24,6 +25,7 @@ from tau import (
     HookFailure,
     Labels,
     Live,
+    NoSuchCursor,
     Notice,
     Part,
     Stop,
@@ -675,4 +677,100 @@ async def test_a_client_that_is_closed_raises_connection_error_on_every_call(
     ):
         with pytest.raises(ConnectionError, match="closed"):
             await call()
+    await h.close()
+
+
+# Taking back an input (D23 ruling 4)
+
+
+async def _busy(tmp_path: Path) -> tuple[Harness, Gate]:
+    """A Harness whose cursor is mid-sample, so inputs sent now wait in its scratchpad."""
+    gate = Gate()
+    reply = Reply([Part.Text("busy")], gate=gate, gate_after=0)
+    h = await Harness.create(tmp_path, provider=FakeProvider([reply, Reply([Part.Text("next")])]))
+    await h.send("start")
+    await h.settle()
+    assert (await h.view()).busy
+    return h, gate
+
+
+@scenario
+async def test_a_client_takes_back_its_own_pending_input(tmp_path: Path) -> None:
+    h, gate = await _busy(tmp_path)
+    first = await h.input("oops")
+    second = await h.input("and this")
+    assert [i.id for i in (await h.view()).items] == [first, second]
+    await h.client.remove_item(h.cursor, first)
+    after = await h.view()
+    assert [i.id for i in after.items] == [second]
+    assert after.busy, "taking back does not touch the step in flight"
+    with pytest.raises(LookupError):
+        await h.client.remove_item(h.cursor, first)
+    gate.release()
+    await h.close()
+
+
+@scenario
+async def test_an_input_the_cursor_took_cannot_be_taken_back(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])]))
+    item = await h.send("hello")
+    await h.settle()
+    assert (await h.view()).items == ()
+    with pytest.raises(LookupError):
+        await h.client.remove_item(h.cursor, item)
+    await h.close()
+
+
+@scenario
+async def test_a_client_cannot_take_back_another_clients_input(tmp_path: Path) -> None:
+    h, gate = await _busy(tmp_path)
+    other = await h.connect("me:other")
+    theirs = await other.input(h.cursor, "not yours")
+    with pytest.raises(PermissionError):
+        await h.client.remove_item(h.cursor, theirs)
+    assert [i.id for i in (await h.view()).items] == [theirs]
+    await other.remove_item(h.cursor, theirs)
+    assert (await h.view()).items == ()
+    gate.release()
+    await other.close()
+    await h.close()
+
+
+@scenario
+async def test_taking_back_names_a_cursor_that_exists(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    item = await h.input("x")
+    with pytest.raises(NoSuchCursor):
+        await h.client.remove_item(99, item)
+    await h.close()
+
+
+@scenario
+async def test_an_input_a_pre_input_hook_is_being_offered_cannot_be_taken_back(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+    recorder = Recorder(gates={"pre_input": gate})
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])]), extensions=[recorder]
+    )
+    item = await h.send("hello")
+    await h.until(lambda: any(point == "pre_input" for point, _ in recorder.calls))
+    with pytest.raises(LookupError, match=f"item {item} is not pending"):
+        await h.client.remove_item(h.cursor, item)
+    gate.release()
+    await h.settle()
+    assert [b.text for b in h.bodies() if isinstance(b, Body.User)] == ["hello"]
+    assert (await h.view()).ending == Ending.Done(), "the step was not failed by the removal"
+    await h.close()
+
+
+@scenario
+async def test_the_message_for_a_missing_item_reads_the_same_local_and_remote(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
+    with pytest.raises(LookupError) as error:
+        await h.client.remove_item(h.cursor, 41)
+    assert str(error.value).startswith("item 41 is not pending on cursor 0")
     await h.close()

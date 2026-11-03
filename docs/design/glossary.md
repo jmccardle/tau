@@ -1304,11 +1304,13 @@ that is not loaded is a usage error (exit 2).
 
 ### TUI, tau.tui, TauApp
 modules `tau.tui` (public), `tau.tui._app`, `_run`, `_line`, `_forms`, `_fields`, `_chat`,
-`_transcript`, `_editor`, `_status`, `_themes`, `_dialogs` · D23 · new (8C-1)
+`_transcript`, `_editor`, `_status`, `_themes`, `_dialogs`, `_moves`, `_tree`, `_picker`,
+`_switch` · D23 · new (8C-1, 8C-2)
 
 The Textual frontend. **`tau`** with no `-p` opens it; **`TauApp(client, cursor, *, welcome, home,
-snapshot=(), theme=None, reconnect=None)`** is the app, a frontend of one `Client` that views one
-cursor (8C-1: the first). It touches only its `Client`. One listener, a worker running
+cwd, snapshot=(), theme=None, reconnect=None, sessions=None)`** is the app, a frontend of one
+`Client` that views one cursor at a time (the **viewed cursor**; `sessions` is the sessions
+directory Ctrl+O lists). It touches only its `Client`. One listener, a worker running
 `async for event in client`, feeds a **SessionView**; the widgets draw from it. **The launch**
 (`tau.tui._run`): `open_client` first, with prompts on the plain terminal (a trust question is asked
 before the screen opens, and `--verbose`'s start report goes to stderr before it), then
@@ -1321,7 +1323,9 @@ readable and the exit status is 1 once the person quits. `tau.tui` is the fourth
 `textual` is a dependency imported only when the screen opens. The keys: Enter sends, Ctrl+J starts
 a line, Tab completes, Esc aborts the step (or declines the question the keyboard is in), Ctrl+C
 aborts if busy, else clears the draft, else quits when pressed twice, Ctrl+R folds thinking, Ctrl+T
-tool boxes, Ctrl+Q quits. `screen_text()` is the screen as plain text (tests read it); `toasts` is
+tool boxes, Ctrl+Q quits, and (8C-2) Alt+Left and Alt+Right view the previous or next cursor,
+Ctrl+Z edits the last message, Ctrl+G the tree, Ctrl+O the session picker, Ctrl+N a new session,
+Up on an empty editor takes back a pending line. `screen_text()` is the screen as plain text (tests read it); `toasts` is
 every toast shown, notices included.
 
 ### SessionView
@@ -1342,7 +1346,10 @@ events alone.
 
 The cursor whose walk the transcript shows and whose `Live` the app watches. A `CursorView` whose
 `at` extends the walk appends the new nodes; one that moves elsewhere (a go-to, another client's
-branch) reads `walk(at)` again. 8C-1 views the first cursor (`Opened.cursor`); switching is 8C-2.
+branch) reads `walk(at)` again. The app starts on the first cursor (`Opened.cursor`) and
+`TauApp.view(cursor)` switches: it `watch`es the new cursor (so its sample in flight is caught up),
+forgets the old one's live layer, reads the new walk and shows its questions, pending lines and
+status. Closing the viewed cursor moves the view to the lowest open one.
 
 ### transcript
 `tau.tui._transcript.ChatDisplay` · D23 §2 · new
@@ -1379,6 +1386,53 @@ shows the commands while the first word is typed, the candidates of a Tab, and a
 `/word` is no command and goes to the model as text. **Pending lines** are the cursor's scratchpad
 items (`CursorView.items`) above the editor, an input under its author's name when someone else
 wrote it.
+
+### cursor bar
+`tau.tui._status.CursorBar` · D23 §2 · new (8C-2)
+
+One line of tabs, one per open cursor in id order: its id and labels, `…` while a step runs, `?`
+while a question is open; the viewed cursor is in brackets (`[0 main] 1 scout …?`). Hidden on a
+session with one cursor and no label. Alt+Left and Alt+Right move the view (around the ends). It
+replaces 0.15's session sidebar and stream strip.
+
+### edit last message
+`tau.tui._moves.Moves` · D23 §2 · new (8C-2)
+
+Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
+message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
+busy cursor it asks first, because a go-to aborts the step. **Reclaim** is its small sibling: Up on
+an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
+editor.
+
+### tree screen
+`tau.tui._tree.TreeScreen`, `TreeIntent`, `plan_tree_rows`, `ZoneTree` · D23 §6 · new (8C-2)
+
+Ctrl+G. Every node as a `Tree` (read from `Client.nodes` in ranges): a fork opens a level, a `User`
+node opens a turn the next `User` node closes, turns mount folded except where a cursor is; a row
+shows the type tag, the text, and the cursors at it with their labels (`◀ [1] main`, the viewed one
+in brackets); the highlighted node is shown whole beside the rows, and the path to it is tinted.
+Enter **goes to** the node, `o` **opens a cursor** there, `l` **labels** the viewed cursor; the
+screen returns a `TreeIntent` and the app makes the call (a go-to on a busy cursor asks first).
+Carried from 0.15's `tree_browser.py` less marks, elide, branch-from-marks, copy and paste.
+
+### SessionPicker, Switch, re-exec
+`tau.tui.SessionPicker`, `tau.tui.Switch`, `tau.tui._switch`, `tau.tui._run` · D23 §5 · new (8C-2)
+
+**`SessionPicker(rows, here, *, held=None, scope="here")`** is the dialog over `tau.list_sessions`
+rows, newest first: title (`SessionInfo.title`), age, state (a **`Holder`**: `current` for this session, picking it closes the picker and does
+nothing; `served` when a live `tau serve` holds it; `in use` when another process holds its lease
+(an `flock` on its log, `is_leased`); `no reply` for a serve record whose server does not answer
+`hello`, with the reason; `error` for a row that cannot be read. The last three are dimmed and not
+pickable; `session_holders` finds them, and a failing probe never keeps the listing from opening) and, in the "all" scope,
+`cwd`. Tab toggles this directory and all, `/` filters (every term, any order), Enter picks, Esc
+cancels. `tau -r` shows it as a small app of its own before the start and then runs
+`--session ID`; Ctrl+O shows it in the app. **`Switch(session, served=False)`** is where the person
+asked to go (`None`: a new session): Ctrl+O and Ctrl+N leave the screen with `TauApp.switch` set.
+**Re-exec**: `tau` closes the session as `Opened.close` does (one never used is removed), changes
+to the directory it was typed in and replaces its own process with `tau` started for the switch
+(`switch_argv`): the sessions directory and theme, the extension flags (`-e`, `--no-extensions`,
+`--set`) unless a server holds the target (it would refuse them), and for a new session the model,
+prompt flags and `--no-session`. One process holds one session and one working directory.
 
 ### header, status bar
 `tau.tui._status.Header`, `StatusBar` · D23 §2 · new
@@ -2396,7 +2450,9 @@ buffer=256)`; `_client.py`) · D16 · new
 
 A frontend's whole view of a session (in process, or over the wire as a `RemoteClient`); it never
 touches `Driver` or `Session`. Async calls that
-act as the client (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`,
+act as the client (`input`, `send`, `remove_item(cursor, item)` (D23 ruling 4: takes back an
+`Input` item this client added and the cursor has not delivered; `LookupError` once it has,
+`PermissionError` for another's; wakes nothing), `step`, `go_to`, `set_auto`, `abort`, `open`,
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
 the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
@@ -2404,7 +2460,7 @@ the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watc
 completed on the driver; see *parse_line*), the reads `node`, `nodes`, `walk`, `children`,
 `close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
-`Client`. `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
+`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
 Every argument and event is a plain frozen value; over the wire (D21) the core's `Node`, `Body`,
 `Author`, `Item`, `ItemData` and `Ending` travel in the log's own JSON encoding (see *wire
 coding*) and the rest as their type hints say. `LocalClient` is the

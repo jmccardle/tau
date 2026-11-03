@@ -73,7 +73,7 @@ def _outcome(outcome: Outcome) -> tuple[str, bool, bool]:
             return "interrupted before it finished", False, True
 
 
-def _config_line(data: str) -> str:
+def config_line(data: str) -> str:
     """What a `Config` node changed, in one line."""
     fields = json.loads(data)
     parts: list[str] = []
@@ -129,8 +129,8 @@ class ChatDisplay(VerticalScroll):
                 widget.add_class("system-box")
                 line = "[System prompt]"
             case Body.Config(config=config):
-                widget = self._dim(_config_line(config.data))
-                line = _config_line(config.data)
+                widget = self._dim(config_line(config.data))
+                line = config_line(config.data)
             case Body.Custom(kind=kind, data=data):
                 widget, line = self._custom(kind, data)
             case _:

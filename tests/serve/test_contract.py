@@ -19,7 +19,8 @@ def schema() -> dict[str, typing.Any]:
 def client_calls() -> dict[str, inspect.Signature]:
     return {
         name: inspect.signature(fn)
-        for name, fn in vars(tau.Client).items()
+        for part in inspect.getmro(tau.Client)
+        for name, fn in vars(part).items()
         if inspect.iscoroutinefunction(fn) and not name.startswith("_") and name != "close"
     }
 

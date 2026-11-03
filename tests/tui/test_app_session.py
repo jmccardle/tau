@@ -46,6 +46,14 @@ async def test_a_client_that_fell_behind_is_cut_off_and_the_app_reconnects(tmp_p
         await until(pilot, lambda: any("reconnecting" in t for t in app.toasts))
         await until(pilot, lambda: app.client is not slow)
         assert app.failure is None
+        # `/flood` met the cut-off: it is back in the editor if the connection was lost under it
+        # and not if the command had finished. Wait for that to be settled, then start clean.
+        for worker in [w for w in app.workers if w.group == "submit"]:
+            await worker.wait()
+        if app.draft:
+            assert app.draft == "/flood"
+            await pilot.press("ctrl+c")
+            await until(pilot, lambda: app.draft == "")
         await type_line(pilot, "hello")
         await pilot.press("enter")
         await shows(pilot, app, "still here")

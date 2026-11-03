@@ -569,6 +569,26 @@ fn a_write_delivers_only_what_is_pending_for_its_own_cursor() {
 }
 
 #[test]
+fn an_input_offered_to_pre_input_hooks_cannot_be_removed() {
+    let (mut m, c) = machine();
+    let item = send(&mut m, c, Author::Frontend(term()), "hi");
+    let mut refused = None;
+    run(&mut m, c, |job, m| match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            ..
+        } => {
+            refused = Some(m.remove_item(item, None));
+            vec![echo(job)]
+        }
+        _ => plain(job, m),
+    });
+    assert_eq!(refused, Some(Err(Error::NoSuchItem(item))));
+    assert_eq!(users(&m, c), 1, "the step delivered it");
+    assert_eq!(m.session.items(c).count(), 0);
+}
+
+#[test]
 fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
     let (mut m, c) = machine();
     let item = send(&mut m, c, Author::Frontend(term()), "hi");

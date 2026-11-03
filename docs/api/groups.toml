@@ -122,7 +122,7 @@ names = [
 id = "tui"
 title = "The terminal UI"
 reader = "`tau.tui`: the Textual app `tau` opens, which a program can embed or drive, and the picture of the session it draws from."
-names = ["tui.TauApp", "tui.SessionView", "tui.LiveLayer", "tui.FormingCall"]
+names = ["tui.TauApp", "tui.Switch", "tui.SessionPicker", "tui.Holder", "tui.TauDialog", "tui.SessionView", "tui.LiveLayer", "tui.FormingCall"]
 
 [[group]]
 id = "diagnostics"

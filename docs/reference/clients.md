@@ -52,6 +52,17 @@ async def go_to(self, cursor: int, to: int) -> None
 Move the cursor to node `to`, aborting a busy step (which declines its open
 questions).
 
+### Client.remove_item
+
+```python
+async def remove_item(self, cursor: int, item: int) -> None
+```
+
+Take back a pending input this client added to `cursor` (`input` or `send`): it is
+removed from the scratchpad before the cursor delivers it. `LookupError` once it is
+delivered, or if there is no such item on the cursor; `PermissionError` for an item
+another client or an extension added. Wakes nothing and does not turn auto-step off.
+
 ### Client.set_auto
 
 ```python
@@ -131,6 +142,48 @@ Answer an open question with a decoded JSON value; `None` declines. `ValueError`
 the value is wrong (the question stays open), `LookupError` if the question is closed
 or unknown (the first good answer wins), `PermissionError` if it is for another
 client.
+
+### Client.close
+
+```python
+async def close(self) -> None
+```
+
+Disconnect: the stream ends and the client is no longer connected.
+
+### Client.node
+
+```python
+async def node(self, id: int) -> Node
+```
+
+The node with this id; `NoSuchNode` if there is none.
+
+### Client.nodes
+
+```python
+async def nodes(self, start: int, limit: int) -> list[Node]
+```
+
+Up to `limit` nodes from id `start`, in id order; none past the end. Ids are dense
+and a node never changes, so a tree is read in ranges. `ValueError` for a negative
+`start` or `limit`.
+
+### Client.walk
+
+```python
+async def walk(self, id: int) -> list[Node]
+```
+
+The nodes from the root to `id`.
+
+### Client.children
+
+```python
+async def children(self, id: int) -> list[int]
+```
+
+The ids of the children of node `id`, in append order.
 
 ### Client.commands
 
@@ -219,48 +272,6 @@ async def complete_line(self, cursor: int, line: str) -> list[str]
 
 `commandline.completions` of `line` on the driver: what could finish its last
 word, in one call.
-
-### Client.node
-
-```python
-async def node(self, id: int) -> Node
-```
-
-The node with this id; `NoSuchNode` if there is none.
-
-### Client.nodes
-
-```python
-async def nodes(self, start: int, limit: int) -> list[Node]
-```
-
-Up to `limit` nodes from id `start`, in id order; none past the end. Ids are dense
-and a node never changes, so a tree is read in ranges. `ValueError` for a negative
-`start` or `limit`.
-
-### Client.walk
-
-```python
-async def walk(self, id: int) -> list[Node]
-```
-
-The nodes from the root to `id`.
-
-### Client.children
-
-```python
-async def children(self, id: int) -> list[int]
-```
-
-The ids of the children of node `id`, in append order.
-
-### Client.close
-
-```python
-async def close(self) -> None
-```
-
-Disconnect: the stream ends and the client is no longer connected.
 
 ## CommandFailed
 

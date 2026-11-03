@@ -10,6 +10,8 @@ In the manner of 0.15's `ExtensionStatusBar` and `WarningsMarker`
 `CursorView`.
 """
 
+from collections.abc import Mapping, Sequence
+
 from textual.widgets import Static
 
 from tau._core import Author, Ending, ItemData
@@ -56,6 +58,48 @@ def pending_line(data: ItemData, me: str) -> str:
         )
     assert isinstance(data, ItemData.Extension)
     return f"[{data.name}]"
+
+
+def tab_text(view: CursorView, labels: Sequence[str], *, viewed: bool) -> str:
+    """One cursor's tab: its id and labels, `…` while a step runs, `?` while a question is
+    open; the viewed cursor's tab is in brackets."""
+    name = " ".join([str(view.cursor), *labels])
+    marks = ("…" if view.busy else "") + ("?" if view.questions else "")
+    inside = name + (" " + marks if marks else "")
+    return f"[{inside}]" if viewed else f" {inside} "
+
+
+def bar_text(
+    views: Mapping[int, CursorView], labels: Sequence[tuple[str, int]], viewed: int
+) -> str:
+    """The cursor bar: a tab per open cursor in id order; `""` (the bar is hidden) with one
+    cursor that has no label."""
+    if len(views) < 2 and not labels:  # noqa: PLR2004 - one cursor needs no tabs
+        return ""
+    return "".join(
+        tab_text(
+            view,
+            [name for name, on in labels if on == cursor],
+            viewed=cursor == viewed,
+        )
+        for cursor, view in sorted(views.items())
+    )
+
+
+class CursorBar(Static):
+    """One tab per open cursor, the viewed one in brackets (Alt+Left and Alt+Right move it). Hidden
+    on a session with one cursor and no label."""
+
+    def __init__(self) -> None:
+        super().__init__("", id="cursor-bar", markup=False)
+        self.text = ""
+        self.display = False
+
+    def show(self, text: str) -> None:
+        """Set the bar's tabs (`""` hides it)."""
+        self.text = text
+        self.display = bool(text)
+        self.update(text)
 
 
 class Header(Static):

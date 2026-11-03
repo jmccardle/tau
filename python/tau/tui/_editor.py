@@ -14,8 +14,10 @@ from collections.abc import Awaitable, Callable
 from typing import ClassVar
 
 from rich.markup import escape
-from textual import events
+from textual import events, work
+from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
@@ -35,6 +37,7 @@ class ChatInput(TextArea):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+j", "newline", "New line", show=False),
+        Binding("ctrl+z", "undo_or_edit", "Undo / edit the last message", show=False),
     ]
 
     class Submitted(Message):
@@ -43,6 +46,13 @@ class ChatInput(TextArea):
         def __init__(self, text: str) -> None:
             super().__init__()
             self.text = text
+
+    class Reclaim(Message):
+        """Up on an empty editor, with a line of this client's waiting in the cursor's
+        scratchpad: take it back."""
+
+    class EditLast(Message):
+        """Ctrl+Z on an empty editor: edit the last message."""
 
     class Candidates(Message):
         """A Tab found `items`; the one the text now holds is `selected`."""
@@ -62,6 +72,8 @@ class ChatInput(TextArea):
         self._start = 0
         self._chosen = 0
         self._cycle_text = ""
+        self.reclaimable = False
+        """Whether this client has a pending line `Up` on an empty editor takes back."""
 
     @property
     def cycling(self) -> bool:
@@ -71,6 +83,13 @@ class ChatInput(TextArea):
     def action_newline(self) -> None:
         """Start a new line."""
         self.insert("\n")
+
+    def action_undo_or_edit(self) -> None:
+        """Ctrl+Z: undo what was typed; with nothing typed, ask to edit the last message."""
+        if self.text:
+            self.action_undo()
+        else:
+            self.post_message(self.EditLast())
 
     def send(self) -> None:
         """Take the draft out of the editor and hand it to the app as `Submitted`, remembering it
@@ -105,6 +124,10 @@ class ChatInput(TextArea):
             event.prevent_default()
             event.stop()
             self.run_worker(self._complete(), exclusive=True)
+        elif event.key == "up" and self.reclaimable and not self.text:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Reclaim())
         elif event.key in ("up", "down") and self._walk(event.key == "up"):
             event.prevent_default()
             event.stop()
@@ -163,6 +186,64 @@ class ChatInput(TextArea):
         self.load_text(shown)
         self.move_cursor(self.document.end)
         self._cycle_text = shown
+
+
+class Composer(Vertical):
+    """The popup and the editor, and what ties them: typing a `/` line shows the commands it
+    could be (`rows`) or warns that it is no command, a Tab shows its candidates, Enter hands the
+    draft to `submit`, a task of its own so the person can answer a question the line asks. Up
+    and Ctrl+Z on an empty editor are moves (`move`): take a line back, edit the last message."""
+
+    def __init__(
+        self,
+        completer: Completer,
+        rows: Callable[[str], list[tuple[str, str]]],
+        submit: Callable[[str], Awaitable[None]],
+        move: Callable[[str], None],
+    ) -> None:
+        super().__init__(id="composer")
+        self._move = move
+        self._completer = completer
+        self._rows = rows
+        self._submit = submit
+
+    def compose(self) -> ComposeResult:
+        yield CommandPopup()
+        yield ChatInput(self._completer)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        event.stop()
+        editor, popup = self.query_one(ChatInput), self.query_one(CommandPopup)
+        text = editor.text
+        if editor.cycling:
+            return
+        if not text.startswith("/") or " " in text or "\n" in text:
+            popup.hide()
+        elif rows := self._rows(text):
+            popup.show(rows)
+        else:
+            popup.warn(f"{text} is not a command: this line goes to the model as text")
+
+    def on_chat_input_candidates(self, event: ChatInput.Candidates) -> None:
+        event.stop()
+        self.query_one(CommandPopup).show([(item, "") for item in event.items], event.selected)
+
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        event.stop()
+        if event.text.strip():
+            self._send(event.text)
+
+    def on_chat_input_reclaim(self, event: ChatInput.Reclaim) -> None:
+        event.stop()
+        self._move("reclaim")
+
+    def on_chat_input_edit_last(self, event: ChatInput.EditLast) -> None:
+        event.stop()
+        self._move("edit")
+
+    @work(group="submit")
+    async def _send(self, text: str) -> None:
+        await self._submit(text)
 
 
 class CommandPopup(Static):

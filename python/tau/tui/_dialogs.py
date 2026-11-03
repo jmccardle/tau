@@ -12,7 +12,7 @@ rules for the title alone.
 
 :class:`TauDialog` is the shell. A subclass supplies :meth:`~TauDialog.compose_body` and gets the
 shell, the title, the centering and the cancel binding. (0.15's `ChoiceDialog` and `TextDialog`
-are not carried: nothing in 8C-1 asks for them.)
+are written new, small, below: `ConfirmDialog` and `TextDialog`.)
 
 Two secondary text roles, deliberately not merged into one. ``tau-dialog-help`` is a
 paragraph stating a consequence before it happens, set left because a centred
@@ -32,7 +32,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
 
 _T = TypeVar("_T")
 
@@ -109,6 +109,7 @@ class TauDialog(ModalScreen[_T]):
         yield from ()
 
     def compose(self) -> ComposeResult:
+        """The shell: a title and the body, pinned header and footer if `BODY_ID` is set."""
         if self.BODY_ID is None:
             with Container(id=self.DIALOG_ID, classes="tau-dialog"):
                 yield Static(self.dialog_title(), classes="tau-dialog-title")
@@ -124,4 +125,54 @@ class TauDialog(ModalScreen[_T]):
                 yield from self.compose_body()
 
     def action_cancel(self) -> None:
+        """Esc: dismiss with `CANCEL_VALUE`."""
         self.dismiss(self.CANCEL_VALUE)
+
+
+class ConfirmDialog(TauDialog[bool]):
+    """Ask a yes-or-no question; dismissed with the answer, `False` on Esc (a cancelled question
+    is never a hidden yes)."""
+
+    DIALOG_ID = "confirm-dialog"
+    CANCEL_VALUE = False
+
+    def __init__(self, title: str, question: str) -> None:
+        super().__init__(title)
+        self._question = question
+
+    def compose_body(self) -> ComposeResult:
+        yield Static(self._question, classes="tau-dialog-help", markup=False)
+        yield from dialog_buttons(
+            [("Yes", "confirm-yes", "primary"), ("No", "confirm-no", "default")],
+            id="confirm-buttons",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm-yes", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-yes")
+
+
+class TextDialog(TauDialog[str | None]):
+    """Ask for one line of text; dismissed with it (Enter), or `None` (Esc). An empty line is not
+    an answer."""
+
+    DIALOG_ID = "text-dialog"
+
+    def __init__(self, title: str, prompt: str) -> None:
+        super().__init__(title)
+        self._prompt = prompt
+
+    def compose_body(self) -> ComposeResult:
+        yield Static(self._prompt, classes="tau-dialog-help", markup=False)
+        yield Input(id="text-dialog-input", classes="tau-dialog-input")
+        yield Static("Enter accepts; Esc cancels", classes="tau-dialog-hint")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        if event.value.strip():
+            self.dismiss(event.value.strip())

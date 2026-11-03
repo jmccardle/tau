@@ -125,7 +125,13 @@ class CommandLine:
         try:
             if text.strip() != "/":
                 taken = await (self._command(text) if text.startswith("/") else self._send(text))
-        except (CommandFailed, Busy, ValueError, LookupError, ConnectionError) as e:
+        except ConnectionError as e:
+            app.toast(
+                f"{e}. The line may have reached the session (check the transcript); "
+                "it is back in the editor",
+                severity="error",
+            )
+        except (CommandFailed, Busy, ValueError, LookupError) as e:
             app.toast(str(e), severity="error")
         if not taken:
             app.restore_draft(text)

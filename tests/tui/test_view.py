@@ -132,3 +132,16 @@ def test_the_layers_of_cursors_are_apart() -> None:
     seen.hear(view(0, 2, busy=True))
     assert seen.live[0].empty
     assert seen.live[1].text == "b"
+
+
+def test_forgetting_a_cursors_live_layer_starts_the_next_watch_from_nothing() -> None:
+    seen = SessionView()
+    seen.hear(view(0, 1, busy=True))
+    seen.hear(view(1, 1, busy=True))
+    seen.hear(Live(0, TextDelta("par")))
+    seen.hear(Live(1, TextDelta("other")))
+    seen.forget_live(0)
+    assert 0 not in seen.live
+    assert seen.live[1].text == "other", "only that cursor's layer"
+    seen.hear(Live(0, TextDelta("replayed")))  # a later watch sends what the sample has said
+    assert seen.live[0].text == "replayed"

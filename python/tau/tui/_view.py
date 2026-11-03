@@ -105,6 +105,11 @@ class SessionView:
             case Live(cursor=cursor, delta=delta):
                 self._live(cursor, delta)
 
+    def forget_live(self, cursor: int) -> None:
+        """Drop `cursor`'s live layer: the client stopped watching it, so what the layer holds
+        would be heard again, from the start, if it is watched again."""
+        self.live.pop(cursor, None)
+
     def labels_of(self, cursor: int) -> tuple[str, ...]:
         """The labels on `cursor`, in label order."""
         return tuple(name for name, on in self.labels if on == cursor)

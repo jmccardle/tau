@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::step::{Answer, Job, Step};
+use crate::step::{self, Answer, Job, Step};
 use crate::transitions;
 use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, NodeId, Session};
 
@@ -234,9 +234,11 @@ impl Machine {
     ///
     /// # Errors
     ///
-    /// `NoSuchItem` if `id` is not in the scratchpad.
+    /// `NoSuchItem` if `id` is not in the scratchpad, or is the input a step is offering to its
+    /// `pre_input` hooks (it is as good as delivered: the step commits it).
     pub fn remove_item(&mut self, id: ItemId, hook: Option<CursorId>) -> Result<(), Error> {
-        if !self.session.scratchpad().items.iter().any(|i| i.id == id) {
+        let offered = self.steps.values().any(|s| step::offers(s, id));
+        if offered || !self.session.scratchpad().items.iter().any(|i| i.id == id) {
             return Err(Error::NoSuchItem(id));
         }
         self.session.remove_item(id);

@@ -19,8 +19,10 @@ Status: **0.16 in development.** What exists now:
 - a wire protocol and `RemoteClient` for those clients;
 - the terminal UI: `tau` opens it (Textual, `tau.tui`) on a new, continued or attached session:
   the transcript with thinking and tool boxes, live text, the editor, `/` commands with a popup,
-  Tab completion and forms for missing arguments, questions as boxes, themes. The cursor bar,
-  the tree, the session picker and the model and config forms follow (Phase 8, 8C-2 and 8C-3).
+  Tab completion and forms for missing arguments, questions as boxes, themes; a cursor bar and
+  switching between cursors, Ctrl+Z to edit the last message, the tree screen (go to a node,
+  open a cursor there, label), the session picker (`tau -r`, Ctrl+O) and Ctrl+N for a new session.
+  The model and config forms follow (Phase 8, 8C-3).
 
 Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
 write an extension or a frontend.

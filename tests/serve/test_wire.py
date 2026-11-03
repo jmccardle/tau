@@ -210,6 +210,7 @@ async def test_the_errors_a_call_raises_are_the_tables_with_the_data_a_row_needs
         ("node", {"id": 99}, -32004),
         ("remove_label", {"label": "nope"}, -32005),
         ("answer", {"question": 5, "value": None}, -32007),
+        ("remove_item", {"cursor": 0, "item": 99}, -32007),
         ("nodes", {"start": -1, "limit": 1}, -32009),
         ("options", {"cursor": 0, "extension": "nope"}, -32012),
     ]

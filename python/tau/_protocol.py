@@ -464,11 +464,13 @@ NOT_CALLS: Final = ("close",)
 
 
 def _methods() -> dict[str, Method]:
-    calls = [
-        v
-        for k, v in vars(Client).items()
+    found: dict[str, Callable[..., Any]] = {
+        k: v
+        for part in inspect.getmro(Client)
+        for k, v in vars(part).items()
         if inspect.iscoroutinefunction(v) and not k.startswith("_") and k not in NOT_CALLS
-    ]
+    }
+    calls = [found[k] for k in sorted(found)]
     return {m.name: m for m in map(_method, [Handshake.hello, *calls])}
 
 

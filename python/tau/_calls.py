@@ -7,21 +7,19 @@ changed, and wakes the pump (`frontend`). A client makes each one through `check
 once the driver has failed or stopped.
 """
 
-import asyncio
-from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 
 from tau import trace
 from tau._commands import Commands
 from tau._config_layers import ModelCatalog
-from tau._core import Author, Busy, ItemData, Node, Session
+from tau._core import Author, Busy, ItemData, Node, NoSuchItem, Session
 from tau._events import LiveDelta
 from tau._handles import reopened
 from tau._hub import Feed, Hub
 from tau._protocols import Clock
 from tau._questions import Questions
-from tau._values import Context, Form
-from tau.commandline import Parsed, parse
+from tau._values import Context
 
 
 def frontend(
@@ -63,7 +61,7 @@ class Calls:
         self._clock = clock
         self._hub = hub
         self._questions = questions
-        self._commands = commands
+        self.commands = commands
         self._catalog = catalog
         self._changing = changing
         self.check = check
@@ -100,10 +98,27 @@ class Calls:
         with self._changing():
             self._left(cursor, cancel=self.session.abort(cursor))
 
+    def remove_item(self, cursor: int, client: str, item: int) -> None:
+        gone = NoSuchItem(
+            f"item {item} is not pending on cursor {cursor}: "
+            "it was delivered, or is being delivered"
+        )
+        with self._changing():
+            held = next((i for i in self.session.cursor(cursor).items if i.id == item), None)
+            if held is None:
+                raise gone
+            data = held.data
+            if not (isinstance(data, ItemData.Input) and data.by == Author.Frontend(client)):
+                raise PermissionError(f"item {item} was not added by {client}")
+            try:
+                self.session.remove_item(item)
+            except NoSuchItem:  # a step is offering it to its pre_input hooks
+                raise gone from None
+
     def _left(self, cursor: int, *, cancel: bool) -> None:
         """The cursor's step is aborted or left: stop its command, cancel the effect core said
         to cancel, and decline its open questions."""
-        self._commands.stop(cursor)
+        self.commands.stop(cursor)
         if cancel:
             self._cancel(cursor)
         self._questions.decline(cursor, busy=self.session.cursor(cursor).busy)
@@ -161,28 +176,6 @@ class Calls:
             lambda q: Context(self._catalog(), self.session, q.new_cursor),
         )
 
-    def forms(self) -> tuple[Form, ...]:
-        return self._commands.forms()
-
-    def run(
-        self, client: str, cursor: int, name: str, args: Mapping[str, object]
-    ) -> "asyncio.Future[str | None]":
-        return self._commands.run(client, cursor, name, args)
-
-    def configure(
-        self, client: str, cursor: int, extension: str, values: Mapping[str, object], save: bool
-    ) -> "asyncio.Future[str | None]":
-        return self._commands.configure(client, cursor, extension, values, save)
-
-    def options(self, cursor: int, extension: str) -> Form:
-        return self._commands.options(cursor, extension)
-
-    def parse_line(self, cursor: int, line: str) -> Parsed:
-        return parse(line, self.forms(), self._commands.option_forms(cursor))
-
-    def option_forms(self, cursor: int) -> dict[str, Form]:
-        return self._commands.option_forms(cursor)
-
     def nodes(self, start: int, limit: int) -> list[Node]:
         if start < 0:
             raise ValueError(f"start is a node id, not {start}")
@@ -190,6 +183,3 @@ class Calls:
             raise ValueError(f"limit is a count, not {limit}")
         tree = self.session.tree
         return [tree.node(i) for i in range(start, min(start + limit, len(tree)))]
-
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
-        return await self._commands.complete(cursor, named, prefix)

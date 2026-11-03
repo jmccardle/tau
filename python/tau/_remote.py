@@ -229,6 +229,9 @@ class RemoteClient(_Channel, Client):
     async def go_to(self, cursor: int, to: int) -> None:
         await self.call("go_to", cursor=cursor, to=to)
 
+    async def remove_item(self, cursor: int, item: int) -> None:
+        await self.call("remove_item", cursor=cursor, item=item)
+
     async def set_auto(self, cursor: int, on: bool) -> None:
         await self.call("set_auto", cursor=cursor, on=on)
 

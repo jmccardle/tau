@@ -255,6 +255,66 @@ above (the text is fixed in place where it was wrong):
   Alt+arrows (8C-2), `/model` and the render window (8C-3). `ChatSidebar`, `ExchangeBox`,
   `StreamStrip` are not carried.
 
+## Built: 8C-2 (2026-11-03)
+
+The cursor bar and switching the viewed cursor, labels (in the bar, the tree and the tree's `l`),
+Ctrl+Z, `Client.remove_item` (local and over the wire) with Up on an empty editor, the tree screen,
+the session picker (`-r`, Ctrl+O), Ctrl+N and re-exec. Where the code differs from the text above:
+
+- **`remove_item(cursor, item)`**: `NoSuchItem` (a `LookupError`) for an item not on the cursor's
+  scratchpad (delivered, or never there); `PermissionError` (wire code `NotYours`) for an `Input`
+  item another client added or an `Extension` item; `NoSuchCursor` for a cursor never opened.
+  Additive on the wire: one method in the schema, no `PROTOCOL` bump. It makes `Client`,
+  `LocalClient` and `Calls` 26 methods, so each carries a `[justified]` line in
+  `scripts/ratchet-allow.toml`. (Review: no justification; `Client` is split in two private
+  parts, `_TreeReads` and `_CommandCalls`, the wire read from its MRO, and `Calls` hands its
+  command-line calls to `Commands`.)
+- **Review fixes.** The picker lists the current session (`current`, a no-op), and marks `in use`
+  (another process's lease), `no reply` (a serve record that does not answer; the listing still
+  opens) and `served`; the lease is checked again before leaving. Moves hold on to the cursor
+  viewed when they began (a closed one is `NoSuchCursor`, a toast). Ctrl+Z is the editor's key:
+  undo with text, edit-last on an empty editor. Ctrl+N asks first on a busy cursor. `remove_item`
+  is refused (`LookupError`) for the input a `pre_input` hook is being offered (core:
+  `Step::offers`), with a readable message. A `ConnectionError` on a sent line says it may have
+  reached the session.
+- **Taking a line back is Up** on an empty editor when one of this client's lines is pending
+  (0.15's reclaim key). With none pending Up walks the history as before.
+- **Ctrl+Z asks first only on a busy cursor**, as the tree's Enter does; the message goes into the
+  editor in front of any draft already there, so nothing typed is lost.
+- **`o` in the tree opens the cursor and says so (a toast); it does not move the view**:
+  Alt+Right views it. The new cursor's view arrives on the stream after `open` returns, and
+  waiting for it to switch would be a wait with nothing to show for it. `l` labels the viewed
+  cursor and leaves the tree.
+- **The tree is carried less than §6 listed**: the row planner (`plan_tree_rows`; `navigate` rows
+  do not exist in 0.16, and the groups left open are those a cursor is inside, not only the
+  first leaf), `ZoneTree` (the type tag's colour and the path to the highlighted node; no marks,
+  copied, hover or elide zones) and the screen's layout, folding keys and detail pane. The detail
+  pane is a plain text view of the node, not 0.15's boxes, and has no fold key.
+- **The cursor bar is text** (`[0 main] 1 scout …?`), hidden with one cursor and no label; it is
+  not clickable. Alt+Left and Alt+Right wrap around.
+- **Closing the viewed cursor** (another client's `close_cursor`) moves the view to the lowest
+  open cursor with a toast; with none left it is the 8C-1 message.
+- **`TauApp` gains `sessions=`** (the sessions directory Ctrl+O lists; without it Ctrl+O is
+  refused with a toast), `cwd` is now a public attribute, `view(cursor)` and `switch`. Leaving for
+  another session sets `TauApp.switch` (`tau.tui.Switch`) and exits cleanly; the launch
+  (`tau.tui._run`) closes the session and replaces the process. `tau.tui` also exports
+  `SessionPicker`, `Switch` and `TauDialog` (the base of `SessionPicker`, which the API check needs
+  published).
+- **`-r` runs the picker before the event loop starts** (`PickerApp`, a small app of its own),
+  then becomes `--session ID`; with no session it is `UnknownSession` before any screen, and a
+  cancelled picker exits 1 ("no session chosen"). `-r` with no terminal is the generic "needs a
+  terminal" usage error the launch gives first.
+- **The re-exec chdirs to the directory `tau` was typed in** before `execve`, so relative flags
+  mean what they meant and Ctrl+N starts the new session there. The flags carried are the sessions
+  directory and theme, `-e`, `--no-extensions`, `--set` (dropped when the target is held by a
+  server, which would refuse them) and, for a new session, `-m`, the prompt flags and
+  `--no-session`. `--verbose` is not carried.
+- **The picker's "served" column** is read by probing each serve record (`served_sessions`) when it
+  opens; a server that does not answer `hello` is a `ServeFailed` and no picker. The search text of
+  `/` is id, name and first message (0.15's last message is not in the catalog).
+- **`TauApp` stays at 25 methods** by moving the popup/editor wiring into `Composer`
+  (`_editor.py`), which also holds the Enter-to-submit task.
+
 ## Gaps in the `Client` contract and the shared start
 
 The most important finding: **the contract is nearly enough.** Everything the TUI draws is in
@@ -264,9 +324,9 @@ the events and the reads. What is missing:
    question box cannot say "permissions asks". Add `OpenQuestion.extension`.
 2. **The first cursor needs a `Session`** (D22 gap 2): an attached TUI cannot call
    `first_cursor`. `open_client` computes it from the snapshot.
-3. **A pending input cannot be taken back.** No `Client` call removes an item; handles have
-   `remove_item`. 0.15's reclaim (Up on an empty editor) has no counterpart. Not needed for 8C-1
-   (Ruling 4: `Client.remove_item` arrives in 8C-2).
+3. **A pending input cannot be taken back.** No `Client` call removed an item; handles have
+   `remove_item`. 0.15's reclaim (Up on an empty editor) had no counterpart. Closed in 8C-2:
+   `Client.remove_item` (Ruling 4), and Up.
 4. **The start asks on the terminal, synchronously** (`Prompts`, `PickSession`): it must run
    before the app takes the screen, and switching sessions in-app means re-executing (§5). Async
    prompts would allow both in-app, at the cost of an API change; not needed with re-exec.

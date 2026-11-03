@@ -299,6 +299,22 @@ Parameters:
 
 Result: [Parsed](#parsed)
 
+### `remove_item` method
+
+Take back a pending input this client added to `cursor` (`input` or `send`): it is
+removed from the scratchpad before the cursor delivers it. `NotFound` once it is
+delivered, or if there is no such item on the cursor; `NotYours` for an item
+another client or an extension added. Wakes nothing and does not turn auto-step off.
+
+Parameters:
+
+| field | type | notes |
+|---|---|---|
+| `cursor` | `integer` |  |
+| `item` | `integer` |  |
+
+Result: `null`
+
 ### `remove_label` method
 
 Remove `label`; `NoSuchLabel` if there is none.

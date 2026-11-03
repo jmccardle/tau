@@ -310,7 +310,9 @@ def class_members(cls: type | None, node: ast.ClassDef, module: str) -> list[Ite
         n
         for b in bases
         if id(b) in PUBLIC_IDS
-        for n in (*vars(b), *vars(b).get("__annotations__", {}))
+        for part in b.__mro__  # a public base documents its underscore bases' members too
+        if part is b or (part.__module__.startswith("tau.") and part.__name__.startswith("_"))
+        for n in (*vars(part), *vars(part).get("__annotations__", {}))
         if n not in ("__init__", "__new__")  # a subclass's constructor is its own signature
     }
     sources = [(cls, node, module)]

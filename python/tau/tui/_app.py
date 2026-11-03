@@ -2,26 +2,29 @@
 
 The app touches only its `Client`, never `Driver`, `Session` or a provider. One listener, a worker
 running `async for event in client`, feeds a `SessionView`; the widgets render from it and nothing
-else holds session state. This is the first cut (8C-1): one cursor is viewed, the one given.
+else holds session state. One cursor is viewed at a time (`view` switches it); the cursor bar
+shows the rest.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import ClassVar
 
-from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
 from textual.notifications import SeverityLevel
 
 from tau._client import Client
+from tau._core import Author, ItemData
 from tau._events import (
     Appended,
     CursorGone,
     CursorView,
     Event,
+    Labels,
     Live,
     Notice,
     ToolProgress,
@@ -29,11 +32,13 @@ from tau._events import (
 from tau._protocol import Welcome
 from tau._values import Json
 from tau.tui._chat import ReasoningRegion, ToolBox
-from tau.tui._editor import ChatInput, CommandPopup, PendingInput
+from tau.tui._editor import ChatInput, CommandPopup, Composer, PendingInput
 from tau.tui._fields import Refused
 from tau.tui._forms import QuestionBox, QuestionStack
 from tau.tui._line import CommandLine
-from tau.tui._status import Header, StatusBar, pending_line, status_lines
+from tau.tui._moves import Moves
+from tau.tui._status import CursorBar, Header, StatusBar, bar_text, pending_line, status_lines
+from tau.tui._switch import Switch
 from tau.tui._themes import build_theme_registry, install_themes
 from tau.tui._transcript import ChatDisplay
 from tau.tui._view import SessionView
@@ -67,6 +72,11 @@ class TauApp(App[None]):
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("ctrl+r", "fold('thinking')", "Fold thinking", show=False),
         Binding("ctrl+t", "fold('tools')", "Fold tool boxes", show=False),
+        Binding("alt+left", "move('previous')", "Previous cursor", show=False),
+        Binding("alt+right", "move('next')", "Next cursor", show=False),
+        Binding("ctrl+g", "move('tree')", "The tree", show=False),
+        Binding("ctrl+o", "move('sessions')", "Sessions", show=False),
+        Binding("ctrl+n", "move('new')", "New session", show=False),
     ]
 
     def __init__(  # noqa: PLR0913 - what one frontend of one session is given
@@ -80,18 +90,25 @@ class TauApp(App[None]):
         snapshot: Sequence[Event] = (),
         theme: str | None = None,
         reconnect: Callable[[], Awaitable[Client]] | None = None,
+        sessions: Path | None = None,
     ) -> None:
         super().__init__()
         self.client = client
         self.cursor = cursor
         self.welcome = welcome
-        self._cwd = cwd
+        self.home = home
+        self.cwd = cwd
+        self.sessions = sessions
+        self.switch: Switch | None = None
+        """Where the person asked to go (Ctrl+O, Ctrl+N), once the app has left for it."""
         self.failure: ConnectionError | None = None
         """What ended the session's stream, if it ended in error and was not reconnected."""
         self.session = SessionView()
         self.toasts: list[str] = []
         """Every toast shown, oldest first: notices, command results, refusals."""
         self._line = CommandLine(self)
+        self._moves = Moves(self)
+        self._drawing = asyncio.Lock()  # one event, or one switch of cursor, draws at a time
         self._snapshot = tuple(snapshot)
         self._reconnect = reconnect
         self._quit_until = 0.0  # while the clock is before this, one more Ctrl+C quits
@@ -102,14 +119,16 @@ class TauApp(App[None]):
     # Layout
 
     def compose(self) -> ComposeResult:
-        """The screen, top to bottom: header, transcript, open questions, pending lines, popup,
-        editor, status bar."""
+        """The screen, top to bottom: header, cursor bar, transcript, open questions, pending
+        lines, popup and editor, status bar."""
         yield Header()
+        yield CursorBar()
         yield ChatDisplay(self.client.id)
         yield QuestionStack(self)
         yield PendingInput()
-        yield CommandPopup()
-        yield ChatInput(self._line.complete_text)
+        yield Composer(
+            self._line.complete_text, self._line.rows, self._line.submit, self.action_move
+        )
         yield StatusBar()
 
     @property
@@ -156,10 +175,11 @@ class TauApp(App[None]):
         self.notify(text, title=title, severity=severity, timeout=timeout)
 
     def screen_text(self) -> str:
-        """What the screen says, without its styling: the header, the transcript, the open
-        questions, the pending lines, the popup and the status bar."""
+        """What the screen says, without its styling: the header, the cursor bar, the transcript,
+        the open questions, the pending lines, the popup and the status bar."""
         parts = [
             self.query_one(Header).text,
+            self.query_one(CursorBar).text,
             self._transcript.text(self.session.live.get(self.cursor)),
             *(box.text for box in self.query(QuestionBox)),
             self.query_one(PendingInput).text,
@@ -176,7 +196,11 @@ class TauApp(App[None]):
         show it."""
         while True:
             try:
-                await self._start()
+                await self.client.watch([self.cursor])
+                await self._line.refresh()
+                snapshot, self._snapshot = self._snapshot, ()
+                for event in snapshot:
+                    await self._hear(event)
                 async for event in self.client:
                     await self._hear(event)
             except ConnectionError as e:
@@ -190,14 +214,6 @@ class TauApp(App[None]):
             self.toast("the session has ended", severity="warning")
             self.query_one(StatusBar).show(["the session has ended"])
             return
-
-    async def _start(self) -> None:
-        """Watch the viewed cursor, ask for the commands, and take the snapshot we were given."""
-        await self.client.watch([self.cursor])
-        await self._line.refresh()
-        snapshot, self._snapshot = self._snapshot, ()
-        for event in snapshot:
-            await self._hear(event)
 
     async def _lost(self, error: ConnectionError) -> bool:
         """The stream ended in `error`. Make a new client when we can, and say whether to go on."""
@@ -217,25 +233,58 @@ class TauApp(App[None]):
         return False
 
     async def _hear(self, event: Event) -> None:
-        self.session.hear(event)
-        match event:
-            case CursorView(cursor=c) if c == self.cursor:
-                await self._follow(event)
-            case Live(cursor=c, delta=ToolProgress(node=node, call_id=call)) if c == self.cursor:
-                self._transcript.progress(node, call, self.session.live[c].progress[(node, call)])
-            case Live(cursor=c, delta=delta) if c == self.cursor:
-                await self._transcript.live(delta, self.session.live[c])
-            case CursorGone(cursor=c) if c == self.cursor:
-                self.failure = ConnectionError(f"cursor {c} was closed")
-                self.query_one(StatusBar).show([f"cursor {c} was closed"])
-            case Appended(nodes=nodes):
-                for node in nodes:
-                    if self._transcript.is_failed_sample_here(node):
-                        await self._transcript.add_side(node)
-            case Notice(text=text):
-                self.toast(text)
-            case _:
-                pass
+        async with self._drawing:
+            self.session.hear(event)
+            match event:
+                case CursorView(cursor=c) if c == self.cursor:
+                    await self._follow(event)
+                case Live(cursor=c, delta=ToolProgress(node=node, call_id=call)) if (
+                    c == self.cursor
+                ):
+                    self._transcript.progress(
+                        node, call, self.session.live[c].progress[(node, call)]
+                    )
+                case Live(cursor=c, delta=delta) if c == self.cursor:
+                    await self._transcript.live(delta, self.session.live[c])
+                case CursorGone(cursor=c) if c == self.cursor and self.session.views:
+                    self.toast(f"cursor {c} was closed", severity="warning")
+                    await self._show(min(self.session.views))
+                case CursorGone(cursor=c) if c == self.cursor:
+                    self.failure = ConnectionError(f"cursor {c} was closed")
+                    self.query_one(StatusBar).show([f"cursor {c} was closed"])
+                case Appended(nodes=nodes):
+                    for node in nodes:
+                        if self._transcript.is_failed_sample_here(node):
+                            await self._transcript.add_side(node)
+                case Notice(text=text):
+                    self.toast(text)
+                case _:
+                    pass
+            if isinstance(event, CursorView | CursorGone | Labels):
+                self._refresh_bar()
+
+    def _refresh_bar(self) -> None:
+        text = bar_text(self.session.views, self.session.labels, self.cursor)
+        self.query_one(CursorBar).show(text)
+
+    async def view(self, cursor: int) -> None:
+        """View `cursor`, an open one: watch it (and so stop hearing the last one's `Live`), read
+        its walk again and show its state. `LookupError` for a cursor that is not open."""
+        async with self._drawing:
+            await self._show(cursor)
+
+    async def _show(self, cursor: int) -> None:
+        if cursor not in self.session.views:
+            raise LookupError(f"cursor {cursor} is not open")
+        await self.client.watch([cursor])
+        self.session.forget_live(self.cursor)  # its deltas are not heard now; a later watch
+        self.session.forget_live(cursor)  # replays what the sample in flight has said
+        self.cursor = cursor
+        view = self.session.views[cursor]
+        await self._transcript.rebuild(await self.client.walk(view.at))
+        await self._line.refresh()
+        await self._follow(view)
+        self._refresh_bar()
 
     async def _follow(self, view: CursorView) -> None:
         """The viewed cursor's state changed: extend the transcript or read the walk again, then
@@ -258,39 +307,20 @@ class TauApp(App[None]):
         me = self.client.id
         pending = [pending_line(i.data, me) for i in view.items]
         self.query_one(PendingInput).show(pending)
+        self._editor.reclaimable = any(
+            isinstance(i.data, ItemData.Input) and i.data.by == Author.Frontend(me)
+            for i in view.items
+        )
         self.query_one(StatusBar).show(status_lines(view))
         title = " ".join((transcript.first or "(no messages)").split())[:60]
         session = "(in memory)" if self.welcome is None else self.welcome.session
-        cwd = str(self._cwd) if self.welcome is None else self.welcome.cwd
+        cwd = str(self.cwd) if self.welcome is None else self.welcome.cwd
         self.query_one(Header).show(title, session, cwd)
 
     # The editor
 
-    def _on_text_area_changed(self, event: ChatInput.Changed) -> None:
-        editor, popup = self._editor, self.query_one(CommandPopup)
-        text = editor.text
-        if editor.cycling:
-            return
-        if not text.startswith("/") or " " in text or "\n" in text:
-            popup.hide()
-        elif rows := self._line.rows(text):
-            popup.show(rows)
-        else:
-            popup.warn(f"{text} is not a command: this line goes to the model as text")
-
-    def _on_chat_input_candidates(self, event: ChatInput.Candidates) -> None:
-        self.query_one(CommandPopup).show([(item, "") for item in event.items], event.selected)
-
     def _on_refused(self, event: Refused) -> None:
         self.toast(event.text, severity="error")
-
-    def _on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        if event.text.strip():
-            self._submit(event.text)
-
-    @work(group="submit")
-    async def _submit(self, text: str) -> None:
-        await self._line.submit(text)
 
     # Keys
 
@@ -317,6 +347,11 @@ class TauApp(App[None]):
     async def action_quit(self) -> None:
         """Leave. The exit status is 1 if the session was lost."""
         self.exit(return_code=0 if self.failure is None else 1)
+
+    def action_move(self, what: str) -> None:
+        """Alt+Left, Alt+Right, Ctrl+Z, Ctrl+G, Ctrl+O, Ctrl+N: a move (`tau.tui._moves`), a task
+        of its own because it may ask a question."""
+        self.run_worker(self._moves.run(what), group="moves", exclusive=True)
 
     def action_fold(self, what: str) -> None:
         """Fold or unfold the thinking regions, or the tool boxes."""

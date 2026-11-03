@@ -15,6 +15,7 @@ side of it is `tau.open_client`). Which session a program opens, and how it star
 `tau._session_start`.
 """
 
+import fcntl
 import json
 import os
 import secrets
@@ -260,6 +261,23 @@ def _age(updated: float | None, now: float) -> str:
         if seconds >= size:
             return f"{seconds // size}{unit}"
     return "now"
+
+
+def is_leased(path: Path) -> bool:
+    """Whether a store holds the lease of the session in `path` (an exclusive `flock` on its log),
+    this process's included. The lease is taken and let go at once, so a session that is free
+    stays free."""
+    try:
+        fd = os.open(path / _LOG, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)  # closing the descriptor lets the lease go
+    return False
 
 
 def age_of(row: SessionInfo, now: float | None = None) -> str:

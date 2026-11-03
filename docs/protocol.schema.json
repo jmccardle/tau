@@ -1396,6 +1396,26 @@
         "$ref": "#/$defs/Parsed"
       }
     },
+    "remove_item": {
+      "description": "Take back a pending input this client added to `cursor` (`input` or `send`): it is\nremoved from the scratchpad before the cursor delivers it. `LookupError` once it is\ndelivered, or if there is no such item on the cursor; `PermissionError` for an item\nanother client or an extension added. Wakes nothing and does not turn auto-step off.",
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "item": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor",
+        "item"
+      ],
+      "additionalProperties": false,
+      "x-result": {
+        "type": "null"
+      }
+    },
     "remove_label": {
       "description": "Remove `label`; `NoSuchLabel` if there is none.",
       "type": "object",

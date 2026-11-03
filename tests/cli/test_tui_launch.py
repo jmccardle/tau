@@ -117,6 +117,23 @@ def test_a_session_another_process_holds_is_leased(configured: World) -> None:
     assert f"tau --fork {OLD}" in result.err
 
 
+def test_resume_without_a_terminal_is_a_usage_error_that_picks_nothing(configured: World) -> None:
+    configured.session(OLD, cwd=configured.home)
+    result = tui(configured, "-r", terminal=False)
+    assert result.code == 2
+    assert "needs a terminal" in result.err
+
+
+def test_resume_with_no_session_to_choose_from_says_so_before_any_screen(
+    configured: World,
+) -> None:
+    result = tui(configured, "-r")
+    assert result.code == 1
+    assert "no session in" in result.err
+    assert "to resume" in result.err
+    assert list_sessions(configured.tau / "sessions") == []
+
+
 def test_the_version_names_no_screen(configured: World) -> None:
     result = tui(configured, "--version", terminal=False)
     assert result.code == 0

@@ -16,5 +16,5 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [The step machine](machine.md): 8 names
 - [Configuration and context](config.md): 34 names
 - [Errors](errors.md): 22 names
-- [The terminal UI](tui.md): 4 names
+- [The terminal UI](tui.md): 8 names
 - [Tracing](diagnostics.md): 4 names

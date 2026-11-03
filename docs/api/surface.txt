@@ -324,6 +324,7 @@ class Client(AsyncIterator[Event], Protocol)
     async def open(self, at: int) -> int
     async def options(self, cursor: int, extension: str) -> Form
     async def parse_line(self, cursor: int, line: str) -> Parsed
+    async def remove_item(self, cursor: int, item: int) -> None
     async def remove_label(self, label: str) -> None
     async def reopen(self, cursor: int) -> int
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
@@ -1020,6 +1021,12 @@ class FormingCall
     id: str
     tool: str
 # tau.tui
+@dataclass(frozen=True)
+class Holder
+    detail: str = ''
+    property pickable: bool
+    state: str
+# tau.tui
 @dataclass
 class LiveLayer
     at: int | None = None
@@ -1030,14 +1037,48 @@ class LiveLayer
     text: str = ''
     thinking: str = ''
 # tau.tui
+class SessionPicker(TauDialog[SessionInfo | None])
+    AGE_WIDTH = 5
+    CWD_WIDTH = 26
+    MIN_TITLE_WIDTH = 20
+    STATE_WIDTH = 6
+    def __init__(
+        self,
+        rows: Sequence[SessionInfo],
+        here: Path,
+        *,
+        held: Mapping[str, Holder] | None = None,
+        scope: Literal['here', 'all'] = 'here',
+        title: str | None = None,
+    ) -> None
+    def action_focus_filter(self) -> None
+    def action_toggle_scope(self) -> None
+    filter_text: reactive[str] = reactive('', init=False)
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None
+    def on_input_changed(self, event: Input.Changed) -> None
+    def on_input_submitted(self, event: Input.Submitted) -> None
+    def on_mount(self) -> None
+    def on_resize(self) -> None
+    scope: reactive[Literal['here', 'all']] = reactive('here', init=False)
+    def shown(self) -> list[SessionInfo]
+    def watch_filter_text(self) -> None
+    def watch_scope(self) -> None
+# tau.tui
 class SessionView
     def __init__(self) -> None
+    def forget_live(self, cursor: int) -> None
     def hear(self, event: Event) -> None
     def labels_of(self, cursor: int) -> tuple[str, ...]
     def path(self, tip: int, at: int) -> list[Node] | None
 # tau.tui
+@dataclass(frozen=True)
+class Switch
+    served: bool = False
+    session: str | None
+# tau.tui
 class TauApp(App[None])
-    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False)]
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False)]
     CSS_PATH = 'tau.tcss'
     ENABLE_COMMAND_PALETTE = False
     def __init__(
@@ -1051,10 +1092,12 @@ class TauApp(App[None])
         snapshot: Sequence[Event] = (),
         theme: str | None = None,
         reconnect: Callable[[], Awaitable[Client]] | None = None,
+        sessions: Path | None = None,
     ) -> None
     async def action_abort(self) -> None
     def action_fold(self, what: str) -> None
     async def action_interrupt(self) -> None
+    def action_move(self, what: str) -> None
     async def action_quit(self) -> None
     async def complete_value(self, schema: Json, text: str) -> list[str]
     def compose(self) -> ComposeResult
@@ -1070,6 +1113,21 @@ class TauApp(App[None])
         severity: SeverityLevel = 'information',
         timeout: float = 5,
     ) -> None
+    async def view(self, cursor: int) -> None
+# tau.tui
+class TauDialog(ModalScreen[_T])
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'cancel', 'Cancel', show=False)]
+    BODY_ID: ClassVar[str | None] = None
+    CANCEL_VALUE: ClassVar[Any] = None
+    DIALOG_ID: ClassVar[str] = 'tau-dialog'
+    TITLE_TEXT: ClassVar[str] = ''
+    def __init__(self, title: str | None = None) -> None
+    def action_cancel(self) -> None
+    def compose(self) -> ComposeResult
+    def compose_body(self) -> ComposeResult
+    def compose_footer(self) -> ComposeResult
+    def compose_header(self) -> ComposeResult
+    def dialog_title(self) -> str
 
 == diagnostics: Tracing
 # tau.trace
