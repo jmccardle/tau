@@ -16,7 +16,7 @@ import pytest
 from fakes import FAKE_PROVIDER, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 from textual.pilot import Pilot
-from textual.widgets import DataTable, OptionList
+from textual.widgets import DataTable, OptionList, Tree
 from tuikit import Gatekeeper, Tuner, check_screen, running, say, shows, type_line, until
 from world import World
 
@@ -115,6 +115,30 @@ async def test_the_tree(tmp_path: Path) -> None:
         await pilot.press("ctrl+g")
         await until(pilot, lambda: bool(app.screen.query("#tree-browser-tree")))
         await picture(pilot, app, "the_tree")
+    await h.close()
+
+
+@scenario
+async def test_the_tree_with_a_branch_and_a_closed_cursor(tmp_path: Path) -> None:
+    h = await start(tmp_path, provider=FakeProvider([say("first answer"), say("side answer")]))
+    async with running(h, tmp_path, welcome=WELCOME, size=SMALL) as (app, pilot):
+        await type_line(pilot, "one")
+        await pilot.press("enter")
+        await shows(pilot, app, "first answer")
+        scout = await h.client.open(1)
+        await h.client.set_label(scout, "scout")
+        await h.client.send(scout, "a side question")
+        await until(pilot, lambda: len(h.nodes()) == 6)
+        gone = await h.client.open(1)
+        await h.client.set_label(gone, "compaction:1")
+        await h.client.close_cursor(gone)
+        await pilot.press("ctrl+g")
+        await until(pilot, lambda: bool(app.screen.query("#tree-browser-tree")))
+        await until(
+            pilot,
+            lambda: "compaction:1" in str(app.screen.query_one(Tree).root.children[1].label),
+        )
+        await picture(pilot, app, "the_tree_with_a_branch_and_a_closed_cursor")
     await h.close()
 
 

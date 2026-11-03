@@ -88,10 +88,20 @@ client's name and no buttons.
 - **Ctrl+Z on an empty editor edits your last message**: the cursor goes to the node before it and
   the message is in the editor, so sending it makes a branch (the old turn stays in the tree). On
   a busy cursor it asks before aborting the step.
-- **Ctrl+G is the tree**: every node, a branch opening a level and each turn a fold (Left and
-  Right), the cursors marked where they are, and the highlighted node whole beside the rows.
-  Enter goes there (on a busy cursor it asks before aborting), `o` opens a new cursor there, `l`
-  puts a label on the viewed cursor, Esc leaves.
+- **Ctrl+G is the tree**: the walk of the cursor you view runs straight down from the first node.
+  Each turn (your message and what followed) is one row that folds (`user: fix it  +14 · 6 calls`).
+  Every other branch hangs off the walk as one folded line, a *stub*: `├┄ 3 nodes, 1 turn ◀ 1 scout …`
+  says how big it is and which cursors are on it (`…` working, `?` a question open). Right unfolds
+  a stub to its turns; the line it shows goes through the cursor on it, else the longest line.
+  Cursors are marked `◀ 1 scout` where they are (a folded turn or stub lists the ones inside it, so
+  none is out of sight); a closed cursor is dimmed `○ 2 compaction:1`. The
+  highlighted node is shown whole beside the rows, under the length of the viewed walk in nodes and
+  tokens. While the tree is open the highlight follows the viewed cursor as it works; moving it
+  yourself pauses that (the title says "paused"), and `f` follows again.
+  Keys: Up, Down, PgUp, PgDn, Home, End move; Left and Right fold and unfold; Enter goes to the
+  node (on a busy cursor it asks before aborting); `[` and `]` jump to the previous and next
+  cursor; `v` views the cursor at the highlight and redraws with its walk down the middle; `o`
+  opens a new cursor at the node; `l` puts a label on the viewed cursor; Esc leaves.
 - **Sessions.** `tau -r` and Ctrl+O open the picker: this directory's sessions, newest first, by
   name or first message; Tab widens it to every directory, `/` filters, Enter opens, Esc cancels.
   A session a `tau serve` holds says `served`; one another `tau` process holds says `in use`, and

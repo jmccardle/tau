@@ -265,7 +265,7 @@ Markdown CodeBlock {
     color: $tau-text-muted;
 }
 
-/* === Tree screen (carried from 0.15's tree browser) === */
+/* === Tree screen (carried from 0.15's tree browser; the spine and stubs are new) === */
 
 #tree-browser-dialog { width: 100%; height: 100%; padding: 0 1; }
 #tree-browser-body { height: 1fr; }
@@ -286,6 +286,8 @@ ZoneTree > .tree--kind-assistant { color: $tau-role-assistant; }
 ZoneTree > .tree--kind-tool { color: $tau-role-tool; }
 ZoneTree > .tree--kind-system { color: $tau-role-system; }
 ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; }
+ZoneTree > .tree--kind-stub { color: $tau-text-quiet; }
+ZoneTree > .tree--closed { color: $tau-text-muted; text-style: dim; }
 
 #tree-detail {
     width: 100%;

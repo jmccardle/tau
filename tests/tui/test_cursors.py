@@ -374,59 +374,7 @@ async def test_l_in_the_tree_labels_the_viewed_cursor(tmp_path: Path) -> None:
     await h.close()
 
 
-@scenario
-async def test_a_branch_is_a_fork_in_the_tree_and_a_turn_folds(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([say("first"), say("second")]))
-    async with running(h, tmp_path) as (app, pilot):
-        await type_line(pilot, "one")
-        await pilot.press("enter")
-        await shows(pilot, app, "first")
-        await pilot.press("ctrl+z")
-        await until(pilot, lambda: app.draft == "one")
-        await pilot.press("enter")
-        await shows(pilot, app, "second")
-        await pilot.press("ctrl+g")
-        await until(pilot, lambda: bool(app.screen.query(Tree)))
-        tree = app.screen.query_one(Tree)
-        system = next(n for n in tree.root.children if str(n.label).startswith("system"))
-        branches = [n for n in system.children if str(n.label).startswith("user")]
-        assert len(branches) == 2, "the fork opens a level: both user messages hang under it"
-        assert [n.is_expanded for n in branches] == [False, True], (
-            "the turn the cursor is not in is folded; the cursor's is open"
-        )
-        assert [r for r in tree_rows(app) if r.startswith("user")] == ["user: one", "user: one"]
-    await h.close()
-
-
 # Moves that wait on a dialog hold on to the cursor they began on
-
-
-@scenario
-async def test_a_tree_choice_is_made_on_the_cursor_that_was_viewed_when_it_opened(
-    tmp_path: Path,
-) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([say("first")]))
-    async with running(h, tmp_path) as (app, pilot):
-        await type_line(pilot, "one")
-        await pilot.press("enter")
-        await shows(pilot, app, "first")
-        scout = await h.client.open(SYS)
-        await h.set_auto(False, scout)
-        await shows(pilot, app, "[0] 1 ")
-        await pilot.press("alt+right")
-        await shows(pilot, app, " 0 [1]")
-        await pilot.press("ctrl+g")
-        await until(pilot, lambda: bool(app.screen.query(Tree)))
-        await h.client.close_cursor(scout)
-        await until(pilot, lambda: app.cursor == h.cursor)
-        before = (await h.view()).at
-        await pilot.press("home", "down")  # the system node
-        await pilot.pause()
-        await pilot.press("enter")
-        await until(pilot, lambda: not app.screen.query(Tree))
-        await until(pilot, lambda: any("closed" in t for t in app.toasts))
-        assert (await h.view()).at == before, "cursor 1's choice did not move cursor 0"
-    await h.close()
 
 
 @scenario

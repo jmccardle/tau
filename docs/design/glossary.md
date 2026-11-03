@@ -1425,15 +1425,44 @@ an empty editor, with a line of this client's still pending, `remove_item`s it a
 editor.
 
 ### tree screen
-`tau.tui._tree.TreeScreen`, `TreeIntent`, `plan_tree_rows`, `ZoneTree` · D23 §6 · new (8C-2)
+`tau.tui._tree.TreeScreen`, `TreeIntent`, `ZoneTree` · D23 §6 · new (8C-2), reworked (TUI follow-up 1)
 
-Ctrl+G. Every node as a `Tree` (read from `Client.nodes` in ranges): a fork opens a level, a `User`
-node opens a turn the next `User` node closes, turns mount folded except where a cursor is; a row
-shows the type tag, the text, and the cursors at it with their labels (`◀ [1] main`, the viewed one
-in brackets); the highlighted node is shown whole beside the rows, and the path to it is tinted.
-Enter **goes to** the node, `o` **opens a cursor** there, `l` **labels** the viewed cursor; the
-screen returns a `TreeIntent` and the app makes the call (a go-to on a busy cursor asks first).
-Carried from 0.15's `tree_browser.py` less marks, elide, branch-from-marks, copy and paste.
+Ctrl+G. A full-size modal: the tree on the left, the highlighted node whole on the right with the
+walk length of the viewed cursor in nodes and approximate tokens (characters ÷ 4, D24's estimate).
+It draws a **spine** and **stubs** (below) from a `TreePlan`; a row shows the type tag and text,
+and the cursors at it: an open one `◀ 1 scout` (the viewed one `◀ [0] main`; `…` while it works, `?`
+while a question is open), a closed one dimmed `○ 2 compaction:1` (from `CursorGone` and the labels
+that stay as restart records). A turn is one row (`user: text  +14 · 6 calls`) and folds; the rows
+of a folded turn or stub have no widgets until it is unfolded. The path to the highlighted node is
+tinted.
+**Following**: while the screen is open the highlight tracks the viewed cursor as it moves (the
+screen reads the app's `SessionView`, which the stream keeps current; it redraws at most every
+100 ms). Moving the highlight by hand pauses following; `f` resumes it; the title says which.
+Keys: ↑ ↓ PgUp PgDn Home End move; ← → fold and unfold; Enter **goes to** the node; `v` **views**
+the cursor at the highlight and redraws with its walk as the spine; `o` **opens a cursor** there;
+`l` **labels** the viewed cursor; `[` `]` jump to the previous and next cursor mark; Esc leaves.
+The screen returns a `TreeIntent` (action, the viewed cursor, node, text) and the app makes the
+call (a go-to on a busy cursor asks first).
+Carried from 0.15's `tree_browser.py`: `ZoneTree`, the layout, the fold keys and the detail pane.
+Not carried: marks, branch-from-marks, copy and paste of subtrees.
+
+### tree plan
+`tau.tui._treeplan.TreePlan`, `TreeRow`, `TreeShape` (private) · D23 §6 · new (TUI follow-up 1)
+
+The rows of the tree screen as data, made a level at a time. The **spine** is the viewed cursor's
+walk, drawn straight down from the root, one row per node before the first turn and then one folded
+row per turn (a `User` node and what follows it on the line). Where a node has more than one child
+the line goes on through one, and every other child is a **stub**: one folded row for the whole
+branch ("3 nodes, 1 turn") with the open and closed cursors on it. A branch at the last node of a
+turn hangs level with the turn; one in the middle hangs inside it. A stub unfolds to its own line,
+drawn the same way: it goes on through the child toward the lowest-numbered open cursor below it,
+else the child with the longest line below it (the lowest id on a tie); the rest are stubs.
+A folded turn's row lists the open and closed cursors inside it (at its later nodes or in a branch
+hung in it), as a stub does. `children(row)` makes a turn's or stub's rows, `locate(node)` the
+rows down to a node, `marks()` the nodes with a cursor at them. `TreeShape` keeps what nodes say
+that never changes (and the turn rows nothing marks) between plans, so a redraw after a node
+arrives costs a walk of the spine, not a rebuild of its rows; nothing is built for what stays
+folded.
 
 ### SessionPicker, Switch, re-exec
 `tau.tui.SessionPicker`, `tau.tui.Switch`, `tau.tui._switch`, `tau.tui._run` · D23 §5 · new (8C-2)

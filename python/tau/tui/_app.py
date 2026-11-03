@@ -43,6 +43,7 @@ from tau.tui._status import CursorBar, Header, StatusBar, bar_text, pending_line
 from tau.tui._switch import Switch
 from tau.tui._themes import build_theme_registry, install_themes
 from tau.tui._transcript import ChatDisplay
+from tau.tui._tree import tell_trees
 from tau.tui._view import SessionView
 
 _QUIT_WINDOW = 3.0  # seconds a first Ctrl+C waits for the second
@@ -266,6 +267,7 @@ class TauApp(App[None]):
                     pass
             if isinstance(event, CursorView | CursorGone | Labels):
                 self._refresh_bar()
+            tell_trees(self.screen_stack, event)
 
     def _refresh_bar(self) -> None:
         text = bar_text(self.session.views, self.session.labels, self.cursor)

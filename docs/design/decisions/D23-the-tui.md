@@ -285,7 +285,7 @@ the session picker (`-r`, Ctrl+O), Ctrl+N and re-exec. Where the code differs fr
   Alt+Right views it. The new cursor's view arrives on the stream after `open` returns, and
   waiting for it to switch would be a wait with nothing to show for it. `l` labels the viewed
   cursor and leaves the tree.
-- **The tree is carried less than §6 listed**: the row planner (`plan_tree_rows`; `navigate` rows
+- **The tree is carried less than §6 listed** (reworked in TUI follow-up 1, below): the row planner (`plan_tree_rows`; `navigate` rows
   do not exist in 0.16, and the groups left open are those a cursor is inside, not only the
   first leaf), `ZoneTree` (the type tag's colour and the path to the highlighted node; no marks,
   copied, hover or elide zones) and the screen's layout, folding keys and detail pane. The detail
@@ -368,6 +368,58 @@ the text above:
   form opens; with the save switch on it writes what the person wrote a value for or what differs
   from the user's file, so saving the branch's current value works. Picking the theme already
   worn saves it.
+
+## Built: tree view (TUI follow-up 1, 2026-11-03)
+
+The Ctrl+G screen reworked on the owner's decisions of 2026-11-03: same full-size modal (tree left,
+detail pane right), new rows and movement. No wire or protocol change: the rows come from
+`nodes(start, limit)` pages and then from the `SessionView`, which the app already feeds from
+`Appended`, `CursorView`, `CursorGone` and `Labels`.
+
+- **Spine and stubs.** The viewed cursor's walk is drawn straight down at depth 0. Each turn off
+  the spine is one folded row (`user: text  +14 · 6 calls · 1 branch`); the turn the viewed cursor
+  is in, or any turn with a cursor mark in it, starts open. Every other branch at a branch point
+  is one folded stub row (`├┄ 3 nodes, 1 turn  ◀ 1 scout …`, closed cursors `○ 2 compaction:1`
+  dimmed). A branch at the last node of a turn hangs level with the turn (folding the turn does not
+  hide it); a branch in the middle hangs inside the turn. **The rule for a stub's own line**: from
+  the stub's first node it goes on through the child toward the lowest-numbered open cursor below
+  it, else the child with the longest line below it (lowest id on a tie); other children are stubs
+  again, recursively. `v` redraws with another cursor's walk as the spine.
+- **Following** is on while the screen opens: a redraw (batched to 100 ms after `Appended`,
+  `CursorView`, `CursorGone` or `Labels`) puts the highlight on the viewed cursor's row. Up, Down,
+  PgUp, PgDn, Home, End, a click, `[` `]` and Left stepping out of a row pause it; `f` resumes it;
+  `v` resumes it on the new viewed cursor. The title says "following" or "paused".
+- **Long trees.** `TreePlan` (`_treeplan.py`, private) makes a row's children only when asked,
+  and `TreeShape` keeps what nodes say that never changes (parents, sizes, heights, the turn rows
+  nothing marks) between plans. The screen gives a row widgets only when it is open, and a redraw
+  changes the rows that differ in place and adds the new ones; it makes the tree again only when
+  the spine changed (`v`, a go-to far back, a branch hung earlier on the spine). A fold the person
+  made is kept across redraws; the default (a cursor in the turn) applies to the rest. Measured
+  through the screen on 30,004 nodes (`tests/tui/test_tree_long.py`, a node arrives with the tree
+  open): a redraw takes about 70 ms from the event to the highlight in place (some 175 ms when two
+  fall together); the first draw of 15,000 turn rows takes about half a second; a full re-make
+  (the spine changed) the same. The first version made all the rows again on each arrival and took
+  0.75 s.
+- **Cursors are always visible.** A folded turn's row lists the open and closed cursors inside it
+  (`user: fix it  +14  ◀ 1`), as a stub's does, and `v` works on it. An unfolded turn shows only
+  those at its own node; the rest show on their rows below.
+- **When the viewed cursor closes** while the screen is open, it follows the app's cursor (the
+  app moves its own to the lowest open one) and says "following". The screen reads the app's
+  `session` each time, so a reconnect (which replaces it) does not leave it stale; nodes it has not
+  read are read with `nodes`.
+- **Keys that changed.** New: `v`, `f`, `[`, `]`. Enter, `o`, `l`, Left, Right, Esc as before,
+  except that Enter and `o` on a folded stub say to unfold it first (a stub is not a node), and
+  Left on a leaf steps out and so pauses following. `TreeIntent` gained `cursor`: the cursor the
+  screen was viewing when it was asked, which `v` can change after the screen opened.
+- **Detail pane**: the node as before, under `cursor N: a walk of X nodes, about Y tokens`
+  (characters the model reads over four, D24's estimate; `Config` and `Custom` nodes count none).
+- **Not built**: copy and derived marks and `p` (need D24 M1, with 8E), previewing another branch
+  in the transcript, diffing, a shape-only read. A closed cursor shows only if this client heard
+  its `CursorGone` (the stream gives one per closed cursor on connecting).
+- **Deviations**: the owner's "turns off the spine start folded" is "turns start folded unless
+  a cursor is in them" (sensible at 15,000 turns, and the cursor's own turn is where one looks).
+  The stub row has no preview of its text (the detail pane shows the branch's first
+  node when it is highlighted). `[` and `]` go in node order, around the ends, not in screen order.
 
 ## Gaps in the `Client` contract and the shared start
 

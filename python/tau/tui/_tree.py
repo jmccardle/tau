@@ -1,51 +1,57 @@
-"""The tree screen (D23 section 6): the session's nodes as a tree, to go to, open a cursor at, or
-label the viewed cursor on.
+"""The tree screen (D23 section 6): the session's nodes as a spine and stubs, to go to, open a
+cursor at, view, or label the viewed cursor on.
 
 Carried from τ 0.15: tau-coding-agent/src/tau_coding_agent/tree_browser.py (tag v0.15.0): `_elide`
-(here `elide`), the row planner `plan_tree_rows` (a fork opens a level; a user message opens a
-level the next user message closes; turn groups mount folded except where a cursor is), `ZoneTree`
-(per-row painting of the type tag and of the path to the highlighted node), the screen's layout,
-fold keys and detail pane. Not carried (the plan sends them to commands or extensions): marks,
-elide, branch-from-marks, copy and paste of subtrees, the hover divergence, the fold of the
-detail pane.
-The data is 0.16's: the rows come from `Client.nodes` in ranges (`read_nodes`), a row is marked
-with the cursors at it and their labels, and the screen returns what was asked (`TreeIntent`), for
-the app to do with calls.
+(here `elide`), `ZoneTree` (per-row painting of the type tag and of the path to the highlighted
+node), the screen's layout, fold keys and detail pane. Not carried (the plan sends them to
+commands or extensions): the 0.15 marks, branch-from-marks, copy and paste of subtrees, the hover
+divergence, the fold of the detail pane. 0.15's row planner (a branch opens a level) is replaced by
+`TreePlan` (`_treeplan`): the viewed cursor's walk straight down, every other branch one folded
+stub.
+The data is 0.16's: the rows come from `Client.nodes` in ranges (`read_nodes`) and then from the
+`SessionView`, which the app keeps current from the stream; the screen returns what was asked
+(`TreeIntent`), for the app to do with calls.
 """
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from time import perf_counter
+from typing import Any, ClassVar, Literal, Protocol
 
-from rich.style import Style
-from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Static, Tree
-from textual.widgets.tree import TreeNode as WidgetNode
 
 from tau._client import Client
-from tau._core import Body, Node, Outcome, Part
-from tau._events import CursorView
+from tau._core import Node
+from tau._events import Appended, CursorGone, CursorView, Event, Labels
 from tau.tui._dialogs import TauDialog, TextDialog
-from tau.tui._transcript import author_name, config_line
+from tau.tui._treeplan import Key, TreeRow
+from tau.tui._treerows import TreeRows, ZoneTree
+from tau.tui._treetext import detail_text, plural
+from tau.tui._view import SessionView
 
 PAGE = 500
 """How many nodes one `Client.nodes` call asks for."""
-_MIN_WIDTH = 2
+BATCH = 0.1
+"""Seconds the screen waits to redraw after the session changes, so a fast agent does not redraw
+per node."""
 _DETAIL_MIN_HEIGHT = 20  # below this many rows the detail pane gives its rows to the tree
-_PREVIEW = 200  # characters of a node's text a row keeps before the width elides it
 
 TreeAction = Literal["go", "open", "label"]
 
 
 @dataclass(frozen=True)
 class TreeIntent:
-    """What the tree screen was asked to do: `go` to `node` (the viewed cursor), `open` a cursor
-    at `node`, or `label` the viewed cursor `text` (`node` is then the node highlighted)."""
+    """What the tree screen was asked to do, on `cursor` (the cursor viewed when it was asked):
+    `go` to `node`, `open` a cursor at `node`, or `label` the cursor `text` (`node` is then the
+    node highlighted)."""
 
     action: TreeAction
+    cursor: int
     node: int
     text: str | None = None
 
@@ -59,358 +65,259 @@ async def read_nodes(client: Client) -> list[Node]:
     return nodes
 
 
-def elide(text: str, width: int) -> str:
-    """`text` cut to `width` cells, ending in `…` when anything was cut. A width with no room for
-    a character and the mark is `…` alone: a row that cannot be shortened shows it, and does not
-    grow the tree a scrollbar."""
-    if width < _MIN_WIDTH:
-        return "…"
-    return text if len(text) <= width else text[: width - 1] + "…"
+class TreeHost(Protocol):
+    """What the tree screen needs of the app, read each time it is needed: the app replaces its
+    `session` when it reconnects, and its `cursor` moves when the viewed cursor closes."""
 
+    client: Client
+    session: SessionView
+    cursor: int
 
-def describe(node: Node) -> tuple[str, str]:
-    """A node's type tag and its one-line text: `user`, `assistant`, `tool`, `system`, `config` or
-    `custom`."""
-    match node.body:
-        case Body.User(text=text):
-            return "user", " ".join(text.split())[:_PREVIEW]
-        case Body.Assistant(parts=parts):
-            said = " ".join("".join(p.text for p in parts if isinstance(p, Part.Text)).split())
-            calls = [p.tool for p in parts if isinstance(p, Part.Call)]
-            return "assistant", said[:_PREVIEW] or "calls " + ", ".join(calls)
-        case Body.Results(outcomes=outcomes):
-            return "tool", f"{len(outcomes)} result{'s' if len(outcomes) != 1 else ''}"
-        case Body.System():
-            return "system", "system prompt"
-        case Body.Config(config=config):
-            return "config", config_line(config.data)
-        case Body.Custom(kind=kind):
-            return "custom", kind
-        case _:
-            raise TypeError(f"node {node.id} holds a body the tree does not know")
-
-
-def full_text(node: Node) -> str:
-    """What the detail pane shows of `node`: who wrote it and all of its text."""
-    tag, short = describe(node)
-    head = f"{tag}  ·  node {node.id}  ·  by {author_name(node.by)}\n\n"
-    match node.body:
-        case Body.User(text=text) | Body.System(text=text):
-            return head + text
-        case Body.Assistant(parts=parts):
-            lines = [
-                p.text if isinstance(p, Part.Text) else f"{p.tool}({p.args_raw})"
-                for p in parts
-                if isinstance(p, Part.Text | Part.Call)
-            ]
-            return head + "\n".join(lines)
-        case Body.Results(outcomes=outcomes):
-            return head + "\n".join(f"{call}: {_outcome(o)}" for call, o, _by in outcomes)
-        case Body.Custom(data=data):
-            return head + data
-        case _:
-            return head + short
-
-
-def _outcome(outcome: Outcome) -> str:
-    match outcome:
-        case Outcome.Ok(value=value):
-            return value
-        case Outcome.Err(error=error):
-            return f"error: {error}"
-        case _:
-            return "interrupted before it finished"
-
-
-@dataclass(frozen=True)
-class TreeRow:
-    """One row the screen draws and where it sits: `parent` is an index into the row list (`None`:
-    the widget root), `depth` the widget depth, `expanded` whether its children show."""
-
-    node: Node
-    parent: int | None
-    depth: int
-    expanded: bool
-    has_children: bool
-
-
-def plan_tree_rows(nodes: Sequence[Node], here: Collection[int]) -> list[TreeRow]:
-    """What the screen draws, under what, at what depth. Pure, so it is tested without a
-    terminal. `nodes` are in id order (a parent before its children); `here` are the nodes
-    cursors are at.
-
-    Two nesting rules, which compose. A fork opens a level, so a run of single-child nodes is a
-    run of siblings and the indent counts branches, not messages. A `User` node opens a level and
-    the next `User` node closes it (it is that group's sibling), so a turn can be folded and a
-    hundred linear turns are a hundred rows at depth 0. Turn groups mount folded, except the
-    groups a cursor's row is inside; fork rows never fold. Iterative: a linear session is one
-    step per node and Python's recursion limit is 1000."""
-    children: dict[int, list[Node]] = {}
-    roots: list[Node] = []
-    for node in nodes:
-        if node.parent is None:
-            roots.append(node)
-        else:
-            children.setdefault(node.parent, []).append(node)
-    built: list[tuple[Node, int | None, int, bool]] = []
-    top: tuple[int | None, int] = (None, 0)
-    stack: list[tuple[Node, tuple[int | None, int], tuple[int | None, int]]] = [
-        (node, top, top) for node in reversed(roots)
-    ]
-    while stack:
-        node, outer, current = stack.pop()
-        is_turn = isinstance(node.body, Body.User)
-        container = outer if is_turn else current
-        index = len(built)
-        built.append((node, container[0], container[1], is_turn))
-        kids = children.get(node.id, [])
-        mine = (index, container[1] + 1)
-        if len(kids) > 1:
-            child_outer = child_current = mine
-        elif is_turn:
-            child_outer, child_current = outer, mine
-        else:
-            child_outer, child_current = outer, current
-        stack.extend((kid, child_outer, child_current) for kid in reversed(kids))
-    open_groups = _groups_around(built, here)
-    parents = {parent for _n, parent, _d, _t in built if parent is not None}
-    return [
-        TreeRow(node, parent, depth, not is_turn or i in open_groups, i in parents)
-        for i, (node, parent, depth, is_turn) in enumerate(built)
-    ]
-
-
-def _groups_around(
-    built: Sequence[tuple[Node, int | None, int, bool]], here: Collection[int]
-) -> set[int]:
-    """The rows on the widget chain above each row whose node is in `here`: the groups that
-    mount open."""
-    open_groups: set[int] = set()
-    for i, (node, _parent, _depth, _turn) in enumerate(built):
-        walk: int | None = i if node.id in here else None
-        while walk is not None:
-            open_groups.add(walk)
-            walk = built[walk][1]
-    return open_groups
-
-
-_KIND_CLASS = {
-    "user": "tree--kind-user",
-    "assistant": "tree--kind-assistant",
-    "tool": "tree--kind-tool",
-    "system": "tree--kind-system",
-    "config": "tree--kind-structural",
-    "custom": "tree--kind-structural",
-}
-
-
-class ZoneTree(Tree[int]):
-    """A `Tree` of node ids that paints each row's type tag (`user:`) in the kind's colour and
-    the gutter of the rows on the path to the highlighted node. Rows are not DOM nodes and cannot
-    carry classes, so it uses `COMPONENT_CLASSES` and `render_label`; every colour is in
-    `tau.tcss`."""
-
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"tree--zone-path", *_KIND_CLASS.values()}
-
-    def __init__(self, label: str, *, id: str | None = None) -> None:
-        super().__init__(label, id=id)
-        self._path: frozenset[int] = frozenset()
-        self._kinds: dict[int, tuple[str, int]] = {}
-
-    def set_kinds(self, kinds: dict[int, tuple[str, int]]) -> None:
-        """Each row's `(class, tag length)`: the span the tag and its colon take. A kind is a
-        property of the node, so this is set once, before the first row is drawn."""
-        self._kinds = kinds
-
-    def set_path(self, path: frozenset[int]) -> None:
-        """The nodes on the path to the highlighted one. The line cache is cleared by hand: its
-        key holds no zone state, and the rows whose style changes are all the rows on the old and
-        new paths."""
-        self._path = path
-        self._line_cache.clear()  # pyright: ignore[reportUnknownMemberType]
-        self.refresh()
-
-    def render_label(self, node: WidgetNode[int], base_style: Style, style: Style) -> Text:
-        """Textual's label with the zone styling spanned over it. The highlighted row is left
-        alone: its own style already is the strongest state on the screen."""
-        text = super().render_label(node, base_style, style)
-        node_id = node.data
-        if node_id is None or node is self.cursor_node:
-            return text
-        label = node.label
-        split = len(text.plain) - len(label.plain if isinstance(label, Text) else label)
-        kind = self._kinds.get(node_id)
-        if kind is not None:
-            component, size = kind
-            end = min(split + size, len(text.plain))
-            if end > split:
-                text.stylize(self.get_component_rich_style(component, partial=True), split, end)
-        if node_id in self._path and split > 0:
-            text.stylize(self.get_component_rich_style("tree--zone-path", partial=True), 0, split)
-        return text
-
-
-def marks_of(
-    node: int, cursors: Mapping[int, CursorView], labels: Sequence[tuple[str, int]], viewed: int
-) -> str:
-    """The cursors at `node` as a row shows them: `◀ 2 main`, the viewed cursor `◀ [1]`."""
-    out = ""
-    for cursor, view in sorted(cursors.items()):
-        if view.at == node:
-            names = " ".join(name for name, on in labels if on == cursor)
-            out += "  ◀ " + (f"[{cursor}]" if cursor == viewed else str(cursor))
-            out += f" {names}" if names else ""
-    return out
+    async def view(self, cursor: int) -> None: ...
 
 
 class TreeScreen(TauDialog[TreeIntent | None]):
-    """Browse the session's tree. Enter goes to the highlighted node (the viewed cursor moves
-    there; on a busy cursor that aborts its step, which the app asks about), `o` opens a cursor
-    there, `l` labels the viewed cursor; Left folds a branch or turn and Right opens it; Esc
-    leaves. The highlighted node is shown whole beside the rows. It dismisses with the
-    `TreeIntent`, or `None`; the app makes the calls."""
+    """Browse the session's tree: the walk of the viewed cursor straight down, every other branch
+    a folded stub (see `TreePlan`).
+
+    Keys: Up, Down, PgUp, PgDn, Home, End move the highlight; Left and Right fold and unfold (on
+    a leaf, Left steps out to the row around it); Enter goes to the highlighted node (the viewed
+    cursor moves there; on a busy cursor that aborts its step, which the app asks about); `[` and
+    `]` jump to the previous and next cursor mark; `v` makes the cursor at the highlight the
+    viewed one; `o` opens a cursor at the node; `l` labels the viewed cursor; `f` follows the
+    viewed cursor again; Esc leaves.
+
+    While it follows, which it does on opening, the highlight tracks the viewed cursor as it
+    moves; moving the highlight by hand pauses that. The title says which. The screen reads
+    `session` (kept current by the app); the app calls `session_changed` and the screen redraws
+    after `BATCH`. If the viewed cursor closes it follows the app's. It dismisses with the
+    `TreeIntent`, or `None`; the app makes the calls.
+
+    `redraw_seconds` is how long the last redraw took, from the event to the highlight in place
+    (the rows are changed in place, not made again, so it does not grow with the session)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "commit", "Go to", priority=True, show=False),
+        Binding("enter", "act('go')", "Go to", priority=True, show=False),
         Binding("left", "collapse", "Fold", show=False),
         Binding("right", "expand", "Unfold", show=False),
-        Binding("o", "open", "Open a cursor here", show=False),
+        Binding("o", "act('open')", "Open a cursor here", show=False),
         Binding("l", "label", "Label the cursor", show=False),
+        Binding("v", "view", "View this cursor", show=False),
+        Binding("f", "follow", "Follow the cursor", show=False),
+        Binding("left_square_bracket", "mark(-1)", "Previous cursor", show=False),
+        Binding("right_square_bracket", "mark(1)", "Next cursor", show=False),
     ]
 
     DIALOG_ID = "tree-browser-dialog"
-    _HELP = "Enter go to   o open a cursor here   l label this cursor   ←→ fold   Esc leave"
+    _HELP = (
+        "Enter go to  v view  o open a cursor here  l label  [ ] cursors  f follow  ←→ fold  "
+        "Esc leave"
+    )
 
-    def __init__(
-        self,
-        nodes: Sequence[Node],
-        cursors: Mapping[int, CursorView],
-        labels: Sequence[tuple[str, int]],
-        viewed: int,
-    ) -> None:
+    def __init__(self, nodes: list[Node], host: TreeHost, viewed: int) -> None:
         super().__init__("The session's tree")
-        self._by_id = {n.id: n for n in nodes}
-        self._plan = plan_tree_rows(nodes, [v.at for v in cursors.values()])
-        self._cursors = cursors
-        self._labels = labels
+        self._all = nodes
+        self._host = host
         self._viewed = viewed
-        self._rows: list[tuple[WidgetNode[int], str, int, bool]] = []
+        self._following = True
+        self._rows: TreeRows  # made with the tree, in `compose_body`
+        self._walk = ""
+        self._pending: Timer | None = None
+        self._wanted: int | None = None  # where `[` or `]` put the highlight
+        self.redraw_seconds = 0.0
+        self._redrawing: float | None = None
+
+    def dialog_title(self) -> str:
+        return f"{self._title} · {'following' if self._following else 'paused (f follows)'}"
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="tree-browser-body"):
             tree = ZoneTree("session", id="tree-browser-tree")
             tree.show_root = False
             tree.guide_depth = 2
+            self._rows = TreeRows(tree)
             yield tree
             with VerticalScroll(id="tree-detail"):
                 yield Static("", id="tree-detail-text", markup=False)
         yield Static(self._HELP, id="tree-browser-help")
 
     def on_mount(self) -> None:
-        tree = self.query_one(ZoneTree)
-        tree.set_kinds(
-            {
-                row.node.id: (_KIND_CLASS[tag], len(tag) + 1)
-                for row in self._plan
-                for tag in [describe(row.node)[0]]
-            }
-        )
-        widgets: list[WidgetNode[int]] = []
-        for row in self._plan:
-            label = self._label(row.node)
-            parent = tree.root if row.parent is None else widgets[row.parent]
-            made = parent.add(
-                label, data=row.node.id, expand=row.expanded, allow_expand=row.has_children
-            )
-            widgets.append(made)
-            self._rows.append((made, label, row.depth, row.has_children))
-        here = self._cursors[self._viewed].at if self._viewed in self._cursors else None
-        target = next((w for w in widgets if w.data == here), None)
-        if target is not None:
-            tree.call_after_refresh(tree.move_cursor, target)
-        tree.call_after_refresh(self._relabel)
-        tree.call_after_refresh(self._show_highlighted)
-        self._apply_detail()
-        tree.focus()
+        self.on_resize()
+        self._redraw()
+        self.query_one(ZoneTree).focus()
 
-    def _label(self, node: Node) -> str:
-        tag, text = describe(node)
-        return f"{tag}: {text}" + marks_of(node.id, self._cursors, self._labels, self._viewed)
+    def on_unmount(self) -> None:
+        if self._pending is not None:
+            self._pending.stop()
+
+    # Keeping up with the session
+
+    def session_changed(self) -> None:
+        """The session heard an event that changes the tree: redraw soon, once for a burst."""
+        if self._pending is None and self.is_running:
+            self._pending = self.set_timer(BATCH, self._redraw)
+
+    def _redraw(self) -> None:
+        """Plan the tree again from the session as it is now, bring the rows up to date, and put
+        the highlight where it belongs: on the viewed cursor while following, where `[` or `]`
+        put it, else where it was."""
+        started = perf_counter()
+        self._pending = None
+        session = self._host.session
+        if self._viewed not in session.views and self._host.cursor in session.views:
+            self._viewed = self._host.cursor  # the viewed cursor closed: follow the app's
+        while len(self._all) in session.nodes:
+            self._all.append(session.nodes[len(self._all)])
+        if any(v.at >= len(self._all) for v in session.views.values()):
+            self.run_worker(self._read_more(), group="tree-nodes", exclusive=True)
+            return  # a cursor is at a node this screen has not read (after a reconnect)
+        kept = self._rows.highlighted()
+        self._rows.draw(self._all, session, self._viewed)
+        length, tokens = self._rows.walk.of(self._rows.viewed_at)
+        self._walk = (
+            f"cursor {self._viewed}: a walk of {plural(length, 'node')}, about "
+            f"{tokens:,} tokens\n\n"
+        )
+        self.query_one(".tau-dialog-title", Static).update(self.dialog_title())
+        target: tuple[int, Key | None] = (self._rows.viewed_at, None)
+        if not self._following and self._wanted is not None:
+            target = (self._wanted, None)
+        elif not self._following and kept is not None:
+            target = (kept.node.id, kept.key)
+        self._redrawing = started
+        self.query_one(ZoneTree).call_after_refresh(self._place, *target)
+
+    async def _read_more(self) -> None:
+        """Read the nodes the session has that this screen has not, and draw."""
+        while page := await self._host.client.nodes(len(self._all), PAGE):
+            self._all.extend(page)
+        self._redraw()
+
+    def _place(self, node_id: int, key: Key | None = None) -> None:
+        self._rows.place(node_id, key)
+        self._show_highlighted()
+        if self._redrawing is not None:
+            self.redraw_seconds = perf_counter() - self._redrawing
+            self._redrawing = None
 
     def on_resize(self) -> None:
-        self._apply_detail()
-        self._relabel()
-
-    def _apply_detail(self) -> None:
         self.query_one("#tree-detail").display = self.screen.size.height >= _DETAIL_MIN_HEIGHT
+        self._rows.relabel()
 
-    def _relabel(self) -> None:
-        """Fit every row's text to the tree's width: it draws one unwrapped line per node, so a
-        longer text would grow a horizontal scrollbar."""
-        tree = self.query_one(ZoneTree)
-        width = tree.content_size.width - tree.styles.scrollbar_size_vertical
-        if width <= 0:
-            return
-        for made, label, depth, has_children in self._rows:
-            toggle = tree.guide_depth if has_children else 0
-            made.set_label(elide(label, width - depth * tree.guide_depth - toggle))
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[TreeRow]) -> None:
+        """A fold opened by the person: remember it, and make the rows it shows."""
+        event.stop()
+        if event.node.data is not None:
+            self._rows.fill(event.node)
+            self._rows.fold(event.node.data, True)
 
-    def _path_to(self, node: int) -> frozenset[int]:
-        path: set[int] = set()
-        step: int | None = node
-        while step is not None:
-            path.add(step)
-            step = self._by_id[step].parent
-        return frozenset(path)
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[TreeRow]) -> None:
+        event.stop()
+        if event.node.data is not None:
+            self._rows.fold(event.node.data, False)
+
+    # The highlight
 
     def _show_highlighted(self) -> None:
-        tree = self.query_one(ZoneTree)
-        node = tree.cursor_node
-        if node is None or node.data is None:
+        row = self._rows.highlighted()
+        if row is None:
             return
-        tree.set_path(self._path_to(node.data))
-        self.query_one("#tree-detail-text", Static).update(full_text(self._by_id[node.data]))
+        self.query_one(ZoneTree).set_path(frozenset(self._rows.plan.ancestry(row.node.id)))
+        self.query_one("#tree-detail-text", Static).update(self._walk + detail_text(row))
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[int]) -> None:
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[TreeRow]) -> None:
         event.stop()
         self._show_highlighted()
 
-    def on_tree_node_selected(self, event: Tree.NodeSelected[int]) -> None:
+    def on_tree_node_selected(self, event: Tree.NodeSelected[TreeRow]) -> None:
         """A click highlights; only Enter goes."""
         event.stop()
         self.query_one(ZoneTree).move_cursor(event.node)
 
-    def _highlighted(self) -> int | None:
-        node = self.query_one(ZoneTree).cursor_node
-        return None if node is None else node.data
+    def on_zone_tree_moved(self, event: ZoneTree.Moved) -> None:
+        """The person moved the highlight: stop following."""
+        event.stop()
+        self._wanted = None
+        self._set_following(False)
 
-    def action_commit(self) -> None:
-        """Enter: go to the highlighted node."""
-        if (node := self._highlighted()) is not None:
-            self.dismiss(TreeIntent("go", node))
+    def _set_following(self, following: bool) -> None:
+        self._following = following
+        self.query_one(".tau-dialog-title", Static).update(self.dialog_title())
 
-    def action_open(self) -> None:
-        """`o`: open a cursor at the highlighted node."""
-        if (node := self._highlighted()) is not None:
-            self.dismiss(TreeIntent("open", node))
+    def action_follow(self) -> None:
+        """`f`: follow the viewed cursor again: the highlight goes to it now."""
+        self._set_following(True)
+        self._place(self._rows.viewed_at)
+
+    # Actions
+
+    def action_act(self, action: TreeAction) -> None:
+        """Enter and `o`: go to, or open a cursor at, the highlighted node. A folded branch is
+        not a node: it is asked to be unfolded first."""
+        row = self._rows.highlighted()
+        if row is None:
+            return
+        if row.kind == "stub":
+            what = "go to" if action == "go" else "open a cursor at"
+            self.notify(f"Unfold the branch (→) and pick a node to {what}", severity="warning")
+            return
+        self.dismiss(TreeIntent(action, self._viewed, row.node.id))
 
     def action_label(self) -> None:
         """`l`: ask for a label and put it on the viewed cursor."""
-        node = self._highlighted()
-        if node is None:
+        row = self._rows.highlighted()
+        if row is None:
             return
+        node, viewed = row.node.id, self._viewed
 
         def labelled(name: str | None) -> None:
             if name is not None:
-                self.dismiss(TreeIntent("label", node, name))
+                self.dismiss(TreeIntent("label", viewed, node, name))
 
         self.app.push_screen(  # pyright: ignore[reportUnknownMemberType]
-            TextDialog("Label", f"A label for cursor {self._viewed} (it moves from any other)"),
+            TextDialog("Label", f"A label for cursor {viewed} (it moves from any other)"),
             labelled,
         )
 
+    async def action_view(self) -> None:
+        """`v`: view the cursor at the highlight (or on the branch the highlight is on); the tree
+        is drawn again with its walk as the spine, and follows it."""
+        row = self._rows.highlighted()
+        if row is None:
+            return
+        here = self._rows.cursors_at(row)
+        if not here:
+            self.notify("No open cursor here", severity="warning")
+            return
+        cursor = next((c for c in here if c != self._viewed), here[0])
+        if cursor != self._viewed:
+            try:
+                await self._host.view(cursor)
+            except (LookupError, ConnectionError) as e:
+                self.notify(str(e), severity="error")
+                return
+            self._viewed = cursor
+        self._following = True
+        self._redraw()
+
+    def action_mark(self, step: int) -> None:
+        """`[` and `]`: highlight the previous or next node with a cursor at it, open or closed,
+        in node order, around the ends; a branch folded over it is unfolded."""
+        marks = self._rows.plan.marks()
+        row = self._rows.highlighted()
+        if not marks or row is None:
+            self.notify("No cursors to jump to", severity="warning")
+            return
+        here = row.node.id
+        later = [m for m in marks if m > here] if step > 0 else [m for m in marks if m < here][::-1]
+        target = later[0] if later else (marks[0] if step > 0 else marks[-1])
+        self._set_following(False)
+        self._rows.reveal(target)
+        self._wanted = target
+        self.query_one(ZoneTree).call_after_refresh(self._place, target)
+
     def action_collapse(self) -> None:
-        """Left: fold the branch or turn the highlight is on, else step out to the one around
+        """Left: fold the turn or branch the highlight is on, else step out to the row around
         it."""
         tree = self.query_one(ZoneTree)
         node = tree.cursor_node
@@ -419,10 +326,21 @@ class TreeScreen(TauDialog[TreeIntent | None]):
         if node.children and node.is_expanded:
             node.collapse()
         elif node.parent is not None and node.parent is not tree.root:
+            self._set_following(False)
             tree.move_cursor(node.parent)
 
     def action_expand(self) -> None:
-        """Right: unfold the branch or turn the highlight is on."""
+        """Right: unfold the turn or branch the highlight is on."""
         node = self.query_one(ZoneTree).cursor_node
-        if node is not None and node.children and not node.is_expanded:
+        if node is not None and node.allow_expand and not node.is_expanded:
+            self._rows.fill(node)
             node.expand()
+
+
+def tell_trees(screens: Iterable[Screen[Any]], event: Event) -> None:
+    """Tell every tree screen among `screens` that the session heard `event`, if it changes the
+    tree."""
+    if isinstance(event, Appended | CursorView | CursorGone | Labels):
+        for screen in screens:
+            if isinstance(screen, TreeScreen):
+                screen.session_changed()

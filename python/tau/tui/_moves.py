@@ -126,13 +126,14 @@ class Moves:
 
     async def _tree(self, cursor: int) -> None:
         """Ctrl+G: the tree screen, and the call it came back with, made on the cursor that was
-        viewed when it opened."""
+        viewed when it was asked (the one it opened on, unless the person chose another there)."""
         app = self.app
         nodes = await read_nodes(app.client)
-        screen = TreeScreen(nodes, app.session.views, app.session.labels, cursor)
+        screen = TreeScreen(nodes, app, cursor)
         intent: TreeIntent | None = await app.push_screen_wait(screen)
         if intent is None:
             return
+        cursor = intent.cursor  # `v` in the tree may have changed the viewed cursor
         match intent.action:
             case "go":
                 if await self._leave(cursor, f"Going to node {intent.node}"):
