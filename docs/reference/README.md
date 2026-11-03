@@ -4,7 +4,7 @@
 
 One page per group of the public surface (`docs/api/README.md` says who each is for).
 
-- [Writing an extension](extensions.md): 19 names
+- [Writing an extension](extensions.md): 20 names
 - [Tools](tools.md): 10 names
 - [The session's records](records.md): 14 names
 - [Writing a frontend](clients.md): 10 names
@@ -14,7 +14,7 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [Embedding tau](driver.md): 5 names
 - [Providers](providers.md): 10 names
 - [The step machine](machine.md): 8 names
-- [Configuration and context](config.md): 34 names
+- [Configuration and context](config.md): 35 names
 - [Errors](errors.md): 22 names
 - [The terminal UI](tui.md): 8 names
 - [Tracing](diagnostics.md): 4 names

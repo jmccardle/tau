@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`
+Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
 
 ## Attachments
 
@@ -111,16 +111,6 @@ def options(self) -> Any
 
 This extension's options at the cursor's `at` (its `options` dataclass); raises
 `ConfigError` if it has none or what is set does not fit.
-
-### Cursor.model
-
-```python
-def model(self) -> str
-```
-
-The qualified name of the model this cursor's branch is on: the last one a `Config` on
-the walk to `at` names, which its next sample uses. `ConfigError` if none names one, or
-a `Config` on the walk is malformed.
 
 ### Cursor.models
 
@@ -641,6 +631,29 @@ def label(self, label: str) -> int
 
 The cursor `label` is on (a closed cursor too); raises `NoSuchLabel`.
 
+### TreeHandle.model
+
+```python
+def model(self, at: int | None = None) -> str
+```
+
+The qualified name of the model the branch at node `at` is on: the last one a `Config`
+on the walk to `at` names, which a sample from there uses. `at` defaults to the cursor's
+node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
+(`ValueError`). `ConfigError` if no `Config` names a model, or one on the walk is
+malformed. A reply's own node is where the model it was sampled with is read.
+
+### TreeHandle.resolved_model
+
+```python
+def resolved_model(self, name: str | None = None) -> ModelConfig
+```
+
+The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is now,
+the one a sample resolves, with its `context_window` and `price`. `name` defaults to
+`model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
+no such model.
+
 ### TreeHandle.append
 
 ```python
@@ -757,3 +770,35 @@ def remove_label(self, label: str) -> None
 ```
 
 Remove `label`; raises `NoSuchLabel`.
+
+## Usage
+
+```python
+class Usage
+    name = 'usage'
+    options = Options
+```
+
+The built-in extension `usage` (the module docstring).
+
+### Usage.__init__
+
+```python
+def __init__(self) -> None
+```
+
+### Usage.usage
+
+```python
+def usage(self, tree: TreeHandle) -> str
+```
+
+What this session has spent: one row per model, and a total.
+
+### Usage.post_reply
+
+```python
+async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Show the reply's counts on the cursor, and tell the clients if it missed the cache.

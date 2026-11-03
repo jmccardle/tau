@@ -54,7 +54,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Google Gemini | `providers/google.py` | **built** | `0.16: _providers/gemini.py`; Gemini 3 thought signatures; no fallback signature when switching providers mid tool loop (D15) |
 | Provider registry: `register_api` / `register_provider` / `ProviderSpec` (add a vendor in 6 lines) | `providers/base.py`, `providers/__init__.py` | **built** (changed) | Vendors are config groups (`base_url`, `api_key_env`, `provider`) per D13; extra providers are objects passed to `Driver` (D15). `tau config check` knows only the built-ins (D15 "Deferred") |
 | Prompt cache marks (Anthropic `cache_control`) | `docs/PROMPT-CACHING.md`, `providers/anthropic.py` | **built** | `0.16: _anthropic_request.py:197`; `options.prompt_caching` default on. `cache_state(walk)` for the provider is **planned** (plan.md Phase 5 paragraph) |
-| Cache-miss notice / `prompt_cache.py` ("your cache is not being read") | `tau_agent_core/prompt_cache.py`, `test_cache_miss_notice.py` | **REGRESSION** | `usage.cached` is recorded; nothing reads it and warns. Natural fit for a frontend or extension; not listed |
+| Cache-miss notice / `prompt_cache.py` ("your cache is not being read") | `tau_agent_core/prompt_cache.py`, `test_cache_miss_notice.py` | **built** (8E-2) | the `usage` extension tells every client once per model (D24 section 3) |
 | Auth discovery: per-vendor env defaults (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`), literal `api_key`, credential hints | `providers/__init__.py:147-165`, `docs/PROVIDER-CREDENTIALS.md` | **dropped** | D13/glossary "api_key_env": a model must name its variable or give a literal; `ModelConfig.api_key` (`_config.py:116`). Hosted providers fail `check` without a key. Deliberate Fail Early, but a 0.15 config with no `api_key_env` will not work |
 | Project `.env` as key source | none | **built** (new) | `0.16: _dotenv.py`, trust-hashed (D13) |
 | Provider retry (408/429/5xx/529, 3 tries, `Retry-After`) | `tau_llm/retry.py`, `docs/PROVIDER-RETRY.md` | **built** (8E-1, changed) | D24 §4: `RetryProvider` ships in `tau` and `start_session` wraps every provider in it; off with `load: {retry: false}`. 504 is retried, a `Retry-After` over 60 s fails at once, a `Retrying` delta says it is waiting, no jitter |
@@ -275,7 +275,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
-| Usage / token accounting in events | `usage.py`, `docs/TOKEN-ACCOUNTING.md` | **built** (reduced) | `meta.usage {input, output, cached}` on each reply; no aggregation, no session stats |
+| Usage / token accounting in events | `usage.py`, `docs/TOKEN-ACCOUNTING.md` | **built** (8E-2) | `meta.usage {input, output, cached?, written?}` on each reply; the `usage` extension shows the status line and `/usage` (D24 section 3) |
 | Cost / pricing (cache-write pricing, per-turn cost, TUI cost line, `test_cost.py`) | `docs/PRICING-AND-COMPACTION-CONFIG.md`, `app.py:_side_cost` | **REGRESSION** | no price fields in `ModelConfig`; not listed. Budget examples gone too |
 | Session stats (`get_session_stats`) | `capabilities.py` | **REGRESSION** | not listed |
 | Latency collection / run manifests (SIM_SPEC measurement runs) | `latency.py`, `run_manifest.py` | **REGRESSION** (research tooling) | `tau.trace` + `docs/benchmarks.md` cover tracing, not these artifacts |

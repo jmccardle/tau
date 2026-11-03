@@ -40,7 +40,13 @@ from tau.cli import extension_flags
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 
-BUILT_INS = ["attachments", "base_tools", "skills", "step_limit"]  # the built-in extensions
+BUILT_INS = [
+    "attachments",
+    "base_tools",
+    "skills",
+    "step_limit",
+    "usage",
+]  # the built-in extensions
 
 
 def load_example(name: str) -> ModuleType:

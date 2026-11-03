@@ -34,7 +34,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import NamedTuple, TextIO
 
-from tau._config import ConfigError
+from tau._config import ConfigError, Price
 from tau._config_layers import (
     LayerText,
     ModelCatalog,
@@ -384,12 +384,18 @@ async def _close(providers: Mapping[str, Provider]) -> None:
         await provider.aclose()
 
 
+def _price_text(price: Price) -> dict[str, str]:
+    return {k: str(getattr(price, k)) for k in ("input", "output", "cache_read", "cache_write")}
+
+
 def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
     config = catalog.resolve(name)
     values = {
         "model": config.model,
         "base_url": config.base_url,
         "max_tokens": config.max_tokens,
+        "context_window": config.context_window,
+        "price": None if config.price is None else json.dumps(_price_text(config.price)),
         "options": json.dumps(config.options, default=dict),
         "provider": config.provider,
         "api_key_env": config.api_key_env,

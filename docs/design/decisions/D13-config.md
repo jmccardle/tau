@@ -180,3 +180,18 @@ options equal to the file's stay untouched, and `values: {}` saves the branch's 
 Options only the user, project or command-line layers set are not copied (a project's setting must
 not leak into every other project). A refused value writes neither the node nor the file. No wire
 change.
+
+## Amended (D24 8E-2, 2026-11-03): `context_window` and `price`
+
+A model's settings gain two keys, read like `max_tokens` and `options`:
+
+- **`context_window`**: a positive integer, the model's context size in tokens. Optional; from the
+  config only (D24 ruling 9). `ModelConfig.context_window`.
+- **`price`**: an object with `input`, `output`, `cache_read` and `cache_write`, USD per million
+  tokens, all four required (a model that charges nothing to write the cache repeats its `input`
+  price). `ModelConfig.price` is a `Price` of `Decimal`s. A `price` with a field missing, an
+  unknown field, a number below 0 or a value that is not a number is a `ConfigError` at the
+  model, which `tau config check` reports at `models.<name>`. A `price` object merges by field
+  across layers and down through groups, as `options` does, so a project can change one field.
+
+Neither is read by a provider or put in a node. `tau config show` prints both.

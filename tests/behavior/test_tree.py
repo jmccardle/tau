@@ -916,8 +916,8 @@ async def test_a_change_to_another_cursor_is_heard_by_a_client(tmp_path: Path, c
 
 
 @scenario
-async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_path: Path) -> None:
-    """A handle built outside a hook writes like the session does: it syncs, so the node
+async def test_a_tree_handle_writes_sync_even_while_a_cursors_hook_is_out(tmp_path: Path) -> None:
+    """A command's tree handle writes like the session does: it syncs, so the node
     survives a crash even while a cursor's hook is out."""
     gate = Gate()
 
@@ -937,25 +937,22 @@ async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_pa
     async def close(cursor: int) -> None:
         pass
 
-    h = await Harness.create(tmp_path, extensions=[Wait()], gates=[gate])
+    written: list[int] = []
+
+    def note(tree: tau.TreeHandle) -> str:
+        """Writes through the tree handle a command is given."""
+        written.append(tree.append(SYS, Body.Custom("note", "")))
+        return "written"
+
+    class Notes:
+        name = "notes"
+        commands = (note,)
+
+    h = await Harness.create(tmp_path, extensions=[Wait(), Notes()], gates=[gate])
     await h.step()
     await h.settle()  # the cursor's pre_step hook is out
-    with pytest.raises(TypeError):
-        tau.TreeHandle(
-            h.session,
-            "frontend",
-            h.clock.now,
-            lambda: None,
-            lambda: None,
-            rest,
-            abort,
-            close,
-            hook=h.cursor,  # pyright: ignore[reportCallIssue]
-        )
-    handle = tau.TreeHandle(
-        h.session, "frontend", h.clock.now, lambda: None, lambda: None, rest, abort, close
-    )
-    node = handle.append(SYS, Body.Custom("note", ""))
+    assert await h.run("note") == "written"
+    node = written[0]
     await h.crash()
     assert len(h.session.tree) > node, "the write was synced"
     await h.close()

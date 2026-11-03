@@ -554,3 +554,28 @@ the glossary for the client rules). Kept as history.
   replay data is never sent; a misspelt option fails `tau config check`; a
   cancelled stream leaves the `Interrupted` reply equal to the live events
   seen; one client serves many samples.
+
+## Amended (D24 8E-2, 2026-11-03): normalized usage
+
+Normalized `usage` is `{input, output}` plus `cached` and `written` **when the server reports
+them**; `input` still counts every prompt token. Item 11's "servers that report no cached tokens get
+`cached: 0`" is withdrawn: an absent `cached` means the server did not say, and `cached: 0` means
+it said it read nothing, which is what the cache notice (D24 section 3) needs to tell apart.
+
+- **`openai`**: `cached` is `prompt_tokens_details.cached_tokens` and `written` is
+  `prompt_tokens_details.cache_write_tokens`, each present only if the chunk carries it. A malformed
+  count still leaves `usage` out. What LiteLLM sends was checked in its source (1.106.6,
+  `types/utils.py` `Usage.__init__` and `llms/anthropic/chat/transformation.py`
+  `calculate_usage`): for an Anthropic model its OpenAI endpoint always sends
+  `prompt_tokens_details` with an integer `cached_tokens` (0 on a miss) and `cache_write_tokens`
+  (also mirrored as `cache_creation_tokens`, and at the top level as
+  `cache_creation_input_tokens` and `cache_read_input_tokens`); `prompt_tokens` already counts both.
+  For a model whose own API reports no cache counts (llama.cpp, many local servers) it sends
+  none, and then `cached` is absent. Only `cache_write_tokens` is read for writes: the
+  other spellings are the same number.
+- **`anthropic`**: `cached` is `cache_read_input_tokens` and `written` is
+  `cache_creation_input_tokens`, each only if the response has it (Anthropic sends both, 0 on a
+  miss).
+- **`gemini`**: `cached` is `cachedContentTokenCount`, `0` when absent (Gemini omits zeros, so
+  absent is a real zero); there is no `written`.
+- **`mock`**: reports `cached: 0`, as before.

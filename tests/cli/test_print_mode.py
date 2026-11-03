@@ -633,6 +633,30 @@ def test_verbose_follows_the_run_node_by_node(configured: World) -> None:
     assert "tau: step ended: Done" in err
 
 
+SHOWS = """
+class Shows:
+    name = "shows"
+
+    async def post_reply(self, cursor, subject):
+        cursor.show("plan mode on")
+        return None
+
+extensions = [Shows()]
+"""
+
+
+def test_verbose_prints_what_an_extension_shows_when_it_changes(configured: World) -> None:
+    err = p(configured, "--verbose", "-e", ext(configured, "shows", SHOWS), "hi").err
+    assert "tau: shows: plan mode on\n" in err
+    assert err.count("tau: shows: ") == 1, "a line is printed when it changes, not on every view"
+    assert "tau: usage: 1 in · 0% cached · 2 out\n" in err, "any extension's, usage included"
+    assert err.index("node 3 Assistant") < err.index("tau: usage: ")
+
+
+def test_without_verbose_a_shown_line_is_not_printed(configured: World) -> None:
+    assert p(configured, "hi").err == ""
+
+
 def test_verbose_shows_a_question_as_it_opens(configured: World) -> None:
     err = p(
         configured, "--verbose", "-e", ext(configured, "gate", GATE), "--answer", "*=yes", "go"

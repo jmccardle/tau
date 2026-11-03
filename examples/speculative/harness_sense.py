@@ -246,8 +246,9 @@ class HarnessSense:
             if usage:
                 since = sum(size[n.id] for n in walk[i + 1 :]) // 4
                 used = usage["input"] + since
+                cached = f"{usage['cached']} cached" if "cached" in usage else "cache not reported"
                 lines.append(
-                    f"reported {usage['input']} prompt tokens ({usage['cached']} cached) at node "
+                    f"reported {usage['input']} prompt tokens ({cached}) at node "
                     f"{walk[i].id}, about {since} more since"
                 )
                 break

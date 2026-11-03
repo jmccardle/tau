@@ -15,7 +15,7 @@ from tau._base_tools import (
 from tau._client import Client, LocalClient
 from tau._clock import SystemClock
 from tau._commands import CommandFailed
-from tau._config import ConfigError, ModelConfig, model_config
+from tau._config import ConfigError, ModelConfig, Price, model_config
 from tau._config_layers import (
     Layer,
     LayerText,
@@ -156,6 +156,7 @@ from tau._startup import (
 from tau._step_limit import StepLimit
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
+from tau._usage import Usage
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
 from tau.commandline import Parsed, UnknownCommand
@@ -258,6 +259,7 @@ __all__ = [
     "Pick",
     "PickSession",
     "Poisoned",
+    "Price",
     "Progress",
     "PromptSource",
     "Prompts",
@@ -305,6 +307,7 @@ __all__ = [
     "UnknownCommand",
     "UnknownSession",
     "UntrustedProject",
+    "Usage",
     "UserConfig",
     "Version",
     "Welcome",

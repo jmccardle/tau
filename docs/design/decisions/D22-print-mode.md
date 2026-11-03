@@ -189,6 +189,11 @@ step_limit.limit=N` (§1).
     (`node 5 Assistant: "Let me read..." + 2 calls: read, bash`; `node 6 Results: read ok, bash
     error`), each step's ending, and each question as it opens.
   
+  - **what an extension shows** (added 8E-2): a line `tau: NAME: TEXT` whenever the text an
+    extension shows on the cursor (`Cursor.show`) differs from the last one, whichever extension it
+    is (`tau: usage: 12 in · 4 out · $0.0001 …`). The lines already shown when the run began are
+    not repeated.
+
   It is a report of what happened, not a debug log: no arguments dump, no timings
   (`tau.trace` is the profiler).
 

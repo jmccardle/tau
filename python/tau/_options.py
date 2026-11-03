@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
-from tau._config import ConfigError, config_fields
+from tau._config import ConfigError, ModelConfig, config_fields
 from tau._core import Body, Node, Session
 from tau._values import (
     Context,
@@ -168,6 +168,10 @@ class ExtensionOptions:
     def models(self) -> tuple[str, ...]:
         """The qualified names of the models the catalog defines, in file order."""
         return self._catalog().names()
+
+    def resolved(self, name: str) -> ModelConfig:
+        """The model `name`, as the catalog resolves it now; `ConfigError` if it has none."""
+        return self._catalog().resolve(name)
 
     def _raw(self, extension: str, node: int) -> Json:
         if extension not in self._types:

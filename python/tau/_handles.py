@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
 
-from tau._config import model_config
+from tau._config import ModelConfig, model_config
 from tau._core import (
     Author,
     Body,
@@ -76,6 +76,11 @@ class OptionsReader(Protocol):
 
     def models(self) -> tuple[str, ...]:
         """The qualified names of the models the catalog defines."""
+        ...
+
+    def resolved(self, name: str) -> ModelConfig:
+        """The model named exactly `name` (qualified), as the next sample resolves it;
+        `ConfigError` if the catalog has none."""
         ...
 
     def save(self, extension: str, changes: Mapping[str, object]) -> None:
@@ -166,9 +171,13 @@ class TreeHandle:
         rest: Rest,
         abort: Abort,
         close: Close,
+        options: OptionsReader,
         own: int | None = None,
     ) -> None:
         self._session = session
+        self._read = options
+        # The node `model` and `resolved_model` mean by default: a cursor's, a batch's.
+        self._here: Callable[[], int | None] = lambda: None
         self._now = now
         self._poke = poke
         self._changed = changed
@@ -218,6 +227,26 @@ class TreeHandle:
     def label(self, label: str) -> int:
         """The cursor `label` is on (a closed cursor too); raises `NoSuchLabel`."""
         return self._session.label(label)
+
+    def model(self, at: int | None = None) -> str:
+        """The qualified name of the model the branch at node `at` is on: the last one a `Config`
+        on the walk to `at` names, which a sample from there uses. `at` defaults to the cursor's
+        node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
+        (`ValueError`). `ConfigError` if no `Config` names a model, or one on the walk is
+        malformed. A reply's own node is where the model it was sampled with is read."""
+        node = self._here() if at is None else at
+        if node is None:
+            raise ValueError("model: this handle is on no node; say which with at=")
+        return self._read.model(node)
+
+    def resolved_model(self, name: str | None = None) -> ModelConfig:
+        """The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is now,
+        the one a sample resolves, with its `context_window` and `price`. `name` defaults to
+        `model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
+        no such model."""
+        if name is None:
+            name = self.model()
+        return self._read.resolved(name)
 
     # Writes
 
@@ -349,9 +378,12 @@ class NodeHandle(TreeHandle):
         close: Close,
         options: OptionsReader,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, rest, abort, close, cursor)
+        super().__init__(
+            session, extension, now, poke, changed, rest, abort, close, options, cursor
+        )
         self._asker = asker
         self._options = options
+        self._here = lambda: self.id
         self.id = id
         self.cursor_id = cursor
 
@@ -417,13 +449,14 @@ class Cursor(TreeHandle):
         show: Show,
         tools: Tools,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, rest, abort, close, id)
+        super().__init__(session, extension, now, poke, changed, rest, abort, close, options, id)
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
         self._show = show
         self._tools = tools
         self._options = options
+        self._here = lambda: self.cursor(self.id).at
         self.id = id
 
     def node(self, id: int | None = None) -> Node:
@@ -438,12 +471,6 @@ class Cursor(TreeHandle):
         """This extension's options at the cursor's `at` (its `options` dataclass); raises
         `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.cursor(self.id).at)
-
-    def model(self) -> str:
-        """The qualified name of the model this cursor's branch is on: the last one a `Config` on
-        the walk to `at` names, which its next sample uses. `ConfigError` if none names one, or
-        a `Config` on the walk is malformed."""
-        return self._options.model(self.cursor(self.id).at)
 
     def models(self) -> tuple[str, ...]:
         """The qualified names of the models the catalog defines, in file order: what
@@ -619,4 +646,5 @@ class Handles:
             self.rest,
             self.abort,
             self.close,
+            self.options,
         )

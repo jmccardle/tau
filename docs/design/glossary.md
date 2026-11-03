@@ -104,8 +104,8 @@ provider sent none: an interrupted reply, a failed sample, a fake.
 What a response carried besides its parts, as the text of a JSON object: for
 the OpenAI provider the `model` the server says answered, the response `id`,
 `system_fingerprint`, and `usage` (token counts), whichever the stream sent; every hosted
-provider and the mock report the normalized `usage` `{input, output, cached}` (D15), beside
-its raw fields (`usage_raw`). Opaque to core, like `Config.data`; persisted and replayed
+provider and the mock report the normalized `usage` `{input, output}` with `cached` and `written`
+when the server reports them (D15, D24 M6), beside its raw fields (`usage_raw`). Opaque to core, like `Config.data`; persisted and replayed
 verbatim. On an `Error` reply it holds `error: {message, status?, retry_after?, internal?,
 provider?}`, the failed sample's `SampleError`, put there by the driver: `retry_after` only
 when finite; `internal: true` and a message of `"<Type>: <msg>"` when the provider raised
@@ -780,13 +780,62 @@ URL; a provider that needs one says so in its `check`), optional `api_key_env`,
 the *name* of the environment variable holding the API
 key, `provider` (default `"openai"`; a name in the driver's provider map), for a
 literal `api_key` in a file `literal_api_key` (hidden from `repr`), `max_tokens`
-(optional positive integer) and `options` (see *options*; stored as a deep read-only
-copy: objects become read-only mappings, lists tuples). Invalid values raise
+(optional positive integer), `context_window` and `price` (see *context_window, Price*) and
+`options` (see *options*; stored as a deep read-only copy: objects become read-only mappings, lists
+tuples). Invalid values raise
 `ConfigError` (a `ValueError`), which also reports a `Config` that is not a
 model name and a name the catalog lacks (`model 'x' is not in your config`);
 the driver turns those into a failed sample. `api_key(environ)` reads the key
 at sample time (the provider's environ); it is never a field, so it reaches no
 node and no log (tested). Groups, merging, and files are `read_models`.
+
+### context_window, Price
+`ModelConfig.context_window`, `tau.Price`, the model keys `context_window` and `price` · D24 M2, M3 · new (8E-2)
+
+**`context_window`** is the model's context size in tokens: an optional positive integer, read from
+the config only (D24 ruling 9). No provider reads it; `usage` shows `ctx` from it and compaction
+will trigger on it. **`price`** is a model's cost in USD per million tokens, a `Price` of four
+`Decimal`s: `input` (prompt tokens neither read from nor written to the cache), `output`,
+`cache_read` and `cache_write`. All four are required: a model that charges nothing for writing
+the cache repeats its `input` price (D24 ruling 6), and a `price` with a field missing, below 0 or
+not a number is a `ConfigError`. Money is `Decimal`, built from the text of a JSON number, so
+`0.15` is 0.15 and a sum of thousands of replies does not drift. Both keys layer like the others
+(a `price` object merges by field across layers and down through groups) and show in `tau config
+show`.
+
+### resolved_model, model(at=)
+`TreeHandle.resolved_model(name=None)`, `TreeHandle.model(at=None)` · D24 M4, M5 · new (8E-2)
+
+On every handle (a cursor, a batch's node, a tree handle). **`model(at=node)`** is the qualified
+name of the model the branch at `node` is on (the fold of its `Config` nodes the driver samples
+with), so a reply is read with the model it was sampled with; `at` defaults to the cursor's node
+or the batch's, and a tree handle must give it. **`resolved_model(name=None)`** is the
+`ModelConfig` the catalog resolves for that qualified name now, with its `context_window` and
+`price` (`name` defaults to `model()`); `ConfigError` if the catalog has none. `handle.model_config`
+was never built; `tau.model_config` is the `Config` node builder.
+
+### Usage (extension), cache notice
+`tau.Usage` (`_usage.py`), key `usage`, option `cache_notice`, command `/usage` · D24 section 3 · new (8E-2)
+
+The built-in extension that shows what the session used and spent. At `post_reply` it shows, on
+the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session`
+(`cached` only when the server reported it; the dollar figures only for a model with a `price`,
+`ctx` only for one with a `context_window`; a session total that left out replies of an unpriced
+model ends in `+`). `/usage` prints a row per model (samples, input, cached share, cache
+writes, output, cost) and a total. Cost is computed when shown from the price in the config
+now, never stored, and a reply is priced by `model(at=its node)`. Every reply in the tree counts
+(summaries and sub-agents too), except a copy: `counted` is the one rule, and is true for every
+reply until `copied_from` exists. The **cache notice** is a `tell` to every client, once per
+model, after a reply with `cached` reported as 0 and at least 4,096 input tokens that follows a
+reply of the same model by under 300 seconds.
+
+### Reading
+`tau._usage.Reading` (private) · D24 section 3 · new (8E-2)
+
+One reply's normalized `meta.usage` as `usage` reads it: `input`, `output`, and `cached` and
+`written`, each `None` when the server did not report it. Not public; a reply whose usage cannot
+be read (not the normalized shape, or more `cached` plus `written` than `input`) has no `Reading`
+and is listed by `/usage` as reporting no usage, with the reason.
 
 ### options
 `ModelConfig.options`, the model key `options` · D15 · new
@@ -1144,7 +1193,7 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
 **load order**: a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `attachments`,
-`base_tools`, `skills` and `step_limit`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+`base_tools`, `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
@@ -1764,9 +1813,9 @@ and read by the running driver at once, no node; also on a node handle, so a too
 see *UserConfig*), `saved_options()` (the fields the user's config file itself sets of the
 calling extension's options, as JSON values, and none of the project's, the overrides' or a node's;
 also on a node handle; what an extension reads to add to a list option it saves, since `options()`
-folds the layers and nodes in), `model()` (the qualified name of the model the cursor's branch is on, as its
-next sample resolves it; `ConfigError` if no `Config` on the walk names one or one is
-malformed), `models()` (the catalog's qualified names, in file order, a tuple: what `set_model`
+folds the layers and nodes in), `model(at=None)` (the qualified name of the model the cursor's branch is on, as its
+next sample resolves it, or at node `at`; `ConfigError` if no `Config` on the walk names one or one is
+malformed), `resolved_model(name=None)` (see *resolved_model*), `models()` (the catalog's qualified names, in file order, a tuple: what `set_model`
 accepts), `tools()` (the names of the driver's tools, the extensions' included, in the order a
 sample is offered them, a tuple: what `Subject.tools` accepts), `show(text)` (see **show**), `move(to)`, `write(body, delivers)`,
 `set_auto(on)`, `tell(text, *, to=None)` (a `Notice` to client `to`, by default to every
@@ -1918,10 +1967,12 @@ raw string is kept as `finish_reason` (via `Finish`). The request sets
 `stream_options.include_usage` unless the option says not to, and the stream is read to
 its end (usage comes after the finish) to fill `meta` with `model`, `id`,
 `system_fingerprint`, `usage_raw` (the server's `usage` object as sent) and the
-normalized `usage` `{"input", "output", "cached"}` from `prompt_tokens`,
-`completion_tokens` and `prompt_tokens_details.cached_tokens` (`cached` is 0 for a server
-that reports none; no `usage` at all if the server gave no prompt and completion counts,
-or a cached count that is present but not an integer). Once `finish_reason` arrives the reply is done: later content deltas are ignored and
+normalized `usage` `{"input", "output"}` from `prompt_tokens` and `completion_tokens`, with
+`cached` from `prompt_tokens_details.cached_tokens` and `written` from
+`prompt_tokens_details.cache_write_tokens` when the server sends them (a count it does not send is
+absent, not 0; a LiteLLM proxy sends both for an Anthropic model, 0 on a miss; no `usage` at all if
+the server gave no prompt and completion counts, or a cache count that is present but not a
+non-negative integer). Once `finish_reason` arrives the reply is done: later content deltas are ignored and
 any later failure (reset, error chunk, malformed SSE, no `[DONE]`) costs only the
 meta not yet received. A `SampleError` carries the `meta` that had arrived. Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
@@ -1984,8 +2035,9 @@ part (text is the block's `thinking`), `{"type": "redacted_thinking", "data": d}
 then `CallArgs` (no arguments is `{}`); `stop_reason` maps `end_turn` and `stop_sequence` to
 `End`, `tool_use` to `Tools`, `max_tokens`, `model_context_window_exceeded` and `pause_turn` to
 `Length`, `refusal` to `End`; any other fails the sample. `meta`: `id`, `model`, `usage`
-`{"input", "output", "cached"}` (`input` is `input_tokens` plus cache reads plus
-`cache_creation_input_tokens`, `cached` the reads alone), `usage_raw` (the cumulative usage
+`{"input", "output"}` and, when reported, `cached` and `written` (`input` is `input_tokens` plus
+cache reads plus `cache_creation_input_tokens`, `cached` the reads alone, `written` the writes
+alone), `usage_raw` (the cumulative usage
 as sent), `stop_details` when sent, and the `request-id` response header as `request_id` (on
 failures too). The provider sends no `anthropic-beta` header, so `check` refuses what needs
 one: `thinking.display` `updates`, `thinking.block_binding`, and `extra_body.context_management`. Errors: an HTTP error or `error` event is a `SampleError`
@@ -2061,7 +2113,8 @@ calls were made), `MAX_TOKENS` and `CONTINUATION` `Length`; `SAFETY`, `RECITATIO
 block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`responseId`),
 `finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
 `output` is `candidatesTokenCount` plus `thoughtsTokenCount` (thinking is billed as output),
-`cached` is `cachedContentTokenCount`; an absent count is 0. An error event in the stream
+`cached` is `cachedContentTokenCount` (an absent count is 0, since Gemini omits zeros); there is no
+`written`. An error event in the stream
 (`{"error": {...}}`) fails the sample with its `code` as `status`. A non-200 response is a
 `SampleError` with `status` and `retry_after` (the `Retry-After` header, else the body's
 `RetryInfo.retryDelay`). Options (`check` refuses any other): `temperature`, `top_p`, `top_k`
@@ -2534,7 +2587,8 @@ the provider's own string (`None` if it has none), and the response `meta`
 (`None` if none; otherwise strict JSON object text, checked on construction:
 `TypeError` for a non-`str`). The
 driver builds the reply draft with all three. A provider that reports usage puts the
-normalized `usage` in `meta` as `{"input", "output", "cached"}` token counts, beside its
+normalized `usage` in `meta` as `{"input", "output"}` token counts with `cached` and `written`
+when reported (D15, D24 M6), beside its
 own fields (D15; the mock and all three hosted providers do so; the hosted providers keep the raw
 `usage` object as `usage_raw`).
 

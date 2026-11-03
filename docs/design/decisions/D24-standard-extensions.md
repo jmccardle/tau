@@ -526,3 +526,53 @@ shared pieces of §1. Where the build differs from the text above, or the text d
   extension that has none, and `extensions.retry`.
 - A listed skill is read live from disk by the model; trust pins what `/NAME` sends.
 - The `--no-extensions` hint is not offered for a built-in's failure.
+
+## Built: 8E-2
+
+Usage (§3) with M2 to M6. Where the build differs from the text above, or the text did not say:
+
+- **Money is `Decimal`**, not integer micro-dollars. Prices are decimal numbers (0.30, 3.75) that
+  would need a fixed number of decimal places as integers; `Decimal` reads them as written (a JSON
+  float is taken as its shortest text, so `0.15` is 0.15) and a sum of any number of replies is
+  exact. Cost is `tokens × price` summed, then scaled by 10⁻⁶ (exact); only the display rounds
+  (half up: `$1.27` from a dollar, `$0.014` below, `<$0.001` under that).
+- **M2/M3**: `ModelConfig.context_window` (positive int) and `ModelConfig.price`
+  (`tau.Price`, four `Decimal`s). Both are model keys in the layered files (D13 amended); a `price`
+  object merges by field like `options`. A missing field, an unknown one, a negative or non-number is
+  a `ConfigError` at the model. `tau config show` prints both.
+- **M4/M5 live on `TreeHandle`**, so `Cursor`, `NodeHandle` and a command's tree handle all have
+  them: `model(at=None)` (the cursor's node, the batch's node, or `at`; a tree handle must give
+  `at`) and `resolved_model(name=None)` (defaults to `model()`). `OptionsReader` gained `resolved`.
+- **M6**: `usage.written` and an absent `cached` as in D15's amendment. LiteLLM (1.106.6, read from
+  its source) sends `prompt_tokens_details.cached_tokens` (0 on a miss) and `cache_write_tokens`
+  for an Anthropic model, so there a miss is `cached: 0`; a server that sends nothing (llama.cpp)
+  now has no `cached`. `examples/cache_rate.py` and `harness_sense.py` read `cached` as optional.
+- **The status line** is `Cursor.show` under the name `usage` (the TUI prints it as
+  `usage: 12.3k in · …`; the wire is unchanged, no schema or `PROTOCOL` change). It follows the
+  text above with these additions: `cached` is left out when unreported; `ctx` is the reply's
+  `input + output` over the window; the session total ends in `+` when replies of an unpriced
+  model were left out of it; a reply with no usage shows `MODEL reported no usage`.
+- **`/usage`** prints a row per model that reported usage (samples, input, cached share, cache
+  writes, output, cost, with `-` for an unreported share or a missing price), a `total` row for
+  more than one model, and lines for replies that reported no usage and models with no price. A
+  model the catalog no longer has is marked `(not in config)` and costs `-`, not an error.
+- **The cache notice** follows §3. The `try provider "anthropic"` sentence is added only for a
+  model on the `openai` provider. Its previous reply is the nearest `Assistant` on the walk, which
+  must count, be of the same model and under 300 s older.
+- **The seam for copies (8E-3)**: `tau._usage.counted(node)` is the one rule for "this reply
+  counts" and returns true for every reply. Once M1 gives nodes `copied_from`, 8E-3 changes its
+  body to `node.copied_from is None`; usage and the cache notice both go through it, and a
+  copy then no longer counts or serves as a notice's previous reply.
+- **Inconsistent counts are no usage** (review fix): a provider's normalizer (`note_usage`) drops
+  `usage` when `cached + written` exceeds `input`, as it does for a malformed count (`usage_raw` still
+  holds what the server said). The extension never fails a step over a past node: a reply whose
+  usage cannot be read (from any provider) is recorded as read once, counts as "reported no
+  usage", and `/usage` names its node and the reason; its own status line says why too.
+- **Display rules**: money rounds half up to three decimals below a dollar and two from a dollar, an
+  amount that rounds up to a dollar is `$1.00`, exactly nothing is `$0`, and under `<$0.001` is
+  `<$0.001`; `999,950` tokens is `1.0M`. The `/usage` total row ends in `+` like the status line when
+  a model could not be priced.
+- **`TreeHandle` requires its `options`** (the driver's `OptionsReader`); a program outside tau gets
+  one as a command's `TreeHandle` argument.
+- **`--verbose` under `tau -p`** prints every extension's shown line when it changes (D22 section 7),
+  usage's included. The cache notice reaches stderr as every notice does.

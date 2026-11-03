@@ -1,8 +1,9 @@
 # What τ does for you
 
-Three things happen in a session without any extension of yours: a failed request is tried again,
-`@file` in a message attaches the file, and files you write become commands (prompt templates and
-skills). Each can be switched off, and each is a few lines to use. The examples run with the mock
+Four things happen in a session without any extension of yours: a failed request is tried again,
+`@file` in a message attaches the file, files you write become commands (prompt templates and
+skills), and what the session has used and spent is shown. Each can be switched off, and each is a
+few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -186,3 +187,60 @@ changed, and τ reads the bytes that were approved. Because they are pinned, a �
 asks once more about every project it trusted before ([Configuration](configuration.md#projects-and-trust)).
 
 Templates and skills are read once, when τ starts. Edit one, then start a new `tau` to use it.
+
+## What it used and what it cost
+
+After each reply the status bar shows what the reply took, and the session's running cost:
+
+```text
+usage: 12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session
+```
+
+`12.3k in` is the prompt, `96% cached` the part of it the server read from its prompt cache (left
+out when the server does not say), `812 out` the reply. `$0.017` and the session total appear for
+a model that has a `price`, and `ctx 7%` for one that has a `context_window`: the share of the
+window the prompt and the reply fill. τ cannot know either number, so you write them in the
+model's settings in your config. A model with no price shows no cost, never `$0`; a session total
+that had to leave out replies of such a model ends in `+`.
+
+```json
+{
+  "models": {
+    "sonnet": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "context_window": 200000,
+      "price": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+    }
+  }
+}
+```
+
+A price is US dollars per million tokens, and all four fields are required: a model that does not
+charge for writing the cache repeats its `input` price as `cache_write`. A price with a field
+missing, below 0, or not a number is a config error naming the model. Groups hand a price down like
+any setting, and a project can change one field (`"price": {"output": 20}`).
+
+`/usage` prints the whole session, one row per model, with the replies of summaries and
+sub-agents included:
+
+```text
+model             samples   input  cached  written  output   cost
+local:qwen              3   36.9k       -        -    2.4k      -
+anthropic:sonnet       12  210.0k     91%     4.1k    9.8k  $1.27
+total                  15  246.9k     91%     4.1k   12.2k  $1.27
+no price, so no cost: local:qwen
+```
+
+Cost is worked out when you look, from the prices in your config now, so correcting a price
+corrects the whole session. A reply is priced by the model it was sampled with, so a session that
+changed models half way adds up right. The sums are exact, not floating point.
+
+When a reply reads nothing from the prompt cache (the server said `cached: 0`) soon after a reply
+of the same model that should have written it, τ tells you once per model, with the size of the
+prompt that went at full price. Through a proxy's OpenAI endpoint nothing marks the cache, and
+the notice says to try the `anthropic` provider. `--set usage.cache_notice=false` silences it, and
+`tau ext disable usage` removes all of this.
+
+`tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
+for any extension that shows a line.

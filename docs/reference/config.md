@@ -4,7 +4,7 @@
 
 Models, the config files, trust, extension loading, the system prompt.
 
-Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `select_model`, `system_prompt`
+Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `Price`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `select_model`, `system_prompt`
 
 ## Ask
 
@@ -210,13 +210,17 @@ class ModelConfig
     literal_api_key: str | None = field(default=None, repr=False)
     max_tokens: int | None = None
     options: Mapping[str, object] = field(default_factory=lambda: {})
+    context_window: int | None = None
+    price: Price | None = None
 ```
 
 A resolved model: which model to ask, where (`base_url`, optional: a provider that
 needs one says so in its `check`), the *name* of the variable holding its API key,
 `max_tokens` (optional, positive), and `options`: a JSON object only the named provider
-reads, which the config loader never looks inside (D15). The driver builds it from the
-catalog at each sample; no node holds it.
+reads, which the config loader never looks inside (D15). `context_window` (optional,
+positive) is the model's context size in tokens and `price` (optional) what it costs:
+extensions read them (D24); no provider does. The driver builds it from the catalog at
+each sample; no node holds it.
 
 The key itself is never a field: it is read from the environment at sample
 time (`api_key`) and so never reaches a node or the log.
@@ -253,6 +257,33 @@ Pick = Callable[[tuple[str, ...]], str]
 ```
 
 A choice put to the person: takes the qualified model names, returns one of them.
+
+## Price
+
+```python
+@dataclass(frozen=True)
+class Price
+    input: Decimal
+    output: Decimal
+    cache_read: Decimal
+    cache_write: Decimal
+```
+
+What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
+nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
+a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
+Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
+number below 0, or one that is not a number.
+
+### Price.of
+
+```python
+@classmethod
+def of(cls, fields: object) -> 'Price'
+```
+
+The price a config's `price` object says. `ConfigError` unless it is an object with
+exactly the four fields, each a number of at least 0.
 
 ## PromptSource
 

@@ -190,11 +190,21 @@ def meta_text(meta: Json) -> str | None:
     return json.dumps(kept, allow_nan=False) if kept else None
 
 
+def _overcounts(usage: Json) -> bool:
+    """Whether a normalized `usage` has more cached and written tokens than input."""
+    read, written = cast("int", usage.get("cached", 0)), cast("int", usage.get("written", 0))
+    return read + written > cast("int", usage["input"])
+
+
 def note_usage(meta: Json, raw: Json, normalize: Callable[[Json], Json | None]) -> None:
     """Keep a `usage` report in `meta`: as sent (`usage_raw`) and normalized (`usage`). The
-    latest report is the one that counts, so a malformed one drops the earlier `usage`."""
+    latest report is the one that counts, so a malformed one (or one that says more tokens were
+    read from and written to the cache than were sent) drops the earlier `usage`; `usage_raw`
+    still holds what the server said."""
     meta["usage_raw"] = raw
     normal = normalize(raw)
+    if normal is not None and _overcounts(normal):
+        normal = None  # more read and written than sent: as malformed as a bad count
     if normal is None:
         meta.pop("usage", None)
     else:

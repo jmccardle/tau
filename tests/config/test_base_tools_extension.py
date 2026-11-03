@@ -40,7 +40,7 @@ def test_it_is_a_built_in_that_is_on_and_lists_the_six_tools(world: World) -> No
 
 def test_it_loads_before_step_limit(world: World) -> None:
     names = [e.name for e in load_extensions(loaded(world))]
-    assert names == ["attachments", "base_tools", "skills", "step_limit"]
+    assert names == ["attachments", "base_tools", "skills", "step_limit", "usage"]
 
 
 def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -> None:
@@ -49,6 +49,7 @@ def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -
         "attachments",
         "skills",
         "step_limit",
+        "usage",
     ]
     found = row(world)
     assert found["state"] == "off"
@@ -63,6 +64,7 @@ def test_no_extensions_leaves_it_on_and_load_false_still_turns_it_off(world: Wor
         "base_tools",
         "skills",
         "step_limit",
+        "usage",
     ]
     assert row(world, "--no-extensions")["state"] == "on"
     world.user_config({"load": {"base_tools": False}})

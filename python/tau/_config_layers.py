@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from tau._config import ConfigError, ModelConfig, key_problem, url_problem
+from tau._config import ConfigError, ModelConfig, Price, key_problem, url_problem
 from tau._config_keys import extensions, load_switches, system_prompt, tui_settings
 from tau._config_tree import (
     ConfigProblem,
@@ -32,7 +32,19 @@ from tau._protocols import Provider
 from tau._values import Context, DefinitionError
 
 CLI = "cli"
-_MODEL_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider", "max_tokens", "options")
+_MODEL_KEYS = (
+    "model",
+    "base_url",
+    "api_key_env",
+    "api_key",
+    "provider",
+    "max_tokens",
+    "context_window",
+    "price",
+    "options",
+)
+_INT_KEYS = ("max_tokens", "context_window")
+_OBJECT_KEYS = ("options", "price")  # settings that are objects, merged by key
 _TOP_KEYS = ("models", "default_model", "extensions", "load", "system_prompt", "tui")
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -301,7 +313,7 @@ class _LayerMerge:
 
 def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     """`own` over `inherited`: a null removes the key, and setting one of
-    `api_key`/`api_key_env` removes the other. `options` merge as objects."""
+    `api_key`/`api_key_env` removes the other. `options` and `price` merge as objects."""
     out = dict(inherited)
     for key, (leaf, group) in own.items():
         if leaf.value is None:
@@ -309,7 +321,7 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
             continue
         before: object = out[key][0].value if key in out else None
         mine: object = leaf.value
-        if key == "options" and isinstance(before, dict) and isinstance(mine, dict):
+        if key in _OBJECT_KEYS and isinstance(before, dict) and isinstance(mine, dict):
             merged = _merge(cast("Tree", before), cast("Tree", mine))
             out[key] = (Leaf(merged, leaf.source), group)
         else:
@@ -325,6 +337,27 @@ def _match(names: Iterable[str], name: str) -> tuple[str, ...]:
     if ":" in name:
         return tuple(q for q in names if q == name)
     return tuple(q for q in names if q.rsplit(":", 1)[-1] == name)
+
+
+def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
+    """The `ModelConfig` of a model's merged settings; `ConfigError` if it refuses them."""
+    objects = {
+        k: cast("dict[str, object]", plain(cast("Tree", merged[k][0].value)))
+        for k in _OBJECT_KEYS
+        if k in merged
+    }
+    numbers = {k: cast("int", merged[k][0].value) for k in _INT_KEYS if k in merged}
+    return ModelConfig(
+        texts["model"],
+        texts.get("base_url"),
+        texts.get("api_key_env"),
+        texts.get("provider", "openai"),
+        texts.get("api_key"),
+        numbers.get("max_tokens"),
+        objects.get("options", {}),
+        numbers.get("context_window"),
+        Price.of(objects["price"]) if "price" in objects else None,
+    )
 
 
 class _Resolver:
@@ -349,9 +382,9 @@ class _Resolver:
         source = source_of(value) or CLI
         bad = Leaf(_INVALID, source)
         text = value.value if isinstance(value, Leaf) else None
-        if key == "max_tokens":
+        if key in _INT_KEYS:
             if not isinstance(text, int):
-                self.problems.add("error", "'max_tokens' must be a positive integer", source, here)
+                self.problems.add("error", f"{key!r} must be a positive integer", source, here)
                 return bad
         elif not isinstance(text, str):
             self.problems.add("error", f"{key!r} must be a string", source, here)
@@ -371,12 +404,12 @@ class _Resolver:
             return value if isinstance(value, Leaf) else bad
         return bad
 
-    def options(self, value: Tree | Leaf, here: str) -> Leaf:
-        """The provider's own settings as an object tree (the loader never looks inside; a
-        `null` inside stays until the layers are combined)."""
+    def object_setting(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
+        """`options` (the provider's own settings) or `price` as an object tree (the loader
+        never looks inside; a `null` inside stays until the layers are combined)."""
         source = source_of(value) or CLI
         if isinstance(value, Leaf):
-            self.problems.add("error", "'options' must be an object", source, here)
+            self.problems.add("error", f"{key!r} must be an object", source, here)
             return Leaf(_INVALID, source)
         return Leaf(value, source)
 
@@ -394,8 +427,8 @@ class _Resolver:
                 self.problems.add("error", msg, source_of(value), here)
             elif isinstance(value, Leaf) and value.value is None:
                 out[key] = (value, group)
-            elif key == "options":
-                out[key] = (self.options(value, here), group)
+            elif key in _OBJECT_KEYS:
+                out[key] = (self.object_setting(key, value, here), group)
             else:
                 out[key] = (self.checked(key, value, label, here), group)
         if all(k in out and out[k][0].value is not None for k in _EXCLUSIVE):
@@ -453,25 +486,11 @@ class _Resolver:
         texts = {
             k: cast("str", leaf.value)
             for k, (leaf, _) in merged.items()
-            if k not in ("max_tokens", "options")
+            if k not in (*_INT_KEYS, *_OBJECT_KEYS)
         }
         self.warn(qualified, merged, texts, here)
-        options = cast(
-            "dict[str, object]",
-            plain(cast("Tree", merged["options"][0].value)) if "options" in merged else {},
-        )
         try:
-            config = ModelConfig(
-                texts["model"],
-                texts.get("base_url"),
-                texts.get("api_key_env"),
-                texts.get("provider", "openai"),
-                texts.get("api_key"),
-                cast("int | None", merged["max_tokens"][0].value)
-                if "max_tokens" in merged
-                else None,
-                options,
-            )
+            config = _model_config(texts, merged)
         except ConfigError as e:
             self.problems.add("error", str(e), source, here)
             return

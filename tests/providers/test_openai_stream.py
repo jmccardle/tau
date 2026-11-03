@@ -43,7 +43,7 @@ async def test_usage_arrives_after_the_finish_and_joins_the_meta() -> None:
     assert meta_of(items[-1]) == {
         "id": "c1",
         "model": "m",
-        "usage": {"input": 20, "output": 7, "cached": 0},
+        "usage": {"input": 20, "output": 7},
         "usage_raw": usage,
     }
 
@@ -59,7 +59,7 @@ async def test_the_llama_cpp_usage_chunk_joins_the_meta_and_timings_do_not() -> 
         "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
         "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
         "system_fingerprint": "b1637-9c7a7553",
-        "usage": {"input": 20, "output": 7, "cached": 0},
+        "usage": {"input": 20, "output": 7},
         "usage_raw": {"completion_tokens": 7, "prompt_tokens": 20, "total_tokens": 27},
     }
 

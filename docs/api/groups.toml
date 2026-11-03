@@ -17,7 +17,7 @@ reader = "An extension is a module that adds hooks, tools, commands and options 
 names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
-    "StepLimit", "Attachments", "Skills", "CURSOR_POINTS", "TOOL_POINTS",
+    "StepLimit", "Attachments", "Skills", "Usage", "CURSOR_POINTS", "TOOL_POINTS",
 ]
 
 [[group]]
@@ -100,7 +100,7 @@ id = "config"
 title = "Configuration and context"
 reader = "Models, the config files, trust, extension loading, the system prompt."
 names = [
-    "ModelConfig", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
+    "ModelConfig", "Price", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
     "LayerText", "read_models", "check_config", "LoadedConfig", "load_config", "UserConfig",
     "Prompts", "prompts", "select_model", "Trusted", "TrustError", "UntrustedProject",
     "DotenvError", "Ask", "Pick", "Layer", "Origin", "Severity", "SourceKind", "SourceState", "ExtensionSource", "ExtensionLoadError", "list_extensions",

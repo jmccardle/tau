@@ -52,6 +52,7 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
+from tau._usage import Usage
 from tau._user_config import UserConfig
 
 SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
@@ -85,6 +86,7 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     BaseTools.name: lambda loaded: BaseTools(),
     Skills.name: _skills,
     StepLimit.name: lambda loaded: StepLimit(),
+    Usage.name: lambda loaded: Usage(),
 }
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}

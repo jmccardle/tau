@@ -7,6 +7,7 @@ problems through `check_config` and `tau config check`, which report every probl
 import json
 import os
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -508,6 +509,60 @@ def test_bad_max_tokens_and_options_are_problems_at_their_key(tmp_path: Path) ->
         problem = only_error(check(tmp_path, config))
         assert problem.path == "models.a"
         assert "'max_tokens' must be a positive integer" in problem.message
+
+
+FULL_PRICE = {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+
+
+def test_context_window_and_price_resolve_to_exact_amounts(world: World) -> None:
+    config = {
+        "models": {
+            "m": {**MODEL, "context_window": 200000, "price": FULL_PRICE},
+            "bare": MODEL,
+        }
+    }
+    catalog = load(world, user=config)
+    m, bare = catalog.resolve("m"), catalog.resolve("bare")
+    assert m.context_window == 200000
+    assert m.price is not None
+    assert (m.price.input, m.price.cache_read, m.price.cache_write) == (
+        Decimal(3),
+        Decimal("0.3"),
+        Decimal("3.75"),
+    )
+    assert (bare.context_window, bare.price) == (None, None)
+
+
+def test_a_price_merges_by_field_across_layers_and_down_through_groups(world: World) -> None:
+    user = {"models": {"g": {"price": FULL_PRICE, "models": {"m": MODEL}}}}
+    cli = {"models": {"g": {"models": {"m": {"price": {"output": 20}}}}}}
+    price = load(world, user=user, cli=cli).resolve("g:m").price
+    assert price is not None
+    assert (price.input, price.output) == (Decimal(3), Decimal(20))
+
+
+def test_a_price_missing_a_field_is_an_error_naming_it(tmp_path: Path) -> None:
+    for fields in ({"input": 3, "output": 15}, {**FULL_PRICE, "cache_write": None}):
+        config = {"models": {"a": {"model": "a", "provider": "mock", "price": fields}}}
+        problem = only_error(check(tmp_path, config))
+        assert problem.path == "models.a"
+        assert "'price' is missing" in problem.message
+        assert "cache_write" in problem.message
+
+
+def test_a_bad_price_or_context_window_is_a_problem(tmp_path: Path) -> None:
+    bad = [
+        ("price", {**FULL_PRICE, "input": -1}, "at least 0"),
+        ("price", {**FULL_PRICE, "input": "3"}, "must be a number"),
+        ("price", {**FULL_PRICE, "input": True}, "must be a number"),
+        ("price", {**FULL_PRICE, "cost": 1}, "unknown keys ['cost']"),
+        ("price", 5, "'price' must be an object"),
+        ("context_window", "big", "'context_window' must be a positive integer"),
+        ("context_window", 0, "'context_window' must be a positive integer"),
+    ]
+    for key, value, message in bad:
+        config = {"models": {"a": {"model": "a", "provider": "mock", key: value}}}
+        assert message in only_error(check(tmp_path, config)).message, (key, value)
 
 
 def test_an_invalid_group_value_is_not_repeated_as_missing_on_each_model(tmp_path: Path) -> None:

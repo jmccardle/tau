@@ -310,22 +310,29 @@ def _tools(tools: Sequence[Tool]) -> list[Json]:
 
 
 def _usage(raw: Json) -> Json | None:
-    """The normalized `{"input", "output", "cached"}` from OpenAI's `usage`, or `None` if the
-    server did not report prompt and completion tokens, or sent a malformed cached count. A
-    server that sends no cached count had none to report, so `cached` is 0."""
+    """The normalized `{"input", "output"}`, with `cached` and `written` when the server reports
+    them, from OpenAI's `usage`; `None` if the server did not report prompt and completion
+    tokens, or sent a malformed cache count. `cached` is `prompt_tokens_details.cached_tokens`
+    and `written` is `prompt_tokens_details.cache_write_tokens` (a LiteLLM proxy sends both for
+    an Anthropic model, `0` on a miss). A server that sends no count has not said it read nothing,
+    so the key is absent, not 0 (D24 section 3: a cache notice tells a miss from silence)."""
     tokens, output = count(raw.get("prompt_tokens")), count(raw.get("completion_tokens"))
     if tokens is None or output is None:
         return None
+    usage: Json = {"input": tokens, "output": output}
     details = raw.get("prompt_tokens_details")  # servers send null for "no details"
     if details is None:
-        return {"input": tokens, "output": output, "cached": 0}
+        return usage
     if not isinstance(details, dict):
         return None
     fields = cast("Json", details)
-    if "cached_tokens" not in fields:
-        return {"input": tokens, "output": output, "cached": 0}
-    cached = count(fields["cached_tokens"])
-    return None if cached is None else {"input": tokens, "output": output, "cached": cached}
+    for key, name in (("cached", "cached_tokens"), ("written", "cache_write_tokens")):
+        if name in fields:
+            reported = count(fields[name])
+            if reported is None:
+                return None
+            usage[key] = reported
+    return usage
 
 
 def _typed_body(model: ModelConfig) -> Json:

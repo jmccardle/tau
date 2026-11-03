@@ -14,7 +14,6 @@ class CallDraft
     property tool: str
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
-    def model(self) -> str
     def models(self) -> tuple[str, ...]
     def move(self, to: int) -> None
     def node(self, id: int | None = None) -> Node
@@ -87,15 +86,23 @@ class TreeHandle
     def cursor(self, cursor: int) -> CursorState
     def cursors(self) -> list[int]
     def label(self, label: str) -> int
+    def model(self, at: int | None = None) -> str
     def open(self, at: int) -> int
     def remove_item(self, id: int) -> None
     def remove_label(self, label: str) -> None
     def reopen(self, cursor: int) -> int
+    def resolved_model(self, name: str | None = None) -> ModelConfig
     async def rest(self, cursor: int) -> Ending | None
     def retire(self) -> None
     def send(self, to: int, text: str) -> int
     def set_label(self, label: str, cursor: int) -> None
     property tree: Tree
+class Usage
+    def __init__(self) -> None
+    name = 'usage'
+    options = Options
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    def usage(self, tree: TreeHandle) -> str
 
 == tools: Tools
 class BashTool
@@ -916,10 +923,12 @@ class ModelConfig
     def api_key(self, environ: Mapping[str, str]) -> str | None
     api_key_env: str | None = None
     base_url: str | None = None
+    context_window: int | None = None
     literal_api_key: str | None = field(default=None, repr=False)
     max_tokens: int | None = None
     model: str
     options: Mapping[str, object] = field(default_factory=lambda: {})
+    price: Price | None = None
     provider: str = 'openai'
 @dataclass(frozen=True)
 class Origin
@@ -927,6 +936,14 @@ class Origin
     key: str
     source: str
 Pick = Callable[[tuple[str, ...]], str]
+@dataclass(frozen=True)
+class Price
+    cache_read: Decimal
+    cache_write: Decimal
+    input: Decimal
+    @classmethod
+    def of(cls, fields: object) -> 'Price'
+    output: Decimal
 @dataclass(frozen=True)
 class PromptSource
     origin: str

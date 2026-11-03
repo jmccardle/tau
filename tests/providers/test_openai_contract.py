@@ -361,11 +361,79 @@ async def test_a_malformed_cached_count_leaves_the_normalized_usage_out(details:
 
 @pytest.mark.parametrize("details", [None, {}])
 @scenario
-async def test_no_cached_count_means_zero_cached(details: object) -> None:
+async def test_no_cached_count_means_no_cached_key(details: object) -> None:
+    """A server that says nothing has not said it read nothing: a cache notice must tell a miss
+    (`cached: 0`) from silence (D24 section 3)."""
     raw: dict[str, object] = {
         "prompt_tokens": 3,
         "completion_tokens": 1,
         "prompt_tokens_details": details,
     }
     meta = await usage_meta(raw)
-    assert meta["usage"] == {"input": 3, "output": 1, "cached": 0}
+    assert meta["usage"] == {"input": 3, "output": 1}
+
+
+@scenario
+async def test_a_reported_zero_is_a_miss_not_silence() -> None:
+    raw: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    assert (await usage_meta(raw))["usage"] == {"input": 3, "output": 1, "cached": 0}
+
+
+@scenario
+async def test_a_litellm_proxy_usage_for_an_anthropic_model_has_reads_and_writes() -> None:
+    """What LiteLLM 1.106's OpenAI endpoint sends for an Anthropic model (read from its source,
+    `Usage.__init__` and `calculate_usage`): `prompt_tokens` counts reads and writes, the
+    details always hold `cached_tokens` (0 on a miss) and `cache_write_tokens`, and the same
+    writes ride at the top level as `cache_creation_input_tokens`."""
+    raw: dict[str, object] = {
+        "prompt_tokens": 2112,
+        "completion_tokens": 77,
+        "total_tokens": 2189,
+        "prompt_tokens_details": {
+            "cached_tokens": 2000,
+            "cache_write_tokens": 100,
+            "cache_creation_tokens": 100,
+        },
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 2000,
+    }
+    meta = await usage_meta(raw)
+    assert meta["usage"] == {"input": 2112, "output": 77, "cached": 2000, "written": 100}
+
+
+@pytest.mark.parametrize(
+    "details",
+    [{"cache_write_tokens": "1"}, {"cache_write_tokens": None}, {"cache_write_tokens": -1}],
+)
+@scenario
+async def test_a_malformed_written_count_leaves_the_normalized_usage_out(details: object) -> None:
+    raw: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "prompt_tokens_details": details,
+    }
+    assert await usage_meta(raw) == {"usage_raw": raw}
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"cached_tokens": 4},
+        {"cache_write_tokens": 4},
+        {"cached_tokens": 2, "cache_write_tokens": 2},
+    ],
+)
+@scenario
+async def test_more_read_and_written_than_sent_is_as_malformed_as_a_bad_count(
+    details: object,
+) -> None:
+    raw: dict[str, object] = {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "prompt_tokens_details": details,
+    }
+    assert await usage_meta(raw) == {"usage_raw": raw}

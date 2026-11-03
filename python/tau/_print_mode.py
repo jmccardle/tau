@@ -89,6 +89,7 @@ class _Run:
     handled: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - answered or declined
     ending: Ending | None = None
     hook_error: HookFailure | None = None
+    shown: dict[str, str] = field(default_factory=lambda: {})  # each extension's line, as last seen
     stepped: bool = False
 
     @property
@@ -150,6 +151,10 @@ class _Run:
             if view.ending is not None and view.ending != self.ending:
                 self.note(f"step ended: {_ending(view.ending)}")
         self.ending = view.ending
+        for who, text in view.shown:
+            if self.verbose and not snapshot and self.shown.get(who) != text:
+                self.note(f"{who}: {text}")  # what an extension shows, whichever it is
+            self.shown[who] = text
         if self.tip is None:
             self.tip = view.at
 

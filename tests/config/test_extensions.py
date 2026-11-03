@@ -27,7 +27,13 @@ SEARCH_SITE = Path(__file__).parents[1] / "fixtures" / "search_site"
 OTHER_SITE = Path(__file__).parents[1] / "fixtures" / "search_site_other"
 PACKAGE = "ffwf-tau-search-fixture 0.4.0"
 POINTS_FILE = "entry_points.txt"  # rules: allow(entry): the file a distribution registers in
-BUILT_INS = ["attachments", "base_tools", "skills", "step_limit"]  # the extensions, in hook order
+BUILT_INS = [
+    "attachments",
+    "base_tools",
+    "skills",
+    "step_limit",
+    "usage",
+]  # the extensions, in hook order
 KEYS = sorted([*BUILT_INS, "retry"])  # the keys `load` takes, `retry` being a provider wrapper
 MODULE = """
 name = "{name}"
@@ -184,6 +190,7 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "retry",
         "skills",
         "step_limit",
+        "usage",
         "search",
         "ralph",
     ]

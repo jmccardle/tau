@@ -173,7 +173,7 @@ async def test_usage_is_normalized_with_cache_writes_counted_as_input_and_reads_
     assert isinstance(finished, Finish)
     assert finished.meta is not None
     meta = json.loads(finished.meta)
-    assert meta["usage"] == {"input": 2112, "output": 77, "cached": 2000}
+    assert meta["usage"] == {"input": 2112, "output": 77, "cached": 2000, "written": 100}
     assert meta["usage_raw"] == {**first, "output_tokens": 77}
     assert (meta["id"], meta["model"]) == ("msg_01XFDUDYJgAACzvnptvVoYEL", ANTHROPIC_MODEL)
 
@@ -352,3 +352,50 @@ async def test_the_request_id_header_is_kept_in_meta_on_success_and_on_failure()
     assert error is not None
     assert error.meta is not None
     assert json.loads(error.meta) == {"request_id": "req_018EeWyXxfu5pfWkrYcMdjWG"}
+
+
+@scenario
+async def test_a_response_that_reports_no_cache_counts_has_neither_key() -> None:
+    body = start({"input_tokens": 12, "output_tokens": 1}) + text(0, ["x"])
+    server = stream(body + finish("end_turn", {"output_tokens": 77}) + event("message_stop"))
+    items, _ = await collect(provider(server), fresh_walk())
+    finished = items[-1]
+    assert isinstance(finished, Finish)
+    assert finished.meta is not None
+    assert json.loads(finished.meta)["usage"] == {"input": 12, "output": 77}
+
+
+@scenario
+async def test_a_reported_zero_read_is_cached_zero_and_a_miss() -> None:
+    first = {
+        "input_tokens": 12,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 1,
+    }
+    body = start(first) + text(0, ["x"]) + finish("end_turn", {"output_tokens": 77})
+    items, _ = await collect(provider(stream(body + event("message_stop"))), fresh_walk())
+    finished = items[-1]
+    assert isinstance(finished, Finish)
+    assert finished.meta is not None
+    assert json.loads(finished.meta)["usage"] == {
+        "input": 12,
+        "output": 77,
+        "cached": 0,
+        "written": 0,
+    }
+
+
+@scenario
+async def test_a_response_whose_cache_counts_exceed_nothing_is_fine_and_keeps_its_raw_usage() -> (
+    None
+):
+    """Anthropic's input is built from the three counts, so they cannot exceed it; the check is
+    the shared one (`note_usage`), shown here to leave a consistent report alone."""
+    first = {"input_tokens": 0, "cache_read_input_tokens": 5, "output_tokens": 1}
+    body = start(first) + text(0, ["x"]) + finish("end_turn", {"output_tokens": 2})
+    items, _ = await collect(provider(stream(body + event("message_stop"))), fresh_walk())
+    finished = items[-1]
+    assert isinstance(finished, Finish)
+    assert finished.meta is not None
+    assert json.loads(finished.meta)["usage"] == {"input": 5, "output": 2, "cached": 5}

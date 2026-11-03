@@ -40,7 +40,7 @@ async def test_a_null_count_in_a_later_usage_does_not_wipe_the_normalized_usage(
     assert error is None
     assert isinstance(items[-1], Finish)
     assert items[-1].meta is not None
-    assert json.loads(items[-1].meta)["usage"] == {"input": 25, "output": 15, "cached": 0}
+    assert json.loads(items[-1].meta)["usage"] == {"input": 25, "output": 15}
 
 
 @scenario

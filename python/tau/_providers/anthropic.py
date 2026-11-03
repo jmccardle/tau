@@ -123,19 +123,28 @@ def _str(value: object, what: str) -> str:
 
 
 def _usage(raw: Json) -> Json | None:
-    """The normalized `{"input", "output", "cached"}` from Anthropic's `usage`, or `None` if it
-    did not report input and output tokens or sent a malformed count. `input` is every prompt
-    token: Anthropic's `input_tokens` counts only those after the last cache breakpoint, so the
-    cache reads and the cache writes (`cache_creation_input_tokens`: prompt tokens that were
-    processed and stored, not served from the cache) are added. `cached` is the reads alone."""
+    """The normalized `{"input", "output"}`, with `cached` and `written` when Anthropic reports
+    them, from Anthropic's `usage`; `None` if it did not report input and output tokens or sent a
+    malformed count. `input` is every prompt token: Anthropic's `input_tokens` counts only those
+    after the last cache breakpoint, so the cache reads and the cache writes
+    (`cache_creation_input_tokens`: prompt tokens that were processed and stored, not served from
+    the cache) are added. `cached` is the reads alone, `written` the writes alone; a count the
+    response leaves out is absent, not 0."""
     fresh, output = count(raw.get("input_tokens")), count(raw.get("output_tokens"))
     if fresh is None or output is None:
         return None
-    parts = [raw.get("cache_read_input_tokens"), raw.get("cache_creation_input_tokens")]
-    read, written = (0 if p is None else count(p) for p in parts)
-    if read is None or written is None:
-        return None
-    return {"input": fresh + read + written, "output": output, "cached": read}
+    reported: Json = {}
+    for key, name in (
+        ("cached", "cache_read_input_tokens"),
+        ("written", "cache_creation_input_tokens"),
+    ):
+        if raw.get(name) is not None:
+            n = count(raw[name])
+            if n is None:
+                return None
+            reported[key] = n
+    total = fresh + sum(cast("int", v) for v in reported.values())
+    return {"input": total, "output": output, **reported}
 
 
 @dataclass

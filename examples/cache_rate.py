@@ -65,13 +65,18 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 if not usage:
                     print(f"{turn:<5} {'(no usage reported)':>21}  {said[:40]!r}")
                     continue
+                if "cached" not in usage:
+                    print(
+                        f"{turn:<5} {usage['input']:>7} {'(cache not reported)':>13}  {said[:40]!r}"
+                    )
+                    continue
                 for key in total:
                     total[key] += usage[key]
                 hit = usage["cached"] / usage["input"] if usage["input"] else 0.0
                 print(
                     f"{turn:<5} {usage['input']:>7} {usage['cached']:>7} {hit:>5.0%}  {said[:40]!r}"
                 )
-            if total["input"]:
+            if total["input"]:  # only the turns that reported the cache
                 print(
                     f"{'all':<5} {total['input']:>7} {total['cached']:>7} "
                     f"{total['cached'] / total['input']:>5.0%}"
