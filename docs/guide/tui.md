@@ -73,6 +73,14 @@ toast.
   the extension's options refuse is a toast, nothing is written, and the line goes back to the
   editor.
 
+## When the provider is busy
+
+If the model's server answers "overloaded" or the connection drops before it answers, τ waits
+and tries again (up to three more times). The status bar says so while it waits, for example
+`HTTP 529: overloaded_error: Overloaded: retry 1 of 3 in 2 s`, and Esc cancels the wait. The line
+goes when the reply starts. `@` in a message completes a path with Tab; the file goes to the model
+with the message ([What τ does for you](built-ins.md)). `tau ext disable retry` turns retrying off.
+
 ## Questions
 
 A question an extension asks (a permission, say) is a box above the editor, so you can still read

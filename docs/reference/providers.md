@@ -4,7 +4,7 @@
 
 The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()["mock"]`).
 
-Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `SampleError`, `builtin_providers`, `replay_for`
+Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `RetryProvider`, `SampleError`, `builtin_providers`, `replay_for`
 
 ## AnthropicProvider
 
@@ -327,6 +327,63 @@ class ProviderClosed(SampleError)
 
 A sample on a provider whose `aclose()` has been called, or one cut off by it. Not a
 transient failure: a retry cannot succeed, so a retrying wrapper passes it on.
+
+## RetryProvider
+
+```python
+class RetryProvider
+```
+
+`inner`, with up to 3 retries per sample (the module docstring). `sleep` is how it waits
+(seconds); a test passes its own.
+
+### RetryProvider.__init__
+
+```python
+def __init__(
+    self,
+    inner: Provider,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None
+```
+
+### RetryProvider.name
+
+```python
+property name: str
+```
+
+The inner provider's name.
+
+### RetryProvider.check
+
+```python
+def check(self, model: ModelConfig) -> list[str]
+```
+
+The inner provider's check.
+
+### RetryProvider.aclose
+
+```python
+async def aclose(self) -> None
+```
+
+Close the inner provider.
+
+### RetryProvider.sample
+
+```python
+async def sample(
+    self,
+    walk: Sequence[Node],
+    model: ModelConfig,
+    tools: Sequence[Tool],
+) -> AsyncGenerator[Part | Finish | Delta, None]
+```
+
+The inner provider's sample, tried again as the module says.
 
 ## SampleError
 

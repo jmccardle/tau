@@ -468,3 +468,61 @@ Decided as the drafts recommended, except where noted (the changes are in the se
   (label `agent:N`).
 - **off by default** (a built-in that `load` must turn on).
 - Amended: **`load`** (the key `retry`).
+
+## Built: 8E-1
+
+Retry (§4), `@file` attachments (§5), skills and prompt templates (§6), with M8 and M9 and the
+shared pieces of §1. Where the build differs from the text above, or the text did not say:
+
+- **`Retrying(attempt, attempts, seconds, reason)`** is a `Delta` (a new `Live` delta kind: wire
+  schema regenerated, no `PROTOCOL` bump). `attempt` counts retries (1 to 3), `reason` is the first
+  line of the error, cut at 200 characters. The driver forwards it as a `Live` and does not put it
+  in the reply's parts or in a late watcher's catch-up: it says what the sample is doing now. The
+  TUI shows it as a status-bar line (`HTTP 529: overloaded_error: Overloaded: retry 1 of 3 in 2 s`)
+  until the next delta or the end of the step. `examples/ratatui` must handle the new kind.
+- **`RetryProvider(inner, *, sleep=asyncio.sleep)`** has no `attempts` or `max_wait`: the policy is
+  fixed. A `Retry-After` of exactly 60 s is waited for; over 60 s fails with the wait in the message.
+  `examples/retry.py` now uses the shipped class; its test moved to `tests/providers`.
+- **`retry` in `load`** is a source row (`built-in`, origin `built-in (provider wrapper)`, no
+  extensions), so `tau ext list`, `enable`, `disable` and `tau config check` know it. The
+  `--verbose` start report prints it without the word `extension`.
+- **M9**: `_BUILTINS` factories take the `LoadedConfig`. `tau ext list` and `switch_source`, which
+  have no `LoadedConfig` of their own, build one the way they already built their inputs (never
+  asking about trust), so an untrusted project's prompt files are not read there either.
+- **`attachments`**: `Attachments(cwd)`; the loader passes the process's working directory, which
+  `start_session` has made the session's. `limit` must be at least 1 (a bad value fails the step
+  like `step_limit`'s). Following the text, a word that names no regular file stays text, a missing
+  file included; only a file that exists and cannot be inlined becomes a `<reference>`, with
+  `unreadable: <reason>`. `~` expands with the process's home, which for a remote client is the
+  server's.
+- **`skills`**: `name` in the frontmatter, which §6 lists without a rule, must equal the file's
+  name (a mismatch is a load error) rather than rename the command. `argument-hint` becomes the
+  description of the command's `args` field (what a form shows); the command's help stays the
+  `description`. Unknown keys and indented lines are ignored (a Claude Code skill loads); a block
+  scalar (`description: >`) is refused. Every problem with a file (name, encoding, frontmatter, no
+  description, a template and a skill of one name in one directory, a command named `config`) is an
+  `ExtensionLoadError` naming the file and ending in `tau ext disable skills`. A skill's tag is
+  `<skill name="NAME" path="/abs/SKILL.md">`, a newline, the body, a newline, `</skill>`. Hidden
+  files and directories, non-`.md` files in `prompts/` and a `skills/` child without `SKILL.md`
+  are ignored. The user's files are read through the filesystem as they are; the project's from
+  `Trusted.prompt_files`.
+- **Trust**: `Trusted.prompt_files` (path under `.tau/` to bytes), `trusted.json` gains
+  `prompts_sha256` and `prompts` per project, and the report lists the files and what changed. A
+  record without `prompts_sha256` is not approved, so every project trusted before 8E-1 asks once
+  more. Only `prompts/*.md` and `skills/*/SKILL.md` are pinned and read; other files in a skill's
+  directory are the model's to `read`, unpinned. `_trust.py` would have passed 800 lines, so its
+  file-reading helpers (`TrustError`, `safe_text`, `read_regular`) moved to `_project_read.py`.
+- **Public**: `Attachments`, `Skills`, `RetryProvider` and `Retrying` are exported.
+- **`tau -p "/review x"`** prints the reply: when a command's run sent input, the reply is printed
+  after the command's own result and the run is held to a message's rules (D22 section 3).
+- **Generated commands yield their bare name.** `Skills.yields_names = True`; `Form.yields` carries
+  it on the wire (additive). A bare `/NAME` means the non-yielding commands that have it; only
+  `/skills:NAME` is the file. Without this a template named `model` or `name` broke the built-ins.
+- **Records from before 8E-1**: a missing `prompts_sha256` is the hash of no prompts, so only a
+  project that has prompt or skill files is asked again, with "added" lines. (The first build asked
+  every project, without a reason.)
+- **Options are checked at the start.** `start_session` refuses what `option_problems` finds
+  (`attachments.limit: 0`, `step_limit.limit: 0`, which used to fail every step), options on an
+  extension that has none, and `extensions.retry`.
+- A listed skill is read live from disk by the model; trust pins what `/NAME` sends.
+- The `--no-extensions` hint is not offered for a built-in's failure.

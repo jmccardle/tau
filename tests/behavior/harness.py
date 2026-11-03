@@ -39,6 +39,7 @@ from tau import (
     Notice,
     Outcome,
     Part,
+    Provider,
     RemoteClient,
     Server,
     Session,
@@ -91,8 +92,10 @@ class Harness:
         clock: FakeClock,
         gates: Sequence[Gate],
         user_config: UserConfig | None = None,
+        wrap: Callable[[FakeProvider], Provider] | None = None,
     ) -> None:
         self.directory = directory
+        self.wrap = wrap
         self.user_config = user_config
         self.session = session
         self.provider = provider
@@ -115,7 +118,7 @@ class Harness:
         and dial `client`."""
         self.driver = Driver(
             self.session,
-            {self.provider.name: self.provider},
+            {self.provider.name: self.provider if self.wrap is None else self.wrap(self.provider)},
             self.catalog,
             tools=self.tools,
             extensions=self.extensions,
@@ -177,9 +180,11 @@ class Harness:
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
         user_config: UserConfig | None = None,
+        wrap: Callable[[FakeProvider], Provider] | None = None,
     ) -> "Harness":
         """A new session in `tmp_path`. `gates` are any beyond the fakes' own that
-        extensions wait at; `user_config` is the file the extensions may save options to."""
+        extensions wait at; `user_config` is the file the extensions may save options to; `wrap`
+        is what the driver's provider is built from the fake (a `RetryProvider` around it)."""
         clock = clock or FakeClock()
         directory = tmp_path / "session"
         session = Session.create(config or FAKE_CONFIG, system, clock.now(), directory)
@@ -193,6 +198,7 @@ class Harness:
             clock,
             gates,
             user_config,
+            wrap,
         )
         await h.start()
         return h

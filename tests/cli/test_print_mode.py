@@ -50,6 +50,15 @@ SLOW = {
     },
 }
 
+LOOP_FOREVER = """
+from tau import Body
+
+name = "loop"
+
+async def post_reply(cursor, subject):
+    cursor.write(Body.User("continue"))
+    return None
+"""
 GATE = """
 from typing import Literal
 
@@ -451,9 +460,42 @@ def test_a_command_that_wakes_the_cursor_is_waited_for_until_the_model_finishes(
 ) -> None:
     result = p(configured, "-e", ext(configured, "cmds", COMMANDS), "--verbose", "/wake")
     assert result.code == 0, result.err
-    assert result.out == "sent\n"
+    assert result.out == "sent\nmock: woken\n", "the command's result, then the reply it caused"
     assert 'node 2 User: "woken"' in result.err
     assert 'Assistant: "mock: woken"' in result.err, "the run ended after the model's answer"
+
+
+def template(world: World, name: str, text: str) -> None:
+    (world.tau / "prompts").mkdir(parents=True, exist_ok=True)
+    (world.tau / "prompts" / f"{name}.md").write_text(text, encoding="utf-8")
+
+
+def test_a_template_command_prints_the_models_reply(configured: World) -> None:
+    template(configured, "review", "Review $1 carefully")
+    assert p(configured, "/review", "main.rs") == Result(0, "mock: Review main.rs carefully\n", "")
+
+
+def test_a_template_command_under_json_prints_events_not_the_reply(configured: World) -> None:
+    template(configured, "review", "Review $1 carefully")
+    result = p(configured, "--json", "/review", "main.rs")
+    assert result.code == 0
+    assert "Review main.rs carefully" in result.out
+    assert not any(line == "mock: Review main.rs carefully" for line in result.out.splitlines())
+
+
+def test_a_template_named_like_a_built_in_leaves_the_built_in_its_name(configured: World) -> None:
+    template(configured, "model", "Pick a model")
+    assert p(configured, "/model", "m").code == 0
+    assert p(configured, "/skills:model").out == "mock: Pick a model\n"
+
+
+def test_a_template_command_that_stops_before_the_model_answers_is_exit_3(
+    configured: World,
+) -> None:
+    template(configured, "review", "Review $1")
+    configured.user_config({**MOCK, "extensions": {"step_limit": {"limit": 1}}})
+    result = p(configured, "-e", ext(configured, "loop", LOOP_FOREVER), "/review", "x")
+    assert result.code == 3, result.err
 
 
 def test_an_unknown_command_is_sent_as_text_with_a_warning(configured: World) -> None:

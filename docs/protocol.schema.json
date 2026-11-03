@@ -533,7 +533,7 @@
       ]
     },
     "Form": {
-      "description": "What a client knows of something it fills in: a command (its `name`, typed as `/name`,\nits `description` and the `schema` of its arguments, with the named types' `\"format\"` and\neach default, and the `extension` that owns it) or an extension's options (the `name` of the\nextension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is\nfor `/config`). A command is called by its `qualified` name, `extension:name`, which on the\nwire a client writes itself from the two fields. Frozen, compared by value, and not hashable:\nthe schema is a dict.",
+      "description": "What a client knows of something it fills in: a command (its `name`, typed as `/name`,\nits `description` and the `schema` of its arguments, with the named types' `\"format\"` and\neach default, and the `extension` that owns it) or an extension's options (the `name` of the\nextension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is\nfor `/config`). A command is called by its `qualified` name, `extension:name`, which on the\nwire a client writes itself from the two fields. A command that `yields` gives its bare name\nup to any other command that has it (`/model` stays the built-in's; the yielding one is only\n`/skills:model`). Frozen, compared by value, and not hashable:\nthe schema is a dict.",
       "type": "object",
       "properties": {
         "name": {
@@ -554,6 +554,9 @@
               "type": "null"
             }
           ]
+        },
+        "yields": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -711,6 +714,9 @@
             },
             {
               "$ref": "#/$defs/CallArgs"
+            },
+            {
+              "$ref": "#/$defs/Retrying"
             },
             {
               "$ref": "#/$defs/ToolProgress"
@@ -988,6 +994,34 @@
         "data"
       ],
       "type": "object"
+    },
+    "Retrying": {
+      "description": "A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of\n`attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the\nreply and is never replayed to a client that starts watching later: it says what the sample\nis doing now, and the next delta (or the end of the sample) replaces it.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Retrying"
+        },
+        "attempt": {
+          "type": "integer"
+        },
+        "attempts": {
+          "type": "integer"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attempt",
+        "attempts",
+        "seconds",
+        "reason"
+      ]
     },
     "Stop": {
       "enum": [

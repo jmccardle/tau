@@ -628,8 +628,15 @@ def _build(
 def option_problems(
     catalog: ModelCatalog, extensions: Sequence[object]
 ) -> tuple[ConfigProblem, ...]:
-    """Every problem in what the layers set for the `extensions` that have options."""
+    """Every problem in what the layers set for the `extensions` that have options, and for
+    options set where there can be none: an extension that has no options, and `retry` (D24
+    section 4: the provider wrapper, which `load` switches and nothing tunes)."""
     problems: list[ConfigProblem] = []
+    bare = [str(e.name) for e in extensions if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
+    for key in ("retry", *bare):
+        if catalog.extensions.get(key):
+            message = f"extension {key!r} has no options"
+            problems.append(ConfigProblem("error", message, None, f"extensions.{key}"))
     for ext in extensions:
         options = getattr(ext, "options", None)
         if options is None:

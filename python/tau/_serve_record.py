@@ -22,9 +22,10 @@ from typing import Final
 from websockets.exceptions import WebSocketException
 
 from tau._config import ConfigError
+from tau._project_read import TrustError
 from tau._protocol import Welcome
 from tau._remote import RemoteClient
-from tau._trust import TrustError, write_atomically
+from tau._trust import write_atomically
 
 SERVE: Final = "serve"
 SOCKET_LIMIT: Final = 107

@@ -343,7 +343,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`base_tools`, `step_limit`) | its name | `load` says off |
+| built-in | inside τ (`attachments`, `base_tools`, `skills`, `step_limit`, and the key `retry` for the provider wrapper) | its name | `load` says off |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |

@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from tau._attachments import Attachments
 from tau._base_tools import (
     BashTool,
     EditTool,
@@ -89,6 +90,7 @@ from tau._events import (
     LiveDelta,
     Notice,
     OpenQuestion,
+    Retrying,
     TextDelta,
     ThinkingDelta,
     ToolProgress,
@@ -104,6 +106,7 @@ from tau._extensions import (
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
+from tau._project_read import TrustError
 from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
 from tau._protocols import (
     CURSOR_POINTS,
@@ -126,6 +129,7 @@ from tau._providers.anthropic import AnthropicProvider
 from tau._providers.gemini import GeminiProvider
 from tau._providers.openai import OpenAIProvider
 from tau._remote import RemoteClient
+from tau._retry import RetryProvider
 from tau._serve import Server
 from tau._session_start import Started, SystemText, start_session
 from tau._sessions import (
@@ -139,6 +143,7 @@ from tau._sessions import (
     list_sessions,
     rename_session,
 )
+from tau._skills import Skills
 from tau._startup import (
     Ask,
     LoadedConfig,
@@ -150,7 +155,7 @@ from tau._startup import (
 )
 from tau._step_limit import StepLimit
 from tau._tools import ToolError
-from tau._trust import Trusted, TrustError, UntrustedProject
+from tau._trust import Trusted, UntrustedProject
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
 from tau.commandline import Parsed, UnknownCommand
@@ -165,6 +170,7 @@ __all__ = [
     "AnthropicProvider",
     "Appended",
     "Ask",
+    "Attachments",
     "Author",
     "BadRecord",
     "BadReplay",
@@ -263,6 +269,8 @@ __all__ = [
     "RemoteClient",
     "Replay",
     "ResolvedModel",
+    "RetryProvider",
+    "Retrying",
     "RunCall",
     "SampleEnd",
     "SampleError",
@@ -271,6 +279,7 @@ __all__ = [
     "SessionFlags",
     "SessionInfo",
     "Severity",
+    "Skills",
     "SourceKind",
     "SourceState",
     "Started",

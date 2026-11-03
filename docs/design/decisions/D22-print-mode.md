@@ -341,6 +341,9 @@ Where the code differs from the text above, or the text left a choice:
 - **A command line's result** is printed on stdout (text) with a newline; under `--json`, where
   stdout is events only, it goes to stderr. `/config EXTENSION` with nothing to change is a usage
   error.
+  If the command sent input to the cursor (a prompt template does), the reply to it is printed
+  after the result, as a message's is, and the run is held to a message's rules: a pending input
+  or auto-step off is exit 3 (amended 2026-11-03, 8E-1).
 - **`--json` errors.** Every failure that exits 1 ends stdout with `{"error": {"type",
   "message"}}`: a start error by its exception's name, a failed step `Failed`, a refused rule
   `RuleRefused`, a failed command `CommandFailed`, a lost server `ConnectionError`.

@@ -25,6 +25,7 @@ from tau._events import (
     Live,
     Notice,
     OpenQuestion,
+    Retrying,
     TextDelta,
     ThinkingDelta,
     ToolProgress,
@@ -94,6 +95,7 @@ def events(values: list[object]) -> list[tau.Event]:
         CallNamed(1, "c", "tool"),
         CallArgs(1, "{"),
         ToolProgress(2, "c", "out"),
+        Retrying(1, 3, 2.0, "HTTP 529: overloaded"),
     ]
     bare = CursorView(0, 1, True, False, (), (), None, None, None, ())
     return [

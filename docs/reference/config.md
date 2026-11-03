@@ -354,6 +354,7 @@ class Trusted
     env_text: str | None
     extension_files: Mapping[str, bytes] | None
     system_md: bytes | None
+    prompt_files: Mapping[str, bytes]
 ```
 
 A trusted project: its `root`, and the exact `.tau/config.json` and `.env` text that
@@ -361,8 +362,9 @@ was approved (`None`: no such file). `extension_files` is every file under
 `.tau/extensions/` as approved (path relative to it, with `/`, to bytes; `None`: there is no
 such directory), which the extension loader imports from and never re-reads; `system_md` the
 bytes of `.tau/SYSTEM.md` as approved (`None`: no such file), which the prompt's assembly
-reads. Use `layer()`, `read_models()` and `project_environment` rather than re-reading the
-files.
+reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
+relative to `.tau/`, with `/`, to bytes), which the skills extension reads. Use `layer()`,
+`read_models()` and `project_environment` rather than re-reading the files.
 
 ### Trusted.layer
 

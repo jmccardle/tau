@@ -1082,13 +1082,69 @@ commands and loads before `step_limit`. A user who wants fewer tools turns it of
 extension (or a drop-in named `base_tools`, which shadows it). A program that builds a `Driver`
 itself has no base tools unless it passes `tools=base_tools(cwd)`.
 
+### Attachments (extension), attachment, reference
+`tau.Attachments` (`_attachments.py`), key `attachments`, option `limit` · D24 section 5 · new (8E-1)
+
+The built-in extension that makes `@path` in an input name a file. Its `pre_input` rewrites the
+draft's text, so the `User` node holds exactly what the model saw (I1): the line, a blank line, then
+one block per file named. An **attachment** is `<attachment path="src/main.rs">` and the file's
+text `</attachment>`; a **reference** is `<reference path="/abs/big.log" size="2.1 MB" reason="over
+10 kB"/>` for a file over `limit` bytes (default 10240), not UTF-8 or unreadable, which the model
+can `read`. A token is `@` and non-space characters at the start of the text or after whitespace;
+trailing punctuation is stripped one character at a time until a regular file is named; `~`
+expands and a relative path is the session's working directory. A word naming no regular file
+(missing, a directory, `@alice`) stays text, and a file named twice is attached once. Every input
+is expanded (a template's, a sub-agent's task).
+
+### Skills (extension), template, skill, skills list
+`tau.Skills` (`_skills.py`), key `skills`, option `advertise` · D24 section 6 · new (8E-1)
+
+The built-in extension for prompt files. A **template** is `NAME.md` and a **skill** is
+`NAME/SKILL.md`, in `$TAU_HOME/prompts/` and `$TAU_HOME/skills/` and the same under the trusted
+project's `.tau/` (pinned by trust like `.tau/SYSTEM.md`, read from the approved bytes; the project
+wins a name). Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
+whose help is the file's `description` and which sends the expanded text to its cursor as input
+authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argument text) and `$1`
+to `$9` (its shell words; a missing one fails the command) and appends the arguments after a
+blank line if it has no placeholder; a skill sends `<skill name="NAME" path="/abs/SKILL.md">` and
+the body, then the arguments. The **skills list** is one `System` node, written at a session's
+first step when a `read` tool is offered and `advertise` is on, naming each skill that is not
+`disable-model-invocation: true` with its description and path; it is then part of the prefix of
+the walk. Frontmatter is `key: value` lines between `---`.
+
+### PromptFile, Trusted.prompt_files, _project_read
+`tau._skills.PromptFile` (private), `tau.Trusted.prompt_files`, module `tau._project_read` · D24 section 6 · new (8E-1)
+
+A **`PromptFile`** is one template or skill read: `kind`, `name`, `description`, the argument
+`hint`, `body`, the `path` of its file and whether the model is told about it (`listed`).
+**`Trusted.prompt_files`** maps `prompts/NAME.md` and `skills/NAME/SKILL.md` (paths under `.tau/`)
+to the bytes trust approved; they are what the project's `PromptFile`s are read from.
+**`_project_read`** holds what every read inside a project goes through: `TrustError`,
+`read_regular` (refuses symlinks and non-regular files), `read_prompt_files`, and `safe_text`
+(moved out of `_trust.py`).
+
+### yields (a command), Form.yields
+`Form.yields`, extension attribute `yields_names` · D24 section 6 · new (8E-1)
+
+A command that **yields** gives its bare name up: a bare `/NAME` means the commands with that name
+that do not yield, and only `/extension:NAME` means the yielding one. If every command with the
+name yields, the bare name is ambiguous as before. The `skills` extension's generated commands
+yield, so a template cannot take `/model` or `/name`.
+
+### prefix (of a walk)
+D24 section 1 · new (8E-1)
+
+The root `Config` and the `System` nodes before the first other message. It holds the system
+prompt, the context files and the skills list, so it is also the prompt-cache prefix every
+cursor of a session shares.
+
 ### Extension loading: source, key, drop-in, shadowed, load
 module `tau._extensions` (private; the names below are exported from `tau`) · D19 · new
 
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
-**load order**: a **built-in** (a class in `tau`, fresh instances at each load: `base_tools` and `step_limit`, key
-its name); an installed package's registration in the `tau.extensions` group (key the registration's
+**load order**: a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `attachments`,
+`base_tools`, `skills` and `step_limit`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
@@ -1105,7 +1161,8 @@ an error naming both.
 every object (nearest layer wins, `null` drops). It lives in the files only (a `Config` node
 cannot set it). A source is on unless `load` says off (or, for packages and drop-ins,
 `--no-extensions`); `"KEY": true` where no source has the key stops the start, `false` there is
-allowed and `tau config check` warns.
+allowed and `tau config check` warns. The key `retry` (D24) is the provider wrapper's switch:
+it is no extension, but it is listed by `tau ext list` and switched by `tau ext disable retry`.
 
 `load_extensions(loaded, *, explicit=(), discover=True) -> list[Extension]` is the one entry point
 every frontend calls after `load_config` and before opening a session: the built-ins `load`
@@ -2737,7 +2794,23 @@ local one is.
 What a provider's `sample` yields while a part is still arriving, with no cursor
 (the provider does not know it): `TextDelta(text)`, `ThinkingDelta(text)`,
 `CallNamed(index, id, tool)` (a call begins forming), `CallArgs(index, text)` (more
-of its `args_raw`). `Delta` is their union: what a provider may yield. Never saved.
+of its `args_raw`). `Delta` is their union, with `Retrying`: what a provider may yield. Never saved.
+
+### RetryProvider, Retrying
+`tau.RetryProvider` (`_retry.py`), `tau.Retrying` (`_events.py`) · D24 section 4 · new (8E-1)
+
+`RetryProvider(inner, *, sleep=asyncio.sleep)` is a `Provider` that holds another one (its
+`name`, `check` and `aclose` are the inner's) and tries a failed sample again: only while the
+inner provider has yielded no part or delta, on HTTP 408, 429, 502, 503, 504 and 529, a 500 that
+carries `Retry-After`, and a failure whose `__cause__` is an `httpx.TransportError`; never on
+`ProviderClosed`, a failure with no status and no transport cause, or a plain 500. At most 3
+retries, each after the server's `Retry-After` if it gave one (over 60 s fails the sample at once,
+naming the wait), else 1, 2 and 4 s. The policy has no options. `start_session` wraps every
+provider in it unless `load` has `retry: false` (`tau ext disable retry`); `retry` is a `load`
+key and a row of `tau ext list`, but no extension. Before each wait it yields
+`Retrying(attempt, attempts, seconds, reason)`: a `Delta` that is no part of the reply, does not
+count as output for the "nothing yielded" rule, is forwarded as a `Live` and never replayed to a
+client that starts watching later. The wait is part of the sample, so an abort ends it.
 
 ### tool progress, ToolProgress
 `tau.ToolProgress(node, call_id, text)` (`_events.py`) · D15 · new

@@ -28,6 +28,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
+from tau._attachments import Attachments
 from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
 from tau._commands import assemble_commands
@@ -35,16 +36,18 @@ from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._options import option_fields
 from tau._project_code import ApprovedFiles, forget
+from tau._project_read import TrustError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
+from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
-    TrustError,
     UntrustedProject,
     ensure_trusted,
     find_project,
+    project_environment,
     require_private,
     tau_home,
     user_config_path,
@@ -64,9 +67,24 @@ RULE = (
     "a module with a `name` (a str) is the extension; otherwise it must define "
     "`extensions = [...]`, a non-empty list of extension instances"
 )
-_BUILTINS: Mapping[str, Callable[[], object]] = {
-    BaseTools.name: BaseTools,
-    StepLimit.name: StepLimit,
+RETRY = "retry"
+"""The `load` key of the provider wrapper `RetryProvider` (D24 section 4): not an extension, but
+it is switched on and off, and listed, like one."""
+
+
+def _skills(loaded: LoadedConfig) -> Skills:
+    """`Skills` for the files `loaded` reads; a file it cannot use stops the start."""
+    try:
+        return Skills.of(loaded)
+    except SkillFileError as e:
+        raise ExtensionLoadError(str(e)) from None
+
+
+_BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
+    Attachments.name: lambda loaded: Attachments(Path.cwd()),
+    BaseTools.name: lambda loaded: BaseTools(),
+    Skills.name: _skills,
+    StepLimit.name: lambda loaded: StepLimit(),
 }
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
@@ -152,6 +170,7 @@ class _Inputs:
     catalog: ModelCatalog
     project: Trusted | None
     untrusted: Path | None  # the root of a project that is not trusted (`tau ext list` only)
+    loaded: LoadedConfig  # what a built-in is built with (D24 M9)
 
 
 # -- the C3 rule and the checks on one source
@@ -231,17 +250,33 @@ def _bad_key(key: str) -> str | None:
     return f"the key {key!r} is not letters, digits, `_` and `-`: rename it"
 
 
-def _off_switch(key: str) -> str:
-    return f"to start without it: tau ext disable {key}   {_BEYOND}"
+def _off_switch(key: str, *, discovered: bool = True) -> str:
+    """The line that gets past a failed source. `--no-extensions` skips only discovered sources,
+    so it is offered for those and not for a built-in."""
+    return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
-def _builtins() -> list[_Candidate]:
-    return [
+def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
+    made = [
         _Candidate(
-            key, "built-in", "built-in", f"built-in {key}", _off_switch(key), lambda m=make: [m()]
+            key,
+            "built-in",
+            "built-in",
+            f"built-in {key}",
+            _off_switch(key, discovered=False),
+            lambda m=make: [m(loaded)],
         )
-        for key, make in sorted(_BUILTINS.items())
+        for key, make in _BUILTINS.items()
     ]
+    wrapper = _Candidate(
+        RETRY,
+        "built-in",
+        "built-in (provider wrapper)",
+        f"built-in {RETRY}",
+        _off_switch(RETRY, discovered=False),
+        list,
+    )
+    return sorted([*made, wrapper], key=lambda c: c.key)
 
 
 def _packages() -> list[_Candidate]:
@@ -616,7 +651,13 @@ def _load_keys(candidates: Sequence[_Candidate], inputs: _Inputs, run: _Run) -> 
 
 def _inspect(inputs: _Inputs, explicit: Sequence[str], discover: bool) -> Inspection:
     given, named = _explicit(explicit)
-    candidates = [*_builtins(), *_packages(), *_user(inputs.home), *_project(inputs), *given]
+    candidates = [
+        *_builtins(inputs.loaded),
+        *_packages(),
+        *_user(inputs.home),
+        *_project(inputs),
+        *given,
+    ]
     keys = {c.key for c in candidates}
     for key in sorted(named - keys):  # `-e KEY` for a key no discovered source has
         problem = f"-e {key}: no extension source has this key (a path has a / or ends in .py)"
@@ -652,7 +693,9 @@ def inspect_extensions(
 ) -> Inspection:
     """Plan, import and check the sources of `loaded` (the arguments of `load_extensions`);
     every failure is in the result, none is raised."""
-    return _inspect(_Inputs(loaded.home, loaded.catalog, loaded.project, None), explicit, discover)
+    return _inspect(
+        _Inputs(loaded.home, loaded.catalog, loaded.project, None, loaded), explicit, discover
+    )
 
 
 def load_extensions(
@@ -689,8 +732,12 @@ def _inputs_for(cwd: Path, environ: Mapping[str, str]) -> _Inputs:
             project = ensure_trusted(root, home, ask=None)
         except UntrustedProject:
             untrusted = root
-    catalog = read_models(user_config_path(home), None if project is None else project.layer())
-    return _Inputs(home, catalog, project, untrusted)
+    layer = None if project is None else project.layer()
+    catalog = read_models(user_config_path(home), layer)
+    loaded = LoadedConfig(
+        catalog, project_environment(project, environ), project, home, UserConfig(home, layer)
+    )
+    return _Inputs(home, catalog, project, untrusted, loaded)
 
 
 def list_extensions(
@@ -714,7 +761,7 @@ def switch_source(cwd: Path, environ: Mapping[str, str], key: str, on: bool) -> 
     sources are found by name, none is imported. Returns the note that a nearer layer (the
     project's) sets the key the other way and wins, else `None`."""
     inputs = _inputs_for(cwd, environ)
-    candidates = [*_builtins(), *_packages(), *_user(inputs.home), *_project(inputs)]
+    candidates = [*_builtins(inputs.loaded), *_packages(), *_user(inputs.home), *_project(inputs)]
     keys = sorted({c.key for c in candidates})
     if key not in keys:
         raise ConfigError(f"no extension source has the key {key!r}; the keys are {keys}")

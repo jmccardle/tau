@@ -1,0 +1,341 @@
+"""Prompt templates and skills (D24 section 6) as files: where they are found, which win, the
+project's pinned by trust like `.tau/SYSTEM.md`, and every file that stops the start. Through
+`tau.load_extensions`, `tau.list_extensions` and `tau.cli.main` on real files; what the commands
+do is in `tests/behavior/test_skills.py`."""
+
+import json
+import os
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from world import World, loaded, tau, trust
+
+from tau import ExtensionLoadError, Skills, UntrustedProject, load_config, load_extensions
+
+SKILL = "---\ndescription: Does a thing\n---\nBody of the skill\n"
+
+
+@pytest.fixture(autouse=True)
+def keep_cwd() -> Iterator[None]:
+    before = os.getcwd()
+    yield
+    os.chdir(before)
+
+
+def put(base: Path, relative: str, text: str) -> Path:
+    path = base / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def commands(world: World, cwd: Path | None = None) -> list[str]:
+    """The commands the `skills` row of `tau ext list` has."""
+    result = tau(world, "ext", "list", "--json", cwd=cwd)
+    rows = {r["key"]: r for r in map(json.loads, result.out.splitlines())}
+    return list(rows["skills"]["commands"])
+
+
+def skills(world: World, cwd: Path | None = None) -> Skills:
+    (found,) = [e for e in load_extensions(loaded(world, cwd)) if isinstance(e, Skills)]
+    return found
+
+
+def failure(world: World, cwd: Path | None = None) -> str:
+    with pytest.raises(ExtensionLoadError) as caught:
+        load_extensions(loaded(world, cwd))
+    return str(caught.value)
+
+
+# -- where they are
+
+
+def test_the_users_templates_and_skills_are_commands_by_name(world: World) -> None:
+    put(world.tau, "prompts/review.md", "Review $1")
+    put(world.tau, "prompts/another.md", "x")
+    put(world.tau, "skills/pdf/SKILL.md", SKILL)
+    assert commands(world) == ["skills:another", "skills:pdf", "skills:review"]
+
+
+def test_only_prompts_md_and_skills_directories_with_a_skill_file_count(world: World) -> None:
+    put(world.tau, "prompts/notes.txt", "not a template")
+    put(world.tau, "prompts/.hidden.md", "hidden")
+    put(world.tau, "prompts/sub/deep.md", "not looked at")
+    put(world.tau, "skills/empty/README.md", "a directory with no SKILL.md")
+    put(world.tau, "skills/.git/SKILL.md", "hidden")
+    put(world.tau, "skills/loose.md", "a file where a directory goes")
+    put(world.tau, "skills/real/SKILL.md", SKILL)
+    assert commands(world) == ["skills:real"]
+
+
+def test_no_directories_is_no_commands_and_no_error(world: World) -> None:
+    assert commands(world) == []
+
+
+def test_load_false_turns_it_off(world: World) -> None:
+    put(world.tau, "prompts/review.md", "Review $1")
+    assert tau(world, "ext", "disable", "skills").code == 0
+    assert commands(world) == []
+    assert "skills" not in [e.name for e in load_extensions(loaded(world))]
+
+
+def test_no_extensions_does_not_turn_it_off(world: World) -> None:
+    put(world.tau, "prompts/review.md", "Review $1")
+    result = tau(world, "ext", "list", "--json", "--no-extensions")
+    rows = {r["key"]: r for r in map(json.loads, result.out.splitlines())}
+    assert rows["skills"]["state"] == "on"
+    assert rows["skills"]["commands"] == ["skills:review"]
+
+
+# -- the project's, pinned by trust
+
+
+def test_a_project_that_is_not_trusted_has_no_templates(world: World) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/deploy.md", "Deploy $1")
+    assert commands(world, root) == []
+
+
+def test_a_trusted_projects_files_are_commands_too(world: World) -> None:
+    put(world.tau, "prompts/review.md", "Review $1")
+    root = world.project()
+    put(root, ".tau/prompts/deploy.md", "Deploy $1")
+    put(root, ".tau/skills/lint/SKILL.md", SKILL)
+    trust(world, root)
+    assert commands(world, root) == ["skills:deploy", "skills:lint", "skills:review"]
+
+
+def test_for_one_name_the_project_wins_over_the_user(world: World) -> None:
+    put(world.tau, "prompts/review.md", "user's")
+    put(world.tau, "skills/lint/SKILL.md", SKILL)
+    root = world.project()
+    mine = put(root, ".tau/prompts/review.md", "project's")
+    other = put(root, ".tau/skills/lint/SKILL.md", "---\ndescription: p\n---\nproject lint")
+    trust(world, root)
+    found = {e.name: e for e in skills(world, root).prompts}
+    assert (found["review"].body, found["review"].path) == ("project's", mine)
+    assert (found["lint"].body, found["lint"].path) == ("project lint", other)
+    assert len(found) == 2
+
+
+def test_the_project_wins_across_kinds(world: World) -> None:
+    put(world.tau, "prompts/review.md", "user's template")
+    root = world.project()
+    put(root, ".tau/skills/review/SKILL.md", "---\ndescription: p\n---\nproject skill")
+    trust(world, root)
+    (prompt,) = skills(world, root).prompts
+    assert (prompt.kind, prompt.body) == ("skill", "project skill")
+
+
+def test_the_trust_report_lists_the_files_it_pins(world: World) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/deploy.md", "Deploy $1")
+    put(root, ".tau/skills/lint/SKILL.md", SKILL)
+    report = tau(world, "trust", cwd=root).out
+    assert "Its prompt templates and skills" in report
+    assert ".tau/prompts/deploy.md" not in report, "listed by path under .tau, as the others are"
+    assert "prompts/deploy.md  9 bytes" in report
+    assert f"skills/lint/SKILL.md  {len(SKILL.encode())} bytes" in report
+
+
+def test_a_prompt_changed_after_approval_untrusts_the_project(world: World) -> None:
+    root = world.project()
+    path = put(root, ".tau/prompts/deploy.md", "Deploy $1")
+    trust(world, root)
+    path.write_text("Deploy $1, then delete everything", encoding="utf-8")
+    with pytest.raises(UntrustedProject) as caught:
+        load_config(root, world.environ, ask=None)
+    assert ".tau/prompts/deploy.md changed" in str(caught.value)
+    assert commands(world, root) == []
+
+
+def test_a_prompt_added_or_removed_after_approval_untrusts_the_project(world: World) -> None:
+    root = world.project()
+    first = put(root, ".tau/prompts/one.md", "1")
+    trust(world, root)
+    put(root, ".tau/skills/new/SKILL.md", SKILL)
+    with pytest.raises(UntrustedProject, match=r"\.tau/skills/new/SKILL\.md added"):
+        load_config(root, world.environ, ask=None)
+    tau(world, "trust", cwd=root)
+    first.unlink()
+    with pytest.raises(UntrustedProject, match=r"\.tau/prompts/one\.md removed"):
+        load_config(root, world.environ, ask=None)
+
+
+def test_the_approved_bytes_are_what_is_read_not_the_file_now(world: World) -> None:
+    root = world.project()
+    path = put(root, ".tau/prompts/deploy.md", "approved text")
+    trust(world, root)
+    config = loaded(world, root)
+    path.write_text("swapped text", encoding="utf-8")
+    (found,) = [e for e in load_extensions(config) if isinstance(e, Skills)]
+    assert found.prompts[0].body == "approved text"
+
+
+def forget_prompts(world: World, root: Path) -> None:
+    """Make the record what a τ from before prompts were pinned wrote."""
+    state = world.tau / "trusted.json"
+    data = json.loads(state.read_text(encoding="utf-8"))
+    del data["projects"][str(root.resolve())]["prompts_sha256"]
+    del data["projects"][str(root.resolve())]["prompts"]
+    state.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_project_trusted_before_prompts_were_pinned_stays_trusted_if_it_has_none(
+    world: World,
+) -> None:
+    root = world.project()
+    trust(world, root)
+    forget_prompts(world, root)
+    assert "already trusted" in tau(world, "trust", cwd=root).out
+    assert load_config(root, world.environ, ask=None).project is not None
+
+
+def test_one_that_has_prompt_files_asks_again_and_says_which_were_added(world: World) -> None:
+    root = world.project()
+    trust(world, root)
+    forget_prompts(world, root)
+    put(root, ".tau/prompts/deploy.md", "Deploy")
+    report = tau(world, "trust", cwd=root).out
+    assert "has changed since you approved it" in report
+    assert ".tau/prompts/deploy.md added" in report
+
+
+def test_a_symlinked_prompt_is_never_read(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    outside = put(tmp_path, "elsewhere.md", "secret")
+    (root / ".tau" / "prompts").mkdir()
+    (root / ".tau" / "prompts" / "link.md").symlink_to(outside)
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    assert "link.md is a symlink; tau refuses symlinks inside a project" in result.err
+
+
+def test_a_symlinked_skill_directory_is_never_read(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    put(tmp_path, "elsewhere/SKILL.md", SKILL)
+    (root / ".tau" / "skills").mkdir()
+    (root / ".tau" / "skills" / "linked").symlink_to(tmp_path / "elsewhere")
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    assert "linked is a symlink; tau refuses symlinks inside a project" in result.err
+
+
+def test_trusted_json_records_the_prompt_hashes(world: World) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/deploy.md", "Deploy")
+    trust(world, root)
+    record = json.loads((world.tau / "trusted.json").read_text(encoding="utf-8"))["projects"][
+        str(root.resolve())
+    ]
+    assert list(record["prompts"]) == ["prompts/deploy.md"]
+    assert len(record["prompts_sha256"]) == 64
+
+
+# -- a file that stops the start
+
+
+def test_a_template_and_a_skill_with_one_name_in_one_place_name_both(world: World) -> None:
+    template = put(world.tau, "prompts/review.md", "t")
+    skill = put(world.tau, "skills/review/SKILL.md", SKILL)
+    message = failure(world)
+    assert 'extension "skills" failed to load; tau did not start.' in message
+    assert f"/review is both a template ({template}) and a skill ({skill}): rename one" in message
+    assert "to start without it: tau ext disable skills" in message
+    assert "--no-extensions" not in message, "it does not turn a built-in off"
+
+
+def test_the_same_name_in_the_users_and_the_projects_is_not_a_clash(world: World) -> None:
+    put(world.tau, "prompts/review.md", "t")
+    root = world.project()
+    put(root, ".tau/skills/review/SKILL.md", SKILL)
+    trust(world, root)
+    assert commands(world, root) == ["skills:review"]
+
+
+def test_a_name_that_is_not_letters_digits_underscore_and_hyphen_stops_the_start(
+    world: World,
+) -> None:
+    path = put(world.tau, "prompts/my notes.md", "t")
+    assert f"{path}: the name 'my notes' is not letters, digits, `_` and `-`: rename it" in failure(
+        world
+    )
+
+
+def test_a_skill_needs_a_description(world: World) -> None:
+    path = put(world.tau, "skills/pdf/SKILL.md", "no frontmatter at all")
+    assert f"{path}: no description, and a skill needs a `description`" in failure(world)
+
+
+def test_an_empty_template_with_no_description_stops_the_start(world: World) -> None:
+    path = put(world.tau, "prompts/empty.md", "---\nargument-hint: x\n---\n\n")
+    assert f"{path}: no description, and it has no text" in failure(world)
+
+
+def test_a_name_in_the_frontmatter_must_be_the_files(world: World) -> None:
+    path = put(world.tau, "prompts/review.md", "---\nname: other\n---\nt")
+    assert f"{path}: `name: other` is not the file's name, 'review'" in failure(world)
+
+
+def test_a_frontmatter_that_never_closes_stops_the_start(world: World) -> None:
+    path = put(world.tau, "prompts/review.md", "---\ndescription: d\nbody")
+    assert f"{path}: the frontmatter opens with --- and never closes" in failure(world)
+
+
+def test_a_frontmatter_line_without_a_colon_stops_the_start(world: World) -> None:
+    path = put(world.tau, "prompts/review.md", "---\ndescription d\n---\nbody")
+    assert f"{path}:2: expected `key: value`, got 'description d'" in failure(world)
+
+
+def test_a_block_scalar_description_is_refused_not_misread(world: World) -> None:
+    path = put(world.tau, "prompts/review.md", "---\ndescription: >\n  long\n---\nbody")
+    assert f"{path}: `description` must be one line of text after the colon" in failure(world)
+
+
+def test_disable_model_invocation_must_be_true_or_false(world: World) -> None:
+    path = put(
+        world.tau,
+        "skills/pdf/SKILL.md",
+        "---\ndescription: d\ndisable-model-invocation: maybe\n---\nb",
+    )
+    assert f"{path}: `disable-model-invocation` is 'maybe', not true or false" in failure(world)
+
+
+def test_a_file_that_is_not_utf8_stops_the_start(world: World) -> None:
+    path = world.tau / "prompts" / "bad.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe")
+    assert f"{path}: not valid UTF-8" in failure(world)
+
+
+def test_a_template_named_config_stops_the_start_on_the_commands_rule(world: World) -> None:
+    put(world.tau, "prompts/config.md", "t")
+    assert "a command cannot be named 'config'" in failure(world)
+
+
+# -- what a frontmatter may hold
+
+
+def test_quotes_comments_indented_lines_and_other_keys_are_read_as_a_claude_skill_has_them(
+    world: World,
+) -> None:
+    put(
+        world.tau,
+        "skills/pdf/SKILL.md",
+        '---\n# a comment\nname: pdf\ndescription: "Quoted: with a colon"\n'
+        "allowed-tools: [Read]\nmetadata:\n  version: 1\nargument-hint: '<file>'\n---\n\nBody\n\n",
+    )
+    (prompt,) = skills(world).prompts
+    assert (prompt.description, prompt.hint, prompt.body) == (
+        "Quoted: with a colon",
+        "<file>",
+        "Body",
+    )
+    assert prompt.listed
+
+
+def test_crlf_files_are_read(world: World) -> None:
+    put(world.tau, "prompts/crlf.md", "---\r\ndescription: d\r\n---\r\nline one\r\nline two\r\n")
+    (prompt,) = skills(world).prompts
+    assert (prompt.description, prompt.body) == ("d", "line one\nline two")

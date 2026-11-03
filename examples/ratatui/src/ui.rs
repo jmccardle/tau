@@ -161,6 +161,12 @@ fn status(screen: &Screen) -> Line<'static> {
             v.model.as_deref().unwrap_or("no model")
         )));
     }
+    if let Some(waiting) = model.retrying() {
+        spans.push(Span::styled(
+            format!(" | {waiting}"),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
     if let Some(trouble) = model.trouble() {
         spans.push(Span::styled(format!(" | {trouble}"), style(Kind::Failure)));
     } else if let Some(notice) = model.notices().last() {

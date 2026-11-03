@@ -454,7 +454,7 @@ draws it as a layer over the cursor. Only a client watching the cursor hears it.
 |---|---|---|
 | `kind` | `"Live"` |  |
 | `cursor` | `integer` |  |
-| `delta` | [TextDelta](#textdelta) or [ThinkingDelta](#thinkingdelta) or [CallNamed](#callnamed) or [CallArgs](#callargs) or [ToolProgress](#toolprogress) |  |
+| `delta` | [TextDelta](#textdelta) or [ThinkingDelta](#thinkingdelta) or [CallNamed](#callnamed) or [CallArgs](#callargs) or [Retrying](#retrying) or [ToolProgress](#toolprogress) |  |
 
 ### CursorView
 
@@ -565,6 +565,21 @@ More of call `index`'s argument text (`args_raw`).
 | `index` | `integer` |  |
 | `text` | `string` |  |
 
+### Retrying
+
+A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of
+`attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the
+reply and is never replayed to a client that starts watching later: it says what the sample
+is doing now, and the next delta (or the end of the sample) replaces it.
+
+| field | type | notes |
+|---|---|---|
+| `kind` | `"Retrying"` |  |
+| `attempt` | `integer` |  |
+| `attempts` | `integer` |  |
+| `seconds` | `number` |  |
+| `reason` | `string` |  |
+
 ### ToolProgress
 
 A running call showing partial output: `text` is new output since the last
@@ -641,7 +656,9 @@ its `description` and the `schema` of its arguments, with the named types' `"for
 each default, and the `extension` that owns it) or an extension's options (the `name` of the
 extension, and a `schema` whose defaults are the values now; `extension` is `null`, as it is
 for `/config`). A command is called by its `qualified` name, `extension:name`, which on the
-wire a client writes itself from the two fields. Frozen, compared by value, and not hashable:
+wire a client writes itself from the two fields. A command that `yields` gives its bare name
+up to any other command that has it (`/model` stays the built-in's; the yielding one is only
+`/skills:model`). Frozen, compared by value, and not hashable:
 the schema is a dict.
 
 | field | type | notes |
@@ -650,6 +667,7 @@ the schema is a dict.
 | `description` | `string` |  |
 | `schema` | `object` |  |
 | `extension` | `string` or `null` | optional |
+| `yields` | `boolean` | optional |
 
 ### HookFailure
 

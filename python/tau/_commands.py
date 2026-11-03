@@ -47,6 +47,13 @@ CONFIG = "config"
 """The name `/config` has when some extension has options (a built-in, not a function)."""
 
 
+def meant[T](found: Sequence[T], yields: Callable[[T], bool]) -> list[T]:
+    """The commands a bare `/name` can mean among `found`, all those with the name: the ones that
+    do not yield, or all of them if every one yields."""
+    kept = [c for c in found if not yields(c)]
+    return kept or list(found)
+
+
 def ambiguous(name: str, qualified: Sequence[str]) -> str:
     """The message for a bare `/name` that several extensions' commands share."""
     count = {2: "two"}.get(len(qualified), str(len(qualified)))
@@ -79,6 +86,7 @@ class _Command:
     function: Callable[..., object]
     described: Described
     owner: str
+    yields: bool = False
 
     @property
     def on_cursor(self) -> bool:
@@ -91,6 +99,7 @@ class _Command:
             self.described.description,
             object_schema(self.described.fields, model=False),
             self.owner,
+            self.yields,
         )
 
     @property
@@ -129,7 +138,9 @@ def assemble_commands(extensions: Sequence[object]) -> dict[str, _Command]:
                     f"extension {owner!r}: a command cannot be named {CONFIG!r}, the built-in "
                     "/config's name"
                 )
-            command = _Command(function, described, owner)
+            command = _Command(
+                function, described, owner, bool(getattr(ext, "yields_names", False))
+            )
             if command.qualified in found:
                 raise DefinitionError(
                     f"two commands are named {described.name!r} (extension {owner!r})"
@@ -256,6 +267,7 @@ class Commands:
             found = [self._commands[name]] if name in self._commands else []
         else:
             found = [c for c in self._commands.values() if c.described.name == name]
+            found = meant(found, lambda c: c.yields)
         if not found:
             raise LookupError(f"no command {name!r}; the commands are {list(self._commands)}")
         if len(found) > 1:

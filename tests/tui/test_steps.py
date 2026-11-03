@@ -6,7 +6,7 @@ from fakes import Fail, FakeProvider, Gate, Reply
 from harness import Harness, scenario
 from tuikit import Greeter, Showy, running, say, shows, type_line, until
 
-from tau import Ending, Part
+from tau import Ending, Part, RetryProvider, TextDelta
 
 
 @scenario
@@ -106,4 +106,36 @@ async def test_a_notice_is_a_toast_and_kept(tmp_path: Path) -> None:
         await until(pilot, lambda: "/count: counted" in app.toasts)
         assert "at 0" in app.toasts, "the command's progress is a notice"
         assert app.session.notices == ["at 0"]
+    await h.close()
+
+
+@scenario
+async def test_the_status_bar_says_a_provider_is_waiting_to_retry_until_the_reply_comes(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+    waits = Gate()
+
+    async def wait(seconds: float) -> None:
+        await waits.wait()
+
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(
+            [
+                Fail("HTTP 529 overloaded", status=529),
+                Reply([TextDelta("ba"), Part.Text("back")], gate=gate, gate_after=1),
+            ]
+        ),
+        wrap=lambda fake: RetryProvider(fake, sleep=wait),
+        gates=[waits, gate],
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "go")
+        await pilot.press("enter")
+        await shows(pilot, app, "HTTP 529 overloaded: retry 1 of 3 in 1 s")
+        waits.release()
+        await until(pilot, lambda: "retry 1 of 3" not in app.screen_text())
+        gate.release()
+        await shows(pilot, app, "back")
     await h.close()

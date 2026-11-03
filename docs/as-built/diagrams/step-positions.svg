@@ -23,7 +23,7 @@
 <polygon fill="white" stroke="transparent" points="296,-1197 296,-1244 458,-1244 458,-1197 296,-1197"/>
 <text text-anchor="start" x="299" y="-1232.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PreStep</text>
 <text text-anchor="start" x="299" y="-1217.3" font-family="Helvetica,sans-Serif" font-size="9.00">pre_step hooks</text>
-<text text-anchor="start" x="299" y="-1202.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreStep) (406)</text>
+<text text-anchor="start" x="299" y="-1202.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreStep) (452)</text>
 <polygon fill="none" stroke="black" points="296,-1197 296,-1244 458,-1244 458,-1197 296,-1197"/>
 </g>
 <!-- (wake)&#45;&gt;PreStep -->
@@ -31,8 +31,8 @@
 <title>(wake)&#45;&gt;PreStep</title>
 <path fill="none" stroke="black" d="M377,-1309.92C377,-1293.76 377,-1272.16 377,-1254.36"/>
 <polygon fill="black" stroke="black" points="380.5,-1254.12 377,-1244.12 373.5,-1254.12 380.5,-1254.12"/>
-<text text-anchor="start" x="393.5" y="-1280" font-family="Helvetica,sans-Serif" font-size="10.00">wake (343)</text>
-<text text-anchor="start" x="377" y="-1269" font-family="Helvetica,sans-Serif" font-size="10.00">wake (asked) (92)</text>
+<text text-anchor="start" x="396.5" y="-1280" font-family="Helvetica,sans-Serif" font-size="10.00">wake (380)</text>
+<text text-anchor="start" x="377" y="-1269" font-family="Helvetica,sans-Serif" font-size="10.00">wake (asked) (101)</text>
 </g>
 <!-- Input -->
 <g id="node3" class="node">
@@ -40,7 +40,7 @@
 <polygon fill="white" stroke="transparent" points="202.5,-1095 202.5,-1142 551.5,-1142 551.5,-1095 202.5,-1095"/>
 <text text-anchor="start" x="206" y="-1130.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Input</text>
 <text text-anchor="start" x="206" y="-1115.3" font-family="Helvetica,sans-Serif" font-size="9.00">input phase: pre_input hooks, then commit a User node, per pending input</text>
-<text text-anchor="start" x="206" y="-1100.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreInput) (280)</text>
+<text text-anchor="start" x="206" y="-1100.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreInput) (325)</text>
 <polygon fill="none" stroke="black" points="202.5,-1095 202.5,-1142 551.5,-1142 551.5,-1095 202.5,-1095"/>
 </g>
 <!-- PreStep&#45;&gt;Input -->
@@ -48,7 +48,7 @@
 <title>PreStep&#45;&gt;Input</title>
 <path fill="none" stroke="black" d="M377,-1196.81C377,-1183.64 377,-1166.82 377,-1152.24"/>
 <polygon fill="black" stroke="black" points="380.5,-1152.1 377,-1142.1 373.5,-1152.1 380.5,-1152.1"/>
-<text text-anchor="start" x="377" y="-1167" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (382)</text>
+<text text-anchor="start" x="377" y="-1167" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (427)</text>
 </g>
 <!-- PostStep -->
 <g id="node11" class="node">
@@ -56,10 +56,10 @@
 <polygon fill="white" stroke="transparent" points="306.5,-135 306.5,-227 511.5,-227 511.5,-135 306.5,-135"/>
 <text text-anchor="start" x="310" y="-216.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PostStep</text>
 <text text-anchor="start" x="310" y="-200.8" font-family="Helvetica,sans-Serif" font-size="9.00">post_step hooks, carrying the ending</text>
-<text text-anchor="start" x="310" y="-186" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Done) (294)</text>
+<text text-anchor="start" x="310" y="-186" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Done) (329)</text>
 <text text-anchor="start" x="310" y="-171" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Halted) (11)</text>
-<text text-anchor="start" x="310" y="-156" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Failed) (65)</text>
-<text text-anchor="start" x="310" y="-141" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Aborted) (37)</text>
+<text text-anchor="start" x="310" y="-156" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Failed) (75)</text>
+<text text-anchor="start" x="310" y="-141" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostStep, Aborted) (38)</text>
 <polygon fill="none" stroke="black" points="306.5,-135 306.5,-227 511.5,-227 511.5,-135 306.5,-135"/>
 </g>
 <!-- PreStep&#45;&gt;PostStep -->
@@ -67,7 +67,7 @@
 <title>PreStep&#45;&gt;PostStep</title>
 <path fill="none" stroke="black" d="M295.66,-1214.29C184.83,-1204.92 0,-1180.19 0,-1119.5 0,-1119.5 0,-1119.5 0,-326.5 0,-263.41 175.18,-221.01 296.24,-199.24"/>
 <polygon fill="black" stroke="black" points="297.08,-202.64 306.32,-197.45 295.86,-195.75 297.08,-202.64"/>
-<text text-anchor="start" x="0" y="-737" font-family="Helvetica,sans-Serif" font-size="10.00">answer HookFailed (20)</text>
+<text text-anchor="start" x="0" y="-737" font-family="Helvetica,sans-Serif" font-size="10.00">answer HookFailed (21)</text>
 <text text-anchor="start" x="0" y="-726" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks(stop) (2)</text>
 </g>
 <!-- Input&#45;&gt;Input -->
@@ -75,7 +75,7 @@
 <title>Input&#45;&gt;Input</title>
 <path fill="none" stroke="black" d="M551.62,-1126.64C573.28,-1125.19 587.5,-1122.48 587.5,-1118.5 587.5,-1115.17 577.56,-1112.73 561.65,-1111.18"/>
 <polygon fill="black" stroke="black" points="561.87,-1107.68 551.62,-1110.36 561.31,-1114.66 561.87,-1107.68"/>
-<text text-anchor="start" x="587.5" y="-1116" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (271)</text>
+<text text-anchor="start" x="587.5" y="-1116" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (315)</text>
 </g>
 <!-- PreSample -->
 <g id="node4" class="node">
@@ -83,7 +83,7 @@
 <polygon fill="white" stroke="transparent" points="342.5,-993 342.5,-1040 523.5,-1040 523.5,-993 342.5,-993"/>
 <text text-anchor="start" x="346" y="-1028.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PreSample</text>
 <text text-anchor="start" x="346" y="-1013.3" font-family="Helvetica,sans-Serif" font-size="9.00">pre_sample hooks (if a sample applies)</text>
-<text text-anchor="start" x="346" y="-998.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreSample) (264)</text>
+<text text-anchor="start" x="346" y="-998.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreSample) (308)</text>
 <polygon fill="none" stroke="black" points="342.5,-993 342.5,-1040 523.5,-1040 523.5,-993 342.5,-993"/>
 </g>
 <!-- Input&#45;&gt;PreSample -->
@@ -91,14 +91,14 @@
 <title>Input&#45;&gt;PreSample</title>
 <path fill="none" stroke="black" d="M389.71,-1094.81C397.3,-1081.26 407.05,-1063.84 415.38,-1048.97"/>
 <polygon fill="black" stroke="black" points="418.51,-1050.54 420.34,-1040.1 412.4,-1047.12 418.51,-1050.54"/>
-<text text-anchor="start" x="407" y="-1065" font-family="Helvetica,sans-Serif" font-size="10.00">no input to offer (372)</text>
+<text text-anchor="start" x="407" y="-1065" font-family="Helvetica,sans-Serif" font-size="10.00">no input to offer (416)</text>
 </g>
 <!-- Input&#45;&gt;PostStep -->
 <g id="edge5" class="edge">
 <title>Input&#45;&gt;PostStep</title>
 <path fill="none" stroke="black" d="M202.47,-1095.15C166.33,-1080.39 139,-1056.38 139,-1017.5 139,-1017.5 139,-1017.5 139,-326.5 139,-250.94 222.21,-214.74 296.25,-197.49"/>
 <polygon fill="black" stroke="black" points="297.16,-200.87 306.15,-195.28 295.63,-194.04 297.16,-200.87"/>
-<text text-anchor="start" x="142" y="-686" font-family="Helvetica,sans-Serif" font-size="10.00">answer HookFailed (3)</text>
+<text text-anchor="start" x="142" y="-686" font-family="Helvetica,sans-Serif" font-size="10.00">answer HookFailed (4)</text>
 <text text-anchor="start" x="139" y="-675" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks(stop) (5)</text>
 <text text-anchor="start" x="149.5" y="-664" font-family="Helvetica,sans-Serif" font-size="10.00">commit refused (3)</text>
 </g>
@@ -108,7 +108,7 @@
 <polygon fill="white" stroke="transparent" points="463.5,-891 463.5,-938 586.5,-938 586.5,-891 463.5,-891"/>
 <text text-anchor="start" x="467" y="-926.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Sample</text>
 <text text-anchor="start" x="467" y="-911.3" font-family="Helvetica,sans-Serif" font-size="9.00">the provider sample</text>
-<text text-anchor="start" x="467" y="-896.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Sample (258)</text>
+<text text-anchor="start" x="467" y="-896.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Sample (302)</text>
 <polygon fill="none" stroke="black" points="463.5,-891 463.5,-938 586.5,-938 586.5,-891 463.5,-891"/>
 </g>
 <!-- PreSample&#45;&gt;Sample -->
@@ -116,7 +116,7 @@
 <title>PreSample&#45;&gt;Sample</title>
 <path fill="none" stroke="black" d="M453.88,-992.81C466.7,-978.87 483.28,-960.85 497.2,-945.72"/>
 <polygon fill="black" stroke="black" points="500.01,-947.83 504.21,-938.1 494.86,-943.09 500.01,-947.83"/>
-<text text-anchor="start" x="482" y="-963" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (260)</text>
+<text text-anchor="start" x="482" y="-963" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (304)</text>
 </g>
 <!-- Tools -->
 <g id="node8" class="node">
@@ -131,7 +131,7 @@
 <title>PreSample&#45;&gt;Tools</title>
 <path fill="none" stroke="black" d="M523.72,-1007.65C675.87,-993.25 966,-959.96 966,-915.5 966,-915.5 966,-915.5 966,-676.5 966,-636.35 863.96,-607.05 782.65,-590.08"/>
 <polygon fill="black" stroke="black" points="783.34,-586.65 772.84,-588.07 781.93,-593.5 783.34,-586.65"/>
-<text text-anchor="start" x="966" y="-788" font-family="Helvetica,sans-Serif" font-size="10.00">sample does not apply (157)</text>
+<text text-anchor="start" x="966" y="-788" font-family="Helvetica,sans-Serif" font-size="10.00">sample does not apply (165)</text>
 </g>
 <!-- PreSample&#45;&gt;PostStep -->
 <g id="edge15" class="edge">
@@ -147,7 +147,7 @@
 <polygon fill="white" stroke="transparent" points="369,-767 369,-814 681,-814 681,-767 369,-767"/>
 <text text-anchor="start" x="372" y="-802.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PreReply</text>
 <text text-anchor="start" x="372" y="-787.3" font-family="Helvetica,sans-Serif" font-size="9.00">pre_reply hooks on the reply draft, then commit the Assistant node</text>
-<text text-anchor="start" x="372" y="-772.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreReply) (233)</text>
+<text text-anchor="start" x="372" y="-772.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PreReply) (269)</text>
 <polygon fill="none" stroke="black" points="369,-767 369,-814 681,-814 681,-767 369,-767"/>
 </g>
 <!-- Sample&#45;&gt;PreReply -->
@@ -155,8 +155,8 @@
 <title>Sample&#45;&gt;PreReply</title>
 <path fill="none" stroke="black" d="M525,-890.84C525,-872.09 525,-845.22 525,-824.15"/>
 <polygon fill="black" stroke="black" points="528.5,-824.04 525,-814.04 521.5,-824.04 528.5,-824.04"/>
-<text text-anchor="start" x="554.5" y="-861" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(reply) (219)</text>
-<text text-anchor="start" x="542.5" y="-850" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(reply, error) (14)</text>
+<text text-anchor="start" x="554.5" y="-861" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(reply) (254)</text>
+<text text-anchor="start" x="542.5" y="-850" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(reply, error) (15)</text>
 <text text-anchor="start" x="525" y="-839" font-family="Helvetica,sans-Serif" font-size="10.00">pre_sample draft answers the sample (3)</text>
 </g>
 <!-- Sample&#45;&gt;PostStep -->
@@ -164,8 +164,8 @@
 <title>Sample&#45;&gt;PostStep</title>
 <path fill="none" stroke="black" d="M586.58,-911.48C630.8,-907.53 690.23,-896.87 735,-869 783.1,-839.05 1031.48,-521.55 1050,-468 1059.01,-441.96 1063.15,-430.22 1050,-406 987.05,-290.03 922.06,-293.96 798,-249 708.26,-216.48 601.01,-199.51 521.87,-190.8"/>
 <polygon fill="black" stroke="black" points="522.19,-187.31 511.88,-189.73 521.45,-194.27 522.19,-187.31"/>
-<text text-anchor="start" x="993" y="-575" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(error) (16)</text>
-<text text-anchor="start" x="995.5" y="-564" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(none) (5)</text>
+<text text-anchor="start" x="993" y="-575" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(error) (23)</text>
+<text text-anchor="start" x="995.5" y="-564" font-family="Helvetica,sans-Serif" font-size="10.00">answer Sampled(none) (6)</text>
 </g>
 <!-- PostReply -->
 <g id="node7" class="node">
@@ -173,7 +173,7 @@
 <polygon fill="white" stroke="transparent" points="438.5,-654 438.5,-701 611.5,-701 611.5,-654 438.5,-654"/>
 <text text-anchor="start" x="442" y="-689.7" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PostReply</text>
 <text text-anchor="start" x="442" y="-674.3" font-family="Helvetica,sans-Serif" font-size="9.00">post_reply hooks</text>
-<text text-anchor="start" x="442" y="-659.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostReply) (221)</text>
+<text text-anchor="start" x="442" y="-659.5" font-family="Helvetica,sans-Serif" font-size="10.00">hands out Hooks(PostReply) (257)</text>
 <polygon fill="none" stroke="black" points="438.5,-654 438.5,-701 611.5,-701 611.5,-654 438.5,-654"/>
 </g>
 <!-- PreReply&#45;&gt;PostReply -->
@@ -181,7 +181,7 @@
 <title>PreReply&#45;&gt;PostReply</title>
 <path fill="none" stroke="black" d="M525,-766.77C525,-750.76 525,-729.08 525,-711.21"/>
 <polygon fill="black" stroke="black" points="528.5,-711.2 525,-701.2 521.5,-711.2 528.5,-711.2"/>
-<text text-anchor="start" x="525" y="-731.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (221)</text>
+<text text-anchor="start" x="525" y="-731.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (257)</text>
 </g>
 <!-- PreReply&#45;&gt;Tools -->
 <g id="edge14" class="edge">
@@ -205,7 +205,7 @@
 <title>PostReply&#45;&gt;Tools</title>
 <path fill="none" stroke="black" d="M531.1,-653.79C536.1,-639.33 544.57,-621.26 558,-610 566.85,-602.58 577.13,-596.64 587.93,-591.9"/>
 <polygon fill="black" stroke="black" points="589.57,-595.02 597.53,-588.03 586.95,-588.52 589.57,-595.02"/>
-<text text-anchor="start" x="558" y="-618.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (207)</text>
+<text text-anchor="start" x="558" y="-618.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (242)</text>
 </g>
 <!-- PostReply&#45;&gt;PostStep -->
 <g id="edge7" class="edge">
@@ -213,7 +213,7 @@
 <path fill="none" stroke="black" d="M514.26,-653.95C496.83,-616.32 462.55,-537.95 445,-468 425.24,-389.24 416.07,-295.42 412,-237.28"/>
 <polygon fill="black" stroke="black" points="415.48,-236.94 411.32,-227.2 408.5,-237.42 415.48,-236.94"/>
 <text text-anchor="start" x="448" y="-445.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer HookFailed (2)</text>
-<text text-anchor="start" x="456.5" y="-434.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (13)</text>
+<text text-anchor="start" x="456.5" y="-434.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks (14)</text>
 <text text-anchor="start" x="445" y="-423.5" font-family="Helvetica,sans-Serif" font-size="10.00">answer Hooks(stop) (2)</text>
 </g>
 <!-- Calls -->
@@ -238,7 +238,7 @@
 <title>Tools&#45;&gt;PostStep</title>
 <path fill="none" stroke="black" d="M673.22,-555.75C635.81,-502.83 510.4,-325.43 446.75,-235.39"/>
 <polygon fill="black" stroke="black" points="449.6,-233.37 440.97,-227.22 443.88,-237.41 449.6,-233.37"/>
-<text text-anchor="start" x="550" y="-376" font-family="Helvetica,sans-Serif" font-size="10.00">tools do not apply (300)</text>
+<text text-anchor="start" x="550" y="-376" font-family="Helvetica,sans-Serif" font-size="10.00">tools do not apply (335)</text>
 </g>
 <!-- Calls&#45;&gt;Calls -->
 <g id="edge2" class="edge">
@@ -277,7 +277,7 @@
 <title>PostStep&#45;&gt;PreStep</title>
 <path fill="none" stroke="black" d="M511.59,-191.17C717.38,-210.94 1161,-261.15 1161,-326.5 1161,-1119.5 1161,-1119.5 1161,-1119.5 1161,-1188.61 675.41,-1210.88 468.55,-1217.23"/>
 <polygon fill="black" stroke="black" points="468.21,-1213.74 458.32,-1217.54 468.42,-1220.73 468.21,-1213.74"/>
-<text text-anchor="start" x="1161" y="-731.5" font-family="Helvetica,sans-Serif" font-size="10.00">ending Done (109)</text>
+<text text-anchor="start" x="1161" y="-731.5" font-family="Helvetica,sans-Serif" font-size="10.00">ending Done (117)</text>
 </g>
 <!-- Rest -->
 <g id="node12" class="node">
@@ -293,9 +293,9 @@
 <title>PostStep&#45;&gt;Rest</title>
 <path fill="none" stroke="black" d="M409,-134.6C409,-109.84 409,-79.75 409,-57.28"/>
 <polygon fill="black" stroke="black" points="412.5,-57.24 409,-47.24 405.5,-57.24 412.5,-57.24"/>
-<text text-anchor="start" x="409" y="-105" font-family="Helvetica,sans-Serif" font-size="10.00">ending Aborted (37)</text>
-<text text-anchor="start" x="412" y="-94" font-family="Helvetica,sans-Serif" font-size="10.00">ending Done (287)</text>
-<text text-anchor="start" x="413.5" y="-83" font-family="Helvetica,sans-Serif" font-size="10.00">ending Failed (61)</text>
+<text text-anchor="start" x="409" y="-105" font-family="Helvetica,sans-Serif" font-size="10.00">ending Aborted (38)</text>
+<text text-anchor="start" x="412" y="-94" font-family="Helvetica,sans-Serif" font-size="10.00">ending Done (322)</text>
+<text text-anchor="start" x="413.5" y="-83" font-family="Helvetica,sans-Serif" font-size="10.00">ending Failed (71)</text>
 <text text-anchor="start" x="412" y="-72" font-family="Helvetica,sans-Serif" font-size="10.00">ending Halted (11)</text>
 </g>
 </g>

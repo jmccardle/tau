@@ -15,13 +15,13 @@ from typing import TextIO, cast
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._options import option_fields
+from tau._project_read import safe_text
 from tau._trust import (
     Trusted,
     ensure_trusted,
     find_project,
     is_interactive,
     project_environment,
-    safe_text,
     tau_home,
     terminal_ask,
     user_config_path,

@@ -27,7 +27,9 @@ from tau._events import (
     Event,
     Labels,
     Live,
+    LiveDelta,
     Notice,
+    Retrying,
     ToolProgress,
 )
 from tau._protocol import Welcome
@@ -47,6 +49,23 @@ from tau.tui._tree import tell_trees
 from tau.tui._view import SessionView
 
 _QUIT_WINDOW = 3.0  # seconds a first Ctrl+C waits for the second
+
+
+def _show_status(app: "TauApp", view: CursorView) -> None:
+    """The status bar for `view`, with the retry its provider is waiting for, if it is."""
+    layer = app.session.live.get(view.cursor)
+    app.query_one(StatusBar).show(status_lines(view, None if layer is None else layer.retrying))
+
+
+async def _draw(
+    app: "TauApp", transcript: ChatDisplay, cursor: int, delta: LiveDelta, was_waiting: bool
+) -> None:
+    """Draw a delta of the viewed cursor. A `Retrying` is the status bar's (a line saying the
+    provider is waiting), and the first delta after one takes the line away."""
+    if was_waiting or isinstance(delta, Retrying):
+        _show_status(app, app.session.views[cursor])
+    if not isinstance(delta, Retrying):
+        await transcript.live(delta, app.session.live[cursor])
 
 
 class TauApp(App[None]):
@@ -239,6 +258,8 @@ class TauApp(App[None]):
 
     async def _hear(self, event: Event) -> None:
         async with self._drawing:
+            layer = self.session.live.get(self.cursor)
+            was_waiting = layer is not None and layer.retrying is not None
             self.session.hear(event)
             match event:
                 case CursorView(cursor=c) if c == self.cursor:
@@ -250,7 +271,7 @@ class TauApp(App[None]):
                         node, call, self.session.live[c].progress[(node, call)]
                     )
                 case Live(cursor=c, delta=delta) if c == self.cursor:
-                    await self._transcript.live(delta, self.session.live[c])
+                    await _draw(self, self._transcript, c, delta, was_waiting)
                 case CursorGone(cursor=c) if c == self.cursor and self.session.views:
                     self.toast(f"cursor {c} was closed", severity="warning")
                     await self._show(min(self.session.views))
@@ -317,7 +338,7 @@ class TauApp(App[None]):
             isinstance(i.data, ItemData.Input) and i.data.by == Author.Frontend(me)
             for i in view.items
         )
-        self.query_one(StatusBar).show(status_lines(view))
+        _show_status(self, view)
         title = " ".join((transcript.first or "(no messages)").split())[:60]
         session = "(in memory)" if self.welcome is None else self.welcome.session
         cwd = str(self.cwd) if self.welcome is None else self.welcome.cwd

@@ -35,6 +35,7 @@ from typing import Final, Protocol, TextIO
 from tau._choice import choose_session
 from tau._clock import SystemClock
 from tau._config import ConfigError
+from tau._project_read import safe_block, safe_text
 from tau._protocol import PROTOCOL, schema_text
 from tau._serve import Server
 from tau._serve_record import (
@@ -54,7 +55,7 @@ from tau._serve_record import (
 from tau._session_start import Started, start_report, start_session
 from tau._sessions import SessionFlags
 from tau._startup import load_config, prompts
-from tau._trust import safe_block, safe_text, tau_home
+from tau._trust import tau_home
 
 IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""

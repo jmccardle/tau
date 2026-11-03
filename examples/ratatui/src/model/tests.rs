@@ -236,3 +236,30 @@ fn a_failed_step_is_reported() {
     model.hear(serde_json::from_value(view).unwrap());
     assert_eq!(model.trouble().as_deref(), Some("the step failed: boom"));
 }
+
+#[test]
+fn a_provider_waiting_to_retry_is_said_until_the_sample_goes_on() {
+    let mut model = Model::new(ME);
+    replay_through(&mut model, u64::MAX);
+    let live = |delta: Value| -> Event {
+        serde_json::from_value(serde_json::json!({"kind": "Live", "cursor": 0, "delta": delta}))
+            .unwrap()
+    };
+    assert_eq!(model.retrying(), None);
+    model.hear(live(serde_json::json!({
+        "kind": "Retrying", "attempt": 1, "attempts": 3, "seconds": 2.0,
+        "reason": "HTTP 529: overloaded_error: Overloaded"
+    })));
+    assert_eq!(
+        model.retrying(),
+        Some("HTTP 529: overloaded_error: Overloaded: retry 1 of 3 in 2 s")
+    );
+    model.hear(live(serde_json::json!({
+        "kind": "Retrying", "attempt": 2, "attempts": 3, "seconds": 2.5, "reason": "HTTP 503"
+    })));
+    assert_eq!(model.retrying(), Some("HTTP 503: retry 2 of 3 in 2.5 s"));
+    model.hear(live(
+        serde_json::json!({"kind": "TextDelta", "text": "back"}),
+    ));
+    assert_eq!(model.retrying(), None, "the next delta takes the line away");
+}

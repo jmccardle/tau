@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from textual.widgets import Static
 
 from tau._core import Author, Ending, ItemData
-from tau._events import CursorView
+from tau._events import CursorView, Retrying
 from tau.tui._transcript import author_name
 
 
@@ -32,8 +32,16 @@ def ending_text(ending: Ending | None) -> str:
             return ""
 
 
-def status_lines(view: CursorView) -> list[str]:
-    """The status bar's lines for a cursor's view."""
+def retrying_text(retrying: Retrying) -> str:
+    """What a `Retrying` says: `HTTP 529: overloaded: retry 1 of 3 in 2 s`."""
+    return (
+        f"{retrying.reason}: retry {retrying.attempt} of {retrying.attempts} "
+        f"in {retrying.seconds:g} s"
+    )
+
+
+def status_lines(view: CursorView, retrying: Retrying | None = None) -> list[str]:
+    """The status bar's lines for a cursor's view, and the retry the provider is waiting for."""
     state = ["working…" if view.busy else "idle"]
     if view.auto:
         state.append("auto")
@@ -45,6 +53,8 @@ def status_lines(view: CursorView) -> list[str]:
     if view.hook_error is not None:
         failure = view.hook_error
         lines.append(f"{failure.point} of {failure.extension} failed: {failure.error}")
+    if retrying is not None:
+        lines.append(retrying_text(retrying))
     lines.extend(f"{who}: {text}" for who, text in view.shown)
     return lines
 

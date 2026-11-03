@@ -51,12 +51,14 @@ class LiveLayer
     thinking: str = ''
     calls: dict[int, FormingCall] = field(default_factory=lambda: {})
     progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
+    retrying: Retrying | None = None
 ```
 
 What a watched cursor's sample has said and the tree does not hold yet: the reply's `text`
 and `thinking` so far, the `calls` forming (by their index in the reply), and each running
-call's `progress` output keyed by `(node, call_id)`. `at` is the cursor's node when the first
-delta arrived: the layer is drawn over it.
+call's `progress` output keyed by `(node, call_id)`. `retrying` is the `Retrying` the provider
+last said, until the sample says anything else or ends. `at` is the cursor's node when the
+first delta arrived: the layer is drawn over it.
 
 ### tau.tui.LiveLayer.empty
 

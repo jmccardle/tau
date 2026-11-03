@@ -61,8 +61,22 @@ class ToolProgress:
     text: str
 
 
-Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
-"""What a provider yields while a part is still arriving."""
+@dataclass(frozen=True)
+class Retrying:
+    """A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of
+    `attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the
+    reply and is never replayed to a client that starts watching later: it says what the sample
+    is doing now, and the next delta (or the end of the sample) replaces it."""
+
+    attempt: int
+    attempts: int
+    seconds: float
+    reason: str
+
+
+Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | Retrying
+"""What a provider yields while a part is still arriving, and `Retrying` while it waits to try
+again."""
 LiveDelta = Delta | ToolProgress
 """What a `Live` carries: a provider's delta, or a tool's progress."""
 

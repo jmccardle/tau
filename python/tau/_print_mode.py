@@ -37,9 +37,9 @@ from tau._core import Author, Body, Busy, Ending, Node, Outcome, Part
 from tau._events import Appended, CursorView, Event, HookFailure, Notice, OpenQuestion
 from tau._launch import AnswerRule, UsageError, message_of
 from tau._open import Opened, open_client
+from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
-from tau._trust import safe_block
 from tau._values import Json
 from tau.commandline import UnknownCommand, value
 
@@ -405,7 +405,8 @@ async def _send(run: _Run, message: str) -> int:
 
 
 async def _command(run: _Run, line: str) -> int:
-    """Run the command line, and wait for any step it caused to end."""
+    """Run the command line, and wait for any step it caused to end. If the command sent input,
+    the reply to it is printed after the command's own result, as a message's is."""
     parsed = await run.client.parse_line(run.cursor, line)
     if parsed.missing:
         raise UsageError(f"{line.split(maxsplit=1)[0]} needs: {', '.join(parsed.missing)}")
@@ -422,9 +423,14 @@ async def _command(run: _Run, line: str) -> int:
     view = run.views[run.cursor]
     if view.busy:
         view = await run.rest()
-    code = run.verdict(view, message=False)
+    sent = bool(view.items) or any(isinstance(n.body, Body.User) for n in run.chain(view.at))
+    code = run.verdict(view, message=sent)  # a command that sent input is held to a message's rules
     if result is not None:
         run.write(run.err if run.json else run.out, result + "\n")
+    if sent and code in (0, 3):
+        reply = run.reply(view.at)
+        if reply is not None and not run.json:
+            run.write(run.out, reply + "\n")
     return code
 
 

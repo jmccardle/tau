@@ -20,8 +20,8 @@ and:
    `--system-prompt` is a layer of the config, given to `load_config`), so an unreadable context
    file stops the start before a session exists; a program with its own prompt passes `system`,
    and then the prompt flags are refused: they would be ignored;
-4. creates or forks the session, names an opened one (`-n`), builds the providers and starts the
-   `Driver`.
+4. creates or forks the session, names an opened one (`-n`), builds the providers (each wrapped
+   in a `RetryProvider` unless `load` turns `retry` off, D24 section 4) and starts the `Driver`.
 
 The result is a `Started`, which keeps what `--verbose`'s start report tells; `stop` ends it, and
 removes a session that was never used. A session another process holds is `Leased`, never replaced
@@ -38,13 +38,15 @@ from tau._builtin import SessionName
 from tau._choice import SessionChoice, choose_session
 from tau._clock import SystemClock
 from tau._config import ConfigError, config_fields, model_config
+from tau._config_layers import option_problems
 from tau._context import SystemPrompt, system_prompt
 from tau._core import Leased, Session
 from tau._driver import Driver
-from tau._extensions import ExtensionSource, absolute_explicit, inspect_extensions
+from tau._extensions import RETRY, ExtensionSource, absolute_explicit, inspect_extensions
 from tau._options import make_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
+from tau._retry import RetryProvider
 from tau._sessions import (
     ForkedFrom,
     PickSession,
@@ -150,7 +152,7 @@ def start_report(started: Started) -> list[str]:
             )
             if where.endswith(")"):  # "built-in (added by the startup)": no parentheses in them
                 where = where.replace(" (", ", ")[:-1]
-            lines.append(f"extension {source.key} ({where})")
+            lines.append(f"{'extension ' if source.extensions else ''}{source.key} ({where})")
     if started.prompt is not None:
         lines += [f"system prompt {part.size:>8} {part.origin}" for part in started.prompt.sources]
     return lines
@@ -164,6 +166,14 @@ def _session_line(started: Started) -> str:
         forked = session_info(started.directory).forked_from
         how = "new" if forked is None else f"forked from {forked.session} at node {forked.node}"
     return f"session {started.directory.name} ({how}) in {started.directory}"
+
+
+def _providers(loaded: LoadedConfig, sources: Sequence[ExtensionSource]) -> dict[str, Provider]:
+    """The built-in providers, each wrapped in a `RetryProvider` unless `load` turns `retry` off."""
+    providers = builtin_providers(loaded.environ)
+    if not any(s.key == RETRY and s.state == "on" for s in sources):
+        return providers
+    return {name: RetryProvider(p) for name, p in providers.items()}
 
 
 async def _close(providers: Mapping[str, Provider]) -> None:
@@ -304,6 +314,14 @@ def _overridden(  # noqa: PLR0913, PLR0917 - the start's inputs, passed on
     return again
 
 
+def refuse_bad_options(loaded: LoadedConfig, extensions: Sequence[Extension]) -> None:
+    """`ConfigError` naming every option the layers set that its extension refuses (a step limit
+    of 0), so the start fails once instead of every step."""
+    problems = [p for p in option_problems(loaded.catalog, extensions) if p.severity == "error"]
+    if problems:
+        raise ConfigError("\n".join(f"{p.path}: {p.message}" for p in problems))
+
+
 def _refuse_ignored_prompt_flags(flags: SessionFlags, system: SystemText | None) -> None:
     """A program with its own `system` text would silently drop the flags that shape D20's."""
     if system is not None and (
@@ -367,6 +385,7 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
             loaded = _overridden(
                 loaded, choice.cwd, environ, prompts, cli, [*own, *added], assignments
             )
+        refuse_bad_options(loaded, [*own, *added])
         assembled = _Assembled(flags)
         text = system if system is not None else assembled
         selected = select_model(loaded.catalog, model, pick=prompts.pick) if new else None
@@ -381,7 +400,7 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     extensions = [*own, *added] + ([SessionName(directory)] if directory else [])
     providers: Mapping[str, Provider] = {}
     try:
-        providers = builtin_providers(loaded.environ)
+        providers = _providers(loaded, found.sources)
         driver = _driver(session, loaded, extensions, providers, clock)
     except BaseException:
         session.close()

@@ -154,7 +154,8 @@ sent, and `.tau/extensions/` runs Python. So τ does not use a project until you
   values blanked), its extension files with their sizes, and the names, never the values, that its
   `.env` sets; then it trusts the project.
 - Approval is of the *exact bytes* of `.tau/config.json`, of `.env`, of every file under
-  `.tau/extensions/`, and of `.tau/SYSTEM.md`. If any changes, the project is untrusted again.
+  `.tau/extensions/`, of `.tau/SYSTEM.md`, and of the prompt templates and skills
+  (`.tau/prompts/*.md`, `.tau/skills/*/SKILL.md`, [What τ does for you](built-ins.md)). If any changes, the project is untrusted again.
   A `git pull` cannot slip a new `base_url` past you.
 - A project whose config has errors cannot be approved: the report lists them.
 - `tau trust` in a directory with no `.tau/` creates and trusts one.
@@ -249,7 +250,7 @@ These are not config, and they last for one run:
 | `--set EXTENSION.FIELD=VALUE` | an extension's option for this run (above) |
 | `-m NAME`, `--model NAME` | the model of a new session (`tau`, `tau -p`) |
 | `--theme NAME` | the terminal UI's theme for this run (`tau`; not with `-p`) |
-| `--no-extensions` | load no package or drop-in (the built-ins, `base_tools` and `step_limit`, still follow `load`) |
+| `--no-extensions` | load no package or drop-in (the built-ins, `attachments`, `base_tools`, `skills` and `step_limit`, and the `retry` wrapper, still follow `load`) |
 | `-c`, `-r`, `--session REF`, `--fork REF`, `--no-session`, `-n NAME` | which session, and its name ([Quickstart](quickstart.md)) |
 
 ## When it fails

@@ -62,6 +62,9 @@ struct Layer {
     calls: BTreeMap<u64, (String, String)>,
     /// Running calls' output, keyed by (batch node, call id), in the order they began.
     progress: Vec<((u64, String), String)>,
+    /// The provider is waiting to try again: `reason: retry 1 of 3 in 2 s`, until the sample says
+    /// anything else.
+    retrying: Option<String>,
 }
 
 impl Layer {
@@ -241,7 +244,19 @@ impl Model {
         }
         let at = self.view().map(|v| v.at);
         self.layer.at = self.layer.at.or(at);
+        if !matches!(
+            live.delta,
+            LiveDelta::Retrying(_) | LiveDelta::ToolProgress(_)
+        ) {
+            self.layer.retrying = None; // the sample is going again
+        }
         match live.delta {
+            LiveDelta::Retrying(d) => {
+                self.layer.retrying = Some(format!(
+                    "{}: retry {} of {} in {} s",
+                    d.reason, d.attempt, d.attempts, d.seconds
+                ));
+            }
             LiveDelta::TextDelta(d) => self.layer.text.push_str(&d.text),
             LiveDelta::ThinkingDelta(d) => self.layer.thinking.push_str(&d.text),
             LiveDelta::CallNamed(d) => {
@@ -417,6 +432,11 @@ impl Model {
                 ItemData::Extension { .. } => None,
             })
             .collect()
+    }
+
+    /// What the provider is waiting for, if it is waiting to try the sample again.
+    pub fn retrying(&self) -> Option<&str> {
+        self.layer.retrying.as_deref()
     }
 
     /// How the last step ended, if it did not end well.

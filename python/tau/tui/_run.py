@@ -25,10 +25,11 @@ from tau._config_layers import read_models
 from tau._events import CursorView
 from tau._launch import UsageError
 from tau._open import Opened, open_client
+from tau._project_read import safe_block
 from tau._session_start import start_report
 from tau._sessions import SessionFlags, UnknownSession, list_sessions, sessions_directory
 from tau._startup import prompts
-from tau._trust import safe_block, tau_home, user_config_path
+from tau._trust import tau_home, user_config_path
 from tau.tui._app import TauApp
 from tau.tui._switch import PickerApp, Switch, session_holders, switch_argv
 from tau.tui._themes import ThemeError, build_theme_registry, resolve_theme

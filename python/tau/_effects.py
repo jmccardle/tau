@@ -26,7 +26,7 @@ from tau._core import (
     SampleEnd,
     Session,
 )
-from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
+from tau._events import CallArgs, CallNamed, Delta, Retrying, TextDelta, ThinkingDelta, ToolProgress
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._protocols import (
     CallDraft,
@@ -292,6 +292,9 @@ class SampleRun:
         return finish
 
     def _delta(self, delta: Delta) -> None:
+        if isinstance(delta, Retrying):  # no part is forming: nothing was yielded before a retry
+            self._on_delta(delta)
+            return
         kind = (
             "text"
             if isinstance(delta, TextDelta)

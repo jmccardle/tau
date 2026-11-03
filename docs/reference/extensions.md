@@ -4,7 +4,32 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `CURSOR_POINTS`, `CallDraft`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`
+Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`
+
+## Attachments
+
+```python
+class Attachments
+    name = 'attachments'
+    options = Options
+```
+
+The built-in extension `attachments`: `@path` in every input names a file (the module
+docstring). `cwd` is the session's working directory, where relative paths start.
+
+### Attachments.__init__
+
+```python
+def __init__(self, cwd: Path) -> None
+```
+
+### Attachments.pre_input
+
+```python
+async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Rewrite the draft's text with the files its `@` words name.
 
 ## CURSOR_POINTS
 
@@ -294,6 +319,7 @@ class Form
     description: str
     schema: Json
     extension: str | None = None
+    yields: bool = False
 ```
 
 What a client knows of something it fills in: a command (its `name`, typed as `/name`,
@@ -301,7 +327,9 @@ its `description` and the `schema` of its arguments, with the named types' `"for
 each default, and the `extension` that owns it) or an extension's options (the `name` of the
 extension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is
 for `/config`). A command is called by its `qualified` name, `extension:name`, which on the
-wire a client writes itself from the two fields. Frozen, compared by value, and not hashable:
+wire a client writes itself from the two fields. A command that `yields` gives its bare name
+up to any other command that has it (`/model` stays the built-in's; the yielding one is only
+`/skills:model`). Frozen, compared by value, and not hashable:
 the schema is a dict.
 
 ### Form.qualified
@@ -401,6 +429,35 @@ NodeId = NewType('NodeId', int)
 ```
 
 A node that exists.
+
+## Skills
+
+```python
+class Skills
+    name = 'skills'
+    options = Options
+    yields_names = True
+```
+
+The built-in extension `skills`: a command for each template and skill, and the skills list
+for the model (the module docstring). `prompts` are what `read_prompts` found.
+
+### Skills.of
+
+```python
+@classmethod
+def of(cls, loaded: LoadedConfig) -> 'Skills'
+```
+
+The extension for the files `loaded` can read. `SkillFileError` for one it cannot use.
+
+### Skills.pre_step
+
+```python
+async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+At a session's first step, write the skills list (the module docstring).
 
 ## StepLimit
 

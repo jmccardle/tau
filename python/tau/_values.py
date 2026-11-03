@@ -376,13 +376,16 @@ class Form:
     each default, and the `extension` that owns it) or an extension's options (the `name` of the
     extension, and a `schema` whose defaults are the values now; `extension` is `None`, as it is
     for `/config`). A command is called by its `qualified` name, `extension:name`, which on the
-    wire a client writes itself from the two fields. Frozen, compared by value, and not hashable:
+    wire a client writes itself from the two fields. A command that `yields` gives its bare name
+    up to any other command that has it (`/model` stays the built-in's; the yielding one is only
+    `/skills:model`). Frozen, compared by value, and not hashable:
     the schema is a dict."""
 
     name: str
     description: str
     schema: Json
     extension: str | None = None
+    yields: bool = False
 
     @property
     def qualified(self) -> str:

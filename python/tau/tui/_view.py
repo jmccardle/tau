@@ -26,6 +26,7 @@ from tau._events import (
     Live,
     LiveDelta,
     Notice,
+    Retrying,
     TextDelta,
     ThinkingDelta,
     ToolProgress,
@@ -46,14 +47,16 @@ class FormingCall:
 class LiveLayer:
     """What a watched cursor's sample has said and the tree does not hold yet: the reply's `text`
     and `thinking` so far, the `calls` forming (by their index in the reply), and each running
-    call's `progress` output keyed by `(node, call_id)`. `at` is the cursor's node when the first
-    delta arrived: the layer is drawn over it."""
+    call's `progress` output keyed by `(node, call_id)`. `retrying` is the `Retrying` the provider
+    last said, until the sample says anything else or ends. `at` is the cursor's node when the
+    first delta arrived: the layer is drawn over it."""
 
     at: int | None = None
     text: str = ""
     thinking: str = ""
     calls: dict[int, FormingCall] = field(default_factory=lambda: {})
     progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
+    retrying: Retrying | None = None
 
     @property
     def empty(self) -> bool:
@@ -63,6 +66,7 @@ class LiveLayer:
     def drop_reply(self) -> None:
         """Forget the reply's text, thinking and calls (the node arrived, or the step ended)."""
         self.at = None
+        self.retrying = None
         self.text = ""
         self.thinking = ""
         self.calls = {}
@@ -154,7 +158,11 @@ class SessionView:
         view = self.views.get(cursor)
         if layer.at is None and view is not None:
             layer.at = view.at
+        if not isinstance(delta, Retrying | ToolProgress):
+            layer.retrying = None  # the sample is going again
         match delta:
+            case Retrying():
+                layer.retrying = delta
             case TextDelta(text=text):
                 layer.text += text
             case ThinkingDelta(text=text):

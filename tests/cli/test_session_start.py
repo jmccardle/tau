@@ -30,6 +30,7 @@ from tau import (
     Opened,
     Part,
     PickSession,
+    RetryProvider,
     Session,
     SessionInfo,
     Started,
@@ -987,3 +988,146 @@ def test_a_session_named_while_it_runs_is_not_deleted_as_unused(configured: Worl
     run(name())
     stop(started)
     assert [r.name for r in rows(configured)] == ["keep me"]
+
+
+# -- retry (D24 section 4): a switch in `load`, not an extension
+
+
+def test_every_provider_a_session_starts_with_retries(configured: World) -> None:
+    started = start(configured)
+    try:
+        assert started.providers
+        assert all(isinstance(p, RetryProvider) for p in started.providers.values())
+        assert sorted(started.providers) == ["anthropic", "gemini", "mock", "openai"]
+    finally:
+        stop(started)
+
+
+def test_no_extensions_does_not_turn_retry_off(configured: World) -> None:
+    started = start(configured, "--no-extensions")
+    try:
+        assert all(isinstance(p, RetryProvider) for p in started.providers.values())
+    finally:
+        stop(started)
+
+
+def test_load_retry_false_leaves_the_providers_as_they_are(configured: World) -> None:
+    configured.user_config({**MOCK, "load": {"retry": False}})
+    started = start(configured)
+    try:
+        assert not any(isinstance(p, RetryProvider) for p in started.providers.values())
+    finally:
+        stop(started)
+
+
+def test_tau_ext_disable_retry_is_that_switch(configured: World) -> None:
+    listed = tau(configured, "ext", "list", "--json").out
+    row = next(r for r in map(json.loads, listed.splitlines()) if r["key"] == "retry")
+    assert (row["state"], row["kind"], row["extensions"]) == ("on", "built-in", [])
+    assert tau(configured, "ext", "disable", "retry").code == 0
+    started = start(configured)
+    try:
+        assert not any(isinstance(p, RetryProvider) for p in started.providers.values())
+    finally:
+        stop(started)
+
+
+# -- attachments and skills (D24 sections 5 and 6) in a session the shared start opens
+
+
+def users_of(started: Started) -> list[str]:
+    """The text of every `User` node of the session, oldest first."""
+    tree = started.session.tree
+    nodes = (tree.node(i) for i in range(len(tree)))
+    return [n.body.text for n in nodes if isinstance(n.body, Body.User)]
+
+
+def said(started: Started, line: str) -> str:
+    """The `User` node `line` became after the session answered it."""
+    client = started.driver.client("t")
+
+    async def go() -> None:
+        await client.send(0, line)
+        await started.driver.rest(0)
+        await client.close()
+
+    run(go())
+    return users_of(started)[-1]
+
+
+def test_at_file_means_the_sessions_working_directory(configured: World) -> None:
+    work = configured.home / "work"
+    work.mkdir()
+    (work / "notes.txt").write_text("remember", encoding="utf-8")
+    started = start(configured, "--no-session", cwd=work)
+    try:
+        assert said(started, "read @notes.txt") == (
+            'read @notes.txt\n\n<attachment path="notes.txt">\nremember\n</attachment>'
+        )
+    finally:
+        stop(started)
+
+
+def test_load_false_turns_attachments_off(configured: World) -> None:
+    work = configured.home / "work"
+    work.mkdir()
+    (work / "notes.txt").write_text("remember", encoding="utf-8")
+    configured.user_config({**MOCK, "load": {"attachments": False}})
+    started = start(configured, "--no-session", cwd=work)
+    try:
+        assert said(started, "read @notes.txt") == "read @notes.txt"
+    finally:
+        stop(started)
+
+
+def test_a_template_in_tau_home_is_a_command_of_the_started_session(configured: World) -> None:
+    prompts = configured.tau / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / "shout.md").write_text("Say $1 loudly", encoding="utf-8")
+    started = start(configured, "--no-session")
+    client = started.driver.client("t")
+    try:
+
+        async def go() -> None:
+            await client.run(0, "shout", {"args": "hello"})
+            await started.driver.rest(0)
+            await client.close()
+
+        run(go())
+        users = users_of(started)
+        assert users == ["Say hello loudly"]
+    finally:
+        stop(started)
+
+
+def test_a_file_that_cannot_be_used_stops_the_start_and_creates_nothing(
+    configured: World,
+) -> None:
+    prompts = configured.tau / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / "my notes.md").write_text("x", encoding="utf-8")
+    with pytest.raises(ExtensionLoadError, match="the name 'my notes' is not letters"):
+        start(configured)
+    assert sessions_of(configured) == []
+
+
+# -- options the layers set are checked at the start, once
+
+
+@pytest.mark.parametrize(
+    ("extension", "options", "problem"),
+    [
+        ("attachments", {"limit": 0}, "an attachment limit must be at least 1 byte"),
+        ("step_limit", {"limit": 0}, "a step limit must be at least 1"),
+        ("retry", {"x": 1}, "extension 'retry' has no options"),
+        ("base_tools", {"x": 1}, "extension 'base_tools' has no options"),
+    ],
+)
+def test_options_an_extension_refuses_stop_the_start_before_a_session_exists(
+    configured: World, extension: str, options: dict[str, object], problem: str
+) -> None:
+    configured.user_config({**MOCK, "extensions": {extension: options}})
+    with pytest.raises(ConfigError, match=f"extensions.{extension}: .*{problem}"):
+        start(configured)
+    assert sessions_of(configured) == []
+    assert problem in tau(configured, "config", "check").out

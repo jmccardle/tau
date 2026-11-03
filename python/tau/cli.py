@@ -77,6 +77,7 @@ from tau._launch import (
 from tau._markdown import to_markdown
 from tau._options import save_options
 from tau._print_mode import print_mode
+from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
 from tau._providers import builtin_providers
@@ -96,15 +97,12 @@ from tau._sessions import (
 from tau._startup import LoadedConfig, load_config, option_changes, prompts, select_model
 from tau._trust import (
     TAU_DIR,
-    TrustError,
     UntrustedProject,
     create_project,
     ensure_trusted,
     find_project,
     project_environment,
     refuse_special,
-    safe_block,
-    safe_text,
     tau_home,
     user_config_path,
 )

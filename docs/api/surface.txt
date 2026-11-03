@@ -2,6 +2,11 @@
 # The public surface of tau: one block per group, names sorted.
 
 == extensions: Writing an extension
+class Attachments
+    def __init__(self, cwd: Path) -> None
+    name = 'attachments'
+    options = Options
+    async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
 CURSOR_POINTS = ('pre_step', 'pre_input', 'pre_sample', 'pre_reply', 'post_reply', 'post_result', 'post_step')
 class CallDraft
     def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None
@@ -37,6 +42,7 @@ class Form
     name: str
     property qualified: str
     schema: Json
+    yields: bool = False
 LabelName = NewType('LabelName', str)
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
@@ -47,6 +53,13 @@ class NodeHandle(TreeHandle)
     def saved_options(self) -> Mapping[str, object]
     def walk(self) -> list[Node]
 NodeId = NewType('NodeId', int)
+class Skills
+    name = 'skills'
+    @classmethod
+    def of(cls, loaded: LoadedConfig) -> 'Skills'
+    options = Options
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
+    yields_names = True
 class StepLimit
     def __init__(self) -> None
     name = 'step_limit'
@@ -410,7 +423,7 @@ class CursorView
     questions: tuple[OpenQuestion, ...]
     shown: tuple[tuple[str, str], ...]
 class CutOff(ConnectionError)
-Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
+Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | Retrying
 Event = Live | CursorView | CursorGone | Labels | Appended | Notice
 @dataclass(frozen=True)
 class HookFailure
@@ -435,6 +448,12 @@ class OpenQuestion
     schema: Json
     text: str
     to: str | None
+@dataclass(frozen=True)
+class Retrying
+    attempt: int
+    attempts: int
+    reason: str
+    seconds: float
 @dataclass(frozen=True)
 class TextDelta
     text: str
@@ -686,6 +705,22 @@ class Provider(Protocol)
         tools: Sequence['Tool'],
     ) -> AsyncGenerator[Part | Finish | Delta, None]
 class ProviderClosed(SampleError)
+class RetryProvider
+    def __init__(
+        self,
+        inner: Provider,
+        *,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None
+    async def aclose(self) -> None
+    def check(self, model: ModelConfig) -> list[str]
+    property name: str
+    async def sample(
+        self,
+        walk: Sequence[Node],
+        model: ModelConfig,
+        tools: Sequence[Tool],
+    ) -> AsyncGenerator[Part | Finish | Delta, None]
 class SampleError(Exception)
     def __init__(
         self,
@@ -920,6 +955,7 @@ class Trusted
     env_text: str | None
     extension_files: Mapping[str, bytes] | None
     def layer(self) -> LayerText | None
+    prompt_files: Mapping[str, bytes]
     def read_models(
         self,
         user: Path | LayerText | None = None,
@@ -1035,6 +1071,7 @@ class LiveLayer
     def drop_reply(self) -> None
     property empty: bool
     progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
+    retrying: Retrying | None = None
     text: str = ''
     thinking: str = ''
 # tau.tui

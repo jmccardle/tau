@@ -4,7 +4,7 @@
 
 What a client's stream yields.
 
-Names: `Appended`, `CallArgs`, `CallNamed`, `CursorGone`, `CursorView`, `CutOff`, `Delta`, `Event`, `HookFailure`, `Labels`, `Live`, `LiveDelta`, `Notice`, `OpenQuestion`, `TextDelta`, `ThinkingDelta`, `ToolProgress`
+Names: `Appended`, `CallArgs`, `CallNamed`, `CursorGone`, `CursorView`, `CutOff`, `Delta`, `Event`, `HookFailure`, `Labels`, `Live`, `LiveDelta`, `Notice`, `OpenQuestion`, `Retrying`, `TextDelta`, `ThinkingDelta`, `ToolProgress`
 
 ## Appended
 
@@ -92,10 +92,11 @@ again for a fresh snapshot.
 ## Delta
 
 ```python
-Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
+Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | Retrying
 ```
 
-What a provider yields while a part is still arriving.
+What a provider yields while a part is still arriving, and `Retrying` while it waits to try
+again.
 
 ## Event
 
@@ -175,6 +176,22 @@ class OpenQuestion
 A question an extension asked and nobody has answered: `id` (what `answer` names), whom
 it is for (`to`: a client id, `None` for anyone), the `extension` that asked, what it asks,
 and the JSON Schema of the answer.
+
+## Retrying
+
+```python
+@dataclass(frozen=True)
+class Retrying
+    attempt: int
+    attempts: int
+    seconds: float
+    reason: str
+```
+
+A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of
+`attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the
+reply and is never replayed to a client that starts watching later: it says what the sample
+is doing now, and the next delta (or the end of the sample) replaces it.
 
 ## TextDelta
 

@@ -27,13 +27,12 @@ every session (`Client.configure(save=True)`); without it they change only the b
 
 import json
 import shlex
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
-from tau._commands import CONFIG, ambiguous
+from tau._commands import CONFIG, ambiguous, meant
 from tau._values import Form, Json
 
 if TYPE_CHECKING:  # client imports us: it returns a `Parsed`
@@ -157,7 +156,7 @@ def _find(name: str, commands: Sequence[Form]) -> Form:
     if ":" in name:
         found = [c for c in commands if c.qualified == name]
     else:
-        found = [c for c in commands if c.name == name]
+        found = meant([c for c in commands if c.name == name], lambda c: c.yields)
     if not found:
         raise UnknownCommand(name)
     if len(found) > 1:
@@ -358,14 +357,15 @@ def _command_names(prefix: str, commands: Sequence[Form]) -> list[str]:
     """The names that could finish `/prefix`: the bare name of each command only one extension
     has and the qualified name of each that several share; after `extension:`, that extension's
     commands."""
-    shared = Counter(c.name for c in commands)
     if ":" in prefix:
         return [f"/{c.qualified}" for c in commands if c.qualified.startswith(prefix)]
-    return [
-        f"/{c.name if shared[c.name] == 1 else c.qualified}"
-        for c in commands
-        if (c.name if shared[c.name] == 1 else c.qualified).startswith(prefix)
-    ]
+    unique: set[int] = set()
+    for name in {c.name for c in commands}:
+        found = meant([c for c in commands if c.name == name], lambda c: c.yields)
+        if len(found) == 1:
+            unique.add(id(found[0]))
+    shown = [c.name if id(c) in unique else c.qualified for c in commands]
+    return [f"/{name}" for name in shown if name.startswith(prefix)]
 
 
 def _extension(word: str) -> str:

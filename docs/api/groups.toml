@@ -4,7 +4,7 @@
 
 # Classes tau makes and hands to a program (a handle, a client from `Driver.client` or
 # `RemoteClient.connect`): their constructors are tau's own and are not part of the surface.
-made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient", "RemoteClient"]
+made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient", "RemoteClient", "Skills"]
 
 # Packages other than tau and the standard library that a public signature may name. `httpx`: the
 # provider classes take an `httpx` transport and timeout.
@@ -17,7 +17,7 @@ reader = "An extension is a module that adds hooks, tools, commands and options 
 names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
-    "StepLimit", "CURSOR_POINTS", "TOOL_POINTS",
+    "StepLimit", "Attachments", "Skills", "CURSOR_POINTS", "TOOL_POINTS",
 ]
 
 [[group]]
@@ -52,7 +52,7 @@ id = "events"
 title = "Events"
 reader = "What a client's stream yields."
 names = [
-    "Event", "Live", "LiveDelta", "Delta", "TextDelta", "ThinkingDelta", "CallNamed", "CallArgs",
+    "Event", "Live", "LiveDelta", "Delta", "TextDelta", "ThinkingDelta", "CallNamed", "CallArgs", "Retrying",
     "ToolProgress", "CursorView", "CursorGone", "Labels", "Appended", "Notice", "CutOff",
     "HookFailure", "OpenQuestion",
 ]
@@ -85,7 +85,7 @@ id = "providers"
 title = "Providers"
 reader = "The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()[\"mock\"]`)."
 names = [
-    "Provider", "Finish", "SampleError", "ProviderClosed", "replay_for", "builtin_providers",
+    "Provider", "Finish", "SampleError", "ProviderClosed", "RetryProvider", "replay_for", "builtin_providers",
     "OpenAIProvider", "AnthropicProvider", "GeminiProvider",
 ]
 
