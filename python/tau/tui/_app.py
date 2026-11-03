@@ -14,6 +14,7 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
+from textual.command import Provider
 from textual.css.query import NoMatches
 from textual.notifications import SeverityLevel
 
@@ -37,6 +38,7 @@ from tau.tui._fields import Refused
 from tau.tui._forms import QuestionBox, QuestionStack
 from tau.tui._line import CommandLine
 from tau.tui._moves import Moves
+from tau.tui._palette import TauCommands
 from tau.tui._status import CursorBar, Header, StatusBar, bar_text, pending_line, status_lines
 from tau.tui._switch import Switch
 from tau.tui._themes import build_theme_registry, install_themes
@@ -65,7 +67,7 @@ class TauApp(App[None]):
     """
 
     CSS_PATH = "tau.tcss"
-    ENABLE_COMMAND_PALETTE = False
+    COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {TauCommands}
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "abort", "Abort", show=False),
         Binding("ctrl+c", "interrupt", "Abort / quit", show=False, priority=True),
@@ -77,6 +79,8 @@ class TauApp(App[None]):
         Binding("ctrl+g", "move('tree')", "The tree", show=False),
         Binding("ctrl+o", "move('sessions')", "Sessions", show=False),
         Binding("ctrl+n", "move('new')", "New session", show=False),
+        Binding("ctrl+up", "scroll('up')", "Scroll up", show=False),
+        Binding("ctrl+down", "scroll('down')", "Scroll down", show=False),
     ]
 
     def __init__(  # noqa: PLR0913 - what one frontend of one session is given
@@ -114,7 +118,7 @@ class TauApp(App[None]):
         self._quit_until = 0.0  # while the clock is before this, one more Ctrl+C quits
         self._theme_errors: list[str] = []
         registry = build_theme_registry(home, errors=self._theme_errors)
-        self.theme_name = install_themes(self, home, theme, registry=registry).name
+        install_themes(self, home, theme, registry=registry)
 
     # Layout
 
@@ -123,7 +127,7 @@ class TauApp(App[None]):
         lines, popup and editor, status bar."""
         yield Header()
         yield CursorBar()
-        yield ChatDisplay(self.client.id)
+        yield ChatDisplay(self.client.id, self._drawing, lambda: self.session.live.get(self.cursor))
         yield QuestionStack(self)
         yield PendingInput()
         yield Composer(
@@ -352,6 +356,11 @@ class TauApp(App[None]):
         """Alt+Left, Alt+Right, Ctrl+Z, Ctrl+G, Ctrl+O, Ctrl+N: a move (`tau.tui._moves`), a task
         of its own because it may ask a question."""
         self.run_worker(self._moves.run(what), group="moves", exclusive=True)
+
+    def action_scroll(self, direction: str) -> None:
+        """Ctrl+Up, Ctrl+Down: a page of the transcript; against its edge, the render window
+        slides a turn."""
+        self._transcript.scroll_page(direction)
 
     def action_fold(self, what: str) -> None:
         """Fold or unfold the thinking regions, or the tool boxes."""

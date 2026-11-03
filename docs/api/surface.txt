@@ -940,6 +940,7 @@ class UserConfig
         changes: Mapping[str, Mapping[str, object]],
         check: Callable[[ModelCatalog], None],
     ) -> ModelCatalog
+    def save_theme(self, name: str) -> None
     def saved(self, extension: str) -> dict[str, object]
 def check_config(
     user: Layer | None = None,
@@ -1078,9 +1079,9 @@ class Switch
     session: str | None
 # tau.tui
 class TauApp(App[None])
-    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False)]
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False), Binding('ctrl+up', "scroll('up')", 'Scroll up', show=False), Binding('ctrl+down', "scroll('down')", 'Scroll down', show=False)]
+    COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {TauCommands}
     CSS_PATH = 'tau.tcss'
-    ENABLE_COMMAND_PALETTE = False
     def __init__(
         self,
         client: Client,
@@ -1099,6 +1100,7 @@ class TauApp(App[None])
     async def action_interrupt(self) -> None
     def action_move(self, what: str) -> None
     async def action_quit(self) -> None
+    def action_scroll(self, direction: str) -> None
     async def complete_value(self, schema: Json, text: str) -> list[str]
     def compose(self) -> ComposeResult
     property draft: str

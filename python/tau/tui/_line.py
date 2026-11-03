@@ -11,17 +11,24 @@ lines only), `commandline.values` for the field of a form or a question.
 
 from collections import Counter
 from dataclasses import replace
+from pathlib import Path
 from typing import Protocol, cast
 
 from textual.notifications import SeverityLevel
+from textual.screen import Screen
 
 from tau._client import Client
 from tau._commands import CommandFailed
 from tau._core import Busy
+from tau._user_config import UserConfig
 from tau._values import Form, Json
 from tau.commandline import Parsed, UnknownCommand, values
+from tau.commandline import value as read_value
+from tau.tui._choose import PickDialog
 from tau.tui._editor import Completion
-from tau.tui._forms import FormDialog
+from tau.tui._fields import shape_of
+from tau.tui._forms import FormDialog, OptionsDialog
+from tau.tui._view import SessionView
 
 
 class Owner(Protocol):
@@ -33,16 +40,26 @@ class Owner(Protocol):
     @property
     def cursor(self) -> int: ...
 
+    @property
+    def session(self) -> SessionView: ...
+
+    @property
+    def home(self) -> Path: ...
+
     def toast(
         self, text: str, *, title: str = "", severity: SeverityLevel = "information"
     ) -> None: ...
 
     def restore_draft(self, text: str) -> None: ...
 
-    async def push_screen_wait(self, screen: FormDialog) -> dict[str, object] | None: ...
+    async def push_screen_wait[T](self, screen: Screen[T]) -> T: ...
 
 
 _PATH_MARK = "@"
+
+CLOSED_TYPES = ("model", "cursor")
+"""The named types (`Schema["format"]`) whose values are a short, closed list, so a missing
+argument of one is picked from the list (`complete(cursor, named, "")`) rather than typed."""
 
 
 def word_start(line: str) -> int:
@@ -75,16 +92,13 @@ class CommandLine:
     def __init__(self, app: Owner) -> None:
         self.app = app
         self.commands: tuple[Form, ...] = ()
-        self.options: dict[str, Form] = {}
+        self.extensions: list[str] = []
 
     async def refresh(self) -> None:
-        """Ask the session for its commands, and for the options of each extension `/config`
-        names."""
-        client, cursor = self.app.client, self.app.cursor
-        self.commands = await client.commands()
+        """Ask the session for its commands, and which extensions `/config` takes."""
+        self.commands = await self.app.client.commands()
         config = next((c for c in self.commands if c.name == "config"), None)
-        names = [] if config is None else extensions_with_options(config)
-        self.options = {n: await client.options(cursor, n) for n in names}
+        self.extensions = [] if config is None else extensions_with_options(config)
 
     def rows(self, typed: str) -> list[tuple[str, str]]:
         """The popup's rows for a first word `typed`: each command whose name starts with it, with
@@ -148,39 +162,77 @@ class CommandLine:
             app.toast(f"no command /{e.name}: sent as text", severity="warning")
             return await self._send(line)
         if parsed.extension is not None and not parsed.args:
-            app.toast(self._options_text(parsed), title=f"/config {parsed.extension}")
-        elif parsed.command.name == "config" and parsed.missing:
-            app.toast(self._options_text(parsed), title="/config")
-        elif parsed.missing:
+            return await self._configure(parsed.extension, parsed.save)
+        if parsed.command.name == "config" and parsed.missing:
+            return await self._configure_which()
+        if parsed.missing:
             return await self._ask_then_run(parsed)
-        else:
-            await self._run(parsed)
+        await self._run(parsed)
         return True
 
-    def _options_text(self, parsed: Parsed) -> str:
-        """What `/config` takes: the extensions with options, or one extension's options."""
-        if parsed.extension is None:
-            listed = ", ".join(self.options)
-            return f"extensions with options: {listed}\n/config EXTENSION name=value ..."
-        properties = cast("dict[str, Json]", self.options[parsed.extension].schema["properties"])
-        fields = "".join(
-            f"\n  {name}={schema.get('default', '?')}  {schema.get('description', '')}"
-            for name, schema in properties.items()
+    async def _configure_which(self) -> bool:
+        """`/config` alone: pick the extension, then edit its options."""
+        picked = await self.app.push_screen_wait(
+            PickDialog("Configure which extension?", self.extensions)
         )
-        return f"/config {parsed.extension} name=value ... [--save]{fields}"
+        return picked is not None and await self._configure(picked, False)
+
+    async def _configure(self, extension: str, save: bool) -> bool:
+        """The options form of `extension` (the values now, from the session); what changed goes
+        to the cursor's branch as a `Config` node, and also to the user's config file when "save
+        for every session" is on."""
+        app = self.app
+        form = await app.client.options(app.cursor, extension)  # the values now
+        saved = UserConfig(app.home).saved(extension)
+        dialog = OptionsDialog(
+            f"/config {extension}", form.schema, self.complete_value, saved, save
+        )
+        changed = await app.push_screen_wait(dialog)
+        if changed is None:
+            return False
+        if not changed:
+            app.toast("nothing changed", title=f"/config {extension}")
+            return True
+        await app.client.configure(app.cursor, extension, changed, save=dialog.save)
+        await self.refresh()  # the options now are the new branch's
+        shown = ", ".join(f"{k}={v}" for k, v in changed.items())
+        where = "for every session" if dialog.save else "on this branch"
+        app.toast(f"{shown} ({where})", title=f"/config {extension}")
+        return True
 
     async def _ask_then_run(self, parsed: Parsed) -> bool:
-        arguments = await self.app.push_screen_wait(
-            FormDialog(
-                f"/{parsed.command.qualified}",
-                parsed.command.schema,
-                self.complete_value,
-                parsed.args,
-                parsed.missing,
+        """Ask for the arguments a command line lacks: a closed set of names (the models) is
+        picked from a list over `complete`, anything else is a field of the form."""
+        app = self.app
+        properties = cast("dict[str, Json]", parsed.command.schema.get("properties", {}))
+        arguments, missing = dict(parsed.args), list(parsed.missing)
+        for name in parsed.missing:
+            schema = shape_of(properties[name])[0]
+            named = schema.get("format")
+            if named not in CLOSED_TYPES:
+                continue
+            offered = await app.client.complete(app.cursor, cast("str", named), "")
+            now = app.session.views[app.cursor].model if named == "model" else None
+            picked = await app.push_screen_wait(
+                PickDialog(f"/{parsed.command.name}: choose {name}", offered, now)
             )
-        )
-        if arguments is None:
-            return False
+            if picked is None:
+                return False
+            arguments[name] = read_value(picked, schema)
+            missing.remove(name)
+        if missing:
+            asked = await app.push_screen_wait(
+                FormDialog(
+                    f"/{parsed.command.qualified}",
+                    parsed.command.schema,
+                    self.complete_value,
+                    arguments,
+                    tuple(missing),
+                )
+            )
+            if asked is None:
+                return False
+            arguments = asked
         await self._run(replace(parsed, args=arguments, missing=()))
         return True
 

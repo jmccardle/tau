@@ -122,9 +122,9 @@ async def until_async(ready: "object") -> None:
 async def test_a_theme_is_chosen_by_name(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     async with running(h, tmp_path, theme="latte") as (app, _):
-        assert app.theme_name == "latte"
+        assert app.theme == "latte"
     async with running(h, tmp_path) as (app, _):
-        assert app.theme_name == "mocha"
+        assert app.theme == "mocha"
     await h.close()
 
 
@@ -148,7 +148,7 @@ async def test_a_user_theme_file_is_a_theme_and_a_bad_one_is_a_toast(tmp_path: P
     client = await h.connect("me:tui")
     app = TauApp(client, h.cursor, welcome=None, home=home, cwd=tmp_path, theme="dusk")
     async with app.run_test(size=SIZE) as pilot:
-        assert app.theme_name == "dusk"
+        assert app.theme == "dusk"
         await until(pilot, lambda: any("broken.json" in t for t in app.toasts))
     await client.close()
     await h.close()

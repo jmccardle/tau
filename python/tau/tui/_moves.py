@@ -1,24 +1,28 @@
 """Moving around the session (D23 sections 2, 5, 6): what the cursor keys do.
 
 Alt+Left and Alt+Right view the previous or next open cursor; Ctrl+Z edits the last message;
-Ctrl+G opens the tree screen; Ctrl+O the session picker; Ctrl+N asks for a new session; Up on an
+Ctrl+G opens the tree screen; Ctrl+O the session picker; the palette's Theme picks a theme and saves
+it (`tui.theme` of the user's config file); Ctrl+N asks for a new session; Up on an
 empty editor takes back a line this client has waiting. Each is a call or two on the `Client` and
 a dialog; none changes the screen itself, `TauApp.view` does. A refusal (the session cannot take
 the call, a connection lost) is a toast, never a crash.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from textual.notifications import SeverityLevel
 from textual.screen import Screen
+from textual.theme import Theme
 
 from tau._client import Client
 from tau._core import Author, Body, Busy, ItemData, NoSuchCursor
 from tau._events import CursorView
 from tau._protocol import Welcome
 from tau._sessions import SessionInfo, is_leased, list_sessions
+from tau._user_config import UserConfig
+from tau.tui._choose import PickDialog
 from tau.tui._dialogs import ConfirmDialog
 from tau.tui._picker import SessionPicker
 from tau.tui._switch import Switch, session_holders
@@ -37,6 +41,11 @@ class Mover(Protocol):
     sessions: Path | None
     cwd: Path
     welcome: Welcome | None
+
+    theme: Any  # Textual's reactive, a `str` to read and to set
+
+    @property
+    def available_themes(self) -> Mapping[str, Theme]: ...
 
     def toast(
         self, text: str, *, title: str = "", severity: SeverityLevel = "information"
@@ -66,6 +75,7 @@ class Moves:
             "sessions": self._pick_session,
             "new": self._new_session,
             "reclaim": self._reclaim,
+            "theme": self._theme,
         }
 
     async def run(self, name: str) -> None:
@@ -158,6 +168,20 @@ class Moves:
         if await self._leave(cursor, "Starting a new session"):
             self.app.switch = Switch(None)
             await self.app.action_quit()
+
+    async def _theme(self, _cursor: int) -> None:
+        """The palette's Theme: choose one of the themes; it is saved as the user's theme for
+        every later `tau` and then worn. A file that cannot be written is a toast, and the theme
+        stays as it was."""
+        app = self.app
+        picked = await app.push_screen_wait(
+            PickDialog("Theme", sorted(app.available_themes), app.theme)
+        )
+        if picked is None:
+            return
+        UserConfig(app.home).save_theme(picked)
+        app.theme = picked
+        app.toast(f"{picked} (saved for every session)", title="theme")
 
     async def _reclaim(self, cursor: int) -> None:
         """Up on an empty editor: take back the last line this client has waiting in the

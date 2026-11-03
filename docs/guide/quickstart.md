@@ -107,7 +107,7 @@ lists the commands, Tab completes them, and a command typed without its argument
 a form. A question an extension asks (a permission, say) is a box above the editor with a button
 for each answer; Esc declines it. Ctrl+Z on an empty editor puts your last message back in it to change and
 send again (with text typed, it undoes); Ctrl+G shows the whole tree of the session; Ctrl+O and `tau -r` choose another session
-to open, Ctrl+N starts a new one. Ctrl+Q leaves, and so does Ctrl+C twice.
+to open, Ctrl+N starts a new one. Ctrl+Q leaves, and so does Ctrl+C twice. [The terminal UI](tui.md) has every key and screen.
 [Frontends](frontends.md#the-terminal-ui) lists the keys.
 
 From a checkout, `examples/chat.py` is a line-by-line chat over the same library, small enough to

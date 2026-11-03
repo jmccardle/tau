@@ -22,6 +22,9 @@ tau = "tau.cli:main"
 dev = [
     "maturin>=1.15,<2",
     "pytest>=8",
+    # tests/tui/test_snapshots.py compares SVGs of Textual's own drawing, so the drawing is pinned
+    "textual==8.2.8",
+    "rich==15.0.0",
     "ruff>=0.14",
     "pyright>=1.1.400",
     "mypy>=2.4",  # stubtest only; pyright is the type checker

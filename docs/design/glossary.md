@@ -989,7 +989,7 @@ for `Driver(user_config=)` (see *UserConfig*).
 The one config file τ writes: the user's `<TAU_HOME>/config.json` (decision 4: τ owns it, D13).
 A frozen record of the layers a frontend loaded (`home`, the approved `project` layer as a
 `LayerText` or `None`, the `cli` overrides), so that after a write it can read them again.
-Two operations write. `save_load(key, on)` (D19 §3) sets `load.<key>` in the user's file the same
+Three operations write. `save_theme(name)` (D23 ruling 3) sets `tui.theme` the same way (read, validate with the loader, atomic write) and returns nothing; it does not know the themes, so whether `name` is one is the caller's (the TUI's theme picker). `save_load(key, on)` (D19 §3) sets `load.<key>` in the user's file the same
 way (read, merge, atomic write; the file's other content stays) and returns the catalog, whose
 `load` shows whether a nearer layer overrules it; it does not know the sources, so whether `key`
 names one is the caller's (`tau ext enable`/`disable`). `save_options(changes, check)` sets `extensions.<name>.<field>` for each
@@ -1006,7 +1006,7 @@ its path is not a parameter of anything, and an edit τ made would have to re-re
 trust hash, which waits for a trust rule. A `Config` node means this branch; the file means
 every session (a node's value still wins on its branch). `UserConfig` is the whole of how τ
 reaches the file; the ways in are `tau config set`, `tau ext enable`/`disable`,
-`/config <extension> ... --save` and `Cursor.save_options` (see *tau config set*, *tau ext*,
+`/config <extension> ... --save`, the TUI's *save for every session* and theme picker, and `Cursor.save_options` (see *tau config set*, *tau ext*,
 *commandline*, *Handles*).
 
 ### select_model, Ask, Pick, terminal_pick, Prompts, prompts
@@ -1305,7 +1305,7 @@ that is not loaded is a usage error (exit 2).
 ### TUI, tau.tui, TauApp
 modules `tau.tui` (public), `tau.tui._app`, `_run`, `_line`, `_forms`, `_fields`, `_chat`,
 `_transcript`, `_editor`, `_status`, `_themes`, `_dialogs`, `_moves`, `_tree`, `_picker`,
-`_switch` · D23 · new (8C-1, 8C-2)
+`_switch`, `_choose`, `_palette`, `_windowed`, `_window` · D23 · new (8C-1, 8C-2, 8C-3)
 
 The Textual frontend. **`tau`** with no `-p` opens it; **`TauApp(client, cursor, *, welcome, home,
 cwd, snapshot=(), theme=None, reconnect=None, sessions=None)`** is the app, a frontend of one
@@ -1325,7 +1325,7 @@ a line, Tab completes, Esc aborts the step (or declines the question the keyboar
 aborts if busy, else clears the draft, else quits when pressed twice, Ctrl+R folds thinking, Ctrl+T
 tool boxes, Ctrl+Q quits, and (8C-2) Alt+Left and Alt+Right view the previous or next cursor,
 Ctrl+Z edits the last message, Ctrl+G the tree, Ctrl+O the session picker, Ctrl+N a new session,
-Up on an empty editor takes back a pending line. `screen_text()` is the screen as plain text (tests read it); `toasts` is
+Up on an empty editor takes back a pending line, and (8C-3) Ctrl+P the command palette and Ctrl+Up and Ctrl+Down a page of the transcript (at its edge, the render window slides). `screen_text()` is the screen as plain text (tests read it); `toasts` is
 every toast shown, notices included.
 
 ### SessionView
@@ -1361,7 +1361,27 @@ outcome is folded in from the `Results` node by call id (a check, a cross, or a 
 its usage (`meta`) under it; a `System` node one folded line, a `Config` node one dim line; a
 `Custom` node a dim line, and the `sample_error` core writes beside the walk an error box under
 the node the cursor is at (it is on no walk, so a later `walk` read does not draw it). The
-live layer is one dashed box until the node arrives.
+live layer is one dashed box until the node arrives. It draws a **render window** of the walk (see *render window*), not the whole of it.
+
+### render window
+`tau.tui._window`, `_windowed.WindowedWalk` · D23 §7 · new (8C-3)
+
+The part of a long walk the transcript draws: the last four turns (a turn starts at a `User` node), or fewer when they hold more than a hundred nodes, and never a turn cut in half; a row above says how many nodes are not drawn, and a row below, while the window is slid back, how many are after it. Scrolling against the top or bottom edge (the wheel, or Ctrl+Up and Ctrl+Down) slides it one turn; a node that falls out of the window at the head is removed while the reader is at the tail (held until they return if not); a message this client sends brings the window to the tail. Presentation only: the walk, `tip` and the session do not change. Carried in idea from 0.15's `render_cap_start` and `window_end`, written over nodes.
+
+### pick dialog
+`tau.tui._choose.PickDialog` · D23 §3, §10 · new (8C-3)
+
+Choose one value from a list too long for buttons: a filter field over a list (matches hold every word, those that start with the text first), Up and Down move, Enter picks, Esc cancels; the current value is marked. It is `/model`'s picker (the values are `complete(cursor, "model", "")`, and any missing argument whose named type is a closed set, `model` or `cursor`), the extension picker of a bare `/config`, and the theme picker.
+
+### options form
+`tau.tui._forms.OptionsDialog` · D23 §3 · new (8C-3)
+
+The form renderer over an extension's options (`Client.options`), each field showing its value now, with a *save for every session* switch. It returns only the options that changed; the app sends them as `configure(cursor, extension, changed, save=switch)`: a `Config` node on this branch, and with the switch also the user's config file (`UserConfig`, never a project's). Nothing changed is a toast, and a value the extension refuses is a toast with nothing written.
+
+### command palette
+`tau.tui._palette.TauCommands` · D23 §2 · new (8C-3)
+
+Ctrl+P, Textual's palette with τ's commands in place of its own: Theme, Tree, Sessions, New session and Quit. Each is a move (`TauApp.action_move`), so the palette and the keys do the same thing.
 
 ### command line (the editor's)
 `tau.tui._line.CommandLine` · D23 §4 · new
@@ -1471,8 +1491,9 @@ only, with no colour literal (a test holds it to that). The built-ins are `mocha
 (`extends`, `palette`, `textual`), one that fails is a toast and the rest load. `--theme NAME` is for
 one run (a usage error under `-p`); the **`tui` config key** is a top-level object in the config
 files whose only key is `theme`, read from the user's file (`{"tui": {"theme": "latte"}}`); an
-unknown name is a `ThemeError` (a `ConfigError`) before the screen opens. Persisting the pick from
-the app is 8C-3.
+unknown name is a `ThemeError` (a `ConfigError`) before the screen opens. Picking a theme in the
+app (Ctrl+P, Theme) wears it and writes `tui.theme` through `UserConfig.save_theme`; a file that
+cannot be written leaves the theme as it was.
 
 ### start report
 `tau._session_start.start_report` · D22 §7 · new

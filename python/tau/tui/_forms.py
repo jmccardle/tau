@@ -9,13 +9,14 @@ in, and the missing ones first. The question box is inline, docked above the edi
 transcript stays readable while a question waits (a question can wait for hours).
 """
 
+from collections.abc import Mapping
 from typing import ClassVar, Protocol, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, Static
+from textual.widgets import Button, Static, Switch
 
 from tau._client import Client
 from tau._events import CursorView, OpenQuestion
@@ -31,6 +32,7 @@ class FormDialog(TauDialog[dict[str, object] | None]):
 
     DIALOG_ID = "form-dialog"
     BODY_ID = "form-body"
+    RUN_LABEL = "Run"
 
     def __init__(
         self,
@@ -65,7 +67,7 @@ class FormDialog(TauDialog[dict[str, object] | None]):
     def compose_footer(self) -> ComposeResult:
         yield Static("Enter in a field moves on; Esc cancels", classes="tau-dialog-hint")
         yield from dialog_buttons(
-            [("Run", "form-run", "primary"), ("Cancel", "form-cancel", "default")],
+            [(self.RUN_LABEL, "form-run", "primary"), ("Cancel", "form-cancel", "default")],
             id="form-buttons",
         )
 
@@ -97,7 +99,57 @@ class FormDialog(TauDialog[dict[str, object] | None]):
             if value is not UNSET:
                 arguments[field.key] = value
         if not problems:
-            self.dismiss(arguments)
+            self.dismiss(self._result(arguments))
+
+    def _result(self, arguments: dict[str, object]) -> dict[str, object]:
+        """What the dialog is dismissed with, from the values the fields hold."""
+        return arguments
+
+
+class OptionsDialog(FormDialog):
+    """Edit an extension's options (`/config EXTENSION`, D23 section 3): the same renderer over
+    the options' schema, each field showing the value this branch has. It is dismissed with the
+    options to set, and `save` says whether the "save for every session" switch was on.
+
+    Without the switch those are the options changed from the branch's value. With it they are
+    also the ones the person wrote a value for, and those that differ from what the user's file
+    holds (`saved`): saving the value the branch already has is a change to the file. `None` when
+    cancelled."""
+
+    DIALOG_ID = "options-dialog"
+    RUN_LABEL = "Apply"
+
+    def __init__(
+        self,
+        title: str,
+        schema: Json,
+        completer: Completer,
+        saved: Mapping[str, object],
+        save: bool = False,
+    ) -> None:
+        super().__init__(title, schema, completer)
+        self.save = save
+        self._saved = saved
+
+    def compose_footer(self) -> ComposeResult:
+        with Horizontal(classes="form-save"):
+            yield Switch(value=self.save, id="form-save")
+            yield Static("save for every session (your config file)", markup=False)
+        yield from super().compose_footer()
+
+    def _result(self, arguments: dict[str, object]) -> dict[str, object]:
+        self.save = self.query_one("#form-save", Switch).value
+        properties = cast("dict[str, Json]", self._schema.get("properties", {}))
+        typed = {f.key for f in self._fields if f.typed}
+
+        def wanted(key: str, value: object) -> bool:
+            if value != properties[key].get("default"):
+                return True
+            return self.save and (
+                key in typed or (key in self._saved and value != self._saved[key])
+            )
+
+        return {k: v for k, v in arguments.items() if wanted(k, v)}
 
 
 class QuestionBox(Vertical):

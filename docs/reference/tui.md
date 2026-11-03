@@ -267,8 +267,8 @@ not carry (the server's are loaded already).
 ```python
 class TauApp(App[None])
     CSS_PATH = 'tau.tcss'
-    ENABLE_COMMAND_PALETTE = False
-    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False)]
+    COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {TauCommands}
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False), Binding('ctrl+up', "scroll('up')", 'Scroll up', show=False), Binding('ctrl+down', "scroll('down')", 'Scroll down', show=False)]
 ```
 
 The terminal UI of one session, over `client`, viewing `cursor`.
@@ -411,6 +411,15 @@ def action_move(self, what: str) -> None
 
 Alt+Left, Alt+Right, Ctrl+Z, Ctrl+G, Ctrl+O, Ctrl+N: a move (`tau.tui._moves`), a task
 of its own because it may ask a question.
+
+### tau.tui.TauApp.action_scroll
+
+```python
+def action_scroll(self, direction: str) -> None
+```
+
+Ctrl+Up, Ctrl+Down: a page of the transcript; against its edge, the render window
+slides a turn.
 
 ### tau.tui.TauApp.action_fold
 

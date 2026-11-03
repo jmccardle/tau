@@ -8,6 +8,7 @@ for whom, is [`docs/api/`](../api/README.md)).
 | guide | read it to |
 |---|---|
 | [Quickstart](quickstart.md) | install τ, write a config with one model, chat, and list, export and serve a session |
+| [The terminal UI](tui.md) | use `tau`: the screen, keys, commands, `/config` and `/model`, the tree, sessions, themes, long sessions, attaching |
 | [The model in ten minutes](model.md) | learn what a session, a node, a cursor, a step and a hook are |
 | [Writing an extension](extensions.md) | add tools, commands, options and hooks, test them, and load them |
 | [Writing a frontend](frontends.md) | drive a session with a `Client`, locally or over `tau serve` |

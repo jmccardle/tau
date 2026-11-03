@@ -2,6 +2,7 @@
 section 1). A real process, so the whole path runs: the terminal check, the theme, `open_client`,
 `run_async` on the driver's loop, `Opened.close`. The mock model, a throwaway TAU_HOME."""
 
+import json
 import time
 
 from ptykit import Screen
@@ -74,3 +75,27 @@ def test_the_cursor_keys_reach_the_app_in_a_terminal(served: World) -> None:
         (1, "edit me!"),
     ]
     session.close()
+
+
+def test_a_theme_picked_in_the_palette_is_kept_for_the_next_tau(served: World) -> None:
+    served.user_config(MOCK)
+    work = served.home / "work"
+    work.mkdir(exist_ok=True)
+    screen = Screen(served, "-m", "m", cwd=work)
+    screen.wait_for("idle")
+    screen.type("\x10")  # Ctrl+P: the command palette
+    screen.wait_for("Theme")
+    screen.type("theme")
+    time.sleep(0.5)
+    screen.type("\r")
+    screen.wait_for("type to filter")
+    screen.type("latte\r")
+    screen.wait_for("saved for every session")
+    assert screen.quit() == 0
+    kept = json.loads((served.tau / "config.json").read_text(encoding="utf-8"))
+    assert kept["tui"] == {"theme": "latte"}, "and the file's other keys are still there"
+    assert kept["default_model"] == "m"
+    again = Screen(served, "-m", "m", cwd=work)
+    again.wait_for("idle")
+    assert b"239;241;245" in again.seen, "the second tau wears latte (its background colour)"
+    assert again.quit() == 0

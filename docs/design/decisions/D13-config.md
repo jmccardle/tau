@@ -162,3 +162,11 @@ project layer is a `ConfigError` ("a person's own setting"), so a cloned reposit
 the colours of the person who opens it, and nothing is accepted and ignored. The user's file and
 the command-line layer merge as the others do. Read by `tau._config_keys.tui_settings`, held as
 `ModelCatalog.tui`.
+
+## Amended (D23 8C-3, 2026-11-03): what τ writes
+
+`UserConfig` (D1) writes the user's file in three places: `extensions.<name>.<field>`
+(`save_options`), `load.<key>` (`save_load`) and now `tui.theme` (`save_theme`), the theme the
+person picks in the terminal UI. Same rules: the file's other content stays, the layers are read
+again, the write is atomic, a project layer has no write. `--theme` stays one run only and writes
+nothing.

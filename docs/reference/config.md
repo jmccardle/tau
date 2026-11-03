@@ -454,6 +454,18 @@ shows whether a nearer layer overrules the value. This does not know the sources
 `key` names one is for the caller. `ConfigError` for a file the loader refuses,
 `TrustError` for a disk that refuses.
 
+### UserConfig.save_theme
+
+```python
+def save_theme(self, name: str) -> None
+```
+
+Set `tui.theme` to `name` in the user's file (D23 ruling 3): the theme every later `tau`
+opens in, unless `--theme` says otherwise for one run. The file's other content stays; it
+is written as `save_options` writes: atomically, a symlink followed, nothing written if
+a step raised. This does not know the themes: whether `name` is one is for the caller.
+`ConfigError` for a file the loader refuses, `TrustError` for a disk that refuses.
+
 ### UserConfig.saved
 
 ```python

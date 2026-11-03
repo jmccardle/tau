@@ -1,8 +1,8 @@
 """The one config file τ writes: the user's `<TAU_HOME>/config.json` (D1, ruling 6).
 
 `UserConfig` is the layers a frontend loaded, so that after an edit it can read them again. Its
-writes are `extensions.<name>.<field>` (`save_options`) and `load.<key>` (`save_load`) in the user
-layer. The project layer has no write: an
+writes are `extensions.<name>.<field>` (`save_options`), `load.<key>` (`save_load`) and
+`tui.theme` (`save_theme`) in the user layer. The project layer has no write: an
 edit τ made to `.tau/config.json` would have to re-record the trust hash, and that waits for a
 trust rule.
 """
@@ -80,6 +80,19 @@ class UserConfig:
         catalog = read_models(LayerText(str(path), body), self.project, self.cli)
         write_atomically(path.resolve(), body)
         return catalog
+
+    def save_theme(self, name: str) -> None:
+        """Set `tui.theme` to `name` in the user's file (D23 ruling 3): the theme every later `tau`
+        opens in, unless `--theme` says otherwise for one run. The file's other content stays; it
+        is written as `save_options` writes: atomically, a symlink followed, nothing written if
+        a step raised. This does not know the themes: whether `name` is one is for the caller.
+        `ConfigError` for a file the loader refuses, `TrustError` for a disk that refuses."""
+        path = self.home / "config.json"
+        data = self._read(path)
+        data["tui"] = {**(cast("dict[str, object] | None", data.get("tui")) or {}), "theme": name}
+        body = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        read_models(LayerText(str(path), body), self.project, self.cli)
+        write_atomically(path.resolve(), body)
 
     def saved(self, extension: str) -> dict[str, object]:
         """`extensions.<extension>` as the user's file itself holds it: the fields it sets, as

@@ -144,6 +144,12 @@ class SchemaField(Vertical):
             self._widget = CompletingInput(schema, self._completer, placeholder=placeholder)
         return self._widget
 
+    @property
+    def typed(self) -> bool:
+        """Whether the person wrote a value in a text field (a choice or switch always has one)."""
+        widget = self._widget
+        return isinstance(widget, Input) and bool(widget.value.strip())
+
     def value(self) -> object:
         """What the field holds: `UNSET` if it was left empty and may be (its default applies).
         `ValueError` if it is required and empty, or the text does not read as the schema's type."""

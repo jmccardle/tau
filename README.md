@@ -21,8 +21,9 @@ Status: **0.16 in development.** What exists now:
   the transcript with thinking and tool boxes, live text, the editor, `/` commands with a popup,
   Tab completion and forms for missing arguments, questions as boxes, themes; a cursor bar and
   switching between cursors, Ctrl+Z to edit the last message, the tree screen (go to a node,
-  open a cursor there, label), the session picker (`tau -r`, Ctrl+O) and Ctrl+N for a new session.
-  The model and config forms follow (Phase 8, 8C-3).
+  open a cursor there, label), the session picker (`tau -r`, Ctrl+O) and Ctrl+N for a new session;
+  `/config` forms (apply to this branch or save for every session), a `/model` picker, a theme
+  picker (Ctrl+P) that remembers your choice, and a window over long sessions.
 
 Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
 write an extension or a frontend.

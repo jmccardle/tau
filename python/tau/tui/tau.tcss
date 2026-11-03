@@ -215,7 +215,11 @@ Markdown CodeBlock {
 .form-input { background: $tau-bg; border: solid $tau-border; color: $tau-text; }
 .form-input:focus { border: solid $tau-accent; }
 .form-choice, .form-multi { height: auto; background: $tau-bg; border: solid $tau-border; }
-#form-dialog { width: 80; max-height: 90%; }
+#form-dialog, #options-dialog { width: 80; max-height: 90%; }
+#pick-dialog { width: 60; height: 24; }
+#pick-list { height: 1fr; background: $tau-bg; border: solid $tau-border; }
+.form-save { height: auto; margin-bottom: 1; }
+.form-save Static { margin-left: 1; padding-top: 1; color: $tau-text-dim; }
 
 /* === Composer, cursor bar === */
 

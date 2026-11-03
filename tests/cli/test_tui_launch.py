@@ -124,6 +124,14 @@ def test_resume_without_a_terminal_is_a_usage_error_that_picks_nothing(configure
     assert "needs a terminal" in result.err
 
 
+def test_resume_with_a_session_named_is_refused_before_any_picker(configured: World) -> None:
+    configured.session(OLD, cwd=configured.home)
+    result = tui(configured, "-r", "--session", OLD)  # a picker would wait on the stream forever
+    assert result.code == 1
+    assert "-r and --session cannot be combined" in result.err
+    assert result.out == ""
+
+
 def test_resume_with_no_session_to_choose_from_says_so_before_any_screen(
     configured: World,
 ) -> None:

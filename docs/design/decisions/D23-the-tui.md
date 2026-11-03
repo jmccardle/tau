@@ -210,7 +210,7 @@ after 0.16.0).
   another client re-reads the walk; switching cursors watches the new one; a `CutOff` remote
   client reconnects.
 - **`SessionView`** has plain unit tests (events in, state out) through `tau.tui`.
-- **Snapshots** (`pytest-textual-snapshot`, a dev dependency): a few fixed scenes (empty, a
+- **Snapshots** (a checked-in SVG per scene, compared by `tests/tui/tuikit.check_screen`; no plugin): a few fixed scenes (empty, a
   reply with tools, a question, the tree, the picker), animations off, reviewed as SVG diffs.
 - What happens before the screen (usage errors, `-r` with no terminal, `Leased`, choosing to
   attach) is tested through `tau.cli.main`; from `open_client` on, the app is tested by pilot.
@@ -314,6 +314,60 @@ the session picker (`-r`, Ctrl+O), Ctrl+N and re-exec. Where the code differs fr
   `/` is id, name and first message (0.15's last message is not in the catalog).
 - **`TauApp` stays at 25 methods** by moving the popup/editor wiring into `Composer`
   (`_editor.py`), which also holds the Enter-to-submit task.
+
+## Built: 8C-3 (2026-11-03)
+
+`/config` forms with "save for every session", the `/model` picker, a theme picker that saves, the
+render window, snapshot tests and the guide page (`docs/guide/tui.md`). Where the code differs from
+the text above:
+
+- **`/config` and `/model` are dialogs over the same renderer.** `/config EXTENSION` (or a bare
+  `/config`, which first asks which extension in a `PickDialog`) opens `OptionsDialog`: the options'
+  schema, each field showing its value now (`Client.options`), and a switch "save for every
+  session". Apply sends only what changed: `configure(cursor, extension, changed, save=switch)`, so
+  the `Config` node is this branch's and the switch also writes the **user's** file (D13: the project
+  layer has no write). `/model` with no name is a `PickDialog` over `complete(cursor, "model", "")`
+  with the current model marked. This is not a branch on the command's name: any missing argument
+  whose named type (`format`) is a closed set (`model`, `cursor`) is picked from a list; the rest
+  are form fields. (`/config` itself is still named in the line code, as in 8C-1.)
+- **The theme picker is the palette's** (Ctrl+P, **Theme**), a `PickDialog`: Ctrl+P is built now,
+  with `TauCommands` (Theme, Tree, Sessions, New session, Quit) in place of Textual's system
+  commands. Picking writes `{"tui": {"theme": NAME}}` through the new `UserConfig.save_theme`, then
+  wears it; if the file cannot be written the theme is not changed and a toast says why.
+  `--theme` writes nothing. The notices list (`toasts`) still has no palette entry.
+  `TauApp.theme_name` (8C-1) is gone: `TauApp.theme` is Textual's own and is the theme worn.
+- **The render window** (§7, "Not verified"): **it separates from event routing cleanly, because
+  0.15's did not need to be carried with it.** The 0.15 window (`render_cap_start`, `window_end`,
+  `turn_starts`, the trim at the tail, the slide at an edge) is a function of the message list plus
+  a few flags; what tangled it was that its renderers, its streams and its exchange boxes all
+  knew the window. Here the bounds are three pure functions of the walk (`_window.py`), and a
+  `WindowedWalk` base class (`_windowed.py`) owns the window, the rows above and below, the slide
+  and the trim, and asks its subclass only to draw one node and forget one. Four turns or 100
+  nodes as in 0.15. Differences: the unit is a node and a turn starts at a `User` node; there are
+  no exchange boxes to unwrap; a record beside the walk (`sample_error`) is kept with its parent
+  and redrawn with it; the trim waits while a reply is live or the reader has scrolled up;
+  sliding down is not offered at the tail. Ctrl+Up and Ctrl+Down are new (0.15 slid on the arrow
+  keys of a focused transcript, and the editor holds the focus here). The reader's intent to
+  follow the tail is now kept across a resize (a question box opening shrinks the transcript),
+  which the snapshots showed was racy.
+- **`tau -r --session ID` was already refused before any picker** (a `ConfigError`, status 1, as
+  the other flags that each choose the session are); a test now holds it.
+- **Snapshots** are in `tests/tui/test_snapshots.py`: the empty session, a reply with thinking and
+  a tool, a question, the tree, the session picker, the `/model` picker and an options form, kept
+  as SVG in `tests/tui/__snapshots__/`, local mode only. The pilot's own app is exported
+  (`export_screenshot`) and compared with the file; `TAU_UPDATE_SNAPSHOTS=1` rewrites them, a
+  difference is reported as the rows of text that changed, and `NO_COLOR` in the environment is a
+  clear failure (Textual then draws without colour). No plugin: `pytest-textual-snapshot` runs its
+  own loop, which a Harness cannot share, and its syrupy pins `pytest<9`. The SVGs are Textual's
+  drawing, so the dev group pins `textual==8.2.8` and `rich==15.0.0`.
+- **Review fixes (8C-3).** The window's slide and deferred trim run under the app's drawing lock
+  with every other mutation of the transcript. Tool progress for a call that is not drawn is
+  ignored. While the window is slid back a reply in flight is not drawn (it would land under the
+  "later" row); coming to the tail draws it from the live layer, whole. A reconnect keeps the
+  reader's place; a send brings the window to the tail. `/config` reads the options when the
+  form opens; with the save switch on it writes what the person wrote a value for or what differs
+  from the user's file, so saving the branch's current value works. Picking the theme already
+  worn saves it.
 
 ## Gaps in the `Client` contract and the shared start
 

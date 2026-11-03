@@ -1,13 +1,19 @@
 """What the TUI tests share: an app over a Harness client, and waiting for the screen."""
 
 import asyncio
+import difflib
+import html
+import os
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fakes import Reply
 from harness import Harness
+from textual.app import App
 from textual.pilot import Pilot
 
 from tau import CallDraft, Cursor, NodeHandle, Part, Progress, Subject, Welcome
@@ -31,6 +37,7 @@ async def running(  # noqa: PLR0913 - what a test may vary of the app
     home: Path | None = None,
     sessions: Path | None = None,
     welcome: Welcome | None = None,
+    size: tuple[int, int] = SIZE,
 ) -> AsyncIterator[tuple[TauApp, Pilot[None]]]:
     """The app over a new client of the Harness, running headless; the client is closed after.
     `sessions` is the sessions directory Ctrl+O lists, with `home` the `TAU_HOME` beside it."""
@@ -44,7 +51,7 @@ async def running(  # noqa: PLR0913 - what a test may vary of the app
         theme=theme,
         sessions=sessions,
     )
-    async with app.run_test(size=SIZE) as pilot:
+    async with app.run_test(size=size) as pilot:
         await until(pilot, lambda: "idle" in app.screen_text() or "working…" in app.screen_text())
         yield app, pilot
     await connected.close()
@@ -118,3 +125,66 @@ class Showy:
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
         cursor.show("plan mode on")
+
+
+@dataclass(frozen=True)
+class Options:
+    size: Annotated[int, "how big"] = 10
+    mode: Literal["fast", "slow"] = "fast"
+    loud: bool = False
+
+    def __post_init__(self) -> None:
+        if self.size < 1:
+            raise ValueError(f"a size is at least 1, not {self.size}")
+
+
+class Tuner:
+    """An extension with options: `size`, `mode` and `loud`; `size` below 1 is refused."""
+
+    name = "tuner"
+    options = Options
+
+
+SNAPSHOTS = Path(__file__).parent / "__snapshots__"
+UPDATE_SNAPSHOTS = "TAU_UPDATE_SNAPSHOTS"
+
+
+def _rows(svg: str) -> list[str]:
+    """The text of an exported screen, one string per terminal row."""
+    found: dict[float, list[tuple[float, str]]] = {}
+    for m in re.finditer(r'<text class="[^"]*" x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]*)</text>', svg):
+        x, y, text = float(m[1]), float(m[2]), html.unescape(m[3]).replace("\xa0", " ")
+        found.setdefault(y, []).append((x, text))
+    rows: list[str] = []
+    for y in sorted(found):
+        line = ""
+        for x, text in sorted(found[y]):
+            line = line.ljust(round(x / 12.2)) + text
+        rows.append(line.rstrip())
+    return rows
+
+
+def check_screen(app: App[None], name: str) -> None:
+    """Compare the app's screen with the SVG kept as `__snapshots__/NAME.svg`. With
+    `TAU_UPDATE_SNAPSHOTS=1` in the environment the file is written instead (look at it, and at
+    `git diff`, before keeping it). A difference is reported as the rows of text that changed; if
+    the text is the same, the colours or the layout differ, and the SVGs say where."""
+    if app.no_color:
+        raise AssertionError(
+            "NO_COLOR is set in the environment: Textual then draws without colour, and every "
+            "snapshot would differ. Unset it to run the snapshots."
+        )
+    svg = re.sub(r"\bterminal-\d+-([\w-]+)", r"terminal-\1", app.export_screenshot(title="tau"))
+    path = SNAPSHOTS / f"{name}.svg"
+    if os.environ.get(UPDATE_SNAPSHOTS):
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(svg, encoding="utf-8")
+        return
+    if not path.exists():
+        raise AssertionError(f"no snapshot {path}: run once with {UPDATE_SNAPSHOTS}=1")
+    kept = path.read_text(encoding="utf-8")
+    if kept == svg:
+        return
+    changed = list(difflib.unified_diff(_rows(kept), _rows(svg), "kept", "now", lineterm="", n=1))
+    said = "\n".join(changed[:60]) if changed else "the text is the same: colours or layout differ"
+    raise AssertionError(f"{name} differs from {path} ({UPDATE_SNAPSHOTS}=1 rewrites it):\n{said}")

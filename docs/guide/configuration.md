@@ -235,7 +235,7 @@ The built-in themes are `mocha` (the default), `latte`, `gruvbox` and `ansi`, an
 A theme of your own is a file `$TAU_HOME/themes/NAME.json` that `extends` one of those and
 overrides parts of its `palette` (τ's colours) or its `textual` tokens; a file that does not read
 is shown as a toast and skipped, and the rest still load. `--theme NAME` picks one for a single
-run. A name that is no theme stops `tau` before it opens, and says which there are. An unknown
+run and writes nothing; picking a theme in the app (Ctrl+P, Theme) writes `tui.theme` to your file. A name that is no theme stops `tau` before it opens, and says which there are. An unknown
 key under `tui` is an error like any other.
 
 ## Per-run flags
