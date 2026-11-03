@@ -226,7 +226,7 @@ async def test_a_call_answered_before_its_batch_is_whole_changes_nothing_to_hear
 
 
 @scenario
-async def test_progress_flooding_a_full_buffer_is_dropped_and_state_does_not_grow_it(
+async def test_progress_flooding_a_full_buffer_is_dropped_and_state_grows_it_by_a_slot_a_run(
     tmp_path: Path,
 ) -> None:
     gate = Gate()
@@ -244,7 +244,10 @@ async def test_progress_flooding_a_full_buffer_is_dropped_and_state_does_not_gro
     assert lives, "some progress is kept"
     assert lives == first[: len(lives)], "the oldest are kept, the later ones dropped"
     assert len(lives) <= 4
-    assert len([e for e in left if isinstance(e, CursorView)]) == 1, "state replaces itself"
+    views = [e for e in left if isinstance(e, CursorView)]
+    assert views[-1].auto is False, "the latest state is kept"
+    assert len(views) <= len(lives) + 1, "state costs one slot per run between the progress"
+    assert sum(not e.auto for e in views) == 1, "the three changes made one copy"
 
 
 class Writer:

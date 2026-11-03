@@ -274,8 +274,8 @@ async def test_a_gone_event_replaces_the_cursors_view_in_a_buffer_nobody_reads(
     slow = await h.connect("slow")  # its snapshot holds the view of `other`
     await h.client.close_cursor(other)
     events = [await asyncio.wait_for(anext(slow), 1) for _ in range(3)]
-    assert [type(e) for e in events] == [CursorView, Labels, CursorGone]
-    assert events[2] == CursorGone(other, at)
+    assert [type(e) for e in events] == [CursorView, CursorGone, Labels], "in its view's place"
+    assert events[1] == CursorGone(other, at)
     assert all(not (isinstance(e, CursorView) and e.cursor == other) for e in events)
     await slow.close()
     await h.close()

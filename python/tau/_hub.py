@@ -30,13 +30,19 @@ class Feed:
     """One client's stream: an async iterator of `Event` with its own bounded buffer, for a
     single consumer (a second concurrent `anext` raises `RuntimeError`).
 
+    The stream keeps the order things happened in. `Labels` and a `CursorView` replace their own
+    earlier copy, and a `CursorGone` its cursor's `CursorView`, only if nothing but state events
+    follows the held copy; a `CursorView` or `CursorGone` then takes its slot, a `Labels` goes to
+    the end (after the cursors it names). Otherwise the new one is appended after everything
+    and the held one stays. Moving it to the end instead would drop a cursor from the snapshot
+    (which ends at its `Labels`), and keeping the slot would put a `CursorView` before the
+    `Appended` nodes it points at and before the `Live` deltas of its step.
+
     `Live` is heard only for the cursors being `watching`, and dropped when `capacity` are
     waiting. `Appended` and `Notice` are never dropped: a backlog of `capacity` of them cuts the
-    client off (the stream ends with `CutOff`, nothing more is delivered). `Labels` and a
-    `CursorView` replace their own earlier copy: it is removed and the new one goes to the end,
-    so the buffer holds at most one per cursor. A `CursorGone` replaces its cursor's `CursorView`
-    the same way. The bound is `capacity` of each of the first two classes, plus one state event
-    per cursor.
+    client off (the stream ends with `CutOff`, nothing more is delivered). The bound
+    is `capacity` of each of the first two classes, plus, in each run of state events between
+    them, one per cursor and one `Labels`.
 
     `close()` disconnects. The hub holds feeds weakly, so one abandoned without `close()` is
     collected and its client is no longer connected. When the driver stops the stream ends
@@ -78,8 +84,25 @@ class Feed:
                     return
                 self._backlog += 1
             case _:
-                self._buffer = [held for held in self._buffer if not _replaces(event, held)]
+                self._replace(event)
+                return
         self._buffer.append(event)
+        self._wake()
+
+    def _replace(self, event: Event) -> None:
+        """Queue the state event `event` in place of its last held copy if only state events
+        follow that copy (`Labels` at the end, the rest in its slot), else after everything."""
+        buffer = self._buffer
+        copies = [i for i, held in enumerate(buffer) if _replaces(event, held)]
+        if copies and all(_is_state(held) for held in buffer[copies[-1] + 1 :]):
+            held = copies[-1]
+            if isinstance(event, Labels):
+                del buffer[held]
+                buffer.append(event)
+            else:
+                buffer[held] = event
+        else:
+            buffer.append(event)
         self._wake()
 
     def _cut_off(self) -> None:
@@ -167,6 +190,10 @@ class Feed:
         tb: TracebackType | None,
     ) -> None:
         await self.close()
+
+
+def _is_state(event: Event) -> bool:
+    return isinstance(event, CursorView | CursorGone | Labels)
 
 
 def _replaces(new: Event, held: Event) -> bool:

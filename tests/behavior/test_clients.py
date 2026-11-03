@@ -102,23 +102,20 @@ async def _drain(h: Harness, *clients: Client) -> list[list[Event]]:
 
 
 @scenario
-async def test_a_state_that_replaces_an_earlier_copy_goes_to_the_end(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([Reply([Part.Text("a")])]))
+async def test_a_state_that_replaces_an_earlier_copy_takes_its_place(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
     other = await h.client.open(SYS)
-    await h.set_auto(False, other)
     client = await h.connect("unread")
-    await h.send("go")
+    await h.set_auto(False, other)
+    await h.set_auto(False)
+    await h.set_auto(True, other)
     await h.settle()
-    await h.set_auto(True, other)  # this cursor's state goes after the other's latest
     (events,) = await _drain(h, client)
     views = [e for e in events if isinstance(e, CursorView)]
-    assert sorted(v.cursor for v in views) == [h.cursor, other], "one copy of each, no more"
-    assert views[-1] == await _view_after(events, other)
-    assert [type(e) for e in events].count(Labels) == 1
-
-
-async def _view_after(events: list[Event], cursor: int) -> CursorView:
-    return next(e for e in reversed(events) if isinstance(e, CursorView) and e.cursor == cursor)
+    assert [(v.cursor, v.auto) for v in views] == [(h.cursor, False), (other, True)], (
+        "one copy of each, the latest, in the order of the snapshot"
+    )
+    assert [type(e) for e in events] == [CursorView, CursorView, Labels]
 
 
 # Watching

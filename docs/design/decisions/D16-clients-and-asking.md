@@ -203,14 +203,18 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
   driver's loop, so nothing falls between them.
 - **Order.** One ordered stream per client. A change's `Appended` comes before the
   `CursorState` that points at its nodes, and a `Labels` after the `CursorState` of every
-  cursor it names. A `CursorState` or `Labels` that replaces an
-  earlier copy removes it and goes to the end, so it never overtakes what it refers to.
+  cursor it names. A `Live` delta
+  follows the `CursorState` that says its step runs. A `CursorState` or `Labels` replaces
+  an earlier copy only when nothing but state events follows that copy (a `CursorState` takes its
+  slot, `Labels` go to the end); otherwise it is appended and the earlier copy stays, so the
+  snapshot is whole at its `Labels` and no state overtakes what it refers to.
 - **`watch(cursors)`** chooses which cursors' `Live` a client gets, starting with a
   catch-up taken in the same act: the parts of the sample in flight that are not in the
   tree yet, and the text of the open part. Tool progress has no catch-up; the result
   arrives as `Appended`.
 - **Bounds.** `Live` is dropped when the client's buffer is full. `CursorState` and
-  `Labels` replace their own earlier copy, so they cost one slot per cursor. A client whose
+  `Labels` replace their own earlier copy, so between two other events they cost one slot per
+  cursor. A client whose
   `Appended` and `Notice` backlog passes the buffer is cut off (`CutOff`, a `ConnectionError`) and
   reconnects to a snapshot.
 - **Gone:** `Saved`, `HookError` as an event (it is in `CursorState`), `driver.questions()`
