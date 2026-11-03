@@ -7,8 +7,8 @@ Three kinds of reader use tau as a library, and the public surface is what one o
 - **An embedder** runs sessions from their own program, with their own providers, or runs the step machine with their own loop.
 
 Everything else is private. `from tau import Name` reaches every public name; the only other
-public modules are `tau.cli` (`main`, the flags), `tau.commandline` (the pure line parser) and
-`tau.trace` (profiling). Every other module's name starts with an underscore, and
+public modules are `tau.cli` (`main`, the flags), `tau.commandline` (the pure line parser),
+`tau.tui` (the terminal UI; importing it imports Textual) and `tau.trace` (profiling). Every other module's name starts with an underscore, and
 `scripts/api_docs.py --check` fails when one that does not has nothing listed in
 [`groups.toml`](groups.toml).
 
@@ -88,6 +88,12 @@ an embedder who start sessions without the `tau` program.
 ## Errors
 
 What a session and its store raise. Every reader catches some of them.
+
+## The terminal UI
+
+`tau.tui`: `TauApp`, the Textual frontend over a `Client` (`tau` with no `-p` opens it), and
+`SessionView`, the picture of the session its stream builds, which needs no screen. For a
+frontend author who wants the screen, or a picture of the stream without one.
 
 ## Tracing
 

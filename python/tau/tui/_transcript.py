@@ -1,0 +1,265 @@
+"""The transcript: the walk of the viewed cursor as boxes (D23 section 2).
+
+In the manner of τ 0.15's tau-coding-agent/src/tau_coding_agent/transcript.py (tag v0.15.0): a
+scrolling container that follows the tail while the reader is at it. Written new: none of its
+event routing or render window is carried (the window is 8C-3). It is fed nodes (`add`,
+`rebuild`) and the live layer (`live`, `progress`, `end_live`) by the app, which reads them from
+`SessionView`.
+
+`User` is a box titled with its author when that is not this client, `Assistant` a box with its
+thinking in a folding region and a tool box per call, whose outcome is folded in from the
+`Results` node by call id. `System` is one folded line, `Config` one dim line, `Custom` a
+`sample_error` as an error box and any other kind one dim line; a stop other than `End` or `Tools`
+is a dim line under the reply.
+"""
+
+import json
+from collections.abc import Sequence
+
+from textual.containers import VerticalScroll
+from textual.widgets import Collapsible, Static
+
+from tau._core import Author, Body, Node, Outcome, Part, Stop
+from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
+from tau.tui._chat import MessageBox, QuietCollapsible, ToolBox, format_tokens
+from tau.tui._view import LiveLayer
+
+_NOTE_LIMIT = 100  # characters of a record we do not know, shown on its one line
+
+
+def author_name(author: Author) -> str:
+    """Who wrote a node, as the transcript titles it: the client id, the extension's name, or
+    what wrote it (`model`, `tools`, `core`)."""
+    match author:
+        case Author.Frontend(client=who) | Author.Extension(name=who):
+            return who
+        case Author.Provider():
+            return "model"
+        case Author.Tools():
+            return "tools"
+        case _:
+            return "core"
+
+
+def usage_line(meta: str | None) -> str:
+    """`↑ in ↓ out` from a reply's `meta` (the normalized `usage`), or `""` if it reports none."""
+    if meta is None:
+        return ""
+    usage = json.loads(meta).get("usage")
+    if not isinstance(usage, dict):
+        return ""
+    sent, got = usage.get("input"), usage.get("output")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    if not isinstance(sent, int) or not isinstance(got, int):
+        return ""
+    return f"↑ {format_tokens(sent)}  ↓ {format_tokens(got)}"
+
+
+def _arguments(args_raw: str) -> object:
+    """The call's arguments decoded for the box, else the text as the model wrote it."""
+    try:
+        return json.loads(args_raw)
+    except ValueError:
+        return args_raw
+
+
+def _outcome(outcome: Outcome) -> tuple[str, bool, bool]:
+    """The text, whether it failed and whether it was interrupted."""
+    match outcome:
+        case Outcome.Ok(value=value):
+            return value, False, False
+        case Outcome.Err(error=error):
+            return error, True, False
+        case _:
+            return "interrupted before it finished", False, True
+
+
+def _config_line(data: str) -> str:
+    """What a `Config` node changed, in one line."""
+    fields = json.loads(data)
+    parts: list[str] = []
+    if "model" in fields:
+        parts.append(f"model: {fields['model']}")
+    for name, options in fields.get("extensions", {}).items():
+        parts.append(f"{name}: " + ", ".join(f"{k}={v}" for k, v in options.items()))
+    return "  ".join(parts)
+
+
+class ChatDisplay(VerticalScroll):
+    """The viewed cursor's walk, drawn. `tip` is the last node drawn (`None` before the first
+    `rebuild`); the app extends it with `add` or replaces the walk with `rebuild`."""
+
+    def __init__(self, client: str) -> None:
+        super().__init__(id="chat-display")
+        self.client = client
+        self.tip: int | None = None
+        self.first: str | None = None
+        """The first `User` text drawn, for the header's title."""
+        self._boxes: dict[int, MessageBox] = {}
+        self._live: MessageBox | None = None
+        self._lines: list[str] = []  # the plain text of each child, in order
+
+    # What is drawn
+
+    async def rebuild(self, walk: Sequence[Node]) -> None:
+        """Draw `walk` and nothing else."""
+        await self.end_live()
+        await self.remove_children()
+        self._boxes, self._lines, self.tip, self.first = {}, [], None, None
+        for node in walk:
+            await self.add(node)
+
+    async def add(self, node: Node) -> None:
+        """Draw `node`, which follows the tip."""
+        body = node.body
+        widget: Static | MessageBox | Collapsible | None = None
+        line = ""
+        match body:
+            case Body.User(text=text):
+                self.first = text if self.first is None else self.first
+                who = author_name(node.by)
+                title = "User" if node.by == Author.Frontend(self.client) else who
+                widget = MessageBox("user", title, text, source="verbatim")
+                line = f"[{title}] {text}"
+            case Body.Assistant():
+                widget, line = self._reply(node)
+            case Body.Results(outcomes=outcomes):
+                line = self._results(node, outcomes)
+            case Body.System(text=text):
+                widget = QuietCollapsible(Static(text), title="System prompt", collapsed=True)
+                widget.add_class("system-box")
+                line = "[System prompt]"
+            case Body.Config(config=config):
+                widget = self._dim(_config_line(config.data))
+                line = _config_line(config.data)
+            case Body.Custom(kind=kind, data=data):
+                widget, line = self._custom(kind, data)
+            case _:
+                raise TypeError(f"node {node.id} holds a body the transcript does not know")
+        self.tip = node.id
+        if widget is not None:
+            await self._mount(widget)
+        if line:
+            self._lines.append(line)
+
+    def is_failed_sample_here(self, node: Node) -> bool:
+        """Whether `node` is the `sample_error` core wrote under the node we are at."""
+        body = node.body
+        return (
+            isinstance(body, Body.Custom)
+            and body.kind == "sample_error"
+            and node.parent is not None
+            and node.parent == self.tip
+        )
+
+    async def add_side(self, node: Node) -> None:
+        """Draw a record core wrote beside the walk and did not move to (a `sample_error`): it
+        hangs under the tip, so it is not on any walk read later."""
+        assert isinstance(node.body, Body.Custom)
+        widget, line = self._custom(node.body.kind, node.body.data)
+        await self._mount(widget)
+        self._lines.append(line)
+
+    def _reply(self, node: Node) -> tuple[MessageBox, str]:
+        body = node.body
+        assert isinstance(body, Body.Assistant)
+        text = "".join(p.text for p in body.parts if isinstance(p, Part.Text))
+        thought = "".join(p.text for p in body.parts if isinstance(p, Part.Thinking))
+        box = MessageBox("assistant", "Assistant", text, usage_line(body.meta), source="markdown")
+        self._boxes[node.id] = box
+        lines = [f"[Assistant] {text}"]
+        for part in body.parts:
+            if isinstance(part, Part.Call):
+                box.add_tool_call(part.tool, _arguments(part.args_raw), part.id)
+                lines.append(f"  {part.tool}({part.args_raw})")
+        if thought:
+            box.add_thinking(thought)
+        if body.stop not in (Stop.End, Stop.Tools):
+            lines.append(f"  (stopped: {body.finish_reason or body.stop})")
+        return box, "\n".join(lines)
+
+    def _results(self, node: Node, outcomes: Sequence[tuple[str, Outcome, Author]]) -> str:
+        assert node.parent is not None
+        boxes = self._boxes[node.parent].tool_boxes
+        lines: list[str] = []
+        for call, outcome, _by in outcomes:
+            text, error, interrupted = _outcome(outcome)
+            boxes[call].set_result(text, error=error, interrupted=interrupted)
+            lines.append(f"  {boxes[call].title}: {text}")
+        return "\n".join(lines)
+
+    def _custom(self, kind: str, data: str) -> tuple[Static | MessageBox, str]:
+        if kind == "sample_error":
+            return MessageBox("error", "Error", data, source="verbatim"), f"[Error] {data}"
+        shown = f"{kind}: {data}"
+        shown = shown if len(shown) <= _NOTE_LIMIT else shown[: _NOTE_LIMIT - 1] + "…"
+        return self._dim(shown), shown
+
+    @staticmethod
+    def _dim(text: str) -> Static:
+        return Static(text, classes="chat-note", markup=False)
+
+    async def _mount(self, widget: Static | MessageBox | Collapsible) -> None:
+        """Add a child, and keep the tail in view if it was in view."""
+        following = self.scroll_y >= self.max_scroll_y - 1
+        await self.mount(widget)
+        if following:
+            self.scroll_end(animate=False)
+
+    # The live layer
+
+    async def live(self, delta: LiveDelta, layer: LiveLayer) -> None:
+        """Draw one live delta of the reply in flight (`ToolProgress` is `progress`). `layer` is
+        `SessionView`'s, which owns what the reply has said; this only draws it."""
+        if self._live is None:
+            self._live = MessageBox("assistant", "Assistant", source="markdown")
+            self._live.add_class("live")
+            await self._mount(self._live)
+        match delta:
+            case TextDelta(text=text):
+                await self._live.append_content_delta(text)
+            case ThinkingDelta(text=text):
+                await self._live.stream_thinking(text)
+            case CallNamed(id=call, tool=tool):
+                self._live.add_tool_call(tool, "", call)
+            case CallArgs(index=index):
+                call = layer.calls[index]
+                self._live.tool_boxes[call.id].set_arguments(call.args)
+            case _:
+                return
+        if self.scroll_y >= self.max_scroll_y - 1:
+            self.scroll_end(animate=False)
+
+    def progress(self, node: int, call_id: str, text: str) -> None:
+        """Show the output a running call has written so far (`text` is all of it)."""
+        box: ToolBox = self._boxes[node].tool_boxes[call_id]
+        box.set_progress(text)
+
+    async def end_live(self) -> None:
+        """Remove the live reply: the node it was becoming has arrived, or the step ended."""
+        if self._live is not None:
+            live, self._live = self._live, None
+            await live.finish_stream()
+            reasoning = live.reasoning
+            if reasoning is not None:
+                await reasoning.finish_stream()
+            await live.remove()
+
+    @property
+    def streaming(self) -> bool:
+        """Whether a live reply is drawn."""
+        return self._live is not None
+
+    # What it says
+
+    def text(self, layer: LiveLayer | None) -> str:
+        """The transcript as plain text, one block per box: what is drawn, folded parts included,
+        and the reply in flight (`layer`) while a live box is drawn."""
+        live = f"[Assistant, live] {layer.text}" if self._live is not None and layer else ""
+        return "\n".join([*self._lines, *([live] if live else [])])
+
+    def fold(self, kind: type[QuietCollapsible]) -> None:
+        """Fold every box of `kind`, or unfold them all if each is folded already."""
+        boxes = list(self.query(kind))
+        fold = any(not b.collapsed for b in boxes)
+        for box in boxes:
+            box.collapsed = fold

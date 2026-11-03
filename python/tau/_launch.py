@@ -4,9 +4,11 @@ The first argument decides which parser reads the line: the name of a subcommand
 `sessions`, `export`, `context`, `serve`, `trust`) runs that subcommand, and anything else,
 including nothing, is the launch command line. So `tau -p sessions` sends the word "sessions".
 
-`launch_parser` builds the launch parser from the flag parsers the program already has (the
-session, extension and `--set` flags). `answer_rule` reads an `--answer` argument, and
-`message_of` joins the words and standard input into the message `-p` sends.
+The flag builders the programs share live here too (`extension_flags`, `option_flags`,
+`session_flags`, ...; `tau.cli` exports them). `launch_parser` builds the launch parser from the
+flag parsers the program already has (the session, extension and `--set` flags). `answer_rule`
+reads an `--answer` argument, and `message_of` joins the words and standard input into the
+message `-p` sends.
 """
 
 import argparse
@@ -65,8 +67,8 @@ def launch_parser(
     `--set` flags). `commands` are the subcommands' names, listed in its help."""
     parser = argparse.ArgumentParser(
         prog="tau",
-        description="τ next (Trusty). `tau -p MESSAGE` sends one message, prints the answer and "
-        "exits.",
+        description="τ next (Trusty). `tau` opens the terminal UI; `tau -p MESSAGE` sends one "
+        "message, prints the answer and exits.",
         parents=[*parents, verbose_flag()],
         epilog="commands (tau COMMAND --help): " + ", ".join(commands),
     )
@@ -95,10 +97,136 @@ def launch_parser(
         "the question; the first rule that matches wins, and no match declines (repeatable)",
     )
     parser.add_argument(
+        "--theme",
+        metavar="NAME",
+        help="the terminal UI's theme for this run (default: the config's tui.theme, else mocha)",
+    )
+    parser.add_argument(
         "-v", "--version", action="store_true", help="print the version and the protocol, and exit"
     )
     parser.add_argument("message", nargs="*", metavar="MESSAGE", help="the words to send")
     return parser
+
+
+def assignment(text: str) -> tuple[str, str, str]:
+    """`EXTENSION.FIELD=VALUE` as its three parts."""
+    target, equals, given = text.partition("=")
+    extension, dot, name = target.partition(".")
+    if not (equals and dot and extension and name):
+        raise argparse.ArgumentTypeError(f"{text!r} is not EXTENSION.FIELD=VALUE")
+    return extension, name, given
+
+
+def extension_flags() -> argparse.ArgumentParser:
+    """A parser (`add_help=False`, for `parents=`) with the flags that choose extensions:
+    `-e VALUE` (repeatable; a path, or the key of a source: a discovered one or a built-in) and
+    `--no-extensions`.
+    `tau.start_session` reads them from the parsed args."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "-e",
+        "--extension",
+        action="append",
+        default=[],
+        metavar="PATH|KEY",
+        help="load this extension file, package directory, or source key even if it is off "
+        "(repeatable); naming it is the consent",
+    )
+    flags.add_argument(
+        "--no-extensions",
+        action="store_true",
+        help="skip every discovered extension source except -e: no installed package or drop-in "
+        "(the built-ins, base_tools and step_limit, still follow `load`)",
+    )
+    return flags
+
+
+def option_flags() -> argparse.ArgumentParser:
+    """A parser (`add_help=False`, for `parents=`) with `--set EXTENSION.FIELD=VALUE`
+    (repeatable): the config's command-line layer, for this run only (D22). A value is read as
+    `/config` reads it; `tau.start_session` applies and checks them against the loaded
+    extensions' options."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        dest="set_options",
+        type=assignment,
+        metavar="EXTENSION.FIELD=VALUE",
+        help="set an extension's option for this run only (repeatable), as `tau config set` "
+        "would for every run",
+    )
+    return flags
+
+
+def session_dir_flag(*, nested: bool = False) -> argparse.ArgumentParser:
+    """`--session-dir DIR`, the sessions directory for one run (default: `$TAU_HOME/sessions`).
+    `nested`: for a subcommand of a command that has it too, which must not reset it."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--session-dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS if nested else None,
+        help="keep and find sessions in DIR (default: $TAU_HOME/sessions)",
+    )
+    return flags
+
+
+def prompt_flags() -> argparse.ArgumentParser:
+    """`--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and `-nc` (D20)."""
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
+        "--system-prompt",
+        metavar="TEXT",
+        help="the base text of the system prompt, in place of the built-in one (use "
+        '"$(cat FILE)" for a file; empty: no base text)',
+    )
+    flags.add_argument(
+        "--append-system-prompt",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="add a section after the base text (repeatable)",
+    )
+    flags.add_argument(
+        "-nc",
+        "--no-context-files",
+        action="store_true",
+        help="leave out AGENTS.md, CLAUDE.md and .tau/SYSTEM.md",
+    )
+    return flags
+
+
+def session_flags() -> argparse.ArgumentParser:
+    """A parser (`add_help=False`, for `parents=`) with the flags that choose the session
+    (D18 section 5): `-c/--continue`, `-r/--resume`, `--session REF`, `--fork REF` and
+    `--no-session` (at most one), `-n/--name NAME` and `--session-dir DIR`; and the prompt flags
+    of a new session (D20): `--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and
+    `-nc/--no-context-files`. Pass the parsed arguments to `start_session`, which makes paths
+    absolute and rejects combinations."""
+    flags = argparse.ArgumentParser(add_help=False, parents=[session_dir_flag(), prompt_flags()])
+    flags.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="open the newest session of this directory",
+    )
+    flags.add_argument("-r", "--resume", action="store_true", help="choose a session to open")
+    flags.add_argument(
+        "--session", metavar="REF", help="open this session: a path, an id, a name or an id prefix"
+    )
+    flags.add_argument(
+        "--fork",
+        metavar="REF",
+        help="start a new session as a copy of one walk of REF (REF:NODE for a node)",
+    )
+    flags.add_argument(
+        "--no-session", action="store_true", help="keep the session in memory: never listed"
+    )
+    flags.add_argument("-n", "--name", metavar="NAME", help="name the session")
+    return flags
 
 
 def message_of(words: Sequence[str], stdin: TextIO) -> str:

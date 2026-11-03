@@ -151,3 +151,14 @@ created as usual. If approval then fails, the `.tau/` just created is removed.
 - Not spiked. Tests: a key never reaches a node or the log; an untrusted
   project fails a script; a bare name with two matches fails a script and
   lists both; a renamed model fails the sample with its name.
+
+## Amended (D23, 2026-11-03): the top-level keys
+
+The top-level keys are `models`, `default_model`, `extensions`, `load`, `system_prompt` (D20)
+and `tui`. `tui` is "the frontend settings" this ADR named: the terminal UI's own, an object whose
+only key is `theme` (a string; an unknown key or a non-string is a `ConfigError`, like any other
+mistake in the files). A project config may not set it: a `tui` in a
+project layer is a `ConfigError` ("a person's own setting"), so a cloned repository cannot choose
+the colours of the person who opens it, and nothing is accepted and ignored. The user's file and
+the command-line layer merge as the others do. Read by `tau._config_keys.tui_settings`, held as
+`ModelCatalog.tui`.

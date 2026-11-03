@@ -2,9 +2,8 @@
 
 Install τ, write a config with one model, talk to it, and look at what you did.
 
-The `tau` program is not finished. `tau -p` sends one message and prints the answer, and `tau`
-also inspects, configures and serves sessions. `tau` alone prints its help: the terminal UI
-arrives in Phase 8, and until then you chat with `examples/chat.py`.
+`tau` opens the terminal UI. `tau -p` sends one message and prints the answer, and `tau` also
+inspects, configures and serves sessions.
 
 ## Install
 
@@ -91,17 +90,30 @@ rule answers: `--answer permissions=yes`. [Frontends](frontends.md#questions) ex
 
 ## Chat
 
-From a checkout, `examples/chat.py` is a line-by-line chat over the same library a terminal UI
-would use. `--model` takes a qualified name or a bare one, and the config's `default_model` is
-used without it.
+`tau` with no `-p` opens the terminal UI on a new session. `-m` picks the model of a new session,
+`-c` continues the newest session of this directory, `--session ID` opens one, and a session a
+`tau serve` holds is attached to, not refused. Standard input and output must be a terminal;
+without one, `tau` says so and `tau -p` is the way to script it.
 
 ```bash skip
-python examples/chat.py                       # your default model
-python examples/chat.py --model mock:echo     # no server needed
+tau                          # your default model, a new session
+tau -m mock:echo             # no server needed
+tau -c --theme latte         # the newest session here, in the light theme
 ```
 
-Type a message and the reply streams in. `/` alone lists the commands and Tab completes them.
-Ctrl-D leaves.
+Type a message and press Enter: the reply streams in above the editor. What you type while the
+model is busy waits above the editor until the next step takes it. Esc aborts the step. `/` alone
+lists the commands, Tab completes them, and a command typed without its arguments asks for them in
+a form. A question an extension asks (a permission, say) is a box above the editor with a button
+for each answer; Esc declines it. Ctrl+Q leaves, and so does Ctrl+C twice. [Frontends](frontends.md#the-terminal-ui)
+lists the keys.
+
+From a checkout, `examples/chat.py` is a line-by-line chat over the same library, small enough to
+read.
+
+```bash skip
+python examples/chat.py --model mock:echo
+```
 
 ## Look at what you did
 

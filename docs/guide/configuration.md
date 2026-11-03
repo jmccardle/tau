@@ -45,6 +45,7 @@ The top-level keys:
 | `extensions` | per-extension options: `{"step_limit": {"limit": 30}}` |
 | `load` | which extension sources are on: `{"shouter": false}` |
 | `system_prompt` | the base text of the system prompt |
+| `tui` | the terminal UI's own settings: `{"theme": "latte"}` (below) |
 
 An unknown key is an error that names the closest key you might have meant.
 
@@ -134,7 +135,7 @@ tau -p --set step_limit.limit=5 "tidy the imports"
 
 `--set EXTENSION.FIELD=VALUE` is the command-line layer for extension options: the same assignment
 as `tau config set`, read the same way and checked by the same option type, but for this run only
-and written nowhere. It may be repeated, and it takes `tau -p` and `tau serve` (the TUI, 8C, will too). It
+and written nowhere. It may be repeated, and it takes `tau`, `tau -p` and `tau serve`. It
 replaces 0.15's `--max-turns` and `--ext-config`. A mistake (an extension that has no options, a
 field it lacks, a value its type refuses) stops the start before a session is made. For a session
 a `tau serve` already holds, `--set` is an error: the server's options are loaded.
@@ -220,6 +221,23 @@ The prompt flags apply to a *new* session. With `-c`, `-r`, `--session` or `--fo
 prompt (`-nc` is accepted). A program that has its own prompt passes it to
 `start_session(system=...)` instead ([Writing a frontend](frontends.md)).
 
+## The terminal UI's settings
+
+The `tui` key holds the terminal UI's own settings; `theme` is the only one yet. It belongs to your file
+(`$TAU_HOME/config.json`): a `tui` key in a project's `.tau/config.json` is an error, because a
+project cannot choose your colours.
+
+```json
+{ "tui": { "theme": "latte" } }
+```
+
+The built-in themes are `mocha` (the default), `latte`, `gruvbox` and `ansi`, and Textual's own.
+A theme of your own is a file `$TAU_HOME/themes/NAME.json` that `extends` one of those and
+overrides parts of its `palette` (τ's colours) or its `textual` tokens; a file that does not read
+is shown as a toast and skipped, and the rest still load. `--theme NAME` picks one for a single
+run. A name that is no theme stops `tau` before it opens, and says which there are. An unknown
+key under `tui` is an error like any other.
+
 ## Per-run flags
 
 These are not config, and they last for one run:
@@ -229,7 +247,8 @@ These are not config, and they last for one run:
 | `--session-dir DIR` | keep and find sessions in `DIR` instead of `$TAU_HOME/sessions` |
 | `-e PATH\|KEY` | load this extension, even if it is off |
 | `--set EXTENSION.FIELD=VALUE` | an extension's option for this run (above) |
-| `-m NAME`, `--model NAME` | the model of a new session (`tau -p`) |
+| `-m NAME`, `--model NAME` | the model of a new session (`tau`, `tau -p`) |
+| `--theme NAME` | the terminal UI's theme for this run (`tau`; not with `-p`) |
 | `--no-extensions` | load no package or drop-in (the built-ins, `base_tools` and `step_limit`, still follow `load`) |
 | `-c`, `-r`, `--session REF`, `--fork REF`, `--no-session`, `-n NAME` | which session, and its name ([Quickstart](quickstart.md)) |
 

@@ -28,13 +28,28 @@ class Opened
     snapshot: tuple[Event, ...]
     welcome: Welcome | None
     started: Started | None
+    socket: Path | None
+    me: str
 ```
 
 A session opened for a client: the `client`, the first `cursor`, the `snapshot` (every
 event the client's stream held up to and including its first `Labels`, and for a reopened
 cursor the events up to its view), the `welcome` (the server's if attached; for a local start
 one built from it, `None` for a session kept in memory, which has no id) and the `started`
-session (`None` when attached: the server owns it).
+session (`None` when attached: the server owns it). Attached, `socket` is the address in the
+server's record and `me` the client id, so `reconnect` can dial again; `client` is always the
+client to use now.
+
+### Opened.reconnect
+
+```python
+async def reconnect(self) -> Client
+```
+
+A new client of the server this session is attached to, with the same id: after a
+stream ended in `ConnectionError`. It replaces `client` (the old one is closed). `OSError`
+if nothing answers at the server's address; `ConnectionError` for a session this process
+runs, which has no server to dial.
 
 ### Opened.close
 

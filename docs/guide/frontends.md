@@ -398,6 +398,49 @@ Things that differ from a local client, and how they are the same:
 `tau serve` has no TCP and no token: the socket's file permissions are the whole security. To use
 a server on another machine, forward the Unix socket with OpenSSH.
 
+## The terminal UI
+
+`tau` with no `-p` is a frontend like the ones above: `tau.tui.TauApp` is a Textual app over a
+`Client`, and it touches nothing else. `tau` opens the session the flags name with `open_client`
+(a trust question is asked on the plain terminal before the screen opens) and runs the app on
+the same event loop as the driver, so a session you start and a session a `tau serve` holds are
+the same screen. If the connection to a server drops, the app connects again with the same client
+id and redraws from the new snapshot; if the session itself fails, the screen says so, keeps the
+transcript readable, and `tau` exits 1 when you quit.
+
+You can embed it, and test one with Textual's pilot:
+
+```python skip
+app = TauApp(client, cursor, welcome=opened.welcome, home=tau_home, snapshot=opened.snapshot)
+async with app.run_test(size=(120, 40)) as pilot:
+    await pilot.press(*"hello", "enter")
+    print(app.screen_text())
+```
+
+The screen, top to bottom: the header (the first message, the session id, the working directory),
+the **transcript** of the cursor it views, the open **questions**, the **pending** lines, the
+command popup, the editor and the status bar (the cursor's model, whether it is working,
+auto-step, how the last step ended, a failed hook, and a line for each extension that shows
+something).
+
+- The transcript is the walk of the cursor: your messages, the model's replies with their thinking
+  folded and a box per tool call (folded; its mark says whether it worked), the live text of the
+  reply in flight, and a message someone else sent to the cursor under that author's name.
+- Enter sends, whether the cursor is busy or not: what you send while it works is a pending item
+  (shown above the editor, with its author if someone else sent it) and the next step takes it.
+  Ctrl+J starts a new line. Up and Down at the first and last line walk the lines you sent.
+- Esc aborts the step. Ctrl+C aborts if the cursor is busy, else empties the editor, else quits
+  when pressed twice; Ctrl+Q quits. Ctrl+R folds the thinking, Ctrl+T the tool boxes.
+- `/` lists the commands; Tab completes the name, then each argument by what it is (models,
+  cursors, nodes, paths). A command typed without its arguments opens a form for them. An
+  unknown `/name` is sent as text, and a bare name two extensions share is refused (type
+  `/extension:name`). The result of a command is a toast.
+- A question is a box above the editor, titled by the extension that asks. A choice has a button
+  for each answer; anything else has a field (Tab completes it as a command's argument is) and an
+  Answer button. Decline, or Esc inside the box, answers nothing. An answer the session refuses
+  stays in the box with the reason.
+- Notices (`cursor.tell`, a command's progress) are toasts.
+
 ## What to build on
 
 - `tau.commandline` (`parse`, `completions`, `value`, `values`) is the pure line-reading library

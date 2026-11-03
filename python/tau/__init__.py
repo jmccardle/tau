@@ -16,16 +16,15 @@ from tau._clock import SystemClock
 from tau._commands import CommandFailed
 from tau._config import ConfigError, ModelConfig, model_config
 from tau._config_layers import (
-    ConfigProblem,
     Layer,
     LayerText,
     ModelCatalog,
     Origin,
     ResolvedModel,
-    Severity,
     check_config,
     read_models,
 )
+from tau._config_tree import ConfigProblem, Severity
 from tau._context import ContextFileError, PromptSource, SystemPrompt, system_prompt
 from tau._core import (
     Answer,

@@ -27,7 +27,7 @@ Sibling projects are clients of τ and sync with it after 0.16.0:
 1. 0.15 code comes in only as described above, never as harness behavior. Learn 0.15 behavior by reading it, then write the behavior as a test.
 2. No new type, field, or module-level concept without a glossary entry; anything not in the glossary is suspect.
 3. Banned identifiers and docstring words (lint in CI): `lane`, `suspension`, `suspend`, `responder`, `side_entry`, `incomplete`, `default_leaf`, `acting_cursor`, `head` (as a frontend), `frame`, `entry` (use `node`), `backend` (use `provider` or `frontend`), `fork` for anything in-session (use `branch`).
-4. Tests go through the `Harness` protocol, the public Python API (what `docs/api/groups.toml` lists: `tau`'s exports, and the three public modules `tau.cli`, `tau.commandline` and `tau.trace`), or the files and wire formats those read. Every other module is private, and its name starts with an underscore (`_trust`, `_events`, `_driver`, ...); `scripts/api_docs.py --check` fails when one does not. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
+4. Tests go through the `Harness` protocol, the public Python API (what `docs/api/groups.toml` lists: `tau`'s exports, and the four public modules `tau.cli`, `tau.commandline`, `tau.tui` and `tau.trace`), or the files and wire formats those read. Every other module is private, and its name starts with an underscore (`_trust`, `_events`, `_driver`, ...); `scripts/api_docs.py --check` fails when one does not. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
 5. Each phase ends with a stop for review. Do not start the next phase without sign-off.
 6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
 7. Ratchet in CI from Phase 3, over `crates/*/src` and `python/tau` (src, not
@@ -65,8 +65,10 @@ changing a public signature.
 | `crates/tau-tools` | The base tools (`read`, `write`, `edit`, `grep`, `find`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
 | `crates/tau-py` | PyO3 bindings, built as `tau._core`. Conversion and error mapping only. |
 | `python/tau` | Python package. `_core.pyi` is the hand-written stub for the native module. |
+| `python/tau/tui` | The terminal UI (D23): `TauApp` over a `Client`, `SessionView`, the widgets, `tau.tcss`, the themes. Imports Textual; `tau -p` never loads it. |
 | `tests/behavior` | The behavior suite through the `Harness` protocol, run twice: clients local, then remote over a Unix socket (D21). |
 | `tests/serve` | What only a wire has: the handshake, bad messages, each way a stream ends, disconnects, and `tau serve` (`-d`, `--stop`, `--schema`) as real processes. |
+| `tests/tui` | The terminal UI through Textual's pilot, over a Harness client, run in both modes (D23); `SessionView` with events alone. |
 | `tests/core` | The native module through the public Python API: a hand-run job loop, errors, persistence, threads. |
 | `docs/api` | What is public and for whom (`README.md`, `groups.toml`), and the generated `surface.txt`. |
 | `docs/reference` | The generated reference, one page per group of the public surface. |

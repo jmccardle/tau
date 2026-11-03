@@ -37,13 +37,29 @@ class Opened:
     event the client's stream held up to and including its first `Labels`, and for a reopened
     cursor the events up to its view), the `welcome` (the server's if attached; for a local start
     one built from it, `None` for a session kept in memory, which has no id) and the `started`
-    session (`None` when attached: the server owns it)."""
+    session (`None` when attached: the server owns it). Attached, `socket` is the address in the
+    server's record and `me` the client id, so `reconnect` can dial again; `client` is always the
+    client to use now."""
 
     client: Client
     cursor: int
     snapshot: tuple[Event, ...]
     welcome: Welcome | None
     started: Started | None
+    socket: Path | None
+    me: str
+
+    async def reconnect(self) -> Client:
+        """A new client of the server this session is attached to, with the same id: after a
+        stream ended in `ConnectionError`. It replaces `client` (the old one is closed). `OSError`
+        if nothing answers at the server's address; `ConnectionError` for a session this process
+        runs, which has no server to dial."""
+        if self.socket is None:
+            raise ConnectionError("this session runs in this process: there is no server to dial")
+        new = await RemoteClient.connect(self.socket, self.me)
+        old, self.client = self.client, new
+        await old.close()
+        return new
 
     async def close(self) -> None:
         """Close the client; for a session this process started, then `Started.stop`."""
@@ -149,7 +165,7 @@ async def open_client(  # noqa: PLR0913 - the start's inputs and the client's id
     found = await _server_of(choice, home)
     if found is not None:
         remote = await _attach(args, flags, choice, found[0], client, model, own)
-        return await _opened(remote, found[1], None)
+        return await _opened(remote, found[1], None, Path(found[0].socket), client)
     chosen = pick_session if not flags.resume else _chosen(choice)
     started = await start_session(
         args,
@@ -164,7 +180,7 @@ async def open_client(  # noqa: PLR0913 - the start's inputs and the client's id
     )
     try:
         local = started.driver.client(client)
-        return await _opened(local, _local_welcome(started), started)
+        return await _opened(local, _local_welcome(started), started, None, client)
     except BaseException:
         await started.stop()
         raise
@@ -190,10 +206,12 @@ def _local_welcome(started: Started) -> Welcome | None:
     )
 
 
-async def _opened(client: Client, welcome: Welcome | None, started: Started | None) -> Opened:
+async def _opened(
+    client: Client, welcome: Welcome | None, started: Started | None, socket: Path | None, me: str
+) -> Opened:
     try:
         events, cursor = await _snapshot(client)
     except BaseException:
         await client.close()
         raise
-    return Opened(client, cursor, tuple(events), welcome, started)
+    return Opened(client, cursor, tuple(events), welcome, started, socket, me)

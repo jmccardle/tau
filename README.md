@@ -16,9 +16,11 @@ Status: **0.16 in development.** What exists now:
   that says how it ended; `--json` for the events, `--answer` for questions, `--verbose`,
   `--version`), `config`, `ext`, `sessions`, `export`, `context`, `trust`, and `serve`, which
   shares a session over a Unix socket with any number of clients (`tau -p` attaches to it);
-- a wire protocol and `RemoteClient` for those clients.
-
-The terminal UI comes in Phase 8.
+- a wire protocol and `RemoteClient` for those clients;
+- the terminal UI: `tau` opens it (Textual, `tau.tui`) on a new, continued or attached session:
+  the transcript with thinking and tool boxes, live text, the editor, `/` commands with a popup,
+  Tab completion and forms for missing arguments, questions as boxes, themes. The cursor bar,
+  the tree, the session picker and the model and config forms follow (Phase 8, 8C-2 and 8C-3).
 
 Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
 write an extension or a frontend.

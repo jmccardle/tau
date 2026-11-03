@@ -19,13 +19,12 @@ REPO = Path(__file__).resolve().parents[2]
 ESC = "\x1b"
 
 
-def test_no_subcommand_prints_help_and_exits_2(world: World) -> None:
+def test_no_subcommand_is_the_terminal_ui_which_needs_a_terminal(world: World) -> None:
     result = tau(world)
     assert result.code == 2
     assert result.out == ""
-    assert "usage: tau" in result.err
-    assert "config" in result.err
-    assert "trust" in result.err
+    assert "needs a terminal" in result.err
+    assert "tau -p" in result.err
 
 
 def test_config_alone_prints_the_help_for_config(world: World) -> None:

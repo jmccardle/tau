@@ -8,7 +8,7 @@ description = "τ next (\"Trusty\"): Rust core, Python extensions."
 requires-python = ">=3.12"
 license = "MIT"
 dynamic = ["version"]
-dependencies = ["httpx>=0.28", "websockets>=15"]
+dependencies = ["httpx>=0.28", "websockets>=15", "textual>=8.2"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
@@ -36,7 +36,7 @@ features = ["abi3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests/behavior", "tests/providers", "tests"]
+pythonpath = ["tests/behavior", "tests/providers", "tests/tui", "tests"]
 addopts = ["--strict-markers"]
 markers = ["local_only(reason): a behavior test of something a wire cannot carry; it runs with local clients only"]
 faulthandler_timeout = 120  # a hung test dumps every thread's stack instead of hanging silently
@@ -68,4 +68,4 @@ strict = ["python"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
-extraPaths = ["tests/behavior", "tests/providers", "tests"]
+extraPaths = ["tests/behavior", "tests/providers", "tests/tui", "tests"]

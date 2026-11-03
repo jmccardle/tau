@@ -1302,6 +1302,124 @@ a server, `-p` handles only the questions that open after its send, on the curso
 the others are the server's other clients' and it never rules on them. A rule naming an extension
 that is not loaded is a usage error (exit 2).
 
+### TUI, tau.tui, TauApp
+modules `tau.tui` (public), `tau.tui._app`, `_run`, `_line`, `_forms`, `_fields`, `_chat`,
+`_transcript`, `_editor`, `_status`, `_themes`, `_dialogs` · D23 · new (8C-1)
+
+The Textual frontend. **`tau`** with no `-p` opens it; **`TauApp(client, cursor, *, welcome, home,
+snapshot=(), theme=None, reconnect=None)`** is the app, a frontend of one `Client` that views one
+cursor (8C-1: the first). It touches only its `Client`. One listener, a worker running
+`async for event in client`, feeds a **SessionView**; the widgets draw from it. **The launch**
+(`tau.tui._run`): `open_client` first, with prompts on the plain terminal (a trust question is asked
+before the screen opens, and `--verbose`'s start report goes to stderr before it), then
+`await app.run_async()` on the same loop as the driver, then `Opened.close`. A session a live
+`tau serve` holds opens as a `RemoteClient` and the app is the same code; `reconnect` (given for
+an attached session) makes a new client with the same id when the stream ends in `ConnectionError`,
+and the fresh snapshot rebuilds the screen (`Opened.reconnect` dials the address in the server's
+record, so a server started with `--socket` is found, and replaces `Opened.client`); without it the failure is shown, the transcript stays
+readable and the exit status is 1 once the person quits. `tau.tui` is the fourth public module;
+`textual` is a dependency imported only when the screen opens. The keys: Enter sends, Ctrl+J starts
+a line, Tab completes, Esc aborts the step (or declines the question the keyboard is in), Ctrl+C
+aborts if busy, else clears the draft, else quits when pressed twice, Ctrl+R folds thinking, Ctrl+T
+tool boxes, Ctrl+Q quits. `screen_text()` is the screen as plain text (tests read it); `toasts` is
+every toast shown, notices included.
+
+### SessionView
+`tau.tui.SessionView` (with `LiveLayer`, `FormingCall`; `tau.tui._view`) · D23 §2 · new
+
+A frontend's picture of the session, built from its stream with `hear(event)`: each open cursor's
+`CursorView`, the closed cursors (`CursorGone`), the `Labels`, the nodes by id (from `Appended`),
+the notices, and the **live layer** of each cursor whose `Live` the client hears. The layer follows
+model.md §9's client rules: a reply's text, thinking and forming calls are drawn over the cursor and
+dropped when its view has another `at` or is not busy; a `CallArgs` whose `CallNamed` was never
+heard is ignored; a call's tool progress, keyed by `(node, call_id)`, is dropped when the `Results`
+node answering it arrives. `path(tip, at)` is the nodes after the tip down to `at` when `at`
+descends from it through nodes the view holds, else `None`. No Textual and no calls: tested with
+events alone.
+
+### viewed cursor
+`TauApp.cursor` · D23 §2 · new
+
+The cursor whose walk the transcript shows and whose `Live` the app watches. A `CursorView` whose
+`at` extends the walk appends the new nodes; one that moves elsewhere (a go-to, another client's
+branch) reads `walk(at)` again. 8C-1 views the first cursor (`Opened.cursor`); switching is 8C-2.
+
+### transcript
+`tau.tui._transcript.ChatDisplay` · D23 §2 · new
+
+The scrolling list of boxes for the viewed cursor's walk, following the tail. A `User` node is a
+box titled with its author when that is not this client (`[me:other]`, `[gamemaster]`); an
+`Assistant` node a box with its thinking in a folding region and a tool box per call, whose
+outcome is folded in from the `Results` node by call id (a check, a cross, or a stop sign), and
+its usage (`meta`) under it; a `System` node one folded line, a `Config` node one dim line; a
+`Custom` node a dim line, and the `sample_error` core writes beside the walk an error box under
+the node the cursor is at (it is on no walk, so a later `walk` read does not draw it). The
+live layer is one dashed box until the node arrives.
+
+### command line (the editor's)
+`tau.tui._line.CommandLine` · D23 §4 · new
+
+The part of the app that knows the session's commands (`Client.commands`, and the options forms
+`/config` takes) and does three things with the editor's text: lists the commands whose name starts
+with the first word typed (the popup's rows, the qualified name where two extensions share one),
+completes the last word (Tab: `complete_line` for a `/` line, `complete(cursor, "path", ...)` for
+an `@` word of a message, `commandline.values` for a form's field or a question's answer), and
+acts on Enter. A line is taken out of the editor when Enter is pressed and given back
+(`TauApp.restore_draft`) if it was not used: refused, the session could not take it, or its form
+was cancelled. Each line is its own task, so a command that waits for an answer does not hold up
+the next line.
+
+### editor, command popup, pending lines
+`tau.tui._editor.ChatInput`, `CommandPopup`, `PendingInput` · D23 §2 · new
+
+The **editor** is the message box: Enter sends, Ctrl+J starts a line, Up/Down at the first or last
+line walk the lines sent, Tab completes through the app's `CommandLine` and further Tabs cycle the
+candidates (a session that cannot complete is a toast, not a crash). The **command popup** under it
+shows the commands while the first word is typed, the candidates of a Tab, and a warning that a
+`/word` is no command and goes to the model as text. **Pending lines** are the cursor's scratchpad
+items (`CursorView.items`) above the editor, an input under its author's name when someone else
+wrote it.
+
+### header, status bar
+`tau.tui._status.Header`, `StatusBar` · D23 §2 · new
+
+The **header** is one line: the session's title (its first message), id and working directory
+(`cwd` given to the app when the session is in memory). The **status bar** is the viewed cursor's
+state: its model, working or idle, auto-step, how the last step ended, a cursor hook that failed in
+it, and a line per extension that shows something (`Cursor.show`).
+
+### question box
+`tau.tui._forms.QuestionBox`, `QuestionStack` · D23 §3 · new
+
+An open question, inline: docked above the editor, titled with the asking extension, with the text,
+the field and the buttons. A question that only asks to choose among values has a button per value,
+any other has its field and an Answer button; Decline (Esc in the box) answers `None`. A refused
+answer (`ValueError`) stays in the box with the reason; `LookupError` (someone answered first)
+closes it quietly; a question `to` another client shows its name and no buttons. Several stack,
+oldest first. It never blocks the screen.
+
+### form renderer
+`tau.tui._fields`, `_forms.FormDialog` · D23 §3 · new
+
+One widget set from a JSON Schema, for a question's answer and a command's arguments: an `enum` is
+a list of choices, a boolean a switch, a list of an `enum` a multi-select, anything else a text
+field read by `commandline.value` and completed with Tab by `commandline.values`; `T | None` may be
+left empty. It branches on the schema's shape and never on a command's or extension's name. A
+command line missing arguments (`Parsed.missing`) opens it as a dialog, the typed arguments filled
+in and the missing ones first; a value that does not read stays in the dialog with its problem.
+
+### theme, tau.tcss, tui config key
+`tau.tui._themes`, `tau.tui/tau.tcss`, `ModelCatalog.tui` · D23 §7, ruling 3 · new
+
+A **theme** is a Textual `Theme` plus τ's palette of `$tau-*` variables; `tau.tcss` is structure
+only, with no colour literal (a test holds it to that). The built-ins are `mocha` (default),
+`latte`, `gruvbox`, `ansi` and Textual's own, adapted; a user theme is `$TAU_HOME/themes/NAME.json`
+(`extends`, `palette`, `textual`), one that fails is a toast and the rest load. `--theme NAME` is for
+one run (a usage error under `-p`); the **`tui` config key** is a top-level object in the config
+files whose only key is `theme`, read from the user's file (`{"tui": {"theme": "latte"}}`); an
+unknown name is a `ThemeError` (a `ConfigError`) before the screen opens. Persisting the pick from
+the app is 8C-3.
+
 ### start report
 `tau._session_start.start_report` · D22 §7 · new
 

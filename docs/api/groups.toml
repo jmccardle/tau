@@ -8,7 +8,7 @@ made_by_tau = ["Cursor", "NodeHandle", "TreeHandle", "Subject", "LocalClient", "
 
 # Packages other than tau and the standard library that a public signature may name. `httpx`: the
 # provider classes take an `httpx` transport and timeout.
-foreign_types = ["httpx"]
+foreign_types = ["httpx", "textual"]
 
 [[group]]
 id = "extensions"
@@ -117,6 +117,12 @@ names = [
     "Closed", "Leased", "Exists", "NotASession", "Version", "Corrupt", "Undecodable", "TooLarge",
     "Poisoned", "TraceError",
 ]
+
+[[group]]
+id = "tui"
+title = "The terminal UI"
+reader = "`tau.tui`: the Textual app `tau` opens, which a program can embed or drive, and the picture of the session it draws from."
+names = ["tui.TauApp", "tui.SessionView", "tui.LiveLayer", "tui.FormingCall"]
 
 [[group]]
 id = "diagnostics"

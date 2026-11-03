@@ -183,7 +183,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Config writes by the program (`save_config`, `update_config`, `/model --save`) | `config.py:82-115` | **planned** | fixes D1: `tau config set`, `/config --save`, `cursor.save_options` |
 | Model unavailable recorded on session (`model_availability`) | `model_availability.py` | **built** (changed) | model named by a `Config` node, resolved at sample; unknown name is a failed sample (`ConfigError`) |
 | Defaults: `default_model` | `config.py` | **built** | `select_model` / `load_config` (`_startup.py`) |
-| `steering_strategy`, `enter_key`, `attachment_inline_limit`, `theme` keys | `tau_default_config.json` | **dropped** / **planned** | steering dropped (D2); `theme`, `enter_key` are TUI settings: Phase 8 (unspecified) |
+| `steering_strategy`, `enter_key`, `attachment_inline_limit`, `theme` keys | `tau_default_config.json` | **dropped** / **planned** | steering dropped (D2); `theme` is built (8C-1): the top-level `tui` key, `{"tui": {"theme": ...}}` (D13 amended); `enter_key` is dropped (Enter sends, Ctrl+J starts a line) |
 | `session_store.backend` (`file` / `jmfts`) | `store_factory.py` | **post-0.16** | JMFTS |
 | Configurable `max_tokens`, `temperature` | `settings.py` | **built** | `max_tokens` typed in `ModelConfig`; `temperature` via provider `options` (D15) |
 
@@ -193,7 +193,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 | 0.15 flag / subcommand | 0.16 status | note |
 |---|---|---|
-| `tau` (no args) -> Textual TUI | **planned** | Phase 8 |
+| `tau` (no args) -> Textual TUI | **built** (8C-1; cursor bar, tree, picker follow) | D23: `tau` opens `tau.tui.TauApp` over `open_client`; without a terminal it is a usage error |
 | `MESSAGES...` with `@file` references | **built** (changed) / **REGRESSION** for `@file` | D22: the words are joined with spaces (0.15: newlines), then standard input after a blank line when it is not a terminal. `@file` waits for the 8E extension (2.9); `-p` sends text as typed |
 | `-p`, `--print` | **built** (changed) | D22: a switch, not a flag that takes the message. Prints only the last reply on stdout; exit 0/1/2/3/130 (3, stopped before finishing, is new); `-p` attaches to the `tau serve` that holds the session |
 | `--mode text` / `json` | **built** (changed) | `text` is the default and the flag is dropped; `json` is `--json`: the wire's own events, one object per line after a `Welcome` line (not 0.15's bus events) |
@@ -202,7 +202,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | `-v`, `--version` | **built** | D22: prints `tau VERSION (protocol N)`, the τ version and the wire protocol a client must speak; a flag of the launch command line only |
 | `-m`, `--model` | **built** | D22: the model of a new session (D18: an existing session records its own; `/model` switches a running one) |
 | `--provider` | **dropped** | the model's `provider` key in config (D22 §9) |
-| `--theme` | **planned** | Phase 8 themes |
+| `--theme` | **built** (8C-1) | D23: for one run; a usage error with `-p` |
 | `-t`, `--tools` | **deferred** | tools come from extensions (`load`, `-e`); a per-run tool list is Tectum's `--no-tools`, after 0.16.0 (D22 §9) |
 | `-nt`, `--no-tools` | **deferred** | same |
 | `-xt`, `--exclude-tools` | **deferred** | same |
@@ -253,7 +253,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
-| Textual TUI (chat, sidebar, palette, dialogs, themes mocha/latte/gruvbox/ansi + user themes) | `app.py`, `chat_widgets.py`, `themes.py`, `tau.tcss`, `dialogs.py`, `modals.py` | **planned** | Phase 8: "reuses 0.15's core widgets (message, tool and reasoning boxes, the stream strip, themes and `tau.tcss`, dialogs, the session picker), with the app around them written against `Client`". Zero lines exist today; `examples/chat.py` is the only interactive client |
+| Textual TUI (chat, sidebar, palette, dialogs, themes mocha/latte/gruvbox/ansi + user themes) | `app.py`, `chat_widgets.py`, `themes.py`, `tau.tcss`, `dialogs.py`, `modals.py` | **built** in part (8C-1: transcript, editor, commands, forms, questions, themes, dialogs; the sidebar becomes the cursor bar, 8C-2; the palette is not built) | Phase 8: "reuses 0.15's core widgets (message, tool and reasoning boxes, the stream strip, themes and `tau.tcss`, dialogs, the session picker), with the app around them written against `Client`". Zero lines exist today; `examples/chat.py` is the only interactive client |
 | Typing while the model runs (steer / enqueue strategies, `TUI-STEERING.md`) | `steering.py`, `follow_ups.py` | **dropped** | D2: input is a scratchpad item delivered by the next step; "queueing is an extension's"; Retired terms: steering queue, follow-up queue |
 | Enter-key mode, editor widgets, slash-command completion in editor | `editor_widgets.py`, `ENTER-KEY.md` | **planned** (unspecified) | `Client.complete` + `commandline` are the library half (D16) |
 | `@file` attachments (inline limit, TUI chips) | `attachments.py`, `docs/FILE-ATTACHMENTS.md` | **REGRESSION** | Not built, not planned |

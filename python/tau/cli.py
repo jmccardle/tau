@@ -2,9 +2,10 @@
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
 [--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), `tau context
 [--show]` (D20), `tau serve` (D21; `tau._serve_cli`) and the launch command line: `tau -p
-[MESSAGE...]` (D22; `tau._print_mode`) and `tau --version`. A first argument that names none of the
-commands is the launch command line (`tau._launch`). `tau._session_start.start_session` is the
-shared start of `tau -p`, `tau serve` and the programs that follow.
+[MESSAGE...]` (D22; `tau._print_mode`), `tau` (D23; the terminal UI, `tau.tui`) and `tau
+--version`. A first argument that names none of the commands is the launch command line
+(`tau._launch`). `tau._session_start.start_session` is the shared start of `tau`, `tau -p`,
+`tau serve` and the programs that follow.
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
@@ -35,13 +36,13 @@ from typing import NamedTuple, TextIO
 
 from tau._config import ConfigError
 from tau._config_layers import (
-    ConfigProblem,
     LayerText,
     ModelCatalog,
     check_config,
     option_problems,
     read_models,
 )
+from tau._config_tree import ConfigProblem
 from tau._context import system_prompt
 from tau._core import (
     BadRecord,
@@ -62,7 +63,17 @@ from tau._extensions import (
     list_extensions,
     switch_source,
 )
-from tau._launch import UsageError, launch_parser, verbose_flag
+from tau._launch import (
+    UsageError,
+    assignment,
+    extension_flags,
+    launch_parser,
+    option_flags,
+    prompt_flags,
+    session_dir_flag,
+    session_flags,
+    verbose_flag,
+)
 from tau._markdown import to_markdown
 from tau._options import save_options
 from tau._print_mode import print_mode
@@ -99,6 +110,8 @@ from tau._trust import (
 )
 from tau._user_config import UserConfig
 
+__all__ = ["extension_flags", "main", "option_flags", "session_flags"]
+
 _USAGE_ERROR = 2
 _INTERRUPTED = 130
 _UNTRUSTED = " [untrusted project: not used until `tau trust`]"
@@ -112,127 +125,6 @@ class _Run:
     environ: Mapping[str, str]
     cwd: Path
     argv: Sequence[str]  # after the command's name
-
-
-def _assignment(text: str) -> tuple[str, str, str]:
-    """`EXTENSION.FIELD=VALUE` as its three parts."""
-    target, equals, given = text.partition("=")
-    extension, dot, name = target.partition(".")
-    if not (equals and dot and extension and name):
-        raise argparse.ArgumentTypeError(f"{text!r} is not EXTENSION.FIELD=VALUE")
-    return extension, name, given
-
-
-def extension_flags() -> argparse.ArgumentParser:
-    """A parser (`add_help=False`, for `parents=`) with the flags that choose extensions:
-    `-e VALUE` (repeatable; a path, or the key of a source: a discovered one or a built-in) and
-    `--no-extensions`.
-    `tau.start_session` reads them from the parsed args."""
-    flags = argparse.ArgumentParser(add_help=False)
-    flags.add_argument(
-        "-e",
-        "--extension",
-        action="append",
-        default=[],
-        metavar="PATH|KEY",
-        help="load this extension file, package directory, or source key even if it is off "
-        "(repeatable); naming it is the consent",
-    )
-    flags.add_argument(
-        "--no-extensions",
-        action="store_true",
-        help="skip every discovered extension source except -e: no installed package or drop-in "
-        "(the built-ins, base_tools and step_limit, still follow `load`)",
-    )
-    return flags
-
-
-def option_flags() -> argparse.ArgumentParser:
-    """A parser (`add_help=False`, for `parents=`) with `--set EXTENSION.FIELD=VALUE`
-    (repeatable): the config's command-line layer, for this run only (D22). A value is read as
-    `/config` reads it; `tau.start_session` applies and checks them against the loaded
-    extensions' options."""
-    flags = argparse.ArgumentParser(add_help=False)
-    flags.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        dest="set_options",
-        type=_assignment,
-        metavar="EXTENSION.FIELD=VALUE",
-        help="set an extension's option for this run only (repeatable), as `tau config set` "
-        "would for every run",
-    )
-    return flags
-
-
-def _session_dir_flag(*, nested: bool = False) -> argparse.ArgumentParser:
-    """`--session-dir DIR`, the sessions directory for one run (default: `$TAU_HOME/sessions`).
-    `nested`: for a subcommand of a command that has it too, which must not reset it."""
-    flags = argparse.ArgumentParser(add_help=False)
-    flags.add_argument(
-        "--session-dir",
-        metavar="DIR",
-        default=argparse.SUPPRESS if nested else None,
-        help="keep and find sessions in DIR (default: $TAU_HOME/sessions)",
-    )
-    return flags
-
-
-def _prompt_flags() -> argparse.ArgumentParser:
-    """`--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and `-nc` (D20)."""
-    flags = argparse.ArgumentParser(add_help=False)
-    flags.add_argument(
-        "--system-prompt",
-        metavar="TEXT",
-        help="the base text of the system prompt, in place of the built-in one (use "
-        '"$(cat FILE)" for a file; empty: no base text)',
-    )
-    flags.add_argument(
-        "--append-system-prompt",
-        action="append",
-        default=[],
-        metavar="TEXT",
-        help="add a section after the base text (repeatable)",
-    )
-    flags.add_argument(
-        "-nc",
-        "--no-context-files",
-        action="store_true",
-        help="leave out AGENTS.md, CLAUDE.md and .tau/SYSTEM.md",
-    )
-    return flags
-
-
-def session_flags() -> argparse.ArgumentParser:
-    """A parser (`add_help=False`, for `parents=`) with the flags that choose the session
-    (D18 section 5): `-c/--continue`, `-r/--resume`, `--session REF`, `--fork REF` and
-    `--no-session` (at most one), `-n/--name NAME` and `--session-dir DIR`; and the prompt flags
-    of a new session (D20): `--system-prompt TEXT`, `--append-system-prompt TEXT` (repeatable) and
-    `-nc/--no-context-files`. Pass the parsed arguments to `start_session`, which makes paths
-    absolute and rejects combinations."""
-    flags = argparse.ArgumentParser(add_help=False, parents=[_session_dir_flag(), _prompt_flags()])
-    flags.add_argument(
-        "-c",
-        "--continue",
-        dest="continue_last",
-        action="store_true",
-        help="open the newest session of this directory",
-    )
-    flags.add_argument("-r", "--resume", action="store_true", help="choose a session to open")
-    flags.add_argument(
-        "--session", metavar="REF", help="open this session: a path, an id, a name or an id prefix"
-    )
-    flags.add_argument(
-        "--fork",
-        metavar="REF",
-        help="start a new session as a copy of one walk of REF (REF:NODE for a node)",
-    )
-    flags.add_argument(
-        "--no-session", action="store_true", help="keep the session in memory: never listed"
-    )
-    flags.add_argument("-n", "--name", metavar="NAME", help="name the session")
-    return flags
 
 
 class _Parsers(NamedTuple):
@@ -255,7 +147,7 @@ def _parser() -> _Parsers:
     saved.add_argument(
         "assignments",
         nargs="+",
-        type=_assignment,
+        type=assignment,
         metavar="EXTENSION.FIELD=VALUE",
         help="a value is read as `/config` reads it",
     )
@@ -269,7 +161,7 @@ def _parser() -> _Parsers:
         switch = ext_sub.add_parser(name, help=f"{what} the source KEY at every start")
         switch.add_argument("key", metavar="KEY", help="the source's key (see `tau ext list`)")
     sessions = sub.add_parser(
-        "sessions", parents=[_session_dir_flag()], help="list sessions; `sessions name` names one"
+        "sessions", parents=[session_dir_flag()], help="list sessions; `sessions name` names one"
     )
     sessions.add_argument("--all", action="store_true", help="every directory, with its cwd")
     sessions.add_argument(
@@ -277,18 +169,18 @@ def _parser() -> _Parsers:
     )
     sessions_sub = sessions.add_subparsers(dest="sessions_command", metavar="{name}")
     named = sessions_sub.add_parser(
-        "name", parents=[_session_dir_flag(nested=True)], help="show or set a session's name"
+        "name", parents=[session_dir_flag(nested=True)], help="show or set a session's name"
     )
     named.add_argument("ref", metavar="REF", help="a path, an id, a name or an id prefix")
     named.add_argument("name", nargs="?", metavar="NAME", help="the new name; empty removes it")
     export = sub.add_parser(
-        "export", parents=[_session_dir_flag()], help="write a session's walk as Markdown"
+        "export", parents=[session_dir_flag()], help="write a session's walk as Markdown"
     )
     export.add_argument("ref", metavar="REF", help="SESSION or SESSION:NODE")
     export.add_argument("-o", "--output", metavar="FILE", help="write FILE (default: standard out)")
     export.add_argument("--thinking", action="store_true", help="include the model's thinking")
     context = sub.add_parser(
-        "context", parents=[_prompt_flags()], help="what a new session here would tell the model"
+        "context", parents=[prompt_flags()], help="what a new session here would tell the model"
     )
     context.add_argument(
         "--show", action="store_true", help="print the system prompt instead of its parts"
@@ -669,14 +561,23 @@ def _config_command(run: _Run, args: argparse.Namespace) -> int:
     return _check(run, args.show)
 
 
+def _program(run: _Run, args: argparse.Namespace) -> int:
+    """`tau serve`, `tau -p` or `tau`: the programs that start a session."""
+    if args.command == "tui":
+        from tau.tui._run import tui_mode  # noqa: PLC0415 - Textual, which -p never imports
+
+        return tui_mode(run, args)
+    return (serve if args.command == "serve" else print_mode)(run, args)
+
+
 def _dispatch(run: _Run, args: argparse.Namespace) -> int:
     match args.command:
         case "trust":
             return _trust(run, args.dir)
         case "context":
             return _context(run, args)
-        case "serve" | "print":
-            return (serve if args.command == "serve" else print_mode)(run, args)
+        case "serve" | "print" | "tui":
+            return _program(run, args)
         case "sessions" | "export":
             return _session_command(run, args)
         case "ext":
@@ -709,10 +610,11 @@ def _launch(
         return args, 0
     if args.message and not args.print:
         launcher.error(f"{args.message[0]!r} is not a command; to send a message: tau -p MESSAGE")
-    if not args.print:
-        launcher.print_help(run.stderr)
-        return args, _USAGE_ERROR
-    args.command = "print"
+    if args.print and args.theme:
+        launcher.error("--theme is for the terminal UI, which -p does not open")
+    if not args.print and (args.json or args.answer):
+        launcher.error("--json and --answer are for -p: the terminal UI has a person")
+    args.command = "print" if args.print else "tui"
     return args, None
 
 
@@ -780,7 +682,7 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         _fail(err, str(e))
         return _USAGE_ERROR
     except OSError as e:  # a session's files: missing, unreadable, or held (`Leased`)
-        if args.command not in ("sessions", "export", "serve", "print"):
+        if args.command not in ("sessions", "export", "serve", "print", "tui"):
             raise
         return _failed(args, out, err, e)
     except KeyboardInterrupt:

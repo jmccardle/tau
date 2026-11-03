@@ -456,7 +456,10 @@ class Opened
     client: Client
     async def close(self) -> None
     cursor: int
+    me: str
+    async def reconnect(self) -> Client
     snapshot: tuple[Event, ...]
+    socket: Path | None
     started: Started | None
     welcome: Welcome | None
 PickSession = Callable[[Sequence[SessionInfo], Sequence[SessionInfo]], SessionInfo]
@@ -870,6 +873,7 @@ class ModelCatalog
     def resolve(self, qualified: str) -> ModelConfig
     system_prompt: str | None = None
     system_prompt_source: str | None = None
+    tui: Mapping[str, str] = field(default_factory=lambda: {})
     warnings: tuple[ConfigProblem, ...]
 @dataclass(frozen=True)
 class ModelConfig
@@ -1007,6 +1011,65 @@ class TraceError(RuntimeError)
 class Undecodable(ValueError)
 class Version(ValueError)
 class WrongAnswer(ValueError)
+
+== tui: The terminal UI
+# tau.tui
+@dataclass
+class FormingCall
+    args: str = ''
+    id: str
+    tool: str
+# tau.tui
+@dataclass
+class LiveLayer
+    at: int | None = None
+    calls: dict[int, FormingCall] = field(default_factory=lambda: {})
+    def drop_reply(self) -> None
+    property empty: bool
+    progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
+    text: str = ''
+    thinking: str = ''
+# tau.tui
+class SessionView
+    def __init__(self) -> None
+    def hear(self, event: Event) -> None
+    def labels_of(self, cursor: int) -> tuple[str, ...]
+    def path(self, tip: int, at: int) -> list[Node] | None
+# tau.tui
+class TauApp(App[None])
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False)]
+    CSS_PATH = 'tau.tcss'
+    ENABLE_COMMAND_PALETTE = False
+    def __init__(
+        self,
+        client: Client,
+        cursor: int,
+        *,
+        welcome: Welcome | None,
+        home: Path,
+        cwd: Path,
+        snapshot: Sequence[Event] = (),
+        theme: str | None = None,
+        reconnect: Callable[[], Awaitable[Client]] | None = None,
+    ) -> None
+    async def action_abort(self) -> None
+    def action_fold(self, what: str) -> None
+    async def action_interrupt(self) -> None
+    async def action_quit(self) -> None
+    async def complete_value(self, schema: Json, text: str) -> list[str]
+    def compose(self) -> ComposeResult
+    property draft: str
+    def focus_editor(self) -> None
+    def restore_draft(self, text: str) -> None
+    def screen_text(self) -> str
+    def toast(
+        self,
+        text: str,
+        *,
+        title: str = '',
+        severity: SeverityLevel = 'information',
+        timeout: float = 5,
+    ) -> None
 
 == diagnostics: Tracing
 # tau.trace

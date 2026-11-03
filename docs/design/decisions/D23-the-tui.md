@@ -58,7 +58,9 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
   `tau.trace`; 8C amends CLAUDE.md's public module list and `docs/api/groups.toml` when it
   builds it),
   so tests can drive it (rule 4) and others can embed it. Public: `TauApp(client,
-  cursor, *, welcome, snapshot, theme=None)` and `SessionPicker` (§5). Everything else is private
+  cursor, *, welcome, home, snapshot=(), theme=None, reconnect=None)` (8C-1: `home` is `TAU_HOME`,
+  for user themes; `reconnect` makes a new client for an attached session) and `SessionPicker` (§5,
+  8C-2), with `SessionView` (§9: tested through `tau.tui`). Everything else is private
   modules under `tau/tui/`, each under the ratchet's 800 lines.
 - **The app touches only its `Client`** (D16 §5): never `Driver`, `Session` or a provider.
 - **One listener**, a worker running `async for event in client`, feeds a **`SessionView`**: a
@@ -78,7 +80,8 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
   a tool box, its outcome folded in from the `Results` node by call id; usage from `meta`),
   `System` (collapsed, one line), `Config` (one dim line: "model: x"), `Custom` (`sample_error`
   as an error box; others one dim line). A stop other than `End` or `Tools` is a dim line.
-- **Status:** the header shows the session's title (name, else first message), id and `cwd`;
+- **Status:** the header shows the session's title (the first message; 8C-1 has no name, which is
+  not in `Welcome`), id and `cwd`;
   the status bar shows the viewed cursor's `model`, busy, auto-step, the last `ending` and
   `hook_error`, and one line per `shown` extension.
 - **Cursor bar:** one tab per open cursor (id, labels, busy, a mark when it has an open
@@ -92,7 +95,8 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
   message** (`go_to` the node before the last `User` node of the walk, and put its text in the
   editor: 0.15's rollback, as a branch). New: Ctrl+O the session picker, Alt+Left/Right the
   previous or next cursor.
-- **Notices** are toasts, and are kept in a list the palette opens.
+- **Notices** are toasts, and are kept in a list (`TauApp.toasts`; the palette that opens it is
+  not built in 8C-1).
 
 ### 3. Questions and forms
 
@@ -160,8 +164,8 @@ its source in its commit (CLAUDE.md). "As is" still means rule 3's renames: `dia
 |---|---|---|
 | `tau.tcss` | 488 | as is, less the rules of the widgets dropped below; no colour literal (the 0.15 test that checks this comes too) |
 | `themes.py` | 703 | as is: `mocha` (default), `latte`, `gruvbox`, `ansi`, Textual's own adapted, user themes in `$TAU_HOME/themes/*.json`; its `tau_home` and config imports point at 0.16's |
-| `dialogs.py`: `TauDialog`, `ChoiceDialog`, `TextDialog` | 226 | as is |
-| `chat_widgets.py`: `MessageBox`, `ReasoningRegion`, `ToolBox`, `ExchangeBox`, `QuietCollapsible`, `MarkdownLineFormatter`, the formatters | ~1,100 | fed from nodes instead of 0.15 message dicts |
+| `dialogs.py`: `TauDialog`, `ChoiceDialog`, `TextDialog` | 226 | `TauDialog` as is; the other two wait for a dialog that needs them (8C-1 built none) |
+| `chat_widgets.py`: `MessageBox`, `ReasoningRegion`, `ToolBox`, `QuietCollapsible`, `MarkdownLineFormatter`, the formatters (`ExchangeBox` is not carried, 8C-1: nodes are the unit, §2, and a fold per exchange hides the reply) | ~1,100 | fed from nodes instead of 0.15 message dicts |
 | `chat_widgets.py`: `ChatInput` | ~250 | its completion source becomes `complete_line` |
 | `editor_widgets.py`: `CommandPopup`, `PendingInput`, `StreamStrip` | ~350 | the popup from `Form`s; pending items from `CursorView.items`; the strip's look becomes the cursor bar |
 | `extension_ui.py`: `ExtensionStatusBar`, `WarningsMarker`, `ExtensionRequestBox` | ~200 | `CursorView.shown`; `hook_error`; the question box |
@@ -221,6 +225,35 @@ after 0.16.0).
   tree screen, the session picker (`-r`, Ctrl+O, Ctrl+N by re-exec).
 - **8C-3:** `/config` forms with save, a `/model` picker over `complete(cursor, "model", "")`,
   persisted theme (Ruling 3), the render window for long walks, snapshots, the guide page.
+
+## Built: 8C-1 (2026-11-03)
+
+`tau` opens the app; `SessionView`, the transcript, live text, the editor, pending lines, abort,
+`/` commands with the popup and Tab, forms for missing arguments, inline questions, toasts, the
+status bar, themes, `tau.tcss`, `--theme` and the `tui` key. Where the code differs from the text
+above (the text is fixed in place where it was wrong):
+
+- **`App.run_async` shares the driver's loop** (the "not verified" line, free-threaded build
+  aside, which this machine cannot run): it is a coroutine of the caller's loop and starts none, so
+  a `LocalClient` is called from the app with no thread between. `tests/tui/test_session.py` runs
+  the app by `run_async` beside a local driver; every pilot test runs in both Harness modes.
+- **Reconnect belongs to 8C-1** (§1): `TauApp(reconnect=)`, given by the launch for an attached
+  session; tested with a `CutOff` client.
+- **A `sample_error` is not on the walk** (model.md §6): core writes it beside the node the cursor
+  is at. The app draws it, from `Appended`, under the node it is at; a later read of the walk does
+  not show it.
+- **`Labels` does not end a snapshot for a late reader**: a `CursorView` republished since the
+  connect moves to the end of the stream, after `Labels` (model.md §9). `open_client` reads at once,
+  so its snapshot is whole; the app depends on no order.
+- **The top-level `tui` key** is the user's alone (ruling 3): a project layer that sets it is a
+  `ConfigError`, found as the layers are read (`ModelCatalog.tui` holds the user's and the
+  command line's). D13's top-level keys gain it.
+- **`/config`**: a bare `/config` or `/config EXTENSION` shows the extensions or the options as a
+  toast; the form with "save for every session" is 8C-3, as §10 says. `/config EXT name=value
+  [--save]` runs.
+- **Not in 8C-1**: the palette (Ctrl+P) and its notices list, the cursor bar, Ctrl+G/O/N/Z and
+  Alt+arrows (8C-2), `/model` and the render window (8C-3). `ChatSidebar`, `ExchangeBox`,
+  `StreamStrip` are not carried.
 
 ## Gaps in the `Client` contract and the shared start
 

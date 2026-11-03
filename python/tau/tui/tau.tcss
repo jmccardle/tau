@@ -1,0 +1,218 @@
+/* τ's structural stylesheet: no colour literal, no prose. Carried from τ 0.15
+   (tau-coding-agent/src/tau_coding_agent/tau.tcss, tag v0.15.0) less the rules of the widgets
+   0.16 does not carry; colour comes from the theme's $tau-* variables. */
+Screen { background: $tau-bg; }
+ModalScreen { align: center middle; }
+
+/* === The dialog shell (tau/tui/_dialogs.py) === */
+
+.tau-dialog {
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    background: $tau-bg-alt;
+    border: thick $tau-border;
+    padding: 1;
+}
+
+.tau-dialog-title {
+    text-align: center;
+    text-style: bold;
+    color: $tau-accent;
+    margin-bottom: 1;
+}
+
+.tau-dialog-help { height: auto; margin-bottom: 1; color: $tau-text-dim; }
+
+/* One line of key hints under a body. Centred, because it is one line. */
+.tau-dialog-hint { text-align: center; margin-top: 1; color: $tau-text-muted; }
+.tau-dialog-buttons { height: auto; align: center middle; }
+
+.tau-dialog-buttons Button {
+    margin: 0 1;
+    background: $tau-surface;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
+
+.tau-dialog-input {
+    margin-bottom: 1;
+    background: $tau-bg;
+    border: solid $tau-border;
+    color: $tau-text;
+}
+
+.tau-dialog-input:focus { border: solid $tau-accent; }
+
+/* A BODY_ID dialog: the header and footer dock, so 100% is what they leave. */
+.tau-dialog-scrolling > .tau-dialog-header { dock: top; height: auto; }
+.tau-dialog-scrolling > .tau-dialog-footer { dock: bottom; height: auto; }
+.tau-dialog-scrolling > .tau-dialog-body { height: auto; max-height: 100%; }
+
+.tau-choice { height: auto; }
+.tau-choice-list { height: auto; max-height: 12; }
+
+/* === Chat Display === */
+
+#chat-display { height: 1fr; padding: 1 2; background: $tau-bg; }
+#chat-placeholder { height: auto; color: $tau-text; }
+
+#chat-display .chat-fold {
+    height: auto;
+    color: $tau-text-muted;
+    text-align: center;
+    text-style: italic;
+    padding: 1 0;
+}
+
+/* === Message Styling === */
+
+/* default; per-role rules below recolor */
+.chat-message {
+    margin: 1 0;
+    height: auto;
+    padding: 0 1;
+    border: solid $tau-border;
+}
+
+.message-reasoning, .message-tools { height: auto; }
+.message-content { color: $tau-text; padding: 0; }
+
+.chat-message MarkdownH1, .chat-message MarkdownH2, .chat-message MarkdownH3, .chat-message MarkdownH4, .chat-message MarkdownH5, .chat-message MarkdownH6, .chat-message MarkdownParagraph, .chat-message MarkdownBlockQuote, .chat-message MarkdownBulletList, .chat-message MarkdownOrderedList, .chat-message MarkdownList, .chat-message MarkdownListItem, .chat-message MarkdownTable, .chat-message MarkdownFence {
+    margin-top: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.chat-message MarkdownFence > Label { padding: 0 2; }
+.chat-message MarkdownFence { overflow-x: auto; scrollbar-size-horizontal: 1; }
+.chat-message MarkdownBlockQuote > BlockQuote { margin-top: 0; }
+.chat-message MarkdownHorizontalRule { padding-top: 0; margin-bottom: 0; }
+
+/* Pending placeholder — muted, until it resolves into a real role */
+.box-pending { border: solid $tau-role-pending; color: $tau-role-pending; }
+.box-user { border: solid $tau-role-user; }
+.box-assistant { border: solid $tau-role-assistant; }
+.box-system { border: solid $tau-role-system; }
+
+
+.box-error { border: solid $tau-role-error; }
+
+/* === Reasoning / thinking regions (collapsible, dim+italic like pi) === */
+
+.reasoning-region { margin: 0; }
+.reasoning-region > CollapsibleTitle { color: $tau-text-quiet; text-style: italic; }
+.reasoning-region Markdown { color: $tau-text-quiet; text-style: italic; }
+
+/* === Tool call + result boxes (one collapsible per call) === */
+
+.tool-box { margin: 0; }
+
+.tool-box > CollapsibleTitle { color: $tau-role-tool; }
+
+/* on error */
+.tool-box.box-error > CollapsibleTitle { color: $tau-role-error; }
+
+
+/* === Pending lines (the scratchpad's items) === */
+
+#pending-input {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
+    max-height: 6;
+    overflow-y: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* === Input Styling === */
+
+#chat-input {
+    margin: 0 1 1 1;
+    border: solid $tau-border;
+    height: auto;
+    max-height: 10;
+    background: $tau-bg-alt;
+    color: $tau-text;
+}
+
+/* Matches user message color */
+#chat-input:focus { border: solid $tau-role-user; background: $tau-bg; }
+
+/* === Slash-command completion  === */
+
+#command-popup {
+    margin: 0 1 1 1;
+    padding: 0 1;
+    height: auto;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+#command-popup.command-popup-unknown { color: $tau-role-pending; }
+
+/* === Code blocks in markdown === */
+
+Markdown CodeBlock {
+    background: $tau-bg-deep;
+    border: solid $tau-border-subtle;
+    color: $tau-code-fg;
+}
+
+/* === Header, status bar === */
+
+#header {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#status-bar {
+    height: auto;
+    max-height: 6;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $tau-text-dim;
+}
+
+/* === One-line records in the transcript (config, system, other custom) === */
+
+.chat-note { height: auto; margin: 0 0 0 2; color: $tau-text-muted; text-style: italic; }
+.system-box { margin: 1 0; }
+.system-box > CollapsibleTitle { color: $tau-role-system; }
+.chat-message.live { border: dashed $tau-role-assistant; }
+
+/* === Questions (inline, above the editor) === */
+
+#questions { height: auto; max-height: 60%; overflow-y: auto; }
+
+.question-box {
+    height: auto;
+    margin: 0 1;
+    padding: 0 1;
+    border: round $tau-accent;
+    background: $tau-bg-alt;
+}
+
+.question-text { color: $tau-text; margin-bottom: 1; }
+.question-buttons { height: auto; }
+.question-buttons Button { margin-right: 1; background: $tau-surface; color: $tau-text; }
+
+/* === The form renderer (questions and command arguments) === */
+
+.form-field { height: auto; margin-bottom: 1; }
+.form-label { color: $tau-text-dim; }
+.form-error { color: $tau-role-error; }
+.form-input { background: $tau-bg; border: solid $tau-border; color: $tau-text; }
+.form-input:focus { border: solid $tau-accent; }
+.form-choice, .form-multi { height: auto; background: $tau-bg; border: solid $tau-border; }
+#form-dialog { width: 80; max-height: 90%; }
