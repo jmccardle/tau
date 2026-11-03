@@ -1,5 +1,7 @@
 //! The line being typed: text, a cursor, and the few keys a one-line editor needs.
 
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 /// A single line of text with a cursor, counted in characters.
 #[derive(Debug, Default, Clone)]
 pub struct Editor {
@@ -75,6 +77,29 @@ impl Editor {
     pub fn set(&mut self, text: &str) {
         self.text = text.chars().collect();
         self.at = self.text.len();
+    }
+
+    /// The keys of a one-line editor, which the draft, an answer field and a form's text fields
+    /// share. Whether `key` was one of them.
+    pub fn handle(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('a') if ctrl => self.home(),
+            KeyCode::Char('e') if ctrl => self.end(),
+            KeyCode::Char('w') if ctrl => self.delete_word(),
+            KeyCode::Char('u') if ctrl => self.delete_to_start(),
+            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                self.insert(c);
+            }
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Left => self.left(),
+            KeyCode::Right => self.right(),
+            KeyCode::Home => self.home(),
+            KeyCode::End => self.end(),
+            _ => return false,
+        }
+        true
     }
 
     /// The line, leaving the editor empty.

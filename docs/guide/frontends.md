@@ -434,8 +434,10 @@ the tree, the pickers, themes, and how it attaches to a server.
 ## A client in another language
 
 [`examples/ratatui`](../../examples/ratatui/README.md) is a chat client of `tau serve` in Rust,
-with ratatui: the first cursor's conversation with live text, a line to type, Esc to abort,
-questions answered or declined, and a fresh `hello` after a cut-off. It shares no code with τ and
+with ratatui: a cursor's conversation with live text, a line to type, Esc to abort, questions
+answered or declined, a tree browser (Ctrl+G: the viewed cursor's walk, other branches as stubs,
+go to, open, view another cursor, label), `/config` forms built from the options' JSON Schema, and
+a fresh `hello` after a cut-off. It reads the whole tree through `nodes` pages. It shares no code with τ and
 its wire types are generated from [`protocol.schema.json`](../protocol.schema.json) at build
 time, so it is the proof that the schema, [the protocol page](protocol.md) and nothing else are
 enough to write a frontend. Read its README for how the types are generated and which parts of the

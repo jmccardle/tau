@@ -28,7 +28,9 @@ SCHEMA = REPO / "docs" / "protocol.schema.json"
 CTRL_C = "\x03"
 CTRL_D = "\x04"
 ESC = "\x1b"
+CTRL_G = "\x07"
 DOWN = "\x1b[B"
+TAB = "\t"
 OLD = "20261030-091502-1c2d3e"
 MOCK = {
     "default_model": "m",
@@ -65,6 +67,27 @@ class Count:
         return None if n is None else f"count: {n}"
 
 extensions = [Count()]
+"""
+TUNER = """
+from dataclasses import dataclass
+from typing import Literal
+
+class Tuner:
+    name = "tuner"
+
+    @dataclass(frozen=True)
+    class Options:
+        depth: int = 2
+        loud: bool = False
+        mode: Literal["fast", "slow"] = "fast"
+
+        def __post_init__(self):
+            if self.depth > 5:
+                raise ValueError("depth is at most 5")
+
+    options = Options
+
+extensions = [Tuner()]
 """
 FLOOD = '''
 from tau import Cursor
@@ -503,3 +526,272 @@ def test_a_protocol_mismatch_exits_with_the_servers_message(
     shown = " ".join(screen.text().split())
     assert "protocol mismatch" in shown
     assert message in shown
+
+
+# -- the tree
+
+
+def branch_off(record: dict[str, object], at: int, text: str) -> None:
+    """A second client opens a cursor at node `at`, labels it `scout` and says `text` on it."""
+
+    async def other() -> None:
+        async with await RemoteClient.connect(str(record["socket"]), "ann@elsewhere:web") as ann:
+            cursor = await ann.open(at)
+            await ann.set_label(cursor, "scout")
+            await ann.send(cursor, text)
+            deadline = time.monotonic() + 10
+            async for event in ann:
+                if time.monotonic() > deadline or f"mock: {text}" in repr(event):
+                    break
+
+    asyncio.run(other())
+
+
+def cursor_at(world: World, cursor: int) -> int:
+    """Where `cursor` ended, once the server has stopped."""
+    stopped = tau(world, "serve", "--stop", "--session", OLD, cwd=work(world))
+    assert stopped.code == 0, stopped.err
+    session = Session.read(world.tau / "sessions" / OLD)
+    try:
+        return session.cursor(cursor).at
+    finally:
+        session.close()
+
+
+def with_branch(home: World, binary: Path) -> Screen:
+    """A session with two turns, a second client's cursor 1 (`scout`) on a branch off the first,
+    and the example open on the tree."""
+    home.session(OLD, cwd=work(home), says=["first thing", "second thing"])
+    record = serving(home)
+    screen = client(home, binary)
+    idle(screen)
+    branch_off(record, 3, "scouting")
+    screen.type(CTRL_G)
+    screen.wait_for("The session's tree", on_screen=True)
+    return screen
+
+
+def test_the_tree_shows_a_second_clients_branch_as_a_stub_with_its_cursor(
+    home: World, binary: Path
+) -> None:
+    screen = with_branch(home, binary)
+    screen.wait_for("following", on_screen=True)
+    shown = screen.display()
+    assert "├┄" in shown, shown
+    assert "◀ 1 scout" in shown, shown
+    assert "◀ [0]" in shown, "the viewed cursor is bracketed"
+    assert "cursor 0: a walk of" in shown, "the detail pane measures the walk"
+    screen.type(DOWN)
+    screen.wait_for("paused (f follows)", on_screen=True)
+    screen.type("f")
+    screen.wait_for("following", on_screen=True)
+    screen.type(ESC)
+    idle(screen)
+    assert "The session's tree" not in screen.display()
+    assert screen.quit() == 0
+
+
+def test_v_views_the_cursor_on_a_branch_and_the_chat_shows_its_walk(
+    home: World, binary: Path
+) -> None:
+    screen = with_branch(home, binary)
+    screen.type("]")  # the next cursor mark, unfolding the branch it is on
+    screen.wait_for("paused (f follows)", on_screen=True)
+    screen.type("v")
+    screen.wait_for("cursor 1: a walk of", on_screen=True)
+    assert "following" in screen.display(), "v resumes following, on the new cursor"
+    assert "◀ [1] scout" in screen.display()
+    screen.type(ESC)
+    screen.wait_for("cursor 1 |", on_screen=True)
+    screen.wait_for("ann@elsewhere:web: scouting", on_screen=True)
+    assert screen.quit() == 0
+
+
+def test_enter_goes_to_a_node_and_the_server_agrees(home: World, binary: Path) -> None:
+    screen = with_branch(home, binary)
+    screen.type("\x1b[H")  # Home: the root
+    screen.type("\x1b[B\x1b[B")  # two rows down: still a node of cursor 0's walk
+    screen.type("\r")
+    idle(screen)
+    assert "The session's tree" not in screen.display()
+    assert screen.quit() == 0
+    assert cursor_at(home, 0) < 3, "cursor 0 went back before the branch point"
+
+
+def test_o_opens_a_cursor_where_the_highlight_is(home: World, binary: Path) -> None:
+    screen = with_branch(home, binary)
+    screen.type("o")
+    screen.wait_for("opened cursor 2 at node", on_screen=True)
+    assert screen.quit() == 0
+
+
+def test_go_to_on_a_busy_cursor_asks_first(home: World, binary: Path) -> None:
+    home.user_config(SLOW)
+    serving(home)
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("go\r")
+    screen.wait_for("busy", on_screen=True)
+    screen.type(CTRL_G)
+    screen.wait_for("The session's tree", on_screen=True)
+    screen.type("\x1b[H\r")
+    screen.wait_for("is busy; going elsewhere aborts its step. Go? (y/n)", on_screen=True)
+    screen.type("n")
+    deadline = time.monotonic() + 10
+    while "Go? (y/n)" in screen.display():
+        assert time.monotonic() < deadline, "the question never closed"
+        screen.pump()
+    assert "The session's tree" in screen.display(), "declined: still in the tree"
+    screen.type("\r")
+    screen.wait_for("Go? (y/n)", on_screen=True)
+    screen.type("y")
+    idle(screen)
+    assert "eight" not in screen.display(), "the step was aborted"
+    assert screen.quit() == 0
+
+
+def test_l_labels_the_viewed_cursor(home: World, binary: Path) -> None:
+    screen = with_branch(home, binary)
+    screen.type("l")
+    screen.wait_for("label for cursor 0", on_screen=True)
+    screen.type("main\r")
+    idle(screen)
+    screen.type(CTRL_G)
+    screen.wait_for("◀ [0] main", on_screen=True)
+    assert screen.quit() == 0
+
+
+# -- config forms
+
+
+def test_a_config_form_applies_to_the_branch_and_saves_only_when_asked(
+    home: World, binary: Path
+) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config tuner\r")
+    screen.wait_for("save for every session", on_screen=True)
+    for name in ("depth", "loud", "mode"):
+        assert name in screen.display()
+    assert "save for every session" in screen.display()
+    screen.type("4")  # depth
+    screen.type(TAB + " ")  # loud on
+    screen.type(TAB + "\x1b[C")  # mode: slow
+    screen.type(TAB + TAB)  # past the save switch, to Apply
+    screen.type("\r")
+    screen.wait_for("tuner: depth=4, loud=true, mode=slow (on this branch)", on_screen=True)
+    assert "save for every session" not in screen.display(), "the form closed"
+    screen.type("/config tuner\r")  # the form shows the values now
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type("\x1b")
+    assert screen.quit() == 0
+    assert any("tuner" in body and "depth" in body for body in log_of(home))
+    config = json.loads((home.tau / "config.json").read_text(encoding="utf-8"))
+    assert "extensions" not in config, "nothing was saved for every session"
+
+
+def test_a_config_form_with_save_writes_the_users_file(home: World, binary: Path) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config tuner\r")
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type("3" + TAB * 3)  # depth, then past loud and mode to the save switch
+    screen.type(" " + TAB + "\r")
+    screen.wait_for("tuner: depth=3 (for every session)", on_screen=True)
+    assert screen.quit() == 0
+    config = json.loads((home.tau / "config.json").read_text(encoding="utf-8"))
+    assert config["extensions"]["tuner"]["depth"] == 3
+    assert any("tuner" in body for body in log_of(home))
+
+
+def test_a_value_the_server_refuses_stays_in_the_form_and_nothing_is_saved(
+    home: World, binary: Path
+) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config tuner\r")
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type("9" + TAB * 3)
+    screen.type(" " + TAB + "\r")  # save on, apply
+    screen.wait_for("depth is at most 5", on_screen=True)
+    assert "save for every session" in screen.display(), "the form is still open"
+    assert "(for every session)" not in screen.display(), "nothing is claimed saved"
+    screen.type(ESC)
+    assert screen.quit() == 0
+    config = json.loads((home.tau / "config.json").read_text(encoding="utf-8"))
+    assert "extensions" not in config
+    assert not any("tuner" in body for body in log_of(home)), "and no node was written"
+
+
+def test_a_field_that_cannot_be_read_is_refused_in_the_form(home: World, binary: Path) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config tuner\r")
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type("lots" + TAB * 4 + "\r")
+    screen.wait_for("is not an integer", on_screen=True)
+    screen.type(ESC)
+    assert screen.quit() == 0
+
+
+def test_config_alone_lists_the_extensions_with_options(home: World, binary: Path) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config\r")
+    screen.wait_for("Configure which extension?", on_screen=True)
+    assert "tuner" in screen.display()
+    screen.type("\r")
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type(ESC)
+    assert screen.quit() == 0
+
+
+def test_a_cut_off_client_keeps_its_tree_open(home: World, binary: Path) -> None:
+    record = serving(home, "-e", extension(home, "flood", FLOOD))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("before\r")
+    screen.wait_for("assistant: mock: before", on_screen=True)
+    screen.type(CTRL_G)
+    screen.wait_for("following", on_screen=True)
+    screen.type(DOWN)
+    screen.wait_for("paused (f follows)", on_screen=True)
+
+    async def flood() -> None:
+        os.kill(screen.pid, signal.SIGSTOP)
+        try:
+            async with await RemoteClient.connect(
+                str(record["socket"]), "ann@elsewhere:web"
+            ) as ann:
+                await ann.run(0, "flood", {"count": 400, "text": "x" * 20000})
+        finally:
+            os.kill(screen.pid, signal.SIGCONT)
+
+    asyncio.run(flood())
+    # The server cut it off before the flood returned; it says hello and reads the tree again
+    # within moments. Give it two seconds, then it is still the tree, and still paused.
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        screen.pump()
+    screen.wait_for("paused (f follows)", on_screen=True)
+    assert "The session's tree" in screen.display()
+    screen.type(ESC)
+    idle(screen)
+    assert screen.quit() == 0
+
+
+def test_save_with_nothing_changed_still_saves(home: World, binary: Path) -> None:
+    serving(home, "-e", extension(home, "tuner", TUNER))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("/config tuner\r")
+    screen.wait_for("save for every session", on_screen=True)
+    screen.type(TAB * 3 + " " + TAB + "\r")  # to the save switch, on, Apply
+    screen.wait_for("saved for every session (no option changed", on_screen=True)
+    assert "nothing changed" not in screen.display()
+    assert screen.quit() == 0

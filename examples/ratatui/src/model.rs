@@ -3,7 +3,7 @@
 //! No IO and no terminal: `hear` takes an event and answers what it now needs from the server,
 //! `rows` says what the walk looks like. The rules for the live layer are model.md section 9's.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::wire::{
     Author, Body, CursorView, Ending, Event, ItemData, Live, LiveDelta, Node, OpenQuestion,
@@ -19,7 +19,12 @@ pub enum Need {
     Walk(u64),
     /// Open a new cursor where this closed one ended.
     Reopen(u64),
+    /// Read the nodes from this id on, a page of them (for the tree).
+    Page(u64),
 }
+
+/// How many nodes one `nodes` call asks for.
+pub const PAGE: u64 = 500;
 
 /// How a row of the transcript is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +88,15 @@ const RESULT_LINES: usize = 12;
 pub struct Model {
     me: String,
     views: BTreeMap<u64, CursorView>,
-    gone: BTreeSet<u64>,
+    /// The closed cursors and the node each was last at.
+    gone: BTreeMap<u64, u64>,
+    labels: Vec<(String, u64)>,
+    /// The cursor being shown.
     cursor: Option<u64>,
     nodes: HashMap<u64, Node>,
+    /// Nodes 0..dense are all held (the tree needs them whole).
+    dense: u64,
+    reading: bool,
     walk: Vec<u64>,
     fetching: Option<u64>,
     layer: Layer,
@@ -99,9 +110,12 @@ impl Model {
         Self {
             me: me.to_owned(),
             views: BTreeMap::new(),
-            gone: BTreeSet::new(),
+            gone: BTreeMap::new(),
+            labels: Vec::new(),
             cursor: None,
             nodes: HashMap::new(),
+            dense: 0,
+            reading: false,
             walk: Vec::new(),
             fetching: None,
             layer: Layer::default(),
@@ -117,6 +131,63 @@ impl Model {
 
     pub fn view(&self) -> Option<&CursorView> {
         self.views.get(&self.cursor?)
+    }
+
+    /// Every open cursor's view.
+    pub fn views(&self) -> &BTreeMap<u64, CursorView> {
+        &self.views
+    }
+
+    /// The closed cursors and the node each was last at.
+    pub fn gone(&self) -> &BTreeMap<u64, u64> {
+        &self.gone
+    }
+
+    /// Every label and the cursor it is on.
+    pub fn labels(&self) -> &[(String, u64)] {
+        &self.labels
+    }
+
+    pub fn node(&self, id: u64) -> Option<&Node> {
+        self.nodes.get(&id)
+    }
+
+    /// How many nodes, from the root, are all held.
+    pub fn dense(&self) -> u64 {
+        self.dense
+    }
+
+    /// Whether the whole tree is still being read.
+    pub fn reading(&self) -> bool {
+        self.reading
+    }
+
+    /// Start reading every node (the tree browser needs them all): the first page to ask for.
+    pub fn begin_read(&mut self) -> Vec<Need> {
+        if self.reading {
+            return Vec::new(); // a read is already on its way
+        }
+        self.reading = true;
+        vec![Need::Page(self.dense)]
+    }
+
+    /// A page of nodes the server answered. An empty page ends the read.
+    pub fn paged(&mut self, nodes: &[Node]) -> Vec<Need> {
+        for node in nodes {
+            self.insert(node.clone());
+        }
+        if nodes.is_empty() {
+            self.reading = false;
+            return Vec::new();
+        }
+        vec![Need::Page(self.dense)]
+    }
+
+    fn insert(&mut self, node: Node) {
+        self.nodes.insert(node.id, node);
+        while self.nodes.contains_key(&self.dense) {
+            self.dense += 1;
+        }
     }
 
     /// The most recent notices, oldest first.
@@ -149,6 +220,9 @@ impl Model {
 
     /// Show cursor `cursor` from now on: hear its `Live` and read its walk.
     pub fn attach(&mut self, cursor: u64) -> Vec<Need> {
+        if self.cursor != Some(cursor) {
+            self.layer = Layer::default();
+        }
         self.cursor = Some(cursor);
         let mut needs = vec![Need::Watch(cursor)];
         needs.extend(self.resync());
@@ -159,7 +233,7 @@ impl Model {
     pub fn walked(&mut self, nodes: Vec<Node>) -> Vec<Need> {
         self.fetching = None;
         for node in nodes {
-            self.nodes.insert(node.id, node);
+            self.insert(node);
         }
         self.resync()
     }
@@ -170,17 +244,20 @@ impl Model {
             Event::CursorView(view) => self.hear_view(view),
             Event::CursorGone(gone) => {
                 self.views.remove(&gone.cursor);
-                self.gone.insert(gone.cursor);
+                self.gone.insert(gone.cursor, gone.at);
                 if self.cursor == Some(gone.cursor) {
-                    self.lost = Some(format!("cursor {} was closed", gone.cursor));
+                    return self.viewed_closed(gone.cursor);
                 }
                 Vec::new()
             }
-            Event::Labels(_) => self.hear_labels(),
+            Event::Labels(labels) => {
+                self.labels = labels.labels;
+                self.hear_labels()
+            }
             Event::Appended(appended) => {
                 for node in appended.nodes {
                     self.settle(&node);
-                    self.nodes.insert(node.id, node);
+                    self.insert(node);
                 }
                 self.resync()
             }
@@ -204,11 +281,26 @@ impl Model {
         if let Some(first) = self.views.keys().next().copied() {
             return self.attach(first);
         }
-        if let Some(closed) = self.gone.iter().next().copied() {
+        if let Some(closed) = self.gone.keys().next().copied() {
             return vec![Need::Reopen(closed)];
         }
         self.lost = Some("the session has no cursor".to_owned());
         Vec::new()
+    }
+
+    /// The cursor being shown was closed (by another client): show the lowest open one, saying
+    /// so; with none left the session cannot be shown.
+    fn viewed_closed(&mut self, closed: u64) -> Vec<Need> {
+        match self.views.keys().next().copied() {
+            Some(next) => {
+                self.notify(format!("cursor {closed} was closed; showing cursor {next}"));
+                self.attach(next)
+            }
+            None => {
+                self.lost = Some(format!("cursor {closed} was closed"));
+                Vec::new()
+            }
+        }
     }
 
     fn hear_view(&mut self, view: CursorView) -> Vec<Need> {
@@ -456,7 +548,7 @@ impl Model {
     }
 }
 
-fn prose(p: &Prose) -> String {
+pub fn prose(p: &Prose) -> String {
     match p {
         Prose::String(text) | Prose::Object { text, .. } => text.clone(),
     }

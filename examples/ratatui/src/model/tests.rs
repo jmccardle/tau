@@ -237,6 +237,54 @@ fn a_failed_step_is_reported() {
     assert_eq!(model.trouble().as_deref(), Some("the step failed: boom"));
 }
 
+fn event(json: &serde_json::Value) -> Event {
+    serde_json::from_value(json.clone()).unwrap()
+}
+
+fn view_of(cursor: u64, at: u64) -> Event {
+    event(&serde_json::json!({
+        "kind": "CursorView", "cursor": cursor, "at": at, "busy": false, "auto": false,
+        "questions": [], "items": [], "ending": null, "hook_error": null, "model": "m",
+        "shown": []
+    }))
+}
+
+#[test]
+fn the_viewed_cursor_closing_moves_the_view_to_the_lowest_open_one() {
+    let mut model = Model::new(ME);
+    model.hear(view_of(0, 6));
+    model.hear(view_of(1, 3));
+    model.hear(event(
+        &serde_json::json!({"kind": "Labels", "labels": [["scout", 1]]}),
+    ));
+    assert_eq!(model.cursor(), Some(0));
+    let gone = event(&serde_json::json!({"kind": "CursorGone", "cursor": 0, "at": 6}));
+    let needs = model.hear(gone);
+    assert_eq!(model.cursor(), Some(1));
+    assert!(needs.contains(&Need::Watch(1)));
+    assert_eq!(model.lost(), None);
+    assert!(model.notices().any(|n| n.contains("showing cursor 1")));
+    assert_eq!(
+        model.gone().get(&0),
+        Some(&6),
+        "its last node is kept for restarting"
+    );
+    assert_eq!(model.labels(), [("scout".to_owned(), 1)]);
+}
+
+#[test]
+fn switching_the_viewed_cursor_drops_the_live_layer() {
+    let mut model = Model::new(ME);
+    replay_through(&mut model, 3);
+    model.hear(view_of(1, 3));
+    model.hear(event(&serde_json::json!({
+        "kind": "Live", "cursor": 0, "delta": {"kind": "TextDelta", "text": "streaming"}
+    })));
+    assert!(shown(&model.rows()).iter().any(|r| r.contains("streaming")));
+    model.attach(1);
+    assert!(!shown(&model.rows()).iter().any(|r| r.contains("streaming")));
+}
+
 #[test]
 fn a_provider_waiting_to_retry_is_said_until_the_sample_goes_on() {
     let mut model = Model::new(ME);

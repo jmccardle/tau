@@ -3,9 +3,15 @@
 mod ask;
 mod editor;
 mod find;
+mod form;
+mod formui;
 mod link;
 mod model;
+mod plan;
 mod run;
+mod tree;
+mod treetext;
+mod treeui;
 mod ui;
 mod wire;
 
@@ -69,12 +75,14 @@ async fn show(
 ) -> Result<Option<String>, String> {
     let mut keys = keyboard();
     let mut draft = Editor::default();
+    let mut restore = run::Restore::default();
     loop {
-        match run::session(term, connected, me, &mut draft, &mut keys).await? {
+        match run::session(term, connected, me, &mut draft, &mut keys, restore).await? {
             Ended::Quit => return Ok(None),
             Ended::Finished(why) => return Ok(Some(why)),
             Ended::Stopped(why) => return Err(why),
-            Ended::CutOff => {
+            Ended::CutOff(kept) => {
+                restore = kept;
                 connected = link::connect(socket, me)
                     .await
                     .map_err(|e| format!("cut off by the server, and could not reconnect: {e}"))?;
