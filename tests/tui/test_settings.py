@@ -253,7 +253,7 @@ async def test_saving_the_value_the_branch_already_has_writes_it_to_the_file(
 
 
 @scenario
-async def test_saving_a_switch_changed_back_to_the_branchs_value_follows_the_file(
+async def test_saving_with_nothing_marked_leaves_a_file_that_matches_the_branch(
     tmp_path: Path,
 ) -> None:
     h = await harness(tmp_path)
@@ -263,8 +263,11 @@ async def test_saving_a_switch_changed_back_to_the_branchs_value_follows_the_fil
         await pilot.press("enter")
         await dialog(pilot, app, "#options-dialog")
         await pilot.click("#form-save")
-        await pilot.click("#form-run")  # nothing marked: the file is as it was
-        await until(pilot, lambda: any("nothing changed" in t for t in app.toasts))
+        await pilot.click("#form-run")  # nothing marked: the server compares branch and file
+        await until(
+            pilot, lambda: any("the branch's options (for every session)" in t for t in app.toasts)
+        )
+        assert saved(tmp_path) == {"extensions": {"tuner": {"loud": True}}}
     await h.close()
 
 

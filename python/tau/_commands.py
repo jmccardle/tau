@@ -283,7 +283,10 @@ class Commands:
         save: bool,
     ) -> "asyncio.Future[str | None]":
         """Start `/config`: change `extension`'s options on `cursor`'s branch to `values` (JSON),
-        as a step of the cursor; with `save`, write them into the user's file first.
+        as a step of the cursor. With `save`, the user's file is written first: the options in
+        `values` and those a `Config` node on the branch set, wherever they differ from the file's,
+        go into `extensions.<name>` (options equal to the file's stay untouched; `values` may be
+        `{}`). Options only the user, project or command-line layers set are not copied.
         `ConfigError` for an extension without options or values its options type refuses (or,
         with `save`, no user config to write), `Busy` unless the cursor is at rest; nothing is
         written then."""
@@ -294,7 +297,7 @@ class Commands:
                 raise ConfigError(f"extension {extension!r} has no options")
             self._options.check_config(at, None, {extension: values})
             if save:
-                self._options.save(extension, values)
+                self._options.save_branch(extension, at, values)
             bound: dict[str, object] = {"extension": extension, "values": dict(values)}
             return self._start(self._config, bound, client, cursor)
 

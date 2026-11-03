@@ -237,8 +237,12 @@ async def configure(
 ```
 
 Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s
-branch: a step of the cursor writes a `Config` node. With `save`, also write them into
-the user's config file (`extensions.<name>`), which every session reads. `ConfigError`
+branch: a step of the cursor writes a `Config` node. With `save`, the server also writes the
+user's config file (`extensions.<name>`), which every session reads: the options in `values`
+and those a `Config` node on the branch set, wherever they differ from the file's (options
+equal to the file's stay untouched; `values` may be `{}`; options only the user, project
+or command-line layers set are not copied). A client needs no access to that file.
+`ConfigError`
 for an extension without options, or values its options type refuses (or, with `save`,
 a driver with no user config), `Busy` unless the cursor is at rest; nothing is written
 then, neither node nor file.

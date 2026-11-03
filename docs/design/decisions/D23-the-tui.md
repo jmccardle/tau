@@ -326,7 +326,7 @@ the text above:
   schema, each field showing its value now (`Client.options`), and a switch "save for every
   session". Apply sends only what changed: `configure(cursor, extension, changed, save=switch)`, so
   the `Config` node is this branch's and the switch also writes the **user's** file (D13: the project
-  layer has no write). `/model` with no name is a `PickDialog` over `complete(cursor, "model", "")`
+  layer has no write; the server picks what to write). `/model` with no name is a `PickDialog` over `complete(cursor, "model", "")`
   with the current model marked. This is not a branch on the command's name: any missing argument
   whose named type (`format`) is a closed set (`model`, `cursor`) is picked from a list; the rest
   are form fields. (`/config` itself is still named in the line code, as in 8C-1.)
@@ -365,9 +365,10 @@ the text above:
   ignored. While the window is slid back a reply in flight is not drawn (it would land under the
   "later" row); coming to the tail draws it from the live layer, whole. A reconnect keeps the
   reader's place; a send brings the window to the tail. `/config` reads the options when the
-  form opens; with the save switch on it writes what the person wrote a value for or what differs
-  from the user's file, so saving the branch's current value works. Picking the theme already
-  worn saves it.
+  form opens; with the save switch on it sends what the person wrote a value for, and the server
+  decides what the file gets (D13: the options `values` and the branch's `Config` nodes set that differ from the file), so the
+  form reads no file and saving the branch's current value works for any client. Picking the
+  theme already worn saves it.
 
 ## Built: tree view (TUI follow-up 1, 2026-11-03)
 
@@ -384,7 +385,8 @@ detail pane right), new rows and movement. No wire or protocol change: the rows 
   hide it); a branch in the middle hangs inside the turn. **The rule for a stub's own line**: from
   the stub's first node it goes on through the child toward the lowest-numbered open cursor below
   it, else the child with the longest line below it (lowest id on a tie); other children are stubs
-  again, recursively. `v` redraws with another cursor's walk as the spine.
+  again, recursively. Below the spine's last node (the viewed cursor's own) every child, an only
+  child included, is a stub. `v` redraws with another cursor's walk as the spine.
 - **Following** is on while the screen opens: a redraw (batched to 100 ms after `Appended`,
   `CursorView`, `CursorGone` or `Labels`) puts the highlight on the viewed cursor's row. Up, Down,
   PgUp, PgDn, Home, End, a click, `[` `]` and Left stepping out of a row pause it; `f` resumes it;

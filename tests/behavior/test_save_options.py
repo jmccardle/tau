@@ -7,10 +7,10 @@ extension's options type before anything is written.
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import pytest
-from fakes import FakeProvider, FakeTool, Reply
+from fakes import FAKE_MODEL, FAKE_PROVIDER, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 
 from tau import (
@@ -24,6 +24,7 @@ from tau import (
     Stop,
     Subject,
     UserConfig,
+    read_models,
 )
 from tau.commandline import parse
 
@@ -180,6 +181,77 @@ async def test_config_save_changes_the_branch_and_the_file(tmp_path: Path) -> No
     assert isinstance(node.body, Body.Config)
     assert node.body.config.data == '{"extensions": {"tuner": {"size": 7}}}'
     assert saved(tmp_path) == {"extensions": {"tuner": {"size": 7}}}
+
+
+def write_file(tmp_path: Path, text: str) -> Path:
+    config = tmp_path / "tau-home" / "config.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(text, encoding="utf-8")
+    return config
+
+
+@scenario
+async def test_config_save_writes_every_option_where_the_branch_differs_from_the_file(
+    tmp_path: Path,
+) -> None:
+    write_file(tmp_path, '{"extensions": {"tuner": {"size": 2}}}')
+    h = await Harness.create(tmp_path, extensions=[Tuner()], user_config=home(tmp_path))
+    await h.configure("tuner", {"size": 4})  # the branch only; the file still says 2
+    await h.settle()
+    assert saved(tmp_path) == {"extensions": {"tuner": {"size": 2}}}
+    await h.configure("tuner", {"mode": "slow"}, save=True)
+    assert saved(tmp_path) == {"extensions": {"tuner": {"size": 4, "mode": "slow"}}}
+
+
+@scenario
+async def test_config_save_with_no_values_saves_what_the_branch_differs_in(
+    tmp_path: Path,
+) -> None:
+    write_file(tmp_path, '{"extensions": {"tuner": {"size": 2, "mode": "slow"}}}')
+    h = await Harness.create(tmp_path, extensions=[Tuner()], user_config=home(tmp_path))
+    await h.configure("tuner", {"size": 4})
+    await h.settle()
+    await h.configure("tuner", {}, save=True)
+    assert saved(tmp_path) == {"extensions": {"tuner": {"size": 4, "mode": "slow"}}}
+
+
+@scenario
+async def test_config_save_does_not_copy_what_only_another_layer_sets(tmp_path: Path) -> None:
+    model = {"model": FAKE_MODEL, "provider": FAKE_PROVIDER}
+    layered = read_models(  # a layer below the user's file, as a project's would be
+        cli={"models": {FAKE_MODEL: model}, "extensions": {"tuner": {"size": 3}}}
+    )
+    h = await Harness.create(
+        tmp_path, extensions=[Tuner()], catalog=layered, user_config=home(tmp_path)
+    )
+    properties: Any = (await h.client.options(h.cursor, "tuner")).schema["properties"]
+    assert properties["size"]["default"] == 3
+    await h.configure("tuner", {"mode": "slow"}, save=True)
+    assert saved(tmp_path) == {"extensions": {"tuner": {"mode": "slow"}}}
+
+
+@scenario
+async def test_config_save_leaves_options_equal_to_the_file_untouched(tmp_path: Path) -> None:
+    config = write_file(tmp_path, '{"extensions": {"tuner": {"mode": "slow"}}}')
+    h = await Harness.create(tmp_path, extensions=[Tuner()], user_config=home(tmp_path))
+    await h.configure("tuner", {}, save=True)
+    assert config.read_text(encoding="utf-8") == '{"extensions": {"tuner": {"mode": "slow"}}}'
+
+
+@scenario
+async def test_config_save_of_a_refused_value_writes_neither_node_nor_file(
+    tmp_path: Path,
+) -> None:
+    text = '{"extensions": {"tuner": {"size": 2}}}'
+    config = write_file(tmp_path, text)
+    h = await Harness.create(tmp_path, extensions=[Tuner()], user_config=home(tmp_path))
+    await h.configure("tuner", {"mode": "slow"})
+    await h.settle()
+    before = len(h.nodes())
+    with pytest.raises(ConfigError, match="a size is at least 1"):
+        await h.configure("tuner", {"size": 0}, save=True)
+    assert len(h.nodes()) == before
+    assert config.read_text(encoding="utf-8") == text
 
 
 @scenario

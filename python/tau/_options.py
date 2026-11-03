@@ -235,6 +235,18 @@ class ExtensionOptions:
         saving = {extension: (self._types[extension], self._fields[extension], dict(changes))}
         self._use_catalog(save_options(self._user, saving))
 
+    def save_branch(self, extension: str, node: int, values: Mapping[str, object]) -> None:
+        """Write into the user's file the options of `extension` that `values` and the `Config`
+        nodes on the branch to `node` set, wherever they differ from what the file holds, so the
+        file then matches the branch's own choices; options equal to the file's stay untouched,
+        and nothing is written if none differs. What only the user, project or command-line
+        layers set is not copied. `ConfigError` as `save` raises it."""
+        saved = self.saved(extension)  # also the errors: no options, no user config
+        chosen = {**self._fold(node).extensions.get(extension, {}), **values}
+        changes = {k: v for k, v in chosen.items() if k not in saved or saved[k] != v}
+        if changes:
+            self.save(extension, changes)
+
     def saved(self, extension: str) -> Mapping[str, object]:
         """The fields of `extension`'s options that the user's file sets itself, as JSON values.
         `ConfigError` if the extension has no options, or the driver was given no user config."""

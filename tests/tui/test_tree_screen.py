@@ -388,3 +388,34 @@ async def test_after_a_reconnect_the_tree_reads_the_new_session_view(tmp_path: P
         await until(pilot, lambda: any(r.startswith("assistant: second") for r in rows(app)))
         await until(pilot, lambda: highlighted(app).node.id == 5)
     await h.close()
+
+
+@scenario
+async def test_an_only_child_below_the_viewed_node_is_a_stub(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("a"), say("b")]))
+    async with running(h, tmp_path) as (app, pilot):
+        await send(pilot, app, "one", "a")
+        await send(pilot, app, "two", "b")
+        await h.client.go_to(h.cursor, 3)
+        await pilot.pause(0.3)
+        await open_tree(pilot, app)
+        assert any(row.startswith("├┄") for row in rows(app)), rows(app)
+    await h.close()
+
+
+@scenario
+async def test_another_clients_branch_from_the_viewed_node_shows_and_is_reached(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("a"), say("b")]))
+    async with running(h, tmp_path) as (app, pilot):
+        await send(pilot, app, "one", "a")
+        other = await h.client.open(3)
+        await h.client.set_label(other, "scout")
+        await h.client.send(other, "side")
+        await until(pilot, lambda: len(h.nodes()) == 6)
+        await open_tree(pilot, app)
+        assert any("scout" in row for row in rows(app)), rows(app)
+        await pilot.press("]")
+        await until(pilot, lambda: "scout" in str(app.screen.query_one(Tree).cursor_node.label))  # type: ignore[union-attr]
+    await h.close()

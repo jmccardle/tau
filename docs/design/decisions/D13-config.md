@@ -170,3 +170,13 @@ the command-line layer merge as the others do. Read by `tau._config_keys.tui_set
 person picks in the terminal UI. Same rules: the file's other content stays, the layers are read
 again, the write is atomic, a project layer has no write. `--theme` stays one run only and writes
 nothing.
+
+## Amended (2026-11-03): what `configure(save=True)` writes
+
+The server decides, so a client needs no disk access. `configure(cursor, extension, values,
+save=True)` checks `values`, then writes to `extensions.<name>` the options in `values` and those
+a `Config` node on the cursor's branch set, wherever they differ from what the user's file holds;
+options equal to the file's stay untouched, and `values: {}` saves the branch's own choices.
+Options only the user, project or command-line layers set are not copied (a project's setting must
+not leak into every other project). A refused value writes neither the node nor the file. No wire
+change.

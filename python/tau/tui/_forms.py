@@ -9,7 +9,6 @@ in, and the missing ones first. The question box is inline, docked above the edi
 transcript stays readable while a question waits (a question can wait for hours).
 """
 
-from collections.abc import Mapping
 from typing import ClassVar, Protocol, cast
 
 from textual.app import ComposeResult
@@ -111,10 +110,9 @@ class OptionsDialog(FormDialog):
     the options' schema, each field showing the value this branch has. It is dismissed with the
     options to set, and `save` says whether the "save for every session" switch was on.
 
-    Without the switch those are the options changed from the branch's value. With it they are
-    also the ones the person wrote a value for, and those that differ from what the user's file
-    holds (`saved`): saving the value the branch already has is a change to the file. `None` when
-    cancelled."""
+    Those are the options changed from the branch's value, and with the switch on also the ones
+    the person wrote a value for. What the user's file holds is not read here: the server compares
+    the branch with the file when `save` is set (D13). `None` when cancelled."""
 
     DIALOG_ID = "options-dialog"
     RUN_LABEL = "Apply"
@@ -124,12 +122,10 @@ class OptionsDialog(FormDialog):
         title: str,
         schema: Json,
         completer: Completer,
-        saved: Mapping[str, object],
         save: bool = False,
     ) -> None:
         super().__init__(title, schema, completer)
         self.save = save
-        self._saved = saved
 
     def compose_footer(self) -> ComposeResult:
         with Horizontal(classes="form-save"):
@@ -145,9 +141,7 @@ class OptionsDialog(FormDialog):
         def wanted(key: str, value: object) -> bool:
             if value != properties[key].get("default"):
                 return True
-            return self.save and (
-                key in typed or (key in self._saved and value != self._saved[key])
-            )
+            return self.save and key in typed
 
         return {k: v for k, v in arguments.items() if wanted(k, v)}
 

@@ -20,7 +20,6 @@ from textual.screen import Screen
 from tau._client import Client
 from tau._commands import CommandFailed
 from tau._core import Busy
-from tau._user_config import UserConfig
 from tau._values import Form, Json
 from tau.commandline import Parsed, UnknownCommand, values
 from tau.commandline import value as read_value
@@ -183,20 +182,17 @@ class CommandLine:
         for every session" is on."""
         app = self.app
         form = await app.client.options(app.cursor, extension)  # the values now
-        saved = UserConfig(app.home).saved(extension)
-        dialog = OptionsDialog(
-            f"/config {extension}", form.schema, self.complete_value, saved, save
-        )
+        dialog = OptionsDialog(f"/config {extension}", form.schema, self.complete_value, save)
         changed = await app.push_screen_wait(dialog)
         if changed is None:
             return False
-        if not changed:
+        if not changed and not dialog.save:
             app.toast("nothing changed", title=f"/config {extension}")
             return True
         await app.client.configure(app.cursor, extension, changed, save=dialog.save)
         await self.refresh()  # the options now are the new branch's
-        shown = ", ".join(f"{k}={v}" for k, v in changed.items())
         where = "for every session" if dialog.save else "on this branch"
+        shown = ", ".join(f"{k}={v}" for k, v in changed.items()) or "the branch's options"
         app.toast(f"{shown} ({where})", title=f"/config {extension}")
         return True
 

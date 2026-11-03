@@ -339,7 +339,7 @@ class TreePlan:
         cur: int | None = start
         while cur is not None:
             nxt = follow(cur)
-            stubs = [k for k in kids[cur] if k != nxt] if len(kids[cur]) > 1 else []
+            stubs = [k for k in kids[cur] if k != nxt] if nxt is None or len(kids[cur]) > 1 else []
             if user[cur]:
                 turn, hung = [], []
             elif turn is None:

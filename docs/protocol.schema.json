@@ -1257,7 +1257,7 @@
       }
     },
     "configure": {
-      "description": "Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s\nbranch: a step of the cursor writes a `Config` node. With `save`, also write them into\nthe user's config file (`extensions.<name>`), which every session reads. `ConfigError`\nfor an extension without options, or values its options type refuses (or, with `save`,\na driver with no user config), `Busy` unless the cursor is at rest; nothing is written\nthen, neither node nor file.",
+      "description": "Change the options named in `values` (decoded JSON) of `extension` on `cursor`'s\nbranch: a step of the cursor writes a `Config` node. With `save`, the server also writes the\nuser's config file (`extensions.<name>`), which every session reads: the options in `values`\nand those a `Config` node on the branch set, wherever they differ from the file's (options\nequal to the file's stay untouched; `values` may be `{}`; options only the user, project\nor command-line layers set are not copied). A client needs no access to that file.\n`ConfigError`\nfor an extension without options, or values its options type refuses (or, with `save`,\na driver with no user config), `Busy` unless the cursor is at rest; nothing is written\nthen, neither node nor file.",
       "type": "object",
       "properties": {
         "cursor": {
