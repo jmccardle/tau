@@ -3,7 +3,9 @@
 Five things happen in a session without any extension of yours: a failed request is tried again,
 `@file` in a message attaches the file, files you write become commands (prompt templates and
 skills), what the session has used and spent is shown, and a long conversation can be shortened
-(`/compact`, `/prune`). Each can be switched off, and each is a few lines to use. The examples run with the mock
+(`/compact`, `/prune`). Two more wait for you to ask: rules that ask before a tool runs
+(permissions), and sub-agents, which are off until you turn them on. Each can be switched off, and
+each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -308,3 +310,123 @@ stay `false`.
 In `Ctrl+G` a node τ computed shows `⧉` and a copy shows `≡ (copy of 12)`; the detail pane says
 where it came from and how long the conversation was before and after, and `p` jumps to the
 source. `tau ext disable compaction` or `tau ext disable prune` removes either.
+
+## Ask before a tool runs
+
+Out of the box τ runs whatever tool the model calls and asks nothing, as it always has. Write rules
+and it asks. A rule is a tool's name, or a tool's name, a colon and a pattern. There are three
+lists, and a call is checked against `deny` first, then `allow`, then `ask`; a call that no rule
+names runs:
+
+```json
+{
+  "extensions": {
+    "permissions": {
+      "ask": ["bash", "write", "edit"],
+      "allow": ["bash:git status*", "bash:git diff*", "bash:ls*"],
+      "deny": ["write:/etc/*", "edit:/etc/*"]
+    }
+  }
+}
+```
+
+That asks about every `bash`, `write` and `edit` call except the `git status`, `git diff` and `ls`
+commands, and refuses outright any write under `/etc`. The one line that turns asking on is
+`/config permissions ask=bash,write,edit --save`.
+
+The pattern is a shell-style glob over the whole command (for `bash`) or the `path` argument (for
+`read`, `write`, `edit`, `grep` and `find`): `*` matches anything, including `/` and line breaks,
+`?` one character, `[ab]` a set, and capitals are not lowercase. A tool an extension gives the model
+takes only its bare name (and a name may hold a colon: `srv:tool`). A rule that names a tool nobody
+provides (`Bash`, `wirte`) stops the start, so a typo cannot silently guard nothing.
+
+Paths are matched as the model wrote them and as the file they name: relative to the session's
+directory, with `..`, `//` and symlinks resolved. So `write:/etc/*` also refuses `../../etc/x` and a
+link that lands in `/etc`. `grep` also names each of its `files` (and the working directory when it
+names no path): a `deny` or `ask` fires if any of them matches, an `allow` needs all of them to, and
+an `allow` matches the resolved path only.
+
+Commands are harder, because a glob is not a shell. An `allow` pattern never runs a command that
+chains or redirects (`;`, `&`, `|`, a backtick, `$(`, `<`, `>`, or a new line) unless the pattern
+contains that character too: `allow: ["bash:git status*"]` runs `git status -s` but asks about
+`git status; rm -rf x`. A `deny` or `ask` pattern is tried on each piece of a chained command, after
+dropping leading `VAR=value` words, `then`/`do`/`else`, a leading backslash and wrappers such as
+`sudo -u X`, `env -i`, `nice -n 5`, `timeout 5`, `xargs` and `command`, and reducing `/bin/rm` to
+`rm`, so `bash:rm *` refuses `ls; rm x` and `/bin/rm x`. That is best effort: quoting,
+`eval` and `bash -c "..."` are not seen, so **a `bash` deny is not a guarantee. `ask: ["bash"]` is the
+safe setting**: it puts every command in front of you. Rules guard against the model; they are not a
+sandbox.
+
+A call that a rule says to ask about holds the cursor with a question that names the tool, its
+command or path, and the rule that matched:
+
+```text
+bash: git push origin master
+(ask rule: bash)                                  yes / always / no
+```
+
+`yes` runs it. `always` runs it and writes its exact rule (`bash:git push origin master`, or for a
+file tool the resolved path) into the `allow` list of your config file, so it is never asked again in
+any session, and τ tells you it did. If a project layer or a `--set` also sets `allow` and hides the
+file's list, τ says so and the rule still holds for the rest of the run. `no` gives the model
+`the user refused this call`. Esc, or going to another node, refuses it too. A batch of calls asks
+all its questions at once, and a [sub-agent](#sub-agents)'s questions are asked on its own
+cursor. Another client of the same session (`tau serve`) can answer a question; the first answer
+wins.
+
+`tau -p` has no one to ask, so a question it has no answer for is declined and the call refused,
+and the run still ends. Give it answers with `--answer`, which matches who asked and what:
+
+```bash skip
+tau -p --answer permissions=yes "tidy the imports"
+tau -p --answer 'permissions:bash: rm*=no' --answer permissions=yes "clean up"
+```
+
+A `--answer` text is a glob over the call (`bash: git push origin master`; a file tool's question
+shows the resolved path, so a text for `/proj/*` does not answer `/proj/../etc/x`), so
+`--answer 'permissions:bash: git push*=yes'` is complete as written, and like an `allow` pattern it
+never answers a command that chains or redirects unless the text contains that character. Leave the
+text out (`--answer permissions=yes`) to answer every question. An empty pattern (`bash:`) or an
+unknown tool name stops the start, and `tau config check` names it.
+
+## Sub-agents
+
+A sub-agent is a second model run the main one starts for a job of its own. It is off until you turn
+it on, because the tool it adds would be in every request:
+
+```bash
+tau ext list | grep -A1 '^agents'
+tau ext enable agents
+tau ext list | grep -A1 '^agents'
+tau ext disable agents
+```
+
+```text expect
+agents        off        built-in
+              off (default); to turn it on: tau ext enable agents
+set load.agents = true in <*>
+agents        on         built-in
+              commands: none; tools: agent
+set load.agents = false in <*>
+```
+
+With it on, the model has a tool, `agent(task)`. Each call opens a new cursor, labelled `agent:1`,
+`agent:2`, and so on, that starts from the system prompt and your context files and nothing
+else, so the model must put everything the job needs in `task`. The result the model reads is
+`agent:1 answered:` and the agent's last reply. The agent is closed when it has answered; it stays in
+the tree (`Ctrl+G`) as a dimmed closed cursor with its label. Several `agent` calls in one reply
+run at once. To give an agent a second job, the model calls `agent(task, to="agent:1")`, which
+reopens it with its earlier work still in its context.
+
+An agent has every tool except `agent`, or exactly the `tools` you list (a call to any other tool
+fails with `tool not offered`), so they do not nest, and the step limit bounds each one.
+Its replies are counted by `/usage`, and Esc on the main cursor aborts the agents it started.
+Permission rules apply to an agent's calls as to any other. If an agent fails, the call fails with
+`agent:1 failed:` and the reason. The settings:
+
+```json
+{ "extensions": { "agents": { "model": "local:small", "tools": ["read", "grep", "find"] } } }
+```
+
+`model` is the model agents run on (default: the one the calling branch is on), and `tools` the
+tools they are offered (default: all but `agent`).

@@ -28,6 +28,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
+from tau._agents import Agents
 from tau._attachments import Attachments
 from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
@@ -36,6 +37,7 @@ from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._options import option_fields
+from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
 from tau._project_read import TrustError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
@@ -84,14 +86,18 @@ def _skills(loaded: LoadedConfig) -> Skills:
 
 
 _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
+    Agents.name: lambda loaded: Agents(),
     Attachments.name: lambda loaded: Attachments(Path.cwd()),
     BaseTools.name: lambda loaded: BaseTools(),
     Compaction.name: lambda loaded: Compaction(),
+    Permissions.name: lambda loaded: Permissions(Path.cwd()),
     Prune.name: lambda loaded: Prune(),
     Skills.name: _skills,
     StepLimit.name: lambda loaded: StepLimit(),
     Usage.name: lambda loaded: Usage(),
 }
+OFF_BY_DEFAULT = frozenset({Agents.name})
+"""The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
@@ -485,6 +491,12 @@ def _reason_off(candidate: _Candidate, catalog: ModelCatalog, discover: bool) ->
         return "--no-extensions"
     if catalog.load.get(candidate.key) is False:
         return f"load.{candidate.key} = false in {catalog.load_sources[candidate.key]}"
+    if (
+        candidate.kind == "built-in"
+        and candidate.key in OFF_BY_DEFAULT
+        and candidate.key not in catalog.load
+    ):
+        return f"off (default); to turn it on: tau ext enable {candidate.key}"
     return None
 
 

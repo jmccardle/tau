@@ -195,7 +195,7 @@ async def test_hook_errors_remembers_what_the_next_step_erases_from_the_view(
 
 @scenario
 async def test_hook_errors_lists_the_calls_an_extension_refused(tmp_path: Path) -> None:
-    script = [use("write", path="x"), use("hook_errors"), say("ok")]
+    script = [use("bash", command="rm x"), use("hook_errors"), say("ok")]
     tools = [FakeTool(n, "ran") for n in ("read", "write", "grep", "bash")]
     h, _ = await sensed(tmp_path, script, tools=tools, extras=[plan_mode])
     await h.run("plan")
@@ -206,7 +206,7 @@ async def test_hook_errors_lists_the_calls_an_extension_refused(tmp_path: Path) 
     await h.send("go")
     await h.settle()
     assert told(h).endswith(
-        "call c: plan mode: write is refused. Put the change in your plan instead. (by plan_mode)"
+        "call c: plan mode: bash is refused. Put the change in your plan instead. (by plan_mode)"
     )
     await h.close()
 

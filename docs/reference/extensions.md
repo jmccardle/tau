@@ -4,7 +4,45 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Prune`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+Names: `Agents`, `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+
+## Agents
+
+```python
+class Agents
+    name = 'agents'
+    options = Options
+```
+
+Gives the model the `agent` tool (the module docstring).
+
+### Agents.__init__
+
+```python
+def __init__(self) -> None
+```
+
+### Agents.pre_sample
+
+```python
+async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Offer an agent's cursor its tools: the `tools` option's, or all but `agent`.
+
+### Agents.agent
+
+```python
+async def agent(
+    self,
+    node: NodeHandle,
+    task: Annotated[str, 'everything the agent needs: it sees none of this conversation'],
+    to: Annotated[str | None, 'an earlier agent to continue, such as agent:1'] = None,
+) -> str
+```
+
+Give a task to a sub-agent that starts with a fresh context and returns its final
+reply. With `to`, send a follow-up to an agent you used before; it remembers its work.
 
 ## Attachments
 
@@ -476,6 +514,15 @@ def walk(self) -> list[Node]
 
 The nodes from the root to the batch's node.
 
+### NodeHandle.tell
+
+```python
+def tell(self, text: str, *, to: str | None = None) -> None
+```
+
+`Cursor.tell`, from a tool hook: send `text` as a `Notice` to client `to`, or to every
+connected client by default.
+
 ### NodeHandle.ask
 
 ```python
@@ -496,6 +543,31 @@ NodeId = NewType('NodeId', int)
 ```
 
 A node that exists.
+
+## Permissions
+
+```python
+class Permissions
+    name = 'permissions'
+    options = Options
+```
+
+Asks before, or refuses, a tool call a rule names (the module docstring). `cwd` is the
+session's working directory, which a relative path is resolved against.
+
+### Permissions.__init__
+
+```python
+def __init__(self, cwd: Path) -> None
+```
+
+### Permissions.pre_tool
+
+```python
+async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
+```
+
+Refuse a denied call, let an allowed one go, and hold an asked one for an answer.
 
 ## Prune
 

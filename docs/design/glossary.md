@@ -1235,6 +1235,60 @@ characters after it over four, or all characters. A summarizer that fails, is ha
 without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing.
 The trigger never reacts to a provider's "prompt too long"; `/compact`, then a step, recovers.
 
+### Permissions (extension), rule
+`tau.Permissions` (`_permissions.py`), key `permissions`, options `ask`, `allow`, `deny` · D24 section 7 · new (8E-4)
+
+The built-in extension that asks before, or refuses, a tool call. A **rule** is `TOOL` (every call
+of the tool) or `TOOL:GLOB` (`bash`: the command; `read`, `write`, `edit`, `grep`, `find`: the
+`path`, and `grep`'s `files`; a tool from an extension takes only the bare form), the glob being `fnmatch`'s, case
+sensitive, over the whole `bash` command, or over a path as written and as resolved (against the
+session's working directory, symlinks followed; `deny` and `ask` fire if any named path matches,
+`allow` needs every one to, resolved). Any other text
+is a tool's whole name. An `allow` glob never matches a command that chains or redirects (`;` `&` `|`
+a backtick `$(` `<` `>` a newline) unless it holds the operator, and `deny` and `ask` try each piece
+of a chain (`tau._shell`; best effort, `ask: [bash]` is safe). A rule naming a tool no loaded
+extension provides is a `ConfigError`. A `pre_tool` hook checks `deny`, then
+`allow`, then `ask`; a call no rule matches runs, and with no rules configured nothing is ever
+asked. An `ask` match holds the cursor with a question, `TOOL: ARGUMENT` (a line per resolved path) and `(ask rule: RULE)`,
+answered `yes`, `always` (run it and append its exact rule to the user's file's `allow`) or `no`;
+`no`, a decline, an abort or a go-to give the call `Err("the user refused this call")`. A `deny`
+match gives it an `Err` naming the rule. Not a sandbox: a later extension's `pre_tool` can change the
+outcome.
+
+### Agents (extension), sub-agent, agent tool
+`tau.Agents` (`_agents.py`), key `agents`, options `model`, `tools`, tool `agent(task, to=None)` · D24 section 8 · new (8E-4)
+
+The built-in extension, **off by default**, that gives the model one tool. A call opens a
+**sub-agent**: a cursor at the end of the session's prefix (a fresh context sharing the cache
+prefix; a `Config` naming the model first when it differs), labelled `agent:N`, sent the task as
+input, waited on with `rest`, and closed when it has answered; the result is `agent:N answered:`
+and its final reply text. `to="agent:N"` reopens that closed agent and sends it a follow-up. An
+ending other than `Done`, or a reply that asks for tools, is a `ToolError` naming the agent. Its
+cursor is offered the `tools` option's tools, or all but `agent`. Aborting the calling cursor
+cancels the call, whose `finally` closes (and so aborts) the agent.
+
+### shell guard (`tau._shell`)
+module `tau._shell` (private) · D24 section 7 · new (8E-4)
+
+What permissions and `--answer` know about a shell command: `allows(glob, command)` for an allowing
+pattern (the command's operators must be in the glob) and `refuses(glob, command)` for a refusing
+or asking one (the command whole and each piece between the operators, with `VAR=` words and
+wrappers stripped and the first word's basename). Best effort, not a parser.
+
+### tool not offered
+`Err("tool not offered: X")` · D24 section 8, driver · new (8E-4)
+
+A call to a registered tool that the sample which made it was not offered (`subject.tools` after
+`pre_sample`) is not run: its outcome is this error, written before any `pre_tool` hook. A reply the
+driver did not sample (loaded with a batch pending, or gone back to) is not checked.
+
+### off by default (a built-in)
+`OFF_BY_DEFAULT` in `tau._extensions` · D24 M10, D19 · new (8E-4)
+
+A built-in that `load` must turn on: its row in `tau ext list` is `off` with `off (default); to turn
+it on: tau ext enable KEY`. `load: {KEY: true}`, `tau ext enable KEY` and `-e KEY` turn it on;
+`--no-extensions` does not. Only `agents` is.
+
 ### rest (a handle's) and an abort of the waiter
 `TreeHandle.rest` · D24 M7 · amended (8E-3)
 
@@ -1254,8 +1308,8 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
-**load order**: a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `attachments`,
-`base_tools`, `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+**load order**: a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents` (off by default), `attachments`,
+`base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that

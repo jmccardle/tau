@@ -17,7 +17,7 @@ reader = "An extension is a module that adds hooks, tools, commands and options 
 names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
-    "StepLimit", "Attachments", "Skills", "Usage", "Compaction", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
+    "StepLimit", "Attachments", "Skills", "Usage", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
 ]
 
 [[group]]

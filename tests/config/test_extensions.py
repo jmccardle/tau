@@ -31,12 +31,14 @@ BUILT_INS = [
     "attachments",
     "base_tools",
     "compaction",
+    "permissions",
     "prune",
     "skills",
     "step_limit",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "retry"])  # the keys `load` takes, `retry` being a provider wrapper
+KEYS = sorted([*BUILT_INS, "agents", "retry"])
+"""The keys `load` takes: `retry` is a provider wrapper, `agents` is off by default."""
 MODULE = """
 name = "{name}"
 {extra}
@@ -187,9 +189,11 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
     assert list(site_rows(result)) == [
         "tau",
         "session_name",
+        "agents",
         "attachments",
         "base_tools",
         "compaction",
+        "permissions",
         "prune",
         "retry",
         "skills",
@@ -326,17 +330,21 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:18] == [
+    assert lines[:22] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
         f"{pad}commands: /name; tools: none",
+        "agents        off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable agents",
         "attachments   on         built-in",
         f"{pad}commands: none; tools: none",
         "base_tools    on         built-in",
         f"{pad}commands: none; tools: read, write, edit, grep, find, bash",
         "compaction    on         built-in",
         f"{pad}commands: /compact; tools: none",
+        "permissions   on         built-in",
+        f"{pad}commands: none; tools: none",
         "prune         on         built-in",
         f"{pad}commands: /prune; tools: none",
         "retry         on         built-in (provider wrapper)",

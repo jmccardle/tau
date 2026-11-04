@@ -8,7 +8,10 @@ import asyncio
 import json
 import os
 import signal
+import threading
 import time
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -351,3 +354,86 @@ def test_open_client_refuses_own_extensions_when_it_attaches(home: World) -> Non
             )
 
     asyncio.run(opened())
+
+
+# -- questions of the cursors its own run opens (a sub-agent's)
+
+
+class _Delegating(BaseHTTPRequestHandler):
+    """The parent calls `agent("sub")`; the agent calls `bash("touch ran")`; both then say so."""
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        messages = body["messages"]
+        child = any(m["role"] == "user" and m["content"] == "sub" for m in messages)
+        if messages[-1]["role"] == "tool":
+            delta, finish = (
+                {"role": "assistant", "content": "child done" if child else "done"},
+                "stop",
+            )
+        else:
+            name, arguments = (
+                ("bash", {"command": "touch ran"}) if child else ("agent", {"task": "sub"})
+            )
+            call = {
+                "index": 0,
+                "id": "c0",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+            delta, finish = {"tool_calls": [call]}, "tool_calls"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": "f",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+@pytest.fixture
+def delegating(home: World) -> Iterator[World]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Delegating)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/v1"
+    home.user_config(
+        {
+            "default_model": "m",
+            "models": {"m": {"model": "m", "base_url": url}},
+            "load": {"agents": True},
+            "extensions": {"permissions": {"ask": ["bash"]}},
+        }
+    )
+    work(home).mkdir(exist_ok=True)
+    try:
+        yield home
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_sub_agents_question_is_answered_by_the_attached_run_not_left_hanging(
+    delegating: World,
+) -> None:
+    serving(delegating)
+    result = p(delegating, "--session", OLD, "--answer", "permissions=yes", "go")
+    assert result.code == 0, result.err
+    assert result.out == "done\n"
+    assert "answered question" in result.err
+    assert (work(delegating) / "ran").exists(), "the agent's bash call ran"
+
+
+def test_without_a_rule_the_attached_run_declines_a_sub_agents_question(delegating: World) -> None:
+    serving(delegating)
+    result = p(delegating, "--session", OLD, "go")
+    assert result.code == 0, result.err
+    assert result.out == "done\n"
+    assert "declined question" in result.err
+    assert not (work(delegating) / "ran").exists(), "the call was refused"

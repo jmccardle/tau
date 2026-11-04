@@ -44,6 +44,7 @@ BUILT_INS = [
     "attachments",
     "base_tools",
     "compaction",
+    "permissions",
     "prune",
     "skills",
     "step_limit",

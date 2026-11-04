@@ -135,12 +135,16 @@ someone does answer: the `-p` client, by rule or by declining.
   any cursor, while the run lasts. A sub-agent's permission question is on the sub-agent's
   cursor, and the run waits on it. **Attached to a server** (§8), other clients, a person in the
   TUI, may be connected, so `-p` handles only the questions that open after its send, on the
-  cursor it sent to. Every other question, one on another cursor or one open before the send, is
-  left to the server's other clients, and `-p` says on stderr that it is. It never rules on them.
+  cursor it sent to or on a cursor opened since it attached (a sub-agent's: the run's own). Every
+  other question, one open before the send or on a cursor that was there already, is left to the
+  server's other clients, and `-p` says on stderr that it is. It never rules on them.
 - **A rule** is `--answer EXTENSION[:TEXT]=VALUE`, repeatable; the first that matches wins.
   It is split at the last `=` (the value), then the rest at the first `:` (extension, text).
-  `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the question's text
-  (default `*`). `VALUE` is read by the question's schema with `commandline.value`, as a typed
+  `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the first line of the
+  question's text (default `*`). A `permissions` question is `TOOL: CALL` then a line `(ask rule:
+  RULE)`: its TEXT is matched against the call alone, with a path tool's paths resolved, and a call
+  that chains commands or redirects (`;` `&` `|` a backtick `$(` `<` `>` a newline) is matched only
+  by a TEXT that contains the operator (D24 "Built: 8E-4"); a TEXT left out answers every question. `VALUE` is read by the question's schema with `commandline.value`, as a typed
   answer is: one of a `Literal`'s values (permissions asks `yes | always | no`, D24 §7), `yes`
   for a boolean, `3`, `a,b` for a list.
   ```

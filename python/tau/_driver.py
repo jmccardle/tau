@@ -15,7 +15,9 @@ rules about performing one effect:
 - An interrupted call skips `pre_result`.
 - A question open when its cursor is aborted or sent elsewhere is declined, and so is one asked
   later in that step; a question never waits on a client being there (D16 section 3).
-- A sample is offered the tools its `pre_sample` hooks left in `subject.tools` (all if none did).
+- A sample is offered the tools its `pre_sample` hooks left in `subject.tools` (all if none did),
+  and a call it makes to a registered tool outside the offer is `Err("tool not offered: X")`
+  without running any hook (a reply this driver did not sample is not checked).
 - Every change a client could see is published by one comparison (`Hub.sync`), after each
   call, each pump pass, and each handle write; nothing is announced by hand.
 - A failure of the driver cancels every effect in flight; `stop()` cancels
@@ -215,6 +217,7 @@ class Driver:
         self._given = tuple(tools)
         # cursor -> the offer of its last pre_sample that a sample follows (None: every tool)
         self._offered: dict[int, tuple[str, ...] | None] = {}
+        self._made_with: dict[int, tuple[int, tuple[str, ...]]] = {}  # cursor -> (at, offer)
         self._options = ExtensionOptions(
             (), session, lambda: self._catalog, user_config, self.use_catalog
         )
@@ -581,7 +584,9 @@ class Driver:
     def _offered_tools(self, cursor: int) -> tuple[Tool, ...]:
         """The tools a sample of `cursor` is offered: its `pre_sample` hooks' choice, once."""
         offered = self._offered.pop(cursor, None)
-        return tuple(t for n, t in self._tools.items() if offered is None or n in offered)
+        tools = tuple(t for n, t in self._tools.items() if offered is None or n in offered)
+        self._made_with[cursor] = (self.session.cursor(cursor).at, tuple(t.name for t in tools))
+        return tools
 
     def _dispatch(self, cursor: int, job: Job) -> None:
         session = self.session
@@ -623,6 +628,9 @@ class Driver:
                         batch=node,
                         progress_tools=self._progress_tools,
                         on_progress=live,
+                        offered=_offer_of(
+                            self._made_with.get(cursor), session.tree.node(node).parent
+                        ),
                     )
                     for c in calls
                 ]
@@ -631,6 +639,15 @@ class Driver:
                     self._unit(cursor, run.run)
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
+
+
+def _offer_of(
+    made: tuple[int, tuple[str, ...]] | None, parent: int | None
+) -> tuple[str, ...] | None:
+    """The names of the tools offered to the sample that wrote a reply whose parent is `parent`,
+    if this driver took that sample from `made` (its cursor's last: where it began, what it was
+    offered). A reply from before a reload, or one a cursor went back to, is not known."""
+    return made[1] if made is not None and made[0] == parent else None
 
 
 # What the pump and the effects never take for a failure: the driver's own cancelling, and the

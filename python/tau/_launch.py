@@ -17,6 +17,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TextIO
 
+from tau import _permissions
+
+PERMISSIONS = "permissions"
+"""The extension whose questions an `--answer` text is matched as a call (`tau._permissions`)."""
+
 
 class UsageError(Exception):
     """A usage error found after the line parsed: nothing to send, a command line missing its
@@ -26,7 +31,9 @@ class UsageError(Exception):
 @dataclass(frozen=True)
 class AnswerRule:
     """One `--answer EXTENSION[:TEXT]=VALUE` (D22 section 5): the asking `extension` (or `*`), a
-    glob over the question's `text` and the `value` to answer with, read by the question's schema.
+    glob over the first line of the question's `text` and the `value` to answer with, read by the
+    question's schema. For `permissions` the glob is over the whole call (its `(ask rule: ...)` line
+    left out), and a call that chains commands is matched only by a glob that holds the operator.
     `spec` is the argument as typed."""
 
     extension: str
@@ -36,7 +43,12 @@ class AnswerRule:
 
     def matches(self, extension: str, text: str) -> bool:
         """Whether the question `text` asked by `extension` is one this rule answers."""
-        return self.extension in ("*", extension) and fnmatch.fnmatchcase(text, self.text)
+        if self.extension not in ("*", extension):
+            return False
+        if extension == PERMISSIONS and self.text != "*":
+            # The call alone (not the line naming the rule that matched), the resolved path.
+            return _permissions.answers(self.text, text)
+        return fnmatch.fnmatchcase(text.split("\n", 1)[0], self.text)
 
 
 def answer_rule(spec: str) -> AnswerRule:

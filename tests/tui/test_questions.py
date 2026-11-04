@@ -3,11 +3,11 @@
 from pathlib import Path
 from typing import Any
 
-from fakes import FakeProvider, FakeTool, Reply
+from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 from tuikit import Gatekeeper, running, say, shows, until
 
-from tau import Author, Body, Cursor, Outcome, Part, Stop, Subject
+from tau import Author, Body, Cursor, Outcome, Part, Permissions, Stop, Subject, model_config
 
 
 def calls() -> Reply:
@@ -114,4 +114,27 @@ async def test_a_text_question_is_answered_in_its_field(tmp_path: Path) -> None:
         await pilot.press("backspace", "7", "enter")
         await shows(pilot, app, "ok")
         assert asks.answer == 7
+    await h.close()
+
+
+@scenario
+async def test_a_permission_question_shows_the_call_the_rule_and_its_three_answers(
+    tmp_path: Path,
+) -> None:
+    tool = FakeTool("bash", "ran")
+    call = Part.Call("a", "bash", '{"command": "git push origin master"}')
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply([call], Stop.Tools), say("done")]),
+        tools=[tool],
+        extensions=[Permissions(tmp_path)],
+        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash:git push*"]}}),
+    )
+    await h.send("go")
+    async with running(h, tmp_path) as (app, pilot):
+        await shows(pilot, app, "bash: git push origin master")
+        await shows(pilot, app, "(ask rule: bash:git push*)  [yes / always / no]")
+        await pilot.click(".question-buttons Button")
+        await shows(pilot, app, "done")
+        assert tool.calls == [{"command": "git push origin master"}]
     await h.close()

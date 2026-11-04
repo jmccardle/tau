@@ -111,7 +111,8 @@ async def post_reply(cursor: Cursor, subject: Subject) -> str | None:
 
 async def pre_tool(node: NodeHandle, call: CallDraft) -> str | None:
     """Refuse what the model may not do in plan mode. The model is only offered the read-only
-    tools, but offering is not enforcing: a call to a tool it was not offered still arrives."""
+    tools and the driver refuses a call to any other (`tool not offered`); this hook refuses what
+    is offered but not allowed: a `bash` command outside `allow_bash`."""
     options = node.options()
     if options.mode != "plan" or call.tool in options.allow_tools:
         return None

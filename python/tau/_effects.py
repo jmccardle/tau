@@ -396,6 +396,8 @@ class _HookError(Exception):
 class CallRun:
     """One call of a batch: `pre_tool` hooks, the tool, `pre_result` hooks.
 
+    `offered` is the names of the tools the sample that made the call was offered, or `None` when
+    that is not known (all): a registered tool outside it is not run (`tool not offered: X`).
     `abort` cancels the tool; a hook that is running finishes (Q34). A tool that opted in
     (`progress_tools` names it) is given a `Progress` that turns each call into
     `on_progress(ToolProgress(node, call id, text))` on the loop while the tool runs, and does
@@ -414,8 +416,10 @@ class CallRun:
         batch: int,
         progress_tools: Collection[str],
         on_progress: Callable[[ToolProgress], None],
+        offered: Collection[str] | None = None,
     ) -> None:
         self.id = call.id
+        self._offered = offered
         self._tool = call.tool
         self._args_raw = call.args_raw
         self._node = node
@@ -444,6 +448,12 @@ class CallRun:
         # Outcomes the driver writes itself skip `pre_result`.
         if self._aborted:
             return Outcome.Interrupted(), Author.Tools()
+        if (
+            self._offered is not None
+            and self._tool in self._tools
+            and self._tool not in self._offered
+        ):
+            return Outcome.Err(f"tool not offered: {self._tool}"), Author.Tools()
         draft = CallDraft(self.id, self._tool, self._args_raw)
         by: Author = Author.Tools()
         try:

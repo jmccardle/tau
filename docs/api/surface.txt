@@ -2,6 +2,17 @@
 # The public surface of tau: one block per group, names sorted.
 
 == extensions: Writing an extension
+class Agents
+    def __init__(self) -> None
+    async def agent(
+        self,
+        node: NodeHandle,
+        task: Annotated[str, 'everything the agent needs: it sees none of this conversation'],
+        to: Annotated[str | None, 'an earlier agent to continue, such as agent:1'] = None,
+    ) -> str
+    name = 'agents'
+    options = Options
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
 class Attachments
     def __init__(self, cwd: Path) -> None
     name = 'attachments'
@@ -67,8 +78,14 @@ class NodeHandle(TreeHandle)
     def options(self) -> Any
     def save_options(self, **changes: object) -> None
     def saved_options(self) -> Mapping[str, object]
+    def tell(self, text: str, *, to: str | None = None) -> None
     def walk(self) -> list[Node]
 NodeId = NewType('NodeId', int)
+class Permissions
+    def __init__(self, cwd: Path) -> None
+    name = 'permissions'
+    options = Options
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
 class Prune
     def __init__(self) -> None
     name = 'prune'

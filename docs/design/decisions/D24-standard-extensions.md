@@ -730,3 +730,106 @@ the text did not say:
 - **Core: an abort while `pre_input` hooks run** now clears the rest of the input queue, which stay
   pending (`input_job` built it once and never rechecked); the input being offered when the abort
   came still commits, since its hooks are not cancelled. No new transition.
+
+## Built: 8E-4
+
+Permissions (§7) and agents (§8) with M10. Where the build differs from the text above, or the
+text did not say:
+
+### Permissions (`tau.Permissions`, `_permissions.py`)
+
+- **Rules.** As §7. A rule is split at its first `:`, and only when `TOOL` is `bash` or one of
+  `read`, `write`, `edit`, `grep`, `find`; any other text is a tool's whole name (a name may hold a
+  colon: `srv:tool`). A glob is `fnmatch`'s, case-sensitive, over the whole argument: `*` crosses
+  `/` and newlines, `?` is one character, `[abc]` a set, a backslash is ordinary. An empty rule or
+  an empty glob is an option error (`start_session` and `tau config check` refuse it; a call made
+  while one stands is refused with the message, so a bad `deny` never lets a call through). A rule
+  naming a tool nothing loaded provides (`Bash`, `wirte`) is a `ConfigError` at the start and an
+  error in `tau config check` (`Options.tool_problems`); rules for a tool a program gives its
+  `Driver` directly are not known to `start_session`. A bare rule matches every call of the tool.
+- **Paths.** The session's working directory (`Permissions(cwd)`; the loader passes the process's,
+  which the start made the session's) is joined to each path argument and made real
+  (`os.path.realpath`: `..`, `//`, `.`, symlinks). A path call names its `path`; `grep` also names
+  each entry of `files`; a `grep` or `find` that names neither searches the working directory. A
+  call whose path arguments are missing (`read`, `write`, `edit`) or not strings matches no
+  pattern rule; the bare rule matches it. `deny` and `ask` fire if any named path matches, as
+  written or resolved. `allow` needs every named path to match, resolved. So `write:/etc/*` holds
+  for `/tmp/../etc/x`, `//etc/x`, a relative path or a symlink that lands in `/etc`, and
+  `grep:/etc/*` for `files: ["/etc/shadow"]`; a relative rule such as `write:secrets/*` matches the
+  path as written, `write:*/secrets/*` the one it lands on.
+- **Commands (`tau._shell`).** A glob is not a shell parser. An `allow` rule (and an `--answer`
+  text) never matches a command containing `;` `&` `|` a backtick `$(` `<` `>` or a newline unless
+  the pattern holds that operator too: the command falls to `ask` (or runs, if no `ask` rule names
+  it). A `deny` or `ask` rule is tried on the command whole and on each piece between those
+  operators and parentheses, with a tab read as a space; leading `VAR=value` words, `then` `do`
+  `else` `elif`, a backslash on the first word and the wrappers `command builtin exec nohup time
+  sudo env nice timeout xargs` stripped (with their flags: `sudo -u X`, `env -i`, `nice -n N`,
+  `timeout -s KILL 5`); and the first word reduced to its basename. So `bash:rm *` refuses `ls; rm
+  x`, `/bin/rm x`, `\rm x`, `if a; then rm x; fi`, `sudo -u root rm x` and `ls | xargs rm -f`. That
+  an asking rule is also hard to step around is beyond what §7 asked. A `bash` deny is best effort
+  (quoting, `eval`, `bash -c "..."` and a name built by expansion are not seen): `ask: [bash]` is
+  the safe setting, and the guide says so.
+- **The question** is the call, then `(ask rule: RULE)`. The call is `bash: COMMAND`, a line
+  `TOOL: PATH` for each resolved path of a path tool, or `TOOL: ARGS` (the raw arguments) for any
+  other tool. When a path was written differently, the rule line ends `; as written: PATH)`. The
+  TUI shows a multi-line text, and the ratatui example draws each line and puts the answer field
+  after them. Choices are `yes | always | no`, in that order.
+- **`--answer`** (D22 §5). For a `permissions` question with an explicit TEXT the glob is over the
+  call alone: the `(ask rule: ...)` line is not part of it, so no trailing `*` is needed. A
+  command is matched as an `allow` pattern is (a chain needs the operator in the TEXT). A path
+  tool's TEXT must match every `TOOL: PATH` line, and those hold the resolved paths, so
+  `permissions:read: /proj/*=yes` does not answer `/proj/../etc/shadow`. A TEXT left out
+  (`permissions=yes`) answers every question.
+- **`always`** appends the exact rule for the call to the user's file's own `allow`, when the file
+  lacks it: for `bash` `bash:` and the command, for a path tool a rule for each resolved path, in
+  both with `*`, `?` and `[` escaped as `[*]`, `[?]`, `[[]` (so `ls *.py` is allowed as that
+  command, and `ls x.py` still asks); for a tool without a pattern the bare tool name. It also
+  keeps the rule in memory for the run, so a Config node or a higher layer that sets `allow` and
+  hides the file's list cannot make the next identical call ask again, and it `tell`s every client
+  where the rule went, and that a layer hides it when `options().allow` does not show it
+  (`NodeHandle.tell`). It does not touch the project's layer.
+- **A refusal** from `no`, a decline, an abort or a go-to is `the user refused this call`. A `deny`
+  rule says `permissions refused this call: it matches the deny rule 'RULE'`.
+- **`/config permissions ask=bash,write`** splits a list at commas; a rule that contains a comma
+  is typed as a JSON array (`ask=["bash:cp a,b *"]`), as for any list option.
+- **Attached `tau -p`** answers (by `--answer`, else declines) the questions on its own cursor and
+  on any cursor that was not in the snapshot it attached with, an agent's included. Clients and
+  cursors are not separate users: one user hops between sub-agents and parallel branches, and
+  every client may answer for any cursor, so there is no `opened_by` and no owner of a question
+  beyond the first answer.
+- **Known limits, not fixed.** (1) `always` holds for the run and in the user's file but is not
+  written as a `Config` node on the branch: a tool hook has no cursor to write one with.
+  (2) It is a guard against the model, not a sandbox: a later extension's `pre_tool` can change the
+  outcome, and a `bash` deny is best effort.
+
+### Driver: a tool that was not offered is not run
+
+A sample's reply remembers the names it was offered (`pre_sample`'s `subject.tools`); a call to a
+registered tool outside them is `Err("tool not offered: X")`, before any hook (so no permission
+question for it). This is what makes the `agents` `tools` option bind and makes "no recursion, no
+depth counter" true: an agent is offered `agent` only if its `tools` option names it, and the
+option refuses that. A reply this driver did not sample (a session loaded with a batch pending, or
+a cursor gone back to an old reply) is not checked, since what it was offered is not recorded.
+
+### Agents (`tau.Agents`, `_agents.py`)
+
+As §8. The cursor opens at the last node of the prefix; if the model it should run on (the `model`
+option, else the calling branch's own, read at the batch's node) is not the one the prefix names, a
+`Config` naming it comes first. The label is the first `agent:N` no cursor of the session has. The
+tool's result is `agent:N answered:` and a newline and the reply's text. A call fails with a
+`ToolError` that names the agent: `agent:N failed: ...`, `was halted: ...`, `was aborted`, a reply
+that asks for tools (a step limit turned auto-step off: `stopped without a final reply (a step
+limit?)`), or no text. A failed agent is closed like any other, and `to` can reopen it. `to` must
+name an `agent:` label of a closed cursor: anything else is `there is no agent 'X'`, and one still
+working is `agent:N is still working`. The agent cursor's `tools` are kept in the extension's memory
+for the length of the call, read from the calling branch's options (so `/config agents tools=...`
+on the parent applies). `tools` containing `agent` is an option error. Not built: `opened_by`.
+
+### M10
+
+`OFF_BY_DEFAULT` in `_extensions.py` names the built-ins that `load` must turn on. Its row is `off`
+with the detail `off (default); to turn it on: tau ext enable agents`; `load: {agents: true}`,
+`tau ext enable agents` and `-e agents` turn it on; `--no-extensions` turns on nothing. A drop-in
+or package with the key `agents` is a different source and not off by default. Hook order with
+`agents` on is `agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`,
+`skills`, `step_limit`, `usage`, as §1 says.

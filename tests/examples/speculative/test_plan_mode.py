@@ -206,7 +206,8 @@ async def test_the_model_is_offered_only_read_only_tools_and_a_call_to_another_i
     await h.run("plan")
     await h.send("look around")
     await h.settle()
-    # `write` is not offered; a model may still call it, and plan mode refuses
+    # `write` is not offered; a model may still call it, and the driver refuses it. `bash` is
+    # offered, so the refusals of `d` and `e` are plan mode's own
     assert h.provider.requests[0].tool_names == ["read", "grep", "bash"]
     results = h.bodies()[-2]
     assert isinstance(results, Body.Results)
@@ -219,8 +220,11 @@ async def test_the_model_is_offered_only_read_only_tools_and_a_call_to_another_i
     ]
     refused = results.outcomes[0][1]
     assert isinstance(refused, Outcome.Err)
-    assert "plan mode: write is refused" in refused.error
-    assert results.outcomes[0][2] == Author.Extension("plan_mode")
+    assert refused.error == "tool not offered: write"
+    own = results.outcomes[4]
+    assert isinstance(own[1], Outcome.Err)
+    assert "plan mode: bash is refused" in own[1].error
+    assert own[2] == Author.Extension("plan_mode")
     assert write.calls == []
     assert read.calls == [{}]
     assert bash.calls == [{"command": "git diff --stat"}]

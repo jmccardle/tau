@@ -150,8 +150,8 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | Extension config (`--ext-config NAME:KEY=VALUE`, `config.json extensions`) | `cli.py`, `extension_auth.py` | **built** (library) | `options` dataclass, `extensions.<name>` in layers, `/config`, `Cursor.set_options`; CLI flag **planned** (unspecified) |
 | Extension locks (stop a session, ask the attached user) | `extension_locks.py` | **dropped** | glossary: suspension/responder -> auto-step off + `question` (D16) |
 | Step debugger: `ctx.suspend`, suspension UI, `80_step_mode.py` | `suspension.py`, `suspensions.py`, `suspension_ui.py` | **dropped** (rebuilt smaller) | Retired terms "suspension, responder -> auto-step off; a question". Phase 5 "debug frontend (auto-step off)" **planned** |
-| Permission gate | `examples/01_permission_gate.py`, `30_permission_gate.py` (examples only; no built-in) | **planned** | Phase 5/8 permissions extension (`pre_tool` asks); prototype `examples/speculative/bash_guard.py` |
-| Sub-agents / delegate / swarm | `examples/20_delegate.py`, `50_review_swarm.py`, `51_delegate_fleet.py` | **planned** | Stage B + Phase 8 sub-agent extension; prototypes `forest.py`, `gamemaster.py` |
+| Permission gate | `examples/01_permission_gate.py`, `30_permission_gate.py` (examples only; no built-in) | **built** (8E-4, new) | D24 §7: the built-in `permissions` extension; rules in `ask`, `allow`, `deny`, asking nothing until configured; `yes \| always \| no`; `tau -p --answer permissions=yes` |
+| Sub-agents / delegate / swarm | `examples/20_delegate.py`, `50_review_swarm.py`, `51_delegate_fleet.py` | **built** (8E-4, changed) | D24 §8: the built-in `agents` extension, off by default (`tau ext enable agents`); the `agent(task, to=None)` tool opens a cursor `agent:N` in the same process (no child processes, chain mode or `tasks[]`) |
 | Extension discovery: drop-ins `~/.tau/extensions`, installed entry points, `-e PATH|MODULE` | `extension_sources.py`, `docs/EXTENSION-PACKAGES.md` | **planned** (unspecified) | Only `examples/chat.py --extension PATH` (fixes C3). "Trusted loader for `tau` (hash-pinned) stays with the trust work carried from Phase 4" (fixes C3, plan.md:229) has no phase. `tau` itself cannot load an extension today |
 | Extension authorization store (`tau ext authorize/revoke/enable/disable/list`) | `extension_auth.py`, `ext_cli.py` | **REGRESSION** | Not in 0.16 CLI (`config check`, `trust` only); successor is the unscheduled trusted loader above |
 | Hot reload of extensions | `reload_extension` capability | **planned** | fixes C2 `driver.reload(extensions)` |
@@ -167,8 +167,8 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
-| Built-in permission system | none; example extensions only | **planned** | Phase 8 standard extension; `ask` is built (D16, `_questions.py`) |
-| Protected paths / sandbox | `examples/31_protected_paths.py` | **planned** (unspecified) | falls under permissions extension if it covers paths; today bash_guard only matches commands |
+| Built-in permission system | none; example extensions only | **built** (8E-4, new) | D24 §7: `permissions`, rules `TOOL` or `TOOL:GLOB` in `ask`, `allow`, `deny` |
+| Protected paths / sandbox | `examples/31_protected_paths.py` | **built** (8E-4, changed) | `deny: ["write:/etc/*", "edit:/etc/*"]`; matches the path as the model wrote it. Not a sandbox (D24 §7) |
 | Headless approval (`--ui-defaults confirm=yes,...`) | `cli.py:--ui-defaults`, `headless.py` | **built** (changed) | D22: `tau -p --answer EXTENSION[:TEXT]=VALUE`. Rules match who asked and what, not a dialog kind; a question no rule matches is declined (stderr says so), and a value the question's schema refuses aborts the run (exit 1). D16 ruling 1 holds: `-p` is the client that answers |
 
 ### 2.7 Config and trust

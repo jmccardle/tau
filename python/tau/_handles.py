@@ -385,6 +385,7 @@ class NodeHandle(TreeHandle):
         cursor: int,
         extension: str,
         asker: Asker,
+        notify: Notify,
         now: Now,
         poke: Poke,
         changed: Changed,
@@ -397,6 +398,7 @@ class NodeHandle(TreeHandle):
             session, extension, now, poke, changed, rest, abort, close, options, cursor
         )
         self._asker = asker
+        self._notify = notify
         self._options = options
         self._here = lambda: self.id
         self.id = id
@@ -425,6 +427,13 @@ class NodeHandle(TreeHandle):
     def walk(self) -> list[Node]:
         """The nodes from the root to the batch's node."""
         return self.tree.walk(self.id)
+
+    def tell(self, text: str, *, to: str | None = None) -> None:
+        """`Cursor.tell`, from a tool hook: send `text` as a `Notice` to client `to`, or to every
+        connected client by default."""
+        self._check()
+        self._changed()
+        self._notify(to, text)
 
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
@@ -657,6 +666,7 @@ class Handles:
             cursor,
             extension,
             partial(self.ask, cursor),
+            self.notify,
             self.now,
             self.poke,
             self.changed,

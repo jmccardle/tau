@@ -71,6 +71,18 @@ class Gate:
 
 extensions = [Gate()]
 """
+TWO_LINES = """
+from typing import Literal
+
+class Gate:
+    name = "gate"
+
+    async def pre_sample(self, cursor, subject):
+        verdict = await cursor.ask("run the thing?\\nand the second line", Literal["yes", "no"])
+        return None if verdict == "yes" else f"verdict: {verdict}"
+
+extensions = [Gate()]
+"""
 COUNT = """
 class Count:
     name = "count"
@@ -357,6 +369,15 @@ def test_set_without_a_value_is_a_usage_error(configured: World) -> None:
 
 
 # -- questions and --answer
+
+
+def test_an_answer_text_globs_the_first_line_of_the_question_only(configured: World) -> None:
+    gate = ext(configured, "gate", TWO_LINES)
+    hit = p(configured, "-e", gate, "--answer", "gate:run the thing?=yes", "go")
+    assert hit.code == 0, hit.err
+    assert "answered question 0 from gate with yes" in hit.err
+    miss = p(configured, "-e", gate, "--answer", "gate:*second line=yes", "go")
+    assert "declined question 0 from gate" in miss.err, "the second line is not in the text"
 
 
 def test_a_rule_answers_the_question_and_the_run_goes_on(configured: World) -> None:

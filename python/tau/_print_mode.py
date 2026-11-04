@@ -87,6 +87,7 @@ class _Run:
     reported: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108
     seen: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - questions announced
     handled: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - answered or declined
+    before: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors at attach
     ending: Ending | None = None
     hook_error: HookFailure | None = None
     shown: dict[str, str] = field(default_factory=lambda: {})  # each extension's line, as last seen
@@ -134,6 +135,8 @@ class _Run:
         elif isinstance(event, Notice):
             self.note(event.text)
         elif isinstance(event, CursorView):
+            if snapshot:
+                self.before.add(event.cursor)
             self.views[event.cursor] = event
             if event.cursor == self.cursor:
                 self.watch_cursor(event, snapshot=snapshot)
@@ -177,8 +180,9 @@ class _Run:
 
     async def questions(self, view: CursorView, *, snapshot: bool) -> None:
         """Deal with the open questions `-p` may answer. Local, all of them, on any cursor.
-        Attached, only those that open after the send, on the cursor it sent to (D22 section 5):
-        the snapshot's, and any on another cursor, are the server's other clients'."""
+        Attached, only those that open after the send, on the cursor it sent to or on a cursor
+        opened since (a sub-agent's): the snapshot's, and those on a cursor that was there
+        already, are the server's other clients' (D22 section 5)."""
         for question in view.questions:
             if question.id not in self.seen and self.verbose:
                 self.note(f'question {question.id} from {question.extension}: "{question.text}"')
@@ -186,7 +190,7 @@ class _Run:
             if question.id in self.handled or question.to not in (None, self.client.id):
                 continue
             self.handled.add(question.id)
-            if self.attached and (snapshot or view.cursor != self.cursor):
+            if self.attached and (snapshot or view.cursor in self.before - {self.cursor}):
                 self.note(
                     f"question {question.id} from {question.extension} on cursor {view.cursor} "
                     "is left to the server's other clients"

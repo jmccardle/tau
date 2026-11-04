@@ -109,13 +109,16 @@ pub fn lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
 /// The lines of the open question: what it asks, then its choices or its field.
 fn question_lines(q: &OpenQuestion, asking: &Asking) -> Vec<Line<'static>> {
     let shape = ask::shape(&q.schema);
+    // The text may span lines (a permission question: the call, then the rule that matched).
+    let mut text = q.text.lines();
     let mut out = vec![Line::from(vec![
         Span::styled(
             format!("{} asks: ", q.extension),
             Style::new().fg(Color::Yellow).bold(),
         ),
-        Span::raw(q.text.clone()),
+        Span::raw(text.next().unwrap_or_default().to_string()),
     ])];
+    out.extend(text.map(|line| Line::from(format!("  {line}"))));
     let choices = shape.choices();
     if choices.is_empty() {
         out.push(Line::from(vec![
@@ -221,7 +224,10 @@ pub fn draw(f: &mut Canvas, screen: &Screen) {
     f.render_widget(status(screen), bar);
 
     let (field, rect) = match (screen.question, ask_has_field(screen)) {
-        (Some(_), true) => (&screen.asking.field, field_rect(question)),
+        (Some(q), true) => (
+            &screen.asking.field,
+            field_rect(question, q.text.lines().count()),
+        ),
         _ => (
             screen.editor,
             Rect {
@@ -245,11 +251,12 @@ fn ask_has_field(screen: &Screen) -> bool {
         .is_some_and(|q| ask::shape(&q.schema).choices().is_empty())
 }
 
-/// Where the answer field's text starts: the second line of the question box, after `answer: `.
-fn field_rect(question: Rect) -> Rect {
+/// Where the answer field's text starts: the line after the question's `text_lines` lines, after
+/// `answer: `.
+fn field_rect(question: Rect, text_lines: usize) -> Rect {
     Rect {
         x: question.x + 8,
-        y: question.y + 1,
+        y: question.y + u16::try_from(text_lines.max(1)).unwrap_or(u16::MAX),
         width: question.width.saturating_sub(8),
         height: 1,
     }
@@ -300,5 +307,23 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert_eq!(got, vec!["you: aaa", "     bbb"]);
+    }
+
+    #[test]
+    fn a_question_of_several_lines_shows_each_and_the_field_follows_them() {
+        let q: OpenQuestion = serde_json::from_value(serde_json::json!({
+            "id": 1, "to": null, "extension": "permissions",
+            "text": "bash: git push\n(ask rule: bash)",
+            "schema": {"type": "string", "enum": ["yes", "always", "no"]},
+        }))
+        .unwrap();
+        let got: Vec<String> = question_lines(&q, &Asking::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(got[0], "permissions asks: bash: git push");
+        assert_eq!(got[1], "  (ask rule: bash)");
+        assert_eq!(got[2], "> yes");
+        assert_eq!(field_rect(Rect::new(0, 5, 40, 4), 2).y, 7);
     }
 }

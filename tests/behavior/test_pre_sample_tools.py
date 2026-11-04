@@ -5,7 +5,7 @@ from pathlib import Path
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 
-from tau import Author, Body, Cursor, Draft, Ending, Part, Stop, Subject
+from tau import Author, Body, Cursor, Draft, Ending, Outcome, Part, Stop, Subject
 
 
 def tools() -> list[FakeTool]:
@@ -191,4 +191,28 @@ async def test_an_offer_does_not_outlive_a_sample_a_draft_answered(tmp_path: Pat
     await h.send("second")
     await h.settle()
     assert [r.tool_names for r in h.provider.requests] == [["read", "write", "bash"]]
+    await h.close()
+
+
+@scenario
+async def test_a_call_to_a_registered_tool_that_was_not_offered_is_an_error_and_runs_nothing(
+    tmp_path: Path,
+) -> None:
+    bash = FakeTool("bash", "b")
+    registered = [FakeTool("read", "r"), bash]
+    calls = Reply([Part.Call("a", "bash", "{}"), Part.Call("b", "read", "{}")], Stop.Tools)
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([calls, say("ok")]),
+        tools=registered,
+        extensions=[Offers(["read"])],
+    )
+    await h.send("hi")
+    await h.settle()
+    results = next(b for b in reversed(h.bodies()) if isinstance(b, Body.Results))
+    assert results.outcomes == [
+        ("a", Outcome.Err("tool not offered: bash"), Author.Tools()),
+        ("b", Outcome.Ok("r"), Author.Tools()),
+    ]
+    assert bash.calls == []
     await h.close()

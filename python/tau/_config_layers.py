@@ -29,6 +29,7 @@ from tau._config_tree import (
 )
 from tau._options import make_options, option_fields
 from tau._protocols import Provider
+from tau._tools import assemble_tools
 from tau._values import Context, DefinitionError
 
 CLI = "cli"
@@ -656,6 +657,7 @@ def option_problems(
         if catalog.extensions.get(key):
             message = f"extension {key!r} has no options"
             problems.append(ConfigProblem("error", message, None, f"extensions.{key}"))
+    tools = _tool_names(extensions)
     for ext in extensions:
         options = getattr(ext, "options", None)
         if options is None:
@@ -663,10 +665,21 @@ def option_problems(
         name = cast("str", getattr(ext, "name"))  # noqa: B009
         raw = dict(catalog.extensions.get(name, {}))
         try:
-            make_options(name, options, option_fields(name, options), raw, Context(catalog))
+            made = make_options(name, options, option_fields(name, options), raw, Context(catalog))
         except (ConfigError, DefinitionError) as e:
             problems.append(ConfigProblem("error", str(e), None, f"extensions.{name}"))
+            continue
+        check = getattr(made, "tool_problems", None)
+        if check is not None:  # an option that names tools: each must be one a start offers
+            for message in check(tools):
+                problems.append(ConfigProblem("error", message, None, f"extensions.{name}"))
     return tuple(problems)
+
+
+def _tool_names(extensions: Sequence[object]) -> list[str]:
+    """The names of the tools the `extensions` provide."""
+    listed, _ = assemble_tools((), extensions)
+    return [cast("str", getattr(t, "name")) for t in listed]  # noqa: B009
 
 
 def check_config(  # noqa: PLR0913 - the layers, the environment, and what is checked against

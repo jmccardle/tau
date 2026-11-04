@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from tau._agents import Agents
 from tau._attachments import Attachments
 from tau._base_tools import (
     BashTool,
@@ -107,6 +108,7 @@ from tau._extensions import (
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
+from tau._permissions import Permissions
 from tau._project_read import TrustError
 from tau._protocol import PROTOCOL, ProtocolError, ProtocolMismatch, Welcome
 from tau._protocols import (
@@ -169,6 +171,7 @@ __all__ = [
     "CURSOR_POINTS",
     "PROTOCOL",
     "TOOL_POINTS",
+    "Agents",
     "Answer",
     "AnthropicProvider",
     "Appended",
@@ -259,6 +262,7 @@ __all__ = [
     "Outcome",
     "Parsed",
     "Part",
+    "Permissions",
     "Pick",
     "PickSession",
     "Poisoned",
