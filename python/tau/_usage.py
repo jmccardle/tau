@@ -94,10 +94,14 @@ def reading(node: Node) -> Reading | None:
 
 
 def counted(node: Node) -> bool:
-    """Whether `node`'s reply counts toward usage. True for every reply today; once `copied_from`
-    exists (D24 M1, stage 8E-3) a copy is `False`: `node.copied_from is None`. This is the one
-    place the rule lives."""
-    return isinstance(node.body, Body.Assistant)
+    """Whether `node`'s reply counts toward usage: a reply that is not a copy
+    (`node.copied_from is None`) and not rewritten from another (`derived_from`: a pruned reply
+    keeps the `meta` of the sample it came from). This is the one place the rule lives."""
+    return (
+        isinstance(node.body, Body.Assistant)
+        and node.copied_from is None
+        and node.derived_from is None
+    )
 
 
 def cost(usage: Reading, price: Price) -> Decimal:

@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::plan::Row;
+use crate::plan::{Kind, Row};
 
 fn node(body: &serde_json::Value) -> Node {
     serde_json::from_value(json!({
@@ -195,4 +195,31 @@ fn the_detail_of_a_stub_says_what_it_holds_and_how_it_begins() {
     assert!(text.starts_with("4 nodes and 2 turns on this branch\ncursor 1 is on it\n"));
     assert!(text.contains("cursor 2 (closed) was on it"));
     assert!(text.contains("It begins:\n\nuser  ·  node 3  ·  by ann@web\n\nbegin here"));
+}
+
+#[test]
+fn a_copy_and_a_derived_node_say_so() {
+    let marks = Marks::new(BTreeMap::new(), &BTreeMap::new(), vec![], 0);
+    let row = Row {
+        kind: Kind::Node,
+        ..Row::default()
+    };
+    let with = |extra: serde_json::Value| -> Node {
+        let mut n = serde_json::to_value(node(&json!({"User": "hi"}))).unwrap();
+        n.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(n).unwrap()
+    };
+    let copy = with(json!({"copied_from": 7}));
+    let derived = with(json!({"derived_from": 6}));
+    assert_eq!(
+        row_label(&row, &copy, &marks, true).suffix,
+        "  ≡ (copy of 7)"
+    );
+    assert_eq!(row_label(&row, &derived, &marks, true).suffix, "  ⧉");
+    assert_eq!(
+        row_label(&row, &node(&json!({"User": "hi"})), &marks, true).suffix,
+        ""
+    );
 }

@@ -1,9 +1,9 @@
 # What τ does for you
 
-Four things happen in a session without any extension of yours: a failed request is tried again,
+Five things happen in a session without any extension of yours: a failed request is tried again,
 `@file` in a message attaches the file, files you write become commands (prompt templates and
-skills), and what the session has used and spent is shown. Each can be switched off, and each is a
-few lines to use. The examples run with the mock
+skills), what the session has used and spent is shown, and a long conversation can be shortened
+(`/compact`, `/prune`). Each can be switched off, and each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -244,3 +244,67 @@ the notice says to try the `anthropic` provider. `--set usage.cache_notice=false
 
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.
+
+## A long conversation can be shortened
+
+Two commands rewrite what the model reads, and both keep the old conversation: they write a new
+line in the session's tree and move you onto it. Going back to an old node shows the conversation
+as it was (`Ctrl+G` draws the old line as a folded branch).
+
+`/compact [focus]` asks a model to summarize the older part of the conversation and keeps the
+newest part word for word. `focus` is text the summary should keep in mind (`/compact the parser
+bug`). τ also does this by itself, with two limits. When a finished turn leaves the conversation
+past the **soft** limit (80% of the hard one), τ compacts after the agent's last reply, and your
+next message starts on the shorter line. If a turn itself grows past the **hard** limit (the
+window less `reserve`), τ interrupts it just before the request that would not fit, compacts, and
+carries on:
+
+```text
+compacted 182k → 23k tokens (nodes 4–418 summarized as node 431)
+```
+
+For that τ must know the window, so give the model a `context_window` (as for the `ctx` readout
+above). A model without one is never compacted by itself and the status bar says so
+(`compaction: local:qwen has no context_window`); `/compact` still works. The settings, with
+`/config compaction` or `extensions.compaction` in your config:
+
+```json
+{ "extensions": { "compaction": { "reserve": 16384, "keep": 8000 } } }
+```
+
+`auto` (`true`) turns the automatic compaction off. `reserve` is the tokens kept free for the reply
+and for the summary itself (16384, or a quarter of the window if less); `hard` and `soft` set the two limits directly, as token counts (`soft`
+above `hard` is a config error). `keep` the tokens of the newest messages copied unchanged. Left unset,
+`keep` is 20000 or half the soft limit if that is less, which suits a 32k
+local model; a `keep` you set must be smaller than the soft limit. If the newest messages alone fill the
+room, or a summary would not be shorter, nothing is written: at the hard limit the step fails and
+says what is too big; at the soft limit τ tells you once and goes on. The soft limit acts only after
+a turn that ended with a reply, not when you go back to one. `model` names another model to write the summary
+(default: the one you are using). The summary is written by a second cursor, `compaction:1`, which
+you can see in the tree and which `/usage` counts; it is closed when it is done. Esc while it
+works leaves your conversation exactly as it was. If the summary fails, the step fails and says
+why. τ does not compact when the provider answers "prompt too long": run `/compact`, then send
+again.
+
+`/prune` needs no model. It keeps the last two turns and turns every older turn into a short
+transcript at the top of the last-but-one: what you asked, how much work was left out, and the
+agent's closing reply.
+
+```text
+<pruned>
+User: let's do task one
+[pruned: 10 messages, 44 tool calls]
+Assistant: Done. I did task one. Summary: ...
+</pruned>
+```
+
+In the last two turns it drops the model's reasoning and cuts any argument of a call over 200
+characters to `[pruned: N chars]` (a long `edit` or `write`); in the second-to-last it also reduces
+each tool result to `ok` or `error`. The last turn keeps its results. `/prune` says what it
+saved (`pruned ~46k → ~6k tokens`), or `nothing to prune`. It is useful when you switch tasks, and
+with a local model, where nothing is cached. Automatic pruning is not built: `prune.auto` must
+stay `false`.
+
+In `Ctrl+G` a node τ computed shows `⧉` and a copy shows `≡ (copy of 12)`; the detail pane says
+where it came from and how long the conversation was before and after, and `p` jumps to the
+source. `tau ext disable compaction` or `tau ext disable prune` removes either.

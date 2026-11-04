@@ -12,6 +12,16 @@ class CallDraft
     def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None
     property id: str
     property tool: str
+class Compaction
+    def __init__(self) -> None
+    async def compact(self, cursor: Cursor, focus: str = '') -> str
+    name = 'compaction'
+    options = Options
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> None
+    async def post_step(self, cursor: Cursor, subject: Subject) -> None
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
     def models(self) -> tuple[str, ...]
@@ -27,7 +37,14 @@ class Cursor(TreeHandle)
     def tell(self, text: str, *, to: str | None = None) -> None
     def tools(self) -> tuple[str, ...]
     def walk(self) -> list[Node]
-    def write(self, body: Body, delivers: Sequence[int] = ()) -> int
+    def write(
+        self,
+        body: Body,
+        delivers: Sequence[int] = (),
+        *,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int
 class CursorHook(Protocol)
     async def __call__(self, cursor: Cursor, subject: Subject, /) -> str | None
 CursorId = NewType('CursorId', int)
@@ -52,6 +69,11 @@ class NodeHandle(TreeHandle)
     def saved_options(self) -> Mapping[str, object]
     def walk(self) -> list[Node]
 NodeId = NewType('NodeId', int)
+class Prune
+    def __init__(self) -> None
+    name = 'prune'
+    options = Options
+    async def prune(self, cursor: Cursor) -> str
 class Skills
     name = 'skills'
     @classmethod
@@ -78,7 +100,14 @@ class ToolHook(Protocol)
 class TreeHandle
     def abort(self, cursor: int) -> None
     def add_item(self, to: int, data: str) -> int
-    def append(self, parent: int, body: Body) -> int
+    def append(
+        self,
+        parent: int,
+        body: Body,
+        *,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int
     def append_root(self, config: Config) -> int
     property by: Author
     async def close_cursor(self, cursor: int) -> None
@@ -272,7 +301,9 @@ class Move
 class Node
     property body: Body
     property by: Author
+    property copied_from: int | None
     property delivers: list[int]
+    property derived_from: int | None
     property id: int
     property parent: int | None
     property time: int
@@ -629,7 +660,7 @@ class Driver
     def add_item(self, to: int, data: ItemData) -> int
     def client(self, id: str, *, buffer: int = 256) -> LocalClient
     def reload(self, extensions: Sequence[Extension]) -> None
-    async def rest(self, cursor: int) -> None
+    async def rest(self, cursor: int, waiter: int | None = None) -> None
     def start(self) -> None
     def state(self) -> DriverState
     async def stop(self) -> None
@@ -830,7 +861,15 @@ class Session
     def abort(self, cursor: int) -> bool
     def add_item(self, to: int, data: ItemData) -> int
     def answer(self, cursor: int, answer: Answer, now: int) -> None
-    def append(self, parent: int, body: Body, by: Author, now: int) -> int
+    def append(
+        self,
+        parent: int,
+        body: Body,
+        by: Author,
+        now: int,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int
     def append_root(self, config: Config, by: Author, now: int) -> int
     def close(self) -> None
     def close_cursor(self, cursor: int) -> None
@@ -848,7 +887,16 @@ class Session
     def go_to(self, cursor: int, to: int, client: str, now: int) -> bool
     def hook_move(self, cursor: int, to: int, by: Author, now: int) -> None
     def hook_set_auto(self, cursor: int, on: bool) -> None
-    def hook_write(self, cursor: int, body: Body, delivers: Sequence[int], by: Author, now: int) -> int
+    def hook_write(
+        self,
+        cursor: int,
+        body: Body,
+        delivers: Sequence[int],
+        by: Author,
+        now: int,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int
     def input(self, cursor: int, by: Author, text: str) -> int
     def label(self, label: str) -> int
     def labels(self) -> list[tuple[str, int]]

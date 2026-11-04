@@ -20,7 +20,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from tau._core import Body, Node, Outcome, Part
+from tau._core import Body, Node, Part
+from tau._lines import characters
 
 RowKind = Literal["node", "turn", "stub"]
 Key = tuple[RowKind, int]
@@ -30,41 +31,9 @@ _Cover = dict[int, int]  # node id -> index of the row of a level that shows it
 
 
 def estimated_chars(node: Node) -> int:
-    """The characters of a node the model reads (D24's estimate): text, thinking, call arguments
-    and outcomes. `Config` and `Custom` nodes never reach the model and count nothing."""
-    match node.body:
-        case Body.System(text=text) | Body.User(text=text):
-            return len(text)
-        case Body.Assistant(parts=parts):
-            return sum(_part_chars(p) for p in parts)
-        case Body.Results(outcomes=outcomes):
-            return sum(_outcome_chars(o) for _call, o, _by in outcomes)
-        case Body.Config() | Body.Custom():
-            return 0
-        case _:
-            raise TypeError(f"node {node.id} holds a body the tree does not know")
-
-
-def _part_chars(part: Part) -> int:
-    match part:
-        case Part.Text(text=text) | Part.Thinking(text=text):
-            return len(text)
-        case Part.Call(args_raw=args):
-            return len(args)
-        case _:
-            raise TypeError(f"a reply part the tree does not know: {part!r}")
-
-
-def _outcome_chars(outcome: Outcome) -> int:
-    match outcome:
-        case Outcome.Ok(value=value):
-            return len(value)
-        case Outcome.Err(error=error):
-            return len(error)
-        case Outcome.Interrupted():
-            return 0
-        case _:
-            raise TypeError(f"an outcome the tree does not know: {outcome!r}")
+    """The characters of a node the model reads (D24's estimate, `tau._lines.characters`: the
+    same number compaction counts)."""
+    return characters(node.body)
 
 
 class WalkLength:

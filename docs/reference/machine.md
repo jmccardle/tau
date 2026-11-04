@@ -666,10 +666,20 @@ Remove an item from the scratchpad. `NoSuchItem` if it is not there.
 ### Session.append
 
 ```python
-def append(self, parent: int, body: Body, by: Author, now: int) -> int
+def append(
+    self,
+    parent: int,
+    body: Body,
+    by: Author,
+    now: int,
+    copied_from: int | None = None,
+    derived_from: int | None = None,
+) -> int
 ```
 
-Append a node under `parent` without moving any cursor.
+Append a node under `parent` without moving any cursor. `copied_from` names the node it
+repeats verbatim, `derived_from` the node whose walk its content was computed from;
+`NoSuchNode` if either is not a node.
 
 ### Session.append_root
 
@@ -708,12 +718,22 @@ job is out for `cursor`.
 ### Session.hook_write
 
 ```python
-def hook_write(self, cursor: int, body: Body, delivers: Sequence[int], by: Author, now: int) -> int
+def hook_write(
+    self,
+    cursor: int,
+    body: Body,
+    delivers: Sequence[int],
+    by: Author,
+    now: int,
+    copied_from: int | None = None,
+    derived_from: int | None = None,
+) -> int
 ```
 
 A cursor hook's write: append a node under the cursor's node, move onto it and consume
 the `delivers` items. Returns the new node's id. `NotInHook` unless a cursor hook job is
-out for `cursor`; `NotPending` if an item is not pending for it.
+out for `cursor`; `NotPending` if an item is not pending for it. `copied_from` and
+`derived_from` as for `append`.
 
 ### Session.hook_set_auto
 

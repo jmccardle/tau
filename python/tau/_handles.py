@@ -36,9 +36,10 @@ Notify = Callable[[str | None, str], None]
 """Sends a `Notice` to a client, or to every client when `None`; dropped if that client is not
 connected."""
 
-Rest = Callable[[int], Awaitable[Ending | None]]
-"""The driver's wait for a cursor to come to rest: returns how its last step ended, or `None`
-if that is not known."""
+Rest = Callable[[int, int | None], Awaitable[Ending | None]]
+"""The driver's wait for a cursor to come to rest, for the cursor (or `None`) that waits:
+returns how its last step ended, or `None` if that is not known, or `Ending.Aborted()` if the
+waiting cursor was aborted meanwhile."""
 
 Abort = Callable[[int], None]
 """The driver's abort of a cursor's step. Safe to call from any thread: it returns once the
@@ -250,10 +251,21 @@ class TreeHandle:
 
     # Writes
 
-    def append(self, parent: int, body: Body) -> int:
-        """Append a node under `parent` without moving any cursor. Returns its id."""
+    def append(
+        self,
+        parent: int,
+        body: Body,
+        *,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int:
+        """Append a node under `parent` without moving any cursor. Returns its id.
+        `copied_from` names the node this one repeats verbatim, `derived_from` the node whose
+        walk its content was computed from (`NoSuchNode` if either is not a node)."""
         self._check()
-        node = self._writes.append(parent, body, self.by, self._now())
+        node = self._writes.append(
+            parent, body, self.by, self._now(), copied_from=copied_from, derived_from=derived_from
+        )
         self._changed()
         return node
 
@@ -308,10 +320,13 @@ class TreeHandle:
         question or a gate does not rest, so this waits as long as the cursor is held. Async
         only: a sync tool, which runs on a worker thread, cannot call it. `ValueError` for this
         handle's own cursor: waiting for itself would never end. No cycle between two cursors
-        is detected; the user's abort is the way out."""
+        is detected; the user's abort is the way out: when this handle's own cursor is aborted
+        (or sent elsewhere) while the wait is out, the wait ends at once and returns
+        `Ending.Aborted()`, so a hook, which an abort never cancels, learns it was aborted. The
+        cursor waited on is left as it is."""
         self._check()
         self._refuse_own(cursor, "rest", "waiting for itself would never end")
-        return await self._rest(cursor)
+        return await self._rest(cursor, self._own)
 
     def abort(self, cursor: int) -> None:
         """Abort `cursor`'s step as a client's `abort` does: cancel its sample or calls, stop
@@ -540,11 +555,27 @@ class Cursor(TreeHandle):
         self._session.hook_move(self.id, to, self.by, self._now())
         self._changed()
 
-    def write(self, body: Body, delivers: Sequence[int] = ()) -> int:
+    def write(
+        self,
+        body: Body,
+        delivers: Sequence[int] = (),
+        *,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int:
         """Append `body` under `at` and move onto it, as one record; the
-        `delivers` items are removed. Returns the new node's id."""
+        `delivers` items are removed. Returns the new node's id. `copied_from` and
+        `derived_from` as for `TreeHandle.append`."""
         self._check()
-        node = self._session.hook_write(self.id, body, list(delivers), self.by, self._now())
+        node = self._session.hook_write(
+            self.id,
+            body,
+            list(delivers),
+            self.by,
+            self._now(),
+            copied_from=copied_from,
+            derived_from=derived_from,
+        )
         self._changed()
         return node
 

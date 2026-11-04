@@ -63,15 +63,22 @@ automatic trigger off (0.15's `/autocompact`).
 | option | default | meaning |
 |---|---|---|
 | `auto` | `true` | compact before a sample that would not fit |
-| `reserve` | 16384 | tokens kept free for the reply and for the summary itself |
-| `keep` | 20000 | tokens of the newest nodes copied verbatim |
+| `reserve` | 16384, or a quarter of the window if less | tokens kept free for the reply and for the summary itself |
+| `hard` | window − `reserve` | estimate above which a turn is interrupted and compacted (Ruling 14) |
+| `soft` | 80% of `hard` | estimate above which the end of a turn compacts (Ruling 14) |
+| `keep` | unset (20000, or half the soft limit if less) | tokens of the newest nodes copied verbatim |
 | `model` | none | the model that writes the summary; none means the branch's own |
 
-**Trigger.** A `pre_sample` hook. If `auto` is on, the model has a `context_window`, and the
-estimate of `walk(at)` is above `context_window − reserve`, it compacts, then the sample runs on
-the new line. One trigger: 0.15's second, softer limit (80% at the end of a turn) is dropped.
-A model with no `context_window` gets no automatic compaction, and the cursor shows
+**Trigger** (two limits, Ruling 14). The **hard limit** is a `pre_sample` hook: if `auto` is on,
+the model has a `context_window` and the estimate of `walk(at)` is above `hard` (default
+`context_window − reserve`), it compacts, interrupting the turn, then the sample runs on the new
+line. The **soft limit** is a `post_step` hook: when a step ends `Done` with the cursor on a reply
+that asks for no tool (the end of the agent's turn), it compacts if the estimate is above `soft`
+(default 80% of `hard`). The turn before that runs uninterrupted, so the summary is built from a
+walk ending in the assistant's reply, and the next user message starts on the compacted line. A
+model with no `context_window` gets no automatic compaction on either limit, and the cursor shows
 `compaction: local:qwen has no context_window` so the user knows why. `/compact` still works.
+`soft` above `hard` is a `ConfigError`.
 
 **Estimate.** The newest reply on the walk that has `meta.usage` and is not a copy gives an exact
 count: its `input + output`. Each message node after it adds its characters divided by 4 (text,
@@ -443,6 +450,11 @@ Decided as the drafts recommended, except where noted (the changes are in the se
     own summarizer cursors (§2). **M7**'s abort is a distinct result. **`usage.written`** is
     added now; `cached` absent-when-unreported only after checking LiteLLM (§3).
 
+14. **Compaction has two limits** (owner, 2026-11-03). The soft limit lets the turn run on and
+    compacts when it ends; the hard limit interrupts the turn before the next sample (§2). It
+    replaces the one trigger of the first draft; 0.15's second, softer limit was dropped for being
+    a percentage of the same thing, and this one is the owner's.
+
 ## Glossary entries proposed
 
 - **prefix (of a walk)**: the root `Config` and the `System` nodes before the first other
@@ -576,3 +588,145 @@ Usage (§3) with M2 to M6. Where the build differs from the text above, or the t
   one as a command's `TreeHandle` argument.
 - **`--verbose` under `tau -p`** prints every extension's shown line when it changes (D22 section 7),
   usage's included. The cache notice reaches stderr as every notice does.
+
+## Built: 8E-3
+
+Prune (§9) and compaction (§2) with M1 and M7. `copied_from` and `derived_from` came first (core,
+store, bindings, stub, wire schema), then `/prune`, which lands the new-line building
+(`tau._lines`, private), then compaction on it. Where the build differs from the text above, or
+the text did not say:
+
+- **M1.** `Node` gains `copied_from` and `derived_from`, each one optional node id. D3 and model.md
+  said "lists"; one id each is what every use needs (a summary derives from the last node it
+  replaced, a copy repeats one node), and a list can be added later without breaking a reader that
+  takes the first. Core has `Provenance` (the two ids) and `Session::append_from` / `write_from`;
+  `append` and `write` are those with none. Both ids must name a node (`NoSuchNode`, nothing
+  written). The log record writes a field only when set, and a record without them loads as none,
+  so a log from before 8E-3 loads (`a_record_from_before_meta_loads_with_none` and
+  `tests/core/test_provenance.py`); there is no store `VERSION` or `PROTOCOL` change. A fork
+  (D18) renumbers a source that is in the walk it copies and drops one that is not. Python:
+  `TreeHandle.append(parent, body, copied_from=, derived_from=)` and `Cursor.write(...,
+  copied_from=, derived_from=)`. The wire schema's `Node` lists them as optional.
+- **`counted` also skips derived replies.** The seam in `tau._usage` is `copied_from is None and
+  derived_from is None`, not `copied_from is None` alone: a pruned reply keeps the `meta` (and so
+  the `usage`) of the sample it came from, and would otherwise be counted again. The estimate for
+  compaction uses the same rule.
+- **Copies are written by the extension.** A handle never passes `by` (model.md), so a copied node's
+  `by` is `Extension("prune")` or `Extension("compaction")`, not its original author; `copied_from`
+  names the original. A `Results` node keeps each outcome's own `by`. This means a future automatic
+  prune cannot tell a person's input from a copy by `by` alone; it should follow `copied_from`.
+- **The line.** Both build the new line under the last node of the prefix (`prefix_length`): copies
+  of the nodes they keep, a computed node with `derived_from`, appended with no cursor moving,
+  then the cursor moves onto the last one. The prefix is shared, not copied. Nothing is awaited
+  between the first append and the move, so a line is whole or absent.
+- **Prune** (`/prune`, `tau.Prune`). Followed §9 and Rulings 10 to 12 exactly. The choices the text
+  left: "messages" in `[pruned: N messages, M tool calls]` counts the turn's replies other than the
+  one shown, "tool calls" counts the calls of every reply of the turn; either is omitted when both
+  are 0; the transcript is `<pruned>`, the accounts, `</pruned>`, a blank line, then the user's text.
+  An old turn's last reply is the last reply that has text. A user message that already begins with
+  a transcript (from an earlier prune) is flattened into the new one, so pruning again never
+  nests. A reply left with no parts once its reasoning is dropped is left out. An outcome becomes
+  `ok` or `error` (an interrupted one stays); the `Config` and `Custom` nodes of an old turn are
+  copied ahead of the transcript so the model and options stay. A node is derived only if it
+  differs from the one it replaces, so a conversation with nothing to prune says `nothing to
+  prune` and writes nothing, and pruning twice in a row does the second time. The option `auto` is
+  there, as §9 says, and a `true` is refused (`prune.auto is not built yet`): the triggers wait on
+  a way to know the cache's state. The command's result is `pruned ~46k → ~6k tokens (node N; the
+  old line is still in the tree)`, characters over four, as everywhere.
+- **Compaction** (`tau.Compaction`, `/compact [focus]`, option `auto`, `reserve`, `keep`, `model`).
+  As §2. The tail begins at the nearest `User` or `Assistant` node at or before `keep` tokens
+  from the end; a head with no `User`, `Assistant` or `Results` node is `nothing to compact yet`.
+  The summary is wrapped as `The earlier part of this conversation was summarized:` and a
+  `<summary>` tag. The notice is the text of §2, from the trigger's estimate before and a
+  character count after, to every client and as `/compact`'s result. `compaction:N` takes the
+  first N no label has. The prompt is in `tau._compaction`; it asks for sections (goal,
+  constraints, progress, open work, facts) and to carry an earlier summary forward.
+- **Failures.** A summarizer that fails, is halted, replies without text, or is cut off at the
+  model's output limit (`Stop.Length`: a truncated summary would be kept as if whole) fails the hook
+  with the reason, and nothing is written. Also refused up front: a `keep` that is not smaller
+  than `context_window − reserve`, since every sample would then compact again (`keep (950) leaves
+  no room before the reserve ...; lower either`).
+- **M7.** `rest` called from a handle whose own cursor is aborted, or sent elsewhere, while the
+  wait is out returns `Ending.Aborted()` at once (the type was `Ending | None`; `None` still means
+  "not known"). A hook is not cancelled by an abort, so this is how a hook's wait ends; a tool is
+  cancelled anyway. The cursor waited on is left alone: compaction closes its summarizer. Compaction's
+  `pre_sample` then returns a halt reason, because core runs a step's sample after the `pre_sample`
+  hooks even when it was aborted meanwhile (the halt keeps the ending `Aborted`). `Esc` therefore
+  leaves the cursor where it was and the tree with no copy or derived node; the summarizer's partial
+  reply, if any, stays on its own branch. An abort during `/compact` cancels the command; its
+  `finally` closes the summarizer.
+- **Recovery.** `/compact` after a provider's "prompt too long" works as Ruling 8 says: the failed
+  step leaves the cursor on the input; `/compact` summarizes, and a step samples the new line.
+- **The estimate** counts a call by its arguments only (D24 says "call arguments"); the tree
+  screen's walk size now uses the same function (`tau._lines.characters`).
+- **The tree screen** draws it (D23 "Built: tree view" amended): `⧉` after a derived node's text,
+  `≡ (copy of N)` after a copy; the old line is the folded stub it already was, with its size; a
+  closed summarizer cursor is the dimmed `○ N compaction:1`; the detail pane starts a copy or
+  derived node with `copied from node N` or `derived from node N` and `walk before: X nodes, about
+  Y tokens` / `walk after: ...`; `p` highlights the source node (unfolding what hides it). The
+  help line dropped `←→ fold` for `p source`. `examples/ratatui` gets the two fields from the
+  regenerated schema types and draws the two marks on its rows; its detail pane and `p` are not
+  built.
+- **Not built:** automatic prune (§9, waits for a way to know the cache's state); automatic
+  compaction on a provider's "prompt too long" (Ruling 8).
+
+### Review fixes (8E-3)
+
+- **Core: an abort while the `pre_sample` hooks run** now ends the step without sampling (the
+  `Sample` position hops to the tools position, then `post_step`, when the ending is not `Done`;
+  the hook's draft is dropped). Before, any awaiting `pre_sample` hook (a question included) let the
+  sample go out after an abort. Compaction's halt-on-abort workaround is gone. Test in Rust
+  (`abort_while_the_pre_sample_hooks_run_ends_the_step_without_sampling`) and through the Harness.
+- **`keep` has no fixed default.** Unset, it is `min(20000, room / 2)` where room is
+  `context_window − reserve` (20000 when the model has no window, for `/compact`), so a 32k model
+  works with the defaults (room 16384, keep 8192). A `keep` that is set and does not fit the room,
+  or a `reserve` that leaves none, fails the step with a message.
+- **A compaction that gains nothing is refused.** Before summarizing, if the prefix and the tail
+  alone reach the room, the step fails naming `keep`; before writing, a line whose estimate is not
+  smaller than the branch's fails with both figures and writes nothing. Prune writes nothing
+  (`nothing to prune: it would not be shorter`) when its line is not smaller.
+- **Prune cuts long strings at any depth** of lists and objects (`edits: [{old, new}]`).
+- **A fork (D18) strips `usage`** from the `meta` of a copy or derived reply whose source it leaves
+  behind (`meta` is rewritten without that one key), so it counts as nobody's sample; sources that
+  are in the walk are kept, renumbered.
+- The tree help line is `Enter go  v view  o open here  l label  [ ] cursors  p source  f follow
+  ←→ fold  Esc leave`.
+- **Left as it is, for the owner:** the summarizer's request can end with two adjacent `User` nodes
+  (the branch's last input, then the summary prompt).
+
+### Ruling 14 built (8E-3)
+
+- Options `hard` and `soft` (token counts, unset by default) beside `reserve`. Hard is `hard` or
+  the window less `reserve`; soft is `soft` or 80% of hard. `soft` above `hard` is refused when the
+  options are read (`soft (700) is above hard (600)`), or when the one that is unset is derived
+  (`soft (950) is above the hard limit (900)`); a hard limit outside the window is refused too.
+- The soft trigger is `post_step` on a `Done` ending whose cursor is at a reply with no `Call`
+  part; a step that ends on `Results`, or an aborted, halted or failed one, never triggers it. The
+  line it writes must end under the soft limit (`prefix` and `keep` tokens must be under it, else the
+  step fails naming `keep`), so the next message does not compact again. `keep`, when unset, is
+  `min(20000, soft / 2)`; a `keep` that is set must be under `soft`. This replaces the "half the
+  room" above.
+- At the hard limit on new input the branch ends in a `User` node not yet answered; the
+  summarizer is opened at that node's parent and sent the input text and the summary prompt as one
+  `User` node (by `Extension("compaction")`), as prune merges, so two user messages never sit side
+  by side. This is the only case; it supersedes "left as it is" above.
+
+### Second review fixes (8E-3)
+
+- **The soft trigger needs a turn.** `post_step` compacts only if this step itself committed the
+  reply the cursor is on (`post_reply` records it, `pre_step` clears it). Going back to a reply, a
+  cursor opened on one, or an item waking a cursor at rest end a step there without a turn, and do
+  not compact.
+- **`reserve` unset is `min(16384, window / 4)`**, so an 8k model has a hard limit of 6144; a
+  `reserve` that is set and leaves no room still fails.
+- **Whole-line checks.** `before` and `after` are both the character estimate (the exact usage count
+  still decides *when*, but is not comparable with a line that has no replies of its own). A line is
+  refused, and nothing written, if `after` is not below `before` or not below the limit that
+  called. When the prefix and the tail alone reach the soft limit, the soft attempt does not run a
+  summarizer: the clients are told once per cursor what is too big (`the prefix (system prompt, ...)`,
+  `the newest node alone`, or `the newest nodes kept (keep = N) ...; lower keep`) and nothing fails.
+  The same condition at the hard limit fails the step with that text.
+- `keep`, `hard` and `soft` below 1 are a `ConfigError` (`keep = 0` used to raise `IndexError`).
+- **Core: an abort while `pre_input` hooks run** now clears the rest of the input queue, which stay
+  pending (`input_job` built it once and never rechecked); the input being offered when the abort
+  came still commits, since its hooks are not cancelled. No new transition.

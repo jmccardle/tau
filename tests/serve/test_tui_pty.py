@@ -52,7 +52,7 @@ def test_the_cursor_keys_reach_the_app_in_a_terminal(served: World) -> None:
     screen.type("edit me\r")
     screen.wait_for("mock: edit me")
     screen.type("\x07")  # Ctrl+G: the tree
-    screen.wait_for("o open a cursor here")
+    screen.wait_for("o open here")
     screen.wait_for("user: edit me")
     screen.type("\x1b")  # Esc leaves it
     time.sleep(0.3)

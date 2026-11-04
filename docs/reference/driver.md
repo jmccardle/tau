@@ -117,12 +117,13 @@ A snapshot of the driver, for a harness.
 ### Driver.rest
 
 ```python
-async def rest(self, cursor: int) -> None
+async def rest(self, cursor: int, waiter: int | None = None) -> None
 ```
 
 Wait until the cursor is at rest with no effect out. Raises `ConnectionError` once the
 driver has failed or stopped (also if it does meanwhile). A cursor held by an open
-question or a gate does not rest.
+question or a gate does not rest. Returns early if `waiter`, the cursor that waits (a
+handle's), is aborted or left meanwhile.
 
 ### Driver.client
 

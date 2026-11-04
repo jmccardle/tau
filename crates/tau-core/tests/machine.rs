@@ -3,7 +3,7 @@
 
 use tau_core::machine::Machine;
 use tau_core::step::{Answer, Draft, Ending, Hook, Job, SampleEnd};
-use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Session, Stop};
+use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Provenance, Session, Stop};
 
 /// Input, then auto-step on: what a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
@@ -480,7 +480,7 @@ fn a_hook_acts_on_its_cursor_only_while_a_hook_job_is_out() {
     // Resting: no hook job is out.
     assert_eq!(m.hook_move(c, sys, by.clone(), 0), Err(Error::NotInHook(c)));
     assert_eq!(
-        m.hook_write(c, note(), vec![], by.clone(), 0),
+        m.hook_write(c, note(), vec![], by.clone(), 0, Provenance::default()),
         Err(Error::NotInHook(c))
     );
     assert_eq!(m.hook_set_auto(c, true), Err(Error::NotInHook(c)));
@@ -489,7 +489,9 @@ fn a_hook_acts_on_its_cursor_only_while_a_hook_job_is_out() {
         panic!("a hook job");
     };
     // The job is out: all three apply at once, with no sync of their own.
-    let written = m.hook_write(c, note(), vec![], by.clone(), 0).unwrap();
+    let written = m
+        .hook_write(c, note(), vec![], by.clone(), 0, Provenance::default())
+        .unwrap();
     assert_eq!(m.session.at(c), Ok(written));
     m.hook_move(c, sys, by.clone(), 0).unwrap();
     assert_eq!(m.session.at(c), Ok(sys));
@@ -599,7 +601,8 @@ fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
             point: Hook::PreInput,
             ..
         } => {
-            m.hook_write(c, note(), vec![item], by.clone(), 0).unwrap();
+            m.hook_write(c, note(), vec![item], by.clone(), 0, Provenance::default())
+                .unwrap();
             writes += 1;
             vec![ok()] // the draft is cleared too: nothing to commit
         }
@@ -621,7 +624,8 @@ fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
             draft,
             ..
         } => {
-            m.hook_write(c, note(), vec![item], by.clone(), 0).unwrap();
+            m.hook_write(c, note(), vec![item], by.clone(), 0, Provenance::default())
+                .unwrap();
             vec![Answer::Hooks {
                 stop: None,
                 draft: draft.clone(),
@@ -669,8 +673,12 @@ fn removing_an_item_is_no_change_and_adding_one_is() {
 fn a_hook_reads_children_labels_and_the_node_count() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    let a = m.append(sys, note(), Author::Core, 0, None).unwrap();
-    let b = m.append(sys, note(), Author::Core, 0, None).unwrap();
+    let a = m
+        .append(sys, note(), Author::Core, 0, Provenance::default(), None)
+        .unwrap();
+    let b = m
+        .append(sys, note(), Author::Core, 0, Provenance::default(), None)
+        .unwrap();
     assert_eq!(m.session.tree.children(sys).unwrap(), &[a, b]);
     assert_eq!(m.session.tree.children(0).unwrap(), &[sys]);
     assert_eq!(m.session.tree.children(99), Err(Error::NoSuchNode(99)));
@@ -688,7 +696,16 @@ fn an_extension_appends_a_note_and_removes_items() {
         kind: "note".into(),
         data: "n".into(),
     };
-    let note = m.append(sys, body.clone(), by.clone(), 0, None).unwrap();
+    let note = m
+        .append(
+            sys,
+            body.clone(),
+            by.clone(),
+            0,
+            Provenance::default(),
+            None,
+        )
+        .unwrap();
     assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
     assert_eq!(m.session.tree.node(note).unwrap().parent, Some(sys));
     let root = m.append_root(Config::from("{}"), by, 0, None);
@@ -901,8 +918,15 @@ fn a_hook_call_on_a_closed_cursor_is_refused_as_closed() {
     assert_eq!(m.hook_move(d, 0, Author::Core, 0).unwrap_err(), closed);
     assert_eq!(m.hook_set_auto(d, true).unwrap_err(), closed);
     assert_eq!(
-        m.hook_write(d, Body::User("x".into()), vec![], Author::Core, 0)
-            .unwrap_err(),
+        m.hook_write(
+            d,
+            Body::User("x".into()),
+            vec![],
+            Author::Core,
+            0,
+            Provenance::default()
+        )
+        .unwrap_err(),
         closed
     );
     assert_eq!(m.session, before, "nothing was recorded");

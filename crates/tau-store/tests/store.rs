@@ -586,6 +586,8 @@ fn a_record_from_before_meta_loads_with_none() {
     fs::write(&log, bytes).unwrap();
     let (store, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(store.dropped, 0);
+    let node = loaded.tree.node(2).unwrap();
+    assert_eq!((node.copied_from, node.derived_from), (None, None));
     assert_eq!(
         loaded.tree.node(2).unwrap().body,
         Body::Assistant {
@@ -595,6 +597,36 @@ fn a_record_from_before_meta_loads_with_none() {
             meta: None,
         }
     );
+}
+
+#[test]
+fn provenance_survives_a_reload() {
+    use tau_core::tree::Provenance;
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let store = Store::create(d.path(), &mut s).unwrap();
+    let a = s
+        .write(c, Body::User("a".into()), vec![], Author::Core, 1)
+        .unwrap();
+    let copy = s
+        .append_from(
+            1,
+            Author::Core,
+            Body::User("a".into()),
+            vec![],
+            2,
+            Provenance {
+                copied_from: Some(a),
+                derived_from: Some(1),
+            },
+        )
+        .unwrap();
+    s.sync();
+    drop(store.save(&mut s).unwrap());
+    let (_, loaded) = Store::open(d.path()).unwrap();
+    assert_eq!(loaded, as_loaded(&s), "I7");
+    let node = loaded.tree.node(copy).unwrap();
+    assert_eq!((node.copied_from, node.derived_from), (Some(a), Some(1)));
 }
 
 #[test]

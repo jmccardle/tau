@@ -240,6 +240,12 @@ impl Step {
                 self.hop("sample does not apply", Pos::Tools);
                 None
             }
+            // An abort while the `pre_sample` hooks ran: no later phase applies.
+            Pos::Sample if self.ending != Ending::Done => {
+                self.draft = None;
+                self.hop("aborted: no sample", Pos::Tools);
+                None
+            }
             Pos::Sample if self.draft.is_some() => {
                 self.hop("pre_sample draft answers the sample", Pos::PreReply);
                 None
@@ -305,6 +311,9 @@ impl Step {
                 vec![]
             }
         });
+        if !on {
+            queue.clear(); // aborted while the inputs were offered: the rest stay pending
+        }
         // An input a hook already delivered is gone from the pad.
         let next = loop {
             if queue.is_empty() {

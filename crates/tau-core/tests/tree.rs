@@ -1,7 +1,7 @@
 //! The tree's views and label records, without the step machine.
 
 use tau_core::step::{Answer, Job, Step};
-use tau_core::tree::{Author, Body, Config, Error, Node, Record, Scratchpad, Session};
+use tau_core::tree::{Author, Body, Config, Error, Node, Provenance, Record, Scratchpad, Session};
 
 fn user(s: &mut Session, c: u64, t: &str) -> u64 {
     s.write(c, Body::User(t.into()), vec![], Author::Core, 0)
@@ -112,6 +112,8 @@ fn a_logged_root_that_is_not_a_config_does_not_replay() {
         by: Author::Core,
         body: Body::System("s".into()),
         delivers: vec![],
+        copied_from: None,
+        derived_from: None,
     };
     let log = [Record::Write {
         node: root,
@@ -194,4 +196,130 @@ fn a_forks_delivers_are_emptied_and_a_missing_node_is_refused() {
     let (copy, _) = s.fork(tip, 0).unwrap();
     assert_eq!(copy.tree.node(2).unwrap().delivers, Vec::<u64>::new());
     assert_eq!(s.fork(77, 0).map(|_| ()), Err(Error::NoSuchNode(77)));
+}
+
+#[test]
+fn a_node_records_where_it_came_from_and_the_source_must_exist() {
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    let a = s
+        .append(1, Author::Core, Body::User("a".into()), vec![], 1)
+        .unwrap();
+    let copy = s
+        .append_from(
+            1,
+            Author::Core,
+            Body::User("a".into()),
+            vec![],
+            2,
+            Provenance {
+                copied_from: Some(a),
+                derived_from: None,
+            },
+        )
+        .unwrap();
+    let summary = s
+        .append_from(
+            1,
+            Author::Core,
+            Body::User("s".into()),
+            vec![],
+            3,
+            Provenance {
+                copied_from: None,
+                derived_from: Some(a),
+            },
+        )
+        .unwrap();
+    let n = |id| s.tree.node(id).unwrap().clone();
+    assert_eq!((n(a).copied_from, n(a).derived_from), (None, None));
+    assert_eq!((n(copy).copied_from, n(copy).derived_from), (Some(a), None));
+    assert_eq!(
+        (n(summary).copied_from, n(summary).derived_from),
+        (None, Some(a))
+    );
+    let before = s.tree.node_count();
+    let missing = Provenance {
+        copied_from: Some(99),
+        derived_from: None,
+    };
+    assert_eq!(
+        s.append_from(1, Author::Core, Body::User("x".into()), vec![], 4, missing),
+        Err(Error::NoSuchNode(99))
+    );
+    assert_eq!(s.tree.node_count(), before, "a refused node is not added");
+}
+
+#[test]
+fn a_fork_renumbers_provenance_and_drops_a_source_outside_the_walk() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let side = s
+        .append(1, Author::Core, Body::User("side".into()), vec![], 1)
+        .unwrap();
+    let a = s
+        .write(c, Body::User("a".into()), vec![], Author::Core, 2)
+        .unwrap();
+    let copy = s
+        .append_from(
+            a,
+            Author::Core,
+            Body::User("b".into()),
+            vec![],
+            3,
+            Provenance {
+                copied_from: Some(a),
+                derived_from: Some(side),
+            },
+        )
+        .unwrap();
+    let (forked, _) = s.fork(copy, 9).unwrap();
+    let last = forked.tree.node(3).unwrap();
+    assert_eq!(last.copied_from, Some(2), "node a is node 2 of the copy");
+    assert_eq!(
+        last.derived_from, None,
+        "the side branch is not in the walk"
+    );
+}
+
+#[test]
+fn a_fork_strips_usage_from_a_copy_whose_source_it_drops() {
+    use tau_core::tree::{Part, Stop};
+    let reply = |meta: &str| Body::Assistant {
+        parts: vec![Part::text("r")],
+        stop: Stop::End,
+        finish_reason: None,
+        meta: Some(meta.into()),
+    };
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let side = s
+        .append(
+            1,
+            Author::Core,
+            reply(r#"{"usage":{"input":9,"output":1}}"#),
+            vec![],
+            1,
+        )
+        .unwrap();
+    let a = s
+        .write(c, Body::User("a".into()), vec![], Author::Core, 2)
+        .unwrap();
+    let kept = s
+        .append_from(
+            a,
+            Author::Core,
+            reply(r#"{"model":"m","usage":{"input":9,"output":1}}"#),
+            vec![],
+            3,
+            Provenance {
+                copied_from: Some(side),
+                derived_from: None,
+            },
+        )
+        .unwrap();
+    let (forked, _) = s.fork(kept, 9).unwrap();
+    let copy = forked.tree.node(3).unwrap();
+    assert_eq!(copy.copied_from, None);
+    let Body::Assistant { meta, .. } = &copy.body else {
+        panic!("a reply")
+    };
+    assert_eq!(meta.as_deref(), Some(r#"{"model":"m"}"#));
 }

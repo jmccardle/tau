@@ -71,3 +71,9 @@ input's text twice.
   `a_torn_tail_opens_as_the_last_sync_before_it` in
   `crates/tau-store/tests/store.rs` (a log cut anywhere, plus garbage, opens
   as the last sync before the cut, and the session goes on from there).
+
+## Note: provenance fields (8E-3)
+
+A `Write` record's node gains `copied_from` and `derived_from` (D24 M1), each a node id, written
+only when set. A record without them loads as none, so `VERSION` stays 1: this is the first
+release of the format and a log written before the fields existed is a log with none.

@@ -17,6 +17,8 @@ const PREVIEW: usize = 200;
 const STUB_GLYPH: &str = "├┄";
 const OPEN_MARK: &str = "◀";
 const CLOSED_MARK: &str = "○";
+const DERIVED_MARK: &str = "⧉";
+const COPY_MARK: &str = "≡";
 
 /// The tag a row starts with, which colours it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +354,18 @@ fn turn_summary(row: &Row) -> String {
     }
 }
 
+/// Where a node's content came from (D24 M1): `⧉` for one computed from another, `≡ (copy of 7)`
+/// for a verbatim copy, nothing for the rest.
+fn provenance_mark(node: &Node) -> String {
+    if node.derived_from.is_some() {
+        format!("  {DERIVED_MARK}")
+    } else if let Some(source) = node.copied_from {
+        format!("  {COPY_MARK} (copy of {source})")
+    } else {
+        String::new()
+    }
+}
+
 /// The words of `row`: a node's tag and text with its fold summary and the cursors at it, or a
 /// stub's counts and the cursors on its branch. A folded turn lists every cursor inside it, so
 /// none is out of sight; an open one only those at its own node (the rest show below it).
@@ -384,11 +398,12 @@ pub fn row_label(row: &Row, node: &Node, marks: &Marks, folded: bool) -> RowLabe
         } else {
             marks.closed_at.get(&row.node).cloned().unwrap_or_default()
         };
-        summary = if row.kind == Kind::Turn {
-            turn_summary(row)
-        } else {
-            String::new()
-        };
+        summary = provenance_mark(node)
+            + &if row.kind == Kind::Turn {
+                turn_summary(row)
+            } else {
+                String::new()
+            };
     }
     let before = summary + &marks.open_text(&shown);
     let after = marks.closed_text(&closed);

@@ -1132,3 +1132,55 @@ fn a_post_step_hook_that_raises_turns_auto_step_off_as_a_string_does() {
     let (s, c, _) = turn_with_hook_answer(Hook::PostStep, halting("stop"));
     assert!(!s.auto[&c]);
 }
+
+#[test]
+fn abort_while_the_pre_sample_hooks_run_ends_the_step_without_sampling() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false);
+    let mut jobs = vec![];
+    loop {
+        let job = step.next_job(&mut s).unwrap();
+        jobs.push(job.clone());
+        match job {
+            Job::Rest => break,
+            Job::Hooks {
+                point: Hook::PreSample,
+                ..
+            } => {
+                assert!(!step.abort(&mut s), "a hook is not cancelled");
+                step.answer(&mut s, echo(&job), 0).unwrap();
+            }
+            job => step.answer(&mut s, echo(&job), 0).unwrap(),
+        }
+    }
+    assert_eq!(ending(&jobs), Ending::Aborted);
+    assert!(!jobs.iter().any(|j| matches!(j, Job::Sample)));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+}
+
+#[test]
+fn abort_while_the_inputs_are_offered_leaves_the_rest_pending() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "one");
+    send(&mut s, c, "two");
+    let mut step = Step::wake(&s, c, false);
+    let mut offered = 0;
+    loop {
+        let job = step.next_job(&mut s).unwrap();
+        match job {
+            Job::Rest => break,
+            Job::Hooks {
+                point: Hook::PreInput,
+                ..
+            } => {
+                offered += 1;
+                step.abort(&mut s);
+                step.answer(&mut s, echo(&job), 0).unwrap();
+            }
+            job => step.answer(&mut s, echo(&job), 0).unwrap(),
+        }
+    }
+    assert_eq!(offered, 1, "the second input is not offered");
+    assert_eq!(s.items(c).count(), 1, "and stays pending");
+}

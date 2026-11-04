@@ -3,7 +3,7 @@ turn or stub, and the marks of the cursors at a row. Pure strings, no Textual: `
 the width and paints them.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau._core import Body, Node, Outcome, Part
@@ -16,6 +16,8 @@ _PREVIEW = 200  # characters of a node's text a row keeps before the width elide
 STUB_GLYPH = "├┄"
 OPEN_MARK = "◀"
 CLOSED_MARK = "○"
+DERIVED_MARK = "⧉"
+COPY_MARK = "≡"
 
 KIND_CLASS = {
     "user": "tree--kind-user",
@@ -90,10 +92,36 @@ def _outcome(outcome: Outcome) -> str:
             return "interrupted before it finished"
 
 
-def detail_text(row: TreeRow) -> str:
-    """What the detail pane shows of `row`: a node whole, or what a stub holds and how it begins."""
+def provenance_mark(node: Node) -> str:
+    """What a row says of where its node came from (D24 M1): `⧉` for a node computed from another
+    (a summary, a pruned reply), `≡ (copy of 7)` for a verbatim copy; `""` for the rest."""
+    if node.derived_from is not None:
+        return f"  {DERIVED_MARK}"
+    if node.copied_from is not None:
+        return f"  {COPY_MARK} (copy of {node.copied_from})"
+    return ""
+
+
+def provenance_text(node: Node, sizes: Callable[[int], tuple[int, int]]) -> str:
+    """The detail pane's lines on where `node` came from, with the walk to the source (before)
+    and the walk to `node` (after) in nodes and about tokens; `""` for a node that came from
+    none. `sizes(id)` is a walk's length and tokens."""
+    for what, source in (("derived from", node.derived_from), ("copied from", node.copied_from)):
+        if source is not None:
+            before, after = sizes(source), sizes(node.id)
+            return (
+                f"{what} node {source}\n"
+                f"walk before: {plural(before[0], 'node')}, about {before[1]:,} tokens\n"
+                f"walk after: {plural(after[0], 'node')}, about {after[1]:,} tokens\n\n"
+            )
+    return ""
+
+
+def detail_text(row: TreeRow, sizes: Callable[[int], tuple[int, int]] | None = None) -> str:
+    """What the detail pane shows of `row`: a node whole, or what a stub holds and how it begins.
+    With `sizes` a node that is a copy or derived says from what, and how the walk changed."""
     if row.kind != "stub":
-        return full_text(row.node)
+        return (provenance_text(row.node, sizes) if sizes else "") + full_text(row.node)
     shown = [f"{plural(row.size, 'node')} and {plural(row.turns, 'turn')} on this branch"]
     shown += [f"cursor {c} is on it" for c in row.cursors]
     shown += [f"cursor {c} (closed) was on it" for c in row.closed]
@@ -193,7 +221,8 @@ def row_label(row: TreeRow, marks: Marks, *, folded: bool = True) -> RowLabel:
             shown = marks.open_at.get(row.node.id, [])
             closed = marks.closed_at.get(row.node.id, [])
         summary = turn_summary(row) if row.kind == "turn" else ""
-    before = summary + marks.open_text(shown)
+    before = (provenance_mark(row.node) if row.kind != "stub" else "") + summary
+    before += marks.open_text(shown)
     after = marks.closed_text(closed)
     return RowLabel(body, before + after, len(before) if after else None, kind, tag_size)
 

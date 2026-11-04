@@ -55,6 +55,7 @@ def _allowed() -> set[tuple[str, str, str]]:
     a.add(("Input", "commit refused", "PostStep"))
     a.add(("PreSample", "answer Hooks", "Sample"))
     a.add(("PreSample", "sample does not apply", "Tools"))
+    a.add(("Sample", "aborted: no sample", "Tools"))
     a.add(("Sample", "pre_sample draft answers the sample", "PreReply"))
     for reply in ("reply", "reply, error"):
         a.add(("Sample", f"answer Sampled({reply})", "PreReply"))

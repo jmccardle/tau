@@ -15,6 +15,7 @@ from tau._base_tools import (
 from tau._client import Client, LocalClient
 from tau._clock import SystemClock
 from tau._commands import CommandFailed
+from tau._compaction import Compaction
 from tau._config import ConfigError, ModelConfig, Price, model_config
 from tau._config_layers import (
     Layer,
@@ -128,6 +129,7 @@ from tau._providers import builtin_providers
 from tau._providers.anthropic import AnthropicProvider
 from tau._providers.gemini import GeminiProvider
 from tau._providers.openai import OpenAIProvider
+from tau._prune import Prune
 from tau._remote import RemoteClient
 from tau._retry import RetryProvider
 from tau._serve import Server
@@ -185,6 +187,7 @@ __all__ = [
     "Clock",
     "Closed",
     "CommandFailed",
+    "Compaction",
     "Config",
     "ConfigError",
     "ConfigProblem",
@@ -267,6 +270,7 @@ __all__ = [
     "ProtocolMismatch",
     "Provider",
     "ProviderClosed",
+    "Prune",
     "ReadTool",
     "RemoteClient",
     "Replay",

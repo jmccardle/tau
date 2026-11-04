@@ -84,8 +84,9 @@ class TreeScreen(TauDialog[TreeIntent | None]):
     a leaf, Left steps out to the row around it); Enter goes to the highlighted node (the viewed
     cursor moves there; on a busy cursor that aborts its step, which the app asks about); `[` and
     `]` jump to the previous and next cursor mark; `v` makes the cursor at the highlight the
-    viewed one; `o` opens a cursor at the node; `l` labels the viewed cursor; `f` follows the
-    viewed cursor again; Esc leaves.
+    viewed one; `o` opens a cursor at the node; `l` labels the viewed cursor; `p` goes to the node
+    the highlighted one was copied or derived from; `f` follows the viewed cursor again; Esc
+    leaves.
 
     While it follows, which it does on opening, the highlight tracks the viewed cursor as it
     moves; moving the highlight by hand pauses that. The title says which. The screen reads
@@ -104,13 +105,14 @@ class TreeScreen(TauDialog[TreeIntent | None]):
         Binding("l", "label", "Label the cursor", show=False),
         Binding("v", "view", "View this cursor", show=False),
         Binding("f", "follow", "Follow the cursor", show=False),
+        Binding("p", "source", "Go to the source node", show=False),
         Binding("left_square_bracket", "mark(-1)", "Previous cursor", show=False),
         Binding("right_square_bracket", "mark(1)", "Next cursor", show=False),
     ]
 
     DIALOG_ID = "tree-browser-dialog"
     _HELP = (
-        "Enter go to  v view  o open a cursor here  l label  [ ] cursors  f follow  ←→ fold  "
+        "Enter go  v view  o open here  l label  [ ] cursors  p source  f follow  ←→ fold  "
         "Esc leave"
     )
 
@@ -223,7 +225,9 @@ class TreeScreen(TauDialog[TreeIntent | None]):
         if row is None:
             return
         self.query_one(ZoneTree).set_path(frozenset(self._rows.plan.ancestry(row.node.id)))
-        self.query_one("#tree-detail-text", Static).update(self._walk + detail_text(row))
+        self.query_one("#tree-detail-text", Static).update(
+            self._walk + detail_text(row, self._rows.walk.of)
+        )
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[TreeRow]) -> None:
         event.stop()
@@ -315,6 +319,24 @@ class TreeScreen(TauDialog[TreeIntent | None]):
         self._rows.reveal(target)
         self._wanted = target
         self.query_one(ZoneTree).call_after_refresh(self._place, target)
+
+    def action_source(self) -> None:
+        """`p`: highlight the node the highlighted one was copied or derived from, unfolding what
+        hides it. A node that came from none says so."""
+        row = self._rows.highlighted()
+        if row is None:
+            return
+        node = row.node
+        source = node.copied_from if node.derived_from is None else node.derived_from
+        if source is None:
+            self.notify(
+                f"Node {node.id} was not copied or derived from another", severity="warning"
+            )
+            return
+        self._set_following(False)
+        self._rows.reveal(source)
+        self._wanted = source
+        self.query_one(ZoneTree).call_after_refresh(self._place, source)
 
     def action_collapse(self) -> None:
         """Left: fold the turn or branch the highlight is on, else step out to the row around

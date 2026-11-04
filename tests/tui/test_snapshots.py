@@ -20,7 +20,7 @@ from textual.widgets import DataTable, OptionList, Tree
 from tuikit import Gatekeeper, Tuner, check_screen, running, say, shows, type_line, until
 from world import World
 
-from tau import PROTOCOL, Part, Stop, UserConfig, Welcome, read_models
+from tau import PROTOCOL, Compaction, Part, Stop, UserConfig, Welcome, model_config, read_models
 from tau.tui import SessionPicker, TauApp
 
 WELCOME = Welcome(PROTOCOL, "0.16.0", "20261102-120000-abc123", "/work/project", 1)
@@ -139,6 +139,46 @@ async def test_the_tree_with_a_branch_and_a_closed_cursor(tmp_path: Path) -> Non
             lambda: "compaction:1" in str(app.screen.query_one(Tree).root.children[1].label),
         )
         await picture(pilot, app, "the_tree_with_a_branch_and_a_closed_cursor")
+    await h.close()
+
+
+@scenario
+async def test_the_tree_of_a_compacted_session(tmp_path: Path) -> None:
+    usage = '{"usage": {"input": 895, "output": 5}}'
+    catalog = read_models(
+        cli={
+            "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 1000}},
+            "extensions": {"compaction": {"reserve": 100, "soft": 900, "keep": 20}},
+        }
+    )
+    replies = [
+        Reply([Part.Text("one" + "." * 600)], Stop.End),
+        Reply([Part.Text("two" + "." * 600)], Stop.End),
+        Reply([Part.Text("r" * 100)], Stop.End, meta=usage),
+        say("the summary"),
+        say("four"),
+    ]
+    h = await start(
+        tmp_path,
+        provider=FakeProvider(replies),
+        extensions=[Compaction()],
+        catalog=catalog,
+        config=model_config("a"),
+    )
+    async with running(h, tmp_path, welcome=WELCOME, size=SMALL) as (app, pilot):
+        for line, answer in (("go 1", "one"), ("go 2", "two"), ("go 3", "rrrr"), ("go 4", "four")):
+            await type_line(pilot, line)
+            await pilot.press("enter")
+            await shows(pilot, app, answer)
+        await pilot.press("ctrl+g")
+        await until(pilot, lambda: bool(app.screen.query("#tree-browser-tree")))
+        await until(
+            pilot,
+            lambda: any(
+                "compaction:1" in str(n.label) for n in app.screen.query_one(Tree).root.children
+            ),
+        )
+        await picture(pilot, app, "the_tree_of_a_compacted_session")
     await h.close()
 
 

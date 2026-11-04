@@ -3,154 +3,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-
 mod part;
 mod replay;
+mod values;
 
 pub use part::{Part, Replay, ReplayError};
 pub use replay::{load, reconcile};
+pub use values::{
+    Author, Body, Config, Item, ItemData, Move, Node, Outcome, Provenance, Record, Scratchpad, Stop,
+};
 
 pub type NodeId = u64;
 pub type CursorId = u64;
 pub type ItemId = u64;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum Stop {
-    End,
-    Tools,
-    Length,
-    Interrupted,
-    Error,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum Outcome {
-    Ok(String),
-    Err(String),
-    Interrupted,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum Body {
-    System(String),
-    User(String),
-    Assistant {
-        parts: Vec<Part>,
-        stop: Stop,
-        /// The provider's own finish string, verbatim; `None` when it sent none
-        /// (an interrupted reply, a failed sample).
-        finish_reason: Option<String>,
-        /// What the response carried besides its parts (model, id, usage...), as JSON
-        /// object text. Opaque to core; `None` when the provider sent none.
-        #[serde(default)]
-        meta: Option<String>,
-    },
-    /// One `(call id, outcome, by)` per call, in call order. `by` is who
-    /// produced that outcome: `Tools`, or the extension that answered or edited it.
-    Results(Vec<(String, Outcome, Author)>),
-    Config(Config),
-    Custom {
-        kind: String,
-        data: String,
-    },
-}
-
-/// A config snapshot. `data` is opaque to core and typed by the driver.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Config {
-    pub data: String,
-}
-
-impl From<&str> for Config {
-    fn from(data: &str) -> Self {
-        Self { data: data.into() }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum Author {
-    Frontend(String),
-    Provider,
-    Tools,
-    Core,
-    Extension(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Node {
-    pub id: NodeId,
-    pub parent: Option<NodeId>,
-    pub time: u64,
-    pub by: Author,
-    pub body: Body,
-    pub delivers: Vec<ItemId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Move {
-    pub cursor: CursorId,
-    pub from: Option<NodeId>,
-    pub to: NodeId,
-    pub by: Author,
-    pub time: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum ItemData {
-    Input { by: Author, text: String },
-    Extension { name: String, data: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Item {
-    pub id: ItemId,
-    pub to: CursorId,
-    pub data: ItemData,
-}
-
-/// A cursor's items live here, for every cursor, with the next item id. The
-/// store keeps it as the scratchpad file, never in the log (D12).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Scratchpad {
-    pub items: Vec<Item>,
-    pub next_item: ItemId,
-}
-
-/// What the store must make durable, in order. Core never writes; it queues.
-/// The store may buffer everything up to a `Sync`; at a `Sync` it syncs the
-/// log, then, if `pad` is set, rewrites the scratchpad file with it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Record {
-    Write {
-        node: Node,
-        mv: Option<Move>,
-    },
-    Move(Move),
-    /// Set or move a label; no cursor removes it.
-    Label {
-        label: String,
-        cursor: Option<CursorId>,
-    },
-    /// A tombstone: the cursor is closed (D17). It keeps its id, its last node
-    /// and its labels; nothing may name it again.
-    Close {
-        cursor: CursorId,
-    },
-    /// A sync point. `pad`: the scratchpad as it stands here, if it changed
-    /// since the last sync.
-    Sync {
-        pad: Option<Scratchpad>,
-    },
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -198,6 +63,32 @@ impl std::fmt::Display for Error {
             Self::WrongAnswer(c) => write!(f, "that answer answers no job on cursor {c}"),
             Self::BadRecord(at) => write!(f, "record {at} does not replay"),
         }
+    }
+}
+
+/// A reply with `usage` taken out of its `meta` (the rest of `meta` is kept); other bodies, and a
+/// `meta` that is not a JSON object with a `usage`, as they are.
+fn without_usage(body: &Body) -> Body {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta: Some(meta),
+    } = body
+    else {
+        return body.clone();
+    };
+    let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_str(meta) else {
+        return body.clone();
+    };
+    if fields.remove("usage").is_none() {
+        return body.clone();
+    }
+    Body::Assistant {
+        parts: parts.clone(),
+        stop: *stop,
+        finish_reason: finish_reason.clone(),
+        meta: Some(serde_json::Value::Object(fields).to_string()),
     }
 }
 
@@ -278,14 +169,31 @@ impl Session {
         self.tree.node(node)?;
         let mut copy = Self::default();
         let mut tip = 0;
+        // Provenance is kept where its source is in the walk too, renumbered; a source
+        // outside the walk is not in the copy, so the field is empty there.
+        let mut renumbered: BTreeMap<NodeId, NodeId> = BTreeMap::new();
         for n in self.tree.walk(node) {
-            tip = match (&n.body, n.parent) {
+            let from = Provenance {
+                copied_from: n.copied_from.and_then(|c| renumbered.get(&c).copied()),
+                derived_from: n.derived_from.and_then(|d| renumbered.get(&d).copied()),
+            };
+            // A copy's usage is its source's: where the source is not in the walk, the copy
+            // would otherwise count as a reply of its own.
+            let cut_off = (n.copied_from.is_some() && from.copied_from.is_none())
+                || (n.derived_from.is_some() && from.derived_from.is_none());
+            let body = if cut_off {
+                without_usage(&n.body)
+            } else {
+                n.body.clone()
+            };
+            tip = match (&body, n.parent) {
                 (Body::Config(c), None) => copy.append_root(n.by.clone(), c.clone(), n.time),
                 (body, Some(_)) => copy
-                    .append(tip, n.by.clone(), body.clone(), vec![], n.time)
+                    .append_from(tip, n.by.clone(), body.clone(), vec![], n.time, from)
                     .expect("a node that passed V2 passes it again"),
                 (_, None) => unreachable!("a root is a Config"),
             };
+            renumbered.insert(n.id, tip);
         }
         let cursor = copy.open(tip, Author::Core, time)?;
         Ok((copy, cursor))
@@ -318,8 +226,27 @@ impl Session {
         delivers: Vec<ItemId>,
         time: u64,
     ) -> Result<NodeId, Error> {
+        self.append_from(parent, by, body, delivers, time, Provenance::default())
+    }
+
+    /// `append`, recording where the node's content came from.
+    ///
+    /// # Errors
+    ///
+    /// As `append`; `NoSuchNode` too if `from` names a node that is not there.
+    pub fn append_from(
+        &mut self,
+        parent: NodeId,
+        by: Author,
+        body: Body,
+        delivers: Vec<ItemId>,
+        time: u64,
+        from: Provenance,
+    ) -> Result<NodeId, Error> {
         let _span = tracing::info_span!("core.append").entered();
-        let node = self.tree.check(Some(parent), by, body, delivers, time)?;
+        let node = self
+            .tree
+            .check(Some(parent), by, body, delivers, time, from)?;
         let id = node.id;
         self.tree.push(node.clone());
         self.queue(Record::Write { node, mv: None });
@@ -337,6 +264,8 @@ impl Session {
             by,
             body: Body::Config(config),
             delivers: vec![],
+            copied_from: None,
+            derived_from: None,
         };
         let id = node.id;
         self.tree.push(node.clone());
@@ -357,8 +286,25 @@ impl Session {
         by: Author,
         time: u64,
     ) -> Result<NodeId, Error> {
+        self.write_from(cursor, body, delivers, by, time, Provenance::default())
+    }
+
+    /// `write`, recording where the node's content came from.
+    ///
+    /// # Errors
+    ///
+    /// As `write`; `NoSuchNode` too if `from` names a node that is not there.
+    pub fn write_from(
+        &mut self,
+        cursor: CursorId,
+        body: Body,
+        delivers: Vec<ItemId>,
+        by: Author,
+        time: u64,
+        from: Provenance,
+    ) -> Result<NodeId, Error> {
         let _span = tracing::info_span!("core.write", cursor).entered();
-        let from = self.at(cursor)?;
+        let at = self.at(cursor)?;
         if let Some(bad) = delivers
             .iter()
             .find(|d| !self.items(cursor).any(|i| i.id == **d))
@@ -367,7 +313,7 @@ impl Session {
         }
         let node = self
             .tree
-            .check(Some(from), by.clone(), body, delivers, time)?;
+            .check(Some(at), by.clone(), body, delivers, time, from)?;
         let id = node.id;
         if !node.delivers.is_empty() {
             self.pad.items.retain(|i| !node.delivers.contains(&i.id));
@@ -375,7 +321,7 @@ impl Session {
         }
         let mv = Move {
             cursor,
-            from: Some(from),
+            from: Some(at),
             to: node.id,
             by,
             time,
@@ -615,9 +561,13 @@ impl Tree {
         body: Body,
         delivers: Vec<ItemId>,
         time: u64,
+        from: Provenance,
     ) -> Result<Node, Error> {
         if let Some(p) = parent {
             self.node(p)?;
+        }
+        for source in [from.copied_from, from.derived_from].into_iter().flatten() {
+            self.node(source)?;
         }
         let ids: Vec<&str> = match &body {
             Body::Results(out) => out.iter().map(|(c, ..)| c.as_str()).collect(),
@@ -640,6 +590,8 @@ impl Tree {
             by,
             body,
             delivers,
+            copied_from: from.copied_from,
+            derived_from: from.derived_from,
         })
     }
 

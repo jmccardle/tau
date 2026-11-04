@@ -1,7 +1,7 @@
 //! Load (I7): rebuild a `Session` from the records a store wrote. Pure; the
 //! store reads the files.
 
-use super::{Body, Error, ItemId, Move, Record, Scratchpad, Session};
+use super::{Body, Error, ItemId, Move, Provenance, Record, Scratchpad, Session};
 
 /// Replay the log's records, take the scratchpad file, then `reconcile`.
 /// Nothing is queued.
@@ -33,6 +33,10 @@ fn replay(s: &mut Session, r: Record) -> Result<(), Error> {
                 node.body.clone(),
                 node.delivers.clone(),
                 node.time,
+                Provenance {
+                    copied_from: node.copied_from,
+                    derived_from: node.derived_from,
+                },
             )?;
             if checked != node {
                 return Err(Error::BadRecord(0));

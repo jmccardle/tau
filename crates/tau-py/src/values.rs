@@ -418,7 +418,8 @@ impl From<Body> for tree::Body {
 
 /// One record of a session's tree, written once and never changed: its `id`, its `parent`
 /// (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
-/// it holds (`body`), and the scratchpad items it consumed (`delivers`).
+/// it holds (`body`), the scratchpad items it consumed (`delivers`), and where its content came
+/// from (`copied_from`, `derived_from`).
 #[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
@@ -434,6 +435,11 @@ pub struct Node {
     body: Body,
     /// The ids of the scratchpad items it consumed.
     delivers: Vec<u64>,
+    /// The node this one repeats verbatim (a compaction or prune copy), or `None`.
+    copied_from: Option<u64>,
+    /// The node whose walk this one's content was computed from (a summary, a pruned
+    /// transcript), or `None`.
+    derived_from: Option<u64>,
 }
 
 impl From<tree::Node> for Node {
@@ -445,6 +451,8 @@ impl From<tree::Node> for Node {
             by: n.by.into(),
             body: n.body.into(),
             delivers: n.delivers,
+            copied_from: n.copied_from,
+            derived_from: n.derived_from,
         }
     }
 }
@@ -458,6 +466,8 @@ impl From<Node> for tree::Node {
             by: n.by.into(),
             body: n.body.into(),
             delivers: n.delivers,
+            copied_from: n.copied_from,
+            derived_from: n.derived_from,
         }
     }
 }

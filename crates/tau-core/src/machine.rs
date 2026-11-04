@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 
 use crate::step::{self, Answer, Job, Step};
 use crate::transitions;
-use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, NodeId, Session};
+use crate::tree::{
+    Author, Body, Config, CursorId, Error, ItemData, ItemId, NodeId, Provenance, Session,
+};
 
 #[derive(Debug)]
 pub struct Machine {
@@ -258,9 +260,12 @@ impl Machine {
         body: Body,
         by: Author,
         now: u64,
+        from: Provenance,
         hook: Option<CursorId>,
     ) -> Result<NodeId, Error> {
-        let id = self.session.append(parent, by, body, vec![], now)?;
+        let id = self
+            .session
+            .append_from(parent, by, body, vec![], now, from)?;
         self.sync_unless_hook(hook);
         Ok(id)
     }
@@ -313,9 +318,11 @@ impl Machine {
         delivers: Vec<ItemId>,
         by: Author,
         now: u64,
+        from: Provenance,
     ) -> Result<NodeId, Error> {
         self.in_hook(cursor)?;
-        self.session.write(cursor, body, delivers, by, now)
+        self.session
+            .write_from(cursor, body, delivers, by, now, from)
     }
 
     /// A hook sets its own cursor's auto-step. It needs no wake: the step is running.

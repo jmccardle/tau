@@ -63,7 +63,7 @@ item, so a reload is a replay (I7).
 ## 1. Stored objects
 
 ```
-Node   { id, parent?, time, by, body, delivers, copied_from*, derived_from* }
+Node   { id, parent?, time, by, body, delivers, copied_from?, derived_from? }
 
 body   = System(text)
        | User(text, images*)
@@ -87,8 +87,8 @@ Item   { id, to, data }   data = Input { by, text } | Extension { name, data }
 
 - A node is written once (I2). `delivers` lists the item ids it consumed; a write
   may deliver only items pending for its own cursor (`NotPending` otherwise).
-  `copied_from` lists nodes it repeats verbatim; `derived_from` lists nodes
-  whose walks its content was computed from.
+  `copied_from` is the node it repeats verbatim; `derived_from` the node whose walk its content
+  was computed from (D24 "Built: 8E-3"). Each is optional and, when set, must name a node.
 - `args_raw` is the argument text exactly as the model produced it, never
   re-serialised.
 - A **cursor** is `{id, at}`; `at` is the `to` of its latest move. A move with

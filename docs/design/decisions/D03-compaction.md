@@ -34,4 +34,4 @@ no direct answer.
 - I1 holds; every compaction is visible in the tree.
 - Phase 5 exit criterion: compaction needs no core change.
 - Cost: copies duplicate bodies.
-- Not yet spiked; the spike's `pre_reply` move test shows the mechanism.
+- Built in 8E (D24 "Built: 8E-3"): `copied_from` and `derived_from` are one optional node id each.

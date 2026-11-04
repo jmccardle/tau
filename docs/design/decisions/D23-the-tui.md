@@ -415,7 +415,9 @@ detail pane right), new rows and movement. No wire or protocol change: the rows 
   screen was viewing when it was asked, which `v` can change after the screen opened.
 - **Detail pane**: the node as before, under `cursor N: a walk of X nodes, about Y tokens`
   (characters the model reads over four, D24's estimate; `Config` and `Custom` nodes count none).
-- **Not built**: copy and derived marks and `p` (need D24 M1, with 8E), previewing another branch
+- **Copy and derived marks, `p`** were built with 8E-3 (D24 "Built: 8E-3"): `⧉`, `≡ (copy of N)`,
+  `copied from` / `derived from` with the walk before and after in the detail pane, and `p`.
+- **Not built**: previewing another branch
   in the transcript, diffing, a shape-only read. A closed cursor shows only if this client heard
   its `CursorGone` (the stream gives one per closed cursor on connecting).
 - **Deviations**: the owner's "turns off the spine start folded" is "turns start folded unless

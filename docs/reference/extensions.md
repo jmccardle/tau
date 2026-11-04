@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+Names: `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Prune`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
 
 ## Attachments
 
@@ -72,6 +72,75 @@ property tool: str
 ```
 
 The name of the tool being called. Read-only.
+
+## Compaction
+
+```python
+class Compaction
+    name = 'compaction'
+    options = Options
+```
+
+The built-in extension `compaction` (the module docstring).
+
+### Compaction.__init__
+
+```python
+def __init__(self) -> None
+```
+
+### Compaction.pre_sample
+
+```python
+async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
+```
+
+The hard limit: compact first, interrupting the turn, if the branch would not fit the
+model's window.
+
+### Compaction.pre_step
+
+```python
+async def pre_step(self, cursor: Cursor, subject: Subject) -> None
+```
+
+A step begins: it has committed no reply yet.
+
+### Compaction.post_reply
+
+```python
+async def post_reply(self, cursor: Cursor, subject: Subject) -> None
+```
+
+Remember the reply this step committed.
+
+### Compaction.post_step
+
+```python
+async def post_step(self, cursor: Cursor, subject: Subject) -> None
+```
+
+The soft limit: when a turn ends (a step that came to a reply with no calls, the cursor
+coming to rest), compact if the branch is past it. A turn that is still going on is left
+alone until the hard limit. Only a step that committed the reply itself counts: going back
+to a reply, or a cursor opened on one, ends a step there without a turn.
+
+### Compaction.pre_tool
+
+```python
+async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
+```
+
+Refuse any call a summarizer makes.
+
+### Compaction.compact
+
+```python
+async def compact(self, cursor: Cursor, focus: str = '') -> str
+```
+
+Summarize this conversation now, on a new line (the old one stays in the tree).
+`focus` is text the summary should keep in mind.
 
 ## Cursor
 
@@ -204,11 +273,19 @@ Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`.
 ### Cursor.write
 
 ```python
-def write(self, body: Body, delivers: Sequence[int] = ()) -> int
+def write(
+    self,
+    body: Body,
+    delivers: Sequence[int] = (),
+    *,
+    copied_from: int | None = None,
+    derived_from: int | None = None,
+) -> int
 ```
 
 Append `body` under `at` and move onto it, as one record; the
-`delivers` items are removed. Returns the new node's id.
+`delivers` items are removed. Returns the new node's id. `copied_from` and
+`derived_from` as for `TreeHandle.append`.
 
 ### Cursor.set_auto
 
@@ -419,6 +496,31 @@ NodeId = NewType('NodeId', int)
 ```
 
 A node that exists.
+
+## Prune
+
+```python
+class Prune
+    name = 'prune'
+    options = Options
+```
+
+The built-in extension `prune` (the module docstring).
+
+### Prune.__init__
+
+```python
+def __init__(self) -> None
+```
+
+### Prune.prune
+
+```python
+async def prune(self, cursor: Cursor) -> str
+```
+
+Shorten this conversation without a model: old turns become a transcript and old
+tool output goes, on a new line (the old one stays in the tree).
 
 ## Skills
 
@@ -657,10 +759,19 @@ no such model.
 ### TreeHandle.append
 
 ```python
-def append(self, parent: int, body: Body) -> int
+def append(
+    self,
+    parent: int,
+    body: Body,
+    *,
+    copied_from: int | None = None,
+    derived_from: int | None = None,
+) -> int
 ```
 
 Append a node under `parent` without moving any cursor. Returns its id.
+`copied_from` names the node this one repeats verbatim, `derived_from` the node whose
+walk its content was computed from (`NoSuchNode` if either is not a node).
 
 ### TreeHandle.append_root
 
@@ -720,7 +831,10 @@ send causes, `rest` first, then `send`, then `rest` again. A cursor held by an o
 question or a gate does not rest, so this waits as long as the cursor is held. Async
 only: a sync tool, which runs on a worker thread, cannot call it. `ValueError` for this
 handle's own cursor: waiting for itself would never end. No cycle between two cursors
-is detected; the user's abort is the way out.
+is detected; the user's abort is the way out: when this handle's own cursor is aborted
+(or sent elsewhere) while the wait is out, the wait ends at once and returns
+`Ending.Aborted()`, so a hook, which an abort never cancels, learns it was aborted. The
+cursor waited on is left as it is.
 
 ### TreeHandle.abort
 

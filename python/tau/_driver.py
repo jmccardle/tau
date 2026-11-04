@@ -78,6 +78,37 @@ class _Waiters:
                 future.set_result(None)
 
 
+class _Leavers:
+    """The waits on other cursors, by the cursor that waits: a hook's `rest` ends when its own
+    cursor is aborted or sent elsewhere, since an abort never cancels a hook (M7)."""
+
+    def __init__(self, wake: Callable[[], None]) -> None:
+        self._wake = wake  # the waits are woken to see they ended
+        self._waiting: Counter[int] = Counter()
+        self._gone: set[int] = set()
+
+    @contextmanager
+    def waiting(self, cursor: int) -> Generator[None]:
+        """`cursor` has a wait out."""
+        self._waiting[cursor] += 1
+        try:
+            yield
+        finally:
+            self._waiting[cursor] -= 1
+            if not self._waiting[cursor]:
+                del self._waiting[cursor]
+                self._gone.discard(cursor)
+
+    def left(self, cursor: int) -> None:
+        """`cursor` was aborted or sent elsewhere: a wait of it that is out ends."""
+        if cursor in self._waiting:
+            self._gone.add(cursor)
+            self._wake()
+
+    def has_left(self, cursor: int) -> bool:
+        return cursor in self._gone
+
+
 @dataclass
 class _Outstanding:
     """One cursor's effect in flight: how to cancel it."""
@@ -194,6 +225,8 @@ class Driver:
             lambda: self._hub.sync(),  # noqa: PLW0108
             lambda client: self._hub.connected(client),  # noqa: PLW0108
         )
+        self._rested = _Waiters()
+        self._leavers = _Leavers(self._rested.wake)
         self._hub = Hub(session, self._questions.open, self._questions.pool, self._model_at)
         self._tasks = _Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
@@ -243,8 +276,8 @@ class Driver:
             cancel=partial(_cancel, self._out),
             catch_up=partial(_catch_up, self._out),
             rest=self.rest,
+            left=self._leavers.left,
         )
-        self._rested = _Waiters()
         self._waits: Counter[asyncio.Task[None]] = (
             Counter()
         )  # effect -> waits on cursors it has out
@@ -361,13 +394,16 @@ class Driver:
             stopped=self._stopped,
         )
 
-    async def rest(self, cursor: int) -> None:
+    async def rest(self, cursor: int, waiter: int | None = None) -> None:
         """Wait until the cursor is at rest with no effect out. Raises `ConnectionError` once the
         driver has failed or stopped (also if it does meanwhile). A cursor held by an open
-        question or a gate does not rest."""
+        question or a gate does not rest. Returns early if `waiter`, the cursor that waits (a
+        handle's), is aborted or left meanwhile."""
         while True:
             _running(self._failure, self._stopped)
             if not (self.session.cursor(cursor).busy or cursor in self._out):
+                return
+            if waiter is not None and self._leavers.has_left(waiter):
                 return
             await self._rested.wait()
 
@@ -407,11 +443,18 @@ class Driver:
             cursor, extension, text, expect, to, new_cursor, self._effect()
         )
 
-    async def _ending_at_rest(self, cursor: int) -> Ending | None:
+    async def _ending_at_rest(self, cursor: int, waiter: int | None) -> Ending | None:
         """`rest`, then how the cursor's last step ended (`None` if not known): what a handle's
-        `rest` returns."""
+        `rest` returns. `Ending.Aborted()` instead if `waiter`, the cursor that waits, is aborted
+        or sent elsewhere first."""
         with self._waiting():
-            await self.rest(cursor)
+            if waiter is None:
+                await self.rest(cursor)
+            else:
+                with self._leavers.waiting(waiter):
+                    await self.rest(cursor, waiter)
+                    if self._leavers.has_left(waiter):
+                        return Ending.Aborted()
         return self._hub.ending(cursor)
 
     async def _close_cursor(self, cursor: int) -> None:

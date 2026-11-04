@@ -43,6 +43,8 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 BUILT_INS = [
     "attachments",
     "base_tools",
+    "compaction",
+    "prune",
     "skills",
     "step_limit",
     "usage",

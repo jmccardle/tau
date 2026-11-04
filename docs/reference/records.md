@@ -576,7 +576,8 @@ class Node
 
 One record of a session's tree, written once and never changed: its `id`, its `parent`
 (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
-it holds (`body`), and the scratchpad items it consumed (`delivers`).
+it holds (`body`), the scratchpad items it consumed (`delivers`), and where its content came
+from (`copied_from`, `derived_from`).
 
 ### Node.id
 
@@ -625,6 +626,23 @@ property delivers: list[int]
 ```
 
 The ids of the scratchpad items it consumed.
+
+### Node.copied_from
+
+```python
+property copied_from: int | None
+```
+
+The node this one repeats verbatim (a compaction or prune copy), or `None`.
+
+### Node.derived_from
+
+```python
+property derived_from: int | None
+```
+
+The node whose walk this one's content was computed from (a summary, a pruned
+transcript), or `None`.
 
 ## Outcome
 

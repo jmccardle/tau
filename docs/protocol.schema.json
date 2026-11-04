@@ -738,6 +738,15 @@
         "by": {
           "$ref": "#/$defs/Author"
         },
+        "copied_from": {
+          "description": "The node this one repeats verbatim (a compaction or prune copy). A log written\nbefore this field existed has none.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "delivers": {
           "items": {
             "format": "uint64",
@@ -745,6 +754,15 @@
             "type": "integer"
           },
           "type": "array"
+        },
+        "derived_from": {
+          "description": "The node whose walk this one's content was computed from (a summary, a pruned\ntranscript). A log written before this field existed has none.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "id": {
           "format": "uint64",

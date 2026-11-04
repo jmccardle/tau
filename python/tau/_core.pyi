@@ -222,7 +222,8 @@ class Config:
 class Node:
     """One record of a session's tree, written once and never changed: its `id`, its `parent`
     (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
-    it holds (`body`), and the scratchpad items it consumed (`delivers`).
+    it holds (`body`), the scratchpad items it consumed (`delivers`), and where its content came
+    from (`copied_from`, `derived_from`).
     """
 
     @property
@@ -243,6 +244,14 @@ class Node:
     @property
     def delivers(self) -> list[int]:
         """The ids of the scratchpad items it consumed."""
+    @property
+    def copied_from(self) -> int | None:
+        """The node this one repeats verbatim (a compaction or prune copy), or `None`."""
+    @property
+    def derived_from(self) -> int | None:
+        """The node whose walk this one's content was computed from (a summary, a pruned
+        transcript), or `None`.
+        """
     def __hash__(self) -> int: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
@@ -892,7 +901,15 @@ class HandleWrites:
     def open(self, at: int, by: Author, now: int) -> int: ...
     def add_item(self, to: int, data: ItemData) -> int: ...
     def remove_item(self, id: int) -> None: ...
-    def append(self, parent: int, body: Body, by: Author, now: int) -> int: ...
+    def append(
+        self,
+        parent: int,
+        body: Body,
+        by: Author,
+        now: int,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int: ...
     def append_root(self, config: Config, by: Author, now: int) -> int: ...
     def set_label(self, label: str, cursor: int) -> None: ...
     def remove_label(self, label: str) -> None: ...
@@ -965,8 +982,19 @@ class Session:
         """Add an item to cursor `to`'s scratchpad and wake it. Returns the item's id."""
     def remove_item(self, id: int) -> None:
         """Remove an item from the scratchpad. `NoSuchItem` if it is not there."""
-    def append(self, parent: int, body: Body, by: Author, now: int) -> int:
-        """Append a node under `parent` without moving any cursor."""
+    def append(
+        self,
+        parent: int,
+        body: Body,
+        by: Author,
+        now: int,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
+    ) -> int:
+        """Append a node under `parent` without moving any cursor. `copied_from` names the node it
+        repeats verbatim, `derived_from` the node whose walk its content was computed from;
+        `NoSuchNode` if either is not a node.
+        """
     def append_root(self, config: Config, by: Author, now: int) -> int:
         """Append a root `Config` (a detached tree) without moving any cursor."""
     def set_label(self, label: str, cursor: int) -> None:
@@ -980,11 +1008,19 @@ class Session:
         job is out for `cursor`.
         """
     def hook_write(
-        self, cursor: int, body: Body, delivers: Sequence[int], by: Author, now: int
+        self,
+        cursor: int,
+        body: Body,
+        delivers: Sequence[int],
+        by: Author,
+        now: int,
+        copied_from: int | None = None,
+        derived_from: int | None = None,
     ) -> int:
         """A cursor hook's write: append a node under the cursor's node, move onto it and consume
         the `delivers` items. Returns the new node's id. `NotInHook` unless a cursor hook job is
-        out for `cursor`; `NotPending` if an item is not pending for it.
+        out for `cursor`; `NotPending` if an item is not pending for it. `copied_from` and
+        `derived_from` as for `append`.
         """
     def hook_set_auto(self, cursor: int, on: bool) -> None:
         """A cursor hook's change of its own cursor's auto-step. `NotInHook` unless a cursor hook

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::tree;
+use tau_core::tree::{self, Provenance};
 use tau_store::Store;
 
 use crate::error::Failure;
@@ -116,6 +116,7 @@ impl Shared {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn append(
         &self,
         py: Python<'_>,
@@ -123,10 +124,11 @@ impl Shared {
         body: Body,
         by: Author,
         now: u64,
+        from: Provenance,
         hook: Option<u64>,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.append"), |m| {
-            Ok(m.append(parent, body.into(), by.into(), now, hook)?)
+            Ok(m.append(parent, body.into(), by.into(), now, from, hook)?)
         })
     }
 
@@ -386,7 +388,11 @@ impl Session {
         self.shared.remove_item(py, id, None)
     }
 
-    /// Append a node under `parent` without moving any cursor.
+    /// Append a node under `parent` without moving any cursor. `copied_from` names the node it
+    /// repeats verbatim, `derived_from` the node whose walk its content was computed from;
+    /// `NoSuchNode` if either is not a node.
+    #[pyo3(signature = (parent, body, by, now, copied_from=None, derived_from=None))]
+    #[allow(clippy::too_many_arguments)]
     fn append(
         &self,
         py: Python<'_>,
@@ -394,8 +400,14 @@ impl Session {
         body: Body,
         by: Author,
         now: u64,
+        copied_from: Option<u64>,
+        derived_from: Option<u64>,
     ) -> PyResult<u64> {
-        self.shared.append(py, parent, body, by, now, None)
+        let from = Provenance {
+            copied_from,
+            derived_from,
+        };
+        self.shared.append(py, parent, body, by, now, from, None)
     }
 
     /// Append a root `Config` (a detached tree) without moving any cursor.
@@ -435,7 +447,10 @@ impl Session {
 
     /// A cursor hook's write: append a node under the cursor's node, move onto it and consume
     /// the `delivers` items. Returns the new node's id. `NotInHook` unless a cursor hook job is
-    /// out for `cursor`; `NotPending` if an item is not pending for it.
+    /// out for `cursor`; `NotPending` if an item is not pending for it. `copied_from` and
+    /// `derived_from` as for `append`.
+    #[pyo3(signature = (cursor, body, delivers, by, now, copied_from=None, derived_from=None))]
+    #[allow(clippy::too_many_arguments)]
     fn hook_write(
         &self,
         py: Python<'_>,
@@ -444,10 +459,16 @@ impl Session {
         delivers: Vec<u64>,
         by: Author,
         now: u64,
+        copied_from: Option<u64>,
+        derived_from: Option<u64>,
     ) -> PyResult<u64> {
+        let from = Provenance {
+            copied_from,
+            derived_from,
+        };
         self.shared
             .write(py, tracing::info_span!("py.hook_write"), |m| {
-                Ok(m.hook_write(cursor, body.into(), delivers, by.into(), now)?)
+                Ok(m.hook_write(cursor, body.into(), delivers, by.into(), now, from)?)
             })
     }
 
@@ -564,6 +585,8 @@ impl HandleWrites {
         self.shared.remove_item(py, id, self.hook)
     }
 
+    #[pyo3(signature = (parent, body, by, now, copied_from=None, derived_from=None))]
+    #[allow(clippy::too_many_arguments)]
     fn append(
         &self,
         py: Python<'_>,
@@ -571,8 +594,15 @@ impl HandleWrites {
         body: Body,
         by: Author,
         now: u64,
+        copied_from: Option<u64>,
+        derived_from: Option<u64>,
     ) -> PyResult<u64> {
-        self.shared.append(py, parent, body, by, now, self.hook)
+        let from = Provenance {
+            copied_from,
+            derived_from,
+        };
+        self.shared
+            .append(py, parent, body, by, now, from, self.hook)
     }
 
     fn append_root(&self, py: Python<'_>, config: Config, by: Author, now: u64) -> PyResult<u64> {

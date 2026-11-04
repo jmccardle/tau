@@ -30,6 +30,8 @@ POINTS_FILE = "entry_points.txt"  # rules: allow(entry): the file a distribution
 BUILT_INS = [
     "attachments",
     "base_tools",
+    "compaction",
+    "prune",
     "skills",
     "step_limit",
     "usage",
@@ -187,6 +189,8 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "session_name",
         "attachments",
         "base_tools",
+        "compaction",
+        "prune",
         "retry",
         "skills",
         "step_limit",
@@ -322,7 +326,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:14] == [
+    assert lines[:18] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -331,6 +335,10 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}commands: none; tools: none",
         "base_tools    on         built-in",
         f"{pad}commands: none; tools: read, write, edit, grep, find, bash",
+        "compaction    on         built-in",
+        f"{pad}commands: /compact; tools: none",
+        "prune         on         built-in",
+        f"{pad}commands: /prune; tools: none",
         "retry         on         built-in (provider wrapper)",
         f"{pad}commands: none; tools: none",
         "skills        on         built-in",

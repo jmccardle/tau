@@ -162,10 +162,16 @@ The item ids a node consumed. The only record of consumption: load drops any
 item some node delivers.
 
 ### copied_from, derived_from
-not yet spiked · new
+`Node.copied_from`, `Node.derived_from`, `Provenance` (core) · D3, D24 M1 · built (8E-3)
 
-Lists of nodes this node repeats verbatim (a compaction copy), or whose walks
-its content was computed from (a summary, a sub-agent's answer).
+Two optional node ids on a `Node`. **`copied_from`**: the node this one repeats verbatim (a
+compaction or prune copy). **`derived_from`**: the node whose walk this one's content was computed
+from (a compaction summary derives from the last node it replaced; a pruned reply or a user
+message carrying a pruned transcript from the one it replaces). Written once (I2), and a source
+must be a node (`NoSuchNode`; nothing is written). A record without them loads as none, so a log
+from before they existed loads. Python: `TreeHandle.append(..., copied_from=, derived_from=)` and
+`Cursor.write(..., copied_from=, derived_from=)`. `Provenance` is the pair as core's `append_from`
+and `write_from` take it. A fork keeps a source that is in the walk it copies, renumbered.
 
 ### session
 *spike* `Session` · retires `AgentSession`, `SessionManager`, catalog
@@ -824,8 +830,8 @@ the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · 
 model ends in `+`). `/usage` prints a row per model (samples, input, cached share, cache
 writes, output, cost) and a total. Cost is computed when shown from the price in the config
 now, never stored, and a reply is priced by `model(at=its node)`. Every reply in the tree counts
-(summaries and sub-agents too), except a copy: `counted` is the one rule, and is true for every
-reply until `copied_from` exists. The **cache notice** is a `tell` to every client, once per
+(summaries and sub-agents too), except a copy or a reply rewritten from another: `counted` is the
+one rule (`copied_from` and `derived_from` both unset). The **cache notice** is a `tell` to every client, once per
 model, after a reply with `cached` reported as 0 and at least 4,096 input tokens that follows a
 reply of the same model by under 300 seconds.
 
@@ -1186,6 +1192,62 @@ D24 section 1 · new (8E-1)
 The root `Config` and the `System` nodes before the first other message. It holds the system
 prompt, the context files and the skills list, so it is also the prompt-cache prefix every
 cursor of a session shares.
+
+### line (a new line), new-line building
+`tau._lines` (private: `Planned`, `copy_of`, `prefix_length`, `write_line`, `characters`) · D24 sections 2, 9 · new (8E-3)
+
+What prune and compaction share. A **line** is a walk. To shorten one they write a new line beside
+the old: under the last node of the prefix, a chain of `Planned` nodes (a body, and `copied_from`
+or `derived_from`), appended without moving any cursor; then the cursor moves onto its last node.
+Nothing is awaited between the first append and the move. The old line stays in the tree, shown by
+the tree screen as a folded stub. `characters(body)` is the one count of what a node adds to a
+request (text, thinking, call arguments, outcomes; `Config` and `Custom` add none); characters
+over four are the estimate's tokens, here and in the tree screen.
+
+### Prune (extension), pruned transcript
+`tau.Prune` (`_prune.py`), key `prune`, command `/prune`, option `auto` · D24 section 9 · new (8E-3)
+
+The built-in extension that shortens a conversation without a model. A **turn** is a `User` node
+and what is under it up to the next; the latest is turn N. Turns 0 to N-2 become the **pruned
+transcript**: `<pruned>`, then per turn `User: text`, `[pruned: M messages, K tool calls]` and
+`Assistant: the last reply with words`, then `</pruned>`, a blank line, and the user's text of
+turn N-1, all in one derived `User` node. Turn N-1 keeps its replies and calls with outcomes
+reduced to `ok` or `error` and no reasoning; turn N keeps its calls and results, without
+reasoning; in both, a string argument over 200 characters becomes `[pruned: N chars]`. `Config`
+and `Custom` nodes are copied. A conversation with nothing to prune writes nothing. `auto` must
+be `false` (automatic pruning is not built).
+
+### Compaction (extension), head, tail, cut, summarizer cursor
+`tau.Compaction` (`_compaction.py`), key `compaction`, options `auto`, `reserve`, `hard`, `soft`, `keep` (unset: 20000 or half the soft limit), `model`, command `/compact [focus]` · D24 section 2 · new (8E-3)
+
+The built-in extension that summarizes a long branch. It has two limits: the **soft limit** (80%
+of the hard one) compacts when a turn ends (`post_step`, a reply with no tool call), the **hard
+limit** (`context_window - reserve`) interrupts a turn before a sample (`pre_sample`); `/compact`
+does it now. The **cut** is where the newest `keep` tokens begin, moved back to a `User` or `Assistant`
+node so a `Results` node stays with its batch; the **tail** is from there on and the **head** is
+what is between the prefix and the cut. The summary is written by a **summarizer cursor**, labelled
+`compaction:N`: opened at the branch's node, sent the summary prompt (and the focus), waited for
+with `rest`, and closed. It is offered the branch's tools but refused any call, and compaction's
+own `pre_sample` skips it. The new line is the head's `Config` copies, the summary as a `User`
+node by `Extension("compaction")` with `derived_from` the last head node, then a copy of every
+tail node. The **estimate** is the newest uncopied reply's reported input plus output plus the
+characters after it over four, or all characters. A summarizer that fails, is halted, replies
+without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing.
+The trigger never reacts to a provider's "prompt too long"; `/compact`, then a step, recovers.
+
+### rest (a handle's) and an abort of the waiter
+`TreeHandle.rest` · D24 M7 · amended (8E-3)
+
+When the cursor a handle works for (a hook's or a tool's own cursor) is aborted or sent elsewhere
+while its `rest` is out, the wait ends at once and returns `Ending.Aborted()`. An abort never
+cancels a hook, so this is how a hook learns to stop waiting; the cursor waited on is not touched.
+
+### copy and derived marks (tree screen)
+`tau.tui` tree screen · D23, D24 M1 · new (8E-3)
+
+`⧉` after a derived node's text, `≡ (copy of N)` after a copy. The detail pane says `copied from
+node N` or `derived from node N` above `walk before: X nodes, about Y tokens` and `walk after:
+...` (the walk to the source and the walk to this node), and `p` highlights the source node.
 
 ### Extension loading: source, key, drop-in, shadowed, load
 module `tau._extensions` (private; the names below are exported from `tau`) · D19 · new

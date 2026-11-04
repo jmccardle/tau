@@ -704,7 +704,9 @@ sees in `Ending.Failed`.
 |---|---|---|
 | `body` | [Body](#body) |  |
 | `by` | [Author](#author) |  |
+| `copied_from` | `integer` or `null` | optional, The node this one repeats verbatim (a compaction or prune copy). A log written before this field existed has none. |
 | `delivers` | array of `integer` |  |
+| `derived_from` | `integer` or `null` | optional, The node whose walk this one's content was computed from (a summary, a pruned transcript). A log written before this field existed has none. |
 | `id` | `integer` |  |
 | `parent` | `integer` or `null` | optional |
 | `time` | `integer` |  |

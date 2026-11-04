@@ -56,6 +56,7 @@ class Calls:
         cancel: Callable[[int], None],
         catch_up: Callable[[int], Sequence[LiveDelta]],
         rest: Callable[[int], Awaitable[None]],
+        left: Callable[[int], None],
     ) -> None:
         self.session = session
         self._clock = clock
@@ -68,6 +69,7 @@ class Calls:
         self._cancel = cancel  # core said a step's effect is to be cancelled: stop it
         self._catch_up = catch_up
         self._rest = rest
+        self._leave = left  # a cursor's step was aborted or left: end the waits it has out
 
     def connect(self, client: str, buffer: int) -> Feed:
         return self._hub.connect(client, buffer)
@@ -122,6 +124,7 @@ class Calls:
         if cancel:
             self._cancel(cursor)
         self._questions.decline(cursor, busy=self.session.cursor(cursor).busy)
+        self._leave(cursor)
 
     async def close_cursor(self, cursor: int) -> None:
         """Abort, wait for rest, close; again if the cursor woke in between. Each round waits

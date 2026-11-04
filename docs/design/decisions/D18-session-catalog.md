@@ -323,3 +323,11 @@ one italic line.
 | tests, behavior via `tau.cli.main` and `Harness`: list, refs, `-c` with none or leased, first cursor, fork and `forked_from`, the `chdir`, rename while leased, never-used removal, export golden files | ~370 |
 
 **Not verified, inferred:** the listing cost (a bench can take a prefix-read case), the line counts.
+
+## Note: provenance in a fork (8E-3)
+
+`copied_from` and `derived_from` (D24 M1) are kept in a fork where their source is in the walk
+(renumbered, as everything is) and dropped where it is not. For a copy or derived reply whose
+source was dropped, the fork also removes `usage` from its `meta`: a copy's usage is its
+source's, and left in it would count as a sample of the fork's own and drive its compaction
+estimate.
