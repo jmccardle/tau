@@ -61,7 +61,8 @@ def test_resume_marks_the_session_a_server_holds_and_attaches_to_it(served: Worl
     screen = Screen(served, "-r", cwd=work)
     screen.wait_for("served")
     screen.type("\r")
-    screen.wait_for(OLD)
+    screen.wait_for("idle", on_screen=True)  # the chat screen, not the picker's own line naming OLD
+    screen.wait_for(OLD, on_screen=True)
     screen.type("over the wire\r")
     screen.wait_for("mock: over the wire")
     assert screen.quit() == 0
