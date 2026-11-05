@@ -9,18 +9,26 @@
     </attachment>
 
 A file over the `limit` option (10240 bytes), not UTF-8, or unreadable is not inlined: the model
-gets `<reference path="/abs/src/big.log" size="2.1 MB" reason="over 10 kB"/>` and can `read` the
-part it needs. A word that names no regular file (a missing one, a directory, `@alice`) stays as
-text, and a file named twice is attached once.
+gets `<reference path="/abs/src/big.log" size="2.1 MB" reason="over the 10 kB limit"/>` and can
+`read` the part it needs. A word that names no regular file (a missing one, a directory, `@alice`)
+stays as text, and a file named twice is attached once. A `</attachment>` inside a file's text is
+written `<\\/attachment>`, so a file cannot end its own block and start another.
 
-A token is `@` followed by non-space characters, at the start of the text or after whitespace.
-If the whole token names no regular file, trailing punctuation is stripped one character at a time
-until one does (`see @notes.txt.` attaches `notes.txt`). `~` expands to the home directory of
-whoever runs the session, and a relative path is taken against the session's working directory,
-which is where `base_tools` and path completion are rooted too.
+A token is `@` followed by non-space characters, at the start of the text or after whitespace, or
+`@"` and a path with spaces up to the next `"` (`@"my notes.txt"`). If the whole token names no
+regular file, trailing punctuation is stripped one character at a time until one does (`see
+@notes.txt.` attaches `notes.txt`). `~` expands to the home directory of whoever runs the session,
+and a relative path is taken against the session's working directory, which is where `base_tools`
+and path completion are rooted too.
 
-It runs at `pre_input`, so the `User` node holds exactly what the model saw (I1), and every input
-is expanded: a person's, a template's, a sub-agent's task.
+A token that looks like a path (it has a `/`, a file extension or a `:LINE` suffix) but attaches
+nothing is said to the person in a notice (`@missing.txt`, `@main.rs:10`). Plain words (`@alice`,
+`john@host`) and code (in backticks or a fenced block) are silent.
+
+It runs at `pre_input`, so the `User` node holds exactly what the model saw (I1), and it expands
+only input a person typed (a draft authored by a `Frontend`, D17 section 1). Text a tool or an
+extension wrote, such as a sub-agent's task or a template's body, is never expanded: it could
+name a file the person's rules deny the model.
 """
 
 import asyncio
@@ -30,10 +38,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
-from tau._core import Body, Draft
+from tau._core import Author, Body, Draft
 from tau._handles import Cursor, Subject
 
-_TOKEN = re.compile(r"(?<!\S)@(\S+)")
+_TOKEN = re.compile(r'(?<!\S)@(?:"([^"\n]+)"|(\S+))')
+_CLOSE_TAG = re.compile(r"</(attachment)", re.IGNORECASE)
+_CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+_PATH_LIKE = re.compile(r"[\w~.+/-]*(?:/|\.\w|:\d+(?:-\d+)?$)[\w~.+/:-]*")
 _PUNCTUATION = ".,;:!?)]}>'\""
 _UNITS = ("B", "kB", "MB", "GB", "TB")
 _STEP = 1024
@@ -87,8 +98,13 @@ def _resolve(word: str, cwd: Path) -> Path | None:
         return None
 
 
-def _reference(path: Path, size: int | None, reason: str) -> str:
-    shown = "" if size is None else f' size="{size_text(size)}"'
+def _reference(path: Path, size: int | None, reason: str, limit: int = 0) -> str:
+    """A `<reference/>`; `size` is shown in bytes where `size_text` would read as `limit` does."""
+    if size is None:
+        shown = ""
+    else:
+        text = f"{size} B" if size_text(size) == size_text(limit) else size_text(size)
+        shown = f' size="{text}"'
     return f'<reference path="{quoted(str(path))}"{shown} reason="{quoted(reason)}"/>'
 
 
@@ -98,26 +114,37 @@ def _block(typed: str, path: Path, limit: int) -> str:
     try:
         size = path.stat().st_size
         if size > limit:
-            return _reference(where, size, f"over {size_text(limit)}")
+            return _reference(where, size, f"over the {size_text(limit)} limit", limit)
         raw = path.read_bytes()
     except OSError as e:
         return _reference(where, None, f"unreadable: {e.strerror or e}")
     if len(raw) > limit:  # it grew while it was read
-        return _reference(where, len(raw), f"over {size_text(limit)}")
+        return _reference(where, len(raw), f"over the {size_text(limit)} limit", limit)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return _reference(where, len(raw), "not UTF-8")
+    text = _CLOSE_TAG.sub(r"<\\/\1", text)
     return f'<attachment path="{quoted(typed)}">\n{text}\n</attachment>'
 
 
-def expand(text: str, cwd: Path, limit: int) -> str:
+def _looks_like_a_path(token: str) -> bool:
+    word = token.rstrip(_PUNCTUATION)
+    return _PATH_LIKE.fullmatch(word) is not None
+
+
+def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
     """`text`, then the block of each file it names with `@` (the module docstring), each file
-    once, in the order first named. `text` itself is never changed."""
+    once, in the order first named; `text` itself is never changed. And the `@` words that look
+    like a path (and are not in code) but attach nothing, as typed."""
     blocks: list[str] = []
     seen: set[Path] = set()
+    missed: list[str] = []
+    code = [m.span() for m in _CODE.finditer(text)]
     for match in _TOKEN.finditer(text):
-        for word in _candidates(match.group(1)):
+        quoted_word, bare = match.group(1), match.group(2)
+        found = [quoted_word] if quoted_word is not None else _candidates(bare)
+        for word in found:
             path = _resolve(word, cwd)
             if path is None:
                 continue
@@ -126,7 +153,12 @@ def expand(text: str, cwd: Path, limit: int) -> str:
                 seen.add(real)
                 blocks.append(_block(word, path, limit))
             break
-    return text if not blocks else text + "\n\n" + "\n".join(blocks)
+        else:
+            typed = quoted_word if quoted_word is not None else bare
+            in_code = any(a <= match.start() < b for a, b in code)
+            if not in_code and (quoted_word is not None or _looks_like_a_path(typed)):
+                missed.append(typed)
+    return (text if not blocks else text + "\n\n" + "\n".join(blocks)), missed
 
 
 class Attachments:
@@ -140,13 +172,21 @@ class Attachments:
         self._cwd = cwd
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Rewrite the draft's text with the files its `@` words name."""
+        """Rewrite what a person typed with the files its `@` words name, and say which `@`
+        words that look like paths named none."""
         draft = subject.draft
-        if draft is None or not isinstance(draft.body, Body.User):
+        if draft is None or not isinstance(draft.by, Author.Frontend):
+            return None
+        if not isinstance(draft.body, Body.User):
             return None
         limit = cursor.options().limit
         text = draft.body.text
-        expanded = await asyncio.to_thread(expand, text, self._cwd, limit)
+        expanded, missed = await asyncio.to_thread(expand, text, self._cwd, limit)
         if expanded != text:
             subject.draft = Draft(Body.User(expanded), draft.delivers, draft.by)
+        for word in missed:
+            cursor.tell(
+                f"attachments: @{word} names no regular file in {self._cwd}, so it is sent as text",
+                to=draft.by.client,
+            )
         return None

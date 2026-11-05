@@ -3,11 +3,13 @@
 answers the questions on the way by `--answer` rules (or declines them), prints the answer and
 exits with a status that says how it ended.
 
-- **stdout** is the answer: the text of the last `Assistant` node the run added, if it has no
-  calls, taken from the node (`Appended`), never from `Live`. With `--json` it is instead the
+- **stdout** is the answer: the text of the last `Assistant` node of the run's own turn (from its
+  own message to the next message another client wrote), if it has no calls, taken from the node
+  (`Appended`), never from `Live`. With `--json` it is instead the
   `Welcome` line and the events the client hears, one object per line, as the wire sends them.
-- **stderr** gets one line each, prefixed `tau: `: every `Notice`, a hook's failure, each question
-  answered by a rule or declined, why a run stopped before it finished, and the failure that ended
+- **stderr** gets one line each, prefixed `tau: `: every `Notice`, a hook's failure, each wait
+  before a retry (`tau: HTTP 429: busy: retry 1 of 3 in 2 s`), each question answered by a rule
+  or declined, why a run stopped before it finished, and the failure that ended
   it; with `--verbose` also the start report and one line per node, step and question.
 - **Exit status**: 0 the model finished, 1 a failure, 2 usage, 3 stopped before finishing, 130
   interrupted (the first SIGINT aborts the cursor and waits for it to rest; the second leaves at
@@ -34,7 +36,16 @@ from typing import Protocol, TextIO, cast
 from tau._client import Client
 from tau._commands import CommandFailed
 from tau._core import Author, Body, Busy, Ending, Node, Outcome, Part
-from tau._events import Appended, CursorView, Event, HookFailure, Notice, OpenQuestion
+from tau._events import (
+    Appended,
+    CursorView,
+    Event,
+    HookFailure,
+    Live,
+    Notice,
+    OpenQuestion,
+    Retrying,
+)
 from tau._launch import AnswerRule, UsageError, message_of
 from tau._open import Opened, open_client
 from tau._project_read import safe_block
@@ -87,7 +98,8 @@ class _Run:
     reported: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108
     seen: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - questions announced
     handled: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - answered or declined
-    before: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors at attach
+    during: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors that appeared while the run's cursor was busy
+    sub: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors this run opened
     ending: Ending | None = None
     hook_error: HookFailure | None = None
     shown: dict[str, str] = field(default_factory=lambda: {})  # each extension's line, as last seen
@@ -134,9 +146,16 @@ class _Run:
             self.nodes.update({n.id: n for n in event.nodes})
         elif isinstance(event, Notice):
             self.note(event.text)
+        elif isinstance(event, Live):
+            if isinstance(event.delta, Retrying) and event.cursor == self.cursor:
+                retry = event.delta
+                self.note(
+                    f"{retry.reason}: retry {retry.attempt} of {retry.attempts} "
+                    f"in {retry.seconds:g} s"
+                )
         elif isinstance(event, CursorView):
-            if snapshot:
-                self.before.add(event.cursor)
+            if not snapshot and event.cursor not in self.views and self.busy_now():
+                self.during.add(event.cursor)
             self.views[event.cursor] = event
             if event.cursor == self.cursor:
                 self.watch_cursor(event, snapshot=snapshot)
@@ -170,6 +189,56 @@ class _Run:
             node = None if node.parent is None else self.nodes.get(node.parent)
         return found[::-1]
 
+    def turn(self, at: int) -> list[Node]:
+        """The nodes of this run's own turn on the walk to `at`: from the first `User` node that
+        is not another client's (`Frontend` of another client id) to the next one that is. On a
+        cursor that other clients also use, what they wrote before and after is not the run's."""
+        found: list[Node] = []
+        for node in self.chain(at):
+            foreign = (
+                isinstance(node.body, Body.User)
+                and isinstance(node.by, Author.Frontend)
+                and node.by.client != self.client.id
+            )
+            if not found and (foreign or not isinstance(node.body, Body.User)):
+                continue
+            if found and foreign:
+                break
+            found.append(node)
+        return found
+
+    def busy_now(self) -> bool:
+        view = self.views.get(self.cursor)
+        return view is not None and view.busy
+
+    def opened_by_run(self, cursor: int) -> bool:
+        """Whether this run opened `cursor`, which nothing records (D24 section 7: no
+        `opened_by`). It did if the cursor appeared while the run's own cursor was busy and it
+        has a task an extension wrote on its walk (a sub-agent: it opens on the session's prefix,
+        not on the run's turn), or its walk passes through the run's own turn. A cursor another
+        client opens on a node that exists (`open(at)`) is not. Remembered once it is."""
+        if cursor == self.cursor or cursor in self.sub:
+            return True
+        own = self.views.get(self.cursor)
+        view = self.views.get(cursor)
+        if own is None or view is None:
+            return False
+        mine = {n.id for n in self.turn(own.at)}
+        task = False  # an extension wrote a user message on the walk: a sub-agent's task
+        node = self.nodes.get(view.at)
+        while node is not None:
+            if node.id in mine:
+                self.sub.add(cursor)
+                return True
+            task = task or (
+                isinstance(node.body, Body.User) and isinstance(node.by, Author.Extension)
+            )
+            node = None if node.parent is None else self.nodes.get(node.parent)
+        if task and cursor in self.during:
+            self.sub.add(cursor)
+            return True
+        return False
+
     def report_nodes(self, view: CursorView) -> None:
         for node in self.chain(view.at):
             if node.id not in self.reported:
@@ -180,31 +249,32 @@ class _Run:
 
     async def questions(self, view: CursorView, *, snapshot: bool) -> None:
         """Deal with the open questions `-p` may answer. Local, all of them, on any cursor.
-        Attached, only those that open after the send, on the cursor it sent to or on a cursor
-        opened since (a sub-agent's): the snapshot's, and those on a cursor that was there
-        already, are the server's other clients' (D22 section 5)."""
+        Attached, only those that open after the attach on the cursor it sent to or on a cursor the
+        run opened (a sub-agent its step started): the snapshot's, and every other cursor's, are
+        the server's other clients' (D22 section 5)."""
         for question in view.questions:
             if question.id not in self.seen and self.verbose:
                 self.note(f'question {question.id} from {question.extension}: "{question.text}"')
             self.seen.add(question.id)
             if question.id in self.handled or question.to not in (None, self.client.id):
                 continue
-            self.handled.add(question.id)
-            if self.attached and (snapshot or view.cursor in self.before - {self.cursor}):
+            if self.attached and (snapshot or not self.opened_by_run(view.cursor)):
+                self.handled.add(question.id)
                 self.note(
                     f"question {question.id} from {question.extension} on cursor {view.cursor} "
                     "is left to the server's other clients"
                 )
             else:
-                await self.resolve(question)
+                self.handled.add(question.id)
+                await self.resolve(question, view.cursor)
 
-    async def resolve(self, question: OpenQuestion) -> None:
+    async def resolve(self, question: OpenQuestion, cursor: int) -> None:
         """Answer the question by the first rule that matches, or decline it."""
         asked = f"question {question.id} from {question.extension}"
         said = f'"{question.text}"'
         rule = next((r for r in self.rules if r.matches(question.extension, question.text)), None)
         if rule is None:
-            self.note(f"declined {asked}: {said}")
+            self.note(f"declined {asked} on cursor {cursor}: {said}")
             await self.answer(question.id, None)
             return
         try:
@@ -281,10 +351,10 @@ class _Run:
     # The reply
 
     def reply(self, at: int) -> str | None:
-        """The text of the last `Assistant` node this run added on the walk to `at`, if it made
-        no calls: the answer."""
+        """The text of the last `Assistant` node of this run's own turn on the walk to `at`, if it
+        made no calls: the answer."""
         last = next(
-            (n for n in reversed(self.chain(at)) if isinstance(n.body, Body.Assistant)), None
+            (n for n in reversed(self.turn(at)) if isinstance(n.body, Body.Assistant)), None
         )
         if last is None or not isinstance(last.body, Body.Assistant):
             return None
@@ -432,7 +502,7 @@ async def _command(run: _Run, line: str) -> int:
     view = run.views[run.cursor]
     if view.busy:
         view = await run.rest()
-    sent = bool(view.items) or any(isinstance(n.body, Body.User) for n in run.chain(view.at))
+    sent = bool(view.items) or bool(run.turn(view.at))
     code = run.verdict(view, message=sent)  # a command that sent input is held to a message's rules
     if result is not None:
         run.write(run.err if run.json else run.out, result + "\n")
@@ -475,8 +545,7 @@ def _check_rules(run: _Run) -> None:
 async def _drive(run: _Run, message: str) -> int:
     """The run, from the snapshot to the status."""
     _check_rules(run)
-    if run.json:
-        await run.client.watch([run.cursor])
+    await run.client.watch([run.cursor])  # `Live`: `--json` prints it; a retry wait is told
     for event in run.opened.snapshot:
         await run.hear(event, snapshot=True)
     if run.verbose:

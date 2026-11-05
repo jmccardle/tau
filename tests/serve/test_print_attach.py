@@ -207,7 +207,7 @@ def test_a_question_on_its_own_cursor_with_no_rule_is_declined(home: World) -> N
     serving(home, "-e", extension(home, "gate", GATE))
     result = p(home, "--session", OLD, "go")
     assert result.code == 3
-    assert 'declined question 0 from gate: "run the thing?"' in result.err
+    assert 'declined question 0 from gate on cursor 0: "run the thing?"' in result.err
 
 
 def test_a_question_on_another_cursor_is_left_to_the_servers_other_clients(home: World) -> None:
@@ -233,6 +233,64 @@ def test_a_question_on_another_cursor_is_left_to_the_servers_other_clients(home:
             assert "left to the server's other clients" in result.err
             await person.answer(question.id, "no")  # still open: -p did not take it
             assert await asking == "no"
+
+    asyncio.run(scenario())
+
+
+def slow(world: World, seconds: int) -> None:
+    """The mock model takes `seconds` to answer, so a test can act while -p waits."""
+    options = {"delay_ms": seconds * 1000}
+    world.user_config(
+        {**MOCK, "models": {"m": {"model": "m", "provider": "mock", "options": options}}}
+    )
+
+
+def test_a_cursor_another_client_opens_after_p_attached_is_still_left_to_it(home: World) -> None:
+    """What -p answers is what its own run opened, not whatever is new since it attached."""
+    slow(home, 6)
+    record = serving(home, "-e", extension(home, "asker", ASKER))
+
+    async def scenario() -> None:
+        async with await RemoteClient.connect(str(record["socket"]), "test:person") as person:
+            snapshot = [await anext(person) for _ in range(2)]
+            assert isinstance(snapshot[0], CursorView)
+            running = asyncio.create_task(
+                asyncio.to_thread(p, home, "--session", OLD, "--answer", "*=yes", "--verbose", "go")
+            )
+            await asyncio.sleep(3)  # -p has attached and sent
+            other = await person.open(snapshot[0].at)
+            asking = asyncio.create_task(person.run(other, "ask", {}))
+            question = None
+            while question is None:
+                event = await asyncio.wait_for(anext(person), 5)
+                if isinstance(event, CursorView) and event.cursor == other and event.questions:
+                    question = event.questions[0]
+            result = await running
+            assert result.code == 0, result.err
+            assert f"question {question.id} from asker on cursor {other}" in result.err
+            assert "left to the server's other clients" in result.err
+            assert "answered question" not in result.err
+            await person.answer(question.id, "no")  # still open: -p did not take it
+            assert await asking == "no"
+
+    asyncio.run(scenario())
+
+
+def test_p_prints_the_reply_to_its_own_message_not_another_clients(home: World) -> None:
+    """Both write to the one cursor; the other client's message waits behind -p's, and its
+    reply comes last."""
+    slow(home, 5)
+    record = serving(home)
+
+    async def scenario() -> None:
+        async with await RemoteClient.connect(str(record["socket"]), "test:person") as person:
+            snapshot = [await anext(person) for _ in range(2)]
+            assert isinstance(snapshot[0], CursorView)
+            running = asyncio.create_task(asyncio.to_thread(p, home, "--session", OLD, "mine"))
+            await asyncio.sleep(3)  # -p has attached and sent; the model is answering it
+            await person.send(snapshot[0].cursor, "theirs")
+            result = await running
+            assert result.out == "mock: mine\n", result.err
 
     asyncio.run(scenario())
 

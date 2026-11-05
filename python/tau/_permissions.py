@@ -19,7 +19,9 @@ it names neither). Any other text is a tool's whole name (a name may hold a colo
 
 An `ask` rule holds the call with a question, `yes | always | no`. `yes` runs the call. `always`
 runs it and appends the exact rule for it (the resolved path, the whole command) to the user's
-file's `allow`, and allows it for the rest of the run even if a higher layer hides that list. `no`,
+file's `allow` (a `bash` or path-tool call with malformed arguments has no exact rule: nothing is
+saved, and the user is told), and allows it for the rest of the run even if a higher layer hides
+that list. `no`,
 a decline, an abort or a go-to refuse it: the model reads `the user refused this call`. A `deny`
 rule refuses a call without asking, and says which rule.
 
@@ -37,11 +39,16 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 
 from tau import _shell
+from tau._agents import Agents
+from tau._base_tools import BaseTools
 from tau._handles import NodeHandle
 from tau._protocols import CallDraft
+from tau._tools import assemble_tools
 
 BASH = "bash"
 PATH_TOOLS = ("read", "write", "edit", "grep", "find")
+SEARCH_TOOLS = ("grep", "find")
+"""The path tools that read every file under their root."""
 PATTERN_TOOLS = (BASH, *PATH_TOOLS)
 """The tools a rule may give a glob for."""
 REFUSED = "the user refused this call"
@@ -63,6 +70,8 @@ class Call:
     written: tuple[str, ...]
     resolved: tuple[str, ...]
     args_raw: str
+    cwd: str = "/"
+    """The session's working directory, made real: where a relative rule starts."""
 
     @classmethod
     def of(cls, draft: CallDraft, cwd: Path) -> "Call":
@@ -75,7 +84,7 @@ class Call:
         elif draft.tool in PATH_TOOLS:
             written = _paths(draft.tool, args)
         resolved = tuple(os.path.realpath(os.path.join(cwd, w)) for w in written)
-        return cls(draft.tool, subject, written, resolved, draft.args_raw)
+        return cls(draft.tool, subject, written, resolved, draft.args_raw, os.path.realpath(cwd))
 
     def shown(self) -> str:
         """The question's text: the command, a line per resolved path, or the raw arguments."""
@@ -137,10 +146,12 @@ class Rule:
     @classmethod
     def exact(cls, call: Call) -> list["Rule"]:
         """The rules that match this call and nothing else a glob can tell apart from it: one for
-        the whole command, or one for each resolved path (the bare tool when it has none)."""
+        the whole command, or one for each resolved path. A tool without patterns gets its bare
+        name. A `bash` or path-tool call whose arguments name nothing (they are malformed) gets
+        none: the bare name would allow every call of the tool."""
         subjects = [call.subject] if call.tool == BASH else list(call.resolved)
         if not subjects or subjects == [None]:
-            return [cls(call.tool)]
+            return [] if call.tool in PATTERN_TOOLS else [cls(call.tool)]
         return [cls(call.tool, _GLOB_CHARS.sub(r"[\1]", str(s))) for s in dict.fromkeys(subjects)]
 
     def __str__(self) -> str:
@@ -154,24 +165,67 @@ class Rule:
         if call.tool == BASH:
             match = _shell.allows if mode == "allow" else _shell.refuses
             return call.subject is not None and match(self.glob, call.subject)
+        absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
             return bool(call.resolved) and all(
-                fnmatch.fnmatchcase(r, self.glob) for r in call.resolved
+                fnmatch.fnmatchcase(r, absolute) for r in call.resolved
             )
         seen = (*call.written, *call.resolved)
-        return any(fnmatch.fnmatchcase(path, self.glob) for path in seen)
+        if any(fnmatch.fnmatchcase(path, g) for path in seen for g in {self.glob, absolute}):
+            return True
+        return call.tool in SEARCH_TOOLS and _searches_under(call, absolute)
+
+
+def _absolute(glob: str, cwd: str) -> str:
+    """`glob` as a rule over real absolute paths: one that starts with a literal relative
+    component (`src/*`, `./src/*`, `../x/*`) starts in `cwd`, as the tool's own paths do. A glob
+    that starts with `/` or a wildcard is left as it is."""
+    if glob[0] in "/*?[":
+        return glob
+    return os.path.normpath(os.path.join(cwd, glob))
+
+
+def _searches_under(call: Call, glob: str) -> bool:
+    """Whether a search's root could hold a path `glob` matches: the root is inside the glob's
+    literal start (the root `/etc` for `/etc/*`, or a link that lands there) or holds it (the root
+    `/` for `/etc/*`). A glob that starts with a wildcard has no literal start to compare."""
+    literal = _GLOB_CHARS.split(glob, maxsplit=1)[0]
+    if not literal:
+        return False
+    for root in (
+        *call.resolved,
+        *(os.path.normpath(os.path.join(call.cwd, w)) for w in call.written),
+    ):
+        inside = root.rstrip("/") + "/"
+        if inside.startswith(literal) or literal.startswith(inside):
+            return True
+    return False
 
 
 def answers(glob: str, text: str) -> bool:
     """Whether an `--answer` glob answers the permissions question `text`: the glob is over the
-    call alone (the `(ask rule: ...)` line is left out). A command is matched as `tau._shell`
-    matches an allowing pattern. A path tool's question has a line `TOOL: PATH` for each resolved
-    path, and the glob must match every one (a path holding a newline only makes more lines)."""
+    call alone (the `(ask rule: ...)` line is left out), written `TOOL: ARGUMENT` as the question
+    shows it or in rule syntax, `TOOL:ARGUMENT`. A command is matched as `tau._shell` matches an
+    allowing pattern (a chain needs the operator in the glob). A path tool's question has a line
+    `TOOL: PATH` for each resolved path, and the glob must match every one (a path holding a
+    newline only makes more lines). Any other tool's call is matched whole: its JSON arguments
+    are no shell command."""
     call, _, _ = text.rpartition("\n(ask rule: ")
     call = call or text
-    if call.split(":", 1)[0] in PATH_TOOLS:
+    tool = call[: call.find(": ")] if ": " in call else call
+    if glob.startswith(f"{tool}:") and not glob.startswith(f"{tool}: "):
+        glob = f"{tool}: {glob[len(tool) + 1 :]}"
+    if tool == BASH:
+        return _shell.allows(glob, call)
+    if tool in PATH_TOOLS:
         return all(fnmatch.fnmatchcase(line, glob) for line in call.split("\n"))
-    return _shell.allows(glob, call)
+    return fnmatch.fnmatchcase(call, glob)
+
+
+def _builtin_tools() -> set[str]:
+    """The names of the tools the built-in extensions provide, loaded or not."""
+    listed, _ = assemble_tools((), [BaseTools(), Agents()])
+    return {cast("str", getattr(t, "name")) for t in listed}  # noqa: B009
 
 
 def _rules(texts: Iterable[str]) -> list[Rule]:
@@ -193,12 +247,14 @@ class Options:
             _rules(getattr(self, name))
 
     def tool_problems(self, tools: Sequence[str]) -> list[str]:
-        """The rules that name a tool nothing loaded provides (a misspelled name would match
-        nothing, and a `deny` that matches nothing is no guard)."""
+        """The rules that name a tool no extension provides (a misspelled name would match
+        nothing, and a `deny` that matches nothing is no guard). A tool of a built-in extension
+        that is not loaded (`agent`, with `agents` off) is known: a rule for it is no error."""
+        known = {*tools, *_builtin_tools()}
         found: list[str] = []
         for name in ("deny", "allow", "ask"):
             for rule in _rules(getattr(self, name)):
-                if rule.tool not in tools:
+                if rule.tool not in known:
                     found.append(
                         f"{name} rule {str(rule)!r} names the tool {rule.tool!r}, which no loaded "
                         f"extension provides; the tools are {sorted(tools)}"
@@ -238,7 +294,13 @@ class Permissions:
         line = f"(ask rule: {asked}" + (f"; as written: {written})" if written else ")")
         answer: Answer | None = await node.ask(f"{seen.shown()}\n{line}", Answer)
         if answer == "always":
-            for rule in Rule.exact(seen):
+            exact = Rule.exact(seen)
+            if not exact:
+                node.tell(
+                    f"permissions: this {seen.tool} call's arguments are malformed, so no rule "
+                    "was saved; it ran this once"
+                )
+            for rule in exact:
                 self._always(node, str(rule))
         return None if answer in ("yes", "always") else REFUSED
 

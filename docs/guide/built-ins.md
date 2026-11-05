@@ -35,6 +35,9 @@ HTTP 529: overloaded_error: Overloaded: retry 1 of 3 in 1 s
 ```
 
 The wait is part of the step, so Esc cancels it. The line goes when the next try starts to answer.
+`tau -p` has no status bar: it writes the same line to standard error for each wait, prefixed
+`tau: ` (`tau: HTTP 429: slow down: retry 1 of 3 in 2 s`), with or without `--verbose`. When the
+third retry fails too, the error says `(still failing after 3 retries)`.
 `tau`, `tau -p` and `tau serve` all retry; a program that builds its own `Driver` wraps its
 providers in `RetryProvider` ([`examples/retry.py`](../../examples/retry.py)). There is nothing
 to tune. If a proxy in front of the model already retries, or you are debugging a provider, turn
@@ -54,7 +57,8 @@ set load.retry = true in <*>
 ```
 
 That writes `{"load": {"retry": false}}` into your config file. `--no-extensions` does not turn it
-off; it skips only installed packages and drop-ins.
+off; it skips only installed packages and drop-ins. `load` is read from the config files only, so
+no flag turns retry off for a single run (`--set load.retry=false` says so).
 
 ## `@file` in a message
 
@@ -78,22 +82,30 @@ fn main() {}
 to the session's working directory, and `~` is the home directory of whoever runs the session; over
 `tau serve` that is the server's, not your terminal's. A token is `@` and the non-space characters
 after it, at the start of the message or after a space, and trailing punctuation does not count:
-`see @notes.txt.` attaches `notes.txt`. A word that names no regular file stays as you typed it
-(`@alice`, a missing file, a directory), and a file named twice is attached once.
+`see @notes.txt.` attaches `notes.txt`. A path with spaces goes in quotes: `@"my notes.txt"`. A word
+that names no regular file stays as you typed it (`@alice`, a missing file, a directory), and a
+file named twice is attached once. When a word looks like a path (it has a `/`, an extension or a
+`:10` after it) but attaches nothing, τ tells you in a notice (a toast in the terminal UI, a line
+on standard error under `-p`), so a typo does not go unnoticed; `john@host`, `@alice` and anything
+inside backticks stay silent.
 
 A file over 10 kB, a file that is not UTF-8 and a file that cannot be read are not pasted. The
 model is given a reference instead, so it can `read` the part it needs:
 
 ```text
-<reference path="/work/big.log" size="2.1 MB" reason="over 10 kB"/>
+<reference path="/work/big.log" size="2.1 MB" reason="over the 10 kB limit"/>
 ```
 
 The limit is an option, in bytes. `--set attachments.limit=100000` changes it for one run,
 `/config attachments limit=100000 --save` for good. `tau ext disable attachments` turns `@file` off.
-The terminal UI completes the path when you press Tab after an `@` word.
+The terminal UI completes the path when you press Tab after an `@` word. It offers only what would
+attach (directories, and regular files; no link to nothing, no FIFO), and puts a path with spaces
+in quotes. A `</attachment>` inside a file is written `<\/attachment>`, so a file cannot close its
+own block and start another.
 
-Every message is expanded the same way, whoever wrote it: the ones you type, the ones a prompt
-template sends, the task an extension gives another cursor.
+Only what you type is expanded. A message that an extension or a tool wrote (the task the model
+gives a sub-agent, the text of a prompt template) is sent as written: if the model could name a
+file with `@`, a rule that denies it the file would mean nothing.
 
 ## Prompt templates and skills
 
@@ -338,22 +350,36 @@ The pattern is a shell-style glob over the whole command (for `bash`) or the `pa
 `read`, `write`, `edit`, `grep` and `find`): `*` matches anything, including `/` and line breaks,
 `?` one character, `[ab]` a set, and capitals are not lowercase. A tool an extension gives the model
 takes only its bare name (and a name may hold a colon: `srv:tool`). A rule that names a tool nobody
-provides (`Bash`, `wirte`) stops the start, so a typo cannot silently guard nothing.
+provides (`Bash`, `wirte`) stops the start, so a typo cannot silently guard nothing; `/config
+permissions ...` checks the names the same way, and a bad rule is never written, `--save` or not.
+A tool of a built-in extension that is off (`agent`, until you enable `agents`) is known, so a
+`deny` for it is no error.
 
 Paths are matched as the model wrote them and as the file they name: relative to the session's
 directory, with `..`, `//` and symlinks resolved. So `write:/etc/*` also refuses `../../etc/x` and a
-link that lands in `/etc`. `grep` also names each of its `files` (and the working directory when it
-names no path): a `deny` or `ask` fires if any of them matches, an `allow` needs all of them to, and
-an `allow` matches the resolved path only.
+link that lands in `/etc`. A rule that starts with a plain relative name (`read:src/*`,
+`write:./out/*`) starts in the session's working directory, as the tool's own paths do, so
+`allow: ["read:src/*"]` allows `src/a.py` and nothing outside that directory. (`tau config check`
+reads the rule as written and has no working directory to resolve it against, so it says nothing
+about it.) A rule that starts with `/` or a wildcard is used as it is. `grep` also names each of its
+`files` (and the working directory when it names no path): a `deny` or `ask` fires if any of them
+matches, an `allow` needs all of them to, and an `allow` matches the resolved path only.
+
+`grep` and `find` read everything under their root, so a `deny` or `ask` for `grep:/etc/*` also
+refuses a search that is rooted at `/etc`, at a directory that holds it (`path=/`) or at a link to
+it. It refuses such a broad search whole; it does not filter the results. A rule that starts with a
+wildcard (`grep:*secret*`) has no directory to compare, and holds only for the paths a search names.
 
 Commands are harder, because a glob is not a shell. An `allow` pattern never runs a command that
 chains or redirects (`;`, `&`, `|`, a backtick, `$(`, `<`, `>`, or a new line) unless the pattern
 contains that character too: `allow: ["bash:git status*"]` runs `git status -s` but asks about
 `git status; rm -rf x`. A `deny` or `ask` pattern is tried on each piece of a chained command, after
-dropping leading `VAR=value` words, `then`/`do`/`else`, a leading backslash and wrappers such as
-`sudo -u X`, `env -i`, `nice -n 5`, `timeout 5`, `xargs` and `command`, and reducing `/bin/rm` to
-`rm`, so `bash:rm *` refuses `ls; rm x` and `/bin/rm x`. That is best effort: quoting,
-`eval` and `bash -c "..."` are not seen, so **a `bash` deny is not a guarantee. `ask: ["bash"]` is the
+dropping leading `VAR=value` words, `if`/`elif`/`while`/`until`/`then`/`do`/`else`, `function NAME`,
+a leading backslash and wrappers such as `sudo -u X` (or `--user X`), `env -i`, `nice -n 5`,
+`timeout 5`, `doas`, `ionice`, `stdbuf`, `setsid`, `strace`, `watch`, `xargs` and `command`, and
+reducing `/bin/rm` to `rm`, so `bash:rm *` refuses `ls; rm x`, `if rm x; then ...`, `ls | xargs rm`
+and `/bin/rm x`. That is best effort: quoting, `eval`, `bash -c "..."` and what `find -exec` runs
+are not seen, so **a `bash` deny is not a guarantee. `ask: ["bash"]` is the
 safe setting**: it puts every command in front of you. Rules guard against the model; they are not a
 sandbox.
 
@@ -367,7 +393,9 @@ bash: git push origin master
 
 `yes` runs it. `always` runs it and writes its exact rule (`bash:git push origin master`, or for a
 file tool the resolved path) into the `allow` list of your config file, so it is never asked again in
-any session, and τ tells you it did. If a project layer or a `--set` also sets `allow` and hides the
+any session, and τ tells you it did. A call whose arguments are malformed (a `read` with no `path`)
+has no exact rule: `always` runs it once, saves nothing, and says so, because the bare tool name
+would allow every call. If a project layer or a `--set` also sets `allow` and hides the
 file's list, τ says so and the rule still holds for the rest of the run. `no` gives the model
 `the user refused this call`. Esc, or going to another node, refuses it too. A batch of calls asks
 all its questions at once, and a [sub-agent](#sub-agents)'s questions are asked on its own
@@ -375,7 +403,7 @@ cursor. Another client of the same session (`tau serve`) can answer a question; 
 wins.
 
 `tau -p` has no one to ask, so a question it has no answer for is declined and the call refused,
-and the run still ends. Give it answers with `--answer`, which matches who asked and what:
+and the run still ends (`tau: declined question 0 from permissions on cursor 0: ...`). Give it answers with `--answer`, which matches who asked and what:
 
 ```bash skip
 tau -p --answer permissions=yes "tidy the imports"
@@ -384,8 +412,10 @@ tau -p --answer 'permissions:bash: rm*=no' --answer permissions=yes "clean up"
 
 A `--answer` text is a glob over the call (`bash: git push origin master`; a file tool's question
 shows the resolved path, so a text for `/proj/*` does not answer `/proj/../etc/x`), so
-`--answer 'permissions:bash: git push*=yes'` is complete as written, and like an `allow` pattern it
-never answers a command that chains or redirects unless the text contains that character. Leave the
+`--answer 'permissions:bash: git push*=yes'` is complete as written. It may also be written as a
+rule, with no space: `--answer 'permissions:bash:git push*=yes'`. Like an `allow` pattern it
+never answers a `bash` command that chains or redirects unless the text contains that character;
+other tools' arguments are no shell command, so a `;` in them means nothing. Leave the
 text out (`--answer permissions=yes`) to answer every question. An empty pattern (`bash:`) or an
 unknown tool name stops the start, and `tau config check` names it.
 

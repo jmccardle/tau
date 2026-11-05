@@ -11,6 +11,7 @@ from harness import Harness, say, scenario
 
 from tau import (
     Body,
+    ConfigError,
     Ending,
     Outcome,
     Part,
@@ -351,6 +352,41 @@ async def test_a_grep_with_no_path_searches_the_working_directory(tmp_path: Path
     await h.close()
 
 
+@pytest.mark.parametrize("tool", ["grep", "find"])
+@pytest.mark.parametrize("root", ["/etc", "/etc/", "/", "/tmp/../etc", "link", "link/", "."])
+@scenario
+async def test_a_deny_on_a_search_refuses_a_root_that_is_or_holds_the_denied_directory(
+    tmp_path: Path, tool: str, root: str
+) -> None:
+    """`deny: grep:/etc/*` would be no guard if `path=/etc`, `path=/` or a link to `/etc` could
+    search it. `.` is the working directory, which a rule for its own files holds."""
+    (tmp_path / "link").symlink_to("/etc")
+    reply = calls(call("a", tool, pattern="root", path=root))
+    here = tmp_path
+    h, (fake,) = await start(
+        tmp_path,
+        [reply, say("ok")],
+        {"deny": [f"{tool}:/etc/*" if root != "." else f"{tool}:{here}/*"]},
+        [FakeTool(tool, "t")],
+    )
+    assert fake.calls == []
+    assert "deny rule" in refusal(h)
+    await h.close()
+
+
+@pytest.mark.parametrize("tool", ["grep", "find"])
+@scenario
+async def test_a_deny_on_a_search_leaves_a_root_that_cannot_hold_it(
+    tmp_path: Path, tool: str
+) -> None:
+    reply = calls(call("a", tool, pattern="x", path="/etcetera"), call("b", tool, pattern="x"))
+    h, (fake,) = await start(
+        tmp_path, [reply, say("ok")], {"deny": [f"{tool}:/etc/*"]}, [FakeTool(tool, "t")]
+    )
+    assert len(fake.calls) == 2
+    await h.close()
+
+
 @scenario
 async def test_an_allow_on_grep_needs_every_file_to_match(tmp_path: Path) -> None:
     ok = os.path.realpath(tmp_path / "ok")
@@ -380,8 +416,8 @@ async def test_every_path_tool_is_denied_by_the_path_it_lands_on(tmp_path: Path,
 
 @scenario
 async def test_a_pattern_needs_the_argument_and_a_bare_rule_does_not(tmp_path: Path) -> None:
-    """`grep` with no path, and a call whose arguments are not an object, match no pattern;
-    the bare rule matches them."""
+    """A call whose arguments are not an object or whose path is not a string matches no pattern
+    (`grep` with no path searches the working directory); the bare rule matches them."""
     reply = calls(
         call("a", "grep", pattern="x"),
         Part.Call("b", "grep", "not json"),
@@ -389,7 +425,7 @@ async def test_a_pattern_needs_the_argument_and_a_bare_rule_does_not(tmp_path: P
         call("d", "grep", path=3),
     )
     grep = FakeTool("grep", "g")
-    h, _ = await start(tmp_path, [reply, say("ok")], {"ask": ["grep:src/*"]}, [grep])
+    h, _ = await start(tmp_path, [reply, say("ok")], {"ask": ["grep:/nowhere/src/*"]}, [grep])
     assert (await h.view()).questions == ()
     await h.close()
 
@@ -424,6 +460,37 @@ async def test_a_bad_rule_refuses_the_call_rather_than_letting_it_run(
     h, (tool,) = await start(tmp_path, [bash("ls"), say("ok")], {"deny": [rule]})
     assert tool.calls == []
     assert problem in refusal(h)
+    await h.close()
+
+
+# /config checks the tool names as the start does
+
+
+@scenario
+async def test_config_refuses_a_rule_naming_no_tool_and_saves_nothing(tmp_path: Path) -> None:
+    h, _ = await start(tmp_path, [bash("ls"), say("ok")])
+    saved = tmp_path / "tau-home" / "config.json"
+    before = saved.read_text(encoding="utf-8") if saved.exists() else None
+    for values in ({"ask": ["Bash"]}, {"deny": ["bash:rm *", "wirte:/etc/*"]}):
+        with pytest.raises(ConfigError, match="names the tool"):
+            await h.configure("permissions", values, save=True)
+    assert (saved.read_text(encoding="utf-8") if saved.exists() else None) == before
+    await h.configure("permissions", {"deny": ["bash:rm *"]}, save=True)
+    assert json.loads(saved.read_text(encoding="utf-8"))["extensions"]["permissions"] == {
+        "deny": ["bash:rm *"]
+    }
+    await h.close()
+
+
+@scenario
+async def test_a_rule_for_a_built_in_tool_that_is_not_loaded_is_no_error(tmp_path: Path) -> None:
+    """`agent` is a tool of `agents`, which is off unless asked for; a deny for it is a guard
+    for the sessions that load it. A name no extension provides is still refused."""
+    h, _ = await start(tmp_path, [bash("ls"), say("ok")])
+    await h.configure("permissions", {"deny": ["agent"]})
+    await h.settle()
+    with pytest.raises(ConfigError, match="names the tool 'agnet'"):
+        await h.configure("permissions", {"deny": ["agnet"]})
     await h.close()
 
 
@@ -465,6 +532,38 @@ async def test_always_runs_the_call_and_saves_its_exact_rule_for_every_session(
     assert again.calls == [{"command": "git push origin master"}]
     (question,) = (await h.view()).questions
     assert question.text.startswith("bash: git push origin dev"), "the rule was exact"
+    await h.close()
+
+
+@pytest.mark.parametrize("tool", ["read", "write", "edit", "bash"])
+@scenario
+async def test_always_on_a_malformed_call_saves_nothing_and_says_so(
+    tmp_path: Path, tool: str
+) -> None:
+    """The bare tool name would allow every call of the tool, so the call runs once."""
+    reply = calls(call("a", tool, file_path="src/a.py"))
+    h, (fake,) = await start(tmp_path, [reply, say("ok")], {"ask": [tool]}, [FakeTool(tool, "t")])
+    await h.respond("always")
+    await h.settle()
+    assert len(fake.calls) == 1
+    assert not (tmp_path / "tau-home" / "config.json").exists()
+    assert any("no rule was saved" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_a_relative_allow_rule_starts_in_the_working_directory(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    reply = calls(
+        call("a", "read", path="src/a.py"),
+        call("b", "read", path="./src/../src/b.py"),
+        call("c", "read", path="other/c.py"),
+    )
+    options = {"ask": ["read"], "allow": ["read:src/*"]}
+    h, (tool,) = await start(tmp_path, [reply, say("done")], options, [FakeTool("read", "r")])
+    (question,) = (await h.view()).questions
+    assert question.text.startswith(f"read: {os.path.realpath(tmp_path / 'other')}/c.py\n")
+    assert [c["path"] for c in tool.calls] == ["src/a.py", "./src/../src/b.py"]
     await h.close()
 
 
@@ -646,6 +745,26 @@ REFUSED_BY_RM = [
     "ls | xargs rm -f",
     "xargs -n1 rm x",
     "nohup nice -n 5 sudo rm x",
+    "if rm x; then echo gone; fi",
+    "while rm x; do :; done",
+    "until rm x; do :; done",
+    "function f { rm x; }; f",
+    "function f() { rm x; }",
+    "f() { rm x; }",
+    "sudo --user root rm x",
+    "sudo -nu root rm x",
+    "sudo --user=root rm x",
+    "env --unset HOME rm x",
+    "xargs --max-args 1 rm x",
+    "xargs -I {} rm {}",
+    "doas rm x",
+    "doas -u root rm x",
+    "ionice -c 3 rm x",
+    "ionice -c3 rm x",
+    "stdbuf -oL rm x",
+    "setsid rm x",
+    "strace -o out rm x",
+    "watch -n 5 rm x",
 ]
 
 

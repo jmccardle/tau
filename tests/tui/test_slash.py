@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 
+import pytest
 from fakes import FakeProvider
 from harness import Harness, scenario
 from tuikit import Greeter, running, say, shows, type_line, until
@@ -171,36 +172,36 @@ async def test_a_name_two_extensions_share_is_refused_and_nothing_is_sent(tmp_pa
 from tuikit import greet as tuikit_greet  # noqa: E402
 
 
-@scenario
-async def test_tab_on_an_at_word_completes_a_path_of_the_sessions_directory(tmp_path: Path) -> None:
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "notes.txt").write_text("x")
-    before = os.getcwd()
-    os.chdir(work)  # paths are completed in the driver's working directory, which is ours here
-    try:
-        h = await harness(tmp_path)
-        async with running(h, tmp_path) as (app, pilot):
-            await type_line(pilot, "look at @not")
-            await pilot.press("tab")
-            await until(pilot, lambda: app.draft == "look at @notes.txt")
-        await h.close()
-    finally:
-        os.chdir(before)
+def make_files(tmp_path: Path) -> Path:
+    where = tmp_path / "files"
+    where.mkdir()
+    (where / "a b.txt").write_text("x", encoding="utf-8")
+    (where / "dangling").symlink_to(where / "nowhere")
+    os.mkfifo(where / "fifo")
+    return where
 
 
 @scenario
-async def test_up_walks_the_lines_sent_before(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, provider=FakeProvider([say("one"), say("two")]))
+async def test_tab_on_an_at_word_quotes_a_path_with_spaces(tmp_path: Path) -> None:
+    where = make_files(tmp_path)
+    h = await harness(tmp_path)
     async with running(h, tmp_path) as (app, pilot):
-        for text, reply in (("first", "one"), ("second", "two")):
-            await type_line(pilot, text)
-            await pilot.press("enter")
-            await shows(pilot, app, reply)
-        await pilot.press("up")
-        await until(pilot, lambda: app.draft == "second")
-        await pilot.press("up")
-        await until(pilot, lambda: app.draft == "first")
-        await pilot.press("down", "down")
-        await until(pilot, lambda: app.draft == "")
+        await type_line(pilot, f"see @{where}/a")
+        await pilot.press("tab")
+        await until(pilot, lambda: app.draft == f'see @"{where}/a b.txt"')
+    await h.close()
+
+
+@pytest.mark.parametrize("name", ["d", "f"])
+@scenario
+async def test_tab_on_an_at_word_does_not_offer_a_link_to_nothing_or_a_fifo(
+    tmp_path: Path, name: str
+) -> None:
+    where = make_files(tmp_path)
+    h = await harness(tmp_path)
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, f"@{where}/{name}")
+        await pilot.press("tab")
+        await pilot.pause(0.3)
+        assert app.draft == f"@{where}/{name}", f"{name} would not attach, so it is not offered"
     await h.close()

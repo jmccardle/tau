@@ -119,9 +119,21 @@ class CommandLine:
             return start, await client.complete_line(cursor, before)
         word = before[start:]
         if word.startswith(_PATH_MARK):
-            found = await client.complete(cursor, "path", word[1:])
-            return start, [_PATH_MARK + path for path in found]
+            return start, await self._complete_path(word[1:])
         return start, []
+
+    async def _complete_path(self, typed: str) -> list[str]:
+        """The `@` words that finish `typed` (the word after the `@`): a path with a space is
+        written `@"a b.txt"`, its quote left open on a directory so the name can go on."""
+        quoted = typed.startswith('"')
+        found = await self.app.client.complete(self.app.cursor, "path", typed.removeprefix('"'))
+        words: list[str] = []
+        for path in found:
+            if quoted or " " in path:
+                words.append(f'{_PATH_MARK}"{path}' + ("" if path.endswith("/") else '"'))
+            else:
+                words.append(_PATH_MARK + path)
+        return words
 
     async def complete_value(self, schema: Json, text: str) -> list[str]:
         """What could finish `text` as a value of `schema` (a form's field, a question's answer)."""

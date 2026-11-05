@@ -219,7 +219,12 @@ class Driver:
         self._offered: dict[int, tuple[str, ...] | None] = {}
         self._made_with: dict[int, tuple[int, tuple[str, ...]]] = {}  # cursor -> (at, offer)
         self._options = ExtensionOptions(
-            (), session, lambda: self._catalog, user_config, self.use_catalog
+            (),
+            session,
+            lambda: self._catalog,
+            user_config,
+            self.use_catalog,
+            tool_names=lambda: self._tools,
         )
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, _Outstanding] = {}

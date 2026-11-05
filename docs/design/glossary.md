@@ -1143,13 +1143,16 @@ itself has no base tools unless it passes `tools=base_tools(cwd)`.
 The built-in extension that makes `@path` in an input name a file. Its `pre_input` rewrites the
 draft's text, so the `User` node holds exactly what the model saw (I1): the line, a blank line, then
 one block per file named. An **attachment** is `<attachment path="src/main.rs">` and the file's
-text `</attachment>`; a **reference** is `<reference path="/abs/big.log" size="2.1 MB" reason="over
-10 kB"/>` for a file over `limit` bytes (default 10240), not UTF-8 or unreadable, which the model
-can `read`. A token is `@` and non-space characters at the start of the text or after whitespace;
+text `</attachment>` (a `</attachment>` inside the text is written `<\/attachment>`); a **reference**
+is `<reference path="/abs/big.log" size="2.1 MB" reason="over the 10 kB limit"/>` for a file over
+`limit` bytes (default 10240), not UTF-8 or unreadable, which the model can `read`. A token is `@`
+and non-space characters at the start of the text or after whitespace, or `@"a path with spaces"`;
 trailing punctuation is stripped one character at a time until a regular file is named; `~`
 expands and a relative path is the session's working directory. A word naming no regular file
-(missing, a directory, `@alice`) stays text, and a file named twice is attached once. Every input
-is expanded (a template's, a sub-agent's task).
+(missing, a directory, `@alice`) stays text, and a file named twice is attached once. A word that
+looks like a path but names none is told to the typing client in a `Notice`. Only input a person
+typed (authored by a `Frontend`) is expanded: never what a tool or extension wrote (a sub-agent's
+task, a template's body).
 
 ### Skills (extension), template, skill, skills list
 `tau.Skills` (`_skills.py`), key `skills`, option `advertise` · D24 section 6 · new (8E-1)
@@ -1243,14 +1246,18 @@ of the tool) or `TOOL:GLOB` (`bash`: the command; `read`, `write`, `edit`, `grep
 `path`, and `grep`'s `files`; a tool from an extension takes only the bare form), the glob being `fnmatch`'s, case
 sensitive, over the whole `bash` command, or over a path as written and as resolved (against the
 session's working directory, symlinks followed; `deny` and `ask` fire if any named path matches,
-`allow` needs every one to, resolved). Any other text
+`allow` needs every one to, resolved; a glob that starts with a relative name starts in the working
+directory; for `grep` and `find` a `deny` or `ask` also fires on a root that holds or lies inside
+the glob's literal start). Any other text
 is a tool's whole name. An `allow` glob never matches a command that chains or redirects (`;` `&` `|`
 a backtick `$(` `<` `>` a newline) unless it holds the operator, and `deny` and `ask` try each piece
-of a chain (`tau._shell`; best effort, `ask: [bash]` is safe). A rule naming a tool no loaded
-extension provides is a `ConfigError`. A `pre_tool` hook checks `deny`, then
+of a chain (`tau._shell`; best effort, `ask: [bash]` is safe). A rule naming a tool no extension
+provides is a `ConfigError` (at the start, and from `/config`); a built-in's tool that is not
+loaded (`agent`) is known. A `pre_tool` hook checks `deny`, then
 `allow`, then `ask`; a call no rule matches runs, and with no rules configured nothing is ever
 asked. An `ask` match holds the cursor with a question, `TOOL: ARGUMENT` (a line per resolved path) and `(ask rule: RULE)`,
-answered `yes`, `always` (run it and append its exact rule to the user's file's `allow`) or `no`;
+answered `yes`, `always` (run it and append its exact rule to the user's file's `allow`; for a call
+with malformed arguments, run it once and save nothing) or `no`;
 `no`, a decline, an abort or a go-to give the call `Err("the user refused this call")`. A `deny`
 match gives it an `Err` naming the rule. Not a sandbox: a later extension's `pre_tool` can change the
 outcome.
@@ -2468,7 +2475,8 @@ builds them, for hooks, tools and commands alike.
 `Client.complete(cursor, named, prefix)` · D16 · new
 
 The values of a named type that start with `prefix`, as strings: `"path"` (the driver's
-machine, relative to its working directory, a leading `~` the home directory as typed; a directory ends with `/`; a hidden name only if
+machine, relative to its working directory, a leading `~` the home directory as typed; only
+directories and regular files, through links: no dangling link, no FIFO; a directory ends with `/`; a hidden name only if
 the prefix starts with `.`; a missing or unreadable directory has none), `"model"` (qualified
 names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
 first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or

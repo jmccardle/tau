@@ -347,6 +347,7 @@ def test_set_is_for_this_run_only_and_changes_no_file(configured: World) -> None
     ("assignment", "complaint"),
     [
         ("nope.limit=1", "extension 'nope' has no options"),
+        ("load.retry=false", "tau ext disable retry"),
         ("step_limit.nope=1", "has no option 'nope'"),
         ("step_limit.limit=ten", "step_limit.limit"),
         ("step_limit.limit=0", "at least 1"),
@@ -391,7 +392,7 @@ def test_no_rule_declines_and_says_so(configured: World) -> None:
     result = p(configured, "-e", ext(configured, "gate", GATE), "go")
     assert result.code == 3
     assert result.out == ""
-    assert 'tau: declined question 0 from gate: "run the thing?"' in result.err
+    assert 'tau: declined question 0 from gate on cursor 0: "run the thing?"' in result.err
 
 
 def test_the_first_matching_rule_wins(configured: World) -> None:
@@ -623,7 +624,7 @@ def test_json_start_error_is_only_the_error_line(world: World) -> None:
 def test_json_stderr_carries_notices_and_questions_stdout_stays_json(configured: World) -> None:
     result = p(configured, "--json", "-e", ext(configured, "gate", GATE), "go")
     assert result.code == 3
-    assert 'tau: declined question 0 from gate: "run the thing?"' in result.err
+    assert 'tau: declined question 0 from gate on cursor 0: "run the thing?"' in result.err
     for line in result.out.splitlines():
         json.loads(line)
 
