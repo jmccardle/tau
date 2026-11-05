@@ -141,10 +141,18 @@ class _Tasks:
         self.effects: set[asyncio.Task[None]] = set()
 
     def spawn(self, coro: Coroutine[object, object, None], *, effect: bool = False) -> None:
-        context = contextvars.copy_context()
-        task = asyncio.create_task(coro, context=context)
+        run = coro
         if effect:
-            context.run(_EFFECT.set, task)
+
+            async def run_as_effect() -> None:
+                # Inside the task, so its first step sees it, even when the loop's task factory
+                # starts a task eagerly (Textual's does) before `create_task` returns.
+                task = asyncio.current_task()
+                _EFFECT.set(task)
+                await coro
+
+            run = run_as_effect()
+        task = asyncio.create_task(run)
         for held in (self.all, self.effects) if effect else (self.all,):
             held.add(task)
             task.add_done_callback(held.discard)

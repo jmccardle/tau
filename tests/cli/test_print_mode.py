@@ -252,6 +252,17 @@ def test_continue_adds_to_the_newest_session(configured: World) -> None:
     assert only.id == sessions(configured)[0]
 
 
+def test_a_command_on_a_resumed_idle_session_waits_for_the_step_loading_started(
+    configured: World,
+) -> None:
+    """Loading wakes the cursor (model.md, Q39): a command that runs as a step of it right away
+    would find it busy."""
+    p(configured, "one")
+    result = p(configured, "-c", "/model m")
+    assert result.code == 0, result.err
+    assert result.err == ""
+
+
 def test_resume_is_a_usage_error_for_print(configured: World) -> None:
     result = p(configured, "-r", "hello")
     assert result.code == 2

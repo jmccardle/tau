@@ -52,7 +52,9 @@ async def test_the_status_bar_shows_the_replys_tokens_cost_and_context(tmp_path:
 
 @scenario
 async def test_a_cache_miss_is_a_toast(tmp_path: Path) -> None:
-    catalog = read_models(cli={"models": {"a": {"model": "a", "provider": FAKE_PROVIDER}}})
+    catalog = read_models(
+        cli={"models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "price": PRICE}}}
+    )
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(5000, 1, 0), reply(5000, 1, 0)]),
@@ -70,4 +72,24 @@ async def test_a_cache_miss_is_a_toast(tmp_path: Path) -> None:
         await until(
             pilot, lambda: any("read nothing from the prompt cache" in t for t in app.toasts)
         )
+    await h.close()
+
+
+@scenario
+async def test_the_reply_badge_and_the_status_line_write_a_count_alike(tmp_path: Path) -> None:
+    catalog = read_models(cli={"models": {"a": {"model": "a", "provider": FAKE_PROVIDER}}})
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(999_950, 3_400_000_000, 0)]),
+        extensions=[Usage()],
+        catalog=catalog,
+        config=model_config("a"),
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "go")
+        await pilot.press("enter")
+        await shows(pilot, app, "usage: 1.0M in · 0% cached · 3.4G out")
+        await until(pilot, lambda: bool(app.query(".box-assistant")))
+        (box,) = app.query(".box-assistant")
+        assert box.border_subtitle == "↑ 1.0M  ↓ 3.4G"
     await h.close()

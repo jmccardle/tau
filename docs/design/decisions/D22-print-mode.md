@@ -365,6 +365,9 @@ Where the code differs from the text above, or the text left a choice:
 - **A rule for an extension this process did not load** is a usage error (exit 2) after the start,
   naming the extensions loaded (not only those that ask: nothing says which do). Attached it is
   not checked: the wire does not carry a server's extension names.
+- **A command line on a session `-c` opened** waits first for the cursor's view to rest: loading
+  wakes every cursor (model.md Q39), so the step it starts is under way when `-p` sends the
+  command, and a command that runs as a step of the cursor would find it busy (8E-5).
 - **Second SIGINT** writes `tau: interrupted` and calls `os._exit(130)` at once, running no
   cleanup, since hooks are never cancelled (model.md §8) and an abort waits for the one in flight.
 - **A closed stdout** (`| head -1`) is exit 141 with no message; its descriptor is pointed at

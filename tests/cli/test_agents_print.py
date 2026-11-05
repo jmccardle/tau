@@ -99,3 +99,19 @@ def test_the_session_keeps_the_agent_as_a_closed_cursor_with_its_label(model: Wo
         assert reply.parts == [Part.Text("child says hi")]
     finally:
         session.close()
+
+
+def test_a_tools_name_nothing_provides_stops_the_start_and_the_check(model: World) -> None:
+    config = json.loads((model.tau / "config.json").read_text())
+    config["extensions"] = {"agents": {"tools": ["read", "grpe"]}}
+    model.user_config(config)
+    result = tau(model, "-p", "--no-context-files", "go")
+    assert result.code == 1
+    assert "tools names 'grpe', which no loaded extension provides" in result.err
+    assert Model.offered == [], "nothing was sampled"
+    checked = tau(model, "config", "check")
+    assert checked.code != 0
+    assert "names 'grpe'" in checked.both
+    config["extensions"] = {"agents": {"tools": ["read", "grep"]}}
+    model.user_config(config)
+    assert tau(model, "-p", "--no-context-files", "go").code == 0

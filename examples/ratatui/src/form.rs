@@ -182,7 +182,7 @@ pub fn read_value(text: &str, schema: &Schema) -> Result<Value, String> {
         }
         return text
             .split(',')
-            .map(|word| read_value(word, items))
+            .map(|word| read_value(word.trim(), items))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array);
     }

@@ -7,7 +7,7 @@ import pytest
 from fakes import FakeProvider
 from harness import Harness, say, scenario
 
-from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
+from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle, Usage
 from tau.commandline import UnknownCommand, completions, parse, value, values
 
 
@@ -160,6 +160,14 @@ async def test_a_str_or_none_parameter_takes_the_rest_too_and_may_be_left_out(
     assert parse("/plan task='add retry'", infos).args == {"task": "add retry"}, "named: as before"
     with pytest.raises(ValueError, match="/plan takes 1 arguments"):
         parse("/plan task=add retry", infos)
+
+
+@scenario
+async def test_a_command_with_no_parameters_says_it_takes_no_arguments(tmp_path: Path) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[Usage()]))
+    assert parse("/usage", infos).args == {}
+    with pytest.raises(ValueError, match="/usage takes no arguments, but was given 'foo'"):
+        parse("/usage foo", infos)
 
 
 @scenario
@@ -348,6 +356,8 @@ async def test_value_reads_text_and_values_completes_it_as_a_commands_argument_i
     assert await values(cursor_schema, "", h.client, h.cursor) == [str(h.cursor), "new"]
     mode_schema = forms["configure"].schema["properties"]["mode"]  # type: ignore[index]
     assert value("slow", mode_schema) == "slow"
+    names = {"type": "array", "items": {"type": "string"}}
+    assert value("read, grep ,find", names) == ["read", "grep", "find"]
     assert await values(mode_schema, "f", h.client, h.cursor) == ["fast"]
     await h.close()
 

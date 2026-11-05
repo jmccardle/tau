@@ -7,7 +7,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-from fakes import FAKE_PROVIDER, FakeProvider, Reply
+from fakes import FAKE_PROVIDER, FakeProvider, Gate, Reply
 from harness import Harness, scenario
 
 from tau import (
@@ -253,7 +253,7 @@ async def test_a_cache_miss_soon_after_a_reply_of_the_same_model_tells_the_clien
     h = await session(
         tmp_path,
         [reply(5000, 10, cached=0), reply(5000, 10, cached=0), reply(5000, 10, cached=0)],
-        catalog(a={}),
+        catalog(a={"price": PRICE}),
     )
     await say(h)
     assert h.notices() == [], "the first reply has no earlier reply to have cached"
@@ -285,7 +285,7 @@ async def test_no_cache_notice_when_the_miss_is_not_a_miss(tmp_path: Path) -> No
             tmp_path / name,
             provider=FakeProvider([first, second]),
             extensions=[Usage()],
-            catalog=catalog(a={}),
+            catalog=catalog(a={"price": PRICE}),
             config=config,
         )
         await say(h)
@@ -343,23 +343,58 @@ async def test_a_tree_handle_reads_models_by_node_and_name(tmp_path: Path) -> No
 
 
 @scenario
-async def test_through_an_openai_endpoint_the_notice_suggests_the_anthropic_provider(
+async def test_the_cache_notice_is_for_a_priced_model_and_never_suggests_another_provider(
     tmp_path: Path,
 ) -> None:
-    cat = read_models(cli={"models": {"a": {"model": "a", "provider": "openai"}}})
-    h = await Harness.create(
+    for name, settings in {"unpriced": {}, "priced": {"price": PRICE}}.items():
+        cat = read_models(cli={"models": {"a": {"model": "a", "provider": "openai", **settings}}})
+        h = await Harness.create(
+            tmp_path / name,
+            provider=OpenAICompatible([reply(5000, 1, cached=0), reply(5000, 1, cached=0)]),
+            extensions=[Usage()],
+            catalog=cat,
+            config=model_config("a"),
+        )
+        await say(h, 2)
+        expected = (
+            []
+            if name == "unpriced"
+            else ["a read nothing from the prompt cache (5.0k tokens sent at full price)."]
+        )
+        assert h.notices() == expected, name
+        await h.close()
+
+
+@scenario
+async def test_an_aborted_reply_is_said_to_be_aborted_and_counted_apart(tmp_path: Path) -> None:
+    gate = Gate()
+    h = await session(
         tmp_path,
-        provider=OpenAICompatible([reply(5000, 1, cached=0), reply(5000, 1, cached=0)]),
-        extensions=[Usage()],
-        catalog=cat,
-        config=model_config("a"),
+        [Reply([Part.Text("par"), Part.Text("tial")], Stop.End, gate=gate, gate_after=1)],
+        catalog(a={"price": PRICE}),
     )
-    await say(h, 2)
-    assert h.notices() == [
-        "a read nothing from the prompt cache (5.0k tokens sent at full price). "
-        "Through a proxy's OpenAI endpoint nothing marks the cache; "
-        'try provider "anthropic".'
-    ]
+    await h.send("go")
+    await h.until(lambda: gate.held == 1)
+    await h.abort()
+    await h.settle()
+    assert await line(h) == "a reply was aborted and reported no usage"
+    assert await h.run("usage") == "no replies yet\n1 reply was aborted and reported no usage"
+    await h.close()
+
+
+@scenario
+async def test_a_usage_the_provider_could_not_read_says_why_on_the_status_line(
+    tmp_path: Path,
+) -> None:
+    sent = {"prompt_tokens": "many", "completion_tokens": 1}
+    meta = json.dumps({"usage_raw": sent})
+    h = await session(
+        tmp_path, [Reply([Part.Text("ok")], Stop.End, meta=meta)], catalog(a={"price": PRICE})
+    )
+    await say(h)
+    shown = await line(h)
+    assert shown.startswith("a reported no usage (node 3: the provider could not read the usage")
+    assert "'many'" in shown
     await h.close()
 
 

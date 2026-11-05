@@ -223,6 +223,11 @@ charge for writing the cache repeats its `input` price as `cache_write`. A price
 missing, below 0, or not a number is a config error naming the model. Groups hand a price down like
 any setting, and a project can change one field (`"price": {"output": 20}`).
 
+A reply that was aborted before the server reported usage says so, and `/usage` counts it apart
+("1 reply was aborted and reported no usage"). A reply whose usage could not be read says why, on
+this line and in `/usage`. Counts are written `812`, `12.3k`, `1.2M` and `1.2G`, here and on the
+badge of each reply in the TUI.
+
 `/usage` prints the whole session, one row per model, with the replies of summaries and
 sub-agents included:
 
@@ -240,8 +245,8 @@ changed models half way adds up right. The sums are exact, not floating point.
 
 When a reply reads nothing from the prompt cache (the server said `cached: 0`) soon after a reply
 of the same model that should have written it, τ tells you once per model, with the size of the
-prompt that went at full price. Through a proxy's OpenAI endpoint nothing marks the cache, and
-the notice says to try the `anthropic` provider. `--set usage.cache_notice=false` silences it, and
+prompt that went at full price. It is about money, so only a model with a `price` gets it.
+`--set usage.cache_notice=false` silences it, and
 `tau ext disable usage` removes all of this.
 
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
@@ -416,7 +421,10 @@ else, so the model must put everything the job needs in `task`. The result the m
 `agent:1 answered:` and the agent's last reply. The agent is closed when it has answered; it stays in
 the tree (`Ctrl+G`) as a dimmed closed cursor with its label. Several `agent` calls in one reply
 run at once. To give an agent a second job, the model calls `agent(task, to="agent:1")`, which
-reopens it with its earlier work still in its context.
+reopens it with its earlier work still in its context. An agent that a crash or a stopped server
+left open, at rest, is continued the same way; one that is still working is `agent:1 is still
+working`, and `to=""` is an error, not a new agent. A final reply with no text is `agent:1 gave an
+empty reply`.
 
 An agent has every tool except `agent`, or exactly the `tools` you list (a call to any other tool
 fails with `tool not offered`), so they do not nest, and the step limit bounds each one.
@@ -429,4 +437,6 @@ Permission rules apply to an agent's calls as to any other. If an agent fails, t
 ```
 
 `model` is the model agents run on (default: the one the calling branch is on), and `tools` the
-tools they are offered (default: all but `agent`).
+tools they are offered (default: all but `agent`). A name in `tools` that no loaded extension
+provides stops the start, and `tau config check` reports it. A list typed on a command line is
+split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.

@@ -80,6 +80,8 @@ class Harness:
     `Harness.mode` says whether the clients are local or remote (the module docstring)."""
 
     mode: ClassVar[Literal["local", "remote"]] = "local"
+    eager: ClassVar[bool] = False
+    """Run the scenario's loop with `asyncio.eager_task_factory`, as Textual's loop does."""
 
     def __init__(  # noqa: PLR0913, PLR0917 - one parameter per thing the Harness holds
         self,
@@ -479,6 +481,8 @@ def _run_bounded(coro: Coroutine[Any, Any, None]) -> None:
     """`asyncio.run`, but neither the scenario nor the loop's cleanup may take for ever:
     `asyncio.run` waits without end for a task that will not cancel."""
     loop = asyncio.new_event_loop()
+    if Harness.eager:
+        loop.set_task_factory(asyncio.eager_task_factory)
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(asyncio.wait_for(coro, SCENARIO_SECONDS))

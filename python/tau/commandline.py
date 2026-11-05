@@ -126,7 +126,7 @@ def value(text: str, schema: Json) -> object:
                 ) from None
             return cast("list[object]", decoded)
         items = cast("Json", schema["items"])
-        return [value(w, items) for w in text.split(",")] if text else []
+        return [value(w.strip(), items) for w in text.split(",")] if text else []
     return _scalar(text, schema)
 
 
@@ -264,6 +264,8 @@ def _read(form: Form, words: Sequence[str], rest: str | None = None) -> Parsed:
         else:
             positional.append(word)
     free = [name for name in properties if name not in args]
+    if not properties and positional:
+        raise ValueError(f"/{form.name} takes no arguments, but was given {' '.join(positional)!r}")
     if len(positional) > len(free):
         raise ValueError(f"/{form.name} takes {len(properties)} arguments {list(properties)}")
     for name, word in zip(free, positional, strict=False):
