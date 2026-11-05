@@ -1160,15 +1160,15 @@ project's `.tau/` (pinned by trust like `.tau/SYSTEM.md`, read from the approved
 wins a name). Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
 whose help is the file's `description` and which sends the expanded text to its cursor as input
 authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argument text) and `$1`
-to `$9` (its shell words; a missing one fails the command) and appends the arguments after a
-blank line if it has no placeholder; a skill sends `<skill name="NAME" path="/abs/SKILL.md">` and
+to `$N` (its words: whitespace splits, `"` groups, `'` is a character; a missing one is empty,
+`$$` is `$`) and appends the arguments after a blank line if it has no placeholder; a skill sends `<skill name="NAME" path="/abs/SKILL.md">` and
 the body, then the arguments. The **skills list** is one `System` node, written at a session's
 first step when a `read` tool is offered and `advertise` is on, naming each skill that is not
 `disable-model-invocation: true` with its description and path; it is then part of the prefix of
 the walk. Frontmatter is `key: value` lines between `---`.
 
 ### PromptFile, Trusted.prompt_files, _project_read
-`tau._skills.PromptFile` (private), `tau.Trusted.prompt_files`, module `tau._project_read` · D24 section 6 · new (8E-1)
+`tau._prompt_files.PromptFile` (private), `tau.Trusted.prompt_files`, modules `tau._prompt_files` and `tau._project_read` · D24 section 6 · new (8E-1)
 
 A **`PromptFile`** is one template or skill read: `kind`, `name`, `description`, the argument
 `hint`, `body`, the `path` of its file and whether the model is told about it (`listed`).
@@ -1176,7 +1176,20 @@ A **`PromptFile`** is one template or skill read: `kind`, `name`, `description`,
 to the bytes trust approved; they are what the project's `PromptFile`s are read from.
 **`_project_read`** holds what every read inside a project goes through: `TrustError`,
 `read_regular` (refuses symlinks and non-regular files), `read_prompt_files`, and `safe_text`
-(moved out of `_trust.py`).
+(moved out of `_trust.py`). **`_prompt_files`** holds `PromptFile`, how a file's bytes become one and
+`read_row`, which returns the prompts and every **`Problem`** (a message, and the command name the
+file would have had) at once, so the start, `tau trust` and a reload list everything wrong together.
+`Trusted.prompt_files` also holds the files that look like a template or skill in the wrong place
+(`prompt_candidates`), so they are pinned and are problems.
+
+### rescan (an extension), stdin (a command parameter)
+`Skills.rescan`, `tau.commandline.STDIN` · D24 section 6 · new (8E-5)
+
+An extension whose commands come from files may have **`rescan()`**: the driver calls it before it
+lists, parses or runs a command, it stats the files and reads again those that changed, and it says
+whether its commands changed (then the driver rebuilds them). It is not a timer or a watcher. A
+command parameter named **`stdin`** is never filled from the command line: `tau -p` fills it with
+standard input, and a command without one refuses input.
 
 ### yields (a command), Form.yields
 `Form.yields`, extension attribute `yields_names` · D24 section 6 · new (8E-1)

@@ -69,7 +69,7 @@ def quoted(text: str) -> str:
     return escaped.replace(">", "&gt;").replace("\n", " ")
 
 
-def _candidates(token: str) -> list[str]:
+def candidates(token: str) -> list[str]:
     """The token, then the token with trailing punctuation stripped a character at a time."""
     found = [token]
     while found[-1] and found[-1][-1] in _PUNCTUATION:
@@ -117,7 +117,7 @@ def expand(text: str, cwd: Path, limit: int) -> str:
     blocks: list[str] = []
     seen: set[Path] = set()
     for match in _TOKEN.finditer(text):
-        for word in _candidates(match.group(1)):
+        for word in candidates(match.group(1)):
             path = _resolve(word, cwd)
             if path is None:
                 continue

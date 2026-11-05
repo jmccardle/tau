@@ -266,6 +266,7 @@ class Driver:
             at_rest=lambda c: not (session.cursor(c).busy or c in self._out),
             spawn=lambda coro: self._tasks.spawn(coro, effect=True),
             on_loop=on_loop,
+            rescan=lambda: _rescan(self._extensions, self._commands),
         )
         self._calls = Calls(
             session,
@@ -736,6 +737,18 @@ def _open_for_tool(
     hub.sync()
     poke()
     return cursor
+
+
+def _rescan(extensions: Sequence[Extension], commands: Commands) -> None:
+    """Ask each extension that has a `rescan` (the commands it lists come from files) whether its
+    commands changed, and run the new ones if any did."""
+    changed = [
+        bool(rescan())
+        for rescan in (getattr(e, "rescan", None) for e in extensions)
+        if callable(rescan)
+    ]
+    if any(changed):
+        commands.use(assemble_commands(extensions))
 
 
 def _hook_failed(hub: Hub, cursor: int, point: str, extension: str, error: str) -> None:

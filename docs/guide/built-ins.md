@@ -122,12 +122,28 @@ Typing `/review main.rs "error handling"` sends
 Review main.rs for bugs. Focus on: error handling
 ```
 
-as your message, and the model answers it. `$ARGUMENTS` is everything after the command, as typed,
-and `$1` to `$9` are its words, split as a shell splits them, so quotes group. A `$N` the
-arguments do not have fails the command and sends nothing. A template with no `$` placeholder gets
-the arguments after a blank line, which makes `Be brief.` a template you can follow with any
-question. The command's help is the `description`; without one it is the first line of the file.
-`argument-hint` is what the terminal UI's form shows for the arguments.
+as your message, and the model answers it. How the arguments are read:
+
+- `$ARGUMENTS` is everything after the command, as typed.
+- `$1`, `$2` and on are its words. Words are split on whitespace, and double quotes group words
+  (`"error handling"` is one word). A single quote is just a character, so `don't` is a word.
+  `$10` and up are numbers of more than one digit: `$10` is the tenth word, not `$1` and `0`.
+- A word the arguments do not have is empty text, so `/review main.rs` works with the hint
+  `<file> [focus]` above: `$2` is nothing.
+- `$$` writes a literal `$` (`costs $$5`). A `$` followed by anything else is left as it is.
+- A template with no placeholder gets the arguments after a blank line, which makes `Be brief.` a
+  template you can follow with any question.
+- A `"` that never closes, or a template that would send nothing (no text and no arguments), is
+  refused like an empty message: one line, `/review: <reason> (usage: /review <file> [focus])`,
+  and nothing is sent.
+
+The command's help is the `description`; without one it is the first line of the file.
+`argument-hint` is what the arguments are: the terminal UI shows it beside the name in the `/` list
+and after `/review `, and in the form that asks for them.
+
+Under `tau -p`, standard input is not an argument. `git diff | tau -p "/review main.rs"` sends the
+template's text, a blank line, then the diff, exactly as it came. `/review` is run with the line
+you typed, and a command that has no such use for input (`/model`) refuses it.
 
 A **skill** is a directory with a `SKILL.md`, in `$TAU_HOME/skills/NAME/`, for instructions that
 come with files of their own, such as scripts. It needs a `description`:
@@ -148,7 +164,8 @@ tau ext list --json | grep '"key": "skills"' | grep -o '"commands": \[[^]]*\]'
 ```
 
 `/pdf report.pdf` sends the skill's text, wrapped in `<skill name="pdf" path="…/SKILL.md">`, and
-then `report.pdf`. A skill also reaches the model by itself: at the first step of a new session,
+then `report.pdf`. An `@path` in the skill's own text names a file beside the skill: it is
+attached from the skill's directory, wherever you are working, as the list below tells the model. A skill also reaches the model by itself: at the first step of a new session,
 when the model has a `read` tool, τ adds one system message that lists each skill's name,
 description and path, and the model `read`s the file when a task matches. A skill that should only
 run when you type it says `disable-model-invocation: true` in its frontmatter and is left out of
@@ -172,10 +189,18 @@ as `tau -p "review main.rs"` would.
 | `$TAU_HOME/skills/NAME/SKILL.md` | a skill |
 | `.tau/prompts/NAME.md`, `.tau/skills/NAME/SKILL.md` in a trusted project | the same, for the project; for one name the project's wins |
 
-A name is letters, digits, `_` and `-`; a template and a skill with one name in one directory, a
-bad name, a file that is not UTF-8 and a skill without a description each stop the start with a
-message naming the file, because a command that quietly went missing would be harder to find.
-`tau ext disable skills` starts without them.
+For one name, **a project's file hides the user's**: if `.tau/prompts/review.md` and
+`$TAU_HOME/prompts/review.md` both exist in a trusted project, `/review` is the project's, and
+nothing says the user's was hidden. A project's skill hides a user's template of that name too.
+
+A name is ASCII letters, digits, `_` and `-`. A template and a skill with one name in one
+directory, a bad name, a file that is not UTF-8 and a skill without a description each stop the
+start with a message naming the file, because a command that quietly went missing would be harder
+to find. So does a file in the wrong place: `skills/pdf/skill.md` (the file is `SKILL.md`,
+in capitals), a flat `skills/pdf.md` (a skill is a directory), `prompts/sub/x.md` (templates are
+not read from subdirectories) and `prompts/x.MD` (`.md` in lower case). All the problems are listed
+at once, and `tau trust` refuses a project whose files have any, listing all of them.
+`tau ext disable skills` starts without them. A byte order mark at the start of a file is ignored.
 
 A file may begin with frontmatter, `key: value` lines between two `---` lines. Read are
 `description` (one line), `argument-hint`, `disable-model-invocation` (`true` or `false`) and
@@ -184,11 +209,20 @@ ignored, so a Claude Code skill loads as it is. There is no YAML: `description: 
 not misread.
 
 A project's files are text the model will be told to follow, so they are pinned like the rest of
-`.tau/`: `tau trust` lists them, a project is asked about again when one is added, removed or
-changed, and τ reads the bytes that were approved. Because they are pinned, a τ that predates this
+`.tau/`: `tau trust` lists them and shows the text of each that is new or changed (the first 2000
+characters of a file, with a line saying how much was cut), a project is asked about again when one
+is added, removed or changed, and τ reads the bytes that were approved. Because they are pinned, a τ that predates this
 asks once more about every project it trusted before ([Configuration](configuration.md#projects-and-trust)).
 
-Templates and skills are read once, when τ starts. Edit one, then start a new `tau` to use it.
+Templates and skills are read when τ starts, and again whenever the files have changed since,
+before a template or skill command runs and before `/name` is called unknown. A running `tau` or
+`tau serve` therefore sees a file you edit, add or delete: no restart, no timer, only a look at
+the directories when you use a command. A project's files stay pinned: one changed since you
+trusted it is not used, and its command fails with the report `tau trust` gives, so you run
+`tau trust` again. A file edited into an error makes its own command fail with the reason, and
+the others go on working. The skills list the model sees is the exception: it is written once, at a
+session's first step, so a skill you add or edit reaches the model's list in new sessions only,
+while `/name` already runs the new file.
 
 ## What it used and what it cost
 

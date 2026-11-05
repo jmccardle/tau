@@ -6,8 +6,9 @@ from pathlib import Path
 from fakes import FakeProvider
 from harness import Harness, scenario
 from tuikit import Greeter, running, say, shows, type_line, until
+from world import World, loaded
 
-from tau import Body
+from tau import Body, Skills
 
 
 async def harness(tmp_path: Path) -> Harness:
@@ -203,4 +204,81 @@ async def test_up_walks_the_lines_sent_before(tmp_path: Path) -> None:
         await until(pilot, lambda: app.draft == "first")
         await pilot.press("down", "down")
         await until(pilot, lambda: app.draft == "")
+    await h.close()
+
+
+@scenario
+async def test_the_argument_hint_is_in_the_list_and_after_the_name(
+    tmp_path: Path, world: World
+) -> None:
+    (world.tau / "prompts").mkdir(parents=True)
+    (world.tau / "prompts" / "review.md").write_text(
+        "---\ndescription: Review a file\nargument-hint: <file> [focus]\n---\nReview $1",
+        encoding="utf-8",
+    )
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("ok")]), extensions=[Skills.of(loaded(world))]
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await pilot.press("slash")
+        await shows(pilot, app, "/review <file> [focus]  Review a file")
+        await type_line(pilot, "review ")
+        await until(pilot, lambda: app.draft == "/review ")
+        await shows(pilot, app, "/review <file> [focus]  Review a file")
+        await pilot.press("x")
+        await until(pilot, lambda: "<file> [focus]" not in app.screen_text())
+    await h.close()
+
+
+@scenario
+async def test_an_unknown_qualified_command_is_an_error_and_stays_in_the_editor(
+    tmp_path: Path,
+) -> None:
+    h = await harness(tmp_path)
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "/skills:nope")
+        await shows(pilot, app, "/skills:nope is not a command")
+        assert "goes to the model" not in app.screen_text()
+        await pilot.press("enter")
+        await until(pilot, lambda: "no command /skills:nope" in app.toasts)
+        await until(pilot, lambda: app.draft == "/skills:nope")
+        assert [b for b in h.bodies() if isinstance(b, Body.User)] == []
+    await h.close()
+
+
+@scenario
+async def test_a_toast_shows_square_brackets_as_they_are(tmp_path: Path) -> None:
+    class Brackets:
+        name = "brackets"
+
+        def say(self) -> str:
+            """Fails with a bracket."""
+            raise ValueError("no [draft] [/bold] here")
+
+        @property
+        def commands(self) -> tuple[object, ...]:
+            return (self.say,)
+
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("ok")]), extensions=[Brackets()])
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "/say")
+        await pilot.press("enter")
+        await until(pilot, lambda: any("no [draft] [/bold] here" in t for t in app.toasts))
+        notices = [n.message for n in app._notifications]  # noqa: SLF001
+        assert any("no [draft] [/bold] here" in str(m) for m in notices)
+    await h.close()
+
+
+@scenario
+async def test_a_template_added_while_the_app_runs_is_in_the_list(
+    tmp_path: Path, world: World
+) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("ok")]), extensions=[Skills.of(loaded(world))]
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        (world.tau / "prompts").mkdir(parents=True)
+        (world.tau / "prompts" / "late.md").write_text("Late $1", encoding="utf-8")
+        await pilot.press("slash")
+        await shows(pilot, app, "/late")
     await h.close()

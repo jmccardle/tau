@@ -21,7 +21,7 @@ from tau._client import Client
 from tau._commands import CommandFailed
 from tau._core import Busy
 from tau._values import Form, Json
-from tau.commandline import Parsed, UnknownCommand, values
+from tau.commandline import STDIN, Parsed, UnknownCommand, values
 from tau.commandline import value as read_value
 from tau.tui._choose import PickDialog
 from tau.tui._editor import Completion
@@ -85,6 +85,15 @@ def extensions_with_options(config: Form) -> list[str]:
     return extension["enum"]
 
 
+def _hint(command: Form) -> str:
+    """What a command's parameters are, as its schema describes them (a template's
+    `argument-hint`); `""` if it says nothing. `stdin` is not typed."""
+    properties = cast("dict[str, Json]", command.schema.get("properties", {}))
+    return " ".join(
+        str(p["description"]) for n, p in properties.items() if n != STDIN and "description" in p
+    )
+
+
 class CommandLine:
     """The commands the session has, and what to do with a line of the app's editor."""
 
@@ -101,13 +110,28 @@ class CommandLine:
 
     def rows(self, typed: str) -> list[tuple[str, str]]:
         """The popup's rows for a first word `typed`: each command whose name starts with it, with
-        the first line of its description; the qualified name where two extensions share one."""
+        its argument hint (what its parameters are described as) and the first line of its
+        description; the qualified name where two extensions share one. For the word and one
+        space (`/review `), the one row of that command, if it has a hint: what to type next."""
         shared = Counter(c.name for c in self.commands)
-        rows = [
-            (f"/{c.qualified if shared[c.name] > 1 else c.name}", c.description.splitlines()[0])
-            for c in self.commands
+        named = [(c, f"/{c.qualified if shared[c.name] > 1 else c.name}") for c in self.commands]
+        if typed.endswith(" "):
+            word = typed.strip()
+            named = [(c, name) for c, name in named if name == word or c.qualified == word[1:]]
+        elif typed:
+            named = [(c, name) for c, name in named if name.startswith(typed)]
+        return [
+            (f"{name} {_hint(c)}".rstrip(), c.description.splitlines()[0])
+            for c, name in named
+            if _hint(c) or not typed.endswith(" ")
         ]
-        return [row for row in rows if row[0].startswith(typed)]
+
+    async def renew(self) -> bool:
+        """Ask the session for its commands again (it may have new ones: they are files); whether
+        they are not the ones the popup showed."""
+        before = self.commands
+        await self.refresh()
+        return self.commands != before
 
     # Completion
 
@@ -158,6 +182,9 @@ class CommandLine:
         try:
             parsed = await app.client.parse_line(app.cursor, line)
         except UnknownCommand as e:
+            if ":" in e.name:  # `/skills:nope` names an extension: it cannot be text
+                app.toast(f"no command /{e.name}", severity="error")
+                return False
             app.toast(f"no command /{e.name}: sent as text", severity="warning")
             return await self._send(line)
         if parsed.extension is not None and not parsed.args:

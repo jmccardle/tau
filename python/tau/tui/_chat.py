@@ -13,10 +13,11 @@ mounts.
 """
 
 import json
-from typing import Literal
+from typing import Literal, cast
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Collapsible, Markdown, Static
 from textual.widgets.markdown import MarkdownStream
@@ -34,6 +35,12 @@ _SUMMARY_LIMIT = 60
 def format_tokens(n: int) -> str:
     """102700 becomes `102.7k`; small counts stay exact."""
     return f"{n / _THOUSAND:.1f}k" if n >= _THOUSAND else str(n)
+
+
+def _plain(text: str) -> str:
+    """`text` as a title that is never read as markup: `echo [draft]` shows as typed. (A
+    `Collapsible` reads a `str` title as markup and a `Content` as it is.)"""
+    return cast("str", Content(text))
 
 
 def format_tool_summary(name: str, arguments: object) -> str:
@@ -179,7 +186,7 @@ class ToolBox(QuietCollapsible):
         self._result_markdown = ""
         self._built = False
         self._result_md: Markdown | None = None
-        super().__init__(title=self._summary, collapsed=True)
+        super().__init__(title=_plain(self._summary), collapsed=True)
         self.add_class("tool-box")
         self.has_result = False
 
@@ -227,7 +234,7 @@ class ToolBox(QuietCollapsible):
         self._arguments = text
         self._summary = format_tool_summary(self.tool_name, self._arguments)
         if not self.has_result:
-            self.title = self._summary
+            self.title = _plain(self._summary)
 
     def set_progress(self, text: str) -> None:
         """Show the output the call has written so far, until its outcome replaces it."""
@@ -236,7 +243,7 @@ class ToolBox(QuietCollapsible):
     def set_result(self, text: str, *, error: bool = False, interrupted: bool = False) -> None:
         """Fold the call's outcome in: `text` is what the tool returned or why it failed."""
         mark = "⊘" if interrupted else "✗" if error else "✓"
-        self.title = f"{mark} {self._summary}"
+        self.title = _plain(f"{mark} {self._summary}")
         self._write_result_body(self._fenced(text))
         self.has_result = True
         if error or interrupted:

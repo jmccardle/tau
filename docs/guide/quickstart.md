@@ -72,7 +72,10 @@ mock: hello from a script
 
 The words are the message. If standard input is not a terminal, what it holds follows them after a
 blank line, so `git diff | tau -p "review this"` works. A program that runs `tau -p` with a pipe it
-never closes passes `</dev/null`.
+never closes passes `</dev/null`; if nothing has arrived on standard input after two seconds,
+`tau` says `tau: reading stdin (use </dev/null for none)` on standard error, once, and keeps
+waiting. With a command, `tau -p "/review a.rs"`, standard input follows the command's text after a
+blank line and is never part of its arguments ([What τ does for you](built-ins.md)).
 
 Only the answer is on standard output, so `answer=$(tau -p "...")` holds it. The exit status says
 how the run ended: `0` the model finished, `1` a failure (a bad config, a provider error, a

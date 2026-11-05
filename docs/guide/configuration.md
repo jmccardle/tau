@@ -250,7 +250,7 @@ These are not config, and they last for one run:
 | `--set EXTENSION.FIELD=VALUE` | an extension's option for this run (above) |
 | `-m NAME`, `--model NAME` | the model of a new session (`tau`, `tau -p`) |
 | `--theme NAME` | the terminal UI's theme for this run (`tau`; not with `-p`) |
-| `--no-extensions` | load no package or drop-in (the built-ins, `attachments`, `base_tools`, `skills` and `step_limit`, and the `retry` wrapper, still follow `load`) |
+| `--no-extensions` | load no package or drop-in (the built-ins, `agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit` and `usage`, and the `retry` wrapper, still follow `load`) |
 | `-c`, `-r`, `--session REF`, `--fork REF`, `--no-session`, `-n NAME` | which session, and its name ([Quickstart](quickstart.md)) |
 
 ## When it fails

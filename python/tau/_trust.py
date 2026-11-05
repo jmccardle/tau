@@ -40,6 +40,7 @@ from tau._project_read import (
     shown,
     unless_io_fails,
 )
+from tau._prompt_files import problems_in
 from tau._providers import builtin_providers
 
 TAU_DIR = ".tau"
@@ -517,7 +518,8 @@ def _layer(seen: _Seen) -> LayerText | None:
 
 
 def _errors(seen: _Seen, home: Path) -> list[str]:
-    """What keeps the project from being approved: config problems, a malformed `.env`."""
+    """What keeps the project from being approved: config problems, a malformed `.env`, every
+    problem with its prompt and skill files."""
     layer = _layer(seen)
     errors: list[str] = []
     if layer is not None:
@@ -529,7 +531,7 @@ def _errors(seen: _Seen, home: Path) -> list[str]:
             parse_dotenv(seen.env, shown(seen.root / _ENV))
         except DotenvError as e:
             errors.append(safe_text(str(e)))
-    return errors
+    return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR)]
 
 
 def _env_names(seen: _Seen) -> list[str]:
@@ -619,8 +621,23 @@ def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
     return lines
 
 
-def _code_listing(seen: _Seen) -> list[str]:
-    """The files that will run with your authority, and the prompt file, by name and size."""
+_SHOWN_CHARS = 2000
+"""How much of one prompt or skill file the report shows."""
+
+
+def _prompt_text(raw: bytes) -> list[str]:
+    """The text of a prompt or skill file as report lines, cut at `_SHOWN_CHARS` characters, which
+    the last line says."""
+    text = raw.decode("utf-8", errors="replace")
+    lines = [f"    {line}" for line in safe_block(text[:_SHOWN_CHARS].rstrip()).split("\n")]
+    if len(text) > _SHOWN_CHARS:
+        lines.append(f"    ... cut: {len(text) - _SHOWN_CHARS} more characters not shown")
+    return lines
+
+
+def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
+    """The files that will run with your authority by name and size, and the prompt and skill
+    files, with the text of each that is new or changed since approval."""
     lines: list[str] = []
     if seen.extensions:
         lines += ["", "Its extensions (code that runs with your authority):"]
@@ -628,8 +645,13 @@ def _code_listing(seen: _Seen) -> list[str]:
     if seen.system is not None:
         lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
     if seen.prompts:
+        before: Mapping[str, str] = {} if approval is None else approval.prompts
+        hashes = _file_hashes(seen.prompts)
         lines += ["", "Its prompt templates and skills (text the model will read):"]
-        lines += [safe_text(f"  {p}  {len(raw)} bytes") for p, raw in seen.prompts.items()]
+        for path, raw in seen.prompts.items():
+            lines.append(safe_text(f"  {path}  {len(raw)} bytes"))
+            if before.get(path) != hashes[path]:
+                lines += _prompt_text(raw)
     return lines
 
 
@@ -649,7 +671,7 @@ def _assess(seen: _Seen, home: Path, approval: _Approval | None) -> _Assessment:
         lines += ["Its config:", *_shown_config(seen)]
     if names := _env_names(seen):
         lines += ["", f"Its .env sets: {', '.join(names)}"]
-    lines += _code_listing(seen)
+    lines += _code_listing(seen, approval)
     lines += ["", "Checks:", *_checks(seen)]
     if approval is not None and not errors:
         lines += ["", "Changes since approval:", *_changes(approval, seen)]

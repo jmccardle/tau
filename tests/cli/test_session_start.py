@@ -1106,7 +1106,7 @@ def test_a_file_that_cannot_be_used_stops_the_start_and_creates_nothing(
     prompts = configured.tau / "prompts"
     prompts.mkdir(parents=True)
     (prompts / "my notes.md").write_text("x", encoding="utf-8")
-    with pytest.raises(ExtensionLoadError, match="the name 'my notes' is not letters"):
+    with pytest.raises(ExtensionLoadError, match="the name 'my notes' is not ASCII letters"):
         start(configured)
     assert sessions_of(configured) == []
 

@@ -200,8 +200,10 @@ class Composer(Vertical):
         rows: Callable[[str], list[tuple[str, str]]],
         submit: Callable[[str], Awaitable[None]],
         move: Callable[[str], None],
+        renew: Callable[[], Awaitable[bool]],
     ) -> None:
         super().__init__(id="composer")
+        self._renew = renew
         self._move = move
         self._completer = completer
         self._rows = rows
@@ -217,12 +219,17 @@ class Composer(Vertical):
         text = editor.text
         if editor.cycling:
             return
-        if not text.startswith("/") or " " in text or "\n" in text:
+        if not text.startswith("/") or "\n" in text:
             popup.hide()
+        elif " " in text:  # the word and one space: what to type next, if the command says
+            popup.show(self._rows(text) if text.count(" ") == 1 and text[-1] == " " else [])
         elif rows := self._rows(text):
             popup.show(rows)
+            if text == "/":
+                self._renewed()
         else:
-            popup.warn(f"{text} is not a command: this line goes to the model as text")
+            sent = "" if ":" in text else ": this line goes to the model as text"
+            popup.warn(f"{text} is not a command{sent}")
 
     def on_chat_input_candidates(self, event: ChatInput.Candidates) -> None:
         event.stop()
@@ -240,6 +247,17 @@ class Composer(Vertical):
     def on_chat_input_edit_last(self, event: ChatInput.EditLast) -> None:
         event.stop()
         self._move("edit")
+
+    @work(group="commands", exclusive=True)
+    async def _renewed(self) -> None:
+        """A `/` was typed: the session may have commands the list lacks (a new file). Show the
+        list again if it did."""
+        try:
+            renewed = await self._renew()
+        except ConnectionError:  # the lost session is the app's to say; the list stays as it was
+            return
+        if renewed and self.query_one(ChatInput).text == "/":
+            self.query_one(CommandPopup).show(self._rows("/"))
 
     @work(group="submit")
     async def _send(self, text: str) -> None:

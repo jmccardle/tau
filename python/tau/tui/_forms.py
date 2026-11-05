@@ -14,12 +14,14 @@ from typing import ClassVar, Protocol, cast
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Button, Static, Switch
 
 from tau._client import Client
 from tau._events import CursorView, OpenQuestion
 from tau._values import Json
+from tau.commandline import STDIN
 from tau.tui._dialogs import TauDialog, dialog_buttons
 from tau.tui._fields import UNSET, Completer, SchemaField, choices_of, shape_of
 
@@ -51,7 +53,7 @@ class FormDialog(TauDialog[dict[str, object] | None]):
     def compose_body(self) -> ComposeResult:
         properties = cast("dict[str, Json]", self._schema.get("properties", {}))
         required = cast("list[str]", self._schema.get("required", []))
-        names = [*self._missing, *(n for n in properties if n not in self._missing)]
+        names = [*self._missing, *(n for n in properties if n not in (*self._missing, STDIN))]
         for name in names:
             field = SchemaField(
                 name,
@@ -204,7 +206,9 @@ class QuestionBox(Vertical):
         yield self._message
         with Horizontal(classes="question-buttons"):
             for i, choice in enumerate(found or ()):
-                yield Button(str(choice), id=f"choice-{qid}-{i}", name=str(i), variant="primary")
+                yield Button(
+                    Content(str(choice)), id=f"choice-{qid}-{i}", name=str(i), variant="primary"
+                )
             if found is None:
                 yield Button("Answer", id=f"answer-{qid}-send", variant="primary")
             yield Button("Decline", id=f"decline-{qid}")

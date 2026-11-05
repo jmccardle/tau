@@ -19,6 +19,7 @@ from typing import ClassVar, cast
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Input, RadioButton, RadioSet, SelectionList, Static, Switch
 
@@ -130,14 +131,14 @@ class SchemaField(Vertical):
         items = cast("Json", schema.get("items", {}))
         default = self._outer.get("default", schema.get("default"))
         if (found := choices_of(schema)) is not None:
-            buttons = [RadioButton(str(v), value=(v == default)) for v in found]
+            buttons = [RadioButton(Content(str(v)), value=(v == default)) for v in found]
             self._widget = RadioSet(*buttons, classes="form-choice")
         elif schema.get("type") == "boolean":
             self._widget = Switch(value=bool(default), classes="form-switch")
         elif schema.get("type") == "array" and choices_of(items) is not None:
             picks = choices_of(items) or []
             chosen: list[object] = default if isinstance(default, list) else []  # pyright: ignore[reportUnknownVariableType]
-            options = [(str(v), i, v in chosen) for i, v in enumerate(picks)]  # pyright: ignore[reportUnknownVariableType]
+            options = [(Content(str(v)), i, v in chosen) for i, v in enumerate(picks)]  # pyright: ignore[reportUnknownVariableType]
             self._widget = SelectionList[int](*options, classes="form-multi")
         else:
             placeholder = "" if default is None else str(default)

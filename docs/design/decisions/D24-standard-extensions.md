@@ -225,9 +225,11 @@ template; a skill requires one. Running it sends the expanded text to the cursor
 (`send`, authored `Extension("skills")`), so the `pre_input` gates and `attachments` see it, and
 the cursor samples.
 
-- **Template expansion:** `$ARGUMENTS` is the whole argument text and `$1`…`$9` are its shell
-  words. A missing `$N` fails the command. A body with no placeholder gets the arguments appended
-  after a blank line. 0.15's `${N:-default}`, `${@:N:L}` and `$@` are dropped.
+- **Template expansion:** `$ARGUMENTS` is the whole argument text and `$N` (any number of digits)
+  its words, split on whitespace with `"` grouping and `'` literal. A missing `$N` is empty text.
+  `$$` is a literal `$`. A body with no placeholder gets the arguments appended after a blank
+  line. 0.15's `${N:-default}`, `${@:N:L}` and `$@` are dropped. (8E-5: it was `$1`…`$9` as a
+  shell splits them, and a missing one failed the command.)
 - **A skill** sends `<skill name="NAME" path="/abs/…/SKILL.md">body</skill>` followed by the
   arguments.
 - **Skills for the model:** when a session's first step begins (its walk has only the prefix) and
@@ -239,7 +241,9 @@ the cursor samples.
 **Files.** `$TAU_HOME/prompts/*.md`, `$TAU_HOME/skills/*/SKILL.md`, and the same under the
 **trusted** project's `.tau/`, where trust **pins** them as it pins `.tau/SYSTEM.md` (D20,
 D19 §4): their hashes are in the trust record, they are read from the approved bytes, and a
-changed file asks for `tau trust` again. They are read once, when extensions load. For one name the
+changed file asks for `tau trust` again. They are read when extensions load, and again before a
+command of the extension is listed or run when a stat says a file was added, removed or edited
+(8E-5; no timer, no watcher; the skills list for the model stays written once). For one name the
 project wins over the user, by D19's nearest-row rule. A template and a skill with one name in
 one directory are a load error naming both. A name must obey the extension-name rule (letters,
 digits, `_`, `-`). Frontmatter is `key: value` lines between `---` (`description`, `name`,
@@ -551,7 +555,7 @@ Usage (§3) with M2 to M6. Where the build differs from the text above, or the t
 - **M2/M3**: `ModelConfig.context_window` (positive int) and `ModelConfig.price`
   (`tau.Price`, four `Decimal`s). Both are model keys in the layered files (D13 amended); a `price`
   object merges by field like `options`. A missing field, an unknown one, a negative or non-number is
-  a `ConfigError` at the model. `tau config show` prints both.
+  a `ConfigError` at the model. (There is no `tau config show`; `tau config check` reports both.)
 - **M4/M5 live on `TreeHandle`**, so `Cursor`, `NodeHandle` and a command's tree handle all have
   them: `model(at=None)` (the cursor's node, the batch's node, or `at`; a tree handle must give
   `at`) and `resolved_model(name=None)` (defaults to `model()`). `OptionsReader` gained `resolved`.
@@ -833,3 +837,23 @@ with the detail `off (default); to turn it on: tau ext enable agents`; `load: {a
 or package with the key `agents` is a different source and not off by default. Hook order with
 `agents` on is `agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`,
 `skills`, `step_limit`, `usage`, as §1 says.
+
+### 8E-5 (hands-on fixes to section 6)
+
+- **Reload before a command.** `Skills.rescan()` stats `prompts/` and `skills/` (user and
+  project) and reads again what changed; the driver asks every extension that has a `rescan`
+  before it lists, parses or runs a command, and rebuilds the commands if one says they changed.
+  A project file that is not what trust approved is not used: each project name is a command that
+  fails with the report `tau trust` would give. A file that cannot be used is a command that fails
+  with the reason. Nothing else stops. The skills list keeps D24's rule (written once), so a new
+  skill is a command at once and reaches the model's list in new sessions only.
+- **Arguments are a command's own refusal.** A command that runs as a step of a cursor may raise
+  `CommandFailed` itself: the client that ran it is told once, the message as written, and it is
+  not a hook failure (the step ends without moving the cursor, as an abort does).
+- **Standard input.** A command with a parameter named `stdin` gets `tau -p`'s standard input in
+  it; the command line never fills it. A template sends its text, a blank line, then `stdin`.
+- **Files in the wrong place are errors**, and `tau trust` lists every error of a project's files
+  and refuses it. The files are pinned like the rest, misplaced ones included.
+- An unknown `/ext:name` is an error (`-p` exits 1), not text. A UTF-8 byte order mark is dropped.
+  `@path` in a skill body starts from the skill's directory.
+

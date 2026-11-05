@@ -194,4 +194,4 @@ A model's settings gain two keys, read like `max_tokens` and `options`:
   model, which `tau config check` reports at `models.<name>`. A `price` object merges by field
   across layers and down through groups, as `options` does, so a project can change one field.
 
-Neither is read by a provider or put in a node. `tau config show` prints both.
+Neither is read by a provider or put in a node. There is no `tau config show`: `tau config check` validates both, and the config files hold them.

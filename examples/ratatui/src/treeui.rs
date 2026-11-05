@@ -18,7 +18,7 @@ use crate::{
     ui::wrap,
 };
 
-const HELP: &str = "Enter go to  v view  o open a cursor here  l label  [ ] cursors  f follow  \
+const HELP: &str = "Enter go to  v view  o open a cursor here  l label  [ ] cursors  f follow  p source  \
                     \u{2190}\u{2192} fold  Esc leave";
 /// Below this many columns the detail pane goes under the tree, and below `SHORT` rows it goes.
 const WIDE: u16 = 100;

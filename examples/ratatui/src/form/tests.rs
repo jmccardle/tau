@@ -253,3 +253,48 @@ fn escape_and_the_cancel_button_cancel() {
 fn a_form_for_an_extension_without_properties_is_refused() {
     assert!(Form::new(1, "demo", &schema(&json!({"properties": {}}))).is_err());
 }
+
+#[test]
+fn an_unset_field_shows_empty_not_null() {
+    let form = options();
+    assert_eq!(form.fields[field(&form, "maybe")].placeholder(), "");
+}
+
+#[test]
+fn a_description_uses_the_width_of_the_terminal_and_wraps_at_it() {
+    use ratatui::{Terminal, backend::TestBackend}; // rules: allow(backend): ratatui API
+    let long = "word ".repeat(30);
+    let form = Form::new(
+        1,
+        "demo",
+        &schema(&json!({
+            "type": "object",
+            "properties": {"a": {"type": "string", "default": "x", "description": long.trim()}},
+        })),
+    )
+    .unwrap();
+    let draw = |width: u16| -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap(); // rules: allow(backend): ratatui API
+        terminal
+            .draw(|f| {
+                crate::formui::draw_form(f, &form);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone(); // rules: allow(backend): ratatui API
+        buffer
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect()
+    };
+    let wide = draw(200);
+    assert!(
+        wide.iter().any(|l| l.contains(long.trim())),
+        "the whole description fits on a wide terminal: {wide:#?}"
+    );
+    let narrow = draw(50);
+    assert!(
+        narrow.iter().filter(|l| l.contains("word")).count() >= 3,
+        "and wraps on a narrow one: {narrow:#?}"
+    );
+}

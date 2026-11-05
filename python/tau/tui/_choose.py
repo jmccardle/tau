@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
+from textual.content import Content
 from textual.widgets import Input, OptionList, Static
 
 from tau.tui._dialogs import TauDialog
@@ -57,7 +58,9 @@ class PickDialog(TauDialog[str | None]):
         self._shown = sorted(found, key=lambda v: not v.lower().startswith(typed.lower()))
         options = self.query_one(OptionList)
         options.clear_options()
-        options.add_options([v + (_CURRENT if v == self._current else "") for v in self._shown])
+        options.add_options(
+            [Content(v + (_CURRENT if v == self._current else "")) for v in self._shown]
+        )
         if self._shown:
             options.highlighted = (
                 self._shown.index(self._current)
