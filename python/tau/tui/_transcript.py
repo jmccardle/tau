@@ -21,7 +21,8 @@ from textual.widgets import Collapsible, Static
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
 from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
-from tau.tui._chat import MessageBox, QuietCollapsible, format_tokens
+from tau._usage import tokens
+from tau.tui._chat import MessageBox, QuietCollapsible
 from tau.tui._view import LiveLayer
 from tau.tui._window import tail_start
 from tau.tui._windowed import WindowedWalk
@@ -53,7 +54,7 @@ def usage_line(meta: str | None) -> str:
     sent, got = usage.get("input"), usage.get("output")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     if not isinstance(sent, int) or not isinstance(got, int):
         return ""
-    return f"↑ {format_tokens(sent)}  ↓ {format_tokens(got)}"
+    return f"↑ {tokens(sent)}  ↓ {tokens(got)}"
 
 
 def _arguments(args_raw: str) -> object:

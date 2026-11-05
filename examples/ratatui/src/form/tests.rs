@@ -121,6 +121,11 @@ fn text_is_read_as_the_fields_type() {
     assert_eq!(read_value("1,2", &list).unwrap(), json!([1, 2]));
     assert_eq!(read_value("[3, 4]", &list).unwrap(), json!([3, 4]));
     assert!(read_value("1,x", &list).is_err());
+    let names = schema(&json!({"type": "array", "items": {"type": "string"}}));
+    assert_eq!(
+        read_value("read, grep ,find", &names).unwrap(),
+        json!(["read", "grep", "find"])
+    );
     assert!(read_value("[1", &list).unwrap_err().contains("JSON array"));
     let flag = schema(&json!({"type": "boolean"}));
     assert_eq!(read_value("Yes", &flag).unwrap(), json!(true));

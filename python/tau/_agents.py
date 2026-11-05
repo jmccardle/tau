@@ -15,6 +15,7 @@ which aborts it first. It is off by default: `load: {agents: true}`, or `tau ext
 """
 
 import contextlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -41,13 +42,26 @@ class Options:
         if TOOL in self.tools:
             raise ValueError(f"a sub-agent cannot be offered {TOOL!r}: agents do not nest")
 
+    def tool_problems(self, tools: Sequence[str]) -> list[str]:
+        """The `tools` names that nothing loaded provides: a sub-agent would be offered no such
+        tool, and nothing would say so."""
+        return [
+            f"tools names {name!r}, which no loaded extension provides; the tools are "
+            f"{sorted(tools)}"
+            for name in self.tools
+            if name not in tools
+        ]
 
-def _text(node: Body) -> str | None:
-    """What a final reply said, or `None` if `node` is not one (a reply that asks for tools is
-    not final: the agent was stopped, by a step limit) or said nothing."""
+
+def _final(label: str, node: Body) -> str:
+    """What a final reply said. `ToolError` if `node` is not one (a reply that asks for tools:
+    the agent was stopped, by a step limit) or said nothing."""
     if not isinstance(node, Body.Assistant) or any(isinstance(p, Part.Call) for p in node.parts):
-        return None
-    return "".join(p.text for p in node.parts if isinstance(p, Part.Text)) or None
+        raise ToolError(f"{label} stopped without a final reply (a step limit?)")
+    text = "".join(p.text for p in node.parts if isinstance(p, Part.Text))
+    if not text:
+        raise ToolError(f"{label} gave an empty reply")
+    return text
 
 
 def _why(label: str, ending: Ending | None) -> str:
@@ -88,16 +102,16 @@ class Agents:
         """Give a task to a sub-agent that starts with a fresh context and returns its final
         reply. With `to`, send a follow-up to an agent you used before; it remembers its work."""
         options = node.options()
-        child, label = self._resume(node, to) if to else self._start(node, options.model)
+        child, label = (
+            self._resume(node, to) if to is not None else self._start(node, options.model)
+        )
         self._offered[child] = tuple(options.tools)
         try:
             node.send(child, task)
             ending = await node.rest(child)
             if not isinstance(ending, Ending.Done):
                 raise ToolError(_why(label, ending))
-            text = _text(node.tree.node(node.cursor(child).at).body)
-            if text is None:
-                raise ToolError(f"{label} stopped without a final reply (a step limit?)")
+            text = _final(label, node.tree.node(node.cursor(child).at).body)
             return f"{label} answered:\n{text}"
         finally:
             del self._offered[child]
@@ -121,13 +135,16 @@ class Agents:
         return child, label
 
     def _resume(self, node: NodeHandle, label: str) -> tuple[int, str]:
-        """The closed agent `label`, reopened."""
+        """The agent `label`: reopened if it is closed, as it is if it is open and at rest (a
+        crash or `serve --stop` left it so)."""
         if not label.startswith(PREFIX) or not self._labelled(node, label):
             raise ToolError(f"there is no agent {label!r}")
         old = node.label(label)
-        if old in node.cursors():
+        if old not in node.cursors():
+            return node.reopen(old), label
+        if node.cursor(old).busy:
             raise ToolError(f"{label} is still working: wait for its answer")
-        return node.reopen(old), label
+        return old, label
 
     @staticmethod
     def _labelled(node: NodeHandle, label: str) -> bool:

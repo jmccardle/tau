@@ -25,15 +25,9 @@ ContentSource = Literal["markdown", "verbatim"]
 """What a body's text is: an assistant's markdown, or output to show line by line (a tool result,
 a message the person typed)."""
 
-_THOUSAND = 1000
 _RESULT_LIMIT = 2000  # characters of a tool result drawn; the node holds all of it
 _ARGUMENT_LIMIT = 40
 _SUMMARY_LIMIT = 60
-
-
-def format_tokens(n: int) -> str:
-    """102700 becomes `102.7k`; small counts stay exact."""
-    return f"{n / _THOUSAND:.1f}k" if n >= _THOUSAND else str(n)
 
 
 def format_tool_summary(name: str, arguments: object) -> str:

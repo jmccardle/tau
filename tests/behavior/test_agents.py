@@ -157,6 +157,46 @@ async def test_to_continues_an_earlier_agent_which_remembers_its_work(tmp_path: 
 
 
 @scenario
+async def test_to_continues_an_agent_a_crash_left_open_at_rest(tmp_path: Path) -> None:
+    script = [
+        delegating(agent("a", "read the file")),
+        say("it says hi"),
+        say("first is done"),
+        delegating(agent("b", "and the next one?", to="agent:1")),
+        say("it says bye"),
+        say("done"),
+    ]
+    h = await start(tmp_path, script)
+    closed = h.session.label("agent:1")
+    left = await h.client.reopen(closed)  # as a kill -9 left it: open, at rest, labelled
+    await h.settle()
+    await h.send("more")
+    await h.settle()
+    assert outcomes(h) == [Outcome.Ok("agent:1 answered:\nit says bye")]
+    assert texts(h, 4) == ["sys", "read the file", "and the next one?"]
+    assert left not in h.session.cursors(), "closed again"
+    await h.close()
+
+
+@scenario
+async def test_to_an_agent_that_is_busy_is_an_error_the_model_reads(tmp_path: Path) -> None:
+    gate = Gate()
+    script = [
+        delegating(agent("a", "x"), agent("b", "y", to="agent:1")),
+        Reply([Part.Text("one")], gate=gate),
+        say("both done"),
+    ]
+    h = await start(tmp_path, script, gates=[gate])
+    gate.release()
+    await h.settle()
+    assert outcomes(h) == [
+        Outcome.Ok("agent:1 answered:\none"),
+        Outcome.Err("agent:1 is still working: wait for its answer"),
+    ]
+    await h.close()
+
+
+@scenario
 async def test_to_an_agent_that_does_not_exist_is_an_error_the_model_reads(tmp_path: Path) -> None:
     h = await start(
         tmp_path,
@@ -170,6 +210,21 @@ async def test_to_an_agent_that_does_not_exist_is_an_error_the_model_reads(tmp_p
         Outcome.Err("there is no agent 'compaction:1'"),
     ]
     assert h.session.cursors() == [h.cursor], "nothing was opened"
+    await h.close()
+
+
+@scenario
+async def test_to_nothing_is_an_error_not_a_new_agent(tmp_path: Path) -> None:
+    h = await start(tmp_path, [delegating(agent("a", "t", to="")), say("ok")])
+    assert outcomes(h) == [Outcome.Err("there is no agent ''")]
+    assert h.session.cursors() == [h.cursor], "nothing was opened"
+    await h.close()
+
+
+@scenario
+async def test_an_empty_final_reply_is_said_so_not_blamed_on_a_step_limit(tmp_path: Path) -> None:
+    h = await start(tmp_path, [delegating(agent("a", "t")), Reply([], Stop.End), say("ok")])
+    assert outcomes(h) == [Outcome.Err("agent:1 gave an empty reply")]
     await h.close()
 
 

@@ -1,11 +1,12 @@
 """Questions are boxes above the editor, answered by a click or declined (D23 section 3)."""
 
+import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
-from tuikit import Gatekeeper, running, say, shows, until
+from tuikit import Gatekeeper, running, say, shows, type_line, until
 
 from tau import Author, Body, Cursor, Outcome, Part, Permissions, Stop, Subject, model_config
 
@@ -137,4 +138,34 @@ async def test_a_permission_question_shows_the_call_the_rule_and_its_three_answe
         await pilot.click(".question-buttons Button")
         await shows(pilot, app, "done")
         assert tool.calls == [{"command": "git push origin master"}]
+    await h.close()
+
+
+@scenario
+async def test_a_question_asked_by_a_step_the_user_started_in_the_tui_is_answered(
+    tmp_path: Path,
+) -> None:
+    """`App.run_async` (the real TUI; `run_test` does not) puts `eager_task_factory` on the loop,
+    so a task runs to its first wait inside `create_task`. The step's hook asks from its first
+    step, so the question must not need anything set after the task exists."""
+    asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
+
+    class Asks:
+        name = "asks"
+
+        def __init__(self) -> None:
+            self.answers: list[object] = []
+
+        async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+            self.answers.append(await cursor.ask("proceed?", Literal["yes", "no"]))
+
+    asks = Asks()
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("done")]), extensions=[asks])
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "go")
+        await pilot.press("enter")
+        await shows(pilot, app, "proceed?")
+        await pilot.click(".question-buttons Button")
+        await shows(pilot, app, "done")
+        assert asks.answers == ["yes"]
     await h.close()

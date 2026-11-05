@@ -227,6 +227,12 @@ class _Run:
                 return event
         raise ConnectionError("the session's stream ended before the cursor rested")
 
+    async def rest_if_busy(self) -> None:
+        """Wait for the own cursor to rest if its last view says it is busy."""
+        view = self.views.get(self.cursor)
+        if view is not None and view.busy:
+            await self.rest()
+
     async def hear_until(self, call: "asyncio.Future[str | None]") -> None:
         """Hear events while `call` runs, then those it published before it returned (the buffer
         is empty once a read started a loop turn ago has not finished)."""
@@ -421,6 +427,7 @@ async def _command(run: _Run, line: str) -> int:
         raise UsageError(f"{line.split(maxsplit=1)[0]} needs: {', '.join(parsed.missing)}")
     if parsed.extension is not None and not parsed.args:
         raise UsageError(f"{line}: say what to change: name=value")
+    await run.rest_if_busy()  # loading woke the cursor: a step of its own is under way
     run.stepped = False
     call = asyncio.ensure_future(parsed.run(run.client, run.cursor))
     try:

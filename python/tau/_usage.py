@@ -18,7 +18,7 @@ write copies) is counted once, as its original: `counted` is that rule.
 
 The cache notice: a reply that read nothing from the cache (`cached` reported as 0, not left
 out), with at least 4,096 input tokens, shortly after a reply of the same model, tells every
-client once per model.
+client once per model. It is about money, so only a model with a `price` gets it.
 """
 
 import json
@@ -28,7 +28,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated
 
 from tau._config import ConfigError, ModelConfig, Price
-from tau._core import Body, Node
+from tau._core import Body, Node, Stop
 from tau._handles import Cursor, Subject, TreeHandle
 
 NOTICE_MIN_INPUT = 4096
@@ -37,7 +37,7 @@ Gemini from about 4,000; below that a miss means nothing)."""
 NOTICE_WITHIN_MS = 300_000
 """How soon after the previous reply a cache is still warm, in milliseconds."""
 _MILLION = -6  # a price is per million tokens: `scaleb(-6)` is exact
-_KILO, _MEGA = 1000, 1_000_000
+_KILO, _MEGA, _GIGA = 1000, 1_000_000, 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -63,14 +63,18 @@ class Reading:
 
 def reading(node: Node) -> Reading | None:
     """The `usage` a reply reports, or `None` if its provider reported none. `ValueError` for a
-    `usage` that is not the normalized shape or has more cached and written than input; the callers
-    (`_read`) turn that into "no usage, and why", so a past node never fails a step."""
+    `usage` that is not the normalized shape or has more cached and written than input, or for a
+    reply whose provider kept the server's report (`usage_raw`) but could not normalize it; the
+    callers (`_read`) turn that into "no usage, and why", so a past node never fails a step."""
     body = node.body
     if not isinstance(body, Body.Assistant) or body.meta is None:
         return None
     meta: object = json.loads(body.meta)
     found = meta.get("usage") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
     if found is None:
+        sent = meta.get("usage_raw") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        if sent is not None:  # the provider kept what the server said but could not read it
+            raise ValueError(f"node {node.id}: the provider could not read the usage {sent!r}")
         return None
     if not isinstance(found, dict):
         raise ValueError(f"node {node.id}: meta.usage is not an object: {found!r}")
@@ -119,12 +123,14 @@ def cost(usage: Reading, price: Price) -> Decimal:
 
 
 def tokens(n: int) -> str:
-    """`n` tokens as people write them: `812`, `12.3k`, `1.2M`."""
+    """`n` tokens as people write them: `812`, `12.3k`, `1.2M`, `1.2G`. A count that rounds up
+    to the next unit is written in it: 999,950 is `1.0M`, not `1000.0k`."""
     if n < _KILO:
         return str(n)
-    if n < _MEGA and f"{n / _KILO:.1f}" != "1000.0":  # 999,950 is 1.0M, not 1000.0k
-        return f"{n / _KILO:.1f}k"
-    return f"{n / _MEGA:.1f}M"
+    for size, unit in ((_KILO, "k"), (_MEGA, "M"), (_GIGA, "G")):
+        if n < size * _KILO and f"{n / size:.1f}" != "1000.0":
+            return f"{n / size:.1f}{unit}"
+    return f"{n / _GIGA:.1f}G"
 
 
 def money(amount: Decimal) -> str:
@@ -155,12 +161,18 @@ class _Row:
     cached: int = 0
     cached_of: int = 0  # the input of those replies
     silent: int = 0  # replies that reported no usage
+    aborted: int = 0  # replies that were aborted, and reported none
     problems: list[str] = field(default_factory=lambda: [])  # why some reported none
     spent: Decimal = Decimal(0)
     priced: bool = False
     configured: bool = True
 
-    def add(self, usage: Reading | None, price: Price | None, problem: str | None) -> None:
+    def add(
+        self, usage: Reading | None, price: Price | None, problem: str | None, *, aborted: bool
+    ) -> None:
+        if usage is None and aborted and problem is None:
+            self.aborted += 1
+            return
         if usage is None:
             self.silent += 1
             if problem is not None:
@@ -185,8 +197,8 @@ class Usage:
 
     def __init__(self) -> None:
         # Per node of the session, once: nodes never change. `None`: no counted reply.
-        # (model, its counts, why it has none if its usage could not be read).
-        self._replies: dict[int, tuple[str, Reading | None, str | None]] = {}
+        # (model, its counts, why it has none if its usage could not be read, whether aborted).
+        self._replies: dict[int, tuple[str, Reading | None, str | None, bool]] = {}
         self._scanned = 0
         self._told: set[str] = set()
         self.commands = (self.usage,)
@@ -203,7 +215,9 @@ class Usage:
         model = cursor.model(at=node.id)
         config = _configured(cursor, model)
         usage, problem = _read(node)
-        if usage is None:
+        if usage is None and problem is None and _aborted(node):
+            cursor.show(f"{model} reply was aborted and reported no usage")
+        elif usage is None:
             cursor.show(f"{model} reported no usage" + (f" ({problem})" if problem else ""))
         else:
             cursor.show(self._line(cursor, usage, config))
@@ -231,6 +245,9 @@ class Usage:
         """The cache notice (the module docstring)."""
         if usage.cached != 0 or usage.input < NOTICE_MIN_INPUT or model in self._told:
             return
+        config = _configured(cursor, model)
+        if config is None or config.price is None:  # "full price" means nothing without a price
+            return
         tree = cursor.tree
         before = [n for n in tree.walk(node.id)[:-1] if isinstance(n.body, Body.Assistant)]
         if not before:
@@ -243,17 +260,10 @@ class Usage:
         ):
             return
         self._told.add(model)
-        text = (
+        cursor.tell(
             f"{model} read nothing from the prompt cache "
             f"({tokens(usage.input)} tokens sent at full price)."
         )
-        config = _configured(cursor, model)
-        if config is not None and config.provider == "openai":
-            text += (
-                " Through a proxy's OpenAI endpoint nothing marks the cache;"
-                ' try provider "anthropic".'
-            )
-        cursor.tell(text)
 
     def _scan(self, tree: TreeHandle) -> None:
         """Read the session's nodes not read yet."""
@@ -267,22 +277,27 @@ class Usage:
                     model = tree.model(at=id)
                 except ConfigError as e:
                     model, usage, problem = "(no model)", None, f"node {id}: {e}"
-                self._replies[id] = (model, usage, problem)
+                self._replies[id] = (model, usage, problem, _aborted(node))
 
     def _rows(self, tree: TreeHandle) -> dict[str, _Row]:
         """One row per model, in the order each first replied, priced by the config now."""
         self._scan(tree)
         rows: dict[str, _Row] = {}
         models: dict[str, ModelConfig | None] = {}
-        for model, usage, problem in self._replies.values():
+        for model, usage, problem, aborted in self._replies.values():
             if model not in models:
                 models[model] = _configured(tree, model)
             config = models[model]
             row = rows.setdefault(model, _Row())
             row.configured = config is not None
             row.priced = config is not None and config.price is not None
-            row.add(usage, None if config is None else config.price, problem)
+            row.add(usage, None if config is None else config.price, problem, aborted=aborted)
         return rows
+
+
+def _aborted(node: Node) -> bool:
+    """Whether `node` is a reply that was cut short by an abort."""
+    return isinstance(node.body, Body.Assistant) and node.body.stop == Stop.Interrupted
 
 
 def _read(node: Node) -> tuple[Reading | None, str | None]:
@@ -363,11 +378,19 @@ def _total(rows: Iterable[_Row]) -> _Row:
 
 
 def _silent(rows: Iterable[_Row]) -> str:
-    """The line for replies that reported no usage, with why where it could not be read."""
+    """The lines for replies that reported no usage, with why where it could not be read, and
+    for replies that were aborted before they reported any."""
     rows = list(rows)
+    text = ""
     count = sum(row.silent for row in rows)
-    if not count:
-        return ""
-    who = "reply reported" if count == 1 else "replies reported"
-    why = [p for row in rows for p in row.problems]
-    return f"\n{count} {who} no usage and not counted" + (f" ({'; '.join(why)})" if why else "")
+    if count:
+        who = "reply reported" if count == 1 else "replies reported"
+        why = [p for row in rows for p in row.problems]
+        text += f"\n{count} {who} no usage and not counted" + (
+            f" ({'; '.join(why)})" if why else ""
+        )
+    cut = sum(row.aborted for row in rows)
+    if cut:
+        who = "reply was" if cut == 1 else "replies were"
+        text += f"\n{cut} {who} aborted and reported no usage"
+    return text

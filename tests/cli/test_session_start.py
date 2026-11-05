@@ -591,6 +591,22 @@ def test_fork_copies_the_first_cursors_walk_into_a_new_session_that_records_its_
         stop(started)
 
 
+def test_a_session_whose_newest_config_only_sets_options_reopens_on_the_model_before_it(
+    configured: World,
+) -> None:
+    def build(session: Session, tip: int) -> int:
+        options = Body.Config(model_config(extensions={"step_limit": {"limit": 3}}))
+        return session.append(tip, options, Author.Frontend("t"), 2)
+
+    configured.session(OLD, cwd=configured.home, says=["hello"], build=build)
+    for argv in (("-c",), ("--fork", OLD)):
+        started = start(configured, *argv)
+        try:
+            assert started.model == "m"
+        finally:
+            stop(started)
+
+
 def test_a_ref_node_forks_that_walk(configured: World) -> None:
     source = source_with_branches(configured, configured.home)
     wanted = bodies(Session.read(source), 4)

@@ -40,7 +40,7 @@ from tau._clock import SystemClock
 from tau._config import ConfigError, config_fields, model_config
 from tau._config_layers import option_problems
 from tau._context import SystemPrompt, system_prompt
-from tau._core import Leased, Session
+from tau._core import Body, Leased, Session
 from tau._driver import Driver
 from tau._extensions import RETRY, ExtensionSource, absolute_explicit, inspect_extensions
 from tau._options import make_options
@@ -198,11 +198,17 @@ def _create(
 
 
 def _recorded_model(session: Session, node: int) -> str:
-    """The model the `Config` in force at `node` names (a session's root always names one)."""
-    recorded = config_fields(session.tree.config_at(node)).model
-    if recorded is None:
-        raise ConfigError("the session's Config names no model")
-    return recorded
+    """The model in force at `node`: the one the latest `Config` on its walk that names a model
+    set (a `Config` that only sets an extension's options names none; a root always names one)."""
+    current: int | None = node
+    while current is not None:
+        here = session.tree.node(current)
+        if isinstance(here.body, Body.Config):
+            recorded = config_fields(here.body.config).model
+            if recorded is not None:
+                return recorded
+        current = here.parent
+    raise ConfigError("the session's Config names no model")
 
 
 def _lease(choice: SessionChoice) -> Session | None:

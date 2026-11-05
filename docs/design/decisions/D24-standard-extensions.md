@@ -568,8 +568,9 @@ Usage (§3) with M2 to M6. Where the build differs from the text above, or the t
   writes, output, cost, with `-` for an unreported share or a missing price), a `total` row for
   more than one model, and lines for replies that reported no usage and models with no price. A
   model the catalog no longer has is marked `(not in config)` and costs `-`, not an error.
-- **The cache notice** follows §3. The `try provider "anthropic"` sentence is added only for a
-  model on the `openai` provider. Its previous reply is the nearest `Assistant` on the walk, which
+- **The cache notice** follows §3, for a model with a `price` only (8E-5: "full price" means
+  nothing without one, and the earlier `try provider "anthropic"` advice for a model on the
+  `openai` provider is gone). Its previous reply is the nearest `Assistant` on the walk, which
   must count, be of the same model and under 300 s older.
 - **The seam for copies (8E-3)**: `tau._usage.counted(node)` is the one rule for "this reply
   counts" and returns true for every reply. Once M1 gives nodes `copied_from`, 8E-3 changes its
@@ -579,7 +580,12 @@ Usage (§3) with M2 to M6. Where the build differs from the text above, or the t
   `usage` when `cached + written` exceeds `input`, as it does for a malformed count (`usage_raw` still
   holds what the server said). The extension never fails a step over a past node: a reply whose
   usage cannot be read (from any provider) is recorded as read once, counts as "reported no
-  usage", and `/usage` names its node and the reason; its own status line says why too.
+  usage", and `/usage` names its node and the reason; its own status line says why too. A reply
+  whose provider kept `usage_raw` but could not normalize it is the same case (8E-5: its reason is
+  "the provider could not read the usage ..."). A reply aborted before any usage was reported says
+  `reply was aborted and reported no usage` on its status line, and `/usage` counts it apart from
+  the silent ones. One formatter, `tau._usage.tokens`, writes counts (`k`, `M`, `G`) for the
+  status line, `/usage` and the TUI's reply badge.
 - **Display rules**: money rounds half up to three decimals below a dollar and two from a dollar, an
   amount that rounds up to a dollar is `$1.00`, exactly nothing is `$0`, and under `<$0.001` is
   `<$0.001`; `999,950` tokens is `1.0M`. The `/usage` total row ends in `+` like the status line when
@@ -819,9 +825,14 @@ option, else the calling branch's own, read at the batch's node) is not the one 
 tool's result is `agent:N answered:` and a newline and the reply's text. A call fails with a
 `ToolError` that names the agent: `agent:N failed: ...`, `was halted: ...`, `was aborted`, a reply
 that asks for tools (a step limit turned auto-step off: `stopped without a final reply (a step
-limit?)`), or no text. A failed agent is closed like any other, and `to` can reopen it. `to` must
-name an `agent:` label of a closed cursor: anything else is `there is no agent 'X'`, and one still
-working is `agent:N is still working`. The agent cursor's `tools` are kept in the extension's memory
+limit?)`), or no text (`gave an empty reply`). A failed agent is closed like any other, and `to` can
+reopen it. `to` must name an `agent:` label: anything else (`to=""` included) is `there is no agent
+'X'`. A closed cursor is reopened; an open one at rest (a crash or `tau serve --stop` left it,
+since the driver's stop cancels as a crash would) is continued as it is; one that is busy is `agent:N
+is still working`. A name in `tools` that no loaded extension provides is a `ConfigError` at the
+start and an error in `tau config check` (`Options.tool_problems`, as permissions'). A list option
+typed on a command line (`commandline.value`, and the ratatui form) is split at commas and each
+item trimmed. The agent cursor's `tools` are kept in the extension's memory
 for the length of the call, read from the calling branch's options (so `/config agents tools=...`
 on the parent applies). `tools` containing `agent` is an option error. Not built: `opened_by`.
 
