@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
+from textual.widgets import Button
 from tuikit import Gatekeeper, running, say, shows, type_line, until
 
 from tau import Author, Body, Cursor, Outcome, Part, Permissions, Stop, Subject, model_config
@@ -168,4 +169,21 @@ async def test_a_question_asked_by_a_step_the_user_started_in_the_tui_is_answere
         await pilot.click(".question-buttons Button")
         await shows(pilot, app, "done")
         assert asks.answers == ["yes"]
+    await h.close()
+
+
+@scenario
+async def test_a_question_with_a_no_choice_has_no_decline_button_beside_it(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply([Part.Call("a", "bash", '{"command": "ls"}')], Stop.Tools)]),
+        tools=[FakeTool("bash", "ran")],
+        extensions=[Permissions(tmp_path)],
+        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
+    )
+    await h.send("go")
+    async with running(h, tmp_path) as (app, pilot):
+        await shows(pilot, app, "bash: ls")
+        labels = [str(b.label) for b in app.query(".question-buttons Button").results(Button)]
+        assert labels == ["yes", "always", "no"]
     await h.close()

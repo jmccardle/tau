@@ -18,7 +18,8 @@ The policy is fixed, and has no options:
   conversion error, a bad walk: the same request fails the same way), or a plain 500, because a
   server such as llama.cpp answers 500 to a chat template or tool-call argument error;
 - it makes at most 3 retries, waiting the server's `Retry-After` if it gave one, else 1, 2 and
-  4 seconds. A `Retry-After` over 60 seconds fails at once, with the wait in the message.
+  4 seconds. A `Retry-After` over 60 seconds fails at once, with the wait in the message. The
+  error of a sample that ran out of retries says so: `... (still failing after 3 retries)`.
 
 Before each wait it yields a `Retrying` delta (which does not count as output for the first
 rule). The wait is part of the sample, so cancelling the sample (an abort) ends it at once.
@@ -77,6 +78,16 @@ def _wait_for(error: SampleError, retry: int) -> float:
     return error.retry_after
 
 
+def _gave_up(error: SampleError, retries: int) -> SampleError:
+    """`error` with how many retries were made, for the sample that ran out of them."""
+    return SampleError(
+        f"{error} (still failing after {retries} retries)",
+        error.meta,
+        status=error.status,
+        retry_after=error.retry_after,
+    )
+
+
 class RetryProvider:
     """`inner`, with up to 3 retries per sample (the module docstring). `sleep` is how it waits
     (seconds); a test passes its own."""
@@ -117,8 +128,10 @@ class RetryProvider:
                     yield item
                 return
             except SampleError as e:
-                if output or retry >= RETRIES or not retryable(e):
+                if output or not retryable(e):
                     raise
+                if retry >= RETRIES:
+                    raise _gave_up(e, retry) from e
                 retry += 1
                 wait = _wait_for(e, retry)
                 why = _reason(e)

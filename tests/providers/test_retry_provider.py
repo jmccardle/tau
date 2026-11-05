@@ -100,10 +100,12 @@ def test_a_429_is_retried_after_the_wait_it_asked_for_then_succeeds() -> None:
 def test_a_transport_failure_is_retried_with_exponential_backoff_until_retries_run_out() -> None:
     inner = ScriptedProvider([Try(error=transport_error()) for _ in range(4)])
     waits = Waits()
-    with pytest.raises(SampleError, match="connection reset"):
+    with pytest.raises(SampleError, match="connection reset") as failed:
         asyncio.run(collect(RetryProvider(inner, sleep=waits)))
     assert inner.calls == 4
     assert waits.seconds == [1.0, 2.0, 4.0]
+    assert "still failing after 3 retries" in str(failed.value)
+    assert isinstance(failed.value.__cause__, SampleError), "the last try's error is kept"
 
 
 @pytest.mark.parametrize("first", [Part.Text("partial"), TextDelta("par")])

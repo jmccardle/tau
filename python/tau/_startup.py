@@ -83,6 +83,13 @@ def option_changes(
     known = {cast("str", getattr(e, "name")): e for e in extensions}  # noqa: B009
     changes: dict[str, tuple[type, tuple[Field, ...], Json]] = {}
     for extension, name, given in assignments:
+        if extension == "load":
+            raise ConfigError(
+                f"load.{name} is not an extension option: `load` is read from the config files "
+                f"only (D19 section 3), and no flag switches it for one run. `tau ext disable "
+                f"{name}` writes load.{name} = false to your config file; `tau ext enable "
+                f"{name}` undoes it"
+            )
         options = getattr(known.get(extension), "options", None)
         if options is None:
             having = [n for n, e in known.items() if getattr(e, "options", None) is not None]

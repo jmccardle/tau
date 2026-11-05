@@ -138,7 +138,7 @@ async def test_the_argument_hint_describes_the_argument(tmp_path: Path, world: W
 
 
 @scenario
-async def test_what_a_template_sends_passes_the_input_gates_so_attachments_expand_it(
+async def test_what_a_template_sends_passes_the_input_gates_but_is_not_a_typed_input(
     tmp_path: Path, world: World
 ) -> None:
     work = tmp_path / "work"
@@ -148,7 +148,7 @@ async def test_what_a_template_sends_passes_the_input_gates_so_attachments_expan
     h = await session(tmp_path, world, Attachments(work))
     await h.run("look")
     await h.settle()
-    assert users(h) == ['Read @notes.txt now\n\n<attachment path="notes.txt">\nN\n</attachment>']
+    assert users(h) == ["Read @notes.txt now"], "attachments expand only what a person typed"
     await h.close()
 
 

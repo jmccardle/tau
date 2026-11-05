@@ -186,11 +186,16 @@ stays what D15 made it, a wrapper `Provider`, and D15 D3 is amended to say it sh
   retries), and caps a long `Retry-After` at 60 s instead of failing.
 - **What the user sees.** Before each wait the wrapper yields a live `Retrying` delta (attempt,
   attempts, seconds, reason). The TUI shows `HTTP 529 overloaded: retry 1 of 3 in 2 s`, and Esc
-  cancels, since the wait is part of the sample. A `Retrying` delta does not count as output for
+  cancels, since the wait is part of the sample. `tau -p` watches its cursor and writes each wait
+  to stderr as `tau: HTTP 529 overloaded: retry 1 of 3 in 2 s`, with or without `--verbose` (as a
+  `Notice` is: D22 §3). A sample that runs out of retries fails with `... (still failing after 3
+  retries)`. A `Retrying` delta does not count as output for
   the "nothing yielded yet" rule.
 - **One switch, no options.** `load: {retry: false}` (or `tau ext disable retry`) turns the
   wrapper off, for a proxy that already retries or a provider being debugged. `tau ext list`
-  shows `retry` beside the extensions. The policy has no options.
+  shows `retry` beside the extensions. The policy has no options. `load` is read from the config
+  files only (D19 §3), so there is no per-run switch: `--set load.retry=false` is a `ConfigError`
+  that says so and names `tau ext disable retry`.
 
 **Needs:** the `Retrying` delta (D15's delta list), and `load` accepting the key `retry` (M8).
 **Dropped from 0.15:** jitter, and the code-only `options["retry"]`.
@@ -200,17 +205,26 @@ stays what D15 made it, a wrapper `Provider`, and D15 D3 is amended to say it sh
 **What the user sees and types.** `explain @src/main.rs` sends the line with the file's text
 attached after it:
 `<attachment path="src/main.rs">…</attachment>`. A file over the limit, not UTF-8, or
-unreadable becomes `<reference path="/abs/src/big.log" size="2.1 MB" reason="over 10 kB"/>`, so
-the model can `read` the part it needs. A token is `@` followed by non-spaces, at the start of the
-line or after whitespace, with trailing punctuation retried stripped. `~` expands, and a relative
+unreadable becomes `<reference path="/abs/src/big.log" size="2.1 MB" reason="over the 10 kB
+limit"/>` (the size is in bytes when it would read like the limit), so the model can `read` the
+part it needs. A token is `@` followed by non-spaces, at the start of the line or after
+whitespace, with trailing punctuation retried stripped; `@"a b.txt"` names a path with spaces. A
+`</attachment>` in a file's text is written `<\/attachment>`. `~` expands, and a relative
 path resolves against the driver's working directory, as `complete` does. A word that names no
-regular file, or names a directory, stays as text. A file named twice is attached once.
+regular file, or names a directory, stays as text. A file named twice is attached once. A word
+that looks like a path (a `/`, an extension, or `:LINE`) but attaches nothing is told to the typing
+client by a `Notice` (`cursor.tell(..., to=client)`: a toast in the TUI, a stderr line under `-p`);
+plain words (`@alice`) and code in backticks are silent.
 
 **Key and options.** `attachments`, on by default. One option, `limit`, in bytes (default 10240).
 **Hook:** `pre_input` rewrites the draft's text. The `User` node therefore holds exactly what
-the model saw (I1). Every input is expanded, a template's or a sub-agent's task included.
+the model saw (I1). **Only input a person typed is expanded**: a draft authored by a `Frontend`
+(D17 §1). What a tool or an extension wrote (`send`, authored `Extension`: a sub-agent's task, a
+template's body) is never expanded, because the model writes the `agent` task and `@secret.txt` in
+it would get past a `read` deny rule.
 **Completion:** the TUI calls `Client.complete(cursor, "path", prefix)` for an `@` word; that
-already works over the wire.
+already works over the wire. `path` offers directories and regular files only (through links), so
+no dangling link and no FIFO, and the TUI writes a name with spaces as `@"a b.txt"`.
 
 **Needs:** nothing.
 **Dropped from 0.15:** images (deferred, D15), the attachment bar and the transcript fold (D23's),
@@ -222,8 +236,8 @@ the `tau -p "@file"` raw-inline rule, and the no-match popup line.
 command, `/NAME args`, or `/skills:NAME args` when another extension also has `/NAME`. The
 command's help is the file's `description`, which defaults to the first body line for a
 template; a skill requires one. Running it sends the expanded text to the cursor as input
-(`send`, authored `Extension("skills")`), so the `pre_input` gates and `attachments` see it, and
-the cursor samples.
+(`send`, authored `Extension("skills")`), so the `pre_input` gates see it (`attachments` does not
+expand it: it is not a person's typing, §5), and the cursor samples.
 
 - **Template expansion:** `$ARGUMENTS` is the whole argument text and `$1`…`$9` are its shell
   words. A missing `$N` fails the command. A body with no placeholder gets the arguments appended
@@ -750,9 +764,11 @@ text did not say:
   `/` and newlines, `?` is one character, `[abc]` a set, a backslash is ordinary. An empty rule or
   an empty glob is an option error (`start_session` and `tau config check` refuse it; a call made
   while one stands is refused with the message, so a bad `deny` never lets a call through). A rule
-  naming a tool nothing loaded provides (`Bash`, `wirte`) is a `ConfigError` at the start and an
-  error in `tau config check` (`Options.tool_problems`); rules for a tool a program gives its
-  `Driver` directly are not known to `start_session`. A bare rule matches every call of the tool.
+  naming a tool no extension provides (`Bash`, `wirte`) is a `ConfigError` at the start, an error in
+  `tau config check` (`Options.tool_problems`), and a `ConfigError` from `/config permissions ...`
+  (checked against the driver's tools before anything is saved); a tool of a built-in extension
+  that is not loaded (`agent`, with `agents` off) is known, so a rule for it is no error; rules for
+  a tool a program gives its `Driver` directly are not known to `start_session`. A bare rule matches every call of the tool.
 - **Paths.** The session's working directory (`Permissions(cwd)`; the loader passes the process's,
   which the start made the session's) is joined to each path argument and made real
   (`os.path.realpath`: `..`, `//`, `.`, symlinks). A path call names its `path`; `grep` also names
@@ -761,19 +777,31 @@ text did not say:
   pattern rule; the bare rule matches it. `deny` and `ask` fire if any named path matches, as
   written or resolved. `allow` needs every named path to match, resolved. So `write:/etc/*` holds
   for `/tmp/../etc/x`, `//etc/x`, a relative path or a symlink that lands in `/etc`, and
-  `grep:/etc/*` for `files: ["/etc/shadow"]`; a relative rule such as `write:secrets/*` matches the
-  path as written, `write:*/secrets/*` the one it lands on.
+  `grep:/etc/*` for `files: ["/etc/shadow"]`. A rule that starts with a literal relative component
+  (`read:src/*`, `./out/*`) starts in the working directory, like the tool's own paths: it matches
+  the path as written and, joined to the real working directory, the one it lands on, so an
+  `allow: ["read:src/*"]` works. A rule that starts with `/` or a wildcard is used as it is
+  (`write:*/secrets/*` matches the path it lands on). `tau config check` has no working directory
+  to resolve against and says nothing about a relative rule.
+  **Searches.** `grep` and `find` read everything under their root, so for them a `deny` or `ask`
+  rule also fires when the root could hold a path the glob matches: the glob's literal start (up to
+  its first `*`, `?` or `[`) and the root, taken with a trailing `/`, are prefixes of one another.
+  So `deny: ["grep:/etc/*"]` refuses `path=/etc`, `path=/` and a link to `/etc`, and leaves
+  `path=/etcetera`. A glob with no literal start (`*secret*`) is compared to the named paths only.
+  The search is refused whole; filtering the results was not chosen.
 - **Commands (`tau._shell`).** A glob is not a shell parser. An `allow` rule (and an `--answer`
   text) never matches a command containing `;` `&` `|` a backtick `$(` `<` `>` or a newline unless
   the pattern holds that operator too: the command falls to `ask` (or runs, if no `ask` rule names
   it). A `deny` or `ask` rule is tried on the command whole and on each piece between those
   operators and parentheses, with a tab read as a space; leading `VAR=value` words, `then` `do`
   `else` `elif`, a backslash on the first word and the wrappers `command builtin exec nohup time
-  sudo env nice timeout xargs` stripped (with their flags: `sudo -u X`, `env -i`, `nice -n N`,
-  `timeout -s KILL 5`); and the first word reduced to its basename. So `bash:rm *` refuses `ls; rm
+  sudo doas env nice ionice stdbuf setsid strace watch timeout xargs` stripped (with their flags,
+  long ones too: `sudo -u X`, `sudo --user X`, `sudo -nu X`, `env -i`, `nice -n N`, `timeout -s KILL
+  5`); `if` `while` `until` and `function NAME` are stripped like `then`; and the first word reduced to its basename. So `bash:rm *` refuses `ls; rm
   x`, `/bin/rm x`, `\rm x`, `if a; then rm x; fi`, `sudo -u root rm x` and `ls | xargs rm -f`. That
   an asking rule is also hard to step around is beyond what §7 asked. A `bash` deny is best effort
-  (quoting, `eval`, `bash -c "..."` and a name built by expansion are not seen): `ask: [bash]` is
+  (quoting, `eval`, `bash -c "..."`, what `find -exec` runs and a name built by expansion are not
+  seen): `ask: [bash]` is
   the safe setting, and the guide says so.
 - **The question** is the call, then `(ask rule: RULE)`. The call is `bash: COMMAND`, a line
   `TOOL: PATH` for each resolved path of a path tool, or `TOOL: ARGS` (the raw arguments) for any
@@ -781,15 +809,20 @@ text did not say:
   TUI shows a multi-line text, and the ratatui example draws each line and puts the answer field
   after them. Choices are `yes | always | no`, in that order.
 - **`--answer`** (D22 §5). For a `permissions` question with an explicit TEXT the glob is over the
-  call alone: the `(ask rule: ...)` line is not part of it, so no trailing `*` is needed. A
-  command is matched as an `allow` pattern is (a chain needs the operator in the TEXT). A path
+  call alone: the `(ask rule: ...)` line is not part of it, so no trailing `*` is needed. The TEXT
+  may be written as the question shows it (`bash: echo*`) or as a rule (`bash:echo*`). A `bash`
+  command is matched as an `allow` pattern is (a chain needs the operator in the TEXT); any other
+  tool's call is matched whole by the glob, since its JSON arguments are no shell command. A path
   tool's TEXT must match every `TOOL: PATH` line, and those hold the resolved paths, so
   `permissions:read: /proj/*=yes` does not answer `/proj/../etc/shadow`. A TEXT left out
   (`permissions=yes`) answers every question.
 - **`always`** appends the exact rule for the call to the user's file's own `allow`, when the file
   lacks it: for `bash` `bash:` and the command, for a path tool a rule for each resolved path, in
   both with `*`, `?` and `[` escaped as `[*]`, `[?]`, `[[]` (so `ls *.py` is allowed as that
-  command, and `ls x.py` still asks); for a tool without a pattern the bare tool name. It also
+  command, and `ls x.py` still asks); for a tool without a pattern the bare tool name. A `bash` or
+  path-tool call whose arguments are malformed (no `command`, no string `path`) has no exact rule,
+  and the bare name would allow every call: `always` then runs the call once, saves nothing, and
+  `tell`s the clients so. The question still offers `always` (the choices do not change per call). It also
   keeps the rule in memory for the run, so a Config node or a higher layer that sets `allow` and
   hides the file's list cannot make the next identical call ask again, and it `tell`s every client
   where the rule went, and that a layer hides it when `options().allow` does not show it
@@ -798,8 +831,16 @@ text did not say:
   rule says `permissions refused this call: it matches the deny rule 'RULE'`.
 - **`/config permissions ask=bash,write`** splits a list at commas; a rule that contains a comma
   is typed as a JSON array (`ask=["bash:cp a,b *"]`), as for any list option.
-- **Attached `tau -p`** answers (by `--answer`, else declines) the questions on its own cursor and
-  on any cursor that was not in the snapshot it attached with, an agent's included. Clients and
+- **Attached `tau -p`** answers (by `--answer`, else declines) the questions that open after it
+  attached on its own cursor and on the cursors its own run opened, an agent's included. Nothing records who opened a cursor, so a
+  cursor is the run's if it appeared while the run's own cursor was busy and an extension wrote a
+  user message on its walk (a sub-agent's task; it opens on the session's prefix), or its walk
+  passes through the run's own turn. A cursor another client opens at an existing node is that
+  client's; a sub-agent that another client's step starts during the run's turn would look like the
+  run's (known limit). The run's own
+  turn is from its first `User` node that is not another client's to the next one that is, and the
+  answer it prints is the last reply without calls in that turn. A declined question is told as
+  `declined question N from EXT on cursor C: "..."`. Clients and
   cursors are not separate users: one user hops between sub-agents and parallel branches, and
   every client may answer for any cursor, so there is no `opened_by` and no owner of a question
   beyond the first answer.

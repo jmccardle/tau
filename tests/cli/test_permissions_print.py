@@ -92,7 +92,7 @@ def test_without_an_answer_rule_the_question_is_declined_and_the_call_refused(mo
     result = p(model)
     assert result.code == 0, result.err
     assert not ran(model)
-    assert 'tau: declined question 0 from permissions: "bash: touch ran' in result.err
+    assert 'tau: declined question 0 from permissions on cursor 0: "bash: touch ran' in result.err
     assert Model.told == ["Error: the user refused this call"], "the model read the refusal"
     assert result.out == "done\n"
 
@@ -195,3 +195,23 @@ def test_an_answer_text_is_matched_against_the_resolved_path(model: World) -> No
     assert Model.told == ["Error: the user refused this call"]
     allowed = p(model, "--answer", "permissions:read: /etc/*=yes")
     assert "answered question 0" in allowed.err
+
+
+def test_an_answer_text_may_be_written_in_rule_syntax_without_the_space(model: World) -> None:
+    result = p(model, "--answer", "permissions:bash:touch*=yes")
+    assert result.code == 0, result.err
+    assert ran(model)
+    assert "answered question 0" in result.err
+
+
+def test_an_answer_for_a_tool_that_is_no_command_ignores_the_shell_operators(
+    model: World,
+) -> None:
+    """`agent`'s arguments are JSON: a `;` in its task is no chain."""
+    config = json.loads((model.tau / "config.json").read_text())
+    config["load"] = {"agents": True}
+    config["extensions"] = {"permissions": {"ask": ["agent"]}}
+    model.user_config(config)
+    Model.tool, Model.args = "agent", {"task": "list files; then summarize"}
+    result = p(model, "--answer", "permissions:agent:*=yes")
+    assert "answered question 0 from permissions with yes" in result.err, result.err

@@ -11,7 +11,7 @@ options: stored options are read without one. A `Model` is checked against the c
 """
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
@@ -118,14 +118,17 @@ class ExtensionOptions:
     (the same fold of its `Config` nodes). `extensions` are checked here (`DefinitionError`);
     `catalog` says where the layers' options are now."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - what the one driver gives it
         self,
         extensions: Sequence[object],
         session: Session,
         catalog: Callable[[], "ModelCatalog"],
         user: "UserConfig | None" = None,
         use_catalog: Callable[["ModelCatalog"], None] | None = None,
+        *,
+        tool_names: Callable[[], Iterable[str]] = lambda: (),
     ) -> None:
+        self._tool_names = tool_names
         self._session = session
         self._catalog = catalog
         self._user = user
@@ -266,8 +269,14 @@ class ExtensionOptions:
         """Raise unless a `Config` node under `at` that sets `model` and `extensions` leaves
         every extension's options valid: `ConfigError` for a model that is not in the catalog,
         for an extension without options, or for what each named extension's options would be
-        at the node (the walk's, then these) and the type refuses."""
+        at the node (the walk's, then these) and the type refuses, or for an option that names a
+        tool (`Permissions`' rules) the driver does not have."""
         if model is not None:
             self._catalog().resolve(model)
         for name, new in extensions.items():
-            self._make(name, {**self._raw(name, at), **new})
+            made = self._make(name, {**self._raw(name, at), **new})
+            check = getattr(made, "tool_problems", None)
+            if check is not None:  # an option that names tools: each must be one the driver has
+                problems: list[str] = check(list(self._tool_names()))
+                if problems:
+                    raise ConfigError("\n".join(problems))

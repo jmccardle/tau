@@ -149,8 +149,9 @@ class OptionsDialog(FormDialog):
 class QuestionBox(Vertical):
     """One open question, inline: who asks, the text, the field and the buttons. A question that
     only asks to choose among values has a button per value; any other has its field and an
-    Answer button. Decline (Esc) answers `None`. A question `to` another client is shown with
-    its name and no buttons. It posts `Answered` or `Declined`; the app makes the call and, if the
+    Answer button. Decline (Esc) answers `None`; it has a button unless a choice is `no`. A
+    question `to` another client is shown with its name and no buttons. It posts `Answered` or
+    `Declined`; the app makes the call and, if the
     answer is refused, `show_error`."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "decline", "Decline", show=False)]
@@ -207,7 +208,8 @@ class QuestionBox(Vertical):
                 yield Button(str(choice), id=f"choice-{qid}-{i}", name=str(i), variant="primary")
             if found is None:
                 yield Button("Answer", id=f"answer-{qid}-send", variant="primary")
-            yield Button("Decline", id=f"decline-{qid}")
+            if "no" not in (found or ()):  # `no` already says it; Esc declines either way
+                yield Button("Decline", id=f"decline-{qid}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()

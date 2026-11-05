@@ -100,8 +100,10 @@ one `Client`, one cursor, no person to ask.
 - It prints from the node (`Appended`), not from `Live`. `Live` is a preview a full buffer may
   drop (D16 §5); a pipe must get exactly what the log holds. Streaming text is `--json`'s and the
   TUI's, also when stdout is a terminal.
-- **stderr** gets, one line each, prefixed `tau: `: every `Notice`; a `hook_error`; each
-  question declined or answered by a rule (§5); why the run stopped when it did not finish (§6);
+- **stderr** gets, one line each, prefixed `tau: `: every `Notice`; a `hook_error`; each wait
+  before a provider retry (`tau: HTTP 429: busy: retry 1 of 3 in 2 s`, from the own cursor's
+  `Retrying`; without `--verbose` too, as 0.15 did); each
+  question declined (`... on cursor C: ...`) or answered by a rule (§5); why the run stopped when it did not finish (§6);
   and the failure that ended it.
 
 ### 4. JSON output: `--json`
