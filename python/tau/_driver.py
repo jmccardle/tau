@@ -153,6 +153,8 @@ class _Tasks:
 
             run = run_as_effect()
         task = asyncio.create_task(run)
+        if effect:  # a task cancelled before its first step never started `coro`: close it
+            task.add_done_callback(lambda _: coro.close())
         for held in (self.all, self.effects) if effect else (self.all,):
             held.add(task)
             task.add_done_callback(held.discard)

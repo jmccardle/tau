@@ -67,7 +67,8 @@ def __init__(self, cwd: Path) -> None
 async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
-Rewrite the draft's text with the files its `@` words name.
+Rewrite what a person typed with the files its `@` words name, and say which `@`
+words that look like paths named none.
 
 ## CURSOR_POINTS
 
@@ -604,7 +605,8 @@ class Skills
 ```
 
 The built-in extension `skills`: a command for each template and skill, and the skills list
-for the model (the module docstring). `prompts` are what `read_prompts` found.
+for the model (the module docstring). `prompts` are what `Skills.of` found; an extension made
+of `prompts` alone reads no files again.
 
 ### Skills.of
 
@@ -613,7 +615,20 @@ for the model (the module docstring). `prompts` are what `read_prompts` found.
 def of(cls, loaded: LoadedConfig) -> 'Skills'
 ```
 
-The extension for the files `loaded` can read. `SkillFileError` for one it cannot use.
+The extension for the files `loaded` can read. `SkillFileError`, naming every problem
+with a file, if any cannot be used.
+
+### Skills.rescan
+
+```python
+def rescan(self) -> bool
+```
+
+Read the template and skill files again if a stat says one was added, removed or
+edited since the last time; whether the commands changed. A file that cannot be used is
+a command that says why when it is run, and the trusted project's files, if what is on
+disk is no longer what trust approved, all say to run `tau trust`. The skills list the
+model sees is not rewritten (D24 section 6).
 
 ### Skills.pre_step
 

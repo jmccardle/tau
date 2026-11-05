@@ -45,6 +45,7 @@ reader = "A frontend holds a `Client`, in this process or over the wire, and rea
 names = [
     "Client", "LocalClient", "RemoteClient", "CommandFailed", "Parsed", "UnknownCommand",
     "commandline.parse", "commandline.completions", "commandline.value", "commandline.values",
+    "commandline.STDIN",
 ]
 
 [[group]]

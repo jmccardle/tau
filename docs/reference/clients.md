@@ -4,7 +4,7 @@
 
 A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed.
 
-Names: `Client`, `CommandFailed`, `LocalClient`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
+Names: `Client`, `CommandFailed`, `LocalClient`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
 
 ## Client
 
@@ -434,6 +434,15 @@ The line names a command there is not. A frontend warns and sends the line as te
 ```python
 def __init__(self, name: str) -> None
 ```
+
+## tau.commandline.STDIN
+
+```python
+STDIN = 'stdin'
+```
+
+A command parameter of this name is never read from the line: `tau -p` fills it with
+standard input.
 
 ## tau.commandline.completions
 

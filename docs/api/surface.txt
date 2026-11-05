@@ -97,6 +97,7 @@ class Skills
     def of(cls, loaded: LoadedConfig) -> 'Skills'
     options = Options
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
+    def rescan(self) -> bool
     yields_names = True
 class StepLimit
     def __init__(self) -> None
@@ -429,6 +430,8 @@ class RemoteClient(Client)
     welcome: Welcome
 class UnknownCommand(LookupError)
     def __init__(self, name: str) -> None
+# tau.commandline
+STDIN = 'stdin'
 # tau.commandline
 async def completions(
     line: str,
