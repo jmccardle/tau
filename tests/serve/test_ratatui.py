@@ -567,7 +567,9 @@ def with_branch(home: World, binary: Path) -> Screen:
     idle(screen)
     branch_off(record, 3, "scouting")
     screen.type(CTRL_G)
-    screen.wait_for("The session's tree", on_screen=True)
+    # The title alone is drawn while the tree is still being read, and keys are dropped then;
+    # the follow state in it says the tree is drawn and takes keys.
+    screen.wait_for("The session's tree · following", on_screen=True)
     return screen
 
 
@@ -633,7 +635,7 @@ def test_go_to_on_a_busy_cursor_asks_first(home: World, binary: Path) -> None:
     screen.type("go\r")
     screen.wait_for("busy", on_screen=True)
     screen.type(CTRL_G)
-    screen.wait_for("The session's tree", on_screen=True)
+    screen.wait_for("The session's tree · ", on_screen=True)
     screen.type("\x1b[H\r")
     screen.wait_for("is busy; going elsewhere aborts its step. Go? (y/n)", on_screen=True)
     screen.type("n")
