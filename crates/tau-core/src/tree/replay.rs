@@ -27,7 +27,7 @@ fn replay(s: &mut Session, r: Record) -> Result<(), Error> {
             if node.parent.is_none() && !matches!(node.body, Body::Config(_)) {
                 return Err(Error::BadRecord(0)); // a root is a Config
             }
-            let checked = s.tree.check(
+            let mut checked = s.tree.check(
                 node.parent,
                 node.by.clone(),
                 node.body.clone(),
@@ -38,6 +38,7 @@ fn replay(s: &mut Session, r: Record) -> Result<(), Error> {
                     derived_from: node.derived_from,
                 },
             )?;
+            checked.typed.clone_from(&node.typed); // the pad that said it is gone
             if checked != node {
                 return Err(Error::BadRecord(0));
             }

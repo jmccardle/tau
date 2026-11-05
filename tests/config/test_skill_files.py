@@ -171,6 +171,23 @@ def test_the_approved_bytes_are_what_is_read_at_the_start(world: World) -> None:
     assert found.prompts[0].body == "approved text"
 
 
+def test_a_project_file_changed_after_approval_is_read_again_once_not_on_every_listing(
+    world: World,
+) -> None:
+    """The stale file is a command that says to run `tau trust`; until a stat says something
+    changed again, `rescan` has nothing to do (it does not hash every project file each time)."""
+    root = world.project()
+    path = put(root, ".tau/prompts/deploy.md", "approved text")
+    trust(world, root)
+    (found,) = [e for e in load_extensions(loaded(world, root)) if isinstance(e, Skills)]
+    assert found.rescan() is False
+    path.write_text("swapped text, longer", encoding="utf-8")
+    assert found.rescan() is True, "the edit is noticed"
+    assert found.rescan() is False, "and not again while the files are as they were"
+    path.write_text("swapped again, longer still", encoding="utf-8")
+    assert found.rescan() is True
+
+
 def forget_prompts(world: World, root: Path) -> None:
     """Make the record what a τ from before prompts were pinned wrote."""
     state = world.tau / "trusted.json"

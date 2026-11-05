@@ -317,6 +317,26 @@ async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step
 
 
 @scenario
+async def test_a_plain_command_that_raises_command_failed_refuses_with_its_message_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse(tree: TreeHandle) -> None:
+        """Refuse."""
+        raise CommandFailed("not today")
+
+    class Refuses:
+        name = "refuses"
+        commands = (refuse,)
+
+    h = await Harness.create(tmp_path, extensions=[Refuses()])
+    with pytest.raises(CommandFailed, match=r"^not today$"):
+        await h.run("refuse")
+    assert "Traceback" not in capsys.readouterr().err, "a refusal is not a crash"
+    assert (await h.view()).hook_error is None
+    await h.close()
+
+
+@scenario
 async def test_a_failing_plain_command_only_raises_for_the_client(tmp_path: Path) -> None:
     def explode(tree: TreeHandle) -> None:
         """Fail."""

@@ -8,7 +8,9 @@ blank line. A **skill** is a directory `NAME/SKILL.md`: `/NAME args` sends
 model that a relative path in the skill starts from the skill's directory (the skills list says
 the same; nothing in the body is attached for it), then the arguments. Either goes to the cursor
 as input authored by `Extension("skills")`, so `pre_input` hooks see it and `attachments` does not
-expand it (only what a person typed); a command's `stdin`, which
+expand it: the template's own `@path` words stay text. The arguments are what the person typed,
+so the command adds the files their `@` words name (if `attachments` is loaded) after the
+whole text, once each, as the extension does for a line; a command's `stdin`, which
 `tau -p` fills, follows it after a blank line. A generated command gives its bare name up
 (`yields_names`): when any other extension also has a command `/NAME`, `/NAME` is that one, and
 `/skills:NAME` is always the file.
@@ -41,6 +43,7 @@ from dataclasses import dataclass
 from typing import Annotated
 from xml.sax.saxutils import escape
 
+from tau._attachments import attached_to
 from tau._commands import CommandFailed
 from tau._core import Body
 from tau._handles import Cursor, Subject
@@ -117,7 +120,7 @@ def _command(name: str, item: PromptFile | str) -> Callable[..., object]:
         if isinstance(item, str):
             raise CommandFailed(item)
         try:
-            text = item.expand(args)
+            text = item.expand(args) + await attached_to(cursor, args)
         except ValueError as e:
             raise CommandFailed(str(e)) from None
         cursor.send(cursor.id, f"{text}\n\n{stdin}" if stdin else text)
@@ -192,7 +195,12 @@ class Skills:
         if loaded is None:
             return ()
         project = () if loaded.project is None else signature(loaded.project.root / TAU_DIR)
-        return (signature(loaded.home), project)
+        try:  # `tau trust` rewrites it: a file that was stale may be approved now
+            info = (loaded.home / "trusted.json").stat()
+            approvals = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            approvals = ()
+        return (signature(loaded.home), project, approvals)
 
     def _make_commands(self) -> None:
         self.commands = tuple(_command(n, item) for n, item in sorted(self._by_name.items()))
@@ -209,8 +217,8 @@ class Skills:
         now = self._stat()
         if now == self._seen:
             return False
-        self._by_name, _, stale = _read(loaded, recheck=True)
-        self._seen = None if stale else now
+        self._by_name, _, _ = _read(loaded, recheck=True)
+        self._seen = now  # a stale file is read again when a stat says it changed, not each time
         self._make_commands()
         return True
 

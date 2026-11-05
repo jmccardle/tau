@@ -88,6 +88,12 @@ pub struct Node {
     /// transcript). A log written before this field existed has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from: Option<NodeId>,
+    /// What a person typed, for a `User` node whose text a `pre_input` hook changed (the
+    /// attachments extension inlines files). Set only when it differs from the text: the
+    /// node's `body` is what the model sees, this is what to put back in an editor. A log
+    /// written before this field existed has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed: Option<String>,
 }
 
 /// Where a new node's content came from: the two optional fields of a `Node`.
@@ -133,6 +139,10 @@ pub struct Scratchpad {
 /// The store may buffer everything up to a `Sync`; at a `Sync` it syncs the
 /// log, then, if `pad` is set, rewrites the scratchpad file with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a record is queued and written once; boxing the node would touch every writer for nothing"
+)]
 pub enum Record {
     Write {
         node: Node,

@@ -87,6 +87,12 @@ def config_line(data: str) -> str:
     return "  ".join(parts)
 
 
+def typed(node: Node) -> str:
+    """What the person typed in the `User` node `node`, not the files a hook inlined."""
+    assert isinstance(node.body, Body.User)
+    return node.body.text if node.typed is None else node.typed
+
+
 class ChatDisplay(WindowedWalk):
     """The viewed cursor's walk, drawn as boxes. It holds the whole walk and draws a window of it
     (`tau.tui._windowed`). `tip` is the walk's last node (`None` before the first `rebuild`); the
@@ -125,7 +131,7 @@ class ChatDisplay(WindowedWalk):
         """Take `walk` as the whole walk and draw its last turns."""
         await self.end_live()
         self._walk, self._sides = list(walk), {}
-        self.first = next((n.body.text for n in walk if isinstance(n.body, Body.User)), None)
+        self.first = next((typed(n) for n in walk if isinstance(n.body, Body.User)), None)
         await self._show(tail_start(self._walk), len(self._walk))
 
     async def add(self, node: Node) -> None:
@@ -133,7 +139,7 @@ class ChatDisplay(WindowedWalk):
         walk, or when this client wrote it (the window moves to the tail to show it); otherwise it
         is counted in the row below."""
         if self.first is None and isinstance(node.body, Body.User):
-            self.first = node.body.text
+            self.first = typed(node)
         mine = isinstance(node.body, Body.User) and node.by == Author.Frontend(self.client)
         await self.extend(node, jump=mine)
 
@@ -145,6 +151,7 @@ class ChatDisplay(WindowedWalk):
         line = ""
         match body:
             case Body.User(text=text):
+                text = typed(node)
                 who = author_name(node.by)
                 title = "User" if node.by == Author.Frontend(self.client) else who
                 widget = MessageBox("user", title, text, source="verbatim")

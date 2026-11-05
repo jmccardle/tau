@@ -765,6 +765,13 @@ REFUSED_BY_RM = [
     "setsid rm x",
     "strace -o out rm x",
     "watch -n 5 rm x",
+    "exec rm x",
+    "exec -a other rm x",
+    "exec -c -l rm x",
+    "builtin exec rm x",
+    "coproc rm x",
+    "ls | xargs rm",  # xargs adds the arguments: bare `xargs rm` is `rm <something>`
+    "xargs -n1 rm",
 ]
 
 

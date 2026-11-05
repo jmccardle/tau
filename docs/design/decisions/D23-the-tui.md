@@ -488,7 +488,7 @@ Decided as the drafts recommended, except where noted.
   from a JSON Schema, for questions, missing arguments and options).
 - **`SessionPicker`**: the `-r` / Ctrl+O picker over `list_sessions`.
 - **tree screen**: rows from `nodes`; go to, open, label.
-- **edit last message** (Ctrl+Z): a go-to before the last `User` node, its text in the editor.
+- **edit last message** (Ctrl+Z): a go-to before the last `User` node, what the person typed (`Node.typed`, D17 §1a; else its text) in the editor. The transcript and the header title show the typed line too, not the files a hook inlined; the tree screen shows the model's text.
 - **theme**, **`tui` config key** (`theme` only).
 - **re-exec** (session switch in the TUI).
 - Amended: **`OpenQuestion`** (`extension`), **Client** (`remove_item`).

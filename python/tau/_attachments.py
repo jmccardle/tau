@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
+from tau._config import ConfigError
 from tau._core import Author, Body, Draft
 from tau._handles import Cursor, Subject
 
@@ -159,6 +160,20 @@ def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
             if not in_code and (quoted_word is not None or _looks_like_a_path(typed)):
                 missed.append(typed)
     return (text if not blocks else text + "\n\n" + "\n".join(blocks)), missed
+
+
+async def attached_to(cursor: Cursor, typed: str) -> str:
+    """The files the `@` words in `typed`, text a person typed into a command (a template's
+    arguments), name: `"\n\n"` and their blocks as `pre_input` would add them to a line, or `""`
+    if there are none or `attachments` is not loaded. Relative paths start at the process's
+    working directory, as the extension's do. An `@` word that names nothing stays as text,
+    unsaid: a command has no client to tell."""
+    try:
+        limit = cursor.options_of(Attachments.name).limit
+    except ConfigError:
+        return ""
+    expanded = (await asyncio.to_thread(expand, typed, Path.cwd(), limit))[0]
+    return expanded[len(typed) :]
 
 
 class Attachments:

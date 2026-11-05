@@ -3,8 +3,10 @@
 
 - `tau serve [session flags] [-e ...] [--socket PATH]` starts the session the shared start
   (`tau.start_session`) opens, binds a Unix socket, writes the serve record and serves until
-  SIGTERM or SIGINT (the driver stops, each stream gets `end`, the socket and record are removed,
-  exit 0) or until the driver fails (exit 1). With `--json` it prints the record as one line.
+  SIGTERM or SIGINT (what is running is aborted and the agents it started are closed, as an
+  interrupted `-p` does; then the driver stops, each stream gets `end`, the socket and record
+  are removed, exit 0) or until the driver fails (exit 1). With `--json` it prints the record as
+  one line.
 - `tau serve -d [--json]` starts the same server detached and prints its record once a `hello`
   answers: the record of a server already serving the session with `"started": false` (a record
   whose socket does not answer is stale and replaced); a failure before the record appears, with
@@ -35,6 +37,8 @@ from typing import Final, Protocol, TextIO
 from tau._choice import choose_session
 from tau._clock import SystemClock
 from tau._config import ConfigError
+from tau._core import CursorClosed
+from tau._driver import Driver
 from tau._project_read import safe_block, safe_text
 from tau._protocol import PROTOCOL, schema_text
 from tau._serve import Server
@@ -61,6 +65,10 @@ IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""
 BOUND_SECONDS: Final = 5.0
 """How long `-d` waits for a record to appear and `--stop` for it to go. No wait is infinite."""
+WIND_DOWN_SECONDS: Final = 3.0
+"""How long a stopping server waits for aborted cursors to rest, under `--stop`'s own bound. A
+hook never returns on an abort (M7), so the wait is bounded; past it the driver stops as a crash
+would."""
 _POLL: Final = 0.05
 
 
@@ -184,6 +192,8 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
             run.stdout.write(safe_text(f"serving {session} on {socket} (pid {record.pid})") + "\n")
         run.stdout.flush()
         failure = await _until_done(server, signalled)
+        if failure is None:
+            await _wind_down(started.driver)
     finally:
         for number in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(number)
@@ -197,6 +207,21 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
     if failure is not None:
         raise ServeFailed(f"the driver failed: {type(failure).__name__}: {failure}")
     return 0
+
+
+async def _wind_down(driver: Driver) -> None:
+    """Abort every cursor and wait for each to rest, so a tool that started an agent is
+    cancelled and closes the agent's cursor (D24 section 8): the session is left as an
+    interrupted `-p` leaves it, not as a crash. Bounded by `WIND_DOWN_SECONDS`."""
+    async with driver.client("serve:stop") as client:
+        cursors = list(driver.session.cursors())
+        for cursor in cursors:
+            with contextlib.suppress(CursorClosed):  # an agent closed since the list was made
+                await client.abort(cursor)
+        with contextlib.suppress(TimeoutError, CursorClosed):
+            async with asyncio.timeout(WIND_DOWN_SECONDS):
+                for cursor in cursors:
+                    await driver.rest(cursor)
 
 
 async def _until_done(server: Server, signalled: asyncio.Event) -> Exception | None:

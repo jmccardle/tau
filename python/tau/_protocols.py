@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
 from tau._config import ModelConfig
 from tau._core import Node, Outcome, Part, Stop
@@ -296,12 +296,27 @@ class Extension(Protocol):
     refused when the driver is built (`DefinitionError`), so a misspelt hook cannot
     sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
     field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
+
+    Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`, and
+    `rescan` (`Rescanning`).
     """
 
     @property
     def name(self) -> str:
         """The extension's name: letters, digits, `_` and `-`, unique among a driver's
         extensions."""
+        ...
+
+
+@runtime_checkable
+class Rescanning(Protocol):
+    """An extension whose commands come from files lists `rescan`: the driver calls it before it
+    lists or runs a command, and it returns whether its `commands` changed (it has made them
+    again, and the driver runs the new ones). It should be cheap when nothing changed: compare
+    what a stat says, never read every file each time."""
+
+    def rescan(self) -> bool:
+        """Read the files again if they changed since the last call; whether `commands` did."""
         ...
 
 

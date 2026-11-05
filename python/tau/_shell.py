@@ -7,9 +7,11 @@ contains that operator too: such a command falls to `ask`. A **refusing or askin
 `deny` or `ask` rule) is tried on the command whole and on each piece of it between the operators,
 with a tab read as a space, leading `VAR=value` words, `then` `do` `else` `elif` `if` `while`
 `until` `function NAME`, a backslash on the first word, and the wrappers in `WRAPPERS` (with their
-flags) stripped, and the first word reduced to its basename (`/bin/rm` is `rm`). This is best
-effort: quoting, `eval`, `bash -c "..."`, what `find -exec` runs and a name built by expansion are
-not seen. `ask: [bash]` is the setting that cannot be tricked.
+flags) stripped (after `xargs` the command also gets a trailing space, as `xargs` adds arguments:
+`xargs rm` is tried as `rm ` too, so `rm *` matches it), and the first word reduced to its
+basename (`/bin/rm` is `rm`). This is best effort: quoting, `eval`, `bash -c "..."`, what
+`find -exec` runs and a name built by expansion are not seen. `ask: [bash]` is the setting
+that cannot be tricked.
 """
 
 import fnmatch
@@ -21,7 +23,8 @@ OPERATORS = (";", "&", "|", "`", "$(", "<", ">", "\n")
 WRAPPERS: dict[str, frozenset[str]] = {
     "command": frozenset(),
     "builtin": frozenset(),
-    "exec": frozenset(),
+    "exec": frozenset({"-a"}),
+    "coproc": frozenset(),
     "nohup": frozenset(),
     "time": frozenset(),
     "setsid": frozenset(),
@@ -90,8 +93,11 @@ def _after_flags(wrapper: str, text: str) -> str:
     return words[0] + (" " + words[1] if len(words) > 1 else "") if words else ""
 
 
-def _stripped(piece: str) -> str:
+def _stripped(piece: str) -> tuple[str, bool]:
+    """`piece` without what runs the command after it (the module docstring), and whether
+    `xargs` was among it."""
     text = piece.lstrip(" {!")
+    adds = False
     while True:
         assignment = _ASSIGNMENT.match(text)
         if assignment is not None:
@@ -99,7 +105,7 @@ def _stripped(piece: str) -> str:
             continue
         first = _FIRST.match(text)
         if first is None:
-            return text
+            return text, adds
         word = first[1]
         if word.startswith("\\") and len(word) > 1:
             text = text[1:]  # `\rm` is `rm`
@@ -108,9 +114,10 @@ def _stripped(piece: str) -> str:
         elif word == "function":  # `function NAME {` opens a body: its first command is next
             text = first[2].lstrip().partition(" ")[2].lstrip(" {!")
         elif word in WRAPPERS:
+            adds = adds or word == "xargs"
             text = _after_flags(word, first[2].lstrip())
         else:
-            return text
+            return text, adds
 
 
 def commands_of(command: str) -> list[str]:
@@ -119,11 +126,12 @@ def commands_of(command: str) -> list[str]:
     command = command.replace("\t", " ")
     found = [command]
     for piece in _SPLIT.split(command):
-        text = _stripped(piece)
-        found.append(text)
-        first = _FIRST.match(text)
-        if first is not None:
-            found.append(posixpath.basename(first[1]) + first[2])
+        text, adds = _stripped(piece)
+        for shown in (text, text + " ") if adds and text else (text,):
+            found.append(shown)
+            first = _FIRST.match(shown)
+            if first is not None:
+                found.append(posixpath.basename(first[1]) + first[2])
     return found
 
 

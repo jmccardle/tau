@@ -84,7 +84,12 @@ one `Client`, one cursor, no person to ask.
    busy. A `send` wakes the cursor, so the view that call published is busy (D21 §3's order holds
    locally too). Meanwhile answer questions (§5).
 5. Print (§3, §4), close the client, stop, and exit (§6). SIGINT aborts the cursor, waits for it
-   to rest, stops and exits 130; a second SIGINT exits 130 at once.
+   to rest, stops and exits 130; a second SIGINT exits 130 at once. If the run's message has no
+   reply node yet (the `User` node is the only node the run added), the interrupt takes it back so
+   the next `-c` does not send two user messages in a row (8E-5): nodes are written once, so the
+   node stays in the tree as a dead branch and the cursor goes to the node before it (a message
+   still pending is removed from the scratchpad instead). Once the model has replied, even in
+   part, nothing is taken back.
 
 `-p` leaves the session as any frontend does: a new session it used is kept and listed.
 `--no-session` is the throwaway run.

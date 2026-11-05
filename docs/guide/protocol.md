@@ -710,6 +710,7 @@ sees in `Ending.Failed`.
 | `id` | `integer` |  |
 | `parent` | `integer` or `null` | optional |
 | `time` | `integer` |  |
+| `typed` | `string` or `null` | optional, What a person typed, for a `User` node whose text a `pre_input` hook changed (the attachments extension inlines files). Set only when it differs from the text: the node's `body` is what the model sees, this is what to put back in an editor. A log written before this field existed has none. |
 
 ### OpenQuestion
 

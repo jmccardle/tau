@@ -113,7 +113,12 @@ read from what the person types (`/count`, `/ralph PROMPT.md 4`) and checked by 
 A command that takes a `Cursor` runs *as a step of that cursor*: it gets the cursor's handle and
 runs before the `pre_step` hooks. It is refused with `Busy` unless the cursor is at rest, and
 aborting the cursor stops it. A command without a `Cursor` runs at once, whatever the cursor is
-doing. Return a string to show a result; raise to fail (the caller gets `CommandFailed`).
+doing. Return a string to show a result; raise to fail (the caller gets `CommandFailed`). To refuse (bad arguments, say) raise `CommandFailed(message)` yourself: the caller gets your message as written, with no traceback, and a `Cursor` command's step does not fail.
+
+An extension whose commands come from files (the built-in `skills`) lists a method `rescan(self)
+-> bool`: τ calls it before it lists or runs any command, and it returns whether `commands`
+changed (then it has made them again). Keep it cheap when nothing changed: compare what a `stat`
+says, never read every file each time.
 
 Two extensions may each have a `/note`. The bare `/note` then names neither, and every command
 also has a **qualified name**, `/shouter:count`, that nothing can take. The name `config` is

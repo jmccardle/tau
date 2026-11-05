@@ -781,6 +781,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "typed": {
+          "description": "What a person typed, for a `User` node whose text a `pre_input` hook changed (the\nattachments extension inlines files). Set only when it differs from the text: the\nnode's `body` is what the model sees, this is what to put back in an editor. A log\nwritten before this field existed has none.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

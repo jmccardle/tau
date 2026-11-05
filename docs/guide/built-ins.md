@@ -105,7 +105,9 @@ own block and start another.
 
 Only what you type is expanded. A message that an extension or a tool wrote (the task the model
 gives a sub-agent, the text of a prompt template) is sent as written: if the model could name a
-file with `@`, a rule that denies it the file would mean nothing.
+file with `@`, a rule that denies it the file would mean nothing. The arguments you type after a
+template's command are yours: `/review @main.rs` attaches `main.rs` (after the template's whole
+text), while an `@path` written in the template file itself stays text.
 
 ## Prompt templates and skills
 
@@ -143,6 +145,8 @@ as your message, and the model answers it. How the arguments are read:
 - A word the arguments do not have is empty text, so `/review main.rs` works with the hint
   `<file> [focus]` above: `$2` is nothing.
 - `$$` writes a literal `$` (`costs $$5`). A `$` followed by anything else is left as it is.
+- `@file` words in the arguments attach their files after the whole text (once each), as they do
+  in a message; the template's own `@` words do not.
 - A template with no placeholder gets the arguments after a blank line, which makes `Be brief.` a
   template you can follow with any question.
 - A `"` that never closes, or a template that would send nothing (no text and no arguments), is
@@ -417,9 +421,9 @@ contains that character too: `allow: ["bash:git status*"]` runs `git status -s` 
 `git status; rm -rf x`. A `deny` or `ask` pattern is tried on each piece of a chained command, after
 dropping leading `VAR=value` words, `if`/`elif`/`while`/`until`/`then`/`do`/`else`, `function NAME`,
 a leading backslash and wrappers such as `sudo -u X` (or `--user X`), `env -i`, `nice -n 5`,
-`timeout 5`, `doas`, `ionice`, `stdbuf`, `setsid`, `strace`, `watch`, `xargs` and `command`, and
-reducing `/bin/rm` to `rm`, so `bash:rm *` refuses `ls; rm x`, `if rm x; then ...`, `ls | xargs rm`
-and `/bin/rm x`. That is best effort: quoting, `eval`, `bash -c "..."` and what `find -exec` runs
+`timeout 5`, `doas`, `ionice`, `stdbuf`, `setsid`, `strace`, `watch`, `xargs`, `exec` (with `-a NAME`), `builtin`, `coproc` and `command`, and
+reducing `/bin/rm` to `rm`, so `bash:rm *` refuses `ls; rm x`, `if rm x; then ...`, `ls | xargs rm` (a bare
+`xargs rm` gets arguments, so it counts as `rm ` with something after it) and `/bin/rm x`. That is best effort: quoting, `eval`, `bash -c "..."` and what `find -exec` runs
 are not seen, so **a `bash` deny is not a guarantee. `ask: ["bash"]` is the
 safe setting**: it puts every command in front of you. Rules guard against the model; they are not a
 sandbox.

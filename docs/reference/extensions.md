@@ -220,6 +220,15 @@ def options(self) -> Any
 This extension's options at the cursor's `at` (its `options` dataclass); raises
 `ConfigError` if it has none or what is set does not fit.
 
+### Cursor.options_of
+
+```python
+def options_of(self, extension: str) -> Any
+```
+
+Another extension's options at the cursor's `at`, as `options` reads its own;
+`ConfigError` if it has none (it is not loaded, or declares no `options`).
+
 ### Cursor.models
 
 ```python
@@ -406,6 +415,9 @@ driver's extensions; any attribute named `pre_*` or `post_*` that is not a hook 
 refused when the driver is built (`DefinitionError`), so a misspelt hook cannot
 sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
 field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
+
+Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`, and
+`rescan` (`Rescanning`).
 
 ### Extension.name
 

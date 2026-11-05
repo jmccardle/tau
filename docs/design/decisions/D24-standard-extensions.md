@@ -220,7 +220,8 @@ plain words (`@alice`) and code in backticks are silent.
 **Hook:** `pre_input` rewrites the draft's text. The `User` node therefore holds exactly what
 the model saw (I1). **Only input a person typed is expanded**: a draft authored by a `Frontend`
 (D17 §1). What a tool or an extension wrote (`send`, authored `Extension`: a sub-agent's task, a
-template's body) is never expanded, because the model writes the `agent` task and `@secret.txt` in
+template's body) is never expanded (8E-5: except the arguments a person typed after a template's
+command, which `skills` attaches itself, after the whole text, through `Cursor.options_of`), because the model writes the `agent` task and `@secret.txt` in
 it would get past a `read` deny rule.
 **Completion:** the TUI calls `Client.complete(cursor, "path", prefix)` for an `@` word; that
 already works over the wire. `path` offers directories and regular files only (through links), so
@@ -837,8 +838,9 @@ text did not say:
   is typed as a JSON array (`ask=["bash:cp a,b *"]`), as for any list option.
 - **Attached `tau -p`** answers (by `--answer`, else declines) the questions that open after it
   attached on its own cursor and on the cursors its own run opened, an agent's included. Nothing records who opened a cursor, so a
-  cursor is the run's if it appeared while the run's own cursor was busy and an extension wrote a
-  user message on its walk (a sub-agent's task; it opens on the session's prefix), or its walk
+  cursor is the run's if an extension wrote a user message on its walk after the attach, while the
+  run's own cursor was busy (a sub-agent's task; it opens on the session's prefix; a follow-up to an
+  agent the session already had open, which is in the attach snapshot, counts too; 8E-5), or its walk
   passes through the run's own turn. A cursor another client opens at an existing node is that
   client's; a sub-agent that another client's step starts during the run's turn would look like the
   run's (known limit). The run's own
@@ -872,8 +874,7 @@ tool's result is `agent:N answered:` and a newline and the reply's text. A call 
 that asks for tools (a step limit turned auto-step off: `stopped without a final reply (a step
 limit?)`), or no text (`gave an empty reply`). A failed agent is closed like any other, and `to` can
 reopen it. `to` must name an `agent:` label: anything else (`to=""` included) is `there is no agent
-'X'`. A closed cursor is reopened; an open one at rest (a crash or `tau serve --stop` left it,
-since the driver's stop cancels as a crash would) is continued as it is; one that is busy is `agent:N
+'X'`. A closed cursor is reopened; an open one at rest (a crash left it; `tau serve --stop` aborts and closes agents first, 8E-5) is continued as it is; one that is busy is `agent:N
 is still working`. A name in `tools` that no loaded extension provides is a `ConfigError` at the
 start and an error in `tau config check` (`Options.tool_problems`, as permissions'). A list option
 typed on a command line (`commandline.value`, and the ratatui form) is split at commas and each

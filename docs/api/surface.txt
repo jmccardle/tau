@@ -39,6 +39,7 @@ class Cursor(TreeHandle)
     def move(self, to: int) -> None
     def node(self, id: int | None = None) -> Node
     def options(self) -> Any
+    def options_of(self, extension: str) -> Any
     def save_options(self, **changes: object) -> None
     def saved_options(self) -> Mapping[str, object]
     def set_auto(self, on: bool) -> None
@@ -325,6 +326,7 @@ class Node
     property id: int
     property parent: int | None
     property time: int
+    property typed: str | None
 class Outcome
     class Err(Outcome)
         def __new__(cls, error: str) -> Outcome.Err

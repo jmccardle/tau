@@ -67,7 +67,9 @@ _ABORTED = "Aborted: the cursor's step was aborted or the cursor was moved"
 class CommandFailed(RuntimeError):
     """A command raised, or returned what is not a `str` or `None`. The message is the failure
     as `"Type: msg"`. `Client.run` raises it as soon as the command raises; an aborted one raises
-    it too."""
+    it too. A command raises it itself to refuse (its arguments, say), with a message for the
+    person: the caller gets that message as written, with no traceback, and a command that takes
+    a `Cursor` does not fail its step for it."""
 
 
 def _settle(
@@ -404,6 +406,8 @@ class Commands:
         except asyncio.CancelledError:
             future.cancel()
             raise
+        except CommandFailed as e:  # it refused: said to who ran it, once, as written
+            _settle(future, error=e)
         except Exception as e:
             _settle(future, error=CommandFailed(describe_failure(e)))
         finally:

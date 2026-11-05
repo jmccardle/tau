@@ -8,8 +8,10 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -254,6 +256,82 @@ def test_stop_ends_the_server_and_removes_its_files(home: World) -> None:
     again = serve(home, "--stop", "--json", "--session", OLD)
     assert record_of(again) == {"session": OLD, "pid": None, "stopped": False}
     assert serve(home, "--stop", "--session", OLD).out == f"no server is serving {OLD}\n"
+
+
+class Hanging(BaseHTTPRequestHandler):
+    """The parent calls `agent("sub")`; the agent's request never answers until `release` is set."""
+
+    reached = threading.Event()
+    release = threading.Event()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if body["messages"][-1]["content"] == "sub":
+            Hanging.reached.set()
+            Hanging.release.wait(30)
+            return
+        call = {
+            "index": 0,
+            "id": "c0",
+            "type": "function",
+            "function": {"name": "agent", "arguments": json.dumps({"task": "sub"})},
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": "f",
+            "choices": [
+                {"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": "tool_calls"}
+            ],
+        }
+        self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+def test_stop_aborts_what_is_running_and_closes_the_agents_first(home: World) -> None:
+    """The server is stopped while an agent works: the agent's cursor is closed in the session,
+    as an interrupted `-p` leaves it, so a later `to="agent:1"` resumes it instead of being told it
+    is still working."""
+    Hanging.reached.clear()
+    Hanging.release.clear()
+    model = ThreadingHTTPServer(("127.0.0.1", 0), Hanging)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{model.server_port}/v1"
+    config = {"default_model": "m", "models": {"m": {"model": "m", "base_url": url}}}
+    home.user_config({**config, "load": {"agents": True}})
+    record = record_of(serve(home, "-d", "--json", "--session", existing(home).name))
+    pid = record["pid"]
+    assert isinstance(pid, int)
+
+    async def start_work() -> None:
+        async with await RemoteClient.connect(str(record["socket"]), "test:starter") as client:
+            await client.send(0, "go")
+            deadline = time.monotonic() + 20
+            while not Hanging.reached.is_set():
+                assert time.monotonic() < deadline, "the agent never started"
+                await asyncio.sleep(0.02)
+
+    try:
+        asyncio.run(start_work())
+        assert serve(home, "--stop", "--json", "--session", OLD).code == 0
+        wait_gone(pid)
+    finally:
+        Hanging.release.set()
+        model.shutdown()
+        model.server_close()
+    session = Session.load(home.tau / "sessions" / OLD)
+    try:
+        child = session.label("agent:1")
+        assert child not in session.cursors(), "the agent's cursor is closed"
+        assert dict(session.closed()).keys() == {child}
+    finally:
+        session.close()
 
 
 def test_stop_cleans_up_a_stale_record_and_the_session_serves_again(home: World) -> None:

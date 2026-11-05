@@ -9,7 +9,7 @@ from textual.app import App
 from textual.widgets import Tree
 from tuikit import Gatekeeper, running, say, shows, type_line, until
 
-from tau import Author, Body, ItemData, Part, Stop, TextDelta
+from tau import Attachments, Author, Body, ItemData, Part, Stop, TextDelta
 
 SYS = 1  # the system node: a new session is Config 0, System 1
 
@@ -173,6 +173,33 @@ async def test_ctrl_z_goes_before_the_last_message_and_puts_its_text_in_the_edit
         assert [(p, t) for p, t, _ in users(h)] == [(SYS, "one"), (SYS, "one again")], (
             "the old turn stays in the tree as a branch"
         )
+    await h.close()
+
+
+@scenario
+async def test_ctrl_z_puts_back_what_was_typed_so_resending_attaches_each_file_once(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("alpha", encoding="utf-8")
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("first"), say("second")]),
+        extensions=[Attachments(work)],
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "explain @a.txt")
+        await pilot.press("enter")
+        await shows(pilot, app, "first")
+        assert "[User] explain @a.txt" in app.screen_text(), "the transcript shows the line"
+        assert "<attachment" not in app.screen_text(), "not the files a hook inlined"
+        await pilot.press("ctrl+z")
+        await until(pilot, lambda: app.draft == "explain @a.txt")
+        await pilot.press("enter")
+        await shows(pilot, app, "second")
+        sent = [text for _, text, _ in users(h)]
+        assert [t.count("<attachment") for t in sent] == [1, 1]
     await h.close()
 
 

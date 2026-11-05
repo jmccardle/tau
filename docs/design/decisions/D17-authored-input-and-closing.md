@@ -104,6 +104,20 @@ first (Decision 2 of the plan).
   session whose scratchpad holds an old-format `Input` fails to load as
   `Corrupt`. There is no migration.
 
+**1a. The typed line is kept (8E-5, owner's decision 2026-11-05).** An input item holds what the
+person typed; a `pre_input` hook may change it before the `User` node is written (attachments
+inlines `@file`s), and the item is then gone. Without the typed line, Ctrl+Z "edit last" put the
+expanded text back (resending attached each file twice) and session titles carried attachment
+markup. So `Node` gains an optional **`typed: String`**: when core writes a `User` node that
+delivers an `Input` item whose text differs from the node's text, `typed` is the item's text;
+otherwise it is unset. It is the same kind of change as `copied_from` (D24 M1): a serde-optional
+field, absent from old records and from lines no hook touched, no `VERSION` bump (D12), and replay
+takes the recorded value (the item that said it is gone). `body` stays what the model saw (I1).
+Nothing about the author changes. A copy made through `append` (compaction, prune, a line move)
+does not carry it. Frontends: edit-last restores it; the TUI transcript, its header title and
+the session list (`first_message`) show it, because the person wrote that line; the tree screen
+and `--verbose` still show the body, since they show what the model got.
+
 **Why not a new body kind** (`Body::Message { from, text }` or similar): every
 provider would have to convert it to the user role anyway. Q11 (wire legality),
 compaction and anything that reads a walk would each learn a kind that means

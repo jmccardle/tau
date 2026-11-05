@@ -136,7 +136,7 @@ class Agents:
 
     def _resume(self, node: NodeHandle, label: str) -> tuple[int, str]:
         """The agent `label`: reopened if it is closed, as it is if it is open and at rest (a
-        crash or `serve --stop` left it so)."""
+        crash left it so)."""
         if not label.startswith(PREFIX) or not self._labelled(node, label):
             raise ToolError(f"there is no agent {label!r}")
         old = node.label(label)

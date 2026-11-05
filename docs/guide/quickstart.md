@@ -80,7 +80,7 @@ blank line and is never part of its arguments ([What τ does for you](built-ins.
 Only the answer is on standard output, so `answer=$(tau -p "...")` holds it. The exit status says
 how the run ended: `0` the model finished, `1` a failure (a bad config, a provider error, a
 command that failed), `2` a usage error, `3` it stopped before finishing (a step limit, a hook
-that halted it, a message that was refused) and `130` interrupted. Anything else it has to say
+that halted it, a message that was refused) and `130` interrupted (a message the model had not begun to answer is taken back, so `-c` continues from before it). Anything else it has to say
 goes to standard error, one line each, starting `tau: `. `--verbose` adds a report of the
 start (the session, the model, the config files, the extensions, the parts of the system prompt)
 and a line per message the run adds.

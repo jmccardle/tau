@@ -236,7 +236,7 @@ impl Store {
             match decode::<Record>(&whole, 0) {
                 Decoded::Record(Record::Write { node, .. }, _) => {
                     if let Body::User(text) = node.body {
-                        return Ok(Some(text));
+                        return Ok(Some(node.typed.unwrap_or(text)));
                     }
                 }
                 Decoded::Record(..) => {}

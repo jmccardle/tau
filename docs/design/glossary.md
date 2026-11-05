@@ -14,7 +14,8 @@ Behavior is specified in `model.md`; this file only says what words mean.
 *spike* `Node`, `NodeId` · retires entry, side entry, finalize
 
 One immutable record: `{id, parent?, time, by, body, delivers}`, plus
-`copied_from` and `derived_from` (not yet spiked). Written once (I2).
+`copied_from` and `derived_from` (not yet spiked), and `typed` (a `User` node's typed line). Written
+once (I2).
 
 ### body
 *spike* `Body` · retires entry type, `customType`
@@ -147,7 +148,7 @@ kept it from starting; the tool may or may not have run).
 
 Who wrote a node, or who asked for a move: `Frontend(client)`, `Provider`,
 `Tools`, `Core`, `Extension(name)`. Filled in by the driver from the caller,
-recorded only, never used for control flow (Q7). A pre hook that edits a draft
+recorded by core and never used by it for control flow (Q7); extensions and clients may decide by it (attachments expands only a `Frontend`'s draft; a halt notifies only a `Frontend`). A pre hook that edits a draft
 leaves its `by` as is; who edited a node is not recorded (accepted gap).
 
 ### time
@@ -172,6 +173,20 @@ must be a node (`NoSuchNode`; nothing is written). A record without them loads a
 from before they existed loads. Python: `TreeHandle.append(..., copied_from=, derived_from=)` and
 `Cursor.write(..., copied_from=, derived_from=)`. `Provenance` is the pair as core's `append_from`
 and `write_from` take it. A fork keeps a source that is in the walk it copies, renumbered.
+
+### typed
+`Node.typed` (core) · D17 §1a · built (8E-5)
+
+What a person typed, on a `User` node whose text a `pre_input` hook changed (the attachments
+extension inlines each `@file`): the node's `body` is what the model saw (I1), `typed` is the line,
+for an editor and a title. Set by core when it writes a `User` node that delivers an `Input` item
+whose text differs from the node's text, and unset (`None`) when they are equal, so a line no hook
+touched stores nothing. Written once (I2). A record without it loads as none, so a log from before
+it existed loads, and `VERSION` stays 1 (as for `copied_from`). A node copied or rewritten by
+`append` (compaction, prune, a line move) does not carry it. Clients: Ctrl+Z "edit last" puts it in
+the editor, so resending attaches each file once; the TUI's transcript and header title and the
+session list's `first` show it; the tree screen and `--verbose` show the model's text. Python:
+`Node.typed`; wire: an optional `typed` string on `Node`.
 
 ### session
 *spike* `Session` · retires `AgentSession`, `SessionManager`, catalog
@@ -2406,7 +2421,10 @@ makes the bare `/model` ambiguous and `/tau:model` still works. Completion after
 name of each unique command and the qualified names of shared ones, and after `/<extension>:` that
 extension's commands. `Client.run` returns the command's result (`str | None`) when the command
 has finished, and raises `CommandFailed`, whose message is the failure as `"Type: msg"`: as soon as
-the command raises (see *Cursor command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A sync function runs on a
+the command raises (see *Cursor command*), and `"Aborted: ..."` for one the cursor's abort or go-to cancelled. A command may raise `CommandFailed(message)` itself to refuse: the caller gets `message` as
+written (no `"Type: "`, no traceback), with or without a `Cursor`, and a `Cursor` command's step does not fail. An extension whose commands come from files lists `rescan() -> bool` (`Rescanning`): the driver
+calls it before it lists or runs a command, and it says whether `commands` changed; it compares
+stats and reads nothing while nothing changed. A sync function runs on a
 worker thread, as a tool does. A `Form` (**values**) is what a client knows of one: name,
 docstring, and the JSON Schema of its arguments with the named types' `"format"` and each
 default; fixed until the driver reloads. `run` checks `args` as values of the language (with the
@@ -2461,7 +2479,8 @@ configured (a missing one is a `ConfigError`, and `check_config` reports it). An
 `DefinitionError` when the driver is built. A field's value at a node is the last one set: the
 layers' `extensions.<name>` (`ModelCatalog.extensions`), then the `Config` nodes on the node's
 walk, root to node, each setting only the fields it names (so a node can change `size` and leave
-`mode`); there is no way to unset a field back to its default. `handle.options()` returns the
+`mode`); there is no way to unset a field back to its default. `Cursor.options_of(name)` reads another extension's the same way (`ConfigError` if it is not loaded
+or has none; `skills` reads `attachments`' `limit`). `handle.options()` returns the
 dataclass instance at the handle's node (`ConfigError` if it does not fit; the type's own
 `__post_init__` may refuse). `ExtensionOptions.save(extension, changes)` writes `changes` into
 the user's file (`save_options`, which builds every extension's options from the layers with the
@@ -2839,7 +2858,10 @@ a record whose socket does not answer is stale and replaced, and two `-d` at onc
 (the loser prints the winner's record). A session held by a process that is not a server fails
 with the `Leased` error after 5 seconds. A detached server exits after 10 minutes with no client
 connected and every cursor at rest (a cursor with an open question is not at rest). `--stop`
-sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go;
+sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go. The
+server, on SIGTERM or SIGINT, first aborts every cursor and waits (3 seconds at most) for each to
+rest, so an agent's tool is cancelled and closes the agent's cursor, as an interrupted `-p` does;
+then the driver stops;
 `--schema` prints `schema_text()`. `--json` prints one JSON object per line: the record, an error
 `{"error": {"type", "message"}}`, `--stop`'s `{session, pid, stopped}`. The **serve record**
 `<session id>.json` is `{socket, pid, session, cwd, protocol, version, since, log}` (`since` in

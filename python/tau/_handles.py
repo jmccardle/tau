@@ -496,6 +496,11 @@ class Cursor(TreeHandle):
         `ConfigError` if it has none or what is set does not fit."""
         return self._options.at(self.extension, self.cursor(self.id).at)
 
+    def options_of(self, extension: str) -> Any:
+        """Another extension's options at the cursor's `at`, as `options` reads its own;
+        `ConfigError` if it has none (it is not loaded, or declares no `options`)."""
+        return self._options.at(extension, self.cursor(self.id).at)
+
     def models(self) -> tuple[str, ...]:
         """The qualified names of the models the catalog defines, in file order: what
         `set_model` accepts."""

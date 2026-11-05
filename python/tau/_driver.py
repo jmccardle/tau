@@ -55,7 +55,15 @@ from tau._events import LiveDelta
 from tau._handles import Handles, Subject
 from tau._hub import Hub
 from tau._options import ExtensionOptions
-from tau._protocols import Clock, Extension, Provider, Tool, check_extensions, check_tools
+from tau._protocols import (
+    Clock,
+    Extension,
+    Provider,
+    Rescanning,
+    Tool,
+    check_extensions,
+    check_tools,
+)
 from tau._questions import Questions
 from tau._tools import assemble_tools
 from tau._user_config import UserConfig
@@ -757,11 +765,7 @@ def _open_for_tool(
 def _rescan(extensions: Sequence[Extension], commands: Commands) -> None:
     """Ask each extension that has a `rescan` (the commands it lists come from files) whether its
     commands changed, and run the new ones if any did."""
-    changed = [
-        bool(rescan())
-        for rescan in (getattr(e, "rescan", None) for e in extensions)
-        if callable(rescan)
-    ]
+    changed = [e.rescan() for e in extensions if isinstance(e, Rescanning)]
     if any(changed):
         commands.use(assemble_commands(extensions))
 

@@ -266,6 +266,7 @@ impl Session {
             delivers: vec![],
             copied_from: None,
             derived_from: None,
+            typed: None,
         };
         let id = node.id;
         self.tree.push(node.clone());
@@ -311,9 +312,10 @@ impl Session {
         {
             return Err(Error::NotPending(*bad));
         }
-        let node = self
+        let mut node = self
             .tree
             .check(Some(at), by.clone(), body, delivers, time, from)?;
+        node.typed = self.typed(&node);
         let id = node.id;
         if !node.delivers.is_empty() {
             self.pad.items.retain(|i| !node.delivers.contains(&i.id));
@@ -331,6 +333,22 @@ impl Session {
         self.moves.push(mv.clone());
         self.queue(Record::Write { node, mv: Some(mv) });
         Ok(id)
+    }
+
+    /// What a person typed, if `node` is the `User` node an input became and a hook changed
+    /// its text: the delivered `Input` item's text.
+    fn typed(&self, node: &Node) -> Option<String> {
+        let Body::User(text) = &node.body else {
+            return None;
+        };
+        self.pad
+            .items
+            .iter()
+            .filter(|i| node.delivers.contains(&i.id))
+            .find_map(|i| match &i.data {
+                ItemData::Input { text: typed, .. } if typed != text => Some(typed.clone()),
+                _ => None,
+            })
     }
 
     /// Move `cursor` to `to`; no record when it is already there.
@@ -592,6 +610,7 @@ impl Tree {
             delivers,
             copied_from: from.copied_from,
             derived_from: from.derived_from,
+            typed: None,
         })
     }
 

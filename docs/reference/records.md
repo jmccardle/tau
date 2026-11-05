@@ -12,7 +12,7 @@ Names: `Author`, `Body`, `Config`, `CursorState`, `Draft`, `Item`, `ItemData`, `
 class Author
 ```
 
-Who wrote a node, or asked for a move. It is recorded and never used to decide anything.
+Who wrote a node, or asked for a move. Core only records it; extensions and clients may decide by it (attachments expands only what a `Frontend` typed).
 
 ### Author.Frontend
 
@@ -577,7 +577,7 @@ class Node
 One record of a session's tree, written once and never changed: its `id`, its `parent`
 (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
 it holds (`body`), the scratchpad items it consumed (`delivers`), and where its content came
-from (`copied_from`, `derived_from`).
+from (`copied_from`, `derived_from`), and what a person typed (`typed`).
 
 ### Node.id
 
@@ -643,6 +643,15 @@ property derived_from: int | None
 
 The node whose walk this one's content was computed from (a summary, a pruned
 transcript), or `None`.
+
+### Node.typed
+
+```python
+property typed: str | None
+```
+
+What a person typed, when a hook changed the text of this `User` node (an attachment
+inlined a file); `None` when the body is what was typed.
 
 ## Outcome
 

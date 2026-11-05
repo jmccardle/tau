@@ -148,6 +148,24 @@ async def test_what_a_template_sends_passes_the_input_gates_but_is_not_a_typed_i
     await h.close()
 
 
+@scenario
+async def test_the_arguments_a_person_typed_attach_their_files_but_the_templates_own_words_do_not(
+    tmp_path: Path, world: World
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "main.rs").write_text("fn main() {}", encoding="utf-8")
+    template(world, "review", f"Review $1 (see @{work}/other.txt)")
+    h = await session(tmp_path, world, Attachments(work))
+    await h.run("review", {"args": f"@{work}/main.rs"})
+    await h.settle()
+    (text,) = users(h)
+    assert text.startswith(f"Review @{work}/main.rs (see @{work}/other.txt)\n\n<attachment")
+    assert text.count("<attachment") == 1
+    assert "fn main() {}" in text
+    await h.close()
+
+
 # -- skills
 
 

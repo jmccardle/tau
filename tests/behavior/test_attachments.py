@@ -9,7 +9,16 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, Reply
 from harness import Harness, scenario
 
-from tau import Attachments, Body, Ending, Part, Stop, TreeHandle, model_config
+from tau import (
+    Attachments,
+    Body,
+    Ending,
+    Part,
+    Stop,
+    TreeHandle,
+    list_sessions,
+    model_config,
+)
 
 DONE = Reply([Part.Text("ok")], Stop.End)
 
@@ -248,3 +257,30 @@ async def test_plain_words_and_code_are_silent(tmp_path: Path) -> None:
     text, notices = await sent_with_notices(tmp_path, line)
     assert text == line
     assert notices == []
+
+
+@scenario
+async def test_the_node_keeps_what_was_typed_beside_what_the_model_saw(tmp_path: Path) -> None:
+    """The `User` node's text is the expanded one (I1); `typed` is the line, so a client can put
+    it back in an editor. A line no hook changed has no `typed`. It survives a reload, and the
+    session list titles the session by it."""
+    write(tmp_path, "a.txt", "alpha")
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([DONE, DONE]),
+        extensions=[Attachments(tmp_path / "work")],
+    )
+    await h.send("explain @a.txt")
+    await h.settle()
+    await h.send("no files here")
+    await h.settle()
+    await h.close()
+    h = await Harness.load(tmp_path)
+    users = [n for n in h.nodes() if isinstance(n.body, Body.User)]
+    assert [n.typed for n in users] == ["explain @a.txt", None]
+    assert isinstance(users[0].body, Body.User)
+    assert "<attachment" in users[0].body.text
+    (tmp_path / "session" / "info.json").write_text(f'{{"cwd": "{tmp_path}"}}', encoding="utf-8")
+    [row] = [r for r in list_sessions(tmp_path) if r.id == "session"]
+    assert row.first == "explain @a.txt"
+    await h.close()

@@ -1,6 +1,8 @@
 """What the driver promises about hooks, questions, extensions, and its own lifetime."""
 
 import asyncio
+import gc
+import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import ClassVar
@@ -604,3 +606,25 @@ async def test_a_later_error_does_not_replace_the_one_that_killed_the_driver(
         await asyncio.wait_for(h.driver.rest(h.cursor), 1)
     await h.driver.stop()
     h.session.close()
+
+
+@pytest.mark.parametrize("turns", range(1, 9))
+@scenario
+async def test_an_effect_cancelled_before_it_starts_leaves_no_coroutine_never_awaited(
+    tmp_path: Path, turns: int
+) -> None:
+    """The driver stops `turns` loop turns after a send, at each point of the pump's hand-off of
+    the step's work to a task; no point leaves the work's coroutine unawaited."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        h = await Harness.create(tmp_path, provider=FakeProvider([Reply([Part.Text("ok")])]))
+        await h.client.send(h.cursor, "hello")
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        await h.driver.stop()
+        h.session.close()
+        del h  # the work's coroutine is finalized with the driver that held it
+        for _ in range(3):
+            await asyncio.sleep(0)
+            gc.collect()
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []

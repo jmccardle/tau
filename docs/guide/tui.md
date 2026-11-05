@@ -98,7 +98,8 @@ client's name and no buttons.
 - **Cursors.** Alt+Left and Alt+Right view the previous or next open cursor. Someone else's branch
   of the cursor you view, or a go-to, redraws its walk.
 - **Ctrl+Z on an empty editor edits your last message**: the cursor goes to the node before it and
-  the message is in the editor, so sending it makes a branch (the old turn stays in the tree). On
+  the message is in the editor as you typed it (`@file` words, not the files they attached), so
+  sending it makes a branch (the old turn stays in the tree) and attaches each file once. On
   a busy cursor it asks before aborting the step.
 - **Ctrl+G is the tree**: the walk of the cursor you view runs straight down from the first node.
   Each turn (your message and what followed) is one row that folds (`user: fix it  +14 · 6 calls`).

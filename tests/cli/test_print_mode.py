@@ -29,6 +29,7 @@ from tau import (
     Event,
     Labels,
     RemoteClient,
+    Session,
     Welcome,
     __version__,
     list_sessions,
@@ -48,6 +49,10 @@ SLOW = {
             "options": {"reply": " ".join(["slow"] * 40), "delay_ms": 100},
         }
     },
+}
+NO_REPLY = {  # the first chunk never comes: an interrupt lands before any reply node
+    "default_model": "m",
+    "models": {"m": {"model": "m", "provider": "mock", "options": {"delay_ms": 60000}}},
 }
 
 LOOP_FOREVER = """
@@ -322,6 +327,26 @@ def test_auto_step_turned_off_is_exit_3_and_says_so(configured: World) -> None:
     assert result.code == 3
     assert result.out == "mock: go\n", "the reply is whole; the stop is still told"
     assert "tau: stopped before finishing: auto-step is off" in result.err
+
+
+def test_an_interrupt_before_any_reply_takes_the_message_back(world: World) -> None:
+    """The unanswered `User` node stays in the tree (nodes are written once), but the cursor goes
+    back before it: the next `-c` sends one user message after the last answered turn, not two in
+    a row."""
+    world.user_config(NO_REPLY)
+    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        assert p(world, "lost question").code == 130
+    finally:
+        timer.cancel()
+    (kept,) = list_sessions(world.tau / "sessions")
+    world.user_config(MOCK)
+    assert p(world, "-c", "the real question").code == 0
+    held = Session.load(kept.path)
+    walk = held.tree.walk(held.cursor(0).at)
+    held.close()
+    assert [n.body.text for n in walk if isinstance(n.body, Body.User)] == ["the real question"]
 
 
 def test_a_run_that_finishes_is_exit_0_whatever_the_limit(configured: World) -> None:

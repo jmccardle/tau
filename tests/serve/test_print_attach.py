@@ -13,12 +13,14 @@ import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from world import Result, World, tau
 
 from tau import (
     PROTOCOL,
+    Author,
     ConfigError,
     CursorView,
     Ending,
@@ -420,13 +422,16 @@ def test_open_client_refuses_own_extensions_when_it_attaches(home: World) -> Non
 class _Delegating(BaseHTTPRequestHandler):
     """The parent calls `agent("sub")`; the agent calls `bash("touch ran")`; both then say so."""
 
+    ARGS: ClassVar[dict[str, str]] = {"task": "sub"}
+
     def log_message(self, format: str, *args: object) -> None:
         pass
 
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         messages = body["messages"]
-        child = any(m["role"] == "user" and m["content"] == "sub" for m in messages)
+        task = self.ARGS["task"]
+        child = any(m["role"] == "user" and m["content"] == task for m in messages)
         if messages[-1]["role"] == "tool":
             delta, finish = (
                 {"role": "assistant", "content": "child done" if child else "done"},
@@ -434,7 +439,7 @@ class _Delegating(BaseHTTPRequestHandler):
             )
         else:
             name, arguments = (
-                ("bash", {"command": "touch ran"}) if child else ("agent", {"task": "sub"})
+                ("bash", {"command": "touch ran"}) if child else ("agent", dict(self.ARGS))
             )
             call = {
                 "index": 0,
@@ -456,9 +461,14 @@ class _Delegating(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
-@pytest.fixture
-def delegating(home: World) -> Iterator[World]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Delegating)
+class _Resuming(_Delegating):
+    """As `_Delegating`, but the parent continues the agent `agent:1` the session already has."""
+
+    ARGS: ClassVar[dict[str, str]] = {"task": "more", "to": "agent:1"}
+
+
+def _serving_model(home: World, handler: type[BaseHTTPRequestHandler]) -> Iterator[World]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/v1"
     home.user_config(
@@ -475,6 +485,16 @@ def delegating(home: World) -> Iterator[World]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture
+def delegating(home: World) -> Iterator[World]:
+    yield from _serving_model(home, _Delegating)
+
+
+@pytest.fixture
+def resuming(home: World) -> Iterator[World]:
+    yield from _serving_model(home, _Resuming)
 
 
 def test_a_sub_agents_question_is_answered_by_the_attached_run_not_left_hanging(
@@ -495,3 +515,22 @@ def test_without_a_rule_the_attached_run_declines_a_sub_agents_question(delegati
     assert result.out == "done\n"
     assert "declined question" in result.err
     assert not (work(delegating) / "ran").exists(), "the call was refused"
+
+
+def test_an_agent_the_session_already_had_open_is_the_attached_runs_when_it_is_sent_a_task(
+    resuming: World,
+) -> None:
+    """A crash left `agent:1` open at rest, so it is in the attach snapshot; the run's model sends
+    it a follow-up, and its question is the run's to answer: no other client is there to."""
+
+    def leftover(made: Session, tip: int) -> int:
+        made.set_label("agent:1", made.open(tip, Author.Core(), 0))
+        return tip
+
+    resuming.session(OLD, cwd=work(resuming), build=leftover)
+    serving(resuming)
+    result = p(resuming, "--session", OLD, "--answer", "permissions=yes", "go")
+    assert result.code == 0, result.err
+    assert result.out == "done\n"
+    assert "left to the server's other clients" not in result.err
+    assert (work(resuming) / "ran").exists(), "the agent's bash call ran"

@@ -265,8 +265,7 @@ async def test_a_toast_shows_square_brackets_as_they_are(tmp_path: Path) -> None
         await type_line(pilot, "/say")
         await pilot.press("enter")
         await until(pilot, lambda: any("no [draft] [/bold] here" in t for t in app.toasts))
-        notices = [n.message for n in app._notifications]  # noqa: SLF001
-        assert any("no [draft] [/bold] here" in str(m) for m in notices)
+        assert any("[draft] [/bold]" in t for t in app.toasts), "its brackets are shown as typed"
     await h.close()
 
 

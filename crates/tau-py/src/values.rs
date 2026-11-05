@@ -231,7 +231,7 @@ impl From<Outcome> for tree::Outcome {
     }
 }
 
-/// Who wrote a node, or asked for a move. It is recorded and never used to decide anything.
+/// Who wrote a node, or asked for a move. Core only records it; extensions and clients may decide by it (attachments expands only what a `Frontend` typed).
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Author {
@@ -419,7 +419,7 @@ impl From<Body> for tree::Body {
 /// One record of a session's tree, written once and never changed: its `id`, its `parent`
 /// (`None` for a root), the `time` the driver gave it in milliseconds, who wrote it (`by`), what
 /// it holds (`body`), the scratchpad items it consumed (`delivers`), and where its content came
-/// from (`copied_from`, `derived_from`).
+/// from (`copied_from`, `derived_from`), and what a person typed (`typed`).
 #[pyclass(frozen, eq, hash, get_all, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Node {
@@ -440,6 +440,9 @@ pub struct Node {
     /// The node whose walk this one's content was computed from (a summary, a pruned
     /// transcript), or `None`.
     derived_from: Option<u64>,
+    /// What a person typed, when a hook changed the text of this `User` node (an attachment
+    /// inlined a file); `None` when the body is what was typed.
+    typed: Option<String>,
 }
 
 impl From<tree::Node> for Node {
@@ -453,6 +456,7 @@ impl From<tree::Node> for Node {
             delivers: n.delivers,
             copied_from: n.copied_from,
             derived_from: n.derived_from,
+            typed: n.typed,
         }
     }
 }
@@ -468,6 +472,7 @@ impl From<Node> for tree::Node {
             delivers: n.delivers,
             copied_from: n.copied_from,
             derived_from: n.derived_from,
+            typed: n.typed,
         }
     }
 }

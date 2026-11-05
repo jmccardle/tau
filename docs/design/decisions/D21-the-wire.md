@@ -217,7 +217,10 @@ Three new `Client` calls, so local and remote stay one contract (amends D16 §5)
   session flags, D19's `-e` and `--no-extensions`, D20's prompt flags). It opens the session
   with the shared startup (D18 §5), binds the socket, and writes the **serve record**
   `$TAU_HOME/serve/<session id>.json`: `{socket, pid, session, cwd, protocol, version,
-  started, log}`. On SIGTERM or SIGINT it stops the driver (each stream gets `end` with
+  started, log}`. On SIGTERM or SIGINT it first aborts every cursor and waits for each to rest (bounded
+  by 3 seconds, `WIND_DOWN_SECONDS`), so a running tool is cancelled and an agent's tool closes the
+  agent's cursor (D24 §8), as `-p`'s SIGINT does (8E-5; before, a stop was crash-like and left the
+  agent open and "still working"), then it stops the driver (each stream gets `end` with
   `null`), removes the socket and record, and exits 0; if the driver fails, it sends `end` with
   `Stopped`, cleans up the same way, and exits 1.
 - `tau serve -d [--json]` starts the server detached (output to `$TAU_HOME/serve/<session
@@ -237,7 +240,7 @@ Three new `Client` calls, so local and remote stay one contract (amends D16 §5)
     `--stop`'s `{session, pid, stopped}`. The record file is one object; `--schema` prints one
     schema document.
 - `tau serve --stop [session flags] [--json]` checks with `hello` that the recorded pid answers
-  on its socket and sends SIGTERM. There is no `shutdown` call on the wire.
+  on its socket and sends SIGTERM (the stop above: abort, close agents, then exit). There is no `shutdown` call on the wire.
 - **Discovery** is the record (`$TAU_HOME/serve/<id>.json`, or list the directory). The Phase 8
   TUI opening a served session connects to it instead of failing with `Leased`.
 - **`RemoteClient`** (`tau.RemoteClient`): `await RemoteClient.connect(socket, client, *,

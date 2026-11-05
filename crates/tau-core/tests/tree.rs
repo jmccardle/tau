@@ -114,6 +114,7 @@ fn a_logged_root_that_is_not_a_config_does_not_replay() {
         delivers: vec![],
         copied_from: None,
         derived_from: None,
+        typed: None,
     };
     let log = [Record::Write {
         node: root,

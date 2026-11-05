@@ -35,7 +35,7 @@ from typing import Protocol, TextIO, cast
 
 from tau._client import Client
 from tau._commands import CommandFailed
-from tau._core import Author, Body, Busy, Ending, Node, Outcome, Part
+from tau._core import Author, Body, Busy, Ending, ItemData, Node, Outcome, Part
 from tau._events import (
     Appended,
     CursorView,
@@ -98,7 +98,7 @@ class _Run:
     reported: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108
     seen: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - questions announced
     handled: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - answered or declined
-    during: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors that appeared while the run's cursor was busy
+    tasks: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - nodes an extension wrote while the run's cursor was busy
     sub: set[int] = field(default_factory=lambda: set[int]())  # noqa: PLW0108 - cursors this run opened
     ending: Ending | None = None
     hook_error: HookFailure | None = None
@@ -144,6 +144,12 @@ class _Run:
             self.line(encode_event(event))
         if isinstance(event, Appended):
             self.nodes.update({n.id: n for n in event.nodes})
+            if self.busy_now():
+                self.tasks.update(
+                    n.id
+                    for n in event.nodes
+                    if isinstance(n.body, Body.User) and isinstance(n.by, Author.Extension)
+                )
         elif isinstance(event, Notice):
             self.note(event.text)
         elif isinstance(event, Live):
@@ -154,12 +160,10 @@ class _Run:
                     f"in {retry.seconds:g} s"
                 )
         elif isinstance(event, CursorView):
-            if not snapshot and event.cursor not in self.views and self.busy_now():
-                self.during.add(event.cursor)
             self.views[event.cursor] = event
             if event.cursor == self.cursor:
                 self.watch_cursor(event, snapshot=snapshot)
-            await self.questions(event, snapshot=snapshot)
+            await _questions(self, event, snapshot=snapshot)
 
     def watch_cursor(self, view: CursorView, *, snapshot: bool) -> None:
         """The own cursor's view: what changed since the last one is noted."""
@@ -211,81 +215,11 @@ class _Run:
         view = self.views.get(self.cursor)
         return view is not None and view.busy
 
-    def opened_by_run(self, cursor: int) -> bool:
-        """Whether this run opened `cursor`, which nothing records (D24 section 7: no
-        `opened_by`). It did if the cursor appeared while the run's own cursor was busy and it
-        has a task an extension wrote on its walk (a sub-agent: it opens on the session's prefix,
-        not on the run's turn), or its walk passes through the run's own turn. A cursor another
-        client opens on a node that exists (`open(at)`) is not. Remembered once it is."""
-        if cursor == self.cursor or cursor in self.sub:
-            return True
-        own = self.views.get(self.cursor)
-        view = self.views.get(cursor)
-        if own is None or view is None:
-            return False
-        mine = {n.id for n in self.turn(own.at)}
-        task = False  # an extension wrote a user message on the walk: a sub-agent's task
-        node = self.nodes.get(view.at)
-        while node is not None:
-            if node.id in mine:
-                self.sub.add(cursor)
-                return True
-            task = task or (
-                isinstance(node.body, Body.User) and isinstance(node.by, Author.Extension)
-            )
-            node = None if node.parent is None else self.nodes.get(node.parent)
-        if task and cursor in self.during:
-            self.sub.add(cursor)
-            return True
-        return False
-
     def report_nodes(self, view: CursorView) -> None:
         for node in self.chain(view.at):
             if node.id not in self.reported:
                 self.reported.add(node.id)
                 self.note(_describe(node, self.nodes))
-
-    # Questions
-
-    async def questions(self, view: CursorView, *, snapshot: bool) -> None:
-        """Deal with the open questions `-p` may answer. Local, all of them, on any cursor.
-        Attached, only those that open after the attach on the cursor it sent to or on a cursor the
-        run opened (a sub-agent its step started): the snapshot's, and every other cursor's, are
-        the server's other clients' (D22 section 5)."""
-        for question in view.questions:
-            if question.id not in self.seen and self.verbose:
-                self.note(f'question {question.id} from {question.extension}: "{question.text}"')
-            self.seen.add(question.id)
-            if question.id in self.handled or question.to not in (None, self.client.id):
-                continue
-            if self.attached and (snapshot or not self.opened_by_run(view.cursor)):
-                self.handled.add(question.id)
-                self.note(
-                    f"question {question.id} from {question.extension} on cursor {view.cursor} "
-                    "is left to the server's other clients"
-                )
-            else:
-                self.handled.add(question.id)
-                await self.resolve(question, view.cursor)
-
-    async def resolve(self, question: OpenQuestion, cursor: int) -> None:
-        """Answer the question by the first rule that matches, or decline it."""
-        asked = f"question {question.id} from {question.extension}"
-        said = f'"{question.text}"'
-        rule = next((r for r in self.rules if r.matches(question.extension, question.text)), None)
-        if rule is None:
-            self.note(f"declined {asked} on cursor {cursor}: {said}")
-            await self.answer(question.id, None)
-            return
-        try:
-            await self.answer(question.id, value(rule.value, question.schema))
-        except ValueError as e:
-            raise _Refused(f"--answer {rule.spec}: {asked} ({said}): {e}") from None
-        self.note(f"answered {asked} with {rule.value}: {said}")
-
-    async def answer(self, question: int, given: object) -> None:
-        with contextlib.suppress(LookupError):  # closed already: the first good answer won
-            await self.client.answer(question, given)
 
     # Waiting
 
@@ -581,6 +515,97 @@ async def _drive(run: _Run, message: str, piped: str) -> int:
         return run.failed(type(e).__name__, str(e))
 
 
+def _opened_by_run(run: _Run, cursor: int) -> bool:
+    """Whether this run's cursor handed work to `cursor`, which nothing records (D24 section 7:
+    no `opened_by`). It did if an extension wrote a user message (a task) onto its walk after
+    the attach, while the run's own cursor was busy (a sub-agent: it opens on the session's
+    prefix, not on the run's turn; or an agent the session already had, sent a follow-up), or
+    its walk passes through the run's own turn. A cursor another client opens on a node that
+    exists (`open(at)`) is not. Remembered once it is."""
+    if cursor == run.cursor or cursor in run.sub:
+        return True
+    own = run.views.get(run.cursor)
+    view = run.views.get(cursor)
+    if own is None or view is None:
+        return False
+    mine = {n.id for n in run.turn(own.at)}
+    task = False  # a task was written onto the walk during the run
+    node = run.nodes.get(view.at)
+    while node is not None:
+        if node.id in mine:
+            run.sub.add(cursor)
+            return True
+        task = task or node.id in run.tasks
+        node = None if node.parent is None else run.nodes.get(node.parent)
+    if task:
+        run.sub.add(cursor)
+        return True
+    return False
+
+
+async def _questions(run: _Run, view: CursorView, *, snapshot: bool) -> None:
+    """Deal with the open questions `-p` may answer. Local, all of them, on any cursor.
+    Attached, only those that open after the attach on the cursor it sent to or on a cursor the
+    run opened (a sub-agent its step started): the snapshot's, and every other cursor's, are
+    the server's other clients' (D22 section 5)."""
+    for question in view.questions:
+        if question.id not in run.seen and run.verbose:
+            run.note(f'question {question.id} from {question.extension}: "{question.text}"')
+        run.seen.add(question.id)
+        if question.id in run.handled or question.to not in (None, run.client.id):
+            continue
+        if run.attached and (snapshot or not _opened_by_run(run, view.cursor)):
+            run.handled.add(question.id)
+            run.note(
+                f"question {question.id} from {question.extension} on cursor {view.cursor} "
+                "is left to the server's other clients"
+            )
+        else:
+            run.handled.add(question.id)
+            await _resolve(run, question, view.cursor)
+
+
+async def _resolve(run: _Run, question: OpenQuestion, cursor: int) -> None:
+    """Answer the question by the first rule that matches, or decline it."""
+    asked = f"question {question.id} from {question.extension}"
+    said = f'"{question.text}"'
+    rule = next((r for r in run.rules if r.matches(question.extension, question.text)), None)
+    if rule is None:
+        run.note(f"declined {asked} on cursor {cursor}: {said}")
+        await _answer(run, question.id, None)
+        return
+    try:
+        await _answer(run, question.id, value(rule.value, question.schema))
+    except ValueError as e:
+        raise _Refused(f"--answer {rule.spec}: {asked} ({said}): {e}") from None
+    run.note(f"answered {asked} with {rule.value}: {said}")
+
+
+async def _answer(run: _Run, question: int, given: object) -> None:
+    with contextlib.suppress(LookupError):  # closed already: the first good answer won
+        await run.client.answer(question, given)
+
+
+async def _take_back(run: _Run) -> None:
+    """After an interrupt: a message nobody answered is taken back, so the next `-c` does not
+    send two user messages in a row. Nodes are written once (I2), so its `User` node stays in
+    the tree, and the cursor goes back to the node before it; a message still pending is
+    removed. Once the model has replied, or this run's cursor did anything else, nothing is
+    taken back."""
+    view = run.views.get(run.cursor)
+    if view is None:
+        return
+    mine = Author.Frontend(run.client.id)
+    with contextlib.suppress(ConnectionError):
+        for item in view.items:
+            if isinstance(item.data, ItemData.Input) and item.data.by == mine:
+                await run.client.remove_item(run.cursor, item.id)
+        added = run.chain(view.at)
+        if len(added) == 1 and isinstance(added[0].body, Body.User) and added[0].by == mine:
+            assert added[0].parent is not None  # a `User` node follows the `Config`
+            await run.client.go_to(run.cursor, added[0].parent)
+
+
 async def _main(process: Process, args: object, message: str, piped: str) -> int:
     opened = await open_client(
         args,
@@ -607,6 +632,7 @@ async def _main(process: Process, args: object, message: str, piped: str) -> int
             if task is not None:
                 task.uncancel()
             await run.abort()
+            await _take_back(run)
             run.note("interrupted")
             return _INTERRUPTED
     finally:

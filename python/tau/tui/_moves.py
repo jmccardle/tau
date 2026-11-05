@@ -111,8 +111,9 @@ class Moves:
 
     async def _edit_last(self, cursor: int) -> None:
         """Ctrl+Z on an empty editor: go to the node before the last `User` node of the walk and
-        put its text in the editor (0.15's rollback, as a branch: the old turn stays in the
-        tree)."""
+        put what the person typed in the editor (the node's `typed`, else its text; 0.15's
+        rollback, as a branch: the old turn stays in the tree). The expanded text would attach
+        each `@file` a second time on resending."""
         app = self.app
         walk = await app.client.walk(self._view(cursor).at)
         last = next((n for n in reversed(walk) if isinstance(n.body, Body.User)), None)
@@ -122,7 +123,7 @@ class Moves:
         if not await self._leave(cursor, "Editing the last message"):
             return
         await app.client.go_to(cursor, last.parent)
-        app.restore_draft(last.body.text)
+        app.restore_draft(last.body.text if last.typed is None else last.typed)
 
     async def _tree(self, cursor: int) -> None:
         """Ctrl+G: the tree screen, and the call it came back with, made on the cursor that was
