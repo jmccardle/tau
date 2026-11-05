@@ -112,12 +112,12 @@ class TauDialog(ModalScreen[_T]):
         """The shell: a title and the body, pinned header and footer if `BODY_ID` is set."""
         if self.BODY_ID is None:
             with Container(id=self.DIALOG_ID, classes="tau-dialog"):
-                yield Static(self.dialog_title(), classes="tau-dialog-title")
+                yield Static(self.dialog_title(), classes="tau-dialog-title", markup=False)
                 yield from self.compose_body()
             return
         with Container(id=self.DIALOG_ID, classes="tau-dialog tau-dialog-scrolling"):
             with Vertical(classes="tau-dialog-header"):
-                yield Static(self.dialog_title(), classes="tau-dialog-title")
+                yield Static(self.dialog_title(), classes="tau-dialog-title", markup=False)
                 yield from self.compose_header()
             with Vertical(classes="tau-dialog-footer"):
                 yield from self.compose_footer()

@@ -538,6 +538,67 @@ def test_an_unknown_command_is_sent_as_text_with_a_warning(configured: World) ->
     assert "tau: no command /nonsense: sent as text" in result.err
 
 
+def test_an_unknown_qualified_command_is_an_error_not_text(configured: World) -> None:
+    for line in ("/skills:nope", "/ext:name"):
+        result = p(configured, line, "now")
+        assert result.code == 1, result.err
+        assert result.out == ""
+        assert f"no command {line}" in result.err
+    assert "sent as text" not in result.err
+
+
+def test_standard_input_goes_after_the_expanded_template_never_into_its_arguments(
+    configured: World,
+) -> None:
+    template(configured, "review", "Review $1 for $2.")
+    result = p(configured, "/review", "a.rs", stdin="diff --git a b\n+x  y\n")
+    assert result.out == "mock: Review a.rs for .\n\ndiff --git a b\n+x  y\n"
+
+
+def test_a_template_argument_error_is_printed_once_with_its_usage(configured: World) -> None:
+    template(configured, "review", "---\nargument-hint: <file> [focus]\n---\nReview $1")
+    result = p(configured, '/review "open')
+    assert result.code == 1
+    assert result.err == (
+        'tau: /review: a " in the arguments is never closed (usage: /review <file> [focus])\n'
+    )
+
+
+def test_a_command_that_does_not_read_standard_input_says_so(configured: World) -> None:
+    result = p(configured, "/model", "m", stdin="data")
+    assert result.code == 2
+    assert "/model does not read standard input" in result.err
+
+
+def test_a_stdin_that_stays_silent_is_said_once_after_two_seconds(configured: World) -> None:
+    read, write = os.pipe()
+    err = io.StringIO()
+
+    def late() -> None:
+        time.sleep(2.6)
+        os.write(write, b"finally")
+        os.close(write)
+
+    writer = threading.Thread(target=late)
+    writer.start()
+    with os.fdopen(read, encoding="utf-8") as stdin:
+        code = main(
+            ["-p"],
+            stdin=stdin,
+            stdout=io.StringIO(),
+            stderr=err,
+            environ=configured.environ,
+            cwd=configured.home,
+        )
+    writer.join()
+    assert code == 0
+    assert err.getvalue() == "tau: reading stdin (use </dev/null for none)\n"
+
+
+def test_a_stdin_that_arrives_in_time_is_not_remarked_on(configured: World) -> None:
+    assert p(configured, stdin="at once").err == ""
+
+
 def test_a_slash_alone_is_a_usage_error(configured: World) -> None:
     assert p(configured, "/").code == 2
 

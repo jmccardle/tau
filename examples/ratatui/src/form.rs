@@ -244,9 +244,11 @@ impl Field {
                 Value::Object(outer.clone())
             )
         })?;
+        // A default of `null` is no default: an unset field shows empty, not the word.
         let default = outer
             .get("default")
             .or_else(|| shape.get("default"))
+            .filter(|d| !d.is_null())
             .cloned();
         let items = match shape.get("items") {
             Some(Value::Object(items)) => Some(items),

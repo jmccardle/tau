@@ -334,7 +334,7 @@ sample.
 
 Every way of loading uses the same rule for what a file provides: **a module with a `name` (a
 string) is itself the extension; otherwise it must define `extensions = [...]`**, a non-empty
-list of extension objects, added in order. A name is letters, digits, `_` and `-`: a `:` would
+list of extension objects, added in order. A name is ASCII letters, digits, `_` and `-`: a `:` would
 break `/shouter:count`, and a `.` would break `tau config set shouter.max_chars=80`.
 
 The places an extension can come from, in the order they load (the order hooks run in). A
@@ -343,7 +343,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`attachments`, `base_tools`, `skills`, `step_limit`, and the key `retry` for the provider wrapper) | its name | `load` says off |
+| built-in | inside τ (`agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |
@@ -356,6 +356,9 @@ Try the file above. `-e` names it once, for this run:
 ```bash
 tau ext list -e shouter.py
 ```
+
+`tau ext list --json` prints one JSON object per source, one per line (JSON lines), so `grep` and
+`jq` work on it line by line; it is not one JSON array.
 
 To keep it, put it in your user drop-ins:
 

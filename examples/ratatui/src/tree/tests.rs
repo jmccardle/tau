@@ -385,3 +385,46 @@ fn a_provider_waiting_to_retry_is_said_on_the_tree_screen_too() {
         .collect();
     assert!(screen.contains("HTTP 529: retry 1 of 3 in 2 s"), "{screen}");
 }
+
+#[test]
+fn a_cursor_that_closes_before_the_tree_is_planned_again_is_still_drawn() {
+    let mut model = session();
+    let tree = opened(&model);
+    hear(
+        &mut model,
+        json!({"kind": "CursorGone", "cursor": 1, "at": 7}),
+    );
+    let rows = screen(&tree, &model);
+    assert!(
+        rows.iter().any(|r| r.contains("1 scout")),
+        "the plan still has the cursor: {rows:#?}"
+    );
+}
+
+#[test]
+fn after_the_terminal_grows_the_tree_scrolls_back_to_fill_the_screen() {
+    let model = session();
+    let mut tree = opened(&model);
+    press(&mut tree, &model, KeyCode::End);
+    let last = tree.flat().len();
+    assert_eq!(tree.window(2), last - 2..last);
+    assert_eq!(tree.window(4), last - 4..last, "rows above come back");
+}
+
+#[test]
+fn p_goes_to_the_node_a_copy_or_derived_node_came_from_and_says_when_none() {
+    let mut model = session();
+    let mut copy = user(8, 5, "copied question");
+    copy["copied_from"] = json!(2);
+    hear(&mut model, json!({"kind": "Appended", "nodes": [copy]}));
+    let mut tree = opened(&model);
+    press(&mut tree, &model, KeyCode::End);
+    assert_eq!(tree.highlighted().unwrap().row.node, 8);
+    press(&mut tree, &model, KeyCode::Char('p'));
+    assert_eq!(tree.highlighted().unwrap().row.node, 2);
+    press(&mut tree, &model, KeyCode::Char('p'));
+    assert_eq!(
+        tree.said.as_deref(),
+        Some("Node 2 was not copied or derived from another")
+    );
+}

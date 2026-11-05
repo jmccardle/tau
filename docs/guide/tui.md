@@ -56,9 +56,13 @@ Notices (`cursor.tell`, a command's progress) are toasts.
 
 `/` lists the commands; a prefix narrows the list and Tab completes. A command typed without its
 arguments asks for them: a form with a field for each argument (a choice is a list, a yes/no a
-switch, anything else a text field Tab completes). An unknown `/name` is sent as text, and a bare
-name two extensions share is refused (type `/extension:name`). The result of a command is a
-toast.
+switch, anything else a text field Tab completes). A command whose arguments are described (a
+template's `argument-hint`) shows them in the list beside its name (`/review <file> [focus]`), and
+again as a line above the editor after you type `/review ` and before you type anything more. An
+unknown `/name` is sent as text; an unknown `/extension:name` is an error and stays in the editor,
+since no extension could be meant by text. A bare name two extensions share is refused (type
+`/extension:name`). The result of a command is a toast. Text a model or a tool wrote, such as a
+command with `[draft]` in it, is drawn as it is: square brackets are never style codes.
 
 - **`/model`** with no name opens a picker of the session's models: type to narrow the list (the
   ones that start with what you typed come first), Up and Down move, Enter picks, Esc cancels. The
@@ -109,7 +113,8 @@ client's name and no buttons.
   Keys: Up, Down, PgUp, PgDn, Home, End move; Left and Right fold and unfold; Enter goes to the
   node (on a busy cursor it asks before aborting); `[` and `]` jump to the previous and next
   cursor; `v` views the cursor at the highlight and redraws with its walk down the middle; `o`
-  opens a new cursor at the node; `l` puts a label on the viewed cursor; Esc leaves.
+  opens a new cursor at the node; `l` puts a label on the viewed cursor; `p` goes to the node the
+  highlighted one was copied or derived from (and says so when it came from none); Esc leaves.
 - **Sessions.** `tau -r` and Ctrl+O open the picker: this directory's sessions, newest first, by
   name or first message; Tab widens it to every directory, `/` filters, Enter opens, Esc cancels.
   A session a `tau serve` holds says `served`; one another `tau` process holds says `in use`, and

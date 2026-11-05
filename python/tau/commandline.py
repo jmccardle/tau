@@ -40,6 +40,9 @@ if TYPE_CHECKING:  # client imports us: it returns a `Parsed`
 
 _SAVE = "--save"
 """The flag of `/config <extension> name=value --save`: write to the user's file too."""
+STDIN = "stdin"
+"""A command parameter of this name is never read from the line: `tau -p` fills it with
+standard input."""
 
 
 class UnknownCommand(LookupError):
@@ -140,7 +143,8 @@ def _array_hint(text: str, schema: Json) -> str:
 
 
 def _properties(form: Form) -> Json:
-    return cast("Json", form.schema["properties"])
+    """The parameters a command line fills: all but `stdin`, which only `tau -p` fills."""
+    return {k: v for k, v in cast("Json", form.schema["properties"]).items() if k != STDIN}
 
 
 def _split(line: str) -> list[str]:

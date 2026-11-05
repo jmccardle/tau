@@ -58,13 +58,11 @@ def test_the_users_templates_and_skills_are_commands_by_name(world: World) -> No
     assert commands(world) == ["skills:another", "skills:pdf", "skills:review"]
 
 
-def test_only_prompts_md_and_skills_directories_with_a_skill_file_count(world: World) -> None:
+def test_other_files_and_hidden_ones_are_not_prompts(world: World) -> None:
     put(world.tau, "prompts/notes.txt", "not a template")
     put(world.tau, "prompts/.hidden.md", "hidden")
-    put(world.tau, "prompts/sub/deep.md", "not looked at")
     put(world.tau, "skills/empty/README.md", "a directory with no SKILL.md")
     put(world.tau, "skills/.git/SKILL.md", "hidden")
-    put(world.tau, "skills/loose.md", "a file where a directory goes")
     put(world.tau, "skills/real/SKILL.md", SKILL)
     assert commands(world) == ["skills:real"]
 
@@ -163,7 +161,7 @@ def test_a_prompt_added_or_removed_after_approval_untrusts_the_project(world: Wo
         load_config(root, world.environ, ask=None)
 
 
-def test_the_approved_bytes_are_what_is_read_not_the_file_now(world: World) -> None:
+def test_the_approved_bytes_are_what_is_read_at_the_start(world: World) -> None:
     root = world.project()
     path = put(root, ".tau/prompts/deploy.md", "approved text")
     trust(world, root)
@@ -258,7 +256,7 @@ def test_a_name_that_is_not_letters_digits_underscore_and_hyphen_stops_the_start
     world: World,
 ) -> None:
     path = put(world.tau, "prompts/my notes.md", "t")
-    assert f"{path}: the name 'my notes' is not letters, digits, `_` and `-`: rename it" in failure(
+    assert f"{path}: the name 'my notes' is not ASCII letters, digits, `_` and `-`" in failure(
         world
     )
 
@@ -339,3 +337,94 @@ def test_crlf_files_are_read(world: World) -> None:
     put(world.tau, "prompts/crlf.md", "---\r\ndescription: d\r\n---\r\nline one\r\nline two\r\n")
     (prompt,) = skills(world).prompts
     assert (prompt.description, prompt.body) == ("d", "line one\nline two")
+
+
+# -- files in the wrong place, and every problem at once
+
+MISPLACED = [
+    ("skills/pdf/skill.md", "pdf", "misplaced skill: rename it SKILL.md"),
+    ("skills/pdf.md", "pdf", "misplaced skill: a skill is a directory"),
+    ("prompts/sub/x.md", "x", "misplaced template: move it to prompts/x.md"),
+    ("prompts/x.MD", "x", "misplaced template: rename it x.md"),
+]
+
+
+@pytest.mark.parametrize(("relative", "name", "message"), MISPLACED)
+def test_a_file_in_the_wrong_place_stops_the_start(
+    world: World, relative: str, name: str, message: str
+) -> None:
+    path = put(world.tau, relative, SKILL)
+    assert f"{path}: {message}" in failure(world)
+
+
+def test_every_problem_is_listed_at_once(world: World) -> None:
+    put(world.tau, "prompts/a.b.md", "x")
+    put(world.tau, "skills/bad/SKILL.md", "no frontmatter")
+    put(world.tau, "prompts/z.MD", "x")
+    message = failure(world)
+    assert "a.b.md: the name 'a.b'" in message
+    assert "skills/bad/SKILL.md: no description" in message
+    assert "z.MD: misplaced template" in message
+
+
+def test_tau_trust_refuses_a_project_with_file_errors_and_lists_all_of_them(
+    world: World,
+) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/a.b.md", "x")
+    put(root, ".tau/skills/bad/SKILL.md", "no frontmatter")
+    put(root, ".tau/skills/loose.md", SKILL)
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    for line in ("a.b.md: the name 'a.b'", "bad/SKILL.md: no description", "loose.md: misplaced"):
+        assert line in result.err, result.err
+    assert "cannot be trusted until these are fixed" in result.err
+    assert not (world.tau / "trusted.json").exists()
+
+
+def test_a_misplaced_file_added_after_approval_is_an_error_at_the_start(
+    world: World,
+) -> None:
+    root = world.project()
+    trust(world, root)
+    put(root, ".tau/prompts/x.MD", "x")
+    with pytest.raises(UntrustedProject, match=r"x\.MD: misplaced template"):
+        load_config(root, world.environ, ask=None)
+
+
+# -- the trust prompt shows what the model will read
+
+
+def test_the_trust_report_shows_the_text_of_new_prompt_files_and_cuts_a_long_one(
+    world: World,
+) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/deploy.md", "Deploy it\nthen leave\n")
+    put(root, ".tau/prompts/long.md", "x" * 2500)
+    report = tau(world, "trust", cwd=root).out
+    assert "    Deploy it\n    then leave" in report
+    assert "x" * 2000 in report
+    assert "x" * 2001 not in report
+    assert "cut: 500 more characters not shown" in report
+
+
+def test_only_a_changed_file_shows_its_text_again(world: World) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/same.md", "SAMETEXT")
+    changed = put(root, ".tau/prompts/edit.md", "BEFORE")
+    trust(world, root)
+    changed.write_text("AFTERTEXT", encoding="utf-8")
+    report = tau(world, "trust", cwd=root).out
+    assert "AFTERTEXT" in report
+    assert "SAMETEXT" not in report
+
+
+# -- a byte order mark
+
+
+def test_a_byte_order_mark_does_not_hide_the_frontmatter(world: World) -> None:
+    path = world.tau / "skills" / "pdf" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(("﻿" + SKILL).encode())
+    (found,) = skills(world).prompts
+    assert (found.description, found.body) == ("Does a thing", "Body of the skill")

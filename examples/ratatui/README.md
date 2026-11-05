@@ -71,6 +71,7 @@ the highlighted node and the size of the viewed walk: nodes and about chars÷4 t
 | `l` | label the viewed cursor |
 | `[`, `]` | previous / next cursor mark, unfolding what hides it |
 | `f` | follow the viewed cursor again |
+| `p` | go to the node the highlighted one was copied or derived from |
 | Esc | back to the chat |
 
 ### `/config` forms

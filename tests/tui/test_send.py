@@ -156,3 +156,18 @@ async def test_ctrl_r_and_ctrl_t_fold_the_thinking_and_the_tool_boxes(tmp_path: 
         await pilot.press("ctrl+t")
         await until(pilot, lambda: [b.collapsed for b in tools] == [False])
     await h.close()
+
+
+@scenario
+async def test_a_tool_call_line_shows_square_brackets_as_typed(tmp_path: Path) -> None:
+    tool = FakeTool("bash", "done")
+    script = [Reply([Part.Call("c1", "bash", '{"command": "echo [draft] [/b]"}')], Stop.Tools)]
+    h = await Harness.create(tmp_path, provider=FakeProvider([*script, say("ok")]), tools=[tool])
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "run it")
+        await pilot.press("enter")
+        await shows(pilot, app, "ok")
+        (box,) = app.query(Collapsible).filter(".tool-box")
+        (title,) = box.query("CollapsibleTitle")
+        assert "bash(command=echo [draft] [/b])" in title.label.plain  # type: ignore[attr-defined]
+    await h.close()

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
-from world import World, loaded
+from world import World, loaded, tau, trust
 
 from tau import (
     Attachments,
@@ -82,9 +82,9 @@ async def test_arguments_is_the_whole_text_and_quotes_group_words_for_numbers(
 ) -> None:
     template(world, "say", "all: $ARGUMENTS\nfirst: $1\nsecond: $2\n")
     h = await session(tmp_path, world)
-    await h.run("say", {"args": "'two words' end"})
+    await h.run("say", {"args": '"two words" end'})
     await h.settle()
-    assert users(h) == ["all: 'two words' end\nfirst: two words\nsecond: end"]
+    assert users(h) == ['all: "two words" end\nfirst: two words\nsecond: end']
     await h.close()
 
 
@@ -103,16 +103,12 @@ async def test_a_body_with_no_placeholder_gets_the_arguments_after_a_blank_line(
 
 
 @scenario
-async def test_a_missing_number_fails_the_command_and_sends_nothing(
-    tmp_path: Path, world: World
-) -> None:
-    template(world, "two", "$1 and $2")
+async def test_a_missing_number_is_empty_text(tmp_path: Path, world: World) -> None:
+    template(world, "two", "$1 and $2.")
     h = await session(tmp_path, world)
-    with pytest.raises(CommandFailed, match=r"/two uses \$2, but the arguments have 1 word"):
-        await h.run("two", {"args": "only"})
+    await h.run("two", {"args": "only"})
     await h.settle()
-    assert users(h) == []
-    assert h.provider.requests == []
+    assert users(h) == ["only and ."]
     await h.close()
 
 
@@ -164,7 +160,9 @@ async def test_a_skill_sends_its_body_in_a_tag_naming_its_file_then_the_argument
     await h.run("pdf", {"args": "extract page 2"})
     await h.settle()
     assert users(h) == [
-        f'<skill name="pdf" path="{path}">\n# PDF\nUse pdftotext.\n</skill>\n\nextract page 2'
+        f'<skill name="pdf" path="{path}">\n# PDF\nUse pdftotext.\n</skill>\n'
+        f"A relative path in a skill starts from the directory of its file: {path.parent}.\n\n"
+        "extract page 2"
     ]
     await h.close()
 
@@ -175,7 +173,10 @@ async def test_a_skill_with_no_arguments_sends_just_the_tag(tmp_path: Path, worl
     h = await session(tmp_path, world)
     await h.run("pdf")
     await h.settle()
-    assert users(h) == [f'<skill name="pdf" path="{path}">\nbody\n</skill>']
+    assert users(h) == [
+        f'<skill name="pdf" path="{path}">\nbody\n</skill>\n'
+        f"A relative path in a skill starts from the directory of its file: {path.parent}."
+    ]
     await h.close()
 
 
@@ -307,4 +308,219 @@ async def test_a_session_with_no_skills_writes_nothing_even_with_templates(
     await h.send("hello")
     await h.settle()
     assert len(prefix(h)) == 1
+    await h.close()
+
+
+# -- what the arguments of a template are
+
+
+@scenario
+async def test_a_single_quote_is_an_apostrophe_and_double_quotes_group(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "two", "1=$1 2=$2")
+    h = await session(tmp_path, world, replies=2)
+    await h.run("two", {"args": 'don\'t "stop now"'})
+    await h.settle()
+    await h.run("two", {"args": '"" x'})
+    await h.settle()
+    assert users(h) == ["1=don't 2=stop now", "1= 2=x"]
+    await h.close()
+
+
+@scenario
+async def test_two_dollars_write_one_and_numbers_past_nine_are_numbers(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "cost", "$$5 for $10, not $1 0 or $$1")
+    h = await session(tmp_path, world)
+    await h.run("cost", {"args": "a b c d e f g h i j"})
+    await h.settle()
+    assert users(h) == ["$5 for j, not a 0 or $1"]
+    await h.close()
+
+
+@scenario
+async def test_a_body_with_only_dollar_signs_still_gets_the_arguments(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "price", "Costs $$5.")
+    h = await session(tmp_path, world)
+    await h.run("price", {"args": "why"})
+    await h.settle()
+    assert users(h) == ["Costs $5.\n\nwhy"]
+    await h.close()
+
+
+@scenario
+async def test_an_argument_error_is_said_once_with_the_usage_and_ends_nothing_wrong(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "review", "---\nargument-hint: <file> [focus]\n---\nReview $1")
+    h = await session(tmp_path, world)
+    with pytest.raises(CommandFailed) as caught:
+        await h.run("review", {"args": '"never closed'})
+    assert str(caught.value) == (
+        '/review: a " in the arguments is never closed (usage: /review <file> [focus])'
+    )
+    await h.settle()
+    assert (await h.view()).hook_error is None, "it is the caller's error, not a hook's"
+    assert users(h) == []
+    await h.close()
+
+
+@scenario
+async def test_a_template_that_would_send_nothing_is_refused(tmp_path: Path, world: World) -> None:
+    template(world, "blank", "---\ndescription: Says nothing\n---\n")
+    h = await session(tmp_path, world)
+    with pytest.raises(CommandFailed, match="/blank: nothing to send"):
+        await h.run("blank")
+    await h.settle()
+    assert users(h) == []
+    await h.close()
+
+
+@scenario
+async def test_standard_input_follows_the_expansion_after_a_blank_line(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "review", "Review $1")
+    h = await session(tmp_path, world)
+    await h.run("review", {"args": "a.rs", "stdin": "the diff"})
+    await h.settle()
+    assert users(h) == ["Review a.rs\n\nthe diff"]
+    parsed = await h.client.parse_line(h.cursor, "/review a.rs stdin=x")
+    assert parsed.args == {"args": "a.rs stdin=x"}, "the line never fills it"
+    await h.close()
+
+
+@scenario
+async def test_a_skill_attaches_nothing_and_tells_the_model_where_its_paths_start(
+    tmp_path: Path, world: World
+) -> None:
+    """A skill's body is extension-written text: `attachments` never expands it (D24 section 5),
+    wherever the file it names is. The model is told the skill's directory and reads it itself."""
+    path = skill(world, "pdf", "---\ndescription: d\n---\nRead @ref.md and @nope.md, @alice")
+    (path.parent / "ref.md").write_text("REF", encoding="utf-8")
+    work = tmp_path / "elsewhere"
+    work.mkdir()
+    (work / "ref.md").write_text("WORK", encoding="utf-8")
+    h = await session(tmp_path, world, Attachments(work))
+    await h.run("pdf")
+    await h.settle()
+    assert users(h) == [
+        f'<skill name="pdf" path="{path}">\nRead @ref.md and @nope.md, @alice\n</skill>\n'
+        f"A relative path in a skill starts from the directory of its file: {path.parent}."
+    ]
+    await h.close()
+
+
+@scenario
+async def test_a_byte_order_mark_is_not_part_of_the_file(tmp_path: Path, world: World) -> None:
+    (world.tau / "prompts").mkdir(parents=True)
+    (world.tau / "prompts" / "bom.md").write_bytes(
+        "\ufeff---\ndescription: Has a mark\n---\nBody".encode()
+    )
+    h = await session(tmp_path, world)
+    form = next(f for f in await h.client.commands() if f.qualified == "skills:bom")
+    assert form.description == "Has a mark"
+    await h.run("bom")
+    await h.settle()
+    assert users(h) == ["Body"]
+    await h.close()
+
+
+# -- files that change while it runs
+
+
+@scenario
+async def test_edited_added_and_deleted_templates_are_noticed_before_a_command_runs(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "old", "OLD $ARGUMENTS")
+    template(world, "gone", "GONE")
+    h = await session(tmp_path, world, replies=3)
+    template(world, "old", "EDITED $ARGUMENTS")
+    template(world, "fresh", "FRESH $ARGUMENTS")
+    (world.tau / "prompts" / "gone.md").unlink()
+    names = [f.name for f in await h.client.commands()]
+    assert "fresh" in names
+    assert "gone" not in names
+    await h.run("old", {"args": "a"})
+    await h.settle()
+    await h.run("fresh", {"args": "b"})
+    await h.settle()
+    assert users(h) == ["EDITED a", "FRESH b"]
+    with pytest.raises(LookupError):
+        await h.run("gone")
+    await h.close()
+
+
+@scenario
+async def test_a_new_name_is_known_to_the_line_before_it_is_called_unknown(
+    tmp_path: Path, world: World
+) -> None:
+    h = await session(tmp_path, world)
+    template(world, "late", "LATE")
+    parsed = await h.client.parse_line(h.cursor, "/late")
+    assert parsed.command.qualified == "skills:late"
+    assert "/late" in await h.client.complete_line(h.cursor, "/la")
+    await h.close()
+
+
+@scenario
+async def test_the_skills_list_the_model_sees_is_still_written_once(
+    tmp_path: Path, world: World
+) -> None:
+    skill(world, "pdf", "---\ndescription: d\n---\nb")
+    h = await session(tmp_path, world, tools=True)
+    skill(world, "later", "---\ndescription: added after the start\n---\nb")
+    await h.send("hello")
+    await h.settle()
+    assert "later" not in prefix(h)[1], "the list is the prefix: it was read at the start"
+    assert "skills:later" in [f.qualified for f in await h.client.commands()]
+    await h.close()
+
+
+@scenario
+async def test_a_file_edited_into_an_error_is_a_command_that_says_so(
+    tmp_path: Path, world: World
+) -> None:
+    template(world, "fine", "ok")
+    template(world, "bad", "ok")
+    h = await session(tmp_path, world)
+    template(world, "bad", "---\nnot frontmatter\n---\nx")
+    with pytest.raises(CommandFailed, match="expected `key: value`"):
+        await h.run("bad")
+    await h.settle()
+    await h.run("fine")  # the others still work
+    await h.settle()
+    assert users(h) == ["ok"]
+    await h.close()
+
+
+@scenario
+async def test_a_project_file_changed_since_it_was_trusted_is_not_used(
+    tmp_path: Path, world: World
+) -> None:
+    root = world.project()
+    path = root / ".tau" / "prompts" / "deploy.md"
+    path.parent.mkdir()
+    path.write_text("approved text", encoding="utf-8")
+    trust(world, root)
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([DONE] * 2),
+        extensions=[Skills.of(loaded(world, root))],
+    )
+    path.write_text("swapped text", encoding="utf-8")
+    with pytest.raises(CommandFailed, match="has changed since you approved it") as caught:
+        await h.run("deploy")
+    assert "tau trust" in str(caught.value)
+    await h.settle()
+    assert users(h) == []
+    assert tau(world, "trust", cwd=root).code == 0
+    await h.run("deploy")  # trusted again: the new text
+    await h.settle()
+    assert users(h) == ["swapped text"]
     await h.close()

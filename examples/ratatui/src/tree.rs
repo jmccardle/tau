@@ -135,22 +135,24 @@ impl Tree {
         )
     }
 
-    /// The marks of cursors for the rows `model` shows.
+    /// The marks of cursors for the rows the last plan drew: the cursors it had, so a row never
+    /// names one the marks lack (one that closed since is still marked where it was, until the
+    /// next plan); `model` says whether each is busy or asking.
     pub fn marks_of(&self, model: &Model) -> Marks {
-        let open = model
-            .views()
+        let open = self
+            .open_at
             .iter()
-            .map(|(c, v)| {
+            .map(|(cursor, at)| {
+                let view = model.views().get(cursor);
                 let flags = Flags {
-                    at: usize::try_from(v.at).expect("a node id fits"),
-                    busy: v.busy,
-                    asking: !v.questions.is_empty(),
+                    at: *at,
+                    busy: view.is_some_and(|v| v.busy),
+                    asking: view.is_some_and(|v| !v.questions.is_empty()),
                 };
-                (*c, flags)
+                (*cursor, flags)
             })
             .collect();
-        let gone: BTreeMap<u64, usize> = self.gone_at.clone();
-        Marks::new(open, &gone, model.labels().to_vec(), self.viewed)
+        Marks::new(open, &self.gone_at, model.labels().to_vec(), self.viewed)
     }
 
     /// The rows to draw in a window `height` high, as a range of `flat`; the window keeps the
@@ -158,7 +160,8 @@ impl Tree {
     pub fn window(&self, height: usize) -> std::ops::Range<usize> {
         let height = height.max(1);
         self.height.set(height);
-        let mut top = self.top.get().min(self.flat.len().saturating_sub(1));
+        // The window ends at the last row at most: a terminal that grew shows more above.
+        let mut top = self.top.get().min(self.flat.len().saturating_sub(height));
         if self.highlight < top {
             top = self.highlight;
         } else if self.highlight >= top + height {
@@ -308,6 +311,7 @@ impl Tree {
             KeyCode::Char('l') => return Ok(Act::Label(self.viewed)),
             KeyCode::Char('v') => return Ok(self.view(model)),
             KeyCode::Char('f') => self.follow()?,
+            KeyCode::Char('p') => self.source(model)?,
             KeyCode::Char('[') => self.mark(false)?,
             KeyCode::Char(']') => self.mark(true)?,
             _ => {}
@@ -401,6 +405,29 @@ impl Tree {
         }
     }
 
+    /// `p`: highlight the node the highlighted one was derived or copied from, unfolding what
+    /// hides it. A node that came from none says so.
+    fn source(&mut self, model: &Model) -> Result<(), String> {
+        let Some(flat) = self.highlighted() else {
+            return Ok(());
+        };
+        let id = flat.row.node;
+        let node = model
+            .node(id as u64)
+            .ok_or(format!("node {id} is not held"))?;
+        let from = node.derived_from.or(node.copied_from);
+        match from.map(usize::try_from) {
+            Some(Ok(source)) if source < self.shape.len() => self.reveal(source),
+            Some(_) => Err(format!(
+                "node {id} comes from a node that is not in the tree"
+            )),
+            None => {
+                self.said = Some(format!("Node {id} was not copied or derived from another"));
+                Ok(())
+            }
+        }
+    }
+
     /// `[` and `]`: highlight the previous or next node with a cursor at it, open or closed, in
     /// node order, around the ends; a branch folded over it is unfolded.
     fn mark(&mut self, forward: bool) -> Result<(), String> {
@@ -423,7 +450,11 @@ impl Tree {
                 .find(|m| **m < here)
                 .or(self.marks.last())
         };
-        let target = *target.expect("marks is not empty");
+        self.reveal(*target.expect("marks is not empty"))
+    }
+
+    /// Highlight `target`, unfolding what hides it, and stop following the viewed cursor.
+    fn reveal(&mut self, target: usize) -> Result<(), String> {
         self.following = false;
         let chain = self.plan(|plan, _| plan.locate(target, None))??;
         for row in &chain[..chain.len() - 1] {

@@ -266,7 +266,9 @@ class TreeRows:
         for row in rows:
             opened = row.expandable and self._folds.get(row.key, row.opens)
             label = row_label(row, self.marks, folded=not opened)
-            made = parent.add(label.text, data=row, expand=opened, allow_expand=row.expandable)
+            made = parent.add(
+                Text(label.text), data=row, expand=opened, allow_expand=row.expandable
+            )
             shown = _Shown(made, row, label, depth)
             self._shown[row.key] = shown
             self._note_marked(row)
@@ -350,7 +352,7 @@ class TreeRows:
             if width
             else (label.text, None)
         )
-        shown.widget.set_label(text)
+        shown.widget.set_label(Text(text))
         self.tree.paint(shown.row.key, label.kind, label.tag_size, dim_at)
 
     def _width(self) -> int:

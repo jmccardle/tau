@@ -11,7 +11,7 @@ import errno
 import os
 import stat
 import unicodedata
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 MAX_BYTES = 1 << 20
@@ -124,22 +124,53 @@ def _children(directory: Path) -> list[Path]:
     return [directory / name for name in names if not name.startswith(".")]
 
 
+def _is_markdown(name: str) -> bool:
+    """Whether `name` ends in `.md` in any case: `x.MD` is a misplaced template, not no file."""
+    return name.lower().endswith(".md")
+
+
+def prompt_candidates(
+    names: Callable[[str], list[str]], is_dir: Callable[[str], bool]
+) -> list[str]:
+    """The paths under `.tau/` that are, or look like they were meant to be, a template or a skill
+    file: `prompts/*.md` and `skills/*/SKILL.md`, and the places they are mistaken for (a `.md` in
+    any case, one level inside a `prompts/` subdirectory, a flat `skills/*.md`, a `skill.md` of
+    another case). `names(relative)` lists a directory under `.tau/` (none if absent) and
+    `is_dir(relative)` says whether a path is one; both leave out names starting with `.`."""
+    found: list[str] = []
+    for top in (PROMPTS_DIR, SKILLS_DIR):
+        for name in names(top):
+            path = f"{top}/{name}"
+            if not is_dir(path):
+                if _is_markdown(name):
+                    found.append(path)
+                continue
+            for inner in names(path):
+                wanted = _is_markdown(inner) if top == PROMPTS_DIR else inner.lower() == "skill.md"
+                if wanted:
+                    found.append(f"{path}/{inner}")
+    return sorted(found)
+
+
 def read_prompt_files(tau: Path) -> dict[str, bytes]:
-    """The prompt templates and skills of a project's `.tau` directory, as bytes: each
-    `prompts/NAME.md` and each `skills/NAME/SKILL.md` (path relative to `tau`, with `/`; other
-    files are not read). A symlink among them, or any file `read_regular` refuses, is a
+    """The prompt templates and skills of a project's `.tau` directory, as bytes, and the files
+    that look like one in the wrong place (`prompt_candidates`): path relative to `tau`, with
+    `/`. Other files are not read. A symlink among them, or any file `read_regular` refuses, is a
     `TrustError`. Nothing is returned for a directory that is absent."""
-    files: dict[str, bytes] = {}
-    for path in _children(tau / PROMPTS_DIR):
-        if path.name.endswith(".md") and not path.is_dir():
-            raw = read_regular(path)
-            if raw is None:
-                raise refusal(path, "vanished while the project was read")
-            files[f"{PROMPTS_DIR}/{path.name}"] = raw
-    for path in _children(tau / SKILLS_DIR):
+
+    def names(relative: str) -> list[str]:
+        return [p.name for p in _children(tau / relative)]
+
+    def is_dir(relative: str) -> bool:
+        path = tau / relative
         if path.is_symlink():
             raise refusal(path, "is a symlink; tau refuses symlinks inside a project")
-        raw = read_regular(path / SKILL_FILE) if path.is_dir() else None
-        if raw is not None:
-            files[f"{SKILLS_DIR}/{path.name}/{SKILL_FILE}"] = raw
+        return path.is_dir()
+
+    files: dict[str, bytes] = {}
+    for relative in prompt_candidates(names, is_dir):
+        raw = read_regular(tau / relative)
+        if raw is None:
+            raise refusal(tau / relative, "vanished while the project was read")
+        files[relative] = raw
     return files

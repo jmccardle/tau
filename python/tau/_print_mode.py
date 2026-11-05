@@ -29,7 +29,7 @@ import signal
 import socket
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, TextIO, cast
 
@@ -52,7 +52,7 @@ from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
 from tau._values import Json
-from tau.commandline import UnknownCommand, value
+from tau.commandline import STDIN, Parsed, UnknownCommand, value
 
 _INTERRUPTED = 130
 _SIGPIPE = 141  # 128 + SIGPIPE: the reader of standard output went away
@@ -489,10 +489,21 @@ async def _send(run: _Run, message: str) -> int:
     return code
 
 
-async def _command(run: _Run, line: str) -> int:
+def _with_stdin(parsed: Parsed, piped: str) -> Parsed:
+    """`parsed` with `piped` as its command's `stdin`; `UsageError` for a command with none."""
+    if STDIN not in cast("Json", parsed.command.schema.get("properties", {})):
+        raise UsageError(f"/{parsed.command.name} does not read standard input")
+    return replace(parsed, args={**parsed.args, STDIN: piped})
+
+
+async def _command(run: _Run, line: str, piped: str) -> int:
     """Run the command line, and wait for any step it caused to end. If the command sent input,
-    the reply to it is printed after the command's own result, as a message's is."""
+    the reply to it is printed after the command's own result, as a message's is. `piped`, what
+    standard input held, goes to the command's `stdin` parameter, which a command without one
+    refuses."""
     parsed = await run.client.parse_line(run.cursor, line)
+    if piped:
+        parsed = _with_stdin(parsed, piped)
     if parsed.missing:
         raise UsageError(f"{line.split(maxsplit=1)[0]} needs: {', '.join(parsed.missing)}")
     if parsed.extension is not None and not parsed.args:
@@ -520,16 +531,19 @@ async def _command(run: _Run, line: str) -> int:
     return code
 
 
-async def _perform(run: _Run, message: str) -> int:
-    """The message: a command line if it starts with `/` (and names a command), else text."""
+async def _perform(run: _Run, message: str, piped: str) -> int:
+    """The message: a command line if it starts with `/` (and names a command), else text, which
+    is followed by what standard input held (`piped`)."""
     if message.startswith("/"):
         try:
-            return await _command(run, message)
+            return await _command(run, message, piped)
         except UnknownCommand as e:
+            if ":" in e.name:  # `/skills:nope` names an extension: it cannot be text
+                return run.failed("UnknownCommand", f"no command /{e.name}")
             run.note(f"no command /{e.name}: sent as text")
         except (ValueError, LookupError) as e:
             raise UsageError(str(e)) from None
-    return await _send(run, message)
+    return await _send(run, f"{message}\n\n{piped}" if piped else message)
 
 
 def _check_rules(run: _Run) -> None:
@@ -549,7 +563,7 @@ def _check_rules(run: _Run) -> None:
             )
 
 
-async def _drive(run: _Run, message: str) -> int:
+async def _drive(run: _Run, message: str, piped: str) -> int:
     """The run, from the snapshot to the status."""
     _check_rules(run)
     await run.client.watch([run.cursor])  # `Live`: `--json` prints it; a retry wait is told
@@ -559,7 +573,7 @@ async def _drive(run: _Run, message: str) -> int:
         for line in run.report():
             run.note(line)
     try:
-        return await _perform(run, message)
+        return await _perform(run, message, piped)
     except _Refused as e:
         await run.abort()
         return run.failed("RuleRefused", str(e))
@@ -567,7 +581,7 @@ async def _drive(run: _Run, message: str) -> int:
         return run.failed(type(e).__name__, str(e))
 
 
-async def _main(process: Process, args: object, message: str) -> int:
+async def _main(process: Process, args: object, message: str, piped: str) -> int:
     opened = await open_client(
         args,
         client=client_id(),
@@ -587,7 +601,7 @@ async def _main(process: Process, args: object, message: str) -> int:
         if run.json and opened.welcome is not None:
             run.line({"kind": "Welcome", **cast("Json", encode(opened.welcome))})
         try:
-            return await _drive(run, message)
+            return await _drive(run, message, piped)
         except asyncio.CancelledError:  # the first SIGINT
             task = asyncio.current_task()
             if task is not None:
@@ -627,12 +641,12 @@ def print_mode(process: Process, args: object) -> int:
     hooks and commands go to stderr only with `--verbose`."""
     if getattr(args, "resume"):  # noqa: B009
         raise UsageError("-r chooses a session on a terminal; -p names it: --session REF, or -c")
-    message = message_of(getattr(args, "message"), process.stdin)  # noqa: B009
+    message = message_of(getattr(args, "message"), process.stdin, process.stderr)  # noqa: B009
 
     async def main() -> int:
         task = asyncio.current_task()
         if task is None or threading.current_thread() is not threading.main_thread():
-            return await _main(process, args, message)  # signals are the main thread's
+            return await _main(process, args, *message)  # signals are the main thread's
         loop = asyncio.get_running_loop()
 
         def again() -> None:
@@ -645,7 +659,7 @@ def print_mode(process: Process, args: object) -> int:
 
         loop.add_signal_handler(signal.SIGINT, first)
         try:
-            return await _main(process, args, message)
+            return await _main(process, args, *message)
         finally:
             loop.remove_signal_handler(signal.SIGINT)
 

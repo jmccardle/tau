@@ -13,6 +13,7 @@ message `-p` sends.
 
 import argparse
 import fnmatch
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TextIO
@@ -148,7 +149,8 @@ def extension_flags() -> argparse.ArgumentParser:
         "--no-extensions",
         action="store_true",
         help="skip every discovered extension source except -e: no installed package or drop-in "
-        "(the built-ins, base_tools and step_limit, still follow `load`)",
+        "(the built-ins, agents, attachments, base_tools, compaction, permissions, prune, skills, "
+        "step_limit and usage, still follow `load`)",
     )
     return flags
 
@@ -241,17 +243,40 @@ def session_flags() -> argparse.ArgumentParser:
     return flags
 
 
-def message_of(words: Sequence[str], stdin: TextIO) -> str:
-    """The message: `words` joined with single spaces, then, if `stdin` is not a terminal, a blank
-    line and what it holds. `UsageError` if neither has anything."""
+STDIN_WAIT = 2.0
+"""Seconds `-p` reads standard input before it says that it is waiting for it."""
+
+
+def _read_stdin(stdin: TextIO, stderr: TextIO) -> str:
+    """What `stdin` holds, to the end. If nothing has arrived after `STDIN_WAIT` seconds, say on
+    `stderr`, once, that this is what is being waited for, and go on waiting."""
+
+    def say() -> None:
+        stderr.write("tau: reading stdin (use </dev/null for none)\n")
+        stderr.flush()
+
+    timer = threading.Timer(STDIN_WAIT, say)
+    timer.daemon = True
+    timer.start()
+    try:
+        first = stdin.read(1)
+    finally:
+        timer.cancel()
+    return first + stdin.read() if first else ""
+
+
+def message_of(words: Sequence[str], stdin: TextIO, stderr: TextIO) -> tuple[str, str]:
+    """The message as `words` joined with single spaces, and what `stdin` holds if it is not a
+    terminal: the message is the first, or, if there are no words, the second. The second is
+    otherwise kept apart, so a command can take it as its own and never as its arguments.
+    `UsageError` if neither has anything."""
     text = " ".join(words)
     text = text if text.strip() else ""
-    piped = "" if stdin.isatty() else stdin.read()
+    piped = "" if stdin.isatty() else _read_stdin(stdin, stderr)
     piped = piped if piped.strip() else ""
-    message = f"{text}\n\n{piped}" if text and piped else text or piped
-    if not message:
+    if not text and not piped:
         raise UsageError(
             "nothing to send: give the message as arguments, or on standard input "
             "(`tau -p </dev/null` has none)"
         )
-    return message
+    return (text, piped) if text else (piped, "")

@@ -8,7 +8,10 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
 };
 
-use crate::form::{Field, Focus, Form, Pick, Widget, show};
+use crate::{
+    form::{Field, Focus, Form, Pick, Widget, show},
+    ui::wrap,
+};
 
 const HINT: &str = "Tab next  Space toggles  \u{2190}\u{2192} choose  Enter on Apply applies  \
                     Esc cancels";
@@ -92,7 +95,7 @@ fn widget_line(field: &Field, focused: bool) -> (Line<'static>, Option<u16>) {
 /// Draw `form`; where the terminal's cursor goes, if the keyboard is in a text field.
 pub fn draw_form(f: &mut Canvas, form: &Form) -> Option<Position> {
     let area = f.area();
-    let wide = 78.min(area.width);
+    let wide = area.width;
     let tall = area.height.saturating_sub(2).max(8);
     let inner = centered(f, area, wide, tall, &form.title);
     let [body, hint] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
@@ -118,7 +121,12 @@ pub fn draw_form(f: &mut Canvas, form: &Form) -> Option<Position> {
         } else {
             Style::new()
         };
-        lines.push(Line::styled(head, look));
+        let across = usize::from(body.width);
+        lines.extend(
+            wrap(&head, across)
+                .into_iter()
+                .map(|l| Line::styled(l, look)),
+        );
         let (line, at) = widget_line(field, focused);
         if focused {
             seen_at = lines.len();
@@ -126,10 +134,11 @@ pub fn draw_form(f: &mut Canvas, form: &Form) -> Option<Position> {
         }
         lines.push(line);
         if let Some(error) = &field.error {
-            lines.push(Line::styled(
-                format!("  {error}"),
-                Style::new().fg(Color::Red),
-            ));
+            lines.extend(
+                wrap(&format!("  {error}"), across)
+                    .into_iter()
+                    .map(|l| Line::styled(l, Style::new().fg(Color::Red))),
+            );
         }
     }
     lines.push(Line::default());
@@ -157,7 +166,12 @@ pub fn draw_form(f: &mut Canvas, form: &Form) -> Option<Position> {
         Span::styled("[ Cancel ]", look(focus == Focus::Cancel)),
     ]));
     if let Some(error) = &form.error {
-        lines.push(Line::styled(error.clone(), Style::new().fg(Color::Red)));
+        let red = Style::new().fg(Color::Red);
+        lines.extend(
+            wrap(error, usize::from(body.width))
+                .into_iter()
+                .map(|l| Line::styled(l, red)),
+        );
     }
     // Keep the focused part in view.
     let height = usize::from(body.height);

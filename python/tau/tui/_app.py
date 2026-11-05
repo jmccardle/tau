@@ -151,7 +151,11 @@ class TauApp(App[None]):
         yield QuestionStack(self)
         yield PendingInput()
         yield Composer(
-            self._line.complete_text, self._line.rows, self._line.submit, self.action_move
+            self._line.complete_text,
+            self._line.rows,
+            self._line.submit,
+            self.action_move,
+            self._line.renew,
         )
         yield StatusBar()
 
@@ -196,7 +200,7 @@ class TauApp(App[None]):
     ) -> None:
         """Show a toast, and keep it in `toasts`."""
         self.toasts.append(f"{title}: {text}" if title else text)
-        self.notify(text, title=title, severity=severity, timeout=timeout)
+        self.notify(text, title=title, severity=severity, timeout=timeout, markup=False)
 
     def screen_text(self) -> str:
         """What the screen says, without its styling: the header, the cursor bar, the transcript,

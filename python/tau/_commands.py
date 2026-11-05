@@ -7,9 +7,10 @@ dispatched, and it runs ahead of the extensions' `pre_step` hooks. Any other com
 once, as a task on the loop. `run` answers a future: the command's result (a `str` or `None`),
 or `CommandFailed`, which carries the failure as `"Type: msg"`; a failed `Cursor` command also
 ends its step `Failed`, as a failing hook does (the cursor's `hook_error` names `pre_step` and
-the extension that lists the command). The future is answered when the command returns or
-raises, not when its step ends. Each `progress` call of a command is a `Notice` to the client
-that ran it.
+the extension that lists the command). A command may raise `CommandFailed` itself to refuse (its
+arguments, say): its caller is told the message as written, and it is no hook failure. The future
+is answered when the command returns or raises, not when its step ends. Each `progress` call of a
+command is a `Notice` to the client that ran it.
 
 `/config` is not a function: its values are a mapping, which the type language has no hint
 for. `configure` runs the built-in `config` the same way a `Cursor` command runs.
@@ -176,8 +177,10 @@ class Commands:
         at_rest: Callable[[int], bool],
         spawn: Callable[[Coroutine[object, object, None]], None],
         on_loop: Callable[[Callable[[], None]], Callable[[], None]],
+        rescan: Callable[[], None] = lambda: None,
     ) -> None:
         self._commands = dict(commands)
+        self._rescan = rescan
         self._session = session
         self._catalog = catalog
         self._options = options
@@ -204,6 +207,7 @@ class Commands:
     def forms(self) -> tuple[Form, ...]:
         """Each command's form, and `/config`'s if some extension has options: its one
         parameter is the extension, and `options` has the rest."""
+        self._rescan()
         forms = tuple(c.form for c in self._commands.values())
         names = self._options.names()
         if not names:
@@ -244,6 +248,7 @@ class Commands:
         when the cursor is not at rest. Nothing is opened or started for a refused call."""
         if name == CONFIG and self._options.names():
             raise ValueError(f"/{CONFIG} is not run with arguments: use configure")
+        self._rescan()
         command = self._named(name)
         with self._frontend():
             self._session.cursor(cursor)
@@ -369,6 +374,9 @@ class Commands:
                     pending.future.cancel()
                     raise  # the driver is cancelling this job, not `stop`
                 _settle(pending.future, error=CommandFailed(_ABORTED))
+                return Answer.Hooks(None, None)
+            except CommandFailed as e:  # it refused: said to who ran it, once, as written
+                _settle(pending.future, error=e)
                 return Answer.Hooks(None, None)
             except Exception as e:
                 error = describe_failure(e)

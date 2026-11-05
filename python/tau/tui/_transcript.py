@@ -154,7 +154,9 @@ class ChatDisplay(WindowedWalk):
             case Body.Results(outcomes=outcomes):
                 line = self._results(node, outcomes)
             case Body.System(text=text):
-                widget = QuietCollapsible(Static(text), title="System prompt", collapsed=True)
+                widget = QuietCollapsible(
+                    Static(text, markup=False), title="System prompt", collapsed=True
+                )
                 widget.add_class("system-box")
                 line = "[System prompt]"
             case Body.Config(config=config):
