@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Keep, LOSSY_NOTE, Sink};
-use crate::walk::{Glob, Hidden, Item, clean, walk};
+use crate::walk::{Exclude, Glob, Hidden, Item, clean, walk};
 use crate::{Cancel, Limits, Result, lock, parse_args, resolve};
 
 #[derive(Deserialize)]
@@ -24,6 +24,8 @@ use crate::{Cancel, Limits, Result, lock, parse_args, resolve};
 struct Args {
     pattern: String,
     path: Option<String>,
+    /// Not in the model's schema: set by a hook (permissions) to leave files out of the walk.
+    exclude: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,11 +101,13 @@ impl Find {
         if !root.is_dir() {
             return Err(format!("path not found: {given}").into());
         }
+        let exclude = args.exclude.as_deref().map(Exclude::new).transpose()?;
         let found = Found::default();
         let cap = self.limits.max_overflow;
         walk(
             &root,
             Some(&glob),
+            exclude.as_ref(),
             Hidden::Included,
             &|| cancel.is_cancelled() || found.stopped.load(Ordering::Relaxed),
             &|e| lock(&found.unreadable).push(e),
@@ -123,7 +127,11 @@ impl Find {
             },
         );
         cancel.check()?;
-        Ok(self.render(found, &args.pattern))
+        let mut text = self.render(found, &args.pattern);
+        if let Some(note) = exclude.as_ref().and_then(Exclude::note) {
+            let _ = write!(text, "\n{note}");
+        }
+        Ok(text)
     }
 
     fn render(&self, found: Found, pattern: &str) -> String {
@@ -199,6 +207,43 @@ mod tests {
         assert_eq!(below, "deep/c.rs");
         let slashed = call(&tool, &json!({"pattern": "src/**/*.rs"})).unwrap();
         assert_eq!(slashed, "src/deep/c.rs");
+    }
+
+    #[test]
+    fn exclude_leaves_files_and_directories_out_and_says_so() {
+        let (tool, dir) = setup(10_000);
+        touch(&dir, &["a.rs", "secret/b.rs", "other/{x}.rs"]);
+        let root = dir.path().canonicalize().unwrap();
+        let exclude = json!([format!("{}/secret/.*", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": exclude})).unwrap();
+        assert_eq!(
+            out,
+            "a.rs\nother/{x}.rs\n[1 path(s) left out of this search: they match its `exclude` patterns]"
+        );
+        let one = json!([format!("{}/other/[{{]x[}}].rs", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": one})).unwrap();
+        assert_eq!(
+            out,
+            "a.rs\nsecret/b.rs\n[1 path(s) left out of this search: they match its `exclude` patterns]"
+        );
+    }
+
+    #[test]
+    fn exclude_dot_matches_a_newline_and_a_directory_is_pruned_only_when_all_below_it_matches() {
+        let (tool, dir) = setup(10_000);
+        touch(&dir, &["a.rs", "x\ny.rs", "secret/b.rs", "secre/c.rs"]);
+        let root = dir.path().canonicalize().unwrap();
+        let newline = json!([format!("{}/x.*y.rs", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": newline})).unwrap();
+        assert!(!out.contains("y.rs"), "{out}");
+        // `secret.` could match the directory `secret/` itself, but not what is in it.
+        let some = json!([format!("{}/secret.", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": some})).unwrap();
+        assert!(
+            out.contains("secret/b.rs") && out.contains("secre/c.rs"),
+            "{out}"
+        );
+        assert!(!out.contains("left out"), "{out}");
     }
 
     #[test]

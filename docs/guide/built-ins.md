@@ -375,6 +375,14 @@ source. `tau ext disable compaction` or `tau ext disable prune` removes either.
 
 ## Ask before a tool runs
 
+Permissions is an example guardrail for the built-in file tools (`read`, `write`, `edit` and
+`grep`, with `find`). It catches accidents: a model that wanders into `/etc`, or edits a file you
+meant to keep. It is not a security boundary, and `bash` is out of its scope: a `bash` rule is a
+pattern over the command's text, and a shell has endless ways to say the same thing. Real
+enforcement belongs below the agent, at the operating-system level: run τ as a separate user with
+only the access you want it to have, in a mount namespace or container that does not show the
+files, or under Landlock.
+
 Out of the box τ runs whatever tool the model calls and asks nothing, as it always has. Write rules
 and it asks. A rule is a tool's name, or a tool's name, a colon and a pattern. There are three
 lists, and a call is checked against `deny` first, then `allow`, then `ask`; a call that no rule
@@ -412,14 +420,29 @@ link that lands in `/etc`. A rule that starts with a plain relative name (`read:
 `write:./out/*`) starts in the session's working directory, as the tool's own paths do, so
 `allow: ["read:src/*"]` allows `src/a.py` and nothing outside that directory. (`tau config check`
 reads the rule as written and has no working directory to resolve it against, so it says nothing
-about it.) A rule that starts with `/` or a wildcard is used as it is. `grep` also names each of its
+about it.) Relative means relative to the session's directory, for `deny`, `ask` and `allow` alike,
+not to the config file's directory. A rule that starts with `/` or a wildcard is used as it is. `grep` also names each of its
 `files` (and the working directory when it names no path): a `deny` or `ask` fires if any of them
 matches, an `allow` needs all of them to, and an `allow` matches the resolved path only.
 
-`grep` and `find` read everything under their root, so a `deny` or `ask` for `grep:/etc/*` also
-refuses a search that is rooted at `/etc`, at a directory that holds it (`path=/`) or at a link to
-it. It refuses such a broad search whole; it does not filter the results. A rule that starts with a
-wildcard (`grep:*secret*`) has no directory to compare, and holds only for the paths a search names.
+An `ask` for a search works the other way: `ask: ["grep:/etc/*"]` asks before any `grep` rooted at
+or inside `/etc`, and before one that holds it (`path=/`), since the search could read there.
+(A pattern that starts with a wildcard has no directory to compare, and asks only for the paths a
+search names.)
+
+`grep` and `find` read everything under their root, so a `deny` for them is applied to what they
+find too. `deny: ["grep:/etc/*"]` refuses a search that is rooted inside `/etc` (`path=/etc/ssh`, or
+a link into it), or that names a file there. A search that only *holds* `/etc` (`path=/etc`, `path=/`,
+no path in a directory that contains it, a link to it) runs, but leaves out every file the pattern
+matches, including a file reached through a link, and ends its answer with a line such as `[2 path(s)
+left out of this search: they match its exclude patterns]`. A directory that matches is not
+entered, so nothing inside it is read or named in an error. The model is told because an answer
+that silently lacks files reads as "no match", and it would conclude wrongly; the line gives no
+names or contents. A `read` deny with a pattern (`read:/home/me/.ssh/*`) guards what `grep` reads
+in the same way; `find` lists names only, so it follows its own `find` rules. Every search
+of the tool is given its deny patterns, since a link under any root can lead to a denied file;
+nothing is added to the answer unless a file was left out. A rule that starts with a wildcard
+(`grep:*secret*`) works the same way. The files are left out of `grep`'s overflow file too.
 
 Commands are harder, because a glob is not a shell. An `allow` pattern never runs a command that
 chains or redirects (`;`, `&`, `|`, a backtick, `$(`, `<`, `>`, or a new line) unless the pattern

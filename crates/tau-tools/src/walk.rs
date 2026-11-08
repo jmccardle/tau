@@ -9,10 +9,12 @@
 //! name; one with a `/` against the path below the walked directory.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use globset::{GlobBuilder, GlobMatcher};
 pub(crate) use ignore::DirEntry as Item; // rules: allow(entry): the `ignore` crate's name
 use ignore::{WalkBuilder, WalkState};
+use regex_automata::meta;
 
 use crate::{Result, ToolError};
 
@@ -61,12 +63,73 @@ impl Glob {
     }
 }
 
+/// Paths a walk leaves out: files whose absolute path, or the real path they resolve to
+/// (symlinks followed), matches one of the patterns, and directories whose path with a `/`
+/// added does (they are not entered). A pattern is a regular expression (Rust syntax) over the
+/// whole path; the caller writes it, so the grammar of the rule it came from is the caller's.
+pub(crate) struct Exclude {
+    set: meta::Regex,
+    left_out: AtomicUsize,
+}
+
+impl Exclude {
+    /// # Errors
+    /// A pattern is not a regular expression.
+    pub(crate) fn new(patterns: &[String]) -> Result<Self> {
+        let whole: Vec<String> = patterns.iter().map(|p| format!(r"\A(?s:{p})\z")).collect();
+        let set = meta::Regex::new_many(&whole)
+            .map_err(|e| ToolError(format!("invalid exclude pattern: {e}")))?;
+        Ok(Self {
+            set,
+            left_out: AtomicUsize::new(0),
+        })
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        self.set.is_match(&*path.to_string_lossy())
+    }
+
+    /// Whether `path` is left out; counts it if so. A directory is left out only if the patterns
+    /// match it with a trailing `/` and also a made-up path below it, so one that names what is
+    /// inside it (`/x/secret/*`) prunes it, and `/x/secret?` or `/x/secret/*.key` do not.
+    fn hides(&self, path: &Path, dir: bool) -> bool {
+        let tried = |p: &Path| {
+            if dir {
+                let below = |tail: &str| {
+                    let mut with = p.as_os_str().to_owned();
+                    with.push(tail);
+                    self.matches(Path::new(&with))
+                };
+                below("/") && below("/\u{1}x/y\nz")
+            } else {
+                self.matches(p)
+            }
+        };
+        let hidden = tried(path) || std::fs::canonicalize(path).is_ok_and(|real| tried(&real));
+        if hidden {
+            self.left_out.fetch_add(1, Ordering::Relaxed);
+        }
+        hidden
+    }
+
+    /// The note that tells the reader the search left paths out, if it did.
+    pub(crate) fn note(&self) -> Option<String> {
+        match self.left_out.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(format!(
+                "[{n} path(s) left out of this search: they match its `exclude` patterns]"
+            )),
+        }
+    }
+}
+
 /// Walk the directory `root`, calling the visitor `make` returns (one per walker thread) for
-/// every item that is not a directory and that `glob` allows, hidden ones as `hidden` says. `stop` is asked before each
+/// every item that is not a directory, that `glob` allows and that `exclude` does not hide, hidden ones as `hidden` says. `stop` is asked before each
 /// item; the walk ends once it says so. A path the walk cannot read goes to `on_error`.
 pub(crate) fn walk<'s, V>(
     root: &'s Path,
     glob: Option<&'s Glob>,
+    exclude: Option<&'s Exclude>,
     hidden: Hidden,
     stop: &'s (dyn Fn() -> bool + Sync),
     on_error: &'s (dyn Fn(String) + Sync),
@@ -89,9 +152,18 @@ pub(crate) fn walk<'s, V>(
             }
             match found {
                 Ok(item) if !item.file_type().is_some_and(|t| t.is_dir()) => {
-                    if glob.is_none_or(|g| g.allows(root, item.path())) {
+                    if glob.is_none_or(|g| g.allows(root, item.path()))
+                        && !exclude.is_some_and(|x| x.hides(item.path(), false))
+                    {
                         visit(&item);
                     }
+                }
+                // A directory `exclude` hides is not entered: nothing under it is read, and no
+                // error can name what is in it.
+                Ok(item)
+                    if item.depth() > 0 && exclude.is_some_and(|x| x.hides(item.path(), true)) =>
+                {
+                    return WalkState::Skip;
                 }
                 Ok(_) => {}
                 Err(e) => on_error(e.to_string()),

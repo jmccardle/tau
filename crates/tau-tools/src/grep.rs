@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Keep, LOSSY_NOTE, Sink};
-use crate::walk::{Glob, Hidden, Item, clean, walk};
+use crate::walk::{Exclude, Glob, Hidden, Item, clean, walk};
 use crate::{Cancel, Limits, Result, ToolError, lock, parse_args, resolve};
 
 /// The most bytes of one matching line that are shown.
@@ -43,6 +43,8 @@ struct Args {
     files: Option<Vec<String>>,
     ignore_case: Option<bool>,
     glob: Option<String>,
+    /// Not in the model's schema: set by a hook (permissions) to leave files out of a walk.
+    exclude: Option<Vec<String>>,
 }
 
 /// The lines of one file that matched.
@@ -171,10 +173,12 @@ impl Grep {
             return Err(format!("path not found: {given}").into());
         }
         let glob = args.glob.as_deref().map(Glob::new).transpose()?;
+        let exclude = args.exclude.as_deref().map(Exclude::new).transpose()?;
         let unreadable = |e: String| lock(&search.unreadable).push(e);
         walk(
             &root,
             glob.as_ref(),
+            exclude.as_ref(),
             Hidden::Skipped,
             &|| search.should_stop(),
             &unreadable,
@@ -187,6 +191,9 @@ impl Grep {
                 }
             },
         );
+        if let Some(note) = exclude.as_ref().and_then(Exclude::note) {
+            *lock(&search.left_out) = Some(note);
+        }
         Ok(false)
     }
 
@@ -250,6 +257,7 @@ impl Grep {
                 unreadable.len()
             ));
         }
+        notes.extend(into_data(search.left_out));
         for note in notes {
             let _ = write!(text, "\n{note}");
         }
@@ -284,6 +292,8 @@ struct Search<'a> {
     found: Mutex<Vec<Hits>>,
     binary: Mutex<Vec<Binary>>,
     unreadable: Mutex<Vec<String>>,
+    /// The note about files an `exclude` left out, if any.
+    left_out: Mutex<Option<String>>,
 }
 
 impl<'a> Search<'a> {
@@ -305,6 +315,7 @@ impl<'a> Search<'a> {
             found: Mutex::new(Vec::new()),
             binary: Mutex::new(Vec::new()),
             unreadable: Mutex::new(Vec::new()),
+            left_out: Mutex::new(None),
         }
     }
 
@@ -464,6 +475,33 @@ mod tests {
 
     fn call(tool: &Grep, args: &Value) -> Result<String> {
         tool.run(&args.to_string(), &Cancel::new())
+    }
+
+    #[test]
+    fn exclude_leaves_files_out_by_path_or_by_the_link_target_and_says_so() {
+        let (tool, dir) = setup(10_000);
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("keep")).unwrap();
+        fs::create_dir_all(root.join("secret")).unwrap();
+        fs::write(root.join("keep/a.txt"), "needle\n").unwrap();
+        fs::write(root.join("secret/b.txt"), "needle\n").unwrap();
+        std::os::unix::fs::symlink(root.join("secret/b.txt"), root.join("keep/link.txt")).unwrap();
+        let exclude = json!([format!("{}/secret/.*", root.display())]);
+        let out = call(&tool, &json!({"pattern": "needle", "exclude": exclude})).unwrap();
+        assert!(out.starts_with("keep/a.txt:1:needle\n"), "{out}");
+        assert!(
+            !out.contains("b.txt:") && !out.contains("link.txt:"),
+            "{out}"
+        );
+        assert!(out.contains("[2 path(s) left out of this search"), "{out}");
+    }
+
+    #[test]
+    fn exclude_with_a_bad_pattern_is_an_error() {
+        let (tool, dir) = setup(10_000);
+        fs::write(dir.path().join("a"), "x").unwrap();
+        let e = call(&tool, &json!({"pattern": "x", "exclude": ["(a"]})).unwrap_err();
+        assert!(e.0.contains("invalid exclude pattern"), "{e:?}");
     }
 
     #[test]
