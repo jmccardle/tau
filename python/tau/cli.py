@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import NamedTuple, TextIO
 
 from tau._config import ConfigError, Price
-from tau._config_clean import Against, Cleaning, clean_files
+from tau._config_clean import Cleaning, clean_config
 from tau._config_layers import (
     LayerText,
     ModelCatalog,
@@ -79,7 +79,7 @@ from tau._launch import (
 )
 from tau._markdown import to_markdown
 from tau._options import save_options
-from tau._print_mode import SIGPIPE_STATUS, detach, print_mode
+from tau._print_mode import SIGPIPE_STATUS, detach, print_mode, reader_gone
 from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
@@ -331,23 +331,8 @@ def _clean(  # noqa: PLR0913, PLR0917 - what the check found, and what was asked
     files = {"user": tau_home(run.environ) / "config.json"}
     if loaded.project is not None:
         files["project"] = project_config_path(loaded.project.root)
-    unknown = sorted(
-        s.key
-        for s in result.sources
-        if s.kind not in ("built-in", "load") and s.key in off_keys(result.sources)
-    )
-    if unknown and cleaning.clean:
-        found.lines.append(
-            f"tau: tool names are not checked: {', '.join(unknown)} (not loaded) may provide "
-            "tools whose names are unknown without loading them"
-        )
-    against = Against(
-        loaded.catalog,
-        {s.key for s in result.sources if s.kind != "load"},
-        result.extensions,
-        None if unknown else tool_names(result.extensions),
-    )
-    found.lines += clean_files({k: v for k, v in files.items() if k in layers}, cleaning, against)
+    named = {k: v for k, v in files.items() if k in layers}
+    found.lines += clean_config(named, cleaning, loaded.catalog, result)
     again = _user_only(run)  # a project file just changed is untrusted until approved
     found.failed = any(
         p.severity == "error"
@@ -752,7 +737,7 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     try:
         return _flushed(_main(given, run), out, err)
     except BrokenPipeError:
-        if _reader_gone(out):
+        if reader_gone(out):
             detach(out)
         return SIGPIPE_STATUS
 
@@ -768,16 +753,6 @@ def _flushed(status: int, out: TextIO, err: TextIO) -> int:
         detach(out)
         return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
     return status
-
-
-def _reader_gone(out: TextIO) -> bool:
-    """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
-    If it was standard error's, standard output is left alone (its buffer may go to a file)."""
-    try:
-        out.flush()
-    except BrokenPipeError:
-        return True
-    return False
 
 
 def _main(given: Sequence[str], run: _Run) -> int:

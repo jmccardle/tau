@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import cast
 
 from tau._config import ConfigError
-from tau._config_layers import ModelCatalog
-from tau._extensions import RETRY
+from tau._config_layers import ModelCatalog, tool_names
+from tau._extensions import RETRY, Inspection
 from tau._options import make_options, option_fields
+from tau._startup import off_keys
 from tau._trust import write_atomically
 from tau._values import Context
 
@@ -140,6 +141,32 @@ def _clean_options(name: str, ext: object, mine: Layer, against: Against) -> lis
                 del mine[key]
             removed += [f"extensions.{name}.{key}: {item!r}" for item in gone]
     return removed
+
+
+def clean_config(
+    files: Mapping[str, Path], cleaning: Cleaning, catalog: ModelCatalog, result: Inspection
+) -> list[str]:
+    """`--clean` and `--purge` over the layer `files` named, against what `result` (the check's
+    inspection of the extensions) found. Returns the lines to tell the person. While an extension
+    that is not built in is off, its tools are unknown without loading it, so no tool name is
+    called missing, and the first line says so."""
+    off = off_keys(result.sources)
+    unknown = sorted(
+        s.key for s in result.sources if s.kind not in ("built-in", "load") and s.key in off
+    )
+    lines: list[str] = []
+    if unknown and cleaning.clean:
+        lines.append(
+            f"tau: tool names are not checked: {', '.join(unknown)} (not loaded) may provide "
+            "tools whose names are unknown without loading them"
+        )
+    against = Against(
+        catalog,
+        {s.key for s in result.sources if s.kind != "load"},
+        result.extensions,
+        None if unknown else tool_names(result.extensions),
+    )
+    return lines + clean_files(files, cleaning, against)
 
 
 def clean_files(files: Mapping[str, Path], cleaning: Cleaning, against: Against) -> list[str]:

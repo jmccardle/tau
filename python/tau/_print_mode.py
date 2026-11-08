@@ -667,6 +667,16 @@ def detach(stream: TextIO) -> None:
         os.close(null)
 
 
+def reader_gone(out: TextIO) -> bool:
+    """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
+    If it was standard error's, standard output is left alone (its buffer may go to a file)."""
+    try:
+        out.flush()
+    except BrokenPipeError:
+        return True
+    return False
+
+
 def print_mode(process: Process, args: object) -> int:
     """`tau -p` as `args` (parsed by `tau.cli`) say: returns the exit status. `UsageError` for
     what is wrong with the line only once it is read (`-r`, nothing to send, a command line
