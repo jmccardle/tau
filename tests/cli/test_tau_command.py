@@ -68,7 +68,12 @@ def test_check_reports_the_options_of_the_extensions_it_knows(world: World) -> N
     world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": "ten"}}})
     assert "option 'limit' must be integer" in tau(world, "config", "check").out
     world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": 10}, "mine": {}}})
-    assert tau(world, "config", "check") == Result(0, "", ""), "a project's own extension: not here"
+    assert tau(world, "config", "check") == Result(
+        0,
+        "config: warning: extensions.mine: no loaded extension is named 'mine'; "
+        "its options are ignored\n",
+        "",
+    ), "options of an extension nothing loads are a warning"
 
 
 def test_check_reports_the_options_of_an_extension_that_is_not_an_object(world: World) -> None:

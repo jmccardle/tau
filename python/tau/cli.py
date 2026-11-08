@@ -35,14 +35,15 @@ from pathlib import Path
 from typing import NamedTuple, TextIO
 
 from tau._config import ConfigError, Price
+from tau._config_clean import Against, Cleaning, clean_files
 from tau._config_layers import (
     LayerText,
     ModelCatalog,
     check_config,
     option_problems,
     read_models,
+    tool_names,
 )
-from tau._config_tree import ConfigProblem
 from tau._context import system_prompt
 from tau._core import (
     BadRecord,
@@ -58,9 +59,11 @@ from tau._dotenv import DotenvError
 from tau._extensions import (
     ExtensionLoadError,
     ExtensionSource,
+    Inspection,
     absolute_explicit,
     inspect_extensions,
     list_extensions,
+    load_key_warnings,
     switch_source,
 )
 from tau._launch import (
@@ -101,6 +104,7 @@ from tau._trust import (
     create_project,
     ensure_trusted,
     find_project,
+    project_config_path,
     project_environment,
     refuse_special,
     tau_home,
@@ -139,6 +143,27 @@ def _parser() -> _Parsers:
     config_sub = config.add_subparsers(dest="config_command", metavar="{check,set}")
     check = config_sub.add_parser("check", help="report every problem in the config files")
     check.add_argument("--show", metavar="MODEL", help="print MODEL's resolved values and sources")
+    check.add_argument(
+        "--clean",
+        action="store_true",
+        help="remove from the config file what it names that is missing or invalid: sources, "
+        "extensions, options and tools nothing provides (your file; see --layer)",
+    )
+    check.add_argument(
+        "--purge",
+        action="append",
+        default=[],
+        metavar="EXTENSION",
+        help="turn EXTENSION off and remove all its options, so it starts from its defaults when "
+        "enabled again (repeatable; your file; see --layer)",
+    )
+    check.add_argument(
+        "--layer",
+        action="append",
+        choices=("user", "project"),
+        help="the file --clean and --purge write: your user config (default) or the trusted "
+        "project's, which must then be approved again (repeatable)",
+    )
     saved = config_sub.add_parser(
         "set", help="write extension options into your config file (every session)"
     )
@@ -245,7 +270,7 @@ def _project_findings(
         return project.layer(), environ, True
 
 
-def _check(run: _Run, show: str | None) -> int:
+def _check(run: _Run, show: str | None, cleaning: Cleaning, layers: Sequence[str]) -> int:
     home = tau_home(run.environ)
     root = find_project(run.cwd, run.environ).root
     found = _Findings()
@@ -267,7 +292,9 @@ def _check(run: _Run, show: str | None) -> int:
         _print(run, found.lines)
         return 1
     loaded = load_config(run.cwd, run.environ, ask=None)
-    _extension_findings(loaded, found)
+    result = _extension_findings(loaded, found)
+    if cleaning and result is not None:
+        loaded = _clean(run, loaded, result, cleaning, layers, found)
     _print(run, found.lines)
     if found.failed:
         return 1
@@ -277,29 +304,53 @@ def _check(run: _Run, show: str | None) -> int:
     return 0
 
 
+def _clean(  # noqa: PLR0913, PLR0917 - what the check found, and what was asked
+    run: _Run,
+    loaded: LoadedConfig,
+    result: Inspection,
+    cleaning: Cleaning,
+    layers: Sequence[str],
+    found: _Findings,
+) -> LoadedConfig:
+    """`--clean` and `--purge`: clean the layer files named (the user's, and the trusted project's
+    if asked), say what went, and read the layers again; `found.failed` is whether an option the
+    extensions refuse is left."""
+    files = {"user": tau_home(run.environ) / "config.json"}
+    if loaded.project is not None:
+        files["project"] = project_config_path(loaded.project.root)
+    against = Against(
+        loaded.catalog,
+        {s.key for s in result.sources if s.kind != "load"},
+        result.extensions,
+        tool_names(result.extensions),
+    )
+    found.lines += clean_files({k: v for k, v in files.items() if k in layers}, cleaning, against)
+    again = _user_only(run)  # a project file just changed is untrusted until approved
+    found.failed = any(
+        p.severity == "error" for p in option_problems(again.catalog, result.extensions)
+    )
+    return again
+
+
 def _print(run: _Run, lines: Sequence[str]) -> None:
     for line in lines:
         run.stdout.write(safe_block(line) + "\n")
 
 
-def _extension_findings(loaded: LoadedConfig, found: _Findings) -> None:
+def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | None:
     """Load the extensions, as a start would: a failed source is an error with the message a
     start prints, a `load` key no source has is a warning, and the options the layers set for
     the loaded extensions are checked against their types."""
     result = inspect_extensions(loaded)
-    for source in result.sources:
-        if source.kind == "load" and source.state == "off":
-            key = source.key
-            where = loaded.catalog.load_sources[key]
-            note = f"{source.detail}"
-            found.lines.append(str(ConfigProblem("warning", note, where, f"load.{key}")))
+    found.lines += [str(p) for p in load_key_warnings(loaded.catalog, result.sources)]
     if result.errors:
         found.lines += result.errors
         found.failed = True
-        return
+        return None
     for problem in option_problems(loaded.catalog, result.extensions):
         found.lines.append(str(problem))
         found.failed = found.failed or problem.severity == "error"
+    return result
 
 
 def _user_only(run: _Run) -> LoadedConfig:
@@ -321,7 +372,11 @@ def _set(run: _Run, assignments: Sequence[tuple[str, str, str]]) -> int:
     loaded = _user_only(run)
     extensions = inspect_extensions(loaded)
     extensions.raise_failures()
-    save_options(UserConfig(loaded.home), option_changes(extensions.extensions, assignments))
+    save_options(
+        UserConfig(loaded.home),
+        option_changes(extensions.extensions, assignments),
+        tool_names(extensions.extensions),
+    )
     shown = " ".join(f"{e}.{n}={g}" for e, n, g in assignments)
     run.stdout.write(safe_text(f"set {shown} in {loaded.home / 'config.json'}") + "\n")
     return 0
@@ -562,7 +617,7 @@ def _ext_command(run: _Run, args: argparse.Namespace) -> int:
 def _config_command(run: _Run, args: argparse.Namespace) -> int:
     if args.config_command == "set":
         return _set(run, args.assignments)
-    return _check(run, args.show)
+    return _check(run, args.show, Cleaning(args.clean, tuple(args.purge)), args.layer or ["user"])
 
 
 def _program(run: _Run, args: argparse.Namespace) -> int:

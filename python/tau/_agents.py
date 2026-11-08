@@ -42,14 +42,18 @@ class Options:
         if TOOL in self.tools:
             raise ValueError(f"a sub-agent cannot be offered {TOOL!r}: agents do not nest")
 
+    def missing_tools(self, tools: Sequence[str]) -> dict[str, list[str]]:
+        """The option fields that name a tool nothing loaded provides, each with those names: a
+        sub-agent would be offered no such tool, and nothing would say so."""
+        missing = [name for name in self.tools if name not in tools]
+        return {"tools": missing} if missing else {}
+
     def tool_problems(self, tools: Sequence[str]) -> list[str]:
-        """The `tools` names that nothing loaded provides: a sub-agent would be offered no such
-        tool, and nothing would say so."""
+        """`missing_tools` as sentences."""
         return [
             f"tools names {name!r}, which no loaded extension provides; the tools are "
             f"{sorted(tools)}"
-            for name in self.tools
-            if name not in tools
+            for name in self.missing_tools(tools).get("tools", [])
         ]
 
 

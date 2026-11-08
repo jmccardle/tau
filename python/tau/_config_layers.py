@@ -27,12 +27,12 @@ from tau._config_tree import (
     source_of,
     suggest,
 )
-from tau._options import make_options, option_fields
+from tau._options import make_layer_options, option_fields, unknown_options
 from tau._protocols import Provider
 from tau._tools import assemble_tools
 from tau._values import Context, DefinitionError
 
-CLI = "cli"
+CLI = "session"
 _MODEL_KEYS = (
     "model",
     "base_url",
@@ -69,7 +69,7 @@ Layer = Path | LayerText
 
 @dataclass(frozen=True)
 class Origin:
-    """Where one resolved value came from: the layer (file path or `"cli"`) and
+    """Where one resolved value came from: the layer (file path or `"session"`) and
     the qualified name of the group that set it (`None`: the model itself)."""
 
     key: str
@@ -648,35 +648,48 @@ def _build(
 def option_problems(
     catalog: ModelCatalog, extensions: Sequence[object]
 ) -> tuple[ConfigProblem, ...]:
-    """Every problem in what the layers set for the `extensions` that have options, and for
-    options set where there can be none: an extension that has no options, and `retry` (D24
-    section 4: the provider wrapper, which `load` switches and nothing tunes)."""
+    """Every problem in what the layers set for the `extensions`. A value the extension's options
+    type refuses is an `error`. Configuration that names something this start does not have is
+    a `warning`, and is ignored: an option that names a tool no loaded extension provides
+    (`Options.tool_problems`), options of an extension that has none (and of `retry`, D24 section
+    4: the provider wrapper, which `load` switches and nothing tunes), and options of an
+    extension that is not loaded. An extension may be a file that was deleted, so a config
+    cannot rely on its cleaning up after itself."""
     problems: list[ConfigProblem] = []
+    loaded = {str(getattr(e, "name")) for e in extensions}  # noqa: B009
+    for key in sorted(catalog.extensions):
+        if key not in loaded and key != "retry":
+            message = f"no loaded extension is named {key!r}; its options are ignored"
+            problems.append(ConfigProblem("warning", message, None, f"extensions.{key}"))
     bare = [str(e.name) for e in extensions if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
     for key in ("retry", *bare):
         if catalog.extensions.get(key):
-            message = f"extension {key!r} has no options"
-            problems.append(ConfigProblem("error", message, None, f"extensions.{key}"))
-    tools = _tool_names(extensions)
+            message = f"extension {key!r} has no options; they are ignored"
+            problems.append(ConfigProblem("warning", message, None, f"extensions.{key}"))
+    tools = tool_names(extensions)
     for ext in extensions:
         options = getattr(ext, "options", None)
         if options is None:
             continue
         name = cast("str", getattr(ext, "name"))  # noqa: B009
         raw = dict(catalog.extensions.get(name, {}))
+        fields = option_fields(name, options)
+        for key in unknown_options(fields, raw):
+            message = f"extension {name!r} has no option {key!r}; it is ignored"
+            problems.append(ConfigProblem("warning", message, None, f"extensions.{name}.{key}"))
         try:
-            made = make_options(name, options, option_fields(name, options), raw, Context(catalog))
+            made = make_layer_options(name, options, fields, raw, Context(catalog))
         except (ConfigError, DefinitionError) as e:
             problems.append(ConfigProblem("error", str(e), None, f"extensions.{name}"))
             continue
         check = getattr(made, "tool_problems", None)
-        if check is not None:  # an option that names tools: each must be one a start offers
+        if check is not None:  # an option that names tools: each should be one a start offers
             for message in check(tools):
-                problems.append(ConfigProblem("error", message, None, f"extensions.{name}"))
+                problems.append(ConfigProblem("warning", message, None, f"extensions.{name}"))
     return tuple(problems)
 
 
-def _tool_names(extensions: Sequence[object]) -> list[str]:
+def tool_names(extensions: Sequence[object]) -> list[str]:
     """The names of the tools the `extensions` provide."""
     listed, _ = assemble_tools((), extensions)
     return [cast("str", getattr(t, "name")) for t in listed]  # noqa: B009
@@ -704,7 +717,7 @@ def check_config(  # noqa: PLR0913 - the layers, the environment, and what is ch
     warning. An empty result means the layers are sound.
     """
     catalog, found = _build(user, project, cli, environ, providers)
-    return found + option_problems(catalog, extensions)
+    return found + (option_problems(catalog, extensions) if extensions else ())
 
 
 def read_models(

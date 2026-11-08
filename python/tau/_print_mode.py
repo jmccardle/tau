@@ -623,6 +623,8 @@ async def _main(process: Process, args: object, message: str, piped: str) -> int
         getattr(args, "verbose"),  # noqa: B009
     )
     try:
+        for warning in opened.warnings:
+            process.stderr.write("tau: " + safe_block(warning) + "\n")
         if run.json and opened.welcome is not None:
             run.line({"kind": "Welcome", **cast("Json", encode(opened.welcome))})
         try:

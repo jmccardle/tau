@@ -85,10 +85,9 @@ def option_changes(
     for extension, name, given in assignments:
         if extension == "load":
             raise ConfigError(
-                f"load.{name} is not an extension option: `load` is read from the config files "
-                f"only (D19 section 3), and no flag switches it for one run. `tau ext disable "
-                f"{name}` writes load.{name} = false to your config file; `tau ext enable "
-                f"{name}` undoes it"
+                f"load.{name} is not an extension option: `tau ext disable {name}` writes "
+                f"load.{name} = false to your config file, and `tau ext enable {name}` undoes "
+                f"it (`--set load.{name}=false` does it for one run)"
             )
         options = getattr(known.get(extension), "options", None)
         if options is None:

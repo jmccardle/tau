@@ -89,19 +89,42 @@ def make_options(
         raise ConfigError(f"extension {extension!r}: {e}") from e
 
 
+def unknown_options(fields: tuple[Field, ...], raw: Mapping[str, object]) -> list[str]:
+    """The keys of `raw` that none of `fields` is: configuration for an option the extension
+    does not have (a version that dropped it). Loading warns about them and goes on."""
+    known = {f.name for f in fields}
+    return [k for k in raw if k not in known]
+
+
+def make_layer_options(
+    extension: str, options: type, fields: tuple[Field, ...], raw: Json, context: Context
+) -> Any:
+    """`make_options` for what the config layers hold: an option the extension does not have
+    is left out (`unknown_options` says so); a value its type refuses is still a `ConfigError`."""
+    gone = unknown_options(fields, raw)
+    return make_options(
+        extension, options, fields, {k: v for k, v in raw.items() if k not in gone}, context
+    )
+
+
 def save_options(
     user: "UserConfig",
     saving: Mapping[str, tuple[type, tuple[Field, ...], Json]],
+    tools: Sequence[str],
 ) -> "ModelCatalog":
     """Write `changes` into the user's file: `saving` maps each extension to its options type,
     its `Field`s and the JSON values to set. Every extension's options, as the layers hold them
-    with the change, are built before anything is written (`ConfigError`); returns the catalog
-    the layers make now."""
+    with the change, are built before anything is written, and one that names a tool not in
+    `tools` is refused (`ConfigError`): a file that τ writes never names what is missing. Returns
+    the catalog the layers make now."""
 
     def fits(catalog: "ModelCatalog") -> None:
         for name, (options, fields, _) in saving.items():
             raw = dict(catalog.extensions.get(name, {}))
-            make_options(name, options, fields, raw, Context(catalog))
+            made = make_layer_options(name, options, fields, raw, Context(catalog))
+            check = getattr(made, "tool_problems", None)
+            if check is not None and (problems := check(tools)):
+                raise ConfigError("\n".join(problems))
 
     return user.save_options({name: changes for name, (_, _, changes) in saving.items()}, fits)
 
@@ -209,7 +232,7 @@ class ExtensionOptions:
         return base
 
     def _make(self, extension: str, raw: Json) -> Any:
-        return make_options(
+        return make_layer_options(
             extension,
             self._types[extension],
             self._fields[extension],
@@ -240,7 +263,7 @@ class ExtensionOptions:
         if self._user is None or self._use_catalog is None:
             raise ConfigError("this driver has no user config to write")
         saving = {extension: (self._types[extension], self._fields[extension], dict(changes))}
-        self._use_catalog(save_options(self._user, saving))
+        self._use_catalog(save_options(self._user, saving, list(self._tool_names())))
 
     def save_branch(self, extension: str, node: int, values: Mapping[str, object]) -> None:
         """Write into the user's file the options of `extension` that `values` and the `Config`
@@ -274,6 +297,8 @@ class ExtensionOptions:
         if model is not None:
             self._catalog().resolve(model)
         for name, new in extensions.items():
+            if name in self._fields and (extra := unknown_options(self._fields[name], dict(new))):
+                raise ConfigError(f"extension {name!r}: unexpected options {extra}")
             made = self._make(name, {**self._raw(name, at), **new})
             check = getattr(made, "tool_problems", None)
             if check is not None:  # an option that names tools: each must be one the driver has

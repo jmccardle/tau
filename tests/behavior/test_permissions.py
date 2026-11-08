@@ -833,3 +833,17 @@ async def test_always_says_it_was_written_when_nothing_hides_it(tmp_path: Path) 
         "permissions: 'bash:git push' is allowed from now on (written to allow in your config file)"
     )
     await h.close()
+
+
+@scenario
+async def test_saving_a_rule_for_a_missing_tool_is_refused_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    h, _ = await start(tmp_path, [])
+    user = UserConfig(tmp_path / "tau-home")
+    user_config = tmp_path / "tau-home" / "config.json"
+    assert not user_config.exists()
+    with pytest.raises(ConfigError, match="names the tool 'Bash'"):
+        await h.configure("permissions", {"ask": ["Bash"]}, save=True)
+    assert not user_config.exists(), "neither the node nor the file"
+    assert user.saved("permissions") == {}

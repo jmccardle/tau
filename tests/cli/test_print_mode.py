@@ -383,7 +383,8 @@ def test_set_is_for_this_run_only_and_changes_no_file(configured: World) -> None
     ("assignment", "complaint"),
     [
         ("nope.limit=1", "extension 'nope' has no options"),
-        ("load.retry=false", "tau ext disable retry"),
+        ("load.nope=true", "no extension source has the key 'nope'"),
+        ("load.retry=maybe", "'maybe' is not true or false"),
         ("step_limit.nope=1", "has no option 'nope'"),
         ("step_limit.limit=ten", "step_limit.limit"),
         ("step_limit.limit=0", "at least 1"),

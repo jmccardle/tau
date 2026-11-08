@@ -246,20 +246,30 @@ class Options:
         for name in ("deny", "allow", "ask"):
             _rules(getattr(self, name))
 
-    def tool_problems(self, tools: Sequence[str]) -> list[str]:
-        """The rules that name a tool no extension provides (a misspelled name would match
-        nothing, and a `deny` that matches nothing is no guard). A tool of a built-in extension
-        that is not loaded (`agent`, with `agents` off) is known: a rule for it is no error."""
+    def missing_tools(self, tools: Sequence[str]) -> dict[str, list[str]]:
+        """The rule lists that name a tool no extension provides, each with those rules (a
+        misspelled name would match nothing, and a `deny` that matches nothing is no guard). A
+        tool of a built-in extension that is not loaded (`agent`, with `agents` off) is known: a
+        rule for it names nothing missing."""
         known = {*tools, *_builtin_tools()}
-        found: list[str] = []
+        found: dict[str, list[str]] = {}
         for name in ("deny", "allow", "ask"):
-            for rule in _rules(getattr(self, name)):
-                if rule.tool not in known:
-                    found.append(
-                        f"{name} rule {str(rule)!r} names the tool {rule.tool!r}, which no loaded "
-                        f"extension provides; the tools are {sorted(tools)}"
-                    )
+            texts: list[str] = list(getattr(self, name))
+            bad = [
+                t for t, rule in zip(texts, _rules(texts), strict=True) if rule.tool not in known
+            ]
+            if bad:
+                found[name] = bad
         return found
+
+    def tool_problems(self, tools: Sequence[str]) -> list[str]:
+        """`missing_tools` as sentences."""
+        return [
+            f"{name} rule {str(rule)!r} names the tool {rule.tool!r}, which no loaded extension "
+            f"provides; the tools are {sorted(tools)}"
+            for name, texts in self.missing_tools(tools).items()
+            for rule in _rules(texts)
+        ]
 
     def first(self, mode: Mode, call: Call, extra: Iterable[str] = ()) -> Rule | None:
         """The first rule of the list `mode` (and `extra`, for `allow`) that matches `call`."""

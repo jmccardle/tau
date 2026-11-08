@@ -1135,8 +1135,6 @@ def test_a_file_that_cannot_be_used_stops_the_start_and_creates_nothing(
     [
         ("attachments", {"limit": 0}, "an attachment limit must be at least 1 byte"),
         ("step_limit", {"limit": 0}, "a step limit must be at least 1"),
-        ("retry", {"x": 1}, "extension 'retry' has no options"),
-        ("base_tools", {"x": 1}, "extension 'base_tools' has no options"),
     ],
 )
 def test_options_an_extension_refuses_stop_the_start_before_a_session_exists(

@@ -875,8 +875,9 @@ that asks for tools (a step limit turned auto-step off: `stopped without a final
 limit?)`), or no text (`gave an empty reply`). A failed agent is closed like any other, and `to` can
 reopen it. `to` must name an `agent:` label: anything else (`to=""` included) is `there is no agent
 'X'`. A closed cursor is reopened; an open one at rest (a crash left it; `tau serve --stop` aborts and closes agents first, 8E-5) is continued as it is; one that is busy is `agent:N
-is still working`. A name in `tools` that no loaded extension provides is a `ConfigError` at the
-start and an error in `tau config check` (`Options.tool_problems`, as permissions'). A list option
+is still working`. A name in `tools` that no loaded extension provides is a `ConfigError` from `/config` and
+`tau config set`, and a warning at the start and in `tau config check` when a file holds it
+(`Options.missing_tools`, 8E-6, as permissions'). A list option
 typed on a command line (`commandline.value`, and the ratatui form) is split at commas and each
 item trimmed. The agent cursor's `tools` are kept in the extension's memory
 for the length of the call, read from the calling branch's options (so `/config agents tools=...`
@@ -912,3 +913,11 @@ or package with the key `agents` is a different source and not off by default. H
   relative path in a skill starts from the directory of its file: /abs/NAME." Nothing in the
   body is attached (§5: only a person's typing is), so the model reads the files itself.
 
+
+### 8E-6 (config hardening; D13 "Built (8E-6)")
+
+A permissions rule or an `agents.tools` name that nothing provides is refused when set (`/config`,
+`tau config set`) and only warned about when a file already holds it, at the start and in `tau
+config check`: a deny naming an unloaded tool was fatal. `tau config check --clean` removes such
+entries. Retry has no switch of its own: `--set load.retry=false` or `TAU_SETTINGS` turns the
+provider wrapper off for one run, like any other `load` key.

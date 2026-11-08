@@ -395,13 +395,15 @@ def test_load_false_turns_a_source_off_and_the_row_says_which_file_did(world: Wo
         assert found[key]["detail"] == f"load.{key} = false in {world.tau / 'config.json'}"
 
 
-def test_load_true_for_a_key_nothing_has_stops_the_start(world: World) -> None:
+def test_load_true_for_a_key_nothing_has_starts_and_check_warns(world: World) -> None:
     world.user_config({"load": {"nope": True}})
-    with pytest.raises(ExtensionLoadError) as caught:
-        load_extensions(start(world))
-    assert f"load.nope = true in {world.tau / 'config.json'}" in str(caught.value)
-    assert "no extension source has the key 'nope'" in str(caught.value)
-    assert rows(world)["nope"]["state"] == "failed"
+    assert names(load_extensions(start(world))) == BUILT_INS
+    found = rows(world)["nope"]
+    assert found["state"] == "off"
+    assert str(found["detail"]).startswith("no extension source has the key 'nope'")
+    result = tau(world, "config", "check")
+    assert result.code == 0
+    assert "warning: load.nope: no extension source has the key 'nope'" in result.out
 
 
 def test_load_false_for_a_key_nothing_has_starts_and_check_warns(world: World) -> None:
@@ -409,7 +411,7 @@ def test_load_false_for_a_key_nothing_has_starts_and_check_warns(world: World) -
     assert names(load_extensions(start(world))) == BUILT_INS
     result = tau(world, "config", "check")
     assert result.code == 0
-    assert "warning: load.nope: no extension source has the key 'nope' (a typo?)" in result.out
+    assert "warning: load.nope: no extension source has the key 'nope' (a typo, or" in result.out
 
 
 def test_the_project_load_layer_overrides_the_users(world: World) -> None:

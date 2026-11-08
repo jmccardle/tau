@@ -29,8 +29,8 @@ There are three layers, and the nearest wins:
 
 1. **user**: `$TAU_HOME/config.json`;
 2. **project**: `.tau/config.json` in a trusted project (below);
-3. **command line**: the few flags that are config: `--system-prompt`, and `--set` for an
-   extension's options (below).
+3. **session**: for one run, never written: `--system-prompt`, `--set`, and the `TAU_SETTINGS`
+   environment variable (below).
 
 Layers merge as JSON: objects merge by key, and lists and scalars replace. A `null` removes a key
 inherited from a lower layer. So a project can change one setting of one of your models and leave
@@ -113,8 +113,29 @@ tau config check --show work:big
 message`, or a dotted path to the setting when there is no line. A JSON mistake gets a line and
 column; an unknown key gets a suggestion. Errors make the exit status 1; warnings (an unset key
 variable, a literal key) do not. It also loads your extensions and checks their options.
+
+Configuration that names something this start does not have is a warning, never an error, and is
+ignored: a `load` key no extension has, options of an extension that is not loaded (deleted, or
+turned off), options of an extension that takes none, an option the extension does not have, and a tool name nothing provides (a
+`permissions` rule, an `agents` `tools` entry). An extension may be nothing but a file that gets
+deleted, so τ cannot count on it cleaning up its own settings. A *value* the extension's option
+type refuses is still an error. `/config` and `tau config set` refuse an unknown option outright.
 `--show NAME` prints each resolved value of one model with the file and group it came from. A key's
 value is never printed.
+
+```bash skip
+tau config check --clean
+tau config check --purge agents
+tau config check --clean --layer project
+```
+
+`--clean` removes what the warnings are about, and any option the extension's type refuses, from
+your config file, and says what it took out. `--purge EXTENSION` (repeatable) turns the extension
+off (`load.EXTENSION = false`) and removes all of its options, so it starts from its defaults when
+you enable it again; for an extension that no longer exists it just removes its keys. They write
+your user file only; `--layer project` (repeatable, with `--layer user`) writes the trusted
+project's `.tau/config.json` instead, and then the project is untrusted until you run `tau trust`
+again, because its content changed.
 
 ### `tau config set`
 
@@ -127,18 +148,32 @@ value is checked by the extension's own option type first, and nothing is writte
 It never writes a project's file. `tau ext enable KEY` and `tau ext disable KEY` write the `load`
 key the same way.
 
-### `--set`
+### Session settings
 
 ```bash skip
 tau -p --set step_limit.limit=5 "tidy the imports"
+tau -p --set load.retry=false "no retries this time"
+TAU_SETTINGS='{"load": {"retry": false}, "extensions": {"step_limit": {"limit": 5}}}' tau -p "go"
 ```
 
-`--set EXTENSION.FIELD=VALUE` is the command-line layer for extension options: the same assignment
-as `tau config set`, read the same way and checked by the same option type, but for this run only
-and written nowhere. It may be repeated, and it takes `tau`, `tau -p` and `tau serve`. It
-replaces 0.15's `--max-turns` and `--ext-config`. A mistake (an extension that has no options, a
-field it lacks, a value its type refuses) stops the start before a session is made. For a session
-a `tau serve` already holds, `--set` is an error: the server's options are loaded.
+The session layer is the nearest one: it applies to one run, whichever program starts it (`tau`,
+`tau -p`, `tau serve`), and is written nowhere. It has the shape of the `extensions` and `load` keys
+of a config file and merges with the files by the same rules (objects by key, lists and scalars
+replace, `null` drops). Nothing else is a session setting: models belong in the files, and
+`--system-prompt` is its own flag.
+
+- `--set EXTENSION.FIELD=VALUE` sets an extension's option, read the same way as `tau config set`
+  and checked by the extension's option type. `--set load.KEY=true|false` switches an extension
+  source on or off for the run. Both may be repeated.
+- `TAU_SETTINGS` is a JSON object with `load` and `extensions` keys, for scripts. `--set` is
+  nearer than it, key by key. It is read from the shell's environment only, never from a
+  project's `.env`.
+
+A mistake in a `--set` (an extension that has no options or is not loaded, a field it lacks, a value
+its type refuses, a `load` key no source has) or an invalid `TAU_SETTINGS` stops the start before a
+session is made. `TAU_SETTINGS` naming something that is not there is only a warning, as in a file.
+For a session a `tau serve` already holds, `--set` is an error and `TAU_SETTINGS` is not read: the
+server's options are loaded. `--set` replaces 0.15's `--max-turns` and `--ext-config`.
 
 ## Projects and trust
 
@@ -261,6 +296,9 @@ fix:
 - *model 'x' is not in your config*: the name is misspelt (the message lists close ones) or
   the config file has an error; run `tau config check`.
 - *project is not trusted*: run `tau trust DIR`.
+- *warnings before the first message* (`tau: config: warning: ...`): your config names something
+  this start lacks, such as a deleted extension's options. The start went on and ignored them;
+  `tau config check --clean` removes them.
 - *extension "x" failed to load; tau did not start*: the message names the source and the way
   past it, `tau ext disable x`, or `--no-extensions`.
 - *session ... is in use by another process*: another `tau` or `tau serve` holds it. Work on a

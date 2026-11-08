@@ -133,6 +133,8 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     started = await start_session(
         args, environ=run.environ, cwd=run.cwd, prompts=prompts(run.stdin, run.stdout)
     )
+    for warning in started.warnings:
+        run.stderr.write("tau: " + safe_block(warning) + "\n")
     if args.verbose:
         for line in start_report(started):
             run.stderr.write("tau: " + safe_block(line) + "\n")

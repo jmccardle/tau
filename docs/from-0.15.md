@@ -212,7 +212,7 @@ counterpart yet, which matches section 2: the suite shrank because the surface d
 | `--bus` | **REGRESSION** | NATS extension not planned |
 | `--no-session` | **built** | D18: `session_flags`, `start_session` |
 | `--max-turns N` | **dropped** (changed) | `StepLimit`'s option; for one run `--set step_limit.limit=N` (D22). A run that stops there exits 3 and says so (0.15 stopped silently and exited 0) |
-| `--ext-config NAME:KEY=VALUE` | **built** (changed) | `--set EXTENSION.FIELD=VALUE` (D22), repeatable: the CLI layer of D13, read and checked as `tau config set` does, for one run; `-p`, `tau` and `tau serve` take it |
+| `--ext-config NAME:KEY=VALUE` | **built** (changed) | `--set EXTENSION.FIELD=VALUE` (D22), repeatable: the session settings of D13, read and checked as `tau config set` does, for one run; `-p`, `tau` and `tau serve` take it |
 | `--ui-defaults METHOD=ANSWER,...` | **built** (changed) | `--answer EXTENSION[:TEXT]=VALUE` (D22); see 2.6 |
 | `--append-system-prompt TEXT` | **built** | D20: `session_flags`; an error with `-c`, `-r`, `--session`, `--fork` (0.15 ignored it) |
 | `--system-prompt TEXT` | **built** | D20: the CLI layer of the `system_prompt` config key; no `{{fields}}` |

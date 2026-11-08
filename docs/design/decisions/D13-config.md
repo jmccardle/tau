@@ -195,3 +195,39 @@ A model's settings gain two keys, read like `max_tokens` and `options`:
   across layers and down through groups, as `options` does, so a project can change one field.
 
 Neither is read by a provider or put in a node. There is no `tau config show`: `tau config check` validates both, and the config files hold them.
+
+## Built (8E-6, 2026-11-07): session settings, and config that names what is missing
+
+**A config that names something missing never crashes a start.** An extension may be only a file
+that gets deleted, so τ cannot rely on it cleaning up its config. Loading turns each of these into
+a warning (`ConfigProblem` severity `warning`; `option_problems`) and ignores it: a `load` key
+no source has (`true` too: D19 said it stopped the start), `extensions.NAME` for an extension
+that is not loaded or takes no options, an option field the extension does not have
+(`make_layer_options` leaves it out; `/config` and `tau config set` still refuse one), (this is the general rule that "`tokenizer` set while
+`tokens` is off" will fall under), and a tool name nothing provides in an option
+(`Options.missing_tools`: `permissions` rules, `agents.tools`). A value the extension's option
+type refuses is still an error. The start collects the warnings (`Started.warnings`) and `tau`,
+`tau -p` and `tau serve` print them on stderr; `tau config check` prints them with its other lines.
+
+**What τ writes is validated first.** `tau config set` and `/config` (with or without `--save`)
+refuse an option that names a missing tool (`save_options(tools=)` and `Options.check_config`),
+so τ never writes a file that warns.
+
+**Cleaning.** `tau config check --clean` removes what the warnings are about, plus option fields
+the extension does not have or its type refuses; `--purge EXTENSION` (repeatable) turns an
+extension off and removes all its options (a source that no longer exists just loses its keys).
+They write the layers `--layer user|project` names, the user file by default; a changed project
+file is untrusted until `tau trust`. Modules: `tau._config_clean`.
+
+**Session settings** replace the "CLI layer" as one named layer, nearest of all, for one start and
+never written (`tau._session_settings`). Shape: the `extensions` and `load` keys of a file. Inputs:
+the `TAU_SETTINGS` environment variable (a JSON object, shell environment only, never a project's
+`.env`) and `--set`, which is nearer. `--set load.KEY=true|false` switches a source (this was the
+misleading error: `--set` split `load.retry` as extension `load`, field `retry` and answered that
+`load` is read from files only; the `load` switch now reaches `inspect_extensions` because the
+layer is built before it), and `--set EXTENSION.FIELD=VALUE` is as before, checked by the loaded
+extension's option type. A bad variable or `--set` fails before a session exists; a `--set
+load.KEY` no source has is an error (a typed flag is a typo), where the same in a file or the
+variable is a warning. A server's loaded session takes neither (`--set` is refused; the variable
+is not read for it). Reviewed paths: `tau -p` (`tests/cli/test_session_settings.py`), the screen
+(`tests/serve/test_tui_pty.py`), `tau serve` (`tests/serve/test_serve_command.py`).
