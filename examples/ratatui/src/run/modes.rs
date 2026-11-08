@@ -36,13 +36,13 @@ pub enum Prompt {
 const REDRAW_AFTER: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl App<'_> {
-    pub(super) fn draw(&self, f: &mut Canvas, screen: &Screen) -> usize {
-        let mut most = 0;
+    pub(super) fn draw(&self, f: &mut Canvas, screen: &Screen) -> Option<usize> {
+        let mut most = None;
         match &self.mode {
             Mode::Tree(_) if self.model.reading() => treeui::draw_reading(f, &self.model),
             Mode::Tree(tree) => treeui::draw(f, tree, &self.model),
             other => {
-                most = ui::draw(f, screen);
+                most = Some(ui::draw(f, screen));
                 match other {
                     Mode::Form(form) => {
                         if let Some(at) = formui::draw_form(f, form) {

@@ -120,7 +120,7 @@ fn wrapped(text: &str, width: usize, look: Style, out: &mut Vec<Line<'static>>) 
 
 /// The lines of the open question, `width` columns wide: what it asks, then its choices or its
 /// field.
-fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize) -> Asked {
+fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize, cap: usize) -> Asked {
     let shape = ask::shape(&q.schema);
     // The text may span lines (a permission question: the call, then the rule that matched).
     let mut text = q.text.lines();
@@ -143,9 +143,12 @@ fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize) -> Asked {
     }
     let choices = shape.choices();
     let mut cursor = None;
+    // The line to keep in view when the question is taller than `cap`.
+    let mut focus = out.len();
     if choices.is_empty() {
         let (rows, at, _) = typed("answer: ", &asking.field, width, usize::MAX);
         cursor = Some((out.len() + at.0, at.1));
+        focus = out.len() + at.0;
         for (i, row) in rows.into_iter().enumerate() {
             let head = if i == 0 { "answer: " } else { "" };
             out.push(Line::from(vec![
@@ -156,6 +159,9 @@ fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize) -> Asked {
     } else {
         for (i, choice) in choices.iter().enumerate() {
             let on = i == asking.picked;
+            if on {
+                focus = out.len();
+            }
             let mark = if on { "> " } else { "  " };
             let look = if on {
                 Style::new().add_modifier(Modifier::REVERSED)
@@ -179,10 +185,16 @@ fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize) -> Asked {
     if let Some(error) = &asking.error {
         wrapped(error, width, style(Kind::Failure), &mut out);
     }
-    Asked { lines: out, cursor }
+    // Taller than `cap`: show the window holding the field or the picked choice, with the line
+    // after it (the hint, usually).
+    let first = window(out.len(), focus, 1, cap);
+    let lines = out.into_iter().skip(first).take(cap).collect();
+    let cursor = cursor.map(|(row, col)| (row - first, col));
+    Asked { lines, cursor }
 }
 
-/// `field` laid out after a `prefix` on lines `width` wide, broken wherever the width falls so
+/// `field` laid out after a `prefix` on lines `width` cells wide, broken wherever the width falls
+/// (a wide character that does not fit starts the next row; a combining one takes no room) so
 /// the cursor's place is known: the rows (the first without the prefix), where the cursor is in
 /// them (row, column), and the row the rows start at when more than `cap` would show. At most
 /// `cap` rows are returned, ending at the cursor's row at the latest.
@@ -193,29 +205,50 @@ fn typed(
     cap: usize,
 ) -> (Vec<String>, (usize, usize), usize) {
     let width = width.max(1);
-    let used = prefix.chars().count().min(width - 1);
-    let chars: Vec<char> = field.text().chars().collect();
+    let used = prefix
+        .chars()
+        .map(|c| c.width().unwrap_or(0))
+        .sum::<usize>()
+        .min(width - 1);
+    let text = field.text();
     let mut rows: Vec<String> = vec![String::new()];
-    let mut col = used % width;
-    for &c in &chars {
-        if col >= width {
+    let (mut row, mut col) = (0, used);
+    let mut cursor = (0, used);
+    let mut count = 0;
+    for (i, c) in text.chars().enumerate() {
+        count = i + 1;
+        let w = c.width().unwrap_or(0);
+        if col > 0 && col + w > width {
             rows.push(String::new());
+            row += 1;
             col = 0;
         }
-        rows.last_mut().expect("a row").push(c);
-        col += 1;
+        if i == field.at() {
+            cursor = (row, col);
+        }
+        rows[row].push(c);
+        col += w;
     }
-    let place = used + field.at();
-    let (row, col) = (place / width, place % width);
-    // A cursor past the last character on a full row starts the next row.
-    while rows.len() <= row {
-        rows.push(String::new());
+    if field.at() >= count {
+        // Past the last character on a full row, the cursor starts the next row.
+        if col >= width {
+            rows.push(String::new());
+            row += 1;
+            col = 0;
+        }
+        cursor = (row, col);
     }
-    let first = (row + 1)
-        .saturating_sub(cap)
-        .min(rows.len().saturating_sub(cap));
+    let first = window(rows.len(), cursor.0, 0, cap);
     let shown: Vec<String> = rows.into_iter().skip(first).take(cap).collect();
-    (shown, (row - first, col), first)
+    (shown, (cursor.0 - first, cursor.1), first)
+}
+
+/// Where a window of `cap` of `total` lines starts so that line `focus` and the `after` lines
+/// below it show, if they fit.
+fn window(total: usize, focus: usize, after: usize, cap: usize) -> usize {
+    (focus + after + 1)
+        .saturating_sub(cap)
+        .min(total.saturating_sub(cap))
 }
 
 fn status(screen: &Screen) -> Line<'static> {
@@ -259,14 +292,14 @@ pub fn draw(f: &mut Canvas, screen: &Screen) -> usize {
     let pending = lines(&screen.model.pending(), width);
     let asked = screen
         .question
-        .map(|q| question_lines(q, screen.asking, width));
+        .map(|q| question_lines(q, screen.asking, width, usize::from(area.height / 2).max(1)));
     let tall = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
-    // A long line being typed grows the editor upward, up to half the screen.
+    // A long line being typed grows the editor upward, up to a quarter of the screen.
     let (typed_rows, cursor, first) = typed(
         "> ",
         screen.editor,
         width,
-        usize::from(area.height / 2).max(1),
+        usize::from(area.height / 4).max(1),
     );
     let [header, transcript, waiting, question, editor, bar] = Layout::vertical([
         Constraint::Length(1),
@@ -380,7 +413,7 @@ mod tests {
             "schema": {"type": "string", "enum": ["yes", "always", "no"]},
         }))
         .unwrap();
-        let asked = question_lines(&q, &Asking::default(), 40);
+        let asked = question_lines(&q, &Asking::default(), 40, 10);
         let got: Vec<String> = asked
             .lines
             .iter()
@@ -433,6 +466,13 @@ mod screen_tests {
         model
     }
 
+    /// What a draw left: the screen's lines, how far the transcript can scroll, the cursor.
+    struct Shot {
+        lines: Vec<String>,
+        most: usize,
+        cursor: (u16, u16),
+    }
+
     /// The screen's lines after drawing `model` on a `width` by `height` terminal, and how far
     /// the transcript can scroll.
     fn drawn_with(
@@ -441,7 +481,7 @@ mod screen_tests {
         scroll: usize,
         typing: &str,
         question: Option<&OpenQuestion>,
-    ) -> (Vec<String>, usize) {
+    ) -> Shot {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap(); // rules: allow(backend): ratatui API
         let mut editor = Editor::default();
         editor.set(typing);
@@ -468,11 +508,16 @@ mod screen_tests {
         let lines = (0..height)
             .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
-        (lines, most)
+        let cursor = terminal.get_cursor_position().unwrap();
+        Shot {
+            lines,
+            most,
+            cursor: (cursor.x, cursor.y),
+        }
     }
 
     fn drawn(model: &Model, size: (u16, u16), scroll: usize) -> Vec<String> {
-        drawn_with(model, size, scroll, "", None).0
+        drawn_with(model, size, scroll, "", None).lines
     }
 
     fn widest(lines: &[String]) -> usize {
@@ -498,7 +543,7 @@ mod screen_tests {
             "schema": {"type": "string", "enum": ["yes", "no"]},
         }))
         .unwrap();
-        let (lines, _) = drawn_with(&talked(1), (60, 24), 0, "", Some(&q));
+        let lines = drawn_with(&talked(1), (60, 24), 0, "", Some(&q)).lines;
         let screen = lines.join("\n");
         assert!(
             screen.contains("q39"),
@@ -510,10 +555,10 @@ mod screen_tests {
     #[test]
     fn a_long_line_being_typed_wraps_and_the_cursor_follows_it() {
         let typing = "x".repeat(70);
-        let (lines, _) = drawn_with(&talked(1), (40, 12), 0, &typing, None);
+        let lines = drawn_with(&talked(1), (40, 12), 0, &typing, None).lines;
         let xs: usize = lines.iter().map(|l| l.matches('x').count()).sum();
         assert_eq!(xs, 70, "{lines:#?}");
-        // "> " and 70 characters: the cursor is on the third row of 40 columns.
+        // "> " and 70 characters: the cursor is on the second row of 40 columns.
         assert_eq!(typed("> ", &editor_of(&typing), 40, 6).1, (1, 32));
     }
 
@@ -526,11 +571,15 @@ mod screen_tests {
     #[test]
     fn a_terminal_that_grows_shows_the_whole_transcript_again() {
         let model = talked(60);
-        let (small, most) = drawn_with(&model, (40, 8), 0, "", None);
+        let Shot {
+            lines: small, most, ..
+        } = drawn_with(&model, (40, 8), 0, "", None);
         assert!(most > 0 && !small.join("").contains("w00"), "{small:#?}");
         // Scrolled to the top, then the terminal grows to fit everything and the scroll that
         // no longer exists is not kept.
-        let (big, most) = drawn_with(&model, (40, 40), most, "", None);
+        let Shot {
+            lines: big, most, ..
+        } = drawn_with(&model, (40, 40), most, "", None);
         assert_eq!(most, 0);
         let big = big.join("\n");
         assert!(big.contains("w00") && big.contains("w59"), "{big}");
@@ -543,5 +592,93 @@ mod screen_tests {
             let lines = drawn(&model, size, 0);
             assert!(lines.join("").contains("w59"), "{size:?}: {lines:#?}");
         }
+    }
+
+    /// Where the cursor is (column, row) after `typing` is drawn on a 20 by 24 terminal.
+    fn cursor_after(typing: &str) -> (u16, u16) {
+        drawn_with(&talked(1), (20, 24), 0, typing, None).cursor
+    }
+
+    #[test]
+    fn wide_characters_are_counted_by_their_cells_and_wrap_whole() {
+        // "> " then 9 CJK characters fill 20 cells; the 30th lands on the fourth row.
+        let cjk = "\u{4e2d}".repeat(30);
+        let shot = drawn_with(&talked(1), (20, 24), 0, &cjk, None);
+        assert_eq!(widest(&shot.lines), 20, "{:#?}", shot.lines);
+        assert_eq!(shot.cursor, (2, 22), "{:#?}", shot.lines);
+    }
+
+    #[test]
+    fn a_combining_mark_takes_no_room_and_emoji_take_two() {
+        assert_eq!(cursor_after("ae\u{301}"), (4, 22));
+        // "> " and 12 emoji of two cells on 20 columns: 9 fit the first row.
+        let emoji = "\u{1f600}".repeat(12);
+        assert_eq!(cursor_after(&emoji), (6, 22));
+    }
+
+    #[test]
+    fn a_question_taller_than_the_screen_keeps_its_field_and_hint_in_view() {
+        let words: Vec<String> = (0..400).map(|i| format!("q{i:03}")).collect();
+        let q: OpenQuestion = serde_json::from_value(json!({
+            "id": 1, "to": null, "extension": "ask", "text": words.join(" "),
+            "schema": {"type": "string"},
+        }))
+        .unwrap();
+        let shot = drawn_with(&talked(1), (40, 20), 0, "", Some(&q));
+        let screen = shot.lines.join("\n");
+        assert!(screen.contains("answer: "), "{screen}");
+        assert!(screen.contains("Esc declines"), "{screen}");
+        assert!(
+            screen.contains("connecting") || screen.contains("idle"),
+            "{screen}"
+        );
+        let row = shot
+            .lines
+            .iter()
+            .position(|l| l.starts_with("answer: "))
+            .unwrap();
+        assert_eq!(usize::from(shot.cursor.1), row);
+    }
+
+    #[test]
+    fn a_long_choice_list_keeps_the_picked_choice_in_view() {
+        let choices: Vec<String> = (0..60).map(|i| format!("choice{i:02}")).collect();
+        let q: OpenQuestion = serde_json::from_value(json!({
+            "id": 1, "to": null, "extension": "ask", "text": "which?",
+            "schema": {"type": "string", "enum": choices},
+        }))
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap(); // rules: allow(backend): ratatui API
+        let model = talked(1);
+        let (editor, asking) = (
+            Editor::default(),
+            Asking {
+                picked: 50,
+                ..Asking::default()
+            },
+        );
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &Screen {
+                        model: &model,
+                        editor: &editor,
+                        asking: &asking,
+                        question: Some(&q),
+                        scroll: 0,
+                        session: "s",
+                        cwd: "/",
+                        client: ME,
+                    },
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer(); // rules: allow(backend): ratatui API
+        let screen: String = (0..20)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("> choice50"), "{screen}");
     }
 }
