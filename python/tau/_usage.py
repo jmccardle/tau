@@ -29,7 +29,7 @@ from typing import Annotated
 
 from tau._config import ConfigError, ModelConfig, Price
 from tau._core import Body, Node, Stop
-from tau._counts import Count, Provenance
+from tau._counts import Basis, Count
 from tau._handles import Cursor, Subject, TreeHandle
 
 NOTICE_MIN_INPUT = 4096
@@ -135,14 +135,14 @@ def tokens(n: int) -> str:
 
 
 def show(count: Count) -> str:
-    """A count as people write it (`tokens`), with its provenance where it is not a report:
+    """A count as people write it (`tokens`), with its basis where it is not a report:
     `~` for a heuristic, and `≤` and its `upper` for a ceiling (D26 section 1)."""
-    match count.provenance:
-        case Provenance.REPORTED | Provenance.RENDERED | Provenance.CALIBRATED:
+    match count.basis:
+        case Basis.REPORTED | Basis.RENDERED | Basis.CALIBRATED:
             return tokens(count.tokens)
-        case Provenance.HEURISTIC:
+        case Basis.HEURISTIC:
             return f"~{tokens(count.tokens)}"
-        case Provenance.CEILING:
+        case Basis.CEILING:
             return f"≤{tokens(count.upper)}"
 
 

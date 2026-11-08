@@ -114,7 +114,7 @@ async def test_a_soft_compaction_leaves_a_line_the_next_bill_finds_under_the_lim
     for _ in range(3):
         await say(h)
     (notice,) = told(h, "compacted")
-    assert notice.startswith("compacted 12.0k → ≤8.6k tokens"), notice
+    assert notice.startswith("compacted 12.0k → ≤8.1k tokens"), notice
     assert notice.endswith("reported counts only)"), notice
     await say(h)  # the fourth turn ends at 9,530 against a soft limit of 10,000
     assert len(summaries(h)) == 1, "the line was under the limit by the measure the bill uses"
@@ -175,7 +175,7 @@ async def test_the_tail_is_cut_after_the_summary_so_the_line_fits(tmp_path: Path
     assert [n.copied_from for n in line[3:]] == [replies[4], users[5], replies[5]]
     assert line[2].derived_from == users[4], "the last node it did not copy"
     (notice,) = told(h, "compacted")
-    assert notice.startswith("compacted 12.0k → ≤9.1k tokens"), notice
+    assert notice.startswith("compacted 12.0k → ≤8.6k tokens"), notice
     await h.close()
 
 
@@ -296,4 +296,22 @@ async def test_compact_straight_after_a_compaction_does_not_summarize_the_summar
     assert len(summaries(h)) == 1
     assert await h.run("compact") == "nothing to compact yet"
     assert len(h.provider.requests) == 4
+    await h.close()
+
+
+@scenario
+async def test_a_summary_that_did_not_fit_is_tried_again_on_another_branch(tmp_path: Path) -> None:
+    big = 2000
+    script: list[Reply | Fail] = [*turns(3, each=big), summarizer("S" * 60_000, 12_100, 15_000)]
+    script += [bill("a" * 8000, 10_000, big, 6000), summarizer(SUMMARY, 12_100, 500)]
+    h = await start(tmp_path, script)
+    for _ in range(3):
+        await say(h, "x" * (big * 4))
+    assert len(summaries(h)) == 1
+    where = h.session.tree.walk(h.session.cursor(h.cursor).at)[-3].id  # the second reply
+    await h.go_to(where)
+    await h.settle()
+    await say(h, "x" * (big * 4))
+    assert len(summaries(h)) == 2, "the failure was on the other branch"
+    assert [n for n in h.notices() if n.startswith("compacted")]
     await h.close()

@@ -237,13 +237,12 @@ def _asked(body: list[Node], start: int) -> Node | None:
 
 
 def _base(request: RequestCount, prefix: list[Node]) -> Count:
-    """The prefix and the request's overhead: the first report's bill if the walk has one, else
-    the ceilings of the prefix nodes."""
-    if request.base_nodes:
-        return request.base
-    total = NONE
-    for node in prefix:
-        total += request.nodes.get(node.id, NONE)
+    """The prefix and the request's overhead: the base of the count if a report billed them,
+    else the tool definitions it holds and the ceilings of the prefix nodes."""
+    total = request.base
+    if not request.base_nodes:
+        for node in prefix:
+            total += request.nodes.get(node.id, NONE)
     return total
 
 
@@ -269,19 +268,21 @@ def _held(request: RequestCount, nodes: list[Node], asked: Node | None) -> Count
     return total
 
 
-def _crowded(plan: "_Plan", wanted: list[Node], room: int, allowance: int) -> str | None:
+def _crowded(
+    plan: "_Plan", wanted: list[Node], room: int, allowance: int
+) -> tuple[str, str] | None:
     """Why the prefix and the nodes `wanted` alone already reach `room`, with room for a summary,
-    naming the part that is too big (`None`: they leave room). The newest node by itself, or the
-    prefix, is not `keep`'s doing."""
+    naming the part that is too big, as `(which part, why)` (`None`: they leave room). The newest
+    node by itself, or the prefix, is not `keep`'s doing."""
     request, base = plan.request, plan.base
     if base.upper >= room:
-        return (
+        return "prefix", (
             f"the prefix and the request's overhead (system prompt, context files, skills, tool "
             f"definitions) take {show(base)} of the {tokens(room)} tokens the model has room for"
         )
     newest = max((_up(request, n) for n in wanted[-1:]), default=0)
     if newest >= room:
-        return (
+        return "newest", (
             f"the newest node alone takes {tokens(newest)} tokens at most, over the "
             f"{tokens(room)} the model has room for"
         )
@@ -289,7 +290,7 @@ def _crowded(plan: "_Plan", wanted: list[Node], room: int, allowance: int) -> st
     if base.upper + held.upper + allowance >= room:
         # a tail longer than the newest turn is `keep`'s doing; the newest turn is not
         keeps = f"keep = {plan.keep}, " if plan.start < plan.minimal else ""
-        return (
+        return "kept", (
             f"the prefix ({show(base)}) and the newest nodes kept ({keeps}{show(held)}) leave "
             f"less than the {tokens(allowance)} tokens a summary may take of the {tokens(room)} "
             f"the model has room for" + ("; lower keep" if keeps else "")
@@ -313,9 +314,8 @@ def _fit(tail: list[Node], request: RequestCount, avail: int, floor: int) -> int
 class _Plan:
     """What `_compact` settled before paying for a summary: the walk and the length of its
     prefix, where the tail starts and where the newest turn alone would start (indexes in the walk
-    after the prefix), the user message the
-    turn in progress began with if the head would lose it, the figures, the `keep` used, and whether
-    the reports alone are over the hard limit."""
+    after the prefix), the user message the turn in progress began with if the head would lose
+    it, the figures, and the `keep` used."""
 
     walk: list[Node]
     prefix: int
@@ -325,7 +325,6 @@ class _Plan:
     request: RequestCount
     base: Count
     keep: int
-    over: bool
 
 
 class Compaction:
@@ -337,8 +336,9 @@ class Compaction:
     def __init__(self) -> None:
         self._summarizers: set[int] = set()  # the cursors opened here, until they are closed
         self._replied: dict[int, int] = {}  # per cursor: the reply its running step committed
-        self._warned: set[tuple[int, Mode]] = set()  # (cursor, limit) told it cannot be met
-        self._futile: dict[int, Limits] = {}  # cursors whose summary did not fit these limits
+        self._warned: set[tuple[int, Mode, str]] = set()  # (cursor, limit, part) told it is too big
+        # cursors whose summary did not fit: the limits, and the node they were on
+        self._futile: dict[int, tuple[Limits, int]] = {}
         self._made = 0
         self.commands = (self.compact,)
 
@@ -375,7 +375,7 @@ class Compaction:
         if not cursor.options().auto:
             return
         limits = _limits(cursor, cursor.options())
-        if limits.soft is None or self._futile.get(cursor.id) == limits:
+        if limits.soft is None or self._tried(cursor, limits):
             return
         if (await cursor.count()).total.upper > limits.soft:
             await self._compact(cursor, "", "soft")
@@ -408,9 +408,8 @@ class Compaction:
         if not messages or all(_is_summary(n) for n in messages):
             return "nothing to compact yet"
         base = _base(request, walk[:prefix])
-        over = limits.hard is not None and request.total.tokens > limits.hard
         minimal = max((i for i, n in enumerate(body) if _cut(request, n)), default=0)
-        return _Plan(walk, prefix, start, minimal, _asked(body, start), request, base, keep, over)
+        return _Plan(walk, prefix, start, minimal, _asked(body, start), request, base, keep)
 
     async def _compact(self, cursor: Cursor, focus: str, mode: Mode) -> str:
         """Compact `cursor`'s branch; the notice (or why nothing was written)."""
@@ -418,6 +417,13 @@ class Compaction:
         limits = _limits(cursor, options)
         plan = await self._plan(cursor, limits, mode)
         if isinstance(plan, str):
+            if mode == "hard":
+                total = show((await cursor.count()).total)
+                room = tokens(limits.hard or 0)
+                raise CompactionFailed(
+                    f"the request takes {total} tokens, more than the {room} the model has room "
+                    f"for, and {plan}"
+                )
             return plan
         room = limits.room(mode)
         if room is not None:
@@ -426,7 +432,7 @@ class Compaction:
             ]
             crowded = _crowded(plan, wanted, room, limits.allowance)
             if crowded is not None:
-                return self._unfit(cursor, crowded, mode, limits, pays=False, over=plan.over)
+                return self._unfit(cursor, crowded[1], crowded[0], mode, limits, pays=False)
         cursor.show("compacting…")
         try:
             made = await self._summarize(cursor, focus, options.model)
@@ -459,7 +465,7 @@ class Compaction:
                     f"the summary takes {show(paid)} tokens and, with the prefix "
                     f"({show(plan.base)}), does not fit the {limit}"
                 )
-                return self._unfit(cursor, why, mode, limits, pays=True, over=plan.over)
+                return self._unfit(cursor, why, "fit", mode, limits, pays=True)
             begin = fits
         start = plan.start + begin
         replaced = sum(_up(request, n) for n in body[:start])
@@ -468,7 +474,7 @@ class Compaction:
                 f"compacting would not make it shorter: the summary takes {show(paid)} tokens "
                 f"and the {tokens(replaced)} it replaces take at most that"
             )
-            return self._unfit(cursor, why, mode, limits, pays=True, over=plan.over)
+            return self._unfit(cursor, why, "shorter", mode, limits, pays=True)
         planned = [copy_of(n) for n in body[:start] if isinstance(n.body, Body.Config)]
         planned.append(Planned(wrapped, derived_from=body[start - 1].id))
         summary_at = len(planned) - 1
@@ -487,28 +493,36 @@ class Compaction:
         cursor.tell(text)
         return text
 
+    def _tried(self, cursor: Cursor, limits: Limits) -> bool:
+        """Whether a summary was paid for on this line, with these limits, and did not fit."""
+        failed = self._futile.get(cursor.id)
+        if failed is None or failed[0] != limits:
+            return False
+        return any(n.id == failed[1] for n in cursor.walk())
+
     def _unfit(  # noqa: PLR0913 - why a line cannot be made, and what that means here
-        self, cursor: Cursor, why: str, mode: Mode, limits: Limits, *, pays: bool, over: bool
+        self,
+        cursor: Cursor,
+        why: str,
+        part: str,
+        mode: Mode,
+        limits: Limits,
+        *,
+        pays: bool,
     ) -> str:
-        """The line cannot be made under its limit. For `/compact`, and at the hard limit when
-        the reports alone are over it, that is a failure. At the soft limit it is a notice, and
-        at the hard limit when only the ceilings of what no report covers push the request over
-        it, the request is sent as it is, with a notice: a ceiling is loose and does not prove
-        that the request is too big, and the provider says if it is. Notices are said once per
-        cursor and limit, since one at every turn end would nag. A summary that was paid for and
-        did not fit is not asked for again at the soft limit until the limits change. `over`:
-        the reports alone are over the hard limit."""
-        if mode == "manual" or (mode == "hard" and over):
+        """The line cannot be made under its limit: a failure for `/compact` and at the hard limit
+        (the request cannot be sent), a notice at the soft one. A notice is said once per cursor,
+        limit and `part` that is too big, since one at every turn end would nag, and a different
+        part is told. A summary that was paid for and did not fit is not asked for again at the
+        soft limit while the limits are the same and the cursor stays on that line; the hard limit
+        and `/compact` always try."""
+        if mode != "soft":
             raise CompactionFailed(why)
-        if pays and mode == "soft":
-            self._futile[cursor.id] = limits
-        if (cursor.id, mode) not in self._warned:
-            self._warned.add((cursor.id, mode))
-            cursor.tell(
-                f"compaction cannot keep this under its soft limit: {why}"
-                if mode == "soft"
-                else f"compaction cannot make room, so the request is sent as it is: {why}"
-            )
+        if pays:
+            self._futile[cursor.id] = (limits, cursor.node().id)
+        if (cursor.id, mode, part) not in self._warned:
+            self._warned.add((cursor.id, mode, part))
+            cursor.tell(f"compaction cannot keep this under its soft limit: {why}")
         return why
 
     async def _summarize(

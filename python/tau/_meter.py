@@ -4,10 +4,12 @@ It reads the reports in the walk and nothing else. The walk to a node is the req
 produced the replies on it, so a reply's reported `input` is the bill for the nodes before it.
 For the replies that report (the **reports**, in walk order):
 
-- **The base** is the first report's `input`: the nodes before that reply, and the request's
-  overhead. It over-counts the prefix and the overhead, in the safe direction. Less the nodes
-  among them that a report already counts exactly (a compaction's copies, below), which have
-  their own counts, so a line that was compacted does not carry its tail in its base.
+- **The base** is the prefix and the request's overhead (tool definitions, hidden prompts,
+  per-message overhead), counted as one: the first report's `input` less the body nodes before
+  that reply (the first message; a compacted line's summary and copies). A lump among them comes
+  out at its cost; any other node comes out at the lowest its bytes allow
+  (`LOWEST_BYTES_PER_TOKEN`), and a base made that way is `HEURISTIC`. With no report the base is
+  the ceiling of the tool definitions.
 - **A span** is the nodes from one report's reply up to the next report's. Its cost is the
   difference of the two `input`s, and that is exact only if the first request is a prefix of the
   second as the server sees it. It is **proved** when the second reports `cached` equal to the
@@ -20,39 +22,50 @@ For the replies that report (the **reports**, in walk order):
   whole lump; so the first request after a compaction is mostly exact.
 
 The total is the newest report's `input` plus its reply's `output`, plus the ceilings of the
-nodes after it. With no report the total is the ceilings of the whole walk.
+nodes after it. With no report the total is the ceilings of the whole walk and of the tool
+definitions.
 """
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
 from tau._core import Node
 from tau._counts import (
+    CEILING_PER_NODE,
     NONE,
+    Basis,
     Count,
     Counter,
     CountJob,
-    Provenance,
     RequestCount,
     ceiling_of,
     reported,
     sent,
 )
+from tau._lines import prefix_length
 from tau._usage import Reading, counted, reading
 from tau._values import DefinitionError
+
+KEPT = 16
+"""How many measured walks a `Meter` keeps."""
+LOWEST_BYTES_PER_TOKEN = 8
+"""A node of B bytes costs at least B / 8 tokens: far above what any tokenizer gives on real text
+(3 to 5 bytes per token), so a bound and not an estimate. It is only ever subtracted, to take a
+node out of the first bill where nothing counts it exactly; text of one repeated character can
+break it."""
 
 
 @dataclass(frozen=True)
 class Measured:
-    """A request count and what the meter keeps to answer further questions about it: the walk,
-    `anchor` (the newest report's `input` and its reply's `output`; `NONE` with no report),
-    `after` (the nodes with a count after the newest report, which add to the anchor) and `lumps`
-    (the node ids each lump of more than one node covers, by its first)."""
+    """A request count and what the meter keeps to answer further questions about it: `anchor`
+    (the newest report's `input` and its reply's `output`; `NONE` with no report), `after` (the
+    nodes with a count after the newest report, which add to the anchor) and `lumps` (the node
+    ids each lump of more than one node covers, by its first)."""
 
     request: RequestCount
-    walk: tuple[Node, ...]
     anchor: Count
     after: tuple[int, ...]
     lumps: Mapping[int, tuple[int, ...]]
@@ -74,6 +87,33 @@ def _reports(walk: list[Node]) -> list[tuple[int, Reading]]:
     return found
 
 
+def _base(
+    walk: list[Node],
+    billed: int,
+    first: int,
+    nodes: Mapping[int, Count],
+    lumps: Mapping[int, tuple[int, ...]],
+) -> Count:
+    """What the first bill holds besides the prefix: its overhead and the prefix are the base.
+    The body nodes before the first reply (the first message, or a compacted line's summary and
+    copies) are taken out of the bill: exactly where they make a whole lump (their count is a
+    difference of two bills), and otherwise by the lowest their bytes allow
+    (`LOWEST_BYTES_PER_TOKEN`), so the base is never less than the prefix and the overhead and
+    is a bound on them. A base with a node taken out that way is `HEURISTIC`."""
+    out, bounded = 0, False
+    for node in walk[prefix_length(walk) : first]:
+        count = nodes.get(node.id)
+        if count is None:
+            continue  # inside a lump, whose first node holds the sum
+        if node.id in lumps:
+            out += count.tokens
+        else:
+            out += (ceiling_of(node.body).bound - CEILING_PER_NODE) // LOWEST_BYTES_PER_TOKEN
+            bounded = True
+    left = max(billed - out, 0)
+    return Count(left, Basis.HEURISTIC if bounded else Basis.REPORTED)
+
+
 def _proved(walk: list[Node], first: tuple[int, Reading], second: tuple[int, Reading]) -> bool:
     """Whether the span from one report to the next is proved (the module docstring). Another
     reply between them, reporting or not, breaks the chain of requests."""
@@ -86,12 +126,13 @@ def _proved(walk: list[Node], first: tuple[int, Reading], second: tuple[int, Rea
 
 
 class Meter:
-    """Measures the walk to a node, from `node` (a node by id); kept per node, since nodes never
-    change."""
+    """Measures the walk to a node, from `node` (a node by id). The last `KEPT` measures are kept
+    (nodes never change, so a kept one is always right); a long-lived server asks about a new
+    tip every turn, and an older one is measured again if it is asked for."""
 
     def __init__(self, node: Callable[[int], Node]) -> None:
         self._node = node
-        self._kept: dict[int, Measured] = {}
+        self._kept: OrderedDict[int, Measured] = OrderedDict()
 
     def walk(self, at: int) -> list[Node]:
         """The nodes from the root to `at`."""
@@ -105,9 +146,14 @@ class Meter:
 
     def measure(self, at: int) -> Measured:
         """The walk to `at` measured."""
-        if at not in self._kept:
-            self._kept[at] = self._measure(self.walk(at))
-        return self._kept[at]
+        if at in self._kept:
+            self._kept.move_to_end(at)
+            return self._kept[at]
+        measured = self._measure(self.walk(at))
+        self._kept[at] = measured
+        while len(self._kept) > KEPT:
+            self._kept.popitem(last=False)
+        return measured
 
     def _measure(self, walk: list[Node]) -> Measured:
         nodes: dict[int, Count] = {}
@@ -118,7 +164,7 @@ class Meter:
             after = tuple(n.id for n in walk if n.id in nodes)
             total = _sum(nodes[i] for i in after)
             request = RequestCount(total, NONE, 0, nodes)
-            return Measured(request, tuple(walk), NONE, after, lumps)
+            return Measured(request, NONE, after, lumps)
         first, last = marks[0][0], marks[-1][0]
         self._fill(walk, 0, first, nodes, lumps)
         for earlier, later in pairwise(marks):
@@ -137,17 +183,9 @@ class Meter:
         anchor = reported(newest.input) + reported(newest.output)
         after = tuple(n.id for n in walk[last + 1 :] if n.id in nodes)
         total = anchor + _sum(nodes[i] for i in after)
-        # the first bill less the nodes before it that a report already counts exactly (copies of
-        # a compaction's tail): what is left is the prefix, the overhead and the nodes only
-        # their bytes bound
-        counted = sum(
-            c.tokens
-            for n in walk[:first]
-            if (c := nodes.get(n.id)) and c.provenance is Provenance.REPORTED
-        )
-        base = reported(max(marks[0][1].input - counted, 0))
+        base = _base(walk, marks[0][1].input, first, nodes, lumps)
         request = RequestCount(total, base, first, nodes)
-        return Measured(request, tuple(walk), anchor, after, lumps)
+        return Measured(request, anchor, after, lumps)
 
     def _fill(
         self,
@@ -209,7 +247,9 @@ def _sum(counts: Iterable[Count]) -> Count:
 class Counts:
     """What the driver counts through: the meter, and the counter if an extension offers one.
     `node` reads a node, `model` the model of the branch at a node, `tools` the base offer, and
-    `counter` the extension offering the counter, as `(key, counter)`."""
+    `counter` the extension offering the counter, as `(key, counter)`, and `overhead` the ceiling
+    of what a request carries besides its nodes (the tool definitions), which a line with no
+    report yet has to add itself."""
 
     def __init__(
         self,
@@ -217,8 +257,10 @@ class Counts:
         model: Callable[[int], str],
         tools: Callable[[], tuple[str, ...]],
         counter: Callable[[], tuple[str, Counter] | None],
+        overhead: Callable[[], Count],
     ) -> None:
         self._meter = Meter(node)
+        self._overhead = overhead
         self._model = model
         self._tools = tools
         self._counter = counter
@@ -229,26 +271,32 @@ class Counts:
         found = self._counter()
         return None if found is None else found[0]
 
+    def _with_overhead(self, measured: Measured) -> Measured:
+        """`measured`, with the overhead added if no report has billed it yet."""
+        if measured.request.base_nodes:
+            return measured
+        overhead = self._overhead()
+        request = replace(measured.request, base=overhead, total=measured.request.total + overhead)
+        return replace(measured, request=request, anchor=overhead)
+
     async def count(self, at: int) -> RequestCount:
         """The request count of the walk to `at`: the meter's, with a counter's answer for the
         nodes no report covers. `DefinitionError` naming the extension if the counter counts a
         node a report covers or one it was not asked about."""
-        measured = self._meter.measure(at)
+        measured = self._with_overhead(self._meter.measure(at))
         found = self._counter()
         if found is None:
             return measured.request
         key, counter = found
         request = measured.request
-        unreported = tuple(
-            i for i, c in request.nodes.items() if c.provenance is not Provenance.REPORTED
-        )
+        unreported = tuple(i for i, c in request.nodes.items() if c.basis is not Basis.REPORTED)
         job = CountJob(
-            measured.walk,
+            tuple(self._meter.walk(at)),
             self._model(at),
             self._tools(),
             request.base,
             request.base_nodes,
-            {i: c for i, c in request.nodes.items() if c.provenance is Provenance.REPORTED},
+            {i: c for i, c in request.nodes.items() if c.basis is Basis.REPORTED},
             unreported,
         )
         answer = await asyncio.to_thread(counter.count, job)

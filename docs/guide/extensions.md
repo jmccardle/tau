@@ -211,11 +211,11 @@ every open question, so a hook must expect `None`. With nobody connected, the qu
 ## Counting tokens
 
 `await cursor.count()` answers what the walk to the cursor's node will cost as a request: a
-`RequestCount` whose `total` is a `Count` (`tokens`, `provenance`, `bound`, and `upper`, their
+`RequestCount` whose `total` is a `Count` (`tokens`, `basis`, `bound`, and `upper`, their
 sum) and whose `nodes` hold a count for each node, so an extension can see how big a part of the
 conversation is without guessing from its characters. `count(at=node_id)` counts another node's
 walk, and a tool hook's `node.count()` the batch's. Every count is what the servers reported
-where a report covers it (`provenance` is `reported`), and for what none does, such as your new
+where a report covers it (`basis` is `reported`), and for what none does, such as your new
 message, the node's bytes as a ceiling (`ceiling`; `upper` is the most it can be). Counts add, and
 a sum is as weak as its weakest part.
 

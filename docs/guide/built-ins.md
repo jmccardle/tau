@@ -354,7 +354,10 @@ itself (16384, or a quarter of the window if less); half of it, at most 8192, is
 take. `hard` and `soft` set the two limits directly, as token counts (`soft` above `hard` is a
 config error). `keep` is the most tokens of the newest messages copied unchanged (the newest turn
 is kept whole even if it is bigger). Left unset, `keep` is 20000 or half the soft limit if that is
-less, which suits a 32k local model; a `keep` you set must be smaller than the soft limit.
+less, which suits a 32k local model; a `keep` you set must be smaller than the soft limit. `keep`
+is measured in the same counts as everything else, so with a server whose requests τ cannot yet
+prove (anything but Anthropic's prompt cache) the messages are counted by their bytes, and 20000
+of them are about 5000 to 6000 real tokens.
 `/compact` with no `keep` set keeps at most half of the conversation, so that asking for it
 summarizes something; right after a compaction it says "nothing to compact yet", since the only
 thing left to summarize is a summary.
@@ -363,12 +366,15 @@ Before τ pays for a summary it checks that the line can come out under the limi
 the request's overhead (system prompt, context files, tool definitions: it is in the first
 reply's bill), the messages it would keep, and room for the summary. If not, nothing is
 summarized: at the soft limit τ tells you once and goes on; for `/compact` the command fails and
-says what is too big. At the hard limit the step fails the same way when the server's own reports
-are already past the limit; when only the bytes of what is not sent yet push it past, τ tells you
-and sends the request as it is, and the provider says if it was too big. After the summary is
-written, τ keeps the longest tail that fits beside it. A summary that does not fit the soft limit
-is told once and not asked for again at the soft limit until a limit changes (a hard limit or
-`/compact` always tries), and a summary no shorter than what it replaces is not written.
+says what is too big. At the hard limit the step fails the same way: τ never sends a request
+that it cannot show fits. That includes a request that is over only by the bytes of what is not
+sent yet (a big paste, a big tool result, counted loosely), so a message of 30,000 characters can
+be refused by a 32k model that would have taken it; split it, or give the model a larger window.
+After the summary is written, τ keeps the longest tail that fits beside it. A summary that does
+not fit the soft limit is told once and not asked for again at the soft limit while the limits are
+the same and the cursor stays on that line (a hard limit or `/compact` always tries), a notice
+about a different part being too big is told as well, and a summary no shorter than what it
+replaces is not written.
 
 `model` names another model to write the summary (default: the one you are using). The summary is
 written by a second cursor, `compaction:1`, which you can see in the tree and which `/usage`

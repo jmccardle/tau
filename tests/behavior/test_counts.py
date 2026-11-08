@@ -11,6 +11,7 @@ from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 
 from tau import (
+    Basis,
     CommandFailed,
     Compaction,
     Count,
@@ -20,7 +21,6 @@ from tau import (
     DefinitionError,
     ModelCatalog,
     Part,
-    Provenance,
     RequestCount,
     Stop,
     Usage,
@@ -64,7 +64,7 @@ class Fills:
     def count(self, job: CountJob) -> CounterAnswer:
         self.jobs.append(job)
         asked = (*job.unreported, *self.also)
-        return CounterAnswer({i: Count(7, Provenance.HEURISTIC, 1) for i in asked})
+        return CounterAnswer({i: Count(7, Basis.HEURISTIC, 1) for i in asked})
 
 
 def catalog() -> ModelCatalog:
@@ -103,11 +103,11 @@ async def test_with_no_report_every_node_is_a_ceiling_of_its_bytes(tmp_path: Pat
     (counted,) = probe.counted
     assert counted.base_nodes == 0
     assert counted.nodes == {
-        1: Count(0, Provenance.CEILING, len("sys") + 16),
-        2: Count(0, Provenance.CEILING, len("hello") + 16),
-        3: Count(0, Provenance.CEILING, len("hi") + 16),
+        1: Count(0, Basis.CEILING, len("sys") + 16),
+        2: Count(0, Basis.CEILING, len("hello") + 16),
+        3: Count(0, Basis.CEILING, len("hi") + 16),
     }
-    assert counted.total == Count(0, Provenance.CEILING, 3 + 5 + 2 + 3 * 16)
+    assert counted.total == Count(0, Basis.CEILING, 3 + 5 + 2 + 3 * 16)
     await h.close()
 
 
@@ -119,16 +119,16 @@ async def test_reports_give_the_total_the_base_and_a_lump_for_each_proved_span(
     h = await run(tmp_path, proved_turns(), probe)
     await h.run("probe")
     (counted,) = probe.counted
-    assert counted.total == Count(6000, Provenance.REPORTED)
-    assert counted.base == Count(1000, Provenance.REPORTED)
+    assert counted.total == Count(6000, Basis.REPORTED)
+    assert counted.base == Count(500, Basis.HEURISTIC), "the bill less the first message, at least"
     assert counted.base_nodes == 3, "the root, the system text and the first message"
     # nodes: 0 root, 1 system, 2 user, 3 reply, 4 user, 5 reply, 6 user, 7 reply
-    assert counted.nodes[3] == Count(2000, Provenance.REPORTED), "the reply and the next input"
+    assert counted.nodes[3] == Count(2000, Basis.REPORTED), "the reply and the next input"
     assert 4 not in counted.nodes, "inside a lump a node has no count of its own"
-    assert counted.nodes[5] == Count(2000, Provenance.REPORTED)
+    assert counted.nodes[5] == Count(2000, Basis.REPORTED)
     assert 6 not in counted.nodes
-    assert counted.nodes[7] == Count(1000, Provenance.REPORTED), "the newest reply: its output"
-    assert counted.nodes[2].provenance is Provenance.CEILING, "the base holds it; its bytes cap it"
+    assert counted.nodes[7] == Count(1000, Basis.REPORTED), "the newest reply: its output"
+    assert counted.nodes[2].basis is Basis.CEILING, "the base holds it; its bytes cap it"
     assert counted.nodes[2].upper == 4000 + 16
     await h.close()
 
@@ -140,10 +140,10 @@ async def test_a_span_the_second_request_does_not_prove_is_a_ceiling(tmp_path: P
     h = await run(tmp_path, replies, probe)
     await h.run("probe")
     (counted,) = probe.counted
-    assert counted.nodes[3] == Count(1000, Provenance.REPORTED), "the reply's own output"
-    assert counted.nodes[4] == Count(0, Provenance.CEILING, 4000 + 16)
-    assert counted.nodes[5] == Count(2000, Provenance.REPORTED), "the next span is proved"
-    assert counted.total == Count(6000, Provenance.REPORTED), "the total is still the bill"
+    assert counted.nodes[3] == Count(1000, Basis.REPORTED), "the reply's own output"
+    assert counted.nodes[4] == Count(0, Basis.CEILING, 4000 + 16)
+    assert counted.nodes[5] == Count(2000, Basis.REPORTED), "the next span is proved"
+    assert counted.total == Count(6000, Basis.REPORTED), "the total is still the bill"
     await h.close()
 
 
@@ -165,9 +165,7 @@ async def test_what_follows_the_newest_report_is_added_as_a_ceiling(tmp_path: Pa
     await h.settle()
     await h.run("probe")
     (counted,) = probe.counted
-    assert counted.total == Count(1100, Provenance.CEILING, 1 + 400 + 16), (
-        "the bill, and the result"
-    )
+    assert counted.total == Count(1100, Basis.CEILING, 1 + 400 + 16), "the bill, and the result"
     await h.close()
 
 
@@ -197,9 +195,9 @@ async def test_a_copy_that_holds_a_whole_lump_takes_its_originals_count(tmp_path
     await h.run("probe")
     (counted,) = probe.counted
     copies = [n for n in line if n.copied_from is not None]
-    assert counted.nodes[copies[0].id] == Count(2000, Provenance.REPORTED)
+    assert counted.nodes[copies[0].id] == Count(2000, Basis.REPORTED)
     assert copies[1].id not in counted.nodes, "the lump is whole, so its second node is inside it"
-    assert counted.nodes[copies[2].id] == Count(1000, Provenance.REPORTED)
+    assert counted.nodes[copies[2].id] == Count(1000, Basis.REPORTED)
     await h.close()
 
 
@@ -214,9 +212,9 @@ async def test_a_counter_fills_what_no_report_covers_and_nothing_else(tmp_path: 
     (job,) = counter.jobs
     assert set(job.unreported) == {1, 2}, "the system text and the first message"
     assert set(job.known) == {3, 5, 7}
-    assert counted.nodes[2] == Count(7, Provenance.HEURISTIC, 1)
-    assert counted.nodes[3] == Count(2000, Provenance.REPORTED), "a report is never replaced"
-    assert counted.total == Count(6000, Provenance.REPORTED), "nothing is after the newest report"
+    assert counted.nodes[2] == Count(7, Basis.HEURISTIC, 1)
+    assert counted.nodes[3] == Count(2000, Basis.REPORTED), "a report is never replaced"
+    assert counted.total == Count(6000, Basis.REPORTED), "nothing is after the newest report"
     await h.close()
 
 
@@ -266,7 +264,7 @@ async def test_a_counter_without_a_count_method_is_refused(tmp_path: Path) -> No
 
 # The sum rule (D26 section 1), as a property over random counts.
 
-PROVENANCES = list(Provenance)
+PROVENANCES = list(Basis)
 
 
 def random_count(rng: random.Random) -> Count:
@@ -283,7 +281,7 @@ def test_a_sum_adds_tokens_and_bounds_and_is_as_weak_as_its_weakest_part() -> No
         assert total.tokens == sum(p.tokens for p in parts)
         assert total.bound == sum(p.bound for p in parts)
         assert total.upper == sum(p.upper for p in parts)
-        assert total.provenance is max((p.provenance for p in parts), key=PROVENANCES.index)
+        assert total.basis is max((p.basis for p in parts), key=PROVENANCES.index)
 
 
 def test_a_sum_is_the_same_in_any_order() -> None:
@@ -299,4 +297,19 @@ def test_a_sum_is_the_same_in_any_order() -> None:
 
 def test_a_count_is_not_negative() -> None:
     with pytest.raises(ValueError, match="not negative"):
-        Count(-1, Provenance.REPORTED)
+        Count(-1, Basis.REPORTED)
+
+
+@scenario
+async def test_a_line_with_no_report_counts_the_tool_definitions_it_will_send(
+    tmp_path: Path,
+) -> None:
+    probe = Probe()
+    tool = FakeTool("big", "r", description="d" * 100)
+    h = await Harness.create(tmp_path, provider=FakeProvider([]), tools=[tool], extensions=[probe])
+    await h.run("probe")
+    (counted,) = probe.counted
+    assert counted.base.basis is Basis.CEILING
+    assert counted.base.bound >= len("big") + 100, "the name and the description, at least"
+    assert counted.total.upper >= counted.base.upper
+    await h.close()

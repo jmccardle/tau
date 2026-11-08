@@ -970,8 +970,9 @@ provider wrapper off for one run, like any other `load` key.
   what it replaces is not written.
 - **Stopping the summarizer fails the step.** Aborting or closing `compaction:N` while the hard
   limit waits for it fails the step with the reason; it no longer sends the sample that did not fit.
-  A hard limit that only the ceilings of what is not sent yet push over, with the reports under it,
-  is not proved: the request is sent as it is, and the provider says if it was too big.
+  The hard limit never sends what it cannot show fits (D26 §5): when compaction cannot make room,
+  or has nothing to compact (a first message too big for the window), the step fails with the
+  figures, even if only the ceiling of what is not sent yet is over.
 - **`/compact` with no `keep` set** keeps at most half of the line, so it summarizes something on a
   model with no window or a short conversation. A head of nothing but an earlier summary is `nothing
   to compact yet`. A turn in progress keeps the user message it began with, verbatim, after the

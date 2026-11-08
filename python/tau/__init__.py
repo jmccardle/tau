@@ -75,7 +75,7 @@ from tau._core import (
     Version,
     WrongAnswer,
 )
-from tau._counts import Count, Counter, CounterAnswer, CountJob, Provenance, RequestCount
+from tau._counts import Basis, Count, Counter, CounterAnswer, CountJob, RequestCount
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
 from tau._events import (
@@ -182,6 +182,7 @@ __all__ = [
     "BadRecord",
     "BadReplay",
     "BashTool",
+    "Basis",
     "Body",
     "Busy",
     "CallArgs",
@@ -277,7 +278,6 @@ __all__ = [
     "Prompts",
     "ProtocolError",
     "ProtocolMismatch",
-    "Provenance",
     "Provider",
     "ProviderClosed",
     "Prune",

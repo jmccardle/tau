@@ -50,6 +50,7 @@ from tau._commands import Commands, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
+from tau._counts import tools_ceiling
 from tau._effects import CallRun, SampleRun, run_hooks
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
@@ -282,6 +283,7 @@ class Driver:
                 self._options.model,
                 lambda: tuple(self._tools),
                 lambda: counter_of(self._extensions),
+                lambda: tools_ceiling(self._tools.values()),
             ),
         )
         self._changing = frontend(self._check, self._hub, self._poke)

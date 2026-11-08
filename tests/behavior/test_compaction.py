@@ -449,32 +449,74 @@ async def test_a_32k_window_with_the_default_options_compacts_instead_of_failing
 
 
 @scenario
-async def test_a_request_over_the_window_only_by_its_bytes_is_sent_as_it_is(
+async def test_a_tool_result_that_cannot_fit_even_by_the_ceiling_fails_the_step(
     tmp_path: Path,
 ) -> None:
-    # 30,000 characters are 7,500 tokens, but 30,000 by their bytes: past the 24,576 of the hard
-    # limit. The reports say 15,000, so the request is not proved too big, and nothing can be
-    # compacted but the one message: the model is asked, and says if it cannot take it.
-    script: list[Reply | Fail] = [bill("a" * 400, 7500, 7500), bill("fine", 22_500, 100, 7500)]
+    # The reports say 8,010 against a hard limit of 9,000; the result is 40,000 characters, 40,017
+    # by its bytes. Compaction cannot make room for it, and the request is not sent.
+    script: list[Reply | Fail] = [
+        bill("a", 6000, 100),
+        bill("b", 7500, 100, 6000),
+        call_reply(8000, 10, 7500),
+        bill("never", 100, 5),
+    ]
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider(script),
+        tools=[FakeTool("big", "x" * 40_000)],
+        extensions=[Compaction()],
+        catalog=catalog(10_000, {"reserve": 1000, "soft": 8000, "keep": 1000}),
+        config=model_config("a"),
+    )
+    for text in ("go 1", "go 2", "go 3"):
+        await say(h, text)
+    view = await h.view()
+    assert view.hook_error is not None
+    assert "the newest node alone takes" in view.hook_error.error
+    assert len(h.provider.requests) == 3, "the sample that cannot fit was not sent"
+    await h.close()
+
+
+@scenario
+async def test_a_first_message_too_big_for_the_window_fails_before_it_is_sent(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([bill("fine", 100_000, 10)]),
         extensions=[Compaction()],
         catalog=read_models(
             cli={
-                "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 32768}},
-                "extensions": {"compaction": {"soft": 24_000}},
+                "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 32768}}
             }
         ),
         config=model_config("a"),
     )
-    await say(h, "x" * 100)
-    await say(h, "z" * 30_000)
+    await say(h, "z" * 400_000)
     view = await h.view()
-    assert view.hook_error is None
-    assert len(h.provider.requests) == 2, "the second sample was sent"
-    (told,) = [n for n in h.notices() if "sent as it is" in n]
-    assert "the newest node alone takes" in told
+    assert view.hook_error is not None
+    assert "nothing to compact" in view.hook_error.error
+    assert "400.0k" in view.hook_error.error
+    assert not h.provider.requests
+    await h.close()
+
+
+@scenario
+async def test_a_big_first_message_is_not_counted_as_the_prefix(tmp_path: Path) -> None:
+    # The first message is 6,000 tokens and the prefix and overhead 500. The first bill is 6,500,
+    # but the line left by compacting the message away is 500 and a summary, not 6,500: with
+    # room for a summary and 1,000 kept it fits a soft limit of 8,000, which 6,500 would not.
+    script: list[Reply | Fail] = [
+        bill("a" * 4000, 6500, 1000),
+        bill("b" * 4000, 8500, 1000, 6500),
+        bill("S" * 2000, 9600, 500),
+    ]
+    h = await start(tmp_path, script, soft=8000)
+    await say(h, "q" * 24_000)
+    await say(h, "r" * 4000)
+    assert [n for n in h.notices() if n.startswith("compacted")]
+    assert not [n for n in h.notices() if "cannot keep" in n]
+    assert (await h.view()).hook_error is None
     await h.close()
 
 

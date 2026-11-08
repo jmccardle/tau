@@ -48,7 +48,7 @@ the cut, the checks and the next bill in one unit, which reported counts alone c
 
 | layer | what it adds | ships in | on by default | new dependencies | writes |
 |---|---|---|---|---|---|
-| **core** | `Count`, `Provenance`, every usage fact (§2), proved spans (§3), the meter and the counter interface (§4), compaction's checks (§5) | `ffwf-tau` | always | none | nothing new |
+| **core** | `Count`, `Basis`, every usage fact (§2), proved spans (§3), the meter and the counter interface (§4), compaction's checks (§5) | `ffwf-tau` | always | none | nothing new |
 | **`tokens`** built-in | the counter: calibration store, a heuristic fitted on proved spans, drift detection, the bound (§6) | `ffwf-tau` | yes; `tau ext disable tokens` | none | `$TAU_HOME/calibration/` |
 | **`tokens` extra** | local tokenizers for the `tokens` extension: tiktoken, HF, chat templates, fingerprinting, downloads, `tau tokens fetch` (§7) | `ffwf-tau-tokens`, installed by `pip install 'ffwf-tau[tokens]'` | used when installed | none in Python; Rust crates only in the second wheel | `$TAU_HOME/tokenizers/` |
 | **`token_calls`** built-in | the providers' count endpoints before a sample (§8) | `ffwf-tau` | no; `tau ext enable token_calls` | none | through `tokens` |
@@ -56,12 +56,12 @@ the cut, the checks and the next bill in one unit, which reported counts alone c
 Each layer works without the ones below it. With no counter the only counts are `reported`, and
 whatever is not reported yet is given a **ceiling**, never a guess (§1, §4).
 
-### 1. Count and provenance (core)
+### 1. Count and basis (core)
 
-A **count** is `tau.Count(tokens, provenance, bound)`. `upper` is `tokens + bound`.
-**Provenance** is one of these five, from strongest to weakest:
+A **count** is `tau.Count(tokens, basis, bound)`. `upper` is `tokens + bound`.
+**Basis** is one of these five, from strongest to weakest:
 
-| provenance | meaning | bound | needs |
+| basis | meaning | bound | needs |
 |---|---|---|---|
 | `reported` | the server's bill for this exact request, or the difference between two bills whose shared prefix is proved (§3) | 0; 8 where the newest reply's thinking is subtracted (§3.2) | core |
 | `rendered` | τ rendered the request as the server will and counted it with the server's tokenizer, and a reported count has confirmed both | 0 | the extra |
@@ -69,7 +69,7 @@ A **count** is `tau.Count(tokens, provenance, bound)`. `upper` is `tokens + boun
 | `heuristic` | a fitted estimate | a 95% bound on the error, from that model's residuals (§6.4) | `tokens` |
 | `ceiling` | no estimate: `tokens` is 0 and `bound` is the node's UTF-8 bytes plus 16 per message-bearing node (§4) | the ceiling | core |
 
-**Sums.** Tokens add and bounds add. The sum's provenance is the weakest of its parts. A
+**Sums.** Tokens add and bounds add. The sum's basis is the weakest of its parts. A
 `calibrated` or `rendered` source that misses a bill drops to `heuristic` until it is confirmed
 again (§6.3). No count is `reported` before the request is sent.
 
@@ -391,7 +391,7 @@ it with a lock file, re-read, add, write-to-temp and rename, at mode 600.
 
 - **Discovery is `import tau_tokens`**, once, when the `tokens` extension is built. A
   `ModuleNotFoundError` whose `name` is `tau_tokens` means "not installed"; any other error fails
-  the start (D19 §6). This is not a fallback: provenance labels every count, and `why` says the
+  the start (D19 §6). This is not a fallback: basis labels every count, and `why` says the
   tokenizers are missing, so a weaker count never passes for an exact one.
 - **Lockstep.** Both wheels take their version from the Cargo workspace (`version.workspace =
   true`; maturin reads it). The extra pins `==` that version; `check.sh` fails when the pin is not
@@ -506,7 +506,7 @@ stay off by default even for local servers: nothing should be required.
 
 | crate or package | gains | IO |
 |---|---|---|
-| `tau-core` | `Count`, `Provenance`, the sum rule, ceilings; proved spans; the meter and composing a `RequestCount`; for `tokens` only: features of a `Body`, the fit, drift, CUSUM, the bound | none; no new dependencies |
+| `tau-core` | `Count`, `Basis`, the sum rule, ceilings; proved spans; the meter and composing a `RequestCount`; for `tokens` only: features of a `Body`, the fit, drift, CUSUM, the bound | none; no new dependencies |
 | `tau-store` | `CalibrationStore`: read, lock, merge, atomic write | `$TAU_HOME/calibration/`, only when `tokens` opens it |
 | `tau-py` | bindings: `Count`, `RequestCount`, `Span`, the calibration functions, `CalibrationStore` | — |
 | `tau-tokens`, `tau-tokens-py` | §7.1 | none in Rust |
@@ -522,7 +522,7 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
 `/v1/models`); vLLM gpt-oss (three turns). T1–T3 need only the main wheel.
 
 **T1, compaction on reported counts (core, main wheel only).**
-- **Builds:** `Count`, `Provenance` (all five) and the sum rule; ceilings; Anthropic proved spans
+- **Builds:** `Count`, `Basis` (all five) and the sum rule; ceilings; Anthropic proved spans
   from today's `cached`; the meter; `RequestCount` and `Cursor.count`; the `Counter` protocol,
   `CountJob`, `TreeHandle.counter` and the one-counter rule, with nothing filling it yet; every
   §5 change with the recommended hard limit; `≤` and `(reported counts only)` in notices; prune
@@ -573,6 +573,35 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
   the same; the hard limit and `/compact` always try. When the turn in progress began with a
   user message that the summary would replace, that message is copied verbatim after the summary.
   A `reserve` of less than 2 tokens leaves no allowance and is a `ConfigError`.
+- **The base is the prefix and the overhead only** (§4 said the first request's whole `input`,
+  which holds the first message too and made a long first message count as overhead). It is the
+  first bill less the body nodes before the first reply: a whole lump comes out at its cost, any
+  other node at the lowest its bytes allow, `LOWEST_BYTES_PER_TOKEN` = 8 (a bound far above what a
+  tokenizer gives, not an estimate; text of one repeated character can break it). A base made so
+  is `heuristic`. This is the one place a ratio of bytes to tokens is used, and only to take a
+  node out of a bill, never to count one. A line with no report yet has the ceiling of its tool
+  definitions as its base, with the ceilings of the prefix nodes.
+- **The hard limit never sends what it cannot show fits.** A ceiling is loose, and a request that
+  is over only by it (a 30,000-character paste into a 32k model) is refused, as D26 §5 says:
+  compaction runs first, and if it cannot make room, or has nothing to compact, the step fails
+  with the figures. Early compaction from a ceiling is accepted.
+- **Known gap: reasoning.** `Reading` does not carry `reasoning` until T2, so a summary's count is
+  its whole `output`, thinking included. That over-counts what the new line carries, which is the
+  safe direction; no count is subtracted by a reply's `output` (only a lump's cost, or the byte
+  bound above, comes out of a bill), so an `output` that includes thinking cannot make the base too
+  small. T2 subtracts `reasoning` as §3.2 says.
+- **`keep`** is the most tokens copied (the longest tail within it, or the newest turn whole), not
+  at least that many, because a cut may land only at the start of a lump. Measured by the nodes'
+  upper counts, so on a provider without proved spans (every node a ceiling) 20000 is about 5000
+  to 6000 real tokens.
+- **The soft latch** (a summary paid for that did not fit is not asked for again) holds while the
+  limits are the same and the failure's node is on the cursor's line; moving to another branch
+  releases it. A notice is told once per cursor, limit and part that is too big (prefix, newest
+  node, tail, summary, shorter), so a different failure is told too.
+- **The meter keeps the last 16 measured walks**, not every one, and no walk of its own: a long
+  `tau serve` asks about a new tip every turn.
+- **`Provenance` is `Basis`** (`tau.Basis`, and `Count.basis`): core's `Provenance` is the pair
+  `copied_from`/`derived_from`, and one word named two glossary concepts.
 - **Prune** compares the two lines by their ceilings, since a line that is not sent has no other
   count, and prints both as `≤`.
 - **The tree screen** prints the walk's request count as `Count`s do (`show`).
@@ -645,8 +674,8 @@ Image formulas land with image parts, which is not part of this ADR's stages.
 
 ### 11. Glossary entries proposed
 
-- **count** (`tau.Count`: `tokens`, `provenance`, `bound`, `upper`) and **provenance**
-  (`tau.Provenance`: `reported`, `rendered`, `calibrated`, `heuristic`, `ceiling`), with the sum
+- **count** (`tau.Count`: `tokens`, `basis`, `bound`, `upper`) and **basis**
+  (`tau.Basis`: `reported`, `rendered`, `calibrated`, `heuristic`, `ceiling`), with the sum
   rule; **ceiling** (a node's UTF-8 bytes plus 16 per message-bearing node).
 - **request count** (`tau.RequestCount`: `total`, `base`, `base_nodes`, `nodes`, `why`);
   **base (of a request count)**; **overhead (of a request)**.
@@ -694,7 +723,7 @@ compaction's head (D24).
 | Fitting in Python inside `tokens` | NNLS by hand, and the property tests move out of core. The call from the extension into `_core` is plain values (§6). |
 | Compaction refuses to run without a counter | The owner ruled it out: reported counts are enough for the soft limit and the fit check, and only the hard limit needs a stand-in (§5). |
 | Compact on the server's context-length refusal | §5: the summarizer is refused too, it reverses D24 ruling 8, and every trip costs a failed request. Rejected (Q1). |
-| Fall back to a similar tokenizer silently | The owner ruled it out. A wrong tokenizer looks exact. A weaker provenance with a stated reason is honest. |
+| Fall back to a similar tokenizer silently | The owner ruled it out. A wrong tokenizer looks exact. A weaker basis with a stated reason is honest. |
 | Store calibration in the session | It would have to be learned again for every session, and it describes the model, not the conversation. |
 
 ## Facts checked today

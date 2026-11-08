@@ -1,7 +1,7 @@
 """Counts (D26 sections 1 and 4): what a number of tokens knows about where it came from.
 
-A **count** is `Count(tokens, provenance, bound)`; its `upper` is `tokens + bound`. The
-provenance is one of five, strongest first: `reported` (the server's own bill, or the difference
+A **count** is `Count(tokens, basis, bound)`; its `upper` is `tokens + bound`. The
+basis is one of five, strongest first: `reported` (the server's own bill, or the difference
 between two bills whose shared prefix is proved), `rendered`, `calibrated`, `heuristic` (the last
 three belong to a counter extension, D26 T2 and later) and `ceiling` (no estimate: the bound is
 the node's UTF-8 bytes plus `CEILING_PER_NODE`). Counts add: tokens and bounds add, and the sum
@@ -13,7 +13,8 @@ can start a kept tail. A **counter** is an object an extension offers as its `co
 attribute; it counts only what no report covers.
 """
 
-from collections.abc import Mapping
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -21,7 +22,7 @@ from typing import Protocol
 from tau._core import Body, Node, Outcome, Part
 
 
-class Provenance(StrEnum):
+class Basis(StrEnum):
     """Where a `Count` came from, strongest first. A sum is as weak as its weakest part."""
 
     REPORTED = "reported"
@@ -31,7 +32,7 @@ class Provenance(StrEnum):
     CEILING = "ceiling"
 
 
-_STRENGTH = {p: i for i, p in enumerate(Provenance)}
+_STRENGTH = {p: i for i, p in enumerate(Basis)}
 
 CEILING_PER_NODE = 16
 """Tokens a ceiling adds for each node a request sends, on top of one token per byte: the chat
@@ -44,7 +45,7 @@ class Count:
     """A number of tokens and what is known about it. `bound` is how many more it may be."""
 
     tokens: int
-    provenance: Provenance
+    basis: Basis
     bound: int = 0
 
     def __post_init__(self) -> None:
@@ -57,17 +58,17 @@ class Count:
         return self.tokens + self.bound
 
     def __add__(self, other: "Count") -> "Count":
-        weakest = max(self.provenance, other.provenance, key=_STRENGTH.__getitem__)
+        weakest = max(self.basis, other.basis, key=_STRENGTH.__getitem__)
         return Count(self.tokens + other.tokens, weakest, self.bound + other.bound)
 
 
-NONE = Count(0, Provenance.REPORTED)
+NONE = Count(0, Basis.REPORTED)
 """Nothing: the count of a node that is not sent."""
 
 
 def reported(tokens: int, bound: int = 0) -> Count:
     """A `reported` count."""
-    return Count(tokens, Provenance.REPORTED, bound)
+    return Count(tokens, Basis.REPORTED, bound)
 
 
 def sent(body: Body) -> bool:
@@ -81,7 +82,7 @@ def ceiling_of(body: Body) -> Count:
     is not sent is `NONE`."""
     if not sent(body):
         return NONE
-    return Count(0, Provenance.CEILING, _bytes(body) + CEILING_PER_NODE)
+    return Count(0, Basis.CEILING, _bytes(body) + CEILING_PER_NODE)
 
 
 def _bytes(body: Body) -> int:
@@ -116,6 +117,27 @@ def _outcome_bytes(outcome: Outcome) -> int:
             return len(error.encode())
         case _:
             return len("Interrupted")
+
+
+class _Described(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def parameters(self) -> Mapping[str, object]: ...
+
+
+def tools_ceiling(tools: Iterable[_Described]) -> Count:
+    """The ceiling of the tool definitions a request carries (name, description and schema of
+    each), which the first bill of a line includes and a line with no bill yet does not."""
+    size = sum(
+        len(t.name.encode()) + len(t.description.encode()) + len(json.dumps(t.parameters).encode())
+        for t in tools
+    )
+    return Count(0, Basis.CEILING, size) if size else NONE
 
 
 @dataclass(frozen=True)

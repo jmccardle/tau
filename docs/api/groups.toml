@@ -18,7 +18,7 @@ names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
     "StepLimit", "Attachments", "Skills", "Usage", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
-    "Count", "Provenance", "RequestCount", "Counter", "CountJob", "CounterAnswer",
+    "Count", "Basis", "RequestCount", "Counter", "CountJob", "CounterAnswer",
 ]
 
 [[group]]

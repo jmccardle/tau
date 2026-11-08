@@ -1309,11 +1309,11 @@ without text or is cut off fails the step; Esc leaves the cursor where it was an
 stopping or closing `compaction:N` fails the hard limit's step. The trigger never reacts to a
 provider's "prompt too long"; `/compact`, then a step, recovers.
 
-### Count, Provenance, ceiling
-`tau.Count` (`tokens`, `provenance`, `bound`; `upper` is their sum), `tau.Provenance` (`reported`,
+### Count, Basis, ceiling
+`tau.Count` (`tokens`, `basis`, `bound`; `upper` is their sum), `tau.Basis` (`reported`,
 `rendered`, `calibrated`, `heuristic`, `ceiling`) (`_counts.py`) · D26 sections 1 and 4 · new (8E-6)
 
-A number of tokens and where it came from. **reported** is a server's bill, or the difference of two
+A number of tokens and what it rests on. **reported** is a server's bill, or the difference of two
 bills whose shared prefix is proved. **rendered**, **calibrated** and **heuristic** belong to a
 counter extension (D26 T2 and later); nothing makes them yet. A **ceiling** is no estimate: the
 count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning, replay data, call
@@ -1328,9 +1328,12 @@ a ceiling. Nothing in τ estimates tokens from characters.
 
 What the walk to a node will cost as a request. `total` is the whole: the newest report's `input`
 and its reply's `output` plus the ceilings of what came after, or the ceilings of the whole walk
-while no reply has reported. The **base** is the first report's `input`, which covers the first
-`base_nodes` nodes and the request's overhead (tool definitions, hidden prompts, per-message
-overhead), counted as one; it over-counts the prefix and the overhead, in the safe direction.
+while no reply has reported (and the ceiling of the tool definitions). The **base** is the prefix
+and the request's overhead (tool definitions, hidden prompts, per-message overhead), counted as
+one: the first report's `input` less the `base_nodes` nodes of the body before that reply (the
+first message; a compacted line's summary and copies), a whole lump at its cost and any other
+node at the lowest its bytes allow (a base made so has the basis `heuristic`). With no report it
+is the ceiling of the tool definitions.
 `nodes` has a count for every node that is sent, by id, except those inside a **lump**: where a
 second request proves that the first is its prefix, the nodes between the two replies cost the
 difference of the two `input`s, held by the first of them, and the others have no count of their
