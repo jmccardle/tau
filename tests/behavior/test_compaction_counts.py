@@ -18,6 +18,7 @@ from tau import (
     Body,
     CommandFailed,
     Compaction,
+    Cursor,
     ModelCatalog,
     Node,
     Part,
@@ -114,7 +115,7 @@ async def test_a_soft_compaction_leaves_a_line_the_next_bill_finds_under_the_lim
     for _ in range(3):
         await say(h)
     (notice,) = told(h, "compacted")
-    assert notice.startswith("compacted 12.0k → ≤8.1k tokens"), notice
+    assert notice.startswith("compacted 12.0k → ≤8.6k tokens"), notice
     assert notice.endswith("reported counts only)"), notice
     await say(h)  # the fourth turn ends at 9,530 against a soft limit of 10,000
     assert len(summaries(h)) == 1, "the line was under the limit by the measure the bill uses"
@@ -173,9 +174,11 @@ async def test_the_tail_is_cut_after_the_summary_so_the_line_fits(tmp_path: Path
     replies = [n.id for n in before if isinstance(n.body, Body.Assistant)][:6]
     line = walk(h)
     assert [n.copied_from for n in line[3:]] == [replies[4], users[5], replies[5]]
-    assert line[2].derived_from == users[4], "the last node it did not copy"
+    source = h.session.tree.node(line[2].derived_from or 0)
+    assert isinstance(source.body, Body.Assistant), "the summarizer's reply"
+    assert source.body.parts == [Part.Text("S" * 20_000)]
     (notice,) = told(h, "compacted")
-    assert notice.startswith("compacted 12.0k → ≤8.6k tokens"), notice
+    assert notice.startswith("compacted 12.0k → ≤9.1k tokens"), notice
     await h.close()
 
 
@@ -214,6 +217,8 @@ async def test_the_hard_limit_counts_a_big_tool_result_by_its_bytes_and_keeps_th
     await say(h, "y" * 24_000)
     await say(h, "the current question")
     assert len(h.provider.requests) == 5, "the summary came before the second sample"
+    asked = h.provider.requests[3].walk  # the summarizer: the head only, the big result is kept
+    assert not any(isinstance(h.session.tree.node(i).body, Body.Results) for i in asked)
     line = walk(h)
     question = next(n for n in h.nodes() if getattr(n.body, "text", "") == "the current question")
     old = {n.id: n for n in h.nodes()}
@@ -223,7 +228,7 @@ async def test_the_hard_limit_counts_a_big_tool_result_by_its_bytes_and_keeps_th
     assert isinstance(old[called.copied_from or 0].body, Body.Assistant)
     assert isinstance(result.body, Body.Results)
     assert result.copied_from is not None
-    assert summary.derived_from == question.id
+    assert isinstance(h.session.tree.node(summary.derived_from or 0).body, Body.Assistant)
     assert done.copied_from is None
     await h.close()
 
@@ -314,4 +319,80 @@ async def test_a_summary_that_did_not_fit_is_tried_again_on_another_branch(tmp_p
     await say(h, "x" * (big * 4))
     assert len(summaries(h)) == 2, "the failure was on the other branch"
     assert [n for n in h.notices() if n.startswith("compacted")]
+    await h.close()
+
+
+class Spy:
+    """An extension that counts each request about to be sent, after compaction has had its say."""
+
+    name = "spy"
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, int]] = []  # cursor, the most the request can take
+
+    async def pre_sample(self, cursor: Cursor, subject: object) -> None:
+        self.seen.append((cursor.id, (await cursor.count()).total.upper))
+
+
+@scenario
+async def test_after_a_compaction_a_big_system_prompt_still_leaves_room(tmp_path: Path) -> None:
+    # A 16 kB system prompt (4,000 tokens) and 500 of overhead on a 32k window. The line the
+    # first compaction leaves has no bill yet; its prefix is the old line's, not 16,000 bytes.
+    over = 4500
+    script: list[Reply | Fail] = [
+        bill("a" * 4000, over + 2000 * k - 1000, 1000, None if k == 1 else over + 2000 * k - 3000)
+        for k in range(1, 9)
+    ]
+    script.append(summarizer("S" * 8000, 99, 2000))
+    script += [bill("z" * 4000, 9000 + 1000 * i, 1000) for i in range(6)]
+    spy = Spy()
+    h = await Harness.create(
+        tmp_path,
+        system="P" * 16_000,
+        provider=FakeProvider(script),
+        extensions=[Compaction(), spy],
+        catalog=read_models(
+            cli={
+                "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 32768}}
+            }
+        ),
+        config=model_config("a"),
+    )
+    for i in range(12):
+        await say(h, f"{i}" * 4000)
+        assert (await h.view()).hook_error is None, f"message {i}"
+    assert len([n for n in h.notices() if n.startswith("compacted")]) == 1
+    assert max(upper for _, upper in spy.seen) <= 24_576, "no request was counted past the limit"
+    await h.close()
+
+
+@scenario
+async def test_the_request_after_a_hard_compaction_is_counted_as_the_notice_counted_it(
+    tmp_path: Path,
+) -> None:
+    # The summary is 30,000 characters that the server billed as 1,000 tokens: the line counts
+    # that, in the notice and in the request that goes out, not 30,000 by its bytes.
+    script: list[Reply | Fail] = [
+        bill("a" * 4000, 1000, 1000),
+        bill("b" * 4000, 12_000, 10_000, 1000),
+        bill("c" * 4000, 30_000, 4000, 12_000),
+        summarizer("S" * 30_000, 38_100, 1000),
+        bill("after", 100, 10),
+    ]
+    spy = Spy()
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(script),
+        extensions=[Compaction(), spy],
+        catalog=catalog(reserve=4000, soft=35_000, keep=30_000),
+        config=model_config("a"),
+    )
+    for size in (4000, 4000, 4000, 8000):
+        await say(h, "q" * size)
+    assert (await h.view()).hook_error is None
+    (notice,) = told(h, "compacted")
+    after = float(notice.split("→ ≤")[1].split("k")[0]) * 1000
+    sent = [upper for cursor, upper in spy.seen if cursor == 0][-1]
+    assert sent <= 36_000, "under the hard limit"
+    assert abs(sent - after) < 100, "the notice and the request are one count"
     await h.close()

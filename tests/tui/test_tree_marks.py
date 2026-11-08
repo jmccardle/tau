@@ -24,7 +24,7 @@ def thoughtful(text: str) -> Reply:
 
 
 def billed(input: int, output: int, cached: int | None = None) -> str:
-    """The usage a server reports: the third reply takes the walk past the hard limit of 900."""
+    """The usage a server reports: the third reply takes the walk past the hard limit of 36,000."""
     usage = {"input": input, "output": output}
     if cached is not None:
         usage["cached"] = cached
@@ -124,9 +124,9 @@ async def test_a_compacted_tree_shows_the_summary_the_copies_and_the_closed_summ
     catalog = read_models(
         cli={
             "models": {
-                "a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 1000},
+                "a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 40_000},
             },
-            "extensions": {"compaction": {"reserve": 100, "soft": 900, "keep": 20}},
+            "extensions": {"compaction": {"reserve": 4000, "soft": 35_000, "keep": 20}},
         }
     )
     h = await Harness.create(
@@ -135,7 +135,7 @@ async def test_a_compacted_tree_shows_the_summary_the_copies_and_the_closed_summ
             [
                 Reply([Part.Text("one" + "." * 600)], Stop.End, meta=billed(10, 160)),
                 Reply([Part.Text("two" + "." * 600)], Stop.End, meta=billed(180, 160, 10)),
-                Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 560, 180)),
+                Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 36_000, 180)),
                 say("the summary"),
                 say("four"),
             ]

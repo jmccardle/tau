@@ -167,7 +167,7 @@ item some node delivers.
 
 Two optional node ids on a `Node`. **`copied_from`**: the node this one repeats verbatim (a
 compaction or prune copy). **`derived_from`**: the node whose walk this one's content was computed
-from (a compaction summary derives from the last node it replaced; a pruned reply or a user
+from (a compaction summary derives from the summarizer's reply that it wraps; a pruned reply or a user
 message carrying a pruned transcript from the one it replaces). Written once (I2), and a source
 must be a node (`NoSuchNode`; nothing is written). A record without them loads as none, so a log
 from before they existed loads. Python: `TreeHandle.append(..., copied_from=, derived_from=)` and
@@ -1302,7 +1302,7 @@ written by a **summarizer cursor**, labelled `compaction:N`: opened at the branc
 summary prompt (and the focus), waited for with `rest`, and closed. It is offered the branch's
 tools but refused any call, and compaction's own `pre_sample` skips it. The new line is the head's
 `Config` copies, the summary as a `User` node by `Extension("compaction")` with `derived_from` the
-last node it replaced, a copy of the user message the turn in progress began with if the head held
+summarizer's reply (whose reported `output` is the summary's count), a copy of the user message the turn in progress began with if the head held
 it, then a copy of every tail node. Every figure is a **count** (below): the bill's own where a
 report covers it, a **ceiling** where none does. A summarizer that fails, is halted, replies
 without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing;

@@ -120,7 +120,7 @@ async def test_reports_give_the_total_the_base_and_a_lump_for_each_proved_span(
     await h.run("probe")
     (counted,) = probe.counted
     assert counted.total == Count(6000, Basis.REPORTED)
-    assert counted.base == Count(500, Basis.HEURISTIC), "the bill less the first message, at least"
+    assert counted.base == Count(1000, Basis.HEURISTIC), "a run of one character takes nothing out"
     assert counted.base_nodes == 3, "the root, the system text and the first message"
     # nodes: 0 root, 1 system, 2 user, 3 reply, 4 user, 5 reply, 6 user, 7 reply
     assert counted.nodes[3] == Count(2000, Basis.REPORTED), "the reply and the next input"
@@ -312,4 +312,32 @@ async def test_a_line_with_no_report_counts_the_tool_definitions_it_will_send(
     assert counted.base.basis is Basis.CEILING
     assert counted.base.bound >= len("big") + 100, "the name and the description, at least"
     assert counted.total.upper >= counted.base.upper
+    await h.close()
+
+
+@scenario
+async def test_a_first_message_of_one_repeated_character_stays_in_the_base(tmp_path: Path) -> None:
+    # 32 kB of spaces is a few hundred tokens, and no ratio of bytes to tokens says how few: the
+    # whole first bill stays in the base. Ordinary text of the same size comes out at a fifth.
+    probe = Probe()
+    h = await Harness.create(
+        tmp_path / "a",
+        provider=FakeProvider([bill(10_000, 100, text="a")]),
+        extensions=[probe],
+    )
+    await h.send(" " * 32_000)
+    await h.settle()
+    await h.run("probe")
+    assert probe.counted[0].base == Count(10_000, Basis.HEURISTIC)
+    await h.close()
+    prose = Probe()
+    h = await Harness.create(
+        tmp_path / "b",
+        provider=FakeProvider([bill(10_000, 100, text="a")]),
+        extensions=[prose],
+    )
+    await h.send("word " * 6400)
+    await h.settle()
+    await h.run("probe")
+    assert prose.counted[0].base == Count(10_000 - 32_000 // 8, Basis.HEURISTIC)
     await h.close()

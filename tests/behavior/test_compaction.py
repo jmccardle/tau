@@ -141,13 +141,16 @@ async def test_a_branch_that_would_not_fit_is_summarized_before_the_sample(tmp_p
 
 
 @scenario
-async def test_the_summary_derives_from_the_last_node_it_replaced(tmp_path: Path) -> None:
+async def test_the_summary_derives_from_the_summarizers_reply(tmp_path: Path) -> None:
     h = await talk_to_the_edge(tmp_path)
     before = walk(h)
     await say(h, BIG)
     summary = walk(h)[2]
     assert texts([before[-1]]) == ["A:three"]
-    assert summary.derived_from == before[-1].id
+    reply = h.session.tree.node(summary.derived_from or 0)
+    assert texts([reply]) == ["A:" + SUMMARY], "the summarizer's reply, which the summary wraps"
+    assert reply.parent is not None
+    assert h.session.tree.node(reply.parent).parent == before[-1].id, "after the old line's tip"
     await h.close()
 
 
@@ -180,13 +183,13 @@ async def test_the_summarizer_is_a_labelled_cursor_that_is_closed_afterwards(
     prompt = h.session.tree.node(last - 1)
     assert isinstance(prompt.body, Body.User)
     assert prompt.by == Author.Extension("compaction")
-    assert prompt.body.text.startswith(BIG + "\n\nSummarize the conversation above")
+    assert prompt.body.text.startswith("Summarize the conversation above")
     # the request is the branch's request plus one message
     request = h.provider.requests[3]
     ids = tuple(n.id for n in h.session.tree.walk(prompt.id))
     assert request.walk == ids
     before = h.session.tree.node(ids[-2])
-    assert isinstance(before.body, Body.Assistant), "the input is merged into the prompt"
+    assert isinstance(before.body, Body.Assistant), "the input not yet answered is left out"
     await h.close()
 
 
@@ -332,7 +335,8 @@ async def test_a_remote_client_reads_the_fields(tmp_path: Path) -> None:
     seen = await h.client.walk(h.session.cursor(h.cursor).at)
     assert seen == walk(h)
     assert [n.copied_from is not None for n in seen[2:]] == [False, True, False]
-    assert seen[2].derived_from == 7
+    assert h.session.tree.node(seen[2].derived_from or 0).by.__class__ is not None
+    assert seen[2].derived_from == 10, "the summarizer's reply"
     await h.close()
 
 
@@ -512,7 +516,7 @@ async def test_a_big_first_message_is_not_counted_as_the_prefix(tmp_path: Path) 
         bill("S" * 2000, 9600, 500),
     ]
     h = await start(tmp_path, script, soft=8000)
-    await say(h, "q" * 24_000)
+    await say(h, "word " * 4800)
     await say(h, "r" * 4000)
     assert [n for n in h.notices() if n.startswith("compacted")]
     assert not [n for n in h.notices() if "cannot keep" in n]
@@ -842,4 +846,68 @@ async def test_a_second_compaction_on_a_32k_window_still_has_room(tmp_path: Path
     assert (await h.view()).hook_error is None
     assert len([n for n in h.notices() if n.startswith("compacted")]) == 2
     assert not [n for n in h.notices() if "cannot keep" in n]
+    await h.close()
+
+
+@scenario
+async def test_a_summarizer_whose_window_cannot_take_the_branch_fails_the_step(
+    tmp_path: Path,
+) -> None:
+    small = read_models(
+        cli={
+            "models": {
+                "a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 40_000},
+                "b": {"model": "b", "provider": FAKE_PROVIDER, "context_window": 10_000},
+            },
+            "extensions": {"compaction": {**OPTIONS, "model": "b"}},
+        }
+    )
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(edge_script()),
+        extensions=[Compaction()],
+        catalog=small,
+        config=model_config("a"),
+    )
+    for text in ("go 1", "go 2", "go 3", BIG):
+        await say(h, text)
+    view = await h.view()
+    assert view.hook_error is not None
+    assert "the summarizer's request takes" in view.hook_error.error
+    assert "set extensions.compaction.model" in view.hook_error.error
+    assert len(h.provider.requests) == 3, "nothing was sent that does not fit"
+    await h.close()
+
+
+@scenario
+async def test_a_first_message_too_big_by_its_bytes_says_why_and_how_to_send_it(
+    tmp_path: Path,
+) -> None:
+    # 250,000 characters are some 60,000 tokens, but with no reply to bill them they are counted
+    # at one token a byte: past the 183,616 of a 200k window.
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([bill("ok", 60_000, 10)]),
+        extensions=[Compaction()],
+        catalog=catalog(200_000, {}),
+        config=model_config("a"),
+    )
+    await say(h, "word " * 50_000)
+    view = await h.view()
+    assert view.hook_error is not None
+    error = view.hook_error.error
+    assert "counted by its bytes" in error
+    assert "`context_window`" in error
+    assert "--set compaction.auto=false" in error
+    assert not h.provider.requests
+    await h.close()
+    h = await Harness.create(
+        tmp_path / "b",
+        provider=FakeProvider([bill("ok", 60_000, 10)]),
+        extensions=[Compaction()],
+        catalog=catalog(200_000, {"auto": False}),
+        config=model_config("a"),
+    )
+    await say(h, "word " * 50_000)
+    assert (await h.view()).hook_error is None, "with automatic compaction off it is sent"
     await h.close()

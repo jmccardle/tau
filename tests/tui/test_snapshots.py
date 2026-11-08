@@ -153,14 +153,14 @@ async def test_the_tree_of_a_compacted_session(tmp_path: Path) -> None:
 
     catalog = read_models(
         cli={
-            "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 1000}},
-            "extensions": {"compaction": {"reserve": 100, "soft": 900, "keep": 20}},
+            "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 40_000}},
+            "extensions": {"compaction": {"reserve": 4000, "soft": 35_000, "keep": 20}},
         }
     )
     replies = [
         Reply([Part.Text("one" + "." * 600)], Stop.End, meta=billed(10, 160)),
         Reply([Part.Text("two" + "." * 600)], Stop.End, meta=billed(180, 160, 10)),
-        Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 560, 180)),
+        Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 36_000, 180)),
         say("the summary"),
         say("four"),
     ]

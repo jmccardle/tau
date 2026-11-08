@@ -114,7 +114,8 @@ calibrated per-class counter stays dropped; D26 adds an optional one (T2 and lat
    without prune knowing compaction's labels.
 3. **New line.** Under the prefix's last node: copies of the head's `Config` nodes, so the model
    and options at the cut stay the same; then the summary as a `User` node by
-   `Extension("compaction")` with `derived_from` = the last head node; then a copy of every tail
+   `Extension("compaction")` with `derived_from` = the summarizer's reply (8E-6; it was the last head node: the reply carries the
+   summary's reported count, which the meter reads); then a copy of every tail
    node, `Config` nodes and `Results` included, each with `copied_from`. The hook moves the cursor
    to the last copy (D3, Q25), and the sample sends the new walk (I1).
 
@@ -751,7 +752,9 @@ the text did not say:
 - At the hard limit on new input the branch ends in a `User` node not yet answered; the
   summarizer is opened at that node's parent and sent the input text and the summary prompt as one
   `User` node (by `Extension("compaction")`), as prune merges, so two user messages never sit side
-  by side. This is the only case; it supersedes "left as it is" above.
+  by side. This is the only case; it supersedes "left as it is" above. (8E-6: the summarizer is
+  still opened at the parent, but is sent the prompt alone: the input is kept verbatim in the
+  tail, and the message that did not fit no longer makes the summarizer's request not fit.)
 
 ### Second review fixes (8E-3)
 

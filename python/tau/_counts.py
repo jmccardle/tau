@@ -14,6 +14,7 @@ attribute; it counts only what no report covers.
 """
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -83,6 +84,52 @@ def ceiling_of(body: Body) -> Count:
     if not sent(body):
         return NONE
     return Count(0, Basis.CEILING, _bytes(body) + CEILING_PER_NODE)
+
+
+LOWEST_BYTES_PER_TOKEN = 8
+"""A run of at most 4 of one character, or any other text, costs at least its bytes over 8 tokens
+(`lowest_tokens`): real text is 3 to 5 bytes per token."""
+_RUN = re.compile(r"(.)\1{3,}", re.DOTALL)
+
+
+def lowest_tokens(body: Body) -> int:
+    """The least a node plausibly costs: its text with every run of one repeated character cut to
+    four (the tokenizers have single tokens for long runs of spaces, dashes or equals signs, which
+    no ratio of bytes covers), over `LOWEST_BYTES_PER_TOKEN`. A bound for taking a node out of a
+    bill, not a count: no tokenizer is asked, and a text that is long runs of something else
+    (`ab` over and over) may be cheaper."""
+    match body:
+        case Body.System(text=text) | Body.User(text=text):
+            texts = [text]
+        case Body.Assistant(parts=parts):
+            texts = [
+                p.text if isinstance(p, Part.Text | Part.Thinking) else p.args_raw
+                for p in parts
+                if isinstance(p, Part.Text | Part.Thinking | Part.Call)
+            ]
+        case Body.Results(outcomes=outcomes):
+            texts = [_outcome_text(o) for _, o, _ in outcomes]
+        case _:
+            return 0
+    squeezed = "".join(_RUN.sub(lambda m: m.group(1) * 4, t) for t in texts)
+    return len(squeezed.encode()) // LOWEST_BYTES_PER_TOKEN
+
+
+def _outcome_text(outcome: Outcome) -> str:
+    match outcome:
+        case Outcome.Ok(value=value):
+            return value
+        case Outcome.Err(error=error):
+            return error
+        case _:
+            return ""
+
+
+def wrapped_count(reply: Count, reply_body: Body, node_body: Body) -> Count:
+    """The count of a node that is a reply's words in a wrapper (a summary): the reply's own count
+    and the ceiling of the words added around them."""
+    wrapper = max(_bytes(node_body) - _bytes(reply_body), 0)
+    return reply + Count(0, Basis.CEILING, wrapper + CEILING_PER_NODE)
 
 
 def _bytes(body: Body) -> int:

@@ -8,7 +8,7 @@ For the replies that report (the **reports**, in walk order):
   per-message overhead), counted as one: the first report's `input` less the body nodes before
   that reply (the first message; a compacted line's summary and copies). A lump among them comes
   out at its cost; any other node comes out at the lowest its bytes allow
-  (`LOWEST_BYTES_PER_TOKEN`), and a base made that way is `HEURISTIC`. With no report the base is
+  (`lowest_tokens`), and a base made that way is `HEURISTIC`. With no report the base is
   the ceiling of the tool definitions.
 - **A span** is the nodes from one report's reply up to the next report's. Its cost is the
   difference of the two `input`s, and that is exact only if the first request is a prefix of the
@@ -32,9 +32,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
-from tau._core import Node
+from tau._core import Body, Node
 from tau._counts import (
-    CEILING_PER_NODE,
     NONE,
     Basis,
     Count,
@@ -42,8 +41,10 @@ from tau._counts import (
     CountJob,
     RequestCount,
     ceiling_of,
+    lowest_tokens,
     reported,
     sent,
+    wrapped_count,
 )
 from tau._lines import prefix_length
 from tau._usage import Reading, counted, reading
@@ -51,11 +52,6 @@ from tau._values import DefinitionError
 
 KEPT = 16
 """How many measured walks a `Meter` keeps."""
-LOWEST_BYTES_PER_TOKEN = 8
-"""A node of B bytes costs at least B / 8 tokens: far above what any tokenizer gives on real text
-(3 to 5 bytes per token), so a bound and not an estimate. It is only ever subtracted, to take a
-node out of the first bill where nothing counts it exactly; text of one repeated character can
-break it."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +94,7 @@ def _base(
     The body nodes before the first reply (the first message, or a compacted line's summary and
     copies) are taken out of the bill: exactly where they make a whole lump (their count is a
     difference of two bills), and otherwise by the lowest their bytes allow
-    (`LOWEST_BYTES_PER_TOKEN`), so the base is never less than the prefix and the overhead and
+    (`lowest_tokens`), so the base is never less than the prefix and the overhead and
     is a bound on them. A base with a node taken out that way is `HEURISTIC`."""
     out, bounded = 0, False
     for node in walk[prefix_length(walk) : first]:
@@ -108,7 +104,7 @@ def _base(
         if node.id in lumps:
             out += count.tokens
         else:
-            out += (ceiling_of(node.body).bound - CEILING_PER_NODE) // LOWEST_BYTES_PER_TOKEN
+            out += lowest_tokens(node.body)
             bounded = True
     left = max(billed - out, 0)
     return Count(left, Basis.HEURISTIC if bounded else Basis.REPORTED)
@@ -161,10 +157,10 @@ class Meter:
         marks = _reports(walk)
         if not marks:
             self._fill(walk, 0, len(walk), nodes, lumps)
-            after = tuple(n.id for n in walk if n.id in nodes)
-            total = _sum(nodes[i] for i in after)
-            request = RequestCount(total, NONE, 0, nodes)
-            return Measured(request, NONE, after, lumps)
+            base, covered = self._carried(walk)
+            after = tuple(n.id for n in walk[covered:] if n.id in nodes)
+            total = base + _sum(nodes[i] for i in after)
+            return Measured(RequestCount(total, base, covered, nodes), base, after, lumps)
         first, last = marks[0][0], marks[-1][0]
         self._fill(walk, 0, first, nodes, lumps)
         for earlier, later in pairwise(marks):
@@ -202,7 +198,7 @@ class Meter:
             node = walk[j]
             if node.copied_from is None:
                 if sent(node.body):
-                    nodes[node.id] = ceiling_of(node.body)
+                    nodes[node.id] = self._derived(node)
                 j += 1
                 continue
             end = j
@@ -210,6 +206,29 @@ class Meter:
                 end += 1
             self._inherit(walk[j : end + 1], nodes, lumps)
             j = end + 1
+
+    def _carried(self, walk: list[Node]) -> tuple[Count, int]:
+        """The base of a line no reply has reported on yet, and how many nodes it covers: the base
+        of the line it was written from (the prefix and the overhead are the same), found through
+        the first node derived from another, or `NONE` and 0 if there is none or that line had
+        no report either."""
+        prefix = prefix_length(walk)
+        for node in walk[prefix:]:
+            if node.derived_from is not None:
+                old = self.measure(node.derived_from).request
+                return (old.base, prefix) if old.base_nodes else (NONE, 0)
+        return NONE, 0
+
+    def _derived(self, node: Node) -> Count:
+        """The count of a node nothing reports: a ceiling, except a `User` node derived from a
+        reply that reported (a summary, derived from the summarizer's reply), which is that
+        reply's count and the ceiling of its wrapper."""
+        if node.derived_from is not None and isinstance(node.body, Body.User):
+            source = self._node(node.derived_from)
+            got = self.measure(source.id).request.nodes.get(source.id)
+            if isinstance(source.body, Body.Assistant) and got and got.basis is Basis.REPORTED:
+                return wrapped_count(got, source.body, node.body)
+        return ceiling_of(node.body)
 
     def _inherit(
         self, run: list[Node], nodes: dict[int, Count], lumps: dict[int, tuple[int, ...]]

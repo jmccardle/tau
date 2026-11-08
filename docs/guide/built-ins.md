@@ -369,14 +369,14 @@ summarized: at the soft limit τ tells you once and goes on; for `/compact` the 
 says what is too big. At the hard limit the step fails the same way: τ never sends a request
 that it cannot show fits. That includes a request that is over only by the bytes of what is not
 sent yet (a big paste, a big tool result, counted loosely), so a message of 30,000 characters can
-be refused by a 32k model that would have taken it; split it, or give the model a larger window.
+be refused by a 32k model that would have taken it. The error says so and names the ways past it: shorten or split the message, give the model a larger `context_window`, or turn automatic compaction off (`--set compaction.auto=false`), after which the provider decides.
 After the summary is written, τ keeps the longest tail that fits beside it. A summary that does
 not fit the soft limit is told once and not asked for again at the soft limit while the limits are
 the same and the cursor stays on that line (a hard limit or `/compact` always tries), a notice
 about a different part being too big is told as well, and a summary no shorter than what it
 replaces is not written.
 
-`model` names another model to write the summary (default: the one you are using). The summary is
+`model` names another model to write the summary (default: the one you are using). The summarizer's own request has to fit that model's window too: if the branch does not, τ summarizes only the older part and keeps the newest turn whole, and if even that does not fit, the step fails and says to give `model` one with a larger window. The summary is
 written by a second cursor, `compaction:1`, which you can see in the tree and which `/usage`
 counts; it is closed when it is done. Esc while it works leaves your conversation exactly as it
 was, and so does stopping or closing the `compaction:1` cursor itself: the step that was waiting

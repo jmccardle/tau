@@ -576,15 +576,36 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
 - **The base is the prefix and the overhead only** (§4 said the first request's whole `input`,
   which holds the first message too and made a long first message count as overhead). It is the
   first bill less the body nodes before the first reply: a whole lump comes out at its cost, any
-  other node at the lowest its bytes allow, `LOWEST_BYTES_PER_TOKEN` = 8 (a bound far above what a
-  tokenizer gives, not an estimate; text of one repeated character can break it). A base made so
-  is `heuristic`. This is the one place a ratio of bytes to tokens is used, and only to take a
-  node out of a bill, never to count one. A line with no report yet has the ceiling of its tool
+  other node at `lowest_tokens` of its text, its bytes over 8 after every run of one repeated
+  character is cut to four (the tokenizers have single tokens for long runs of spaces or dashes,
+  which no ratio covers). A base made so is `heuristic`. **No exact route exists**, and none was
+  found: every bill holds the prefix, the overhead, the head and the tail together, so telling the
+  prefix from a node needs a lower bound on that node, and a lump gives one only for nodes a
+  second request proved. (The summarizer's bill is no exception: it is the whole branch and the
+  prompt.) This is the one place a ratio of bytes to tokens is used, only to take a node out of a
+  bill, never to count one; text that is long runs of something else (`ab` over and over) may
+  break it, and a base too small then shows in the next bill, not before. T3's tokenizer
+  replaces it.
+- **A line with no report yet carries the old line's base.** The line a compaction (or a prune)
+  writes has no bill, but its prefix and overhead are the old line's: the meter reads the base
+  of the line its first derived node came from. A summary is derived from the summarizer's reply
+  (not, as in D24, from the last node it replaced) so that its count is that reply's reported
+  `output` and the ceiling of its wrapper, in the meter and in the plan alike; the notice and the
+  request that goes out are counted once, after the line is written, and the hard limit counts
+  again before it sends. A line with no report and no old line has the ceiling of its tool
   definitions as its base, with the ceilings of the prefix nodes.
+- **The summarizer is checked too.** Its request is the branch (without a message not yet
+  answered, which the tail keeps verbatim) and the prompt, with room left for the summary, and
+  it must fit the window of the model that writes it. If the whole branch does not, the
+  summarizer is opened at the end of the head (the tail, longer by the user messages after the
+  head's last reply, is then kept whole); if the head does not fit either, the step fails and
+  says to set `extensions.compaction.model` to a model with a larger window.
 - **The hard limit never sends what it cannot show fits.** A ceiling is loose, and a request that
   is over only by it (a 30,000-character paste into a 32k model) is refused, as D26 §5 says:
   compaction runs first, and if it cannot make room, or has nothing to compact, the step fails
-  with the figures. Early compaction from a ceiling is accepted.
+  with the figures, and when part of the request is counted only by its bytes the message says
+  so and names the ways past it (shorten or split it, a larger `context_window`, or
+  `compaction.auto=false`). Early compaction from a ceiling is accepted.
 - **Known gap: reasoning.** `Reading` does not carry `reasoning` until T2, so a summary's count is
   its whole `output`, thinking included. That over-counts what the new line carries, which is the
   safe direction; no count is subtracted by a reply's `output` (only a lump's cost, or the byte
