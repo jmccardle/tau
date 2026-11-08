@@ -33,7 +33,7 @@ import fnmatch
 import json
 import os
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, cast
@@ -262,12 +262,13 @@ class Options:
                 found[name] = bad
         return found
 
-    def tool_problems(self, tools: Sequence[str]) -> list[str]:
-        """`missing_tools` as sentences."""
+    def tool_problems(self, tools: Sequence[str], only: Collection[str] | None = None) -> list[str]:
+        """`missing_tools` as sentences, for the fields in `only` (default: all)."""
         return [
             f"{name} rule {str(rule)!r} names the tool {rule.tool!r}, which no loaded extension "
             f"provides; the tools are {sorted(tools)}"
             for name, texts in self.missing_tools(tools).items()
+            if only is None or name in only
             for rule in _rules(texts)
         ]
 

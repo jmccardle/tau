@@ -36,7 +36,6 @@ from tau._commands import assemble_commands
 from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
-from tau._config_tree import ConfigProblem
 from tau._options import option_fields
 from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
@@ -652,24 +651,12 @@ def _off(c: _Candidate, inputs: _Inputs, discover: bool, named: set[str]) -> str
 
 
 def _load_keys(candidates: Sequence[_Candidate], inputs: _Inputs, run: _Run) -> None:
-    """A `load` key that no source has is a row that warns, whichever way it is set: an extension
-    may be a file that was deleted, and a config that names it must not stop the start."""
-    catalog = inputs.catalog
-    for key in sorted(set(catalog.load) - {c.key for c in candidates}):
-        origin = f"load.{key} = {str(catalog.load[key]).lower()} in {catalog.load_sources[key]}"
+    """A `load` key that no source has is a row that warns, whichever way it is set."""
+    load, by = inputs.catalog.load, inputs.catalog.load_sources
+    for key in sorted(set(load) - {c.key for c in candidates}):
+        origin = f"load.{key} = {str(load[key]).lower()} in {by[key]}"
         note = f"no extension source has the key {key!r} (a typo, or a deleted extension?)"
         run.sources.append(ExtensionSource(key, "off", "load", origin, note))
-
-
-def load_key_warnings(
-    catalog: ModelCatalog, sources: Sequence[ExtensionSource]
-) -> list[ConfigProblem]:
-    """A warning for each `load` key that no source has (the rows `_load_keys` made)."""
-    return [
-        ConfigProblem("warning", s.detail or "", catalog.load_sources[s.key], f"load.{s.key}")
-        for s in sources
-        if s.kind == "load" and s.state == "off"
-    ]
 
 
 def _inspect(inputs: _Inputs, explicit: Sequence[str], discover: bool) -> Inspection:

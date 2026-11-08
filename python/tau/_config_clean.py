@@ -7,6 +7,7 @@ An extension may be just a file that gets deleted, so a config can name things t
 """
 
 import json
+import stat
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import cast
 
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
+from tau._extensions import RETRY
 from tau._options import make_options, option_fields
 from tau._trust import write_atomically
 from tau._values import Context
@@ -36,12 +38,14 @@ class Cleaning:
 @dataclass(frozen=True)
 class Against:
     """What a start has, which a layer file is cleaned against: the `catalog` the layers make,
-    the `sources` (every extension source's key), the loaded `extensions` and their `tools`."""
+    the `sources` (every extension source's key; an extension some source provides is never
+    missing, loaded or not), the loaded `extensions` and their `tools` (`None`: an extension that
+    is not loaded may provide tools whose names are unknown, so none is called missing)."""
 
     catalog: ModelCatalog
     sources: Collection[str]
     extensions: Sequence[object]
-    tools: Sequence[str]
+    tools: Sequence[str] | None
 
 
 def clean_layer(data: Layer, cleaning: Cleaning, against: Against) -> list[str]:
@@ -72,18 +76,24 @@ def _clean_load(switches: Layer, sources: Collection[str]) -> list[str]:
 
 
 def _clean_extensions(options: Layer, against: Against) -> list[str]:
-    """Remove the options of extensions that are not loaded or take none, and the invalid parts
-    of the others'."""
+    """Remove the options of extensions that no source provides or that take none, and the
+    invalid parts of the loaded ones'. Options of a source that is off stay: it may be switched
+    on again, and by a nearer layer than this file. A list or object this empties goes too."""
     removed: list[str] = []
     by_name = {str(getattr(e, "name")): e for e in against.extensions}  # noqa: B009
     for name in list(options):
         mine = options[name]
         ext = by_name.get(name)
+        if name in against.sources and name != RETRY and ext is None:
+            continue  # off, not missing
         if ext is None or getattr(ext, "options", None) is None or not isinstance(mine, dict):
             del options[name]
             removed.append(f"extensions.{name}")
-        else:
-            removed += _clean_options(name, ext, cast("Layer", mine), against)
+            continue
+        found = _clean_options(name, ext, cast("Layer", mine), against)
+        removed += found
+        if found and not mine:
+            del options[name]
     return removed
 
 
@@ -121,10 +131,13 @@ def _clean_options(name: str, ext: object, mine: Layer, against: Against) -> lis
     except ConfigError:
         return removed  # what is left still does not fit as a whole; the check says so
     missing = getattr(made, "missing_tools", None)
-    lost: dict[str, list[str]] = {} if missing is None else missing(against.tools)
+    unsafe = missing is None or against.tools is None
+    lost: dict[str, list[str]] = {} if unsafe else missing(against.tools)  # type: ignore[misc]
     for key, gone in lost.items():
         if key in mine:
             mine[key] = [e for e in cast("list[str]", mine[key]) if e not in gone]
+            if not mine[key]:
+                del mine[key]
             removed += [f"extensions.{name}.{key}: {item!r}" for item in gone]
     return removed
 
@@ -147,7 +160,9 @@ def clean_files(files: Mapping[str, Path], cleaning: Cleaning, against: Against)
         if not removed:
             continue
         body = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        mode = stat.S_IMODE(path.stat().st_mode)
         write_atomically(path.resolve(), body)
+        path.chmod(mode)  # the file keeps its mode: a project's config is not made private
         lines.append(f"{layer} config {path}: removed")
         lines += [f"  {item}" for item in removed]
         if layer == "project":

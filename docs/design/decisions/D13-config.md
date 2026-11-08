@@ -219,6 +219,14 @@ extension off and removes all its options (a source that no longer exists just l
 They write the layers `--layer user|project` names, the user file by default; a changed project
 file is untrusted until `tau trust`. Modules: `tau._config_clean`.
 
+**Off is not missing.** `option_problems(off=)` keeps the options of a source that exists but is
+not loaded quietly, and `--clean` removes only names that no source provides; tool names are not
+cleaned while a non-built-in source is off (its tools are unknown). A write is checked only for
+the fields it sets (`tool_problems(tools, only)`), so an old warning never blocks a new setting.
+Each option warning names the layer file (`ModelCatalog.extension_sources`). `--clean` drops the
+lists and objects it empties and keeps the file's mode; it says when it is skipped because an
+extension failed to load.
+
 **Session settings** replace the "CLI layer" as one named layer, nearest of all, for one start and
 never written (`tau._session_settings`). Shape: the `extensions` and `load` keys of a file. Inputs:
 the `TAU_SETTINGS` environment variable (a JSON object, shell environment only, never a project's

@@ -123,7 +123,8 @@ def save_options(
             raw = dict(catalog.extensions.get(name, {}))
             made = make_layer_options(name, options, fields, raw, Context(catalog))
             check = getattr(made, "tool_problems", None)
-            if check is not None and (problems := check(tools)):
+            changed = list(saving[name][2])
+            if check is not None and (problems := check(tools, changed)):
                 raise ConfigError("\n".join(problems))
 
     return user.save_options({name: changes for name, (_, _, changes) in saving.items()}, fits)
@@ -302,6 +303,6 @@ class ExtensionOptions:
             made = self._make(name, {**self._raw(name, at), **new})
             check = getattr(made, "tool_problems", None)
             if check is not None:  # an option that names tools: each must be one the driver has
-                problems: list[str] = check(list(self._tool_names()))
+                problems: list[str] = check(list(self._tool_names()), list(new))
                 if problems:
                     raise ConfigError("\n".join(problems))

@@ -48,7 +48,6 @@ from tau._extensions import (
     Inspection,
     absolute_explicit,
     inspect_extensions,
-    load_key_warnings,
 )
 from tau._options import make_layer_options
 from tau._protocols import Clock, Extension, Provider
@@ -65,7 +64,15 @@ from tau._sessions import (
     rename_session,
     session_info,
 )
-from tau._startup import LoadedConfig, Prompts, load_config, option_changes, select_model
+from tau._startup import (
+    LoadedConfig,
+    Prompts,
+    load_config,
+    load_key_warnings,
+    off_keys,
+    option_changes,
+    select_model,
+)
 from tau._trust import tau_home, user_config_path
 from tau._values import Context, Json
 
@@ -362,7 +369,10 @@ def start_warnings(
     source has, options of an extension that is not loaded or has none, a tool no loaded
     extension provides. Each is ignored; none stops the start."""
     found = load_key_warnings(loaded.catalog, sources)
-    found += [p for p in option_problems(loaded.catalog, extensions) if p.severity == "warning"]
+    off = off_keys(sources)
+    found += [
+        p for p in option_problems(loaded.catalog, extensions, off) if p.severity == "warning"
+    ]
     return tuple(str(p) for p in found)
 
 

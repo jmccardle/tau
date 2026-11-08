@@ -847,3 +847,17 @@ async def test_saving_a_rule_for_a_missing_tool_is_refused_and_writes_nothing(
         await h.configure("permissions", {"ask": ["Bash"]}, save=True)
     assert not user_config.exists(), "neither the node nor the file"
     assert user.saved("permissions") == {}
+
+
+@scenario
+async def test_config_checks_only_the_fields_it_sets(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path,
+        tools=[FakeTool("bash", "output")],
+        extensions=[Permissions(tmp_path)],
+        user_config=UserConfig(tmp_path / "tau-home", cli=rules(deny=["nosuch"])),
+    )
+    await h.configure("permissions", {"ask": ["bash"]}, save=True)
+    await h.settle()
+    with pytest.raises(ConfigError, match="names the tool 'nosuch2'"):
+        await h.configure("permissions", {"ask": ["nosuch2"]})

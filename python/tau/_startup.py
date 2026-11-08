@@ -10,10 +10,11 @@ import difflib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO, cast
+from typing import TYPE_CHECKING, TextIO, cast
 
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
+from tau._config_tree import ConfigProblem
 from tau._options import option_fields
 from tau._project_read import safe_text
 from tau._trust import (
@@ -29,6 +30,9 @@ from tau._trust import (
 from tau._user_config import UserConfig
 from tau._values import Field, Json, object_schema
 from tau.commandline import value
+
+if TYPE_CHECKING:
+    from tau._extensions import ExtensionSource
 
 Ask = Callable[[str], bool]
 """A yes-or-no question put to the person: takes the question, returns the answer."""
@@ -183,3 +187,19 @@ def prompts(stdin: TextIO, stdout: TextIO) -> Prompts:
     if not is_interactive(stdin, stdout):
         return Prompts(None, None)
     return Prompts(terminal_ask(stdin, stdout), terminal_pick(stdin, stdout))
+
+
+def off_keys(sources: Sequence["ExtensionSource"]) -> set[str]:
+    """The keys of the sources that exist but are not loaded: their options are kept quietly."""
+    return {s.key for s in sources if s.kind != "load" and s.state not in ("on", "always")}
+
+
+def load_key_warnings(
+    catalog: ModelCatalog, sources: Sequence["ExtensionSource"]
+) -> list[ConfigProblem]:
+    """A warning for each `load` key no source has (the rows `_load_keys` made)."""
+    return [
+        ConfigProblem("warning", s.detail or "", catalog.load_sources[s.key], f"load.{s.key}")
+        for s in sources
+        if s.kind == "load" and s.state == "off"
+    ]

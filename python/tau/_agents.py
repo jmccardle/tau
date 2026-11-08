@@ -15,7 +15,7 @@ which aborts it first. It is off by default: `load: {agents: true}`, or `tau ext
 """
 
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -48,8 +48,10 @@ class Options:
         missing = [name for name in self.tools if name not in tools]
         return {"tools": missing} if missing else {}
 
-    def tool_problems(self, tools: Sequence[str]) -> list[str]:
-        """`missing_tools` as sentences."""
+    def tool_problems(self, tools: Sequence[str], only: Collection[str] | None = None) -> list[str]:
+        """`missing_tools` as sentences, for the fields in `only` (default: all)."""
+        if only is not None and "tools" not in only:
+            return []
         return [
             f"tools names {name!r}, which no loaded extension provides; the tools are "
             f"{sorted(tools)}"

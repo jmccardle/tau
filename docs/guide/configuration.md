@@ -112,12 +112,13 @@ tau config check --show work:big
 `check` reads every config file and prints one line per problem as `file:line:column: severity:
 message`, or a dotted path to the setting when there is no line. A JSON mistake gets a line and
 column; an unknown key gets a suggestion. Errors make the exit status 1; warnings (an unset key
-variable, a literal key) do not. It also loads your extensions and checks their options.
+variable, a literal key) do not. Options of an extension that is switched off are kept without
+a warning. It also loads your extensions and checks their options.
 
 Configuration that names something this start does not have is a warning, never an error, and is
 ignored: a `load` key no extension has, options of an extension that is not loaded (deleted, or
 turned off), options of an extension that takes none, an option the extension does not have, and a tool name nothing provides (a
-`permissions` rule, an `agents` `tools` entry). An extension may be nothing but a file that gets
+`permissions` rule, an `agents` `tools` name). An extension may be nothing but a file that gets
 deleted, so τ cannot count on it cleaning up its own settings. A *value* the extension's option
 type refuses is still an error. `/config` and `tau config set` refuse an unknown option outright.
 `--show NAME` prints each resolved value of one model with the file and group it came from. A key's
@@ -129,7 +130,9 @@ tau config check --purge agents
 tau config check --clean --layer project
 ```
 
-`--clean` removes what the warnings are about, and any option the extension's type refuses, from
+`--clean` removes what the warnings are about (only for names that no extension source provides
+from where you run it; the options of an extension that is merely switched off stay, and so do tool
+names while such an extension might provide them), and any option the extension's type refuses, from
 your config file, and says what it took out. `--purge EXTENSION` (repeatable) turns the extension
 off (`load.EXTENSION = false`) and removes all of its options, so it starts from its defaults when
 you enable it again; for an extension that no longer exists it just removes its keys. They write

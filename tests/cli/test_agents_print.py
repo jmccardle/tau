@@ -109,7 +109,9 @@ def test_a_tools_name_nothing_provides_is_a_warning_at_the_start_and_the_check(
     model.user_config(config)
     result = tau(model, "-p", "--no-context-files", "go")
     assert result.code == 0, result.err
-    assert "tau: config: warning: extensions.agents: tools names 'grpe'" in result.err
+    assert (
+        f"{model.tau / 'config.json'}: warning: extensions.agents: tools names 'grpe'" in result.err
+    )
     assert Model.offered, "the start went on"
     checked = tau(model, "config", "check")
     assert checked.code == 0

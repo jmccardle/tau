@@ -11,15 +11,19 @@ TUI_KEYS = ("theme",)
 """What `tui` may hold."""
 
 
-def extensions(merged: Tree, problems: Problems) -> dict[str, dict[str, object]]:
-    """The merged `extensions` object: each extension's options, an object."""
+def extensions(
+    merged: Tree, problems: Problems
+) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
+    """The merged `extensions` object: each extension's options, an object, and the layer that
+    set each (`NAME`, and `NAME.FIELD` for each field)."""
     node = merged.get("extensions")
     if node is None or (isinstance(node, Leaf) and node.value is None):
-        return {}
+        return {}, {}
     if not isinstance(node, dict):
         problems.add("error", "'extensions' must be an object", source_of(node), "extensions")
-        return {}
+        return {}, {}
     out: dict[str, dict[str, object]] = {}
+    sources: dict[str, str] = {}
     for name, options in node.items():
         if isinstance(options, Leaf):
             if options.value is not None:
@@ -27,7 +31,12 @@ def extensions(merged: Tree, problems: Problems) -> dict[str, dict[str, object]]
                 problems.add("error", msg, options.source, f"extensions.{name}")
             continue
         out[name] = cast("dict[str, object]", plain(options))
-    return out
+        if (where := source_of(options)) is not None:
+            sources[name] = where
+        for field, setting in options.items():
+            if (where := source_of(setting)) is not None:
+                sources[f"{name}.{field}"] = where
+    return out, sources
 
 
 def load_switches(merged: Tree, problems: Problems) -> tuple[dict[str, bool], dict[str, str]]:

@@ -63,7 +63,6 @@ from tau._extensions import (
     absolute_explicit,
     inspect_extensions,
     list_extensions,
-    load_key_warnings,
     switch_source,
 )
 from tau._launch import (
@@ -97,7 +96,15 @@ from tau._sessions import (
     rename_session,
     sessions_directory,
 )
-from tau._startup import LoadedConfig, load_config, option_changes, prompts, select_model
+from tau._startup import (
+    LoadedConfig,
+    load_config,
+    load_key_warnings,
+    off_keys,
+    option_changes,
+    prompts,
+    select_model,
+)
 from tau._trust import (
     TAU_DIR,
     UntrustedProject,
@@ -293,6 +300,11 @@ def _check(run: _Run, show: str | None, cleaning: Cleaning, layers: Sequence[str
         return 1
     loaded = load_config(run.cwd, run.environ, ask=None)
     result = _extension_findings(loaded, found)
+    if cleaning and result is None:
+        found.lines.append(
+            "tau: --clean/--purge skipped: an extension failed to load (above); fix it, or "
+            "`tau ext disable KEY` it, and run this again"
+        )
     if cleaning and result is not None:
         loaded = _clean(run, loaded, result, cleaning, layers, found)
     _print(run, found.lines)
@@ -318,16 +330,27 @@ def _clean(  # noqa: PLR0913, PLR0917 - what the check found, and what was asked
     files = {"user": tau_home(run.environ) / "config.json"}
     if loaded.project is not None:
         files["project"] = project_config_path(loaded.project.root)
+    unknown = sorted(
+        s.key
+        for s in result.sources
+        if s.kind not in ("built-in", "load") and s.key in off_keys(result.sources)
+    )
+    if unknown and cleaning.clean:
+        found.lines.append(
+            f"tau: tool names are not checked: {', '.join(unknown)} (not loaded) may provide "
+            "tools whose names are unknown without loading them"
+        )
     against = Against(
         loaded.catalog,
         {s.key for s in result.sources if s.kind != "load"},
         result.extensions,
-        tool_names(result.extensions),
+        None if unknown else tool_names(result.extensions),
     )
     found.lines += clean_files({k: v for k, v in files.items() if k in layers}, cleaning, against)
     again = _user_only(run)  # a project file just changed is untrusted until approved
     found.failed = any(
-        p.severity == "error" for p in option_problems(again.catalog, result.extensions)
+        p.severity == "error"
+        for p in option_problems(again.catalog, result.extensions, off_keys(result.sources))
     )
     return again
 
@@ -347,7 +370,7 @@ def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | 
         found.lines += result.errors
         found.failed = True
         return None
-    for problem in option_problems(loaded.catalog, result.extensions):
+    for problem in option_problems(loaded.catalog, result.extensions, off_keys(result.sources)):
         found.lines.append(str(problem))
         found.failed = found.failed or problem.severity == "error"
     return result

@@ -10,7 +10,7 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -93,6 +93,8 @@ class ModelCatalog:
     D16 section 4). Which options an extension has is its own to say (`check_config`).
     `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
     `load_sources` the layer (file path) that set each key: what the extension loader reads.
+    `extension_sources` the layer that set each extension's options (`NAME`) and each option
+    (`NAME.FIELD`), for the problems found in them.
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
     that set it (`CLI` for `--system-prompt`). `tui` is the merged `tui`
@@ -103,6 +105,7 @@ class ModelCatalog:
     default_model: str | None
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
+    extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -628,7 +631,8 @@ def _build(
     default = _default_model(merged, resolver.declared, problems)
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
-    options, tui = extensions(merged, problems), tui_settings(merged, problems)
+    options, option_sources = extensions(merged, problems)
+    tui = tui_settings(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
     catalog = ModelCatalog(
@@ -636,6 +640,7 @@ def _build(
         default_model=default,
         warnings=warnings,
         extensions=options,
+        extension_sources=option_sources,
         load=switches,
         load_sources=switched_by,
         system_prompt=prompt,
@@ -645,27 +650,47 @@ def _build(
     return catalog, found
 
 
+def _unprovided(
+    catalog: ModelCatalog,
+    extensions: Sequence[object],
+    off: Collection[str],
+    warn: Callable[[str, str], None],
+) -> None:
+    """Warn of options set for an extension nothing provides, or that takes none."""
+    loaded = {str(getattr(e, "name")) for e in extensions}  # noqa: B009
+    for key in sorted(catalog.extensions):
+        if key not in loaded and key not in off and key != "retry":
+            warn(
+                f"no loaded extension is named {key!r}; its options are ignored",
+                f"extensions.{key}",
+            )
+    bare = [str(e.name) for e in extensions if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
+    for key in ("retry", *bare):
+        if catalog.extensions.get(key):
+            warn(f"extension {key!r} has no options; they are ignored", f"extensions.{key}")
+
+
 def option_problems(
-    catalog: ModelCatalog, extensions: Sequence[object]
+    catalog: ModelCatalog, extensions: Sequence[object], off: Collection[str] = ()
 ) -> tuple[ConfigProblem, ...]:
     """Every problem in what the layers set for the `extensions`. A value the extension's options
     type refuses is an `error`. Configuration that names something this start does not have is
     a `warning`, and is ignored: an option that names a tool no loaded extension provides
-    (`Options.tool_problems`), options of an extension that has none (and of `retry`, D24 section
-    4: the provider wrapper, which `load` switches and nothing tunes), and options of an
-    extension that is not loaded. An extension may be a file that was deleted, so a config
-    cannot rely on its cleaning up after itself."""
+    (`Options.tool_problems`), an option the extension does not have, options of an extension that
+    has none (and of `retry`, D24 section 4: the provider wrapper, which `load` switches and
+    nothing tunes), and options of an extension nothing provides. An extension may be a file that
+    was deleted, so a config cannot rely on its cleaning up after itself. The `off` keys are
+    sources that exist and are switched off: their options are kept quietly, for when they are on
+    again. Each problem names the layer that set it."""
     problems: list[ConfigProblem] = []
-    loaded = {str(getattr(e, "name")) for e in extensions}  # noqa: B009
-    for key in sorted(catalog.extensions):
-        if key not in loaded and key != "retry":
-            message = f"no loaded extension is named {key!r}; its options are ignored"
-            problems.append(ConfigProblem("warning", message, None, f"extensions.{key}"))
-    bare = [str(e.name) for e in extensions if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
-    for key in ("retry", *bare):
-        if catalog.extensions.get(key):
-            message = f"extension {key!r} has no options; they are ignored"
-            problems.append(ConfigProblem("warning", message, None, f"extensions.{key}"))
+    where = catalog.extension_sources
+
+    def warn(message: str, path: str, field: str | None = None) -> None:
+        name = path.split(".")[1]
+        source = where.get(f"{name}.{field}") if field else None
+        problems.append(ConfigProblem("warning", message, source or where.get(name), path))
+
+    _unprovided(catalog, extensions, off, warn)
     tools = tool_names(extensions)
     for ext in extensions:
         options = getattr(ext, "options", None)
@@ -675,17 +700,20 @@ def option_problems(
         raw = dict(catalog.extensions.get(name, {}))
         fields = option_fields(name, options)
         for key in unknown_options(fields, raw):
-            message = f"extension {name!r} has no option {key!r}; it is ignored"
-            problems.append(ConfigProblem("warning", message, None, f"extensions.{name}.{key}"))
+            warn(
+                f"extension {name!r} has no option {key!r}; it is ignored",
+                f"extensions.{name}.{key}",
+                key,
+            )
         try:
             made = make_layer_options(name, options, fields, raw, Context(catalog))
         except (ConfigError, DefinitionError) as e:
-            problems.append(ConfigProblem("error", str(e), None, f"extensions.{name}"))
+            problems.append(ConfigProblem("error", str(e), where.get(name), f"extensions.{name}"))
             continue
         check = getattr(made, "tool_problems", None)
         if check is not None:  # an option that names tools: each should be one a start offers
             for message in check(tools):
-                problems.append(ConfigProblem("warning", message, None, f"extensions.{name}"))
+                warn(message, f"extensions.{name}")
     return tuple(problems)
 
 
