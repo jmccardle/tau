@@ -24,7 +24,7 @@ from tau._project_read import (
 )
 from tau._protocols import EXTENSION_NAME
 
-_PLACEHOLDER = re.compile(r"\$(\$|ARGUMENTS|[1-9][0-9]*)")
+_PLACEHOLDER = re.compile(r"\$(\$|ARGUMENTS|[1-9][0-9]*|\{[1-9][0-9]*\})")
 _FENCE = "---"
 _KNOWN = ("name", "description", "argument-hint", "disable-model-invocation")
 _BLOCK = ("|", ">")
@@ -85,7 +85,7 @@ class PromptFile:
                 return args
             if words is None:
                 words = self._words(args)
-            number = int(key)
+            number = int(key.strip("{}"))
             return words[number - 1] if number <= len(words) else ""
 
         text = _PLACEHOLDER.sub(fill, self.body)
@@ -215,6 +215,9 @@ def _misplaced(parts: tuple[str, ...], path: Path) -> Problem:
     if len(parts) == 2:  # noqa: PLR2004
         fix = f"a skill is a directory: move it to {SKILLS_DIR}/{name}/{SKILL_FILE}"
         return Problem(f"{path}: misplaced skill: {fix}", name)
+    if len(parts) == 4:  # noqa: PLR2004
+        fix = f"move it to {SKILLS_DIR}/{parts[2]}/{SKILL_FILE}; subdirectories are not read"
+        return Problem(f"{path}: misplaced skill: {fix}", parts[2])
     fix = f"rename it {SKILL_FILE}, in capitals"
     return Problem(f"{path}: misplaced skill: {fix}", parts[1])
 

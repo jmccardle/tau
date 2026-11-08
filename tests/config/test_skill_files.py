@@ -361,6 +361,7 @@ def test_crlf_files_are_read(world: World) -> None:
 MISPLACED = [
     ("skills/pdf/skill.md", "pdf", "misplaced skill: rename it SKILL.md"),
     ("skills/pdf.md", "pdf", "misplaced skill: a skill is a directory"),
+    ("skills/group/pdf/SKILL.md", "pdf", "misplaced skill: move it to skills/pdf/SKILL.md"),
     ("prompts/sub/x.md", "x", "misplaced template: move it to prompts/x.md"),
     ("prompts/x.MD", "x", "misplaced template: rename it x.md"),
 ]
