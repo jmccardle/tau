@@ -54,10 +54,9 @@ one `Client`, one cursor, no person to ask.
   runs that subcommand; anything else is the launch command line (`tau`, or `tau -p`). So
   `tau -p sessions` sends the word "sessions".
 - **The message** is the positional words joined with single spaces, then, if stdin is not a
-  terminal, a blank line and everything read from stdin: `git diff | tau -p "review this"`. A
-  program that runs `tau -p` with an open pipe it never closes must pass `</dev/null`, or `-p`
-  waits for it. Nothing in either place is a usage error (exit 2), checked before the start, so
-  it creates no session.
+  terminal, a blank line and everything read from stdin: `git diff | tau -p "review this"`. How
+  stdin is read is *As built*, "Standard input and output". Nothing in either place is a usage
+  error (exit 2), checked before the start, so it creates no session.
 - **Flags** are D18's session flags, D19's `-e` and `--no-extensions`, D20's prompt flags, and
   `-m/--model`, `--json`, `--answer RULE` (§5), `--set EXTENSION.FIELD=VALUE` (§1), `--verbose`
   (§7). `-r` with `-p` is a usage error (D18). `--no-extensions` skips the discovered sources
@@ -377,8 +376,38 @@ Where the code differs from the text above, or the text left a choice:
   command, and a command that runs as a step of the cursor would find it busy (8E-5).
 - **Second SIGINT** writes `tau: interrupted` and calls `os._exit(130)` at once, running no
   cleanup, since hooks are never cancelled (model.md §8) and an abort waits for the one in flight.
-- **A closed stdout** (`| head -1`) is exit 141 with no message; its descriptor is pointed at
-  /dev/null so the interpreter's own flush at exit stays quiet.
+- **Standard input and output** (8E-6). `tau -p` never blocks silently on stdin, and behaves as a
+  Unix filter does for each kind:
+
+  | stdin | what happens |
+  |---|---|
+  | a terminal | never read |
+  | a file, `/dev/null`, a pipe that has sent its data and closed | read to its end at once |
+  | a pipe that sends something within 3 s | read to its end, however long that takes |
+  | with words: a pipe left open that says nothing for 3 s (cron, ssh, a CI step) | not read: `tau: no standard input within 3 s: going on without it (`-` as the first word waits for it)` on stderr, and the words go alone |
+  | no words at all (`make 2>&1 \| tau -p`) | as for `-`: stdin is the only possible message, so it is waited for; after 2 s stderr says `tau: still reading standard input: it has not ended (`</dev/null` skips it)` |
+  | `-` as the first word (stdin not a terminal) | read to its end however long it takes, like `cat -`; the rest of the line is the words; after 2 s stderr says the same notice once. A `-` anywhere else, or on a terminal, is a literal word (`what is 5 - 3`) |
+  | closed (`<&-`) | empty |
+  | not UTF-8 | usage error (exit 2), no traceback |
+
+  Choice: the rule is the wait for the *first byte*, not a guess at whether data is "coming": no
+  program can tell an idle pipe from a slow producer, so the default bounds the cost of being
+  wrong (3 s and one stderr line) and `-` is the explicit "I mean it" (the `cat -`, `tar -f -`
+  convention). `slow-command | tau -p "..."` that is silent for over 3 s needs the `-`. With no
+  words the 3 s give-up does not apply (nothing else could be the message): stdin is waited for as with `-`, with the notice. The `-` word is removed
+  from the message.
+
+  Standard output: a closed descriptor (`>&-`) is exit 1, `tau: standard output is closed`; a
+  reader that went away (`| head -1`), at a write or at the final flush, of any command, is exit
+  141 with no message, and the descriptor is pointed at /dev/null so the interpreter's own flush
+  at exit stays quiet; a write that fails otherwise (a full disk) is exit 1 with one line.
+- **Retries** are told on stderr, one line each, with or without `--verbose` (`tau: HTTP 429: busy:
+  retry 1 of 3 in 2 s`); `--json` also carries them as `Live` events.
+- **Interrupt.** If the first SIGINT's stop is still waiting for a hook after 2 s, stderr says so
+  and that a second SIGINT leaves the message in the session. The second leaves at once
+  (above), so a message already written stays: the next `-c` then sees two user messages in a row
+  (the first has no reply). Taking it back needs the move to be applied by the core, which a
+  hook still running prevents.
 - **Tracebacks.** A failed hook, tool or command prints its traceback to the process's stderr
   (`describe_failure`); under `-p` that stream is /dev/null unless `--verbose`, so stderr holds
   `tau: ` lines. This also hides anything else an extension prints to stderr during the run.

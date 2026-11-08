@@ -22,6 +22,7 @@ D18 section 5), which `start_session` reads; it carries the prompt flags (`--sys
 
 import argparse
 import asyncio
+import io
 import json
 import os
 import shlex
@@ -76,7 +77,7 @@ from tau._launch import (
 )
 from tau._markdown import to_markdown
 from tau._options import save_options
-from tau._print_mode import print_mode
+from tau._print_mode import SIGPIPE_STATUS, detach, print_mode
 from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
@@ -646,18 +647,63 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     cwd: Path | None = None,
 ) -> int:
     """Run `tau` with `argv` (default `sys.argv[1:]`); the other arguments default to
-    the process's streams, environment, and working directory. Returns the exit status."""
+    the process's streams, environment, and working directory. Returns the exit status.
+
+    The process's streams may be missing or go away, as any Unix program's may. A closed standard
+    input (`<&-`) reads as empty; a closed standard error says nothing; a closed standard output
+    is an error (status 1, said on standard error); and a standard output whose reader has gone
+    (`tau -p ... | head -1`) ends the run quietly with status 141, 128 plus SIGPIPE, as a program
+    killed by that signal would."""
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    if err is None:
+        err = io.StringIO()
+    if out is None:
+        err.write("tau: standard output is closed\n")
+        return 1
     given = sys.argv[1:] if argv is None else list(argv)
+    source = sys.stdin if stdin is None else stdin
     run = _Run(
-        sys.stdin if stdin is None else stdin,
+        io.StringIO("") if source is None else source,
         out,
         err,
         os.environ if environ is None else environ,
         Path.cwd() if cwd is None else cwd,
         given[1:],
     )
+    try:
+        return _flushed(_main(given, run), out, err)
+    except BrokenPipeError:
+        if _reader_gone(out):
+            detach(out)
+        return SIGPIPE_STATUS
+
+
+def _flushed(status: int, out: TextIO, err: TextIO) -> int:
+    """`status`, or 1 if the last of standard output cannot be written (a full disk) and nothing
+    said so yet."""
+    try:
+        out.flush()
+    except BrokenPipeError:
+        raise
+    except OSError as e:
+        detach(out)
+        return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
+    return status
+
+
+def _reader_gone(out: TextIO) -> bool:
+    """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
+    If it was standard error's, standard output is left alone (its buffer may go to a file)."""
+    try:
+        out.flush()
+    except BrokenPipeError:
+        return True
+    return False
+
+
+def _main(given: Sequence[str], run: _Run) -> int:
+    out, err = run.stdout, run.stderr
     args, status = _parse(run, given, _parser())
     if status is not None:
         return status
@@ -685,6 +731,8 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
             out.write(error_line(e) + "\n")
         _fail(err, str(e))
         return _USAGE_ERROR
+    except BrokenPipeError:  # not a failure of ours: `main` ends quietly
+        raise
     except OSError as e:  # a session's files: missing, unreadable, or held (`Leased`)
         if args.command not in ("sessions", "export", "serve", "print", "tui"):
             raise

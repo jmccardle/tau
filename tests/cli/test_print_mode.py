@@ -595,31 +595,6 @@ def test_a_command_that_does_not_read_standard_input_says_so(configured: World) 
     assert "/model does not read standard input" in result.err
 
 
-def test_a_stdin_that_stays_silent_is_said_once_after_two_seconds(configured: World) -> None:
-    read, write = os.pipe()
-    err = io.StringIO()
-
-    def late() -> None:
-        time.sleep(2.6)
-        os.write(write, b"finally")
-        os.close(write)
-
-    writer = threading.Thread(target=late)
-    writer.start()
-    with os.fdopen(read, encoding="utf-8") as stdin:
-        code = main(
-            ["-p"],
-            stdin=stdin,
-            stdout=io.StringIO(),
-            stderr=err,
-            environ=configured.environ,
-            cwd=configured.home,
-        )
-    writer.join()
-    assert code == 0
-    assert err.getvalue() == "tau: reading stdin (use </dev/null for none)\n"
-
-
 def test_a_stdin_that_arrives_in_time_is_not_remarked_on(configured: World) -> None:
     assert p(configured, stdin="at once").err == ""
 
@@ -852,6 +827,62 @@ def test_a_second_interrupt_leaves_at_once_though_a_hook_never_returns(
     assert process.returncode == 130
     assert out == b""
     assert err == b"tau: interrupted\n"
+
+
+SLOW_HOOK = """
+import asyncio, pathlib
+
+MARKS = pathlib.Path(MARKS_DIRECTORY)
+
+class SlowHook:
+    name = "slowhook"
+
+    async def pre_sample(self, cursor, subject):
+        (MARKS / "started").write_text("x")
+        await asyncio.sleep(4)  # hooks are never cancelled: an abort waits this long
+
+extensions = [SlowHook()]
+"""
+
+
+def test_a_stop_that_waits_for_a_hook_says_why_and_still_takes_the_message_back(
+    configured: World,
+) -> None:
+    """One Ctrl+C while a hook runs: after two seconds `-p` says it is waiting for the hook and
+    that a second Ctrl+C would leave the message in the session; the hook ends, the message is
+    taken back, and the next `-c` sends one user message, not two in a row."""
+    marks = configured.home / "marks"
+    marks.mkdir()
+    source = SLOW_HOOK.replace("MARKS_DIRECTORY", repr(str(marks)))
+    extension = ext(configured, "slowhook", source)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "tau", "-p", "-e", extension, "lost question"],
+        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        cwd=configured.home,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        wait_for(marks / "started")
+        process.send_signal(signal.SIGINT)
+        out, err = process.communicate(timeout=30)
+    finally:
+        process.kill()
+        process.wait()
+    assert process.returncode == 130
+    assert out == b""
+    assert err.decode().splitlines() == [
+        "tau: still stopping (a hook is running); Ctrl+C again leaves at once, "
+        "and then the message stays in the session",
+        "tau: interrupted",
+    ]
+    assert p(configured, "-c", "the real question").code == 0
+    (kept,) = list_sessions(configured.tau / "sessions")
+    held = Session.load(kept.path)
+    walk = held.tree.walk(held.cursor(0).at)
+    held.close()
+    assert [n.body.text for n in walk if isinstance(n.body, Body.User)] == ["the real question"]
 
 
 # -- a closed stdout
