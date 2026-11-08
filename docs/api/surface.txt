@@ -18,6 +18,12 @@ class Attachments
     name = 'attachments'
     options = Options
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+class Basis(StrEnum)
+    CALIBRATED = 'calibrated'
+    CEILING = 'ceiling'
+    HEURISTIC = 'heuristic'
+    RENDERED = 'rendered'
+    REPORTED = 'reported'
 CURSOR_POINTS = ('pre_step', 'pre_input', 'pre_sample', 'pre_reply', 'post_reply', 'post_result', 'post_step')
 class CallDraft
     def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None
@@ -33,6 +39,27 @@ class Compaction
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
     async def pre_step(self, cursor: Cursor, subject: Subject) -> None
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
+@dataclass(frozen=True)
+class Count
+    basis: Basis
+    bound: int = 0
+    tokens: int
+    property upper: int
+@dataclass(frozen=True)
+class CountJob
+    base: Count
+    base_nodes: int
+    known: Mapping[int, Count]
+    model: str
+    tools: tuple[str, ...]
+    unreported: tuple[int, ...]
+    walk: tuple[Node, ...]
+class Counter(Protocol)
+    def count(self, job: CountJob) -> CounterAnswer
+@dataclass(frozen=True)
+class CounterAnswer
+    nodes: Mapping[int, Count]
+    why: str | None = None
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
     def models(self) -> tuple[str, ...]
@@ -92,6 +119,13 @@ class Prune
     name = 'prune'
     options = Options
     async def prune(self, cursor: Cursor) -> str
+@dataclass(frozen=True)
+class RequestCount
+    base: Count
+    base_nodes: int
+    nodes: Mapping[int, Count]
+    total: Count
+    why: str | None = None
 class Skills
     name = 'skills'
     @classmethod
@@ -131,6 +165,8 @@ class TreeHandle
     property by: Author
     async def close_cursor(self, cursor: int) -> None
     def closed(self) -> list[tuple[int, int]]
+    async def count(self, at: int | None = None) -> RequestCount
+    property counter: str | None
     def cursor(self, cursor: int) -> CursorState
     def cursors(self) -> list[int]
     def label(self, label: str) -> int

@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
 
 ## Agents
 
@@ -69,6 +69,19 @@ async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
 
 Rewrite what a person typed with the files its `@` words name, and say which `@`
 words that look like paths named none.
+
+## Basis
+
+```python
+class Basis(StrEnum)
+    REPORTED = 'reported'
+    RENDERED = 'rendered'
+    CALIBRATED = 'calibrated'
+    HEURISTIC = 'heuristic'
+    CEILING = 'ceiling'
+```
+
+Where a `Count` came from, strongest first. A sum is as weak as its weakest part.
 
 ## CURSOR_POINTS
 
@@ -180,6 +193,74 @@ async def compact(self, cursor: Cursor, focus: str = '') -> str
 
 Summarize this conversation now, on a new line (the old one stays in the tree).
 `focus` is text the summary should keep in mind.
+
+## Count
+
+```python
+@dataclass(frozen=True)
+class Count
+    tokens: int
+    basis: Basis
+    bound: int = 0
+```
+
+A number of tokens and what is known about it. `bound` is how many more it may be.
+
+### Count.upper
+
+```python
+property upper: int
+```
+
+The most it can be: `tokens + bound`.
+
+## CountJob
+
+```python
+@dataclass(frozen=True)
+class CountJob
+    walk: tuple[Node, ...]
+    model: str
+    tools: tuple[str, ...]
+    base: Count
+    base_nodes: int
+    known: Mapping[int, Count]
+    unreported: tuple[int, ...]
+```
+
+What a counter is asked: the walk to count, the model and tools of the request, and what
+core already knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The
+counter answers for the rest, `unreported`.
+
+## Counter
+
+```python
+class Counter(Protocol)
+```
+
+What an extension offers as its `counter` attribute (at most one extension may). `count`
+is synchronous and does no network IO: the driver runs it in a thread. Core keeps every
+report: an answer for a node a report covers fails the count with a `DefinitionError`.
+
+### Counter.count
+
+```python
+def count(self, job: CountJob) -> CounterAnswer
+```
+
+Count the nodes of `job.unreported`.
+
+## CounterAnswer
+
+```python
+@dataclass(frozen=True)
+class CounterAnswer
+    nodes: Mapping[int, Count]
+    why: str | None = None
+```
+
+A counter's answer: a count for some of the job's `unreported` nodes, and `why` the rest
+stay as weak as they are (or `None`).
 
 ## Cursor
 
@@ -607,6 +688,28 @@ async def prune(self, cursor: Cursor) -> str
 Shorten this conversation without a model: old turns become a transcript and old
 tool output goes, on a new line (the old one stays in the tree).
 
+## RequestCount
+
+```python
+@dataclass(frozen=True)
+class RequestCount
+    total: Count
+    base: Count
+    base_nodes: int
+    nodes: Mapping[int, Count]
+    why: str | None = None
+```
+
+What the walk to a node will cost as a request (`Cursor.count`).
+
+`total` is the whole request. `base` counts the walk's first `base_nodes` nodes and the
+request's overhead (tool definitions, hidden prompts, per-message overhead) as one; it is
+`NONE` with `base_nodes` 0 while no reply on the walk has reported its usage. `nodes` has one
+count for each node that is sent, by node id, except a node inside a **lump**: where two
+requests prove that the nodes between them cost a known sum, the first node holds the sum and
+the others have no count of their own, so a cut never lands inside one. `why` says why the
+total is weaker than it could be, or is `None`.
+
 ## Skills
 
 ```python
@@ -854,6 +957,27 @@ The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is
 the one a sample resolves, with its `context_window` and `price`. `name` defaults to
 `model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
 no such model.
+
+### TreeHandle.counter
+
+```python
+property counter: str | None
+```
+
+The key of the extension that offers the counter (D26), or `None`: then `count` is
+the meter's alone.
+
+### TreeHandle.count
+
+```python
+async def count(self, at: int | None = None) -> RequestCount
+```
+
+What the walk to node `at` will cost as a request: a `RequestCount`, its `total` and a
+count for each node. Every count is a report, or a ceiling (the node's bytes) for what no
+report covers, unless the `counter` extension counts it better. `at` defaults to the
+cursor's node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
+(`ValueError`). `DefinitionError` if the counter counts what a report covers.
 
 ### TreeHandle.append
 
