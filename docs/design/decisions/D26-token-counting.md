@@ -584,10 +584,15 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
   second request proved. (The summarizer's bill is no exception: it is the whole branch and the
   prompt.) This is the one place a ratio of bytes to tokens is used, only to take a node out of a
   bill, never to count one; text that is long runs of something else (`ab` over and over) may
-  break it, and a base too small then shows in the next bill, not before. T3's tokenizer
-  replaces it.
-- **A line with no report yet carries the old line's base.** The line a compaction (or a prune)
-  writes has no bill, but its prefix and overhead are the old line's: the meter reads the base
+  break it. On a line with bills, a base too small only skews the plan and shows in the next
+  bill. The first request after a compaction is the exception: it is counted with the old line's
+  base, so it can go out under-counted by up to about 1/16 of the bytes it counts by ceiling
+  (reviewed: ~300 tokens for 22 kB of `abab…`). That eats into the room kept for the reply; the
+  request it counts by bytes is under the hard limit, so it does not pass the window. T3's
+  tokenizer replaces it.
+- **A line with no report yet carries the old line's base.** The line a compaction writes has no
+  bill (a prune's line too, unless its first rewritten node is the first user message: that line
+  inherits nothing and is counted by ceiling until its first bill), but its prefix and overhead are the old line's: the meter reads the base
   of the line its first derived node came from. A summary is derived from the summarizer's reply
   (not, as in D24, from the last node it replaced) so that its count is that reply's reported
   `output` and the ceiling of its wrapper, in the meter and in the plan alike; the notice and the
@@ -600,7 +605,7 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
   summarizer is opened at the end of the head (the tail, longer by the user messages after the
   head's last reply, is then kept whole); if the head does not fit either, the step fails and
   says to set `extensions.compaction.model` to a model with a larger window.
-- **The hard limit never sends what it cannot show fits.** A ceiling is loose, and a request that
+- **The hard limit never sends what it cannot show fits**, short of the base gap above. A ceiling is loose, and a request that
   is over only by it (a 30,000-character paste into a 32k model) is refused, as D26 §5 says:
   compaction runs first, and if it cannot make room, or has nothing to compact, the step fails
   with the figures, and when part of the request is counted only by its bytes the message says
