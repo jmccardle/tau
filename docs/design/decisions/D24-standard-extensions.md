@@ -300,6 +300,12 @@ base tools, and an extension's tool takes only the bare form. `deny` is checked 
 is the one line that turns on asking. Protected paths are `deny: ["write:/etc/*",
 "edit:/etc/*"]`.
 
+**Scope (decided 2026-11-07).** Permissions is an example guardrail for the built-in file tools
+(`read`, `write`, `edit`, `grep`, `find`). It catches accidents; it is not a security boundary,
+and `bash` is out of scope: a `bash` rule is a pattern over the command text and nothing more.
+Real enforcement belongs below the agent, at the OS level: a separate user, mount namespaces, or
+Landlock.
+
 **Hook:** `pre_tool`, asking through `node.ask`. **Headless:** `tau -p` answers with `--answer`
 rules (D22) or declines, so the call is refused and the run never hangs.
 **Not a sandbox:** a later extension's `pre_tool` can change the outcome (model.md §7). It
@@ -788,12 +794,20 @@ text did not say:
   `allow: ["read:src/*"]` works. A rule that starts with `/` or a wildcard is used as it is
   (`write:*/secrets/*` matches the path it lands on). `tau config check` has no working directory
   to resolve against and says nothing about a relative rule.
-  **Searches.** `grep` and `find` read everything under their root, so for them a `deny` or `ask`
-  rule also fires when the root could hold a path the glob matches: the glob's literal start (up to
-  its first `*`, `?` or `[`) and the root, taken with a trailing `/`, are prefixes of one another.
-  So `deny: ["grep:/etc/*"]` refuses `path=/etc`, `path=/` and a link to `/etc`, and leaves
-  `path=/etcetera`. A glob with no literal start (`*secret*`) is compared to the named paths only.
-  The search is refused whole; filtering the results was not chosen.
+  **Searches.** `grep` and `find` read everything under their root. A `deny` or `ask` rule fires
+when a named path matches, as for any path tool. A `deny` also reaches the files a search
+finds: `pre_tool` adds `exclude: [PATTERN]` to the call's arguments for each deny rule about the
+tool, the rule's pattern over real absolute paths (a relative rule starts in the working
+directory). It does so for every search, not only one whose root holds the pattern, because a link
+under any root can lead to a denied file. The
+tool (not the extension) then leaves out every walked file whose absolute path, or whose real path
+after symlinks, matches (`walk.rs`, `Exclude`), before it reads it: nothing denied reaches the
+output or the overflow file. `exclude` is not in the tools' schema; it is the hook's channel, and
+a model that sends its own only narrows its search. The answer ends `[N file(s) left out of this
+search: ...]`, a count with no names: silence would read as "no match" and mislead the model. So
+`deny: ["grep:/etc/*"]` refuses `path=/etc/ssh` and runs `path=/etc` and `path=/` without `/etc`'s
+files. A `read` deny with a glob guards `grep` this way too (`grep` reads; `find` only names).
+Refusing a broad search whole was E4's first answer; John chose filtering (8E-6).
 - **Commands (`tau._shell`).** A glob is not a shell parser. An `allow` rule (and an `--answer`
   text) never matches a command containing `;` `&` `|` a backtick `$(` `<` `>` or a newline unless
   the pattern holds that operator too: the command falls to `ask` (or runs, if no `ask` rule names

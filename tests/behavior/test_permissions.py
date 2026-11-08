@@ -4,6 +4,7 @@ question's `yes | always | no`."""
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
@@ -13,6 +14,8 @@ from tau import (
     Body,
     ConfigError,
     Ending,
+    FindTool,
+    GrepTool,
     Outcome,
     Part,
     Permissions,
@@ -353,21 +356,17 @@ async def test_a_grep_with_no_path_searches_the_working_directory(tmp_path: Path
 
 
 @pytest.mark.parametrize("tool", ["grep", "find"])
-@pytest.mark.parametrize("root", ["/etc", "/etc/", "/", "/tmp/../etc", "link", "link/", "."])
+@pytest.mark.parametrize("root", ["/etc/ssh", "/etc/ssh/", "/tmp/../etc/ssh", "link/ssh"])
 @scenario
-async def test_a_deny_on_a_search_refuses_a_root_that_is_or_holds_the_denied_directory(
+async def test_a_deny_on_a_search_refuses_a_root_inside_the_denied_directory(
     tmp_path: Path, tool: str, root: str
 ) -> None:
-    """`deny: grep:/etc/*` would be no guard if `path=/etc`, `path=/` or a link to `/etc` could
-    search it. `.` is the working directory, which a rule for its own files holds."""
+    """`deny: grep:/etc/*` would be no guard if `path=/etc/ssh` or a link into `/etc` could
+    search it."""
     (tmp_path / "link").symlink_to("/etc")
     reply = calls(call("a", tool, pattern="root", path=root))
-    here = tmp_path
     h, (fake,) = await start(
-        tmp_path,
-        [reply, say("ok")],
-        {"deny": [f"{tool}:/etc/*" if root != "." else f"{tool}:{here}/*"]},
-        [FakeTool(tool, "t")],
+        tmp_path, [reply, say("ok")], {"deny": [f"{tool}:/etc/*"]}, [FakeTool(tool, "t")]
     )
     assert fake.calls == []
     assert "deny rule" in refusal(h)
@@ -375,15 +374,66 @@ async def test_a_deny_on_a_search_refuses_a_root_that_is_or_holds_the_denied_dir
 
 
 @pytest.mark.parametrize("tool", ["grep", "find"])
+@pytest.mark.parametrize("root", ["/etc", "/", "/tmp/../etc", "link", "link/", ".", "/etcetera"])
 @scenario
-async def test_a_deny_on_a_search_leaves_a_root_that_cannot_hold_it(
+async def test_a_search_whose_root_is_not_denied_runs_without_the_denied_files(
+    tmp_path: Path, tool: str, root: str
+) -> None:
+    """The root is not itself denied, so the search runs, told to leave out the denied files. A
+    root that cannot hold them (`/etcetera`) is told too: a link under it might lead there."""
+    (tmp_path / "link").symlink_to("/etc")
+    here = os.path.realpath(tmp_path)
+    rule = f"{tool}:/etc/*" if root != "." else f"{tool}:{here}/secret/*"
+    reply = calls(call("a", tool, pattern="root", path=root))
+    h, (fake,) = await start(tmp_path, [reply, say("ok")], {"deny": [rule]}, [FakeTool(tool, "t")])
+    (sent,) = fake.calls
+    assert sent["exclude"] == [rule.split(":", 1)[1]]
+    await h.close()
+
+
+@scenario
+async def test_a_read_deny_also_guards_what_grep_would_read(tmp_path: Path) -> None:
+    reply = calls(
+        call("a", "grep", pattern="x", files=["/etc/shadow"]),
+        call("b", "grep", pattern="x", path="/"),
+        call("c", "find", pattern="x", path="/"),
+    )
+    h, (fake, find) = await start(
+        tmp_path,
+        [reply, say("ok")],
+        {"deny": ["read:/etc/*", "read"]},
+        [FakeTool("grep", "g"), FakeTool("find", "f")],
+    )
+    assert [c.get("exclude") for c in fake.calls] == [["/etc/*"]]
+    assert find.calls == [{"pattern": "x", "path": "/"}]  # names, not content: read does not cover
+    await h.close()
+
+
+@pytest.mark.parametrize("tool", ["grep", "find"])
+@scenario
+async def test_a_search_with_no_path_cannot_return_what_a_deny_hides(
     tmp_path: Path, tool: str
 ) -> None:
-    reply = calls(call("a", tool, pattern="x", path="/etcetera"), call("b", tool, pattern="x"))
-    h, (fake,) = await start(
-        tmp_path, [reply, say("ok")], {"deny": [f"{tool}:/etc/*"]}, [FakeTool(tool, "t")]
-    )
-    assert len(fake.calls) == 2
+    """End to end with the real tools, in a tmp dir: the denied files, and the link to one, are
+    left out of the answer, which says that files were."""
+    real = tmp_path.resolve()
+    (real / "open").mkdir()
+    (real / "secret").mkdir()
+    (real / "open" / "a.txt").write_text("needle\n")
+    (real / "secret" / "b.txt").write_text("needle\n")
+    (real / "open" / "link.txt").symlink_to(real / "secret" / "b.txt")
+    pattern = "needle" if tool == "grep" else "*.txt"
+    reply = calls(call("a", tool, pattern=pattern), call("b", tool, pattern=pattern, path="open"))
+    real_tool = cast("FakeTool", GrepTool(real) if tool == "grep" else FindTool(real))
+    h, _ = await start(real, [reply, say("ok")], {"deny": [f"{tool}:{real}/secret/*"]}, [real_tool])
+    body = next(b for b in reversed(h.bodies()) if isinstance(b, Body.Results))
+    texts = [o.value for _, o, _ in body.outcomes if isinstance(o, Outcome.Ok)]
+    assert len(texts) == 2
+    for text in texts:
+        assert "a.txt" in text
+        assert "b.txt" not in text
+        assert "link.txt" not in text
+        assert "left out of this search" in text
     await h.close()
 
 

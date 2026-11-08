@@ -12,6 +12,10 @@ it names neither). Any other text is a tool's whole name (a name may hold a colo
   the session's working directory and made real (`..`, `//`, `.` and symlinks resolved). A call may
   name several (`grep`'s `path` and `files`): `deny` and `ask` fire if any of them matches, in
   either spelling; `allow` needs every one to match, as resolved.
+- **Searches** (`grep`, `find`) read everything under their root. A search whose root is inside a
+  denied pattern is refused. Any other runs with `exclude: [PATTERN]` added to its arguments
+  for each deny rule about it, and the tool leaves out the matching files (also through a
+  symlink) and says how many. A `deny` for `read:GLOB` guards `grep` too.
 - **Commands** follow `tau._shell`: an `allow` glob never vouches for a command that chains or
   redirects (it falls to `ask`) unless the glob has the operator too, and `deny` and `ask` are tried
   on each piece of a chained command. A `bash` deny is best effort; `ask: [bash]` is the safe
@@ -158,7 +162,7 @@ class Rule:
         return self.tool if self.glob is None else f"{self.tool}:{self.glob}"
 
     def matches(self, call: Call, mode: Mode) -> bool:
-        if call.tool != self.tool:
+        if call.tool != self.tool and not self.guards(call, mode):
             return False
         if self.glob is None:
             return True
@@ -171,9 +175,24 @@ class Rule:
                 fnmatch.fnmatchcase(r, absolute) for r in call.resolved
             )
         seen = (*call.written, *call.resolved)
-        if any(fnmatch.fnmatchcase(path, g) for path in seen for g in {self.glob, absolute}):
-            return True
-        return call.tool in SEARCH_TOOLS and _searches_under(call, absolute)
+        return any(fnmatch.fnmatchcase(path, g) for path in seen for g in {self.glob, absolute})
+
+    def guards(self, call: Call, mode: Mode) -> bool:
+        """Whether a `read` deny with a glob also covers this `grep`: grep reads the files."""
+        return (
+            mode == "deny" and self.tool == "read" and self.glob is not None and call.tool == "grep"
+        )
+
+    def hides_from(self, call: Call) -> str | None:
+        """For a deny rule of a search `call`: the pattern (over real absolute paths) for the
+        files the search must leave out, or `None` if the rule is not about this search. Any
+        search may need it, even one whose root is elsewhere: a link under the root can lead to
+        a denied file. A search whose root is, or is inside, a denied path was already refused."""
+        if self.glob is None or call.tool not in SEARCH_TOOLS:
+            return None
+        if call.tool != self.tool and not self.guards(call, "deny"):
+            return None
+        return _absolute(self.glob, call.cwd)
 
 
 def _absolute(glob: str, cwd: str) -> str:
@@ -183,23 +202,6 @@ def _absolute(glob: str, cwd: str) -> str:
     if glob[0] in "/*?[":
         return glob
     return os.path.normpath(os.path.join(cwd, glob))
-
-
-def _searches_under(call: Call, glob: str) -> bool:
-    """Whether a search's root could hold a path `glob` matches: the root is inside the glob's
-    literal start (the root `/etc` for `/etc/*`, or a link that lands there) or holds it (the root
-    `/` for `/etc/*`). A glob that starts with a wildcard has no literal start to compare."""
-    literal = _GLOB_CHARS.split(glob, maxsplit=1)[0]
-    if not literal:
-        return False
-    for root in (
-        *call.resolved,
-        *(os.path.normpath(os.path.join(call.cwd, w)) for w in call.written),
-    ):
-        inside = root.rstrip("/") + "/"
-        if inside.startswith(literal) or literal.startswith(inside):
-            return True
-    return False
 
 
 def answers(glob: str, text: str) -> bool:
@@ -220,6 +222,20 @@ def answers(glob: str, text: str) -> bool:
     if tool in PATH_TOOLS:
         return all(fnmatch.fnmatchcase(line, glob) for line in call.split("\n"))
     return fnmatch.fnmatchcase(call, glob)
+
+
+def _leave_out(call: CallDraft, patterns: list[str]) -> None:
+    """Give a search the `exclude` patterns it must honor, beside any it has. A call whose
+    arguments are not an object, or whose `exclude` is not a list, is left for the tool to
+    refuse."""
+    if not patterns:
+        return
+    args = _arguments(call.args_raw)
+    given = args.get("exclude", [])
+    if not args or not isinstance(given, list):
+        return
+    args["exclude"] = [*cast("list[object]", given), *patterns]
+    call.args_raw = json.dumps(args)
 
 
 def _builtin_tools() -> set[str]:
@@ -261,6 +277,12 @@ class Options:
                     )
         return found
 
+    def exclusions(self, call: Call) -> list[str]:
+        """The patterns of the files a `grep` or `find` must leave out: those its `deny` rules
+        name that its root holds."""
+        found = (r.hides_from(call) for r in _rules(self.deny))
+        return list(dict.fromkeys(p for p in found if p is not None))
+
     def first(self, mode: Mode, call: Call, extra: Iterable[str] = ()) -> Rule | None:
         """The first rule of the list `mode` (and `extra`, for `allow`) that matches `call`."""
         texts = [*getattr(self, mode), *extra]
@@ -285,6 +307,7 @@ class Permissions:
         denied = options.first("deny", seen)
         if denied is not None:
             return f"permissions refused this call: it matches the deny rule {str(denied)!r}"
+        _leave_out(call, options.exclusions(seen))
         if options.first("allow", seen, self._approved) is not None:
             return None
         asked = options.first("ask", seen)
