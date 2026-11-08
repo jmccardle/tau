@@ -28,6 +28,7 @@ from textual.widgets import Static, Tree
 from tau._client import Client
 from tau._core import Node
 from tau._events import Appended, CursorGone, CursorView, Event, Labels
+from tau._usage import show
 from tau.tui._dialogs import TauDialog, TextDialog
 from tau.tui._treeplan import Key, TreeRow
 from tau.tui._treerows import TreeRows, ZoneTree
@@ -175,10 +176,9 @@ class TreeScreen(TauDialog[TreeIntent | None]):
             return  # a cursor is at a node this screen has not read (after a reconnect)
         kept = self._rows.highlighted()
         self._rows.draw(self._all, session, self._viewed)
-        length, tokens = self._rows.walk.of(self._rows.viewed_at)
+        length, count = self._rows.walk.of(self._rows.viewed_at)
         self._walk = (
-            f"cursor {self._viewed}: a walk of {plural(length, 'node')}, about "
-            f"{tokens:,} tokens\n\n"
+            f"cursor {self._viewed}: a walk of {plural(length, 'node')}, {show(count)} tokens\n\n"
         )
         self.query_one(".tau-dialog-title", Static).update(self.dialog_title())
         target: tuple[int, Key | None] = (self._rows.viewed_at, None)

@@ -75,6 +75,7 @@ from tau._core import (
     Version,
     WrongAnswer,
 )
+from tau._counts import Count, Counter, CounterAnswer, CountJob, Provenance, RequestCount
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
 from tau._events import (
@@ -196,6 +197,10 @@ __all__ = [
     "ConfigProblem",
     "ContextFileError",
     "Corrupt",
+    "Count",
+    "CountJob",
+    "Counter",
+    "CounterAnswer",
     "Cursor",
     "CursorClosed",
     "CursorGone",
@@ -272,12 +277,14 @@ __all__ = [
     "Prompts",
     "ProtocolError",
     "ProtocolMismatch",
+    "Provenance",
     "Provider",
     "ProviderClosed",
     "Prune",
     "ReadTool",
     "RemoteClient",
     "Replay",
+    "RequestCount",
     "ResolvedModel",
     "RetryProvider",
     "Retrying",

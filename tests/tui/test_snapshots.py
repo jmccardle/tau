@@ -10,6 +10,7 @@ them next to the old. They are Textual's drawing, so textual and rich are pinned
 group. Run once (local mode): the rest of the suite holds the wire to the same app.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -144,7 +145,12 @@ async def test_the_tree_with_a_branch_and_a_closed_cursor(tmp_path: Path) -> Non
 
 @scenario
 async def test_the_tree_of_a_compacted_session(tmp_path: Path) -> None:
-    usage = '{"usage": {"input": 895, "output": 5}}'
+    def billed(input: int, output: int, cached: int | None = None) -> str:
+        usage = {"input": input, "output": output}
+        if cached is not None:
+            usage["cached"] = cached
+        return json.dumps({"usage": usage})
+
     catalog = read_models(
         cli={
             "models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 1000}},
@@ -152,9 +158,9 @@ async def test_the_tree_of_a_compacted_session(tmp_path: Path) -> None:
         }
     )
     replies = [
-        Reply([Part.Text("one" + "." * 600)], Stop.End),
-        Reply([Part.Text("two" + "." * 600)], Stop.End),
-        Reply([Part.Text("r" * 100)], Stop.End, meta=usage),
+        Reply([Part.Text("one" + "." * 600)], Stop.End, meta=billed(10, 160)),
+        Reply([Part.Text("two" + "." * 600)], Stop.End, meta=billed(180, 160, 10)),
+        Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 560, 180)),
         say("the summary"),
         say("four"),
     ]

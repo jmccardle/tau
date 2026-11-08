@@ -29,6 +29,7 @@ from typing import Annotated
 
 from tau._config import ConfigError, ModelConfig, Price
 from tau._core import Body, Node, Stop
+from tau._counts import Count, Provenance
 from tau._handles import Cursor, Subject, TreeHandle
 
 NOTICE_MIN_INPUT = 4096
@@ -133,6 +134,25 @@ def tokens(n: int) -> str:
     return f"{n / _GIGA:.1f}G"
 
 
+def show(count: Count) -> str:
+    """A count as people write it (`tokens`), with its provenance where it is not a report:
+    `~` for a heuristic, and `≤` and its `upper` for a ceiling (D26 section 1)."""
+    match count.provenance:
+        case Provenance.REPORTED | Provenance.RENDERED | Provenance.CALIBRATED:
+            return tokens(count.tokens)
+        case Provenance.HEURISTIC:
+            return f"~{tokens(count.tokens)}"
+        case Provenance.CEILING:
+            return f"≤{tokens(count.upper)}"
+
+
+def how_counted(counter: str | None) -> str:
+    """The line `/usage` ends with: how counts are made before a request is sent."""
+    if counter is None:
+        return "counts: reported only, with byte ceilings for what is not sent yet"
+    return f"counts: reported, and by the {counter} extension for what is not sent yet"
+
+
 def money(amount: Decimal) -> str:
     """`amount` in dollars, rounded half up: two decimals from `$1` (`$1.27`), three below
     (`$0.014`), `$0` for exactly nothing and `<$0.001` for less than the display holds. An amount
@@ -205,7 +225,7 @@ class Usage:
 
     def usage(self, tree: TreeHandle) -> str:
         """What this session has spent: one row per model, and a total."""
-        return table(self._rows(tree))
+        return f"{table(self._rows(tree))}\n{how_counted(tree.counter)}"
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""

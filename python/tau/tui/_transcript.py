@@ -15,7 +15,7 @@ is a dim line under the reply.
 
 import asyncio
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from textual.widgets import Collapsible, Static
 
@@ -93,6 +93,29 @@ def typed(node: Node) -> str:
     return node.body.text if node.typed is None else node.typed
 
 
+def titled(node: Node) -> bool:
+    """Whether `node` can name the session: a `User` node the person wrote, not a summary
+    written in its place."""
+    return isinstance(node.body, Body.User) and node.derived_from is None
+
+
+async def _title(
+    walk: Sequence[Node], older: Callable[[int], Awaitable[Sequence[Node]]]
+) -> str | None:
+    """The text of the first message of `walk`, or if it holds none (a compacted line begins with a
+    summary and the newest messages) of the walk its first summary was made from, and so on."""
+    while True:
+        found = next((typed(n) for n in walk if titled(n)), None)
+        if found is not None:
+            return found
+        source = next(
+            (n.derived_from for n in walk if isinstance(n.body, Body.User) and n.derived_from), None
+        )
+        if source is None:
+            return None
+        walk = await older(source)
+
+
 class ChatDisplay(WindowedWalk):
     """The viewed cursor's walk, drawn as boxes. It holds the whole walk and draws a window of it
     (`tau.tui._windowed`). `tip` is the walk's last node (`None` before the first `rebuild`); the
@@ -107,7 +130,7 @@ class ChatDisplay(WindowedWalk):
             layer  # the live layer of the viewed cursor, as the app's `SessionView` has it
         )
         self.first: str | None = None
-        """The first `User` text of the walk, for the header's title."""
+        """The first `User` text of the walk that is not a summary, for the header's title."""
         self._sides: dict[int, list[Node]] = {}  # records beside the walk, by their parent
         self._boxes: dict[int, MessageBox] = {}
         self._live: MessageBox | None = None
@@ -127,18 +150,22 @@ class ChatDisplay(WindowedWalk):
 
     # What is drawn
 
-    async def rebuild(self, walk: Sequence[Node]) -> None:
-        """Take `walk` as the whole walk and draw its last turns."""
+    async def rebuild(
+        self, walk: Sequence[Node], older: Callable[[int], Awaitable[Sequence[Node]]]
+    ) -> None:
+        """Take `walk` as the whole walk and draw its last turns. `older` reads the walk to a
+        node: a walk that begins with a summary is named by the first message of the walk the
+        summary was made from."""
         await self.end_live()
         self._walk, self._sides = list(walk), {}
-        self.first = next((typed(n) for n in walk if isinstance(n.body, Body.User)), None)
+        self.first = await _title(walk, older)
         await self._show(tail_start(self._walk), len(self._walk))
 
     async def add(self, node: Node) -> None:
         """Take `node`, which follows the tip, onto the walk. It is drawn when the window ends the
         walk, or when this client wrote it (the window moves to the tail to show it); otherwise it
         is counted in the row below."""
-        if self.first is None and isinstance(node.body, Body.User):
+        if self.first is None and titled(node):
             self.first = typed(node)
         mine = isinstance(node.body, Body.User) and node.by == Author.Frontend(self.client)
         await self.extend(node, jump=mine)

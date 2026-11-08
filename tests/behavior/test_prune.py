@@ -113,7 +113,7 @@ async def test_prune_writes_a_new_line_and_moves_the_cursor_onto_it(tmp_path: Pa
     old_size = len(h.session.tree.walk(old_tip))
     result = await prune(h)
     assert result is not None
-    assert result.startswith("pruned ~")
+    assert result.startswith("pruned ≤"), "neither line is sent, so both are counted by their bytes"
     new_tip = h.session.cursor(h.cursor).at
     assert new_tip != old_tip
     assert len(h.session.tree.walk(new_tip)) < old_size

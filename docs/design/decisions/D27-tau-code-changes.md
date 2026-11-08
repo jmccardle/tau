@@ -1,4 +1,4 @@
-# What tau-code changes for D21 (full table, moved out of D21 §10)
+# D27: What tau-code changes for D21 (full table, moved out of D21 §10)
 
 tau-code 0.8.1 is built against 0.15's protocol "0.12". Left column: what it does today.
 Right column: what it does against D21.

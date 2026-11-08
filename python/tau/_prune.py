@@ -18,13 +18,15 @@ one it replaces, so a conversation that has nothing to prune writes nothing.
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, cast
 
 from tau._core import Body, Node, Outcome, Part
+from tau._counts import NONE, Count, ceiling_of
 from tau._handles import Cursor
-from tau._lines import Planned, characters, copy_of, prefix_length, tokens_of, write_line
-from tau._usage import tokens
+from tau._lines import Planned, copy_of, prefix_length, write_line
+from tau._usage import show
 
 LONG = 200
 """A string argument longer than this many characters is pruned."""
@@ -226,15 +228,22 @@ class Prune:
         if not any(p.derived_from is not None for p in planned):
             return "nothing to prune"
         kept = prefix_length(walk)
-        before = sum(characters(n.body) for n in walk)
-        after = sum(characters(p.body) for p in planned) + sum(
-            characters(n.body) for n in walk[:kept]
-        )
-        if after >= before:
+        before = _ceilings(n.body for n in walk)
+        after = _ceilings(p.body for p in planned) + _ceilings(n.body for n in walk[:kept])
+        if after.upper >= before.upper:
             return "nothing to prune: it would not be shorter"
         last = write_line(cursor, walk[kept - 1].id, planned)[-1]
         cursor.move(last)
         return (
-            f"pruned ~{tokens(tokens_of(before))} → ~{tokens(tokens_of(after))} tokens "
+            f"pruned {show(before)} → {show(after)} tokens "
             f"(node {last}; the old line is still in the tree)"
         )
+
+
+def _ceilings(bodies: Iterable[Body]) -> Count:
+    """The ceilings of `bodies` added up: both sides of a comparison of lines that are not sent
+    yet are counted the same way, so one that is shorter by its bytes is shown shorter."""
+    total = NONE
+    for body in bodies:
+        total += ceiling_of(body)
+    return total

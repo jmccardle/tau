@@ -1,13 +1,24 @@
 """Typing a message, and what the transcript shows of the walk (D23 section 9)."""
 
+import json
 from pathlib import Path
 
-from fakes import Fail, FakeProvider, FakeTool, Gate, Reply
+from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 from textual.widgets import Collapsible
 from tuikit import running, say, shows, type_line, until
 
-from tau import Author, Body, Part, Stop, TextDelta, ThinkingDelta
+from tau import (
+    Author,
+    Body,
+    Compaction,
+    Part,
+    Stop,
+    TextDelta,
+    ThinkingDelta,
+    model_config,
+    read_models,
+)
 
 
 @scenario
@@ -170,4 +181,44 @@ async def test_a_tool_call_line_shows_square_brackets_as_typed(tmp_path: Path) -
         (box,) = app.query(Collapsible).filter(".tool-box")
         (title,) = box.query("CollapsibleTitle")
         assert "bash(command=echo [draft] [/b])" in title.label.plain  # type: ignore[attr-defined]
+    await h.close()
+
+
+@scenario
+async def test_the_title_after_a_compaction_is_not_the_summary(tmp_path: Path) -> None:
+    window = {"model": "a", "provider": FAKE_PROVIDER, "context_window": 40_000}
+    options = {"reserve": 2000, "soft": 10_000, "keep": 1000}
+    catalog = read_models(cli={"models": {"a": window}, "extensions": {"compaction": options}})
+
+    def billed(input: int, cached: int | None = None) -> str:
+        usage: dict[str, int] = {"input": input, "output": 6000}
+        if cached is not None:
+            usage["cached"] = cached
+        return json.dumps({"usage": usage})
+
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(
+            [
+                Reply([Part.Text("first")], Stop.End, meta=billed(100)),
+                Reply([Part.Text("second")], Stop.End, meta=billed(6200, 100)),
+                say("the summary of everything"),
+            ]
+        ),
+        extensions=[Compaction()],
+        catalog=catalog,
+        config=model_config("a"),
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "question one")
+        await pilot.press("enter")
+        await shows(pilot, app, "first")
+        await type_line(pilot, "question two")
+        await pilot.press("enter")
+        await shows(pilot, app, "second")
+        await until(pilot, lambda: bool([n for n in h.notices() if n.startswith("compacted")]))
+        await until(pilot, lambda: "summary of everything" in app.screen_text())
+        title = app.screen_text().splitlines()[0]
+        assert "summary of everything" not in title
+        assert "question" in title
     await h.close()
