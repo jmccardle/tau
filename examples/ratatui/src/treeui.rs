@@ -170,7 +170,7 @@ pub fn draw_reading(f: &mut Canvas, model: &Model) {
     let area = f.area();
     f.render_widget(
         Line::styled(
-            "The session's tree",
+            "Reading the session's tree",
             Style::new().add_modifier(Modifier::REVERSED),
         ),
         Rect { height: 1, ..area },

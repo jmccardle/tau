@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -106,25 +106,53 @@ pub fn lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The lines of the open question: what it asks, then its choices or its field.
-fn question_lines(q: &OpenQuestion, asking: &Asking) -> Vec<Line<'static>> {
+/// What the open question draws: its lines, and where the answer field's cursor is in them
+/// (row, column), if it has one.
+struct Asked {
+    lines: Vec<Line<'static>>,
+    cursor: Option<(usize, usize)>,
+}
+
+/// `text` as lines at most `width` wide, each styled `look`.
+fn wrapped(text: &str, width: usize, look: Style, out: &mut Vec<Line<'static>>) {
+    out.extend(wrap(text, width).into_iter().map(|l| Line::styled(l, look)));
+}
+
+/// The lines of the open question, `width` columns wide: what it asks, then its choices or its
+/// field.
+fn question_lines(q: &OpenQuestion, asking: &Asking, width: usize) -> Asked {
     let shape = ask::shape(&q.schema);
     // The text may span lines (a permission question: the call, then the rule that matched).
     let mut text = q.text.lines();
-    let mut out = vec![Line::from(vec![
-        Span::styled(
-            format!("{} asks: ", q.extension),
-            Style::new().fg(Color::Yellow).bold(),
-        ),
-        Span::raw(text.next().unwrap_or_default().to_string()),
-    ])];
-    out.extend(text.map(|line| Line::from(format!("  {line}"))));
+    let label = format!("{} asks: ", q.extension);
+    let mut out = Vec::new();
+    let first = format!("{label}{}", text.next().unwrap_or_default());
+    for (i, piece) in wrap(&first, width).into_iter().enumerate() {
+        if i == 0 {
+            let (head, rest) = piece.split_at(piece.len().min(label.len()));
+            out.push(Line::from(vec![
+                Span::styled(head.to_owned(), Style::new().fg(Color::Yellow).bold()),
+                Span::raw(rest.to_owned()),
+            ]));
+        } else {
+            out.push(Line::from(piece));
+        }
+    }
+    for line in text {
+        wrapped(&format!("  {line}"), width, Style::new(), &mut out);
+    }
     let choices = shape.choices();
+    let mut cursor = None;
     if choices.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("answer: ", Style::new().fg(Color::Yellow)),
-            Span::raw(asking.field.text()),
-        ]));
+        let (rows, at, _) = typed("answer: ", &asking.field, width, usize::MAX);
+        cursor = Some((out.len() + at.0, at.1));
+        for (i, row) in rows.into_iter().enumerate() {
+            let head = if i == 0 { "answer: " } else { "" };
+            out.push(Line::from(vec![
+                Span::styled(head, Style::new().fg(Color::Yellow)),
+                Span::raw(row),
+            ]));
+        }
     } else {
         for (i, choice) in choices.iter().enumerate() {
             let on = i == asking.picked;
@@ -134,7 +162,12 @@ fn question_lines(q: &OpenQuestion, asking: &Asking) -> Vec<Line<'static>> {
             } else {
                 Style::new()
             };
-            out.push(Line::styled(format!("{mark}{}", ask::show(choice)), look));
+            wrapped(
+                &format!("{mark}{}", ask::show(choice)),
+                width,
+                look,
+                &mut out,
+            );
         }
     }
     let hint = if choices.is_empty() {
@@ -142,11 +175,47 @@ fn question_lines(q: &OpenQuestion, asking: &Asking) -> Vec<Line<'static>> {
     } else {
         "Up/Down choose, Enter answers, Esc declines"
     };
-    out.push(Line::styled(hint, style(Kind::Dim)));
+    wrapped(hint, width, style(Kind::Dim), &mut out);
     if let Some(error) = &asking.error {
-        out.push(Line::styled(error.clone(), style(Kind::Failure)));
+        wrapped(error, width, style(Kind::Failure), &mut out);
     }
-    out
+    Asked { lines: out, cursor }
+}
+
+/// `field` laid out after a `prefix` on lines `width` wide, broken wherever the width falls so
+/// the cursor's place is known: the rows (the first without the prefix), where the cursor is in
+/// them (row, column), and the row the rows start at when more than `cap` would show. At most
+/// `cap` rows are returned, ending at the cursor's row at the latest.
+fn typed(
+    prefix: &str,
+    field: &Editor,
+    width: usize,
+    cap: usize,
+) -> (Vec<String>, (usize, usize), usize) {
+    let width = width.max(1);
+    let used = prefix.chars().count().min(width - 1);
+    let chars: Vec<char> = field.text().chars().collect();
+    let mut rows: Vec<String> = vec![String::new()];
+    let mut col = used % width;
+    for &c in &chars {
+        if col >= width {
+            rows.push(String::new());
+            col = 0;
+        }
+        rows.last_mut().expect("a row").push(c);
+        col += 1;
+    }
+    let place = used + field.at();
+    let (row, col) = (place / width, place % width);
+    // A cursor past the last character on a full row starts the next row.
+    while rows.len() <= row {
+        rows.push(String::new());
+    }
+    let first = (row + 1)
+        .saturating_sub(cap)
+        .min(rows.len().saturating_sub(cap));
+    let shown: Vec<String> = rows.into_iter().skip(first).take(cap).collect();
+    (shown, (row - first, col), first)
 }
 
 fn status(screen: &Screen) -> Line<'static> {
@@ -182,22 +251,29 @@ fn status(screen: &Screen) -> Line<'static> {
 }
 
 /// Draw the whole screen. The terminal's cursor goes to the editor, or to the open question's
-/// field.
-pub fn draw(f: &mut Canvas, screen: &Screen) {
+/// field. Returns how far up the transcript can be scrolled at this size, for the caller to
+/// keep the scroll within.
+pub fn draw(f: &mut Canvas, screen: &Screen) -> usize {
     let area = f.area();
     let width = usize::from(area.width);
     let pending = lines(&screen.model.pending(), width);
     let asked = screen
         .question
-        .map(|q| question_lines(q, screen.asking))
-        .unwrap_or_default();
-    let tall = |lines: &[Line]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        .map(|q| question_lines(q, screen.asking, width));
+    let tall = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+    // A long line being typed grows the editor upward, up to half the screen.
+    let (typed_rows, cursor, first) = typed(
+        "> ",
+        screen.editor,
+        width,
+        usize::from(area.height / 2).max(1),
+    );
     let [header, transcript, waiting, question, editor, bar] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(tall(&pending)),
-        Constraint::Length(tall(&asked)),
-        Constraint::Length(1),
+        Constraint::Length(tall(pending.len())),
+        Constraint::Length(tall(asked.as_ref().map_or(0, |a| a.lines.len()))),
+        Constraint::Length(tall(typed_rows.len())),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -212,62 +288,49 @@ pub fn draw(f: &mut Canvas, screen: &Screen) {
         ),
         header,
     );
-    render_transcript(f, transcript, screen);
-    f.render_widget(Paragraph::new(pending).wrap(Wrap { trim: false }), waiting);
-    f.render_widget(Paragraph::new(asked), question);
+    let most = render_transcript(f, transcript, screen);
+    f.render_widget(Paragraph::new(pending), waiting);
+    if let Some(asked) = &asked {
+        f.render_widget(Paragraph::new(asked.lines.clone()), question);
+    }
 
     let prompt = Span::styled("> ", Style::new().fg(Color::Green).bold());
-    f.render_widget(
-        Line::from(vec![prompt, Span::raw(screen.editor.text())]),
-        editor,
-    );
+    let rows: Vec<Line> = typed_rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| match (first, i) {
+            (0, 0) => Line::from(vec![prompt.clone(), Span::raw(row)]),
+            _ => Line::from(row),
+        })
+        .collect();
+    f.render_widget(Paragraph::new(rows), editor);
     f.render_widget(status(screen), bar);
 
-    let (field, rect) = match (screen.question, ask_has_field(screen)) {
-        (Some(q), true) => (
-            &screen.asking.field,
-            field_rect(question, q.text.lines().count()),
-        ),
-        _ => (
-            screen.editor,
-            Rect {
-                x: editor.x + 2,
-                ..editor
-            },
-        ),
+    let (x, y) = match asked.as_ref().and_then(|a| a.cursor) {
+        Some((row, col)) => (question.x + to_u16(col), question.y + to_u16(row)),
+        None => (editor.x + to_u16(cursor.1), editor.y + to_u16(cursor.0)),
     };
-    let at = u16::try_from(field.at()).unwrap_or(u16::MAX);
     f.set_cursor_position(Position::new(
-        rect.x
-            .saturating_add(at)
-            .min(area.right().saturating_sub(1)),
-        rect.y,
+        x.min(area.right().saturating_sub(1)),
+        y.min(area.bottom().saturating_sub(1)),
     ));
+    most
 }
 
-fn ask_has_field(screen: &Screen) -> bool {
-    screen
-        .question
-        .is_some_and(|q| ask::shape(&q.schema).choices().is_empty())
+fn to_u16(n: usize) -> u16 {
+    u16::try_from(n).unwrap_or(u16::MAX)
 }
 
-/// Where the answer field's text starts: the line after the question's `text_lines` lines, after
-/// `answer: `.
-fn field_rect(question: Rect, text_lines: usize) -> Rect {
-    Rect {
-        x: question.x + 8,
-        y: question.y + u16::try_from(text_lines.max(1)).unwrap_or(u16::MAX),
-        width: question.width.saturating_sub(8),
-        height: 1,
-    }
-}
-
-fn render_transcript(f: &mut Canvas, area: Rect, screen: &Screen) {
+/// Draw the transcript scrolled up by `screen.scroll` lines, never past its top. Returns the
+/// most it can be scrolled at this size.
+fn render_transcript(f: &mut Canvas, area: Rect, screen: &Screen) -> usize {
     let all = lines(&screen.model.rows(), usize::from(area.width));
     let height = usize::from(area.height);
-    let end = all.len().saturating_sub(screen.scroll);
+    let most = all.len().saturating_sub(height);
+    let end = all.len() - screen.scroll.min(most);
     let start = end.saturating_sub(height);
     f.render_widget(Paragraph::new(all[start..end].to_vec()), area);
+    most
 }
 
 #[cfg(test)]
@@ -317,13 +380,168 @@ mod tests {
             "schema": {"type": "string", "enum": ["yes", "always", "no"]},
         }))
         .unwrap();
-        let got: Vec<String> = question_lines(&q, &Asking::default())
+        let asked = question_lines(&q, &Asking::default(), 40);
+        let got: Vec<String> = asked
+            .lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert_eq!(got[0], "permissions asks: bash: git push");
         assert_eq!(got[1], "  (ask rule: bash)");
         assert_eq!(got[2], "> yes");
-        assert_eq!(field_rect(Rect::new(0, 5, 40, 4), 2).y, 7);
+    }
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use ratatui::{Terminal, backend::TestBackend}; // rules: allow(backend): ratatui API
+    use serde_json::json;
+
+    use super::*;
+
+    const ME: &str = "tester@host:ratatui";
+
+    fn hear(model: &mut Model, event: serde_json::Value) {
+        model.hear(serde_json::from_value(event).unwrap());
+    }
+
+    /// A session whose one reply is `words` numbered words long.
+    fn talked(words: usize) -> Model {
+        let mut model = Model::new(ME);
+        hear(
+            &mut model,
+            json!({"kind": "CursorView", "cursor": 0, "at": 2, "busy": false, "auto": false,
+                   "questions": [], "items": [], "ending": "Done", "hook_error": null,
+                   "model": "m", "shown": []}),
+        );
+        hear(&mut model, json!({"kind": "Labels", "labels": []}));
+        let text = (0..words)
+            .map(|i| format!("w{i:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let nodes = vec![
+            json!({"id": 0, "parent": null, "time": 0, "by": {"Frontend": "t"},
+                   "body": {"System": "sys"}, "delivers": []}),
+            json!({"id": 1, "parent": 0, "time": 0, "by": {"Frontend": "t"},
+                   "body": {"User": "hi"}, "delivers": []}),
+            json!({"id": 2, "parent": 1, "time": 0, "by": {"Frontend": "t"},
+                   "body": {"Assistant": {"parts": [{"Text": text}], "stop": "End",
+                                          "finish_reason": null, "meta": null}},
+                   "delivers": []}),
+        ];
+        hear(&mut model, json!({"kind": "Appended", "nodes": nodes}));
+        model
+    }
+
+    /// The screen's lines after drawing `model` on a `width` by `height` terminal, and how far
+    /// the transcript can scroll.
+    fn drawn_with(
+        model: &Model,
+        (width, height): (u16, u16),
+        scroll: usize,
+        typing: &str,
+        question: Option<&OpenQuestion>,
+    ) -> (Vec<String>, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap(); // rules: allow(backend): ratatui API
+        let mut editor = Editor::default();
+        editor.set(typing);
+        let asking = Asking::default();
+        let mut most = 0;
+        terminal
+            .draw(|f| {
+                most = draw(
+                    f,
+                    &Screen {
+                        model,
+                        editor: &editor,
+                        asking: &asking,
+                        question,
+                        scroll,
+                        session: "s",
+                        cwd: "/",
+                        client: ME,
+                    },
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer(); // rules: allow(backend): ratatui API
+        let lines = (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        (lines, most)
+    }
+
+    fn drawn(model: &Model, size: (u16, u16), scroll: usize) -> Vec<String> {
+        drawn_with(model, size, scroll, "", None).0
+    }
+
+    fn widest(lines: &[String]) -> usize {
+        lines
+            .iter()
+            .map(|l| l.trim_end().chars().count())
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn transcript_text_fills_the_terminal_width() {
+        let lines = drawn(&talked(60), (120, 24), 0);
+        assert!(widest(&lines) > 100, "{lines:#?}");
+    }
+
+    #[test]
+    fn a_long_question_wraps_to_the_width_instead_of_clipping() {
+        let words = (0..40).map(|i| format!("q{i:02}")).collect::<Vec<_>>();
+        let q: OpenQuestion = serde_json::from_value(json!({
+            "id": 1, "to": null, "extension": "permissions",
+            "text": format!("bash: {}", words.join(" ")),
+            "schema": {"type": "string", "enum": ["yes", "no"]},
+        }))
+        .unwrap();
+        let (lines, _) = drawn_with(&talked(1), (60, 24), 0, "", Some(&q));
+        let screen = lines.join("\n");
+        assert!(
+            screen.contains("q39"),
+            "the end of the question is shown: {screen}"
+        );
+        assert!(widest(&lines) <= 60);
+    }
+
+    #[test]
+    fn a_long_line_being_typed_wraps_and_the_cursor_follows_it() {
+        let typing = "x".repeat(70);
+        let (lines, _) = drawn_with(&talked(1), (40, 12), 0, &typing, None);
+        let xs: usize = lines.iter().map(|l| l.matches('x').count()).sum();
+        assert_eq!(xs, 70, "{lines:#?}");
+        // "> " and 70 characters: the cursor is on the third row of 40 columns.
+        assert_eq!(typed("> ", &editor_of(&typing), 40, 6).1, (1, 32));
+    }
+
+    fn editor_of(text: &str) -> Editor {
+        let mut editor = Editor::default();
+        editor.set(text);
+        editor
+    }
+
+    #[test]
+    fn a_terminal_that_grows_shows_the_whole_transcript_again() {
+        let model = talked(60);
+        let (small, most) = drawn_with(&model, (40, 8), 0, "", None);
+        assert!(most > 0 && !small.join("").contains("w00"), "{small:#?}");
+        // Scrolled to the top, then the terminal grows to fit everything and the scroll that
+        // no longer exists is not kept.
+        let (big, most) = drawn_with(&model, (40, 40), most, "", None);
+        assert_eq!(most, 0);
+        let big = big.join("\n");
+        assert!(big.contains("w00") && big.contains("w59"), "{big}");
+    }
+
+    #[test]
+    fn at_the_bottom_stays_at_the_bottom_when_the_terminal_resizes() {
+        let model = talked(60);
+        for size in [(40, 8), (40, 20), (100, 20), (30, 6)] {
+            let lines = drawn(&model, size, 0);
+            assert!(lines.join("").contains("w59"), "{size:?}: {lines:#?}");
+        }
     }
 }

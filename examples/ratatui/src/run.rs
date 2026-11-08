@@ -126,8 +126,9 @@ pub async fn session(
         restore: Some(restore),
     };
     loop {
+        let mut most = 0;
         term.draw(|f| {
-            app.draw(
+            most = app.draw(
                 f,
                 &Screen {
                     model: &app.model,
@@ -142,6 +143,9 @@ pub async fn session(
             );
         })
         .map_err(|e| format!("cannot draw the screen: {e}"))?;
+        // Whatever the size now, the scroll stays within the transcript: a terminal that grew
+        // does not leave it scrolled past the top.
+        app.scroll = app.scroll.min(most);
 
         let due = app
             .due
