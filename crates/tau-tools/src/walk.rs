@@ -76,7 +76,7 @@ impl Exclude {
     /// # Errors
     /// A pattern is not a regular expression.
     pub(crate) fn new(patterns: &[String]) -> Result<Self> {
-        let whole: Vec<String> = patterns.iter().map(|p| format!(r"\A(?:{p})\z")).collect();
+        let whole: Vec<String> = patterns.iter().map(|p| format!(r"\A(?s:{p})\z")).collect();
         let set = meta::Regex::new_many(&whole)
             .map_err(|e| ToolError(format!("invalid exclude pattern: {e}")))?;
         Ok(Self {
@@ -89,14 +89,18 @@ impl Exclude {
         self.set.is_match(&*path.to_string_lossy())
     }
 
-    /// Whether `path` is left out; counts it if so. A directory is tried with a trailing `/`,
-    /// as a pattern for what is inside it (`/x/secret/*`) sees it.
+    /// Whether `path` is left out; counts it if so. A directory is left out only if the patterns
+    /// match it with a trailing `/` and also a made-up path below it, so one that names what is
+    /// inside it (`/x/secret/*`) prunes it, and `/x/secret?` or `/x/secret/*.key` do not.
     fn hides(&self, path: &Path, dir: bool) -> bool {
         let tried = |p: &Path| {
             if dir {
-                let mut with = p.as_os_str().to_owned();
-                with.push("/");
-                self.matches(Path::new(&with))
+                let below = |tail: &str| {
+                    let mut with = p.as_os_str().to_owned();
+                    with.push(tail);
+                    self.matches(Path::new(&with))
+                };
+                below("/") && below("/\u{1}x/y\nz")
             } else {
                 self.matches(p)
             }

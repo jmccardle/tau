@@ -202,7 +202,7 @@ class Rule:
         return glob_regex(_absolute(self.glob, call.cwd))
 
 
-_CLASS_ESCAPES = frozenset("\\[]^&~")
+_CLASS_ESCAPES = frozenset("\\[]^&~-")
 _LITERAL_ESCAPES = frozenset("\\.+*?()|[]{}^$#&-~")
 
 
@@ -242,8 +242,24 @@ def _char_set(glob: str, i: int) -> tuple[str, int]:
     members = glob[i:j]
     negated = members.startswith("!")
     members = members[1:] if negated else members
-    body = "".join("\\" + m if m in _CLASS_ESCAPES else m for m in members)
-    return f"[{'^' if negated else ''}{body}]", j + 1
+    return f"[{'^' if negated else ''}{_set_members(members)}]", j + 1
+
+
+def _set_members(members: str) -> str:
+    """The inside of a set: `x-y` is a range, and every other character is escaped if the regex
+    would read it as syntax, so `--`, `&&` and `~~` are never class operators."""
+    out: list[str] = []
+    k = 0
+    while k < len(members):
+        low = members[k]
+        text = "\\" + low if low in _CLASS_ESCAPES else low
+        if members[k + 1 : k + 2] == "-" and k + 2 < len(members):
+            high = members[k + 2]
+            text += "-" + ("\\" + high if high in _CLASS_ESCAPES else high)
+            k += 2
+        out.append(text)
+        k += 1
+    return "".join(out)
 
 
 @functools.cache
@@ -260,7 +276,8 @@ def _absolute(glob: str, cwd: str) -> str:
     """`glob` as a rule over real absolute paths: one that starts with a literal relative
     component (`src/*`, `./src/*`, `../x/*`) starts in `cwd`, as the tool's own paths do. A glob
     that starts with a wildcard is left as it is. The directories before the first wildcard are
-    normalised (`/tmp/../etc/*` is `/etc/*`), as the paths a rule is matched against are."""
+    normalised by text (`/tmp/../etc/*` is `/etc/*`), not through symlinks: if `/tmp/x` is a link,
+    `/tmp/x/../etc/*` is `/tmp/etc/*`, though the OS would walk from the link's target."""
     if glob[0] in "*?[":
         return glob
     full = glob if glob[0] == "/" else os.path.join(cwd, glob)

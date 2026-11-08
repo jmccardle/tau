@@ -487,6 +487,27 @@ async def test_an_unreadable_denied_directory_is_not_entered_or_named(
     assert "could not" not in text
 
 
+@scenario
+async def test_the_tool_reads_a_set_and_a_newline_as_the_check_does(tmp_path: Path) -> None:
+    """`--`, `&&` and `~~` in a set are no operators, and `*` crosses a newline, in the tool
+    exactly as in the check."""
+    real = tmp_path.resolve()
+    (real / "open").mkdir()
+    (real / "keep").mkdir()
+    for name in ["+", ",", "-", "a", "b", "&", "~", "x\ny", "kept"]:
+        (real / "open" / name).write_text("needle\n")
+    rules = [f"grep:{real}/open/[+--]", f"grep:{real}/open/[&&]", f"grep:{real}/open/[a-a~~]"]
+    rules.append(f"grep:{real}/open/x*y")
+    (text,) = await search_outputs(
+        real,
+        [call("a", "grep", pattern="needle")],
+        {"deny": rules},
+        cast("FakeTool", GrepTool(real)),
+    )
+    shown = {line.split(":")[0] for line in text.splitlines() if ":1:needle" in line}
+    assert shown == {"open/b", "open/kept"}
+
+
 @pytest.mark.parametrize(
     ("rule", "path", "denied"),
     [

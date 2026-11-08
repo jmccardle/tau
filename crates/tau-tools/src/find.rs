@@ -229,6 +229,24 @@ mod tests {
     }
 
     #[test]
+    fn exclude_dot_matches_a_newline_and_a_directory_is_pruned_only_when_all_below_it_matches() {
+        let (tool, dir) = setup(10_000);
+        touch(&dir, &["a.rs", "x\ny.rs", "secret/b.rs", "secre/c.rs"]);
+        let root = dir.path().canonicalize().unwrap();
+        let newline = json!([format!("{}/x.*y.rs", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": newline})).unwrap();
+        assert!(!out.contains("y.rs"), "{out}");
+        // `secret.` could match the directory `secret/` itself, but not what is in it.
+        let some = json!([format!("{}/secret.", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": some})).unwrap();
+        assert!(
+            out.contains("secret/b.rs") && out.contains("secre/c.rs"),
+            "{out}"
+        );
+        assert!(!out.contains("left out"), "{out}");
+    }
+
+    #[test]
     fn ignore_rules_apply_without_a_git_repository() {
         let (tool, dir) = setup(10_000);
         fs::write(dir.path().join(".gitignore"), "gen.rs\nbuild/\n").unwrap();
