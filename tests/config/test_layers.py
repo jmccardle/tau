@@ -302,7 +302,7 @@ def test_explain_names_the_layer_and_innermost_group_of_each_value(world: World)
         str(world.tau / "config.json"),
         "a:b",
     )
-    assert (origins["api_key_env"].source, origins["api_key_env"].group) == ("cli", "a")
+    assert (origins["api_key_env"].source, origins["api_key_env"].group) == ("session", "a")
     assert (origins["provider"].source, origins["provider"].group) == ("default", None)
 
 
@@ -464,7 +464,7 @@ def test_max_tokens_and_options_merge_by_layer_and_down_through_groups(world: Wo
     assert (m.max_tokens, m.options) == (4, {"delay_ms": 5})
     assert (n.max_tokens, n.options) == (8, {"delay_ms": 9, "reply": "hi"})
     assert m.base_url is None
-    assert {o.key: o.source for o in catalog.explain("g:m")}["max_tokens"] == "cli"
+    assert {o.key: o.source for o in catalog.explain("g:m")}["max_tokens"] == "session"
 
 
 def test_options_that_are_not_an_object_are_a_problem_even_under_a_group_of_objects(

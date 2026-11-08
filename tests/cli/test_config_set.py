@@ -142,3 +142,35 @@ def test_set_works_from_a_project_that_is_not_trusted_yet(world: World) -> None:
     assert tau(world, "config", "set", "step_limit.limit=7", cwd=root).code == 0
     assert file(world) == {"extensions": {"step_limit": {"limit": 7}}}
     assert os.listdir(root / ".tau") == ["config.json"]
+
+
+def test_set_refuses_a_rule_that_names_a_tool_nothing_provides_and_writes_nothing(
+    world: World,
+) -> None:
+    path = world.user_config({"extensions": {"permissions": {"deny": ["bash:rm *"]}}})
+    before = path.read_bytes()
+    result = tau(world, "config", "set", 'permissions.deny=["bash:rm *", "nosuch"]')
+    assert (result.code, result.out) == (1, "")
+    assert "deny rule 'nosuch' names the tool 'nosuch'" in result.err
+    assert path.read_bytes() == before
+    assert tau(world, "config", "set", 'permissions.deny=["bash:rm *", "write"]').code == 0
+    assert tau(world, "config", "check").code == 0
+
+
+def test_set_refuses_agent_tools_that_nothing_provides(world: World) -> None:
+    path = world.user_config({"load": {"agents": True}})
+    before = path.read_bytes()
+    result = tau(world, "config", "set", 'agents.tools=["read", "grpe"]')
+    assert (result.code, result.out) == (1, "")
+    assert "tools names 'grpe'" in result.err
+    assert path.read_bytes() == before
+
+
+def test_set_checks_only_the_fields_it_writes(world: World) -> None:
+    world.user_config({"extensions": {"permissions": {"deny": ["nosuch"]}}})
+    result = tau(world, "config", "set", 'permissions.ask=["bash", "read"]')
+    assert result.code == 0, result.err
+    assert file(world)["extensions"] == {  # type: ignore[comparison-overlap]
+        "permissions": {"deny": ["nosuch"], "ask": ["bash", "read"]}
+    }, "the old deny stays a warning"
+    assert tau(world, "config", "set", 'permissions.deny=["nosuch"]').code == 1

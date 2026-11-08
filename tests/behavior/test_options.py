@@ -234,8 +234,10 @@ def test_check_config_reports_each_extension_whose_options_do_not_fit() -> None:
     assert "missing required options ['endpoint']" in endpoint.message  # type: ignore[attr-defined]
     fine: dict[str, object] = {"step_limit": {"limit": 3}, "client": {"endpoint": "e"}}
     assert problems(fine, [StepLimit(), Client()]) == ()
-    assert problems(bad, [Tuner()]) == (), "an extension not given is not looked at"
-    assert problems(bad, []) == (), "and by default none is"
+    (unloaded,) = problems(bad, [Tuner()])
+    assert (unloaded.severity, unloaded.path) == ("warning", "extensions.step_limit")  # type: ignore[attr-defined]
+    assert "no loaded extension is named 'step_limit'" in unloaded.message  # type: ignore[attr-defined]
+    assert problems(bad, []) == (), "no extensions given: nothing is looked at"
 
 
 @scenario

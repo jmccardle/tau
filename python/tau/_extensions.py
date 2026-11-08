@@ -651,20 +651,12 @@ def _off(c: _Candidate, inputs: _Inputs, discover: bool, named: set[str]) -> str
 
 
 def _load_keys(candidates: Sequence[_Candidate], inputs: _Inputs, run: _Run) -> None:
-    """A `load` key that no source has: `true` stops the start, `false` is a row that warns."""
-    catalog = inputs.catalog
-    for key in sorted(set(catalog.load) - {c.key for c in candidates}):
-        on = catalog.load[key]
-        origin = f"load.{key} = {str(on).lower()} in {catalog.load_sources[key]}"
-        if on:
-            note = f"no extension source has the key {key!r}"
-            run.errors.append(
-                f"{origin}: {note}; tau did not start.\n  fix the key, or remove it from `load`"
-            )
-            run.sources.append(ExtensionSource(key, "failed", "load", origin, note))
-        else:
-            note = f"no extension source has the key {key!r} (a typo?)"
-            run.sources.append(ExtensionSource(key, "off", "load", origin, note))
+    """A `load` key that no source has is a row that warns, whichever way it is set."""
+    load, by = inputs.catalog.load, inputs.catalog.load_sources
+    for key in sorted(set(load) - {c.key for c in candidates}):
+        origin = f"load.{key} = {str(load[key]).lower()} in {by[key]}"
+        note = f"no extension source has the key {key!r} (a typo, or a deleted extension?)"
+        run.sources.append(ExtensionSource(key, "off", "load", origin, note))
 
 
 def _inspect(inputs: _Inputs, explicit: Sequence[str], discover: bool) -> Inspection:

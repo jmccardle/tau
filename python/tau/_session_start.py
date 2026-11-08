@@ -42,11 +42,18 @@ from tau._config_layers import option_problems
 from tau._context import SystemPrompt, system_prompt
 from tau._core import Body, Leased, Session
 from tau._driver import Driver
-from tau._extensions import RETRY, ExtensionSource, absolute_explicit, inspect_extensions
-from tau._options import make_options
+from tau._extensions import (
+    RETRY,
+    ExtensionSource,
+    Inspection,
+    absolute_explicit,
+    inspect_extensions,
+)
+from tau._options import make_layer_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
 from tau._retry import RetryProvider
+from tau._session_settings import SessionSettings
 from tau._sessions import (
     ForkedFrom,
     PickSession,
@@ -57,7 +64,15 @@ from tau._sessions import (
     rename_session,
     session_info,
 )
-from tau._startup import LoadedConfig, Prompts, load_config, option_changes, select_model
+from tau._startup import (
+    LoadedConfig,
+    Prompts,
+    load_config,
+    load_key_warnings,
+    off_keys,
+    option_changes,
+    select_model,
+)
 from tau._trust import tau_home, user_config_path
 from tau._values import Context, Json
 
@@ -91,9 +106,10 @@ class Started:
     the one recorded at the first cursor), the session's working directory `cwd` (the process is
     in it), the session's `directory` (`None`: in memory) and whether this run `created` it (a new
     session or a fork). `sources` are the extension sources the start planned, one per row of
-    `tau ext list`, and `prompt` the parts of the system prompt it assembled (`None`: the session
-    already had one, or the program supplied the text). A session named during the run counts as
-    used."""
+    `tau ext list`, `warnings` what the config names that this start lacks (one line each;
+    frontends print them), and `prompt` the parts of the system prompt it assembled (`None`:
+    the session already had one, or the program supplied the text). A session named during the
+    run counts as used."""
 
     session: Session
     driver: Driver
@@ -104,6 +120,7 @@ class Started:
     directory: Path | None
     created: bool
     sources: tuple[ExtensionSource, ...]
+    warnings: tuple[str, ...]
     prompt: SystemPrompt | None
     _nodes: int
     _name: str | None
@@ -301,23 +318,62 @@ def _overridden(  # noqa: PLR0913, PLR0917 - the start's inputs, passed on
     cwd: Path,
     environ: Mapping[str, str],
     prompts: Prompts,
-    cli: Mapping[str, object] | None,
+    settings: SessionSettings,
+    cli: Mapping[str, object],
     extensions: Sequence[object],
-    assignments: Sequence[tuple[str, str, str]],
 ) -> LoadedConfig:
-    """`loaded` again with `--set` as the `cli` layer's `extensions`: every value is read by its
-    option's type, and every extension's options are built from the layers as they are now
-    (`ConfigError` otherwise), so a bad `--set` fails before a session exists."""
-    changes = option_changes(extensions, assignments)
-    layer: dict[str, object] = {
-        **(cli or {}),
-        "extensions": {name: values for name, (_, _, values) in changes.items()},
-    }
+    """`loaded` again with the `--set` options laid on the session layer `cli`: every value is
+    read by its option's type, and every extension's options are built from the layers as they
+    are now (`ConfigError` otherwise), so a bad `--set` fails before a session exists."""
+    changes = option_changes(extensions, settings.options)
+    layer = settings.with_options(cli, {name: values for name, (_, _, values) in changes.items()})
     again = load_config(cwd, environ, ask=prompts.ask, cli=layer)
     for name, (options, fields, _) in changes.items():
         raw: Json = dict(again.catalog.extensions.get(name, {}))
-        make_options(name, options, fields, raw, Context(again.catalog))
+        make_layer_options(name, options, fields, raw, Context(again.catalog))
     return again
+
+
+def _configured(  # noqa: PLR0913, PLR0917 - the start's inputs, passed on
+    choice: SessionChoice,
+    environ: Mapping[str, str],
+    prompts: Prompts,
+    flags: SessionFlags,
+    settings: SessionSettings,
+    own: Sequence[Extension],
+    *,
+    explicit: Sequence[str],
+    discover: bool,
+) -> tuple[LoadedConfig, Inspection, tuple[str, ...]]:
+    """The layers (the session settings nearest), the extensions they load, and the start's
+    warnings. `ConfigError` or `ExtensionLoadError` for what the start cannot go on with."""
+    cli = {
+        **({} if flags.system_prompt is None else {"system_prompt": flags.system_prompt}),
+        **settings.layer,
+    }
+    loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
+    found = inspect_extensions(loaded, explicit=explicit, discover=discover)
+    found.raise_failures()
+    settings.refuse_missing([s.key for s in found.sources if s.kind != "load"])
+    every = [*own, *found.extensions]
+    if settings.options:
+        loaded = _overridden(loaded, choice.cwd, environ, prompts, settings, cli, every)
+    refuse_bad_options(loaded, every)
+    return loaded, found, start_warnings(loaded, found.sources, every)
+
+
+def start_warnings(
+    loaded: LoadedConfig, sources: Sequence[ExtensionSource], extensions: Sequence[object]
+) -> tuple[str, ...]:
+    """What the config names that this start does not have, one line each: a `load` key no
+    source has, options of an extension that is not loaded or has none, a tool no loaded
+    extension provides. Each is ignored; none stops the start."""
+    found = load_key_warnings(loaded.catalog, sources)
+    off = off_keys(sources)
+    found += [
+        p for p in option_problems(loaded.catalog, extensions, off) if p.severity == "warning"
+    ]
+    return tuple(str(p) for p in found)
 
 
 def refuse_bad_options(loaded: LoadedConfig, extensions: Sequence[Extension]) -> None:
@@ -375,23 +431,17 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     _refuse_ignored_prompt_flags(flags, system)
     explicit = absolute_explicit(getattr(args, "extension"), cwd)  # noqa: B009
     discover = not getattr(args, "no_extensions")  # noqa: B009
-    assignments = getattr(args, "set_options", None) or ()
+    settings = SessionSettings.of(environ, getattr(args, "set_options", None) or ())
     choice = choose_session(flags, home=tau_home(environ), cwd=cwd, pick=pick_session)
     refuse_model(choice, model)
     os.chdir(choice.cwd)
     new = choice.kind == "new"
     held = _lease(choice)
     try:
-        cli = None if flags.system_prompt is None else {"system_prompt": flags.system_prompt}
-        loaded = load_config(choice.cwd, environ, ask=prompts.ask, cli=cli)
-        found = inspect_extensions(loaded, explicit=explicit, discover=discover)
-        found.raise_failures()
+        loaded, found, warnings = _configured(
+            choice, environ, prompts, flags, settings, [*own], explicit=explicit, discover=discover
+        )
         added = list(found.extensions)
-        if assignments:
-            loaded = _overridden(
-                loaded, choice.cwd, environ, prompts, cli, [*own, *added], assignments
-            )
-        refuse_bad_options(loaded, [*own, *added])
         assembled = _Assembled(flags)
         text = system if system is not None else assembled
         selected = select_model(loaded.catalog, model, pick=prompts.pick) if new else None
@@ -424,6 +474,7 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
         directory,
         created,
         found.sources,
+        warnings,
         assembled.prompt,
         len(session.tree),
         None if directory is None else read_name(directory),

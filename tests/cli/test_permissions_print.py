@@ -132,21 +132,21 @@ def test_an_answer_the_question_does_not_offer_is_exit_1(model: World) -> None:
     assert not ran(model)
 
 
-def test_a_rule_naming_a_tool_nothing_provides_stops_the_start_and_the_check(
+def test_a_rule_naming_a_tool_nothing_provides_is_a_warning_at_the_start_and_the_check(
     model: World,
 ) -> None:
     config = json.loads((model.tau / "config.json").read_text())
     config["extensions"]["permissions"]["deny"] = ["Bash", "wirte:/etc/*", "write:/etc/*"]
     model.user_config(config)
     result = p(model)
-    assert result.code == 1
+    assert result.code == 0, result.err
     assert (
-        "deny rule 'Bash' names the tool 'Bash', which no loaded extension provides" in result.err
+        "warning: extensions.permissions: deny rule 'Bash' names the tool 'Bash', which no "
+        "loaded extension provides" in result.err
     )
     assert "deny rule 'wirte:/etc/*' names the tool 'wirte:/etc/*'" in result.err
-    assert not ran(model)
     checked = tau(model, "config", "check")
-    assert checked.code != 0
+    assert checked.code == 0
     assert "names the tool 'Bash'" in checked.both
 
 

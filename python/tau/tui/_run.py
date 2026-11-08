@@ -102,6 +102,8 @@ async def launch(
         model=getattr(args, "model"),  # noqa: B009
     )
     try:
+        for warning in opened.warnings:
+            process.stderr.write("tau: " + safe_block(warning) + "\n")
         if getattr(args, "verbose"):  # noqa: B009
             for line in report(opened):
                 process.stderr.write("tau: " + safe_block(line) + "\n")

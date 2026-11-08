@@ -882,7 +882,40 @@ D13 · retires 0.15's `~/.tau/config.json` reader
 The **user config** is `$TAU_HOME/config.json` (`TAU_HOME` defaults to
 `~/.tau`); tau owns it and may rewrite it. A **project config** is
 `.tau/config.json` in a trusted directory. Layers, nearest wins: user,
-project, CLI flags.
+project, session settings.
+
+### session settings, TAU_SETTINGS
+module `tau._session_settings` (`SessionSettings`, `ENVIRONMENT`, `merged`) · D13 (8E-6) · new
+
+The layer nearest a run (the "CLI layer" of D13 before 8E-6, still `cli=` in the
+`read_models` family; a problem or value from it has the source `session`). It has the shape of a config file's
+`extensions` and `load` keys, merges with the files by the same JSON rules, applies to one
+start of any program (`tau`, `-p`, `serve`) and is never written. Two inputs, `--set` over
+the **`TAU_SETTINGS`** environment variable (a JSON object): `--set load.KEY=true|false`
+switches an extension source, `--set EXTENSION.FIELD=VALUE` sets an option. Nothing else is a
+session setting. `SessionSettings.of` reads both; `refuse_missing` fails a `--set load.KEY`
+that no source has (a typed flag is a typo; a file or the variable only warns).
+
+### start warnings, Started.warnings, missing_tools
+modules `tau._session_start` (`start_warnings`, `Started.warnings`, `Opened.warnings`),
+`tau._extensions` (`load_key_warnings`) · D13 (8E-6) · new
+
+Configuration that names something a start does not have is a warning, never an error, and is
+ignored: a `load` key no source has, `extensions.NAME` of an extension not loaded or without
+options, a tool name nothing provides, an option field the extension does not have. `option_problems` makes them (severity `warning`; a value
+an option type refuses stays an `error`); a start collects them in `Started.warnings`, one line
+each, and `tau`, `tau -p` and `tau serve` print them on stderr as `tau: config: warning: ...`.
+An options type may define **`missing_tools(tools)`**, the fields that name a missing tool with
+those entries (`tool_problems` is the same as sentences). What τ itself writes (`/config`, `tau
+config set`) is refused instead (`save_options(tools=)`).
+
+### config clean: `--clean`, `--purge`, `--layer`
+module `tau._config_clean` (`Cleaning`, `Against`, `clean_layer`, `clean_files`) · D13 (8E-6) · new
+
+`tau config check --clean` removes from a layer file what the warnings are about and any option
+field its type refuses; `--purge EXTENSION` turns an extension off and removes all its options.
+`--layer user|project` (default `user`) names the file; a changed project file is untrusted until
+`tau trust` approves it again. `Cleaning` is what was asked, `Against` what the start has.
 
 ### group, qualified name
 D13 · new

@@ -110,8 +110,8 @@ A new top-level config key, an object from source key to `true` or `false`:
 - **It lives in the config files only; a `Config` node cannot set it**, because loading
   happens once at start, not per branch. It is not inside `extensions.<name>`, which is an
   extension's options, keyed by name, and settable by a branch.
-- `"KEY": true` where no source has that key stops the start with an `ExtensionLoadError`;
-  `"KEY": false` there is allowed, and `tau config check` warns, so a typo shows.
+- `"KEY"` (`true` or `false`) where no source has that key is a warning, in `tau config check`
+  and at every start; it is ignored (8E-6: it stopped the start for `true` before).
 - **`tau ext disable KEY`** and **`tau ext enable KEY`** write `load.KEY` into the user's file
   through a second `UserConfig` write, `save_load(key, on)`, with `save_options`'s
   read/check/atomic-write path. A key that no source has writes nothing. If the project's layer

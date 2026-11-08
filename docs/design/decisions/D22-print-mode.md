@@ -62,8 +62,9 @@ one `Client`, one cursor, no person to ask.
   (§7). `-r` with `-p` is a usage error (D18). `--no-extensions` skips the discovered sources
   (packages, user, project) and leaves every built-in as `load` says, `base_tools` included
   (D19 §5); only `load: {base_tools: false}` turns the tools off.
-- **Per-run options.** `--set EXTENSION.FIELD=VALUE`, repeatable, is the CLI layer of the
-  config (D13) for this run only, parsed as `tau config set` parses it. It replaces 0.15's
+- **Per-run options.** `--set EXTENSION.FIELD=VALUE`, repeatable, is the session-settings layer
+  of the config (D13, 8E-6; `--set load.KEY=true|false` and `TAU_SETTINGS` too) for this run only,
+  parsed as `tau config set` parses it. It replaces 0.15's
   `--max-turns` (`--set step_limit.limit=5`) and `--ext-config`, and is a flag of `-p`, `tau`
   and `tau serve` alike.
 - **No prompts.** `-p` passes no `prompts` to the start: an untrusted project fails with "run

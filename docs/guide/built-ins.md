@@ -57,8 +57,9 @@ set load.retry = true in <*>
 ```
 
 That writes `{"load": {"retry": false}}` into your config file. `--no-extensions` does not turn it
-off; it skips only installed packages and drop-ins. `load` is read from the config files only, so
-no flag turns retry off for a single run (`--set load.retry=false` says so).
+off; it skips only installed packages and drop-ins. To turn it off for one run, use a session
+setting: `tau -p --set load.retry=false "..."`, or `TAU_SETTINGS='{"load": {"retry": false}}'` in
+the environment (see [Session settings](configuration.md#session-settings)).
 
 ## `@file` in a message
 
@@ -399,10 +400,11 @@ The pattern is a shell-style glob over the whole command (for `bash`) or the `pa
 `read`, `write`, `edit`, `grep` and `find`): `*` matches anything, including `/` and line breaks,
 `?` one character, `[ab]` a set, and capitals are not lowercase. A tool an extension gives the model
 takes only its bare name (and a name may hold a colon: `srv:tool`). A rule that names a tool nobody
-provides (`Bash`, `wirte`) stops the start, so a typo cannot silently guard nothing; `/config
-permissions ...` checks the names the same way, and a bad rule is never written, `--save` or not.
-A tool of a built-in extension that is off (`agent`, until you enable `agents`) is known, so a
-`deny` for it is no error.
+provides (`Bash`, `wirte`) is refused when you set it: `/config permissions ...` and `tau config
+set` check the names, and a bad rule is never written, `--save` or not. A file that already holds
+one (an extension that provided the tool was deleted, or you edited the file) only warns at the
+start and in `tau config check`, and the rule matches nothing; `tau config check --clean` removes
+it. A tool of a built-in extension that is off (`agent`, until you enable `agents`) is known.
 
 Paths are matched as the model wrote them and as the file they name: relative to the session's
 directory, with `..`, `//` and symlinks resolved. So `write:/etc/*` also refuses `../../etc/x` and a
@@ -465,8 +467,8 @@ shows the resolved path, so a text for `/proj/*` does not answer `/proj/../etc/x
 rule, with no space: `--answer 'permissions:bash:git push*=yes'`. Like an `allow` pattern it
 never answers a `bash` command that chains or redirects unless the text contains that character;
 other tools' arguments are no shell command, so a `;` in them means nothing. Leave the
-text out (`--answer permissions=yes`) to answer every question. An empty pattern (`bash:`) or an
-unknown tool name stops the start, and `tau config check` names it.
+text out (`--answer permissions=yes`) to answer every question. An empty pattern (`bash:`) stops the
+start, and `tau config check` names it.
 
 ## Sub-agents
 
@@ -512,5 +514,6 @@ Permission rules apply to an agent's calls as to any other. If an agent fails, t
 
 `model` is the model agents run on (default: the one the calling branch is on), and `tools` the
 tools they are offered (default: all but `agent`). A name in `tools` that no loaded extension
-provides stops the start, and `tau config check` reports it. A list typed on a command line is
+provides is refused by `/config` and `tau config set`, and is a warning (a name that matches
+nothing) when a file already holds it. A list typed on a command line is
 split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.

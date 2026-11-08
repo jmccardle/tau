@@ -13,7 +13,7 @@ Severity = Literal["error", "warning"]
 class ConfigProblem:
     """One thing wrong (or suspicious) in the config layers.
 
-    `source` is the file path or `"cli"`; `path` the dotted location inside it
+    `source` is the file path or `"session"`; `path` the dotted location inside it
     (`models.free_tokens.models.gpt-6-sol.modle`); `line` and `column` are set
     for JSON syntax errors. The message never holds an API key.
     """

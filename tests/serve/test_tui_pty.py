@@ -99,3 +99,23 @@ def test_a_theme_picked_in_the_palette_is_kept_for_the_next_tau(served: World) -
     again.wait_for("idle")
     assert b"239;241;245" in again.seen, "the second tau wears latte (its background colour)"
     assert again.quit() == 0
+
+
+def test_the_screen_starts_with_session_settings_and_says_what_the_config_lacks(
+    served: World,
+) -> None:
+    served.user_config({**MOCK, "load": {"deleted": True}})
+    work = served.home / "work"
+    work.mkdir(exist_ok=True)
+    env = {"TAU_SETTINGS": json.dumps({"load": {"retry": False}})}
+    screen = Screen(served, "-m", "m", "--verbose", cwd=work, env=env)
+    screen.wait_for("idle")
+    shown = screen.text()
+    assert "warning: load.deleted: no extension source has the key 'deleted'" in shown
+    assert "tau: extension step_limit" in shown
+    assert "tau: retry (" not in shown
+    assert screen.quit() == 0
+    plain = Screen(served, "-m", "m", "--verbose", cwd=work)
+    plain.wait_for("idle")
+    assert "tau: retry (" in plain.text(), "without the variable, retry is on"
+    assert plain.quit() == 0

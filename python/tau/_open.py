@@ -49,6 +49,12 @@ class Opened:
     socket: Path | None
     me: str
 
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        """What the start's config names that it lacks (`Started.warnings`); none when attached,
+        where the server said them."""
+        return () if self.started is None else self.started.warnings
+
     async def reconnect(self) -> Client:
         """A new client of the server this session is attached to, with the same id: after a
         stream ended in `ConnectionError`. It replaces `client` (the old one is closed). `OSError`

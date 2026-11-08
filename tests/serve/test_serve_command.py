@@ -395,6 +395,28 @@ def test_verbose_reports_the_start_on_stderr_and_set_is_checked(home: World) -> 
     assert "tau: extension step_limit" in report
 
 
+def test_a_server_starts_with_session_settings_and_says_what_the_config_lacks(
+    home: World,
+) -> None:
+    existing(home)
+    home.environ["TAU_SETTINGS"] = json.dumps({"load": {"retry": False}})
+    config = json.loads((home.tau / "config.json").read_text(encoding="utf-8"))
+    home.user_config({**config, "load": {"deleted": True}})
+    server = start_foreground(home, "--json", "--verbose", "--session", OLD)
+    try:
+        assert server.stdout is not None
+        json.loads(server.stdout.readline())
+        server.send_signal(signal.SIGTERM)
+        assert server.wait(timeout=10) == 0
+        assert server.stderr is not None
+        report = server.stderr.read()
+    finally:
+        server.kill()
+    assert "tau: extension step_limit" in report
+    assert "tau: retry (" not in report, "TAU_SETTINGS switched it off for this server"
+    assert "warning: load.deleted: no extension source has the key 'deleted'" in report
+
+
 def start_foreground(world: World, *argv: str) -> subprocess.Popen[str]:
     env = {**world.environ, "PYTHONUNBUFFERED": "1"}
     return subprocess.Popen(
