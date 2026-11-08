@@ -55,7 +55,8 @@ from tau._values import Json
 from tau.commandline import STDIN, Parsed, UnknownCommand, value
 
 _INTERRUPTED = 130
-_SIGPIPE = 141  # 128 + SIGPIPE: the reader of standard output went away
+STOP_NOTICE = 2.0  # seconds a stop takes before it is said why
+SIGPIPE_STATUS = 141  # 128 + SIGPIPE: the reader of standard output went away
 _SHOWN = 60  # characters of a message shown in a `--verbose` line
 
 
@@ -649,15 +650,19 @@ def _leave(process: Process) -> None:
         os._exit(_INTERRUPTED)
 
 
-def _detach(stream: TextIO) -> None:
+def detach(stream: TextIO) -> None:
     """Point a closed pipe's descriptor at /dev/null, so the interpreter's own flush at exit
     does not fail again (the Python documentation's advice). A stream with no descriptor, such
     as an in-memory one, has nothing to redirect."""
     try:
         descriptor = stream.fileno()
-    except OSError:
+    except (OSError, ValueError):
         return
-    os.dup2(os.open(os.devnull, os.O_WRONLY), descriptor)
+    null = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null, descriptor)
+    finally:
+        os.close(null)
 
 
 def print_mode(process: Process, args: object) -> int:
@@ -678,9 +683,19 @@ def print_mode(process: Process, args: object) -> int:
         def again() -> None:
             _leave(process)
 
+        def waiting() -> None:
+            process.stderr.write(
+                "tau: still stopping (a hook is running); Ctrl+C again leaves at once, "
+                "and then the message stays in the session\n"
+            )
+            process.stderr.flush()
+
+        hint: list[asyncio.TimerHandle] = []
+
         def first() -> None:
             loop.remove_signal_handler(signal.SIGINT)
             loop.add_signal_handler(signal.SIGINT, again)
+            hint.append(loop.call_later(STOP_NOTICE, waiting))
             task.cancel()
 
         loop.add_signal_handler(signal.SIGINT, first)
@@ -688,6 +703,8 @@ def print_mode(process: Process, args: object) -> int:
             return await _main(process, args, *message)
         finally:
             loop.remove_signal_handler(signal.SIGINT)
+            for timer in hint:
+                timer.cancel()
 
     with open(os.devnull, "w", encoding="utf-8") as silence:
         shown = process.stderr if getattr(args, "verbose") else silence  # noqa: B009
@@ -695,5 +712,5 @@ def print_mode(process: Process, args: object) -> int:
             try:
                 return asyncio.run(main())
             except _Gone:
-                _detach(process.stdout)
-                return _SIGPIPE
+                detach(process.stdout)
+                return SIGPIPE_STATUS

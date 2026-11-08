@@ -13,6 +13,7 @@ message `-p` sends.
 
 import argparse
 import fnmatch
+import select
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -243,40 +244,81 @@ def session_flags() -> argparse.ArgumentParser:
     return flags
 
 
-STDIN_WAIT = 2.0
-"""Seconds `-p` reads standard input before it says that it is waiting for it."""
+STDIN_WAIT = 3.0
+"""Seconds `-p` waits for standard input to say anything (a byte or the end), when it is not a
+terminal and the line has no `-`."""
+STDIN_NOTICE = 2.0
+"""Seconds a `-` waits in silence before `-p` says what it is waiting for."""
+STDIN_WORD = "-"
+"""The word that means "read standard input, however long it takes" (as `cat -` does)."""
+
+
+def _stdin_speaks(stdin: TextIO) -> bool:
+    """Whether a read of `stdin` would not block at first: a byte or the end is there, within
+    `STDIN_WAIT` seconds. A stream with no descriptor (in memory) always speaks."""
+    try:
+        descriptor = stdin.fileno()
+    except (OSError, ValueError):  # io.UnsupportedOperation is both
+        return True
+    ready, _, _ = select.select([descriptor], [], [], STDIN_WAIT)
+    return bool(ready)
 
 
 def _read_stdin(stdin: TextIO, stderr: TextIO) -> str:
-    """What `stdin` holds, to the end. If nothing has arrived after `STDIN_WAIT` seconds, say on
-    `stderr`, once, that this is what is being waited for, and go on waiting."""
+    """What `stdin` holds, to the end. If nothing has arrived after `STDIN_NOTICE` seconds, say on
+    `stderr`, once, that this is what is being waited for, and go on waiting. `UsageError` if it
+    is not text."""
 
     def say() -> None:
-        stderr.write("tau: reading stdin (use </dev/null for none)\n")
+        stderr.write(
+            "tau: waiting for standard input (end it with Ctrl-D, or EOF; `</dev/null` skips it)\n"
+        )
         stderr.flush()
 
-    timer = threading.Timer(STDIN_WAIT, say)
+    timer = threading.Timer(STDIN_NOTICE, say)
     timer.daemon = True
     timer.start()
     try:
-        first = stdin.read(1)
+        text = stdin.read()
+        text.encode("utf-8")  # the process's stdin keeps undecodable bytes as lone surrogates
+    except UnicodeError as e:
+        raise UsageError("standard input is not UTF-8 text") from e
     finally:
         timer.cancel()
-    return first + stdin.read() if first else ""
+    return text
 
 
 def message_of(words: Sequence[str], stdin: TextIO, stderr: TextIO) -> tuple[str, str]:
-    """The message as `words` joined with single spaces, and what `stdin` holds if it is not a
-    terminal: the message is the first, or, if there are no words, the second. The second is
-    otherwise kept apart, so a command can take it as its own and never as its arguments.
-    `UsageError` if neither has anything."""
-    text = " ".join(words)
+    """The message as `words` joined with single spaces, and what standard input holds: the
+    message is the first, or, if there are no words, the second. The second is otherwise kept
+    apart, so a command can take it as its own and never as its arguments.
+
+    Standard input is read, to its end, when the line has the word `-` (even from a terminal, and
+    however long it takes), or when there are no words and it is not a terminal (the only possible
+    message, so the same wait), or when it is not a terminal and says something (a byte or its
+    end) within `STDIN_WAIT` seconds. A pipe or file that has already sent its data, `/dev/null`,
+    and
+    a closed descriptor are all read at once; one that stays silent (cron, ssh or a CI step that
+    left it open) is said so on `stderr` and `-p` goes on without it. `UsageError` if there is
+    no message."""
+    text = " ".join(w for w in words if w != STDIN_WORD)
     text = text if text.strip() else ""
-    piped = "" if stdin.isatty() else _read_stdin(stdin, stderr)
+    piped = ""
+    # no words: standard input is the only possible message, so it is waited for as `-` does
+    if STDIN_WORD in words or (not text and not stdin.isatty()):
+        piped = _read_stdin(stdin, stderr)
+    elif not stdin.isatty():
+        if _stdin_speaks(stdin):
+            piped = _read_stdin(stdin, stderr)
+        else:
+            stderr.write(
+                f"tau: no standard input within {STDIN_WAIT:g} s: going on without it "
+                f"(the word `{STDIN_WORD}` waits for it)\n"
+            )
     piped = piped if piped.strip() else ""
     if not text and not piped:
         raise UsageError(
             "nothing to send: give the message as arguments, or on standard input "
-            "(`tau -p </dev/null` has none)"
+            f"(a pipe or file; the word `{STDIN_WORD}` waits for it, `</dev/null` has none)"
         )
     return (text, piped) if text else (piped, "")
