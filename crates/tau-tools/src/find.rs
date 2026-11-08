@@ -210,23 +210,22 @@ mod tests {
     }
 
     #[test]
-    fn exclude_leaves_files_out_and_says_so() {
+    fn exclude_leaves_files_and_directories_out_and_says_so() {
         let (tool, dir) = setup(10_000);
-        touch(&dir, &["a.rs", "secret/b.rs", "secret/{x}.rs"]);
+        touch(&dir, &["a.rs", "secret/b.rs", "other/{x}.rs"]);
         let root = dir.path().canonicalize().unwrap();
-        let exclude = json!([format!("{}/secret/*", root.display())]);
+        let exclude = json!([format!("{}/secret/.*", root.display())]);
         let out = call(&tool, &json!({"pattern": "*.rs", "exclude": exclude})).unwrap();
         assert_eq!(
             out,
-            "a.rs\n[2 file(s) left out of this search: they match its `exclude` patterns]"
+            "a.rs\nother/{x}.rs\n[1 path(s) left out of this search: they match its `exclude` patterns]"
         );
-        let braces = json!([format!("{}/secret/{{x}}.rs", root.display())]);
-        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": braces})).unwrap();
-        assert!(
-            out.contains("a.rs\nsecret/b.rs\n") || out.starts_with("a.rs\nsecret/b.rs"),
-            "{out}"
+        let one = json!([format!("{}/other/[{{]x[}}].rs", root.display())]);
+        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": one})).unwrap();
+        assert_eq!(
+            out,
+            "a.rs\nsecret/b.rs\n[1 path(s) left out of this search: they match its `exclude` patterns]"
         );
-        assert!(out.contains("[1 file(s) left out"), "{out}");
     }
 
     #[test]

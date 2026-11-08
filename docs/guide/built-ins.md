@@ -419,12 +419,18 @@ not to the config file's directory. A rule that starts with `/` or a wildcard is
 `files` (and the working directory when it names no path): a `deny` or `ask` fires if any of them
 matches, an `allow` needs all of them to, and an `allow` matches the resolved path only.
 
+An `ask` for a search works the other way: `ask: ["grep:/etc/*"]` asks before any `grep` rooted at
+or inside `/etc`, and before one that holds it (`path=/`), since the search could read there.
+(A pattern that starts with a wildcard has no directory to compare, and asks only for the paths a
+search names.)
+
 `grep` and `find` read everything under their root, so a `deny` for them is applied to what they
 find too. `deny: ["grep:/etc/*"]` refuses a search that is rooted inside `/etc` (`path=/etc/ssh`, or
 a link into it), or that names a file there. A search that only *holds* `/etc` (`path=/etc`, `path=/`,
 no path in a directory that contains it, a link to it) runs, but leaves out every file the pattern
-matches, including a file reached through a link, and ends its answer with a line such as `[2 file(s)
-left out of this search: they match its exclude patterns]`. The model is told because an answer
+matches, including a file reached through a link, and ends its answer with a line such as `[2 path(s)
+left out of this search: they match its exclude patterns]`. A directory that matches is not
+entered, so nothing inside it is read or named in an error. The model is told because an answer
 that silently lacks files reads as "no match", and it would conclude wrongly; the line gives no
 names or contents. A `read` deny with a pattern (`read:/home/me/.ssh/*`) guards what `grep` reads
 in the same way; `find` lists names only, so it follows its own `find` rules. Every search

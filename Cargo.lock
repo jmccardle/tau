@@ -803,6 +803,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "nix",
+ "regex-automata",
  "serde",
  "serde_json",
  "tempfile",

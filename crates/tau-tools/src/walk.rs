@@ -11,9 +11,10 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use globset::{GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobMatcher};
 pub(crate) use ignore::DirEntry as Item; // rules: allow(entry): the `ignore` crate's name
 use ignore::{WalkBuilder, WalkState};
+use regex_automata::meta;
 
 use crate::{Result, ToolError};
 
@@ -63,75 +64,59 @@ impl Glob {
 }
 
 /// Paths a walk leaves out: files whose absolute path, or the real path they resolve to
-/// (symlinks followed), matches one of the patterns. A pattern is `fnmatch`'s: `*` and `?`
-/// match any character including `/`, `[...]` is a set, and nothing else is special.
+/// (symlinks followed), matches one of the patterns, and directories whose path with a `/`
+/// added does (they are not entered). A pattern is a regular expression (Rust syntax) over the
+/// whole path; the caller writes it, so the grammar of the rule it came from is the caller's.
 pub(crate) struct Exclude {
-    set: GlobSet,
+    set: meta::Regex,
     left_out: AtomicUsize,
 }
 
 impl Exclude {
     /// # Errors
-    /// A pattern does not parse (an unclosed `[`).
+    /// A pattern is not a regular expression.
     pub(crate) fn new(patterns: &[String]) -> Result<Self> {
-        let mut set = GlobSetBuilder::new();
-        for pattern in patterns {
-            let glob = GlobBuilder::new(&literal_braces(pattern))
-                .literal_separator(false)
-                .backslash_escape(false)
-                .build()
-                .map_err(|e| ToolError(format!("invalid exclude pattern `{pattern}`: {e}")))?;
-            set.add(glob);
-        }
-        let set = set
-            .build()
-            .map_err(|e| ToolError(format!("invalid exclude patterns: {e}")))?;
+        let whole: Vec<String> = patterns.iter().map(|p| format!(r"\A(?:{p})\z")).collect();
+        let set = meta::Regex::new_many(&whole)
+            .map_err(|e| ToolError(format!("invalid exclude pattern: {e}")))?;
         Ok(Self {
             set,
             left_out: AtomicUsize::new(0),
         })
     }
 
-    /// Whether `path` is left out; counts it if so.
-    fn hides(&self, path: &Path) -> bool {
-        let hidden = self.set.is_match(path)
-            || std::fs::canonicalize(path).is_ok_and(|real| self.set.is_match(real));
+    fn matches(&self, path: &Path) -> bool {
+        self.set.is_match(&*path.to_string_lossy())
+    }
+
+    /// Whether `path` is left out; counts it if so. A directory is tried with a trailing `/`,
+    /// as a pattern for what is inside it (`/x/secret/*`) sees it.
+    fn hides(&self, path: &Path, dir: bool) -> bool {
+        let tried = |p: &Path| {
+            if dir {
+                let mut with = p.as_os_str().to_owned();
+                with.push("/");
+                self.matches(Path::new(&with))
+            } else {
+                self.matches(p)
+            }
+        };
+        let hidden = tried(path) || std::fs::canonicalize(path).is_ok_and(|real| tried(&real));
         if hidden {
             self.left_out.fetch_add(1, Ordering::Relaxed);
         }
         hidden
     }
 
-    /// The note that tells the reader the search left files out, if it did.
+    /// The note that tells the reader the search left paths out, if it did.
     pub(crate) fn note(&self) -> Option<String> {
         match self.left_out.load(Ordering::Relaxed) {
             0 => None,
             n => Some(format!(
-                "[{n} file(s) left out of this search: they match its `exclude` patterns]"
+                "[{n} path(s) left out of this search: they match its `exclude` patterns]"
             )),
         }
     }
-}
-
-/// `pattern` with `{` and `}` made literal: they are alternation in a glob, not in `fnmatch`.
-fn literal_braces(pattern: &str) -> String {
-    let mut out = String::new();
-    let mut in_set = false;
-    for c in pattern.chars() {
-        match c {
-            '[' if !in_set => in_set = true,
-            ']' if in_set => in_set = false,
-            '{' | '}' if !in_set => {
-                out.push('[');
-                out.push(c);
-                out.push(']');
-                continue;
-            }
-            _ => {}
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// Walk the directory `root`, calling the visitor `make` returns (one per walker thread) for
@@ -164,10 +149,17 @@ pub(crate) fn walk<'s, V>(
             match found {
                 Ok(item) if !item.file_type().is_some_and(|t| t.is_dir()) => {
                     if glob.is_none_or(|g| g.allows(root, item.path()))
-                        && !exclude.is_some_and(|x| x.hides(item.path()))
+                        && !exclude.is_some_and(|x| x.hides(item.path(), false))
                     {
                         visit(&item);
                     }
+                }
+                // A directory `exclude` hides is not entered: nothing under it is read, and no
+                // error can name what is in it.
+                Ok(item)
+                    if item.depth() > 0 && exclude.is_some_and(|x| x.hides(item.path(), true)) =>
+                {
+                    return WalkState::Skip;
                 }
                 Ok(_) => {}
                 Err(e) => on_error(e.to_string()),

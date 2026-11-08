@@ -3,6 +3,7 @@ question's `yes | always | no`."""
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import cast
 
@@ -387,8 +388,145 @@ async def test_a_search_whose_root_is_not_denied_runs_without_the_denied_files(
     reply = calls(call("a", tool, pattern="root", path=root))
     h, (fake,) = await start(tmp_path, [reply, say("ok")], {"deny": [rule]}, [FakeTool(tool, "t")])
     (sent,) = fake.calls
-    assert sent["exclude"] == [rule.split(":", 1)[1]]
+    (pattern,) = cast("list[str]", sent["exclude"])
+    denied = "/etc/passwd" if root != "." else f"{here}/secret/key"
+    assert re.fullmatch(pattern, denied, re.DOTALL)
+    assert not re.fullmatch(pattern, f"{here}/open/key", re.DOTALL)
     await h.close()
+
+
+async def search_outputs(
+    root: Path, replies: list[Part.Call], options: dict[str, list[str]], tool: FakeTool
+) -> list[str]:
+    """What the real `tool` answered, call by call, in a session of `options`."""
+    h, _ = await start(root, [calls(*replies), say("ok")], options, [tool])
+    body = next(b for b in reversed(h.bodies()) if isinstance(b, Body.Results))
+    await h.close()
+    return [o.value if isinstance(o, Outcome.Ok) else str(o) for _, o, _ in body.outcomes]
+
+
+def secret_tree(tmp_path: Path) -> Path:
+    real = tmp_path.resolve()
+    (real / "open").mkdir()
+    (real / "secret").mkdir()
+    (real / "open" / "a.txt").write_text("needle\n")
+    (real / "secret" / "b.txt").write_text("needle\n")
+    return real
+
+
+@pytest.mark.parametrize("exclude", [None, [], ["nothing-matches-this"]])
+@scenario
+async def test_a_model_cannot_switch_the_filter_off_with_its_own_exclude(
+    tmp_path: Path, exclude: list[str] | None
+) -> None:
+    """`exclude: null` is no `exclude`; a list the model gives only adds to the deny patterns."""
+    real = secret_tree(tmp_path)
+    call_ = call("a", "grep", pattern="needle", exclude=exclude)
+    (text,) = await search_outputs(
+        real, [call_], {"deny": [f"grep:{real}/secret/*"]}, cast("FakeTool", GrepTool(real))
+    )
+    assert "a.txt" in text
+    assert "b.txt" not in text
+
+
+@pytest.mark.parametrize("args_raw", ['{"pattern": "x", "exclude": "all"}', "not json", "[]"])
+@scenario
+async def test_a_search_whose_arguments_cannot_take_the_deny_patterns_is_refused(
+    tmp_path: Path, args_raw: str
+) -> None:
+    reply = calls(Part.Call("a", "grep", args_raw))
+    h, (fake,) = await start(
+        tmp_path, [reply, say("ok")], {"deny": ["grep:/etc/*"]}, [FakeTool("grep", "g")]
+    )
+    assert fake.calls == []
+    assert "deny rules cannot be applied" in refusal(h)
+    await h.close()
+
+
+@pytest.mark.parametrize("tool", ["grep", "find"])
+@pytest.mark.parametrize("root", ["/etc", "/", "link"])
+@scenario
+async def test_an_ask_on_a_search_still_asks_when_the_root_holds_the_pattern(
+    tmp_path: Path, tool: str, root: str
+) -> None:
+    (tmp_path / "link").symlink_to("/etc")
+    reply = calls(
+        call("a", tool, pattern="x", path=root), call("b", tool, pattern="x", path="/etcetera")
+    )
+    h, (fake,) = await start(
+        tmp_path, [reply, say("ok")], {"ask": [f"{tool}:/etc/*"]}, [FakeTool(tool, "t")]
+    )
+    (question,) = (await h.view()).questions
+    assert f"ask rule: {tool}:/etc/*" in question.text
+    assert [c["path"] for c in fake.calls] == ["/etcetera"]
+    await h.close()
+
+
+@pytest.mark.parametrize(("tool", "pattern"), [("grep", "needle"), ("find", "*")])
+@scenario
+async def test_an_unreadable_denied_directory_is_not_entered_or_named(
+    tmp_path: Path, tool: str, pattern: str
+) -> None:
+    real = secret_tree(tmp_path)
+    (real / "secret" / "private").mkdir()
+    (real / "secret" / "private" / "key").write_text("needle\n")
+    (real / "secret" / "private").chmod(0)
+    try:
+        made = GrepTool(real) if tool == "grep" else FindTool(real)
+        (text,) = await search_outputs(
+            real,
+            [call("a", tool, pattern=pattern)],
+            {"deny": [f"{tool}:{real}/secret/*"]},
+            cast("FakeTool", made),
+        )
+    finally:
+        (real / "secret" / "private").chmod(0o700)
+    assert "a.txt" in text
+    assert "secret" not in text
+    assert "private" not in text
+    assert "could not" not in text
+
+
+@pytest.mark.parametrize(
+    ("rule", "path", "denied"),
+    [
+        ("write:/etc/[^b]ar", "/etc/^ar", True),  # `^` is no negation, as in fnmatch
+        ("write:/etc/[^b]ar", "/etc/xar", False),
+        ("write:/etc/[!b]ar", "/etc/xar", True),
+        ("write:/etc/[ab", "/etc/[ab", True),  # an unclosed `[` is itself
+        ("write:/etc/{a,b}", "/etc/{a,b}", True),
+        ("write:/tmp/../etc/*", "/etc/passwd", True),
+        ("write:/a/b/../c/*", "/a/c/x", True),
+    ],
+)
+@scenario
+async def test_a_rule_pattern_means_what_fnmatch_says(
+    tmp_path: Path, rule: str, path: str, denied: bool
+) -> None:
+    reply = calls(call("a", "write", path=path, content="x"))
+    h, (tool,) = await start(
+        tmp_path, [reply, say("ok")], {"deny": [rule]}, [FakeTool("write", "w")]
+    )
+    assert (tool.calls == []) is denied
+    await h.close()
+
+
+@scenario
+async def test_a_search_excludes_what_an_unclosed_bracket_or_a_caret_rule_names(
+    tmp_path: Path,
+) -> None:
+    """The tool is given the same grammar as the check: a `[` in a rule breaks no search."""
+    real = secret_tree(tmp_path)
+    (real / "open" / "[x").write_text("needle\n")
+    (text,) = await search_outputs(
+        real,
+        [call("a", "grep", pattern="needle")],
+        {"deny": [f"grep:{real}/open/[x", f"grep:{real}/secret/[!q]*"]},
+        cast("FakeTool", GrepTool(real)),
+    )
+    assert "a.txt" in text
+    assert "[x" not in text
+    assert "b.txt" not in text
 
 
 @scenario
@@ -404,7 +542,8 @@ async def test_a_read_deny_also_guards_what_grep_would_read(tmp_path: Path) -> N
         {"deny": ["read:/etc/*", "read"]},
         [FakeTool("grep", "g"), FakeTool("find", "f")],
     )
-    assert [c.get("exclude") for c in fake.calls] == [["/etc/*"]]
+    ((pattern,),) = [cast("list[str]", c["exclude"]) for c in fake.calls]
+    assert re.fullmatch(pattern, "/etc/shadow", re.DOTALL)
     assert find.calls == [{"pattern": "x", "path": "/"}]  # names, not content: read does not cover
     await h.close()
 
@@ -501,7 +640,11 @@ async def test_a_tool_name_may_hold_a_colon_and_only_the_pattern_tools_split_at_
 
 @pytest.mark.parametrize(
     ("rule", "problem"),
-    [("bash:", "empty pattern"), ("", "names no tool")],
+    [
+        ("bash:", "empty pattern"),
+        ("", "names no tool"),
+        ("read:[z-a]", "rule 'read:[z-a]' has an invalid pattern"),
+    ],
 )
 @scenario
 async def test_a_bad_rule_refuses_the_call_rather_than_letting_it_run(

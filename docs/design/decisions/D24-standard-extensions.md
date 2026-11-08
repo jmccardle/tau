@@ -803,7 +803,15 @@ under any root can lead to a denied file. The
 tool (not the extension) then leaves out every walked file whose absolute path, or whose real path
 after symlinks, matches (`walk.rs`, `Exclude`), before it reads it: nothing denied reaches the
 output or the overflow file. `exclude` is not in the tools' schema; it is the hook's channel, and
-a model that sends its own only narrows its search. The answer ends `[N file(s) left out of this
+a model that sends its own only narrows its search (`null` is none, and a value `pre_tool` cannot
+merge into, or arguments that are not an object, refuse the call: a deny that could not be applied
+never lets the search run). The patterns are regular expressions that `glob_regex` makes from the
+rule's glob (`fnmatch`'s grammar, written once, so the check and the tool agree; `[^b]` is a set of
+`^` and `b`, an unclosed `[` is itself; the directories before the first wildcard are normalised,
+`/tmp/../etc/*` is `/etc/*`); an invalid one (`[z-a]`) is an option error naming the rule. A
+directory that matches (with a `/` added) is not entered, so no error names what is inside. An
+`ask` rule also fires when the root could hold the pattern (the root and the glob's literal start
+are prefixes of one another), as before 8E-6. The answer ends `[N path(s) left out of this
 search: ...]`, a count with no names: silence would read as "no match" and mislead the model. So
 `deny: ["grep:/etc/*"]` refuses `path=/etc/ssh` and runs `path=/etc` and `path=/` without `/etc`'s
 files. A `read` deny with a glob guards `grep` this way too (`grep` reads; `find` only names).

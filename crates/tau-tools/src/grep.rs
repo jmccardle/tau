@@ -486,21 +486,21 @@ mod tests {
         fs::write(root.join("keep/a.txt"), "needle\n").unwrap();
         fs::write(root.join("secret/b.txt"), "needle\n").unwrap();
         std::os::unix::fs::symlink(root.join("secret/b.txt"), root.join("keep/link.txt")).unwrap();
-        let exclude = json!([format!("{}/secret/*", root.display())]);
+        let exclude = json!([format!("{}/secret/.*", root.display())]);
         let out = call(&tool, &json!({"pattern": "needle", "exclude": exclude})).unwrap();
         assert!(out.starts_with("keep/a.txt:1:needle\n"), "{out}");
         assert!(
             !out.contains("b.txt:") && !out.contains("link.txt:"),
             "{out}"
         );
-        assert!(out.contains("[2 file(s) left out of this search"), "{out}");
+        assert!(out.contains("[2 path(s) left out of this search"), "{out}");
     }
 
     #[test]
     fn exclude_with_a_bad_pattern_is_an_error() {
         let (tool, dir) = setup(10_000);
         fs::write(dir.path().join("a"), "x").unwrap();
-        let e = call(&tool, &json!({"pattern": "x", "exclude": ["[a"]})).unwrap_err();
+        let e = call(&tool, &json!({"pattern": "x", "exclude": ["(a"]})).unwrap_err();
         assert!(e.0.contains("invalid exclude pattern"), "{e:?}");
     }
 

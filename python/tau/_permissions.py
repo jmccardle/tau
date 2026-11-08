@@ -34,6 +34,7 @@ outcome (model.md section 7).
 """
 
 import fnmatch
+import functools
 import json
 import os
 import re
@@ -145,6 +146,11 @@ class Rule:
             return cls(text)  # a tool's whole name, which may hold a colon
         if not glob:
             raise ValueError(f"rule {text!r} has an empty pattern after the colon")
+        if tool != BASH:
+            try:
+                _compiled(glob)
+            except re.error as e:
+                raise ValueError(f"rule {text!r} has an invalid pattern: {e}") from e
         return cls(tool, glob)
 
     @classmethod
@@ -171,11 +177,12 @@ class Rule:
             return call.subject is not None and match(self.glob, call.subject)
         absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
-            return bool(call.resolved) and all(
-                fnmatch.fnmatchcase(r, absolute) for r in call.resolved
-            )
+            return bool(call.resolved) and all(_fits(r, absolute) for r in call.resolved)
         seen = (*call.written, *call.resolved)
-        return any(fnmatch.fnmatchcase(path, g) for path in seen for g in {self.glob, absolute})
+        if any(_fits(path, g) for path in seen for g in {self.glob, absolute}):
+            return True
+        # An `ask` also fires on a search whose root could hold what the glob matches.
+        return mode == "ask" and call.tool in SEARCH_TOOLS and _searches_under(call, absolute)
 
     def guards(self, call: Call, mode: Mode) -> bool:
         """Whether a `read` deny with a glob also covers this `grep`: grep reads the files."""
@@ -192,16 +199,100 @@ class Rule:
             return None
         if call.tool != self.tool and not self.guards(call, "deny"):
             return None
-        return _absolute(self.glob, call.cwd)
+        return glob_regex(_absolute(self.glob, call.cwd))
+
+
+_CLASS_ESCAPES = frozenset("\\[]^&~")
+_LITERAL_ESCAPES = frozenset("\\.+*?()|[]{}^$#&-~")
+
+
+def glob_regex(glob: str) -> str:
+    """The regular expression a rule's glob means, for Python's `re` and Rust's `regex` alike
+    (the `exclude` a search is given is these): `*` is any run of characters, `?` one, `[abc]` and
+    `[!abc]` a set, an unclosed `[` itself, and everything else, `{`, `^` and `\\` included, is
+    literal. It is `fnmatch`'s grammar, written once so that the deny check and the tool agree."""
+    out: list[str] = []
+    i, n = 0, len(glob)
+    while i < n:
+        c = glob[i]
+        i += 1
+        if c == "*":
+            if not out or out[-1] != ".*":
+                out.append(".*")
+        elif c == "?":
+            out.append(".")
+        elif c == "[":
+            made, i = _char_set(glob, i)
+            out.append(made)
+        else:
+            out.append("\\" + c if c in _LITERAL_ESCAPES else c)
+    return "".join(out)
+
+
+def _char_set(glob: str, i: int) -> tuple[str, int]:
+    """The regular expression for the set whose `[` is just before `glob[i]`, and where the
+    glob goes on; an unclosed `[` is the character itself."""
+    n = len(glob)
+    j = i + 1 if glob[i : i + 1] == "!" else i
+    j = j + 1 if glob[j : j + 1] == "]" else j
+    while j < n and glob[j] != "]":
+        j += 1
+    if j >= n:
+        return "\\[", i
+    members = glob[i:j]
+    negated = members.startswith("!")
+    members = members[1:] if negated else members
+    body = "".join("\\" + m if m in _CLASS_ESCAPES else m for m in members)
+    return f"[{'^' if negated else ''}{body}]", j + 1
+
+
+@functools.cache
+def _compiled(glob: str) -> re.Pattern[str]:
+    """`glob` as a pattern; `re.error` if it is not one (a backwards range, `[z-a]`)."""
+    return re.compile(f"(?s:{glob_regex(glob)})")
+
+
+def _fits(path: str, glob: str) -> bool:
+    return _compiled(glob).fullmatch(path) is not None
 
 
 def _absolute(glob: str, cwd: str) -> str:
     """`glob` as a rule over real absolute paths: one that starts with a literal relative
     component (`src/*`, `./src/*`, `../x/*`) starts in `cwd`, as the tool's own paths do. A glob
-    that starts with `/` or a wildcard is left as it is."""
-    if glob[0] in "/*?[":
+    that starts with a wildcard is left as it is. The directories before the first wildcard are
+    normalised (`/tmp/../etc/*` is `/etc/*`), as the paths a rule is matched against are."""
+    if glob[0] in "*?[":
         return glob
-    return os.path.normpath(os.path.join(cwd, glob))
+    full = glob if glob[0] == "/" else os.path.join(cwd, glob)
+    cut = _first_wildcard(full)
+    head, tail = full[:cut], full[cut:]
+    if not tail:
+        return os.path.normpath(full)
+    directory = head[: head.rfind("/") + 1]
+    name = head[len(directory) :]
+    return os.path.normpath(directory).rstrip("/") + "/" + name + tail
+
+
+def _first_wildcard(glob: str) -> int:
+    found = _GLOB_CHARS.search(glob)
+    return len(glob) if found is None else found.start()
+
+
+def _searches_under(call: Call, glob: str) -> bool:
+    """Whether a search's root could hold a path `glob` matches: the root is inside the glob's
+    literal start (the root `/etc` for `/etc/*`, or a link that lands there) or holds it (the root
+    `/` for `/etc/*`). A glob that starts with a wildcard has no literal start to compare."""
+    literal = _GLOB_CHARS.split(glob, maxsplit=1)[0]
+    if not literal:
+        return False
+    for root in (
+        *call.resolved,
+        *(os.path.normpath(os.path.join(call.cwd, w)) for w in call.written),
+    ):
+        inside = root.rstrip("/") + "/"
+        if inside.startswith(literal) or literal.startswith(inside):
+            return True
+    return False
 
 
 def answers(glob: str, text: str) -> bool:
@@ -224,18 +315,22 @@ def answers(glob: str, text: str) -> bool:
     return fnmatch.fnmatchcase(call, glob)
 
 
-def _leave_out(call: CallDraft, patterns: list[str]) -> None:
-    """Give a search the `exclude` patterns it must honor, beside any it has. A call whose
-    arguments are not an object, or whose `exclude` is not a list, is left for the tool to
-    refuse."""
+def _leave_out(call: CallDraft, patterns: list[str]) -> str | None:
+    """Give a search the `exclude` patterns it must honor, beside any it has (a model's own only
+    narrows). `None` is no `exclude` set (`null` is none). A call whose arguments cannot take
+    them is refused, with the reason: a deny that could not be applied must not let it run."""
     if not patterns:
-        return
+        return None
     args = _arguments(call.args_raw)
-    given = args.get("exclude", [])
-    if not args or not isinstance(given, list):
-        return
-    args["exclude"] = [*cast("list[object]", given), *patterns]
+    given = args.get("exclude")
+    if not args or not (given is None or isinstance(given, list)):
+        return (
+            "permissions refused this call: its arguments are not an object with a list "
+            "`exclude` (or none), so the deny rules cannot be applied to the search"
+        )
+    args["exclude"] = [*cast("list[object]", given or []), *patterns]
     call.args_raw = json.dumps(args)
+    return None
 
 
 def _builtin_tools() -> set[str]:
@@ -307,7 +402,9 @@ class Permissions:
         denied = options.first("deny", seen)
         if denied is not None:
             return f"permissions refused this call: it matches the deny rule {str(denied)!r}"
-        _leave_out(call, options.exclusions(seen))
+        unfiltered = _leave_out(call, options.exclusions(seen))
+        if unfiltered is not None:
+            return unfiltered
         if options.first("allow", seen, self._approved) is not None:
             return None
         asked = options.first("ask", seen)
