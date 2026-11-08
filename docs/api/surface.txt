@@ -541,6 +541,7 @@ class Opened
     snapshot: tuple[Event, ...]
     socket: Path | None
     started: Started | None
+    property warnings: tuple[str, ...]
     welcome: Welcome | None
 PickSession = Callable[[Sequence[SessionInfo], Sequence[SessionInfo]], SessionInfo]
 @dataclass(frozen=True)
@@ -582,6 +583,7 @@ class Started
     session: Session
     sources: tuple[ExtensionSource, ...]
     async def stop(self) -> None
+    warnings: tuple[str, ...]
 SystemText = Callable[[Path, LoadedConfig], str]
 class UnknownSession(LookupError)
 # tau.cli
@@ -977,6 +979,7 @@ class LoadedConfig
 class ModelCatalog
     default_model: str | None
     def explain(self, qualified: str) -> tuple[Origin, ...]
+    extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     def find(self, name: str) -> tuple[str, ...]
     load: Mapping[str, bool] = field(default_factory=lambda: {})

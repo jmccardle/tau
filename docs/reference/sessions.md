@@ -40,6 +40,15 @@ session (`None` when attached: the server owns it). Attached, `socket` is the ad
 server's record and `me` the client id, so `reconnect` can dial again; `client` is always the
 client to use now.
 
+### Opened.warnings
+
+```python
+property warnings: tuple[str, ...]
+```
+
+What the start's config names that it lacks (`Started.warnings`); none when attached,
+where the server said them.
+
 ### Opened.reconnect
 
 ```python
@@ -148,6 +157,7 @@ class Started
     directory: Path | None
     created: bool
     sources: tuple[ExtensionSource, ...]
+    warnings: tuple[str, ...]
     prompt: SystemPrompt | None
 ```
 
@@ -156,9 +166,10 @@ closes through `stop`, the `loaded` config and the `model` (selected for a new s
 the one recorded at the first cursor), the session's working directory `cwd` (the process is
 in it), the session's `directory` (`None`: in memory) and whether this run `created` it (a new
 session or a fork). `sources` are the extension sources the start planned, one per row of
-`tau ext list`, and `prompt` the parts of the system prompt it assembled (`None`: the session
-already had one, or the program supplied the text). A session named during the run counts as
-used.
+`tau ext list`, `warnings` what the config names that this start lacks (one line each;
+frontends print them), and `prompt` the parts of the system prompt it assembled (`None`:
+the session already had one, or the program supplied the text). A session named during the
+run counts as used.
 
 ### Started.never_used
 
@@ -223,6 +234,12 @@ def main(
 
 Run `tau` with `argv` (default `sys.argv[1:]`); the other arguments default to
 the process's streams, environment, and working directory. Returns the exit status.
+
+The process's streams may be missing or go away, as any Unix program's may. A closed standard
+input (`<&-`) reads as empty; a closed standard error says nothing; a closed standard output
+is an error (status 1, said on standard error); and a standard output whose reader has gone
+(`tau -p ... | head -1`) ends the run quietly with status 141, 128 plus SIGPIPE, as a program
+killed by that signal would.
 
 ## tau.cli.option_flags
 

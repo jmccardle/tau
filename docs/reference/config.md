@@ -40,7 +40,7 @@ class ConfigProblem
 
 One thing wrong (or suspicious) in the config layers.
 
-`source` is the file path or `"cli"`; `path` the dotted location inside it
+`source` is the file path or `"session"`; `path` the dotted location inside it
 (`models.free_tokens.models.gpt-6-sol.modle`); `line` and `column` are set
 for JSON syntax errors. The message never holds an API key.
 
@@ -146,6 +146,7 @@ class ModelCatalog
     default_model: str | None
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
+    extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -158,6 +159,8 @@ Every model the merged layers define, plus `default_model`, any warnings, and th
 D16 section 4). Which options an extension has is its own to say (`check_config`).
 `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
 `load_sources` the layer (file path) that set each key: what the extension loader reads.
+`extension_sources` the layer that set each extension's options (`NAME`) and each option
+(`NAME.FIELD`), for the problems found in them.
 `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
 `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
 that set it (`CLI` for `--system-prompt`). `tui` is the merged `tui`
@@ -247,7 +250,7 @@ class Origin
     group: str | None
 ```
 
-Where one resolved value came from: the layer (file path or `"cli"`) and
+Where one resolved value came from: the layer (file path or `"session"`) and
 the qualified name of the group that set it (`None`: the model itself).
 
 ## Pick
