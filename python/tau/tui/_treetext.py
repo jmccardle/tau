@@ -7,7 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau._core import Body, Node, Outcome, Part
+from tau._counts import Count
 from tau._events import CursorView
+from tau._usage import show
 from tau.tui._transcript import author_name, config_line
 from tau.tui._treeplan import TreeRow
 
@@ -102,22 +104,22 @@ def provenance_mark(node: Node) -> str:
     return ""
 
 
-def provenance_text(node: Node, sizes: Callable[[int], tuple[int, int]]) -> str:
+def provenance_text(node: Node, sizes: Callable[[int], tuple[int, Count]]) -> str:
     """The detail pane's lines on where `node` came from, with the walk to the source (before)
-    and the walk to `node` (after) in nodes and about tokens; `""` for a node that came from
-    none. `sizes(id)` is a walk's length and tokens."""
+    and the walk to `node` (after) in nodes and tokens (`tau._usage.show`); `""` for a node that
+    came from none. `sizes(id)` is a walk's length and its count."""
     for what, source in (("derived from", node.derived_from), ("copied from", node.copied_from)):
         if source is not None:
             before, after = sizes(source), sizes(node.id)
             return (
                 f"{what} node {source}\n"
-                f"walk before: {plural(before[0], 'node')}, about {before[1]:,} tokens\n"
-                f"walk after: {plural(after[0], 'node')}, about {after[1]:,} tokens\n\n"
+                f"walk before: {plural(before[0], 'node')}, {show(before[1])} tokens\n"
+                f"walk after: {plural(after[0], 'node')}, {show(after[1])} tokens\n\n"
             )
     return ""
 
 
-def detail_text(row: TreeRow, sizes: Callable[[int], tuple[int, int]] | None = None) -> str:
+def detail_text(row: TreeRow, sizes: Callable[[int], tuple[int, Count]] | None = None) -> str:
     """What the detail pane shows of `row`: a node whole, or what a stub holds and how it begins.
     With `sizes` a node that is a copy or derived says from what, and how the walk changed."""
     if row.kind != "stub":

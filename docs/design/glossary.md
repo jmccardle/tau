@@ -167,7 +167,7 @@ item some node delivers.
 
 Two optional node ids on a `Node`. **`copied_from`**: the node this one repeats verbatim (a
 compaction or prune copy). **`derived_from`**: the node whose walk this one's content was computed
-from (a compaction summary derives from the last node it replaced; a pruned reply or a user
+from (a compaction summary derives from the summarizer's reply that it wraps; a pruned reply or a user
 message carrying a pruned transcript from the one it replaces). Written once (I2), and a source
 must be a node (`NoSuchNode`; nothing is written). A record without them loads as none, so a log
 from before they existed loads. Python: `TreeHandle.append(..., copied_from=, derived_from=)` and
@@ -848,7 +848,9 @@ now, never stored, and a reply is priced by `model(at=its node)`. Every reply in
 (summaries and sub-agents too), except a copy or a reply rewritten from another: `counted` is the
 one rule (`copied_from` and `derived_from` both unset). The **cache notice** is a `tell` to every client, once per
 model, after a reply with `cached` reported as 0 and at least 4,096 input tokens that follows a
-reply of the same model by under 300 seconds.
+reply of the same model by under 300 seconds. `/usage` ends with one line on how counts are made before
+a request is sent (D26): `counts: reported only, with byte ceilings for what is not sent yet`, or
+`counts: reported, and by the NAME extension for what is not sent yet` when a counter is loaded.
 
 ### Reading
 `tau._usage.Reading` (private) · D24 section 3 · new (8E-2)
@@ -1288,17 +1290,77 @@ be `false` (automatic pruning is not built).
 The built-in extension that summarizes a long branch. It has two limits: the **soft limit** (80%
 of the hard one) compacts when a turn ends (`post_step`, a reply with no tool call), the **hard
 limit** (`context_window - reserve`) interrupts a turn before a sample (`pre_sample`); `/compact`
-does it now. The **cut** is where the newest `keep` tokens begin, moved back to a `User` or `Assistant`
-node so a `Results` node stays with its batch; the **tail** is from there on and the **head** is
-what is between the prefix and the cut. The summary is written by a **summarizer cursor**, labelled
-`compaction:N`: opened at the branch's node, sent the summary prompt (and the focus), waited for
-with `rest`, and closed. It is offered the branch's tools but refused any call, and compaction's
-own `pre_sample` skips it. The new line is the head's `Config` copies, the summary as a `User`
-node by `Extension("compaction")` with `derived_from` the last head node, then a copy of every
-tail node. The **estimate** is the newest uncopied reply's reported input plus output plus the
-characters after it over four, or all characters. A summarizer that fails, is halted, replies
-without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing.
-The trigger never reacts to a provider's "prompt too long"; `/compact`, then a step, recovers.
+does it now; `auto` switches off both limits' automatic compaction. The **cut** is where the tail
+begins: the earliest `User` or `Assistant` node outside a lump whose nodes cost at most `keep`
+tokens, or the newest turn alone if that costs more; the **tail** is from there on and the **head**
+is what is between the prefix and the cut. The **summary allowance** is the room a line leaves for
+the summary, `min(reserve / 2, 8192)`; a `reserve` under 2 tokens is a `ConfigError`. Before a
+summarizer is opened, the prefix and the request's overhead (the `base`), the tail and the
+allowance must fit under the limit that called; after the summary, the tail is cut again to what
+fits beside it, and a summary no shorter than what it replaces is not written. The summary is
+written by a **summarizer cursor**, labelled `compaction:N`: opened at the branch's node, sent the
+summary prompt (and the focus), waited for with `rest`, and closed. It is offered the branch's
+tools but refused any call, and compaction's own `pre_sample` skips it. The new line is the head's
+`Config` copies, the summary as a `User` node by `Extension("compaction")` with `derived_from` the
+summarizer's reply (whose reported `output` is the summary's count), a copy of the user message the turn in progress began with if the head held
+it, then a copy of every tail node. Every figure is a **count** (below): the bill's own where a
+report covers it, a **ceiling** where none does. A summarizer that fails, is halted, replies
+without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing;
+stopping or closing `compaction:N` fails the hard limit's step. The trigger never reacts to a
+provider's "prompt too long"; `/compact`, then a step, recovers.
+
+### Count, Basis, ceiling
+`tau.Count` (`tokens`, `basis`, `bound`; `upper` is their sum), `tau.Basis` (`reported`,
+`rendered`, `calibrated`, `heuristic`, `ceiling`) (`_counts.py`) · D26 sections 1 and 4 · new (8E-6)
+
+A number of tokens and what it rests on. **reported** is a server's bill, or the difference of two
+bills whose shared prefix is proved. **rendered**, **calibrated** and **heuristic** belong to a
+counter extension (D26 T2 and later); nothing makes them yet. A **ceiling** is no estimate: the
+count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning, replay data, call
+ids, names and arguments, outcomes) plus 16 tokens for the node (`CEILING_PER_NODE`). Counts add:
+tokens and bounds add, and the sum is as weak as its weakest part, so a reported bill plus the
+ceiling of a new message is a ceiling count with the bill as its `tokens`. A count is shown by
+`tau._usage.show`: the tokens for a reported one, `~` for a heuristic one, `≤` and the `upper` for
+a ceiling. Nothing in τ estimates tokens from characters.
+
+### RequestCount, base, lump
+`tau.RequestCount` (`total`, `base`, `base_nodes`, `nodes`, `why`) (`_counts.py`) · D26 section 4 · new (8E-6)
+
+What the walk to a node will cost as a request. `total` is the whole: the newest report's `input`
+and its reply's `output` plus the ceilings of what came after, or the ceilings of the whole walk
+while no reply has reported (and the ceiling of the tool definitions). The **base** is the prefix
+and the request's overhead (tool definitions, hidden prompts, per-message overhead), counted as
+one: the first report's `input` less the `base_nodes` nodes of the body before that reply (the
+first message; a compacted line's summary and copies), a whole lump at its cost and any other
+node at the lowest its bytes allow (a base made so has the basis `heuristic`). With no report it
+is the ceiling of the tool definitions.
+`nodes` has a count for every node that is sent, by id, except those inside a **lump**: where a
+second request proves that the first is its prefix, the nodes between the two replies cost the
+difference of the two `input`s, held by the first of them, and the others have no count of their
+own, so a cut never lands inside one. The newest reply's count is its `output`.
+
+### Cursor.count, meter
+`TreeHandle.count(at=None)`, `tau._meter.Meter`, `Counts` · D26 section 4 · new (8E-6)
+
+`await cursor.count()` is the `RequestCount` of the walk to `at` (default: the cursor's node, a
+batch's node for a tool hook; a plain tree handle must say). The **meter** is what core answers
+with no counter: it reads the reports in the walk and nothing else. A **span** is proved when the
+second request reports `cached` equal to the first's `input` with no other reply between them
+(Anthropic caches the whole of every request); a copy that holds a whole lump takes its original's
+count from the original's walk. Counts are kept by node, since nodes never change.
+
+### counter, Counter, CountJob, CounterAnswer, TreeHandle.counter
+`tau.Counter`, `tau.CountJob`, `tau.CounterAnswer` (`_counts.py`); an extension's `counter`
+attribute; `TreeHandle.counter` · D26 section 4 · new (8E-6)
+
+An extension may offer a **counter**, as it offers `tools`: an object with
+`count(job: CountJob) -> CounterAnswer`, synchronous and without network IO (the driver runs it in a
+thread). The job holds the walk, the model, the tools, the base, the nodes a report already counts
+(`known`) and the ones it does not (`unreported`); the answer gives a count for some of those and
+a `why`. Core keeps every report: an answer for any other node is a `DefinitionError` naming the
+extension. At most one loaded extension may offer one: two in one source are a `DefinitionError`,
+and two sources are an `ExtensionLoadError` naming both. `TreeHandle.counter` is the key of the
+extension that offers it, or `None`. Nothing offers one yet; the `tokens` built-in is D26 T3.
 
 ### Permissions (extension), rule
 `tau.Permissions` (`_permissions.py`), key `permissions`, options `ask`, `allow`, `deny` · D24 section 7 · new (8E-4)

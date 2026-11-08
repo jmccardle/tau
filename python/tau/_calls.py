@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager, contextmanager
 from tau import trace
 from tau._commands import Commands
 from tau._config_layers import ModelCatalog
-from tau._core import Author, Busy, ItemData, Node, NoSuchItem, Session
+from tau._core import Author, Busy, CursorClosed, ItemData, Node, NoSuchItem, Session
 from tau._events import LiveDelta
 from tau._handles import reopened
 from tau._hub import Feed, Hub
@@ -132,7 +132,10 @@ class Calls:
         (the abort refuses it)."""
         while True:
             self.abort(cursor)
-            await self._rest(cursor)
+            try:
+                await self._rest(cursor)
+            except CursorClosed:  # another closer got there first: it is closed, as asked
+                return
             try:
                 with self._changing():
                     self.session.close_cursor(cursor)

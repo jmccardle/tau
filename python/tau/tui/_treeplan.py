@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from tau._core import Body, Node, Part
-from tau._lines import characters
+from tau._counts import Count
+from tau._meter import Meter
 
 RowKind = Literal["node", "turn", "stub"]
 Key = tuple[RowKind, int]
@@ -30,34 +31,28 @@ Key = tuple[RowKind, int]
 _Cover = dict[int, int]  # node id -> index of the row of a level that shows it
 
 
-def estimated_chars(node: Node) -> int:
-    """The characters of a node the model reads (D24's estimate, `tau._lines.characters`: the
-    same number compaction counts)."""
-    return characters(node.body)
-
-
 class WalkLength:
-    """The length of the walk to any node, in nodes and approximate tokens (the characters the
-    model would read, divided by 4). Nodes never change, so what is counted is kept: `extend`
-    with the nodes that arrived, then ask."""
+    """The length of the walk to any node, in nodes and tokens: what the reports in it say, and
+    the ceiling of what none covers (`tau._meter`). Nodes never change, so what is counted is
+    kept: `extend` with the nodes that arrived, then ask."""
 
     def __init__(self) -> None:
-        self._nodes: list[int] = []
-        self._chars: list[int] = []
+        self._nodes: list[Node] = []
+        self._meter = Meter(self._read)
+        self._lengths: list[int] = []
+
+    def _read(self, node_id: int) -> Node:
+        return self._nodes[node_id]
 
     def extend(self, nodes: Sequence[Node]) -> None:
-        """Count the nodes in `nodes` not counted yet (ids are dense, a parent first)."""
+        """Take the nodes in `nodes` not taken yet (ids are dense, a parent first)."""
         for node in nodes[len(self._nodes) :]:
-            if node.parent is None:
-                self._nodes.append(1)
-                self._chars.append(estimated_chars(node))
-            else:
-                self._nodes.append(self._nodes[node.parent] + 1)
-                self._chars.append(self._chars[node.parent] + estimated_chars(node))
+            self._nodes.append(node)
+            self._lengths.append(1 if node.parent is None else self._lengths[node.parent] + 1)
 
-    def of(self, node_id: int) -> tuple[int, int]:
-        """The walk to `node_id`: its length in nodes and its tokens."""
-        return self._nodes[node_id], self._chars[node_id] // 4
+    def of(self, node_id: int) -> tuple[int, Count]:
+        """The walk to `node_id`: its length in nodes and its count."""
+        return self._lengths[node_id], self._meter.measure(node_id).request.total
 
 
 @dataclass(frozen=True)

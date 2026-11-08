@@ -62,36 +62,42 @@ automatic trigger off (0.15's `/autocompact`).
 
 | option | default | meaning |
 |---|---|---|
-| `auto` | `true` | compact before a sample that would not fit |
+| `auto` | `true` | compact by itself, at the soft limit and at the hard one; `false` leaves both to `/compact` |
 | `reserve` | 16384, or a quarter of the window if less | tokens kept free for the reply and for the summary itself |
-| `hard` | window − `reserve` | estimate above which a turn is interrupted and compacted (Ruling 14) |
-| `soft` | 80% of `hard` | estimate above which the end of a turn compacts (Ruling 14) |
-| `keep` | unset (20000, or half the soft limit if less) | tokens of the newest nodes copied verbatim |
+| `hard` | window − `reserve` | count above which a turn is interrupted and compacted (Ruling 14) |
+| `soft` | 80% of `hard` | count above which the end of a turn compacts (Ruling 14) |
+| `keep` | unset (20000, or half the soft limit if less) | the most tokens of the newest nodes copied verbatim |
 | `model` | none | the model that writes the summary; none means the branch's own |
 
 **Trigger** (two limits, Ruling 14). The **hard limit** is a `pre_sample` hook: if `auto` is on,
-the model has a `context_window` and the estimate of `walk(at)` is above `hard` (default
+the model has a `context_window` and the count of `walk(at)` is above `hard` (default
 `context_window − reserve`), it compacts, interrupting the turn, then the sample runs on the new
 line. The **soft limit** is a `post_step` hook: when a step ends `Done` with the cursor on a reply
-that asks for no tool (the end of the agent's turn), it compacts if the estimate is above `soft`
+that asks for no tool (the end of the agent's turn), it compacts if the count is above `soft`
 (default 80% of `hard`). The turn before that runs uninterrupted, so the summary is built from a
 walk ending in the assistant's reply, and the next user message starts on the compacted line. A
 model with no `context_window` gets no automatic compaction on either limit, and the cursor shows
-`compaction: local:qwen has no context_window` so the user knows why. `/compact` still works.
+`local:qwen has no context_window` so the user knows why. `/compact` still works.
 `soft` above `hard` is a `ConfigError`.
 
-**Estimate.** The newest reply on the walk that has `meta.usage` and is not a copy gives an exact
-count: its `input + output`. Each message node after it adds its characters divided by 4 (text,
-thinking, call arguments, outcomes). With no such reply, the whole walk is counted by characters.
-This is an estimate by design, never treated as exact. 0.15's calibrated per-class counter is
-dropped.
+**Counts** (amended by D26, stage 8E-6; the first draft counted characters over four). Every figure
+here is a `Count` (`tau.Count`, D26 §1) from `Cursor.count`: the newest reply that reported its usage
+and is not a copy gives the request's own bill, `input + output`; a span between two reports that
+the server proves is a prefix of the next (`cached` equal to the previous `input`) gives its nodes'
+cost; what no report covers is a **ceiling**, a node's UTF-8 bytes plus 16 tokens. Nothing is
+estimated from characters, and the compaction works with no counting extension installed. 0.15's
+calibrated per-class counter stays dropped; D26 adds an optional one (T2 and later).
 
 **Algorithm** (D3's shape, now specified):
 
-1. **Cut.** Walk back from `at`, adding each node's estimate, until `keep` is reached. The tail
-   starts at the nearest `User` or `Assistant` node at or before that point; a `Results` node
-   always stays with its batch. The head is everything between the prefix and the tail. An
-   empty head means `nothing to compact yet`; the sample then runs as it is, and may fail.
+1. **Cut** (amended by D26). The tail is the longest suffix that starts at a `User` or
+   `Assistant` node outside a proved span and costs at most `keep` tokens by the nodes' upper
+   counts, or the newest turn alone if that costs more; a `Results` node always stays with its
+   batch. The head is everything between the prefix and the tail. An empty head, or a head of
+   nothing but an earlier summary, means `nothing to compact yet`; the sample then runs as it is,
+   and may fail. Before a summarizer is opened the line must have room: the prefix and the
+   request's overhead, the tail and the summary allowance, `min(reserve / 2, 8192)`, under the
+   limit that called. After the summary, the tail is cut again to what fits beside it.
 2. **Summary.** The extension opens a **summarizer cursor** at `at`, labelled `compaction:N`
    (with a `Config` naming `model` under `at` first, if `model` is set), `send`s it the summary
    prompt and the focus text, and `await rest`s. The summary is the text of its reply. The
@@ -108,7 +114,8 @@ dropped.
    without prune knowing compaction's labels.
 3. **New line.** Under the prefix's last node: copies of the head's `Config` nodes, so the model
    and options at the cut stay the same; then the summary as a `User` node by
-   `Extension("compaction")` with `derived_from` = the last head node; then a copy of every tail
+   `Extension("compaction")` with `derived_from` = the summarizer's reply (8E-6; it was the last head node: the reply carries the
+   summary's reported count, which the meter reads); then a copy of every tail
    node, `Config` nodes and `Results` included, each with `copied_from`. The hook moves the cursor
    to the last copy (D3, Q25), and the sample sends the new walk (I1).
 
@@ -127,7 +134,7 @@ that is a visible failure.
 (Rust, in core); (c) a handle read of the resolved model (`resolved_model`); (d) abort ends a
 hook's `rest`.
 
-**Dropped from 0.15:** the soft limit, the split-turn prefix summary, the read and modified file
+**Dropped from 0.15:** the split-turn prefix summary, the read and modified file
 lists appended to the summary, `/autocompact`, the calibrated counter, the summarizer
 window check, and `compaction.summarizer` (now `extensions.compaction.model`).
 
@@ -480,7 +487,8 @@ Decided as the drafts recommended, except where noted (the changes are in the se
 14. **Compaction has two limits** (owner, 2026-11-03). The soft limit lets the turn run on and
     compacts when it ends; the hard limit interrupts the turn before the next sample (§2). It
     replaces the one trigger of the first draft; 0.15's second, softer limit was dropped for being
-    a percentage of the same thing, and this one is the owner's.
+    a percentage of the same thing, and this one is the owner's. (The list of what was dropped in §2
+    said "the soft limit" in the first draft, which this ruling reversed; it no longer does.)
 
 ## Glossary entries proposed
 
@@ -665,7 +673,8 @@ the text did not say:
   prune` and writes nothing, and pruning twice in a row does the second time. The option `auto` is
   there, as §9 says, and a `true` is refused (`prune.auto is not built yet`): the triggers wait on
   a way to know the cache's state. The command's result is `pruned ~46k → ~6k tokens (node N; the
-  old line is still in the tree)`, characters over four, as everywhere.
+  old line is still in the tree)`, characters over four, as everywhere (D26, 8E-6: by the ceilings of both
+  lines, shown with `≤`).
 - **Compaction** (`tau.Compaction`, `/compact [focus]`, option `auto`, `reserve`, `keep`, `model`).
   As §2. The tail begins at the nearest `User` or `Assistant` node at or before `keep` tokens
   from the end; a head with no `User`, `Assistant` or `Results` node is `nothing to compact yet`.
@@ -690,8 +699,9 @@ the text did not say:
   `finally` closes the summarizer.
 - **Recovery.** `/compact` after a provider's "prompt too long" works as Ruling 8 says: the failed
   step leaves the cursor on the input; `/compact` summarizes, and a step samples the new line.
-- **The estimate** counts a call by its arguments only (D24 says "call arguments"); the tree
-  screen's walk size now uses the same function (`tau._lines.characters`).
+- **The estimate** counted a call by its arguments only; since D26 (8E-6) the count of a node is
+  its bytes, call id, name and arguments, and the tree screen's walk size uses `Cursor.count`'s
+  meter (`tau._meter`).
 - **The tree screen** draws it (D23 "Built: tree view" amended): `⧉` after a derived node's text,
   `≡ (copy of N)` after a copy; the old line is the folded stub it already was, with its size; a
   closed summarizer cursor is the dimmed `○ N compaction:1`; the detail pane starts a copy or
@@ -742,7 +752,9 @@ the text did not say:
 - At the hard limit on new input the branch ends in a `User` node not yet answered; the
   summarizer is opened at that node's parent and sent the input text and the summary prompt as one
   `User` node (by `Extension("compaction")`), as prune merges, so two user messages never sit side
-  by side. This is the only case; it supersedes "left as it is" above.
+  by side. This is the only case; it supersedes "left as it is" above. (8E-6: the summarizer is
+  still opened at the parent, but is sent the prompt alone: the input is kept verbatim in the
+  tail, and the message that did not fit no longer makes the summarizer's request not fit.)
 
 ### Second review fixes (8E-3)
 
@@ -752,7 +764,8 @@ the text did not say:
   not compact.
 - **`reserve` unset is `min(16384, window / 4)`**, so an 8k model has a hard limit of 6144; a
   `reserve` that is set and leaves no room still fails.
-- **Whole-line checks.** `before` and `after` are both the character estimate (the exact usage count
+- **Whole-line checks** (superseded by D26, stage 8E-6, which counts the cut, the checks and the
+  notice in the bill's unit and checks before paying; kept as history). `before` and `after` are both the character estimate (the exact usage count
   still decides *when*, but is not comparable with a line that has no replies of its own). A line is
   refused, and nothing written, if `after` is not below `before` or not below the limit that
   called. When the prefix and the tail alone reach the soft limit, the soft attempt does not run a
@@ -945,3 +958,31 @@ A permissions rule or an `agents.tools` name that nothing provides is refused wh
 config check`: a deny naming an unloaded tool was fatal. `tau config check --clean` removes such
 entries. Retry has no switch of its own: `--set load.retry=false` or `TAU_SETTINGS` turns the
 provider wrapper off for one run, like any other `load` key.
+
+### 8E-6 (compaction on reported counts, D26 T1)
+
+- **One unit.** The cut, the checks, the notice and the limits use `Cursor.count`, not characters
+  over four: a line that passes is under its limit by the measure the next bill uses, so the end of
+  the next turn does not compact again (the loop when real tokens ran above the characters), and a
+  summary is not paid for when the line could not come out under the limit (§2 *Counts*,
+  *Algorithm*).
+- **`auto` gates both limits.** `false` switches off the soft limit's compaction as well as the
+  hard one's. The guide described it backwards.
+- **A summary that does not fit the soft limit is told once** and not asked for again at the soft
+  limit until the limits change; the hard limit and `/compact` always try. A summary no shorter than
+  what it replaces is not written.
+- **Stopping the summarizer fails the step.** Aborting or closing `compaction:N` while the hard
+  limit waits for it fails the step with the reason; it no longer sends the sample that did not fit.
+  The hard limit never sends what it cannot show fits (D26 §5): when compaction cannot make room,
+  or has nothing to compact (a first message too big for the window), the step fails with the
+  figures, even if only the ceiling of what is not sent yet is over.
+- **`/compact` with no `keep` set** keeps at most half of the line, so it summarizes something on a
+  model with no window or a short conversation. A head of nothing but an earlier summary is `nothing
+  to compact yet`. A turn in progress keeps the user message it began with, verbatim, after the
+  summary.
+- **A `reserve` under 2 tokens** (a window of 1 to 7 with `reserve` unset) leaves a summary no
+  allowance and is a `ConfigError`; the `IndexError` of a window of 1 to 4 is gone with the code
+  that raised it.
+- **Presentation.** The cursor's line says `local:qwen has no context_window` (the TUI adds the
+  extension's name; it had read `compaction: compaction:`); the TUI's title is the first message the
+  person wrote, taken from the walk the summary was made from when the line begins with a summary.

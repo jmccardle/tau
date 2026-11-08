@@ -23,6 +23,14 @@ def thoughtful(text: str) -> Reply:
     return Reply([Part.Thinking("t" * 300), Part.Text(text)], Stop.End)
 
 
+def billed(input: int, output: int, cached: int | None = None) -> str:
+    """The usage a server reports: the third reply takes the walk past the hard limit of 36,000."""
+    usage = {"input": input, "output": output}
+    if cached is not None:
+        usage["cached"] = cached
+    return json.dumps({"usage": usage})
+
+
 def rows(app: App[None]) -> list[str]:
     out: list[str] = []
     stack = list(reversed(app.screen.query_one(Tree).root.children))
@@ -98,8 +106,8 @@ async def test_the_detail_pane_says_where_a_node_came_from_and_p_goes_there(
         source = h.session.tree.node(tip).derived_from
         assert source is not None
         text = detail(app)
-        assert f"derived from node {source}\nwalk before: 8 nodes, about 232 tokens\n" in text
-        assert "walk after: 6 nodes, about 17 tokens\n" in text
+        assert f"derived from node {source}\nwalk before: 8 nodes, ≤1.0k tokens\n" in text
+        assert "walk after: 6 nodes, ≤149 tokens\n" in text
         await pilot.press("p")
         await until(pilot, lambda: highlighted(app).node.id == source)
         assert f"node {source}  ·  by" in detail(app)
@@ -113,22 +121,21 @@ async def test_the_detail_pane_says_where_a_node_came_from_and_p_goes_there(
 async def test_a_compacted_tree_shows_the_summary_the_copies_and_the_closed_summarizer(
     tmp_path: Path,
 ) -> None:
-    usage = json.dumps({"usage": {"input": 895, "output": 5}})
     catalog = read_models(
         cli={
             "models": {
-                "a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 1000},
+                "a": {"model": "a", "provider": FAKE_PROVIDER, "context_window": 40_000},
             },
-            "extensions": {"compaction": {"reserve": 100, "soft": 900, "keep": 20}},
+            "extensions": {"compaction": {"reserve": 4000, "soft": 35_000, "keep": 20}},
         }
     )
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider(
             [
-                Reply([Part.Text("one" + "." * 600)], Stop.End),
-                Reply([Part.Text("two" + "." * 600)], Stop.End),
-                Reply([Part.Text("r" * 100)], Stop.End, meta=usage),
+                Reply([Part.Text("one" + "." * 600)], Stop.End, meta=billed(10, 160)),
+                Reply([Part.Text("two" + "." * 600)], Stop.End, meta=billed(180, 160, 10)),
+                Reply([Part.Text("r" * 100)], Stop.End, meta=billed(350, 36_000, 180)),
                 say("the summary"),
                 say("four"),
             ]
@@ -145,8 +152,8 @@ async def test_a_compacted_tree_shows_the_summary_the_copies_and_the_closed_summ
         await until(pilot, lambda: highlighted(app).node.id == tip)
         listed = rows(app)
         assert any("user: The earlier part of this conversation" in r and "⧉" in r for r in listed)
-        # the copied reply is folded into the summary's turn; the copied input shows
-        assert sum(r.startswith("user: go 4") and "≡ (copy of" in r for r in listed) == 1
+        # the input the summary left out of itself is copied, and shows as its own turn
+        assert sum(r.startswith("user: go 4") for r in listed) == 1, listed
         assert any("○ 1 compaction:1" in r for r in listed), listed
         assert any(r.startswith("├┄ ") for r in listed), "the old line is a stub"
     await h.close()

@@ -205,6 +205,7 @@ class _Provides:
     extensions: list[Extension]
     commands: list[str]  # qualified names
     tools: list[str]
+    counter: bool  # whether one of them offers the counter
 
 
 def _checked(provided: list[object]) -> _Provides:
@@ -218,7 +219,8 @@ def _checked(provided: list[object]) -> _Provides:
         options = getattr(extension, "options", None)
         if options is not None:
             option_fields(extension.name, options)
-    return _Provides(list(checked), list(commands), list(tools))
+    offered = any(getattr(e, "counter", None) is not None for e in checked)
+    return _Provides(list(checked), list(commands), list(tools), offered)
 
 
 # -- importing
@@ -556,6 +558,7 @@ class _Run:
     causes: list[BaseException] = field(default_factory=lambda: [])
     names: dict[str, str] = field(default_factory=lambda: {})
     tools: dict[str, str] = field(default_factory=lambda: {})
+    counter: str | None = None  # where the counter comes from
 
     def row(self, c: _Candidate, state: SourceState, detail: str | None = None) -> None:
         self.sources.append(ExtensionSource(c.key, state, c.kind, c.origin, detail))
@@ -593,8 +596,8 @@ class _Run:
         )
 
     def _clash(self, c: _Candidate, provided: _Provides) -> str | None:
-        """Two sources providing one extension name or one tool name (names, not commands:
-        those are qualified), naming both."""
+        """Two sources providing one extension name, one tool name (names, not commands:
+        those are qualified) or the counter, naming both."""
         for extension in provided.extensions:
             before = self.names.setdefault(extension.name, c.where)
             if before != c.where:
@@ -603,6 +606,10 @@ class _Run:
             before = self.tools.setdefault(tool, c.where)
             if before != c.where:
                 return f"two tools are named {tool!r}: {before} and {c.where}"
+        if provided.counter:
+            before = self.counter = self.counter or c.where
+            if before != c.where:
+                return f"two sources offer a counter: {before} and {c.where}"
         return None
 
 

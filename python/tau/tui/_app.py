@@ -312,7 +312,7 @@ class TauApp(App[None]):
         self.session.forget_live(cursor)  # replays what the sample in flight has said
         self.cursor = cursor
         view = self.session.views[cursor]
-        await self._transcript.rebuild(await self.client.walk(view.at))
+        await self._transcript.rebuild(await self.client.walk(view.at), self.client.walk)
         await self._line.refresh()
         await self._follow(view)
         self._refresh_bar()
@@ -326,7 +326,7 @@ class TauApp(App[None]):
             if transcript.tip is not None:
                 path = self.session.path(transcript.tip, view.at)
             if path is None:
-                await transcript.rebuild(await self.client.walk(view.at))
+                await transcript.rebuild(await self.client.walk(view.at), self.client.walk)
             else:
                 await transcript.end_live()
                 for node in path:

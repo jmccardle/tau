@@ -50,10 +50,12 @@ from tau._commands import Commands, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
+from tau._counts import tools_ceiling
 from tau._effects import CallRun, SampleRun, run_hooks
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
 from tau._hub import Hub
+from tau._meter import Counts
 from tau._options import ExtensionOptions
 from tau._protocols import (
     Clock,
@@ -63,6 +65,7 @@ from tau._protocols import (
     Tool,
     check_extensions,
     check_tools,
+    counter_of,
 )
 from tau._questions import Questions
 from tau._tools import assemble_tools
@@ -275,6 +278,13 @@ class Driver:
                 lambda: self._home, partial(self._hub.show, cursor, extension, text)
             ),
             lambda: tuple(self._tools),
+            Counts(
+                session.tree.node,
+                self._options.model,
+                lambda: tuple(self._tools),
+                lambda: counter_of(self._extensions),
+                lambda: tools_ceiling(self._tools.values()),
+            ),
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(

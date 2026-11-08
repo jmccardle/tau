@@ -218,8 +218,8 @@ async def test_the_detail_pane_says_how_long_the_viewed_walk_is(tmp_path: Path) 
         await until(pilot, lambda: highlighted(app).node.id == 3)
         detail = app.screen.query_one("#tree-detail-text", Static)
         await until(pilot, lambda: "a walk of 4 nodes" in str(detail.render()))
-        assert "about 101 tokens" in str(detail.render()), (
-            "(3 + 3 + 400) characters over four, rounded down"
+        assert "≤454 tokens" in str(detail.render()), (
+            "no reply has reported, so the bytes: 19 + 19 + 416, each with its 16 for the node"
         )
 
 

@@ -9,6 +9,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from tau._config import ModelConfig
 from tau._core import Node, Outcome, Part, Stop
+from tau._counts import Counter
 from tau._events import Delta
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._values import DefinitionError
@@ -329,6 +330,7 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
     letters, digits, `_` and `-`, unique; hooks that are points); raises `DefinitionError` naming
     the extension."""
     names: set[str] = set()
+    counters: list[str] = []
     for i, candidate in enumerate(extensions):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
@@ -342,6 +344,17 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
         if name in names:
             raise DefinitionError(f"two extensions are named {name!r}")
         names.add(name)
+        offered: object = getattr(candidate, "counter", None)
+        if offered is not None:
+            if not callable(getattr(offered, "count", None)):
+                raise DefinitionError(
+                    f"extension {name!r}: `counter` must have a callable `count(job)` method"
+                )
+            counters.append(name)
+            if len(counters) > 1:
+                raise DefinitionError(
+                    f"two extensions offer a counter: {counters[0]!r} and {name!r}"
+                )
         for attr in dir(candidate):
             if not attr.startswith(("pre_", "post_")):
                 continue
@@ -353,6 +366,16 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
             if not callable(getattr(candidate, attr)):
                 raise DefinitionError(f"extension {name!r}: hook `{attr}` must be callable")
     return tuple(cast("Extension", e) for e in extensions)
+
+
+def counter_of(extensions: Sequence[object]) -> tuple[str, Counter] | None:
+    """The extension offering the counter (`check_extensions` allows one), as `(its name, the
+    counter)`, or `None`."""
+    for extension in extensions:
+        offered: object = getattr(extension, "counter", None)
+        if offered is not None:
+            return cast("Extension", extension).name, cast("Counter", offered)
+    return None
 
 
 class Clock(Protocol):

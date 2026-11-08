@@ -21,6 +21,7 @@ from tau._core import (
     Session,
     Tree,
 )
+from tau._counts import Counting, RequestCount
 from tau._values import DefinitionError, Kind, Model, kind_of
 
 Poke = Callable[[], None]
@@ -173,10 +174,12 @@ class TreeHandle:
         abort: Abort,
         close: Close,
         options: OptionsReader,
+        counts: Counting,
         own: int | None = None,
     ) -> None:
         self._session = session
         self._read = options
+        self._counts = counts
         # The node `model` and `resolved_model` mean by default: a cursor's, a batch's.
         self._here: Callable[[], int | None] = lambda: None
         self._now = now
@@ -248,6 +251,23 @@ class TreeHandle:
         if name is None:
             name = self.model()
         return self._read.resolved(name)
+
+    @property
+    def counter(self) -> str | None:
+        """The key of the extension that offers the counter (D26), or `None`: then `count` is
+        the meter's alone."""
+        return self._counts.counter
+
+    async def count(self, at: int | None = None) -> RequestCount:
+        """What the walk to node `at` will cost as a request: a `RequestCount`, its `total` and a
+        count for each node. Every count is a report, or a ceiling (the node's bytes) for what no
+        report covers, unless the `counter` extension counts it better. `at` defaults to the
+        cursor's node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
+        (`ValueError`). `DefinitionError` if the counter counts what a report covers."""
+        node = self._here() if at is None else at
+        if node is None:
+            raise ValueError("count: this handle is on no node; say which with at=")
+        return await self._counts.count(node)
 
     # Writes
 
@@ -393,9 +413,10 @@ class NodeHandle(TreeHandle):
         abort: Abort,
         close: Close,
         options: OptionsReader,
+        counts: Counting,
     ) -> None:
         super().__init__(
-            session, extension, now, poke, changed, rest, abort, close, options, cursor
+            session, extension, now, poke, changed, rest, abort, close, options, counts, cursor
         )
         self._asker = asker
         self._notify = notify
@@ -470,10 +491,13 @@ class Cursor(TreeHandle):
         abort: Abort,
         close: Close,
         options: OptionsReader,
+        counts: Counting,
         show: Show,
         tools: Tools,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, rest, abort, close, options, id)
+        super().__init__(
+            session, extension, now, poke, changed, rest, abort, close, options, counts, id
+        )
         self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self._notify = notify
@@ -643,6 +667,7 @@ class Handles:
     close: Close
     show: Show
     tools: Tools
+    counts: Counting
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
@@ -659,6 +684,7 @@ class Handles:
             self.abort,
             self.close,
             self.options,
+            self.counts,
             self.show,
             self.tools,
         )
@@ -679,6 +705,7 @@ class Handles:
             self.abort,
             self.close,
             self.options,
+            self.counts,
         )
 
     def tree(self, extension: str) -> TreeHandle:
@@ -693,4 +720,5 @@ class Handles:
             self.abort,
             self.close,
             self.options,
+            self.counts,
         )

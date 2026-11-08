@@ -286,7 +286,7 @@ this line and in `/usage`. Counts are written `812`, `12.3k`, `1.2M` and `1.2G`,
 badge of each reply in the TUI.
 
 `/usage` prints the whole session, one row per model, with the replies of summaries and
-sub-agents included:
+sub-agents included, and ends with how counts are made before a request is sent:
 
 ```text
 model             samples   input  cached  written  output   cost
@@ -294,6 +294,7 @@ local:qwen              3   36.9k       -        -    2.4k      -
 anthropic:sonnet       12  210.0k     91%     4.1k    9.8k  $1.27
 total                  15  246.9k     91%     4.1k   12.2k  $1.27
 no price, so no cost: local:qwen
+counts: reported only, with byte ceilings for what is not sent yet
 ```
 
 Cost is worked out when you look, from the prices in your config now, so correcting a price
@@ -317,38 +318,71 @@ as it was (`Ctrl+G` draws the old line as a folded branch).
 
 `/compact [focus]` asks a model to summarize the older part of the conversation and keeps the
 newest part word for word. `focus` is text the summary should keep in mind (`/compact the parser
-bug`). τ also does this by itself, with two limits. When a finished turn leaves the conversation
-past the **soft** limit (80% of the hard one), τ compacts after the agent's last reply, and your
-next message starts on the shorter line. If a turn itself grows past the **hard** limit (the
-window less `reserve`), τ interrupts it just before the request that would not fit, compacts, and
-carries on:
+bug`). τ also does this by itself (unless `auto` is `false`), with two limits. When a finished turn
+leaves the conversation past the **soft** limit (80% of the hard one), τ compacts after the agent's
+last reply, and your next message starts on the shorter line. If a turn itself grows past the
+**hard** limit (the window less `reserve`), τ interrupts it just before the request that would not
+fit, compacts, and carries on. If the turn began with a message of yours that the summary would
+replace, that message is kept word for word after the summary:
 
 ```text
-compacted 182k → 23k tokens (nodes 4–418 summarized as node 431)
+compacted 182k → ≤23k tokens (nodes 4–418 summarized as node 431; reported counts only)
 ```
 
+τ counts in the unit the server bills in. What it sent already is the server's own number, from
+the reply's usage. What it has not sent yet (your new message, a tool result just added, a line
+it has just written) it can only bound by the bytes in it, plus 16 tokens for each message, and a
+count that includes such a bound is written with `≤` and the most it can be. The bound is loose,
+about three to four times the tokens of English text. So a long tool result can make τ compact
+sooner than the real count would, and `/usage` ends with a line saying how counts are made:
+`counts: reported only, with byte ceilings for what is not sent yet`. τ never guesses a count
+from characters. Nothing has to be installed for any of this.
+
 For that τ must know the window, so give the model a `context_window` (as for the `ctx` readout
-above). A model without one is never compacted by itself and the status bar says so
-(`compaction: local:qwen has no context_window`); `/compact` still works. The settings, with
-`/config compaction` or `extensions.compaction` in your config:
+above; a window too small to leave `reserve` at least 2 tokens is a config error). A model without
+one is never compacted by itself and the status bar says so (`local:qwen has no
+context_window`); `/compact` still works there too. The settings, with `/config compaction` or
+`extensions.compaction` in your config:
 
 ```json
 { "extensions": { "compaction": { "reserve": 16384, "keep": 8000 } } }
 ```
 
-`auto` (`true`) turns the automatic compaction off. `reserve` is the tokens kept free for the reply
-and for the summary itself (16384, or a quarter of the window if less); `hard` and `soft` set the two limits directly, as token counts (`soft`
-above `hard` is a config error). `keep` the tokens of the newest messages copied unchanged. Left unset,
-`keep` is 20000 or half the soft limit if that is less, which suits a 32k
-local model; a `keep` you set must be smaller than the soft limit. If the newest messages alone fill the
-room, or a summary would not be shorter, nothing is written: at the hard limit the step fails and
-says what is too big; at the soft limit τ tells you once and goes on. The soft limit acts only after
-a turn that ended with a reply, not when you go back to one. `model` names another model to write the summary
-(default: the one you are using). The summary is written by a second cursor, `compaction:1`, which
-you can see in the tree and which `/usage` counts; it is closed when it is done. Esc while it
-works leaves your conversation exactly as it was. If the summary fails, the step fails and says
-why. τ does not compact when the provider answers "prompt too long": run `/compact`, then send
-again.
+`auto` (`true`) lets τ compact by itself, at the soft limit and at the hard one; `false` leaves
+both to you and `/compact`. `reserve` is the tokens kept free for the reply and for the summary
+itself (16384, or a quarter of the window if less); half of it, at most 8192, is what a summary may
+take. `hard` and `soft` set the two limits directly, as token counts (`soft` above `hard` is a
+config error). `keep` is the most tokens of the newest messages copied unchanged (the newest turn
+is kept whole even if it is bigger). Left unset, `keep` is 20000 or half the soft limit if that is
+less, which suits a 32k local model; a `keep` you set must be smaller than the soft limit. `keep`
+is measured in the same counts as everything else, so with a server whose requests τ cannot yet
+prove (anything but Anthropic's prompt cache) the messages are counted by their bytes, and 20000
+of them are about 5000 to 6000 real tokens.
+`/compact` with no `keep` set keeps at most half of the conversation, so that asking for it
+summarizes something; right after a compaction it says "nothing to compact yet", since the only
+thing left to summarize is a summary.
+
+Before τ pays for a summary it checks that the line can come out under the limit: the prefix and
+the request's overhead (system prompt, context files, tool definitions: it is in the first
+reply's bill), the messages it would keep, and room for the summary. If not, nothing is
+summarized: at the soft limit τ tells you once and goes on; for `/compact` the command fails and
+says what is too big. At the hard limit the step fails the same way: τ never sends a request
+that it cannot show fits. That includes a request that is over only by the bytes of what is not
+sent yet (a big paste, a big tool result, counted loosely), so a message of 30,000 characters can
+be refused by a 32k model that would have taken it. The error says so and names the ways past it: shorten or split the message, give the model a larger `context_window`, or turn automatic compaction off (`--set compaction.auto=false`), after which the provider decides.
+After the summary is written, τ keeps the longest tail that fits beside it. A summary that does
+not fit the soft limit is told once and not asked for again at the soft limit while the limits are
+the same and the cursor stays on that line (a hard limit or `/compact` always tries), a notice
+about a different part being too big is told as well, and a summary no shorter than what it
+replaces is not written.
+
+`model` names another model to write the summary (default: the one you are using). The summarizer's own request has to fit that model's window too: if the branch does not, τ summarizes only the older part and keeps the newest turn whole, and if even that does not fit, the step fails and says to give `model` one with a larger window. The summary is
+written by a second cursor, `compaction:1`, which you can see in the tree and which `/usage`
+counts; it is closed when it is done. Esc while it works leaves your conversation exactly as it
+was, and so does stopping or closing the `compaction:1` cursor itself: the step that was waiting
+for it fails instead of sending the request that would not fit. If the summary fails, the step
+fails and says why. τ does not compact when the provider answers "prompt too long": run
+`/compact`, then send again.
 
 `/prune` needs no model. It keeps the last two turns and turns every older turn into a short
 transcript at the top of the last-but-one: what you asked, how much work was left out, and the

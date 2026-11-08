@@ -2,35 +2,34 @@
 
 When a branch nears its model's context window, the next sample is preceded by a summary: the
 older part of the branch (the **head**) becomes one `User` node, and the newest part (the
-**tail**, about `keep` tokens) is copied. They hang from the end of the prefix as a new line, and
-the cursor moves onto it. The old line stays in the tree. `/compact [focus]` does it now, with
-text the summary should keep in mind.
+**tail**, at most `keep` tokens unless the newest turn is bigger) is copied. They hang from the
+end of the prefix as a new line, and the cursor moves onto it. The old line stays in the tree.
+`/compact [focus]` does it now, with text the summary should keep in mind.
 
 The summary is written by a **summarizer cursor**: a cursor opened at the branch's node, sent
 the summary prompt, and waited for. It shows in the tree and its reply is counted by `usage`; it
 is closed afterwards. It is offered the branch's tools, which keeps the prompt cache warm, and
 refused any call it makes (`pre_tool`). Compaction's own `pre_sample` skips those cursors.
 
+Every figure is a `tau.Count` from `Cursor.count` (D26): what the servers reported, and for what
+no report covers yet the bytes of the node as a ceiling. Before a summarizer is paid for, the line
+must have room (the prefix and the request's overhead, the tail, and the summary allowance); after
+it, the tail is cut to what fits beside the summary.
+
 The trigger is proactive only: a provider's "prompt too long" is not caught. `/compact`, then a
 step, recovers.
 """
 
-from dataclasses import dataclass
-from typing import Annotated
+from dataclasses import dataclass, replace
+from typing import Annotated, Literal
 
 from tau._config import ConfigError, model_config
-from tau._core import Body, Ending, Node, NoSuchLabel, Part, Stop
+from tau._core import Author, Body, CursorClosed, Ending, Node, NoSuchLabel, Part, Stop
+from tau._counts import NONE, Count, RequestCount, ceiling_of, reported, sent, wrapped_count
 from tau._handles import Cursor, NodeHandle, Subject
-from tau._lines import (
-    Planned,
-    characters,
-    copy_of,
-    prefix_length,
-    tokens_of,
-    write_line,
-)
+from tau._lines import Planned, copy_of, prefix_length, write_line
 from tau._protocols import CallDraft
-from tau._usage import counted, reading, tokens
+from tau._usage import reading, show, tokens
 from tau._values import Model
 
 PROMPT = """\
@@ -62,7 +61,7 @@ SUMMARY = "The earlier part of this conversation was summarized:\n\n<summary>\n{
 class Options:
     """`Compaction`'s options (`extensions.compaction`; `/config compaction`)."""
 
-    auto: Annotated[bool, "compact before a sample that would not fit"] = True
+    auto: Annotated[bool, "compact by itself, at the soft limit and at the hard one"] = True
     reserve: Annotated[
         int | None,
         "tokens kept free for the reply and for the summary itself (unset: 16384, or a quarter "
@@ -70,13 +69,14 @@ class Options:
     ] = None
     hard: Annotated[
         int | None,
-        "estimate above which a turn is interrupted and compacted (unset: window - reserve)",
+        "count above which a turn is interrupted and compacted (unset: window - reserve)",
     ] = None
     soft: Annotated[
-        int | None, "estimate above which the turn's end compacts (unset: 80% of the hard limit)"
+        int | None, "count above which the turn's end compacts (unset: 80% of the hard limit)"
     ] = None
     keep: Annotated[
-        int | None, "tokens of the newest nodes copied verbatim (unset: 20000, or half the room)"
+        int | None,
+        "the most tokens of the newest nodes copied verbatim (unset: 20000, or half the room)",
     ] = None
     model: Annotated[Model | None, "the model that writes the summary (none: the branch's)"] = None
 
@@ -97,46 +97,100 @@ DEFAULT_KEEP = 20000
 """The `keep` of a model whose soft limit is at least twice this; a smaller one gets half of it."""
 SOFT_PERCENT = 80
 """The soft limit, as a share of the hard limit, when `soft` is not set."""
+MAX_ALLOWANCE = 8192
+"""The most the **summary allowance** (room kept for the summary) can be."""
+MIN_RESERVE = 2
+"""The smallest `reserve` that leaves a summary an allowance of a token."""
+
+Mode = Literal["manual", "soft", "hard"]
+"""Who asked: `/compact`, the soft limit at a turn's end, or the hard limit before a sample."""
 
 
 class CompactionFailed(RuntimeError):
     """The summary could not be written; nothing was written to the tree."""
 
 
-def estimate(walk: list[Node]) -> int:
-    """The tokens `walk` will cost as a request. The newest reply that reported its usage and is
-    not a copy gives an exact count (its input and output); each node after it adds its
-    characters divided by 4. With no such reply the whole walk is counted by characters. An
-    estimate by design, never treated as exact."""
-    for i in range(len(walk) - 1, -1, -1):
-        node = walk[i]
-        if not counted(node):
-            continue
-        try:
-            usage = reading(node)
-        except ValueError:
-            continue  # a reply whose usage cannot be read is a reply with none
-        if usage is not None:
-            return usage.input + usage.output + _estimate(walk[i + 1 :])
-    return _estimate(walk)
+@dataclass(frozen=True)
+class Limits:
+    """The limits of the cursor's model: `soft` and `hard` (both `None`: it has no
+    `context_window`), the `keep` to use and the `reserve`. A summary may take half the reserve,
+    at most `MAX_ALLOWANCE`: the **summary allowance**."""
+
+    soft: int | None
+    hard: int | None
+    keep: int
+    reserve: int
+
+    @property
+    def allowance(self) -> int:
+        """Tokens a line must leave room for, for the summary."""
+        return min(self.reserve // 2, MAX_ALLOWANCE)
+
+    def room(self, mode: Mode) -> int | None:
+        """The limit a line must end under: the soft limit for the soft limit's compaction,
+        else the hard one."""
+        return self.soft if mode == "soft" else self.hard
 
 
-def _estimate(nodes: list[Node]) -> int:
-    return tokens_of(sum(characters(n.body) for n in nodes))
+def _limits(cursor: Cursor, options: Options) -> Limits:
+    """The limits of the cursor's model. Hard is `hard`, else the window less `reserve`; soft is
+    `soft`, else 80% of hard; `keep` is the one set, else `DEFAULT_KEEP` or half the soft limit
+    if that is less; `reserve`, when unset, is `DEFAULT_RESERVE` or a quarter of the window if
+    that is less. `ConfigError` if a limit leaves no room, the reserve leaves none for a summary,
+    a `soft` set is above the hard limit, or a `keep` set does not fit under the soft limit."""
+    model = cursor.model()
+    window = cursor.resolved_model(model).context_window
+    if window is None:
+        reserve = DEFAULT_RESERVE if options.reserve is None else options.reserve
+        return Limits(None, None, DEFAULT_KEEP if options.keep is None else options.keep, reserve)
+    reserve = min(DEFAULT_RESERVE, window // 4) if options.reserve is None else options.reserve
+    if reserve < MIN_RESERVE:
+        raise ConfigError(
+            f"{model}: a reserve of {reserve} tokens leaves no room for a summary "
+            f"(the window is {window}); raise the window or the reserve"
+        )
+    hard = window - reserve if options.hard is None else options.hard
+    if hard <= 0 or hard > window:
+        raise ConfigError(
+            f"{model}: the hard limit {hard} is not within its {window}-token window "
+            f"(reserve {reserve})"
+        )
+    soft = hard * SOFT_PERCENT // 100 if options.soft is None else options.soft
+    if soft > hard:
+        raise ConfigError(f"{model}: soft ({soft}) is above the hard limit ({hard})")
+    if options.keep is None:
+        return Limits(soft, hard, min(DEFAULT_KEEP, soft // 2), reserve)
+    if options.keep >= soft:
+        raise ConfigError(
+            f"{model}: keep ({options.keep}) does not fit under the soft limit ({soft}); "
+            "lower keep, or raise soft, hard or the window"
+        )
+    return Limits(soft, hard, options.keep, reserve)
 
 
-def tail_start(body: list[Node], keep: int) -> int:
-    """Where the tail of `body` (a walk after its prefix) starts: walking back from the end until
-    `keep` tokens are reached, then back to the nearest `User` or `Assistant` node, so a
-    `Results` node stays with its batch. 0 means everything is tail."""
-    held = 0
-    i = len(body)
-    while i > 0 and tokens_of(held) < keep:
-        i -= 1
-        held += characters(body[i].body)
-    while i > 0 and not isinstance(body[i].body, (Body.User, Body.Assistant)):
-        i -= 1
-    return i
+def _up(request: RequestCount, node: Node) -> int:
+    """The most `node` costs in `request`: nothing for a node that is not sent or is inside a
+    lump, whose first node holds the sum."""
+    count = request.nodes.get(node.id)
+    return 0 if count is None else count.upper
+
+
+def _cut(request: RequestCount, node: Node) -> bool:
+    """Whether a tail may start at `node`: a `User` or `Assistant` node (so a `Results` node
+    stays with its batch) that no lump holds inside."""
+    return isinstance(node.body, (Body.User, Body.Assistant)) and node.id in request.nodes
+
+
+def tail_start(body: list[Node], request: RequestCount, keep: int) -> int:
+    """Where the tail of `body` (a walk after its prefix) starts: the earliest node a tail may
+    start at whose nodes cost at most `keep` tokens (by `request`'s upper counts), or the last
+    such node if even that costs more: the newest turn is kept whole. 0 means everything is
+    tail."""
+    cuts = [i for i, n in enumerate(body) if _cut(request, n)]
+    if not cuts:
+        return 0
+    found = _fit(body, request, keep, cuts[-1])
+    return cuts[-1] if found is None else found
 
 
 def _text(reply: Node) -> str:
@@ -159,78 +213,135 @@ def _turn_ended(node: Node) -> bool:
     )
 
 
-def _check_fits(
-    walk: list[Node], kept: int, planned: list[Planned], room: int | None
-) -> tuple[int, int]:
-    """The tokens before and after, both counted by characters so neither is biased.
-    `CompactionFailed` unless the planned line is shorter and under `room`."""
-    before = _estimate(walk)
-    after = _estimate(walk[:kept]) + sum(tokens_of(characters(p.body)) for p in planned)
-    over = room is not None and after >= room
-    if after >= before or over:
-        raise CompactionFailed(
-            f"compacting would not make it shorter than {tokens(before)} tokens"
-            + (f" or fit {tokens(room)}" if over and room is not None else "")
-            + f" (the new line is {tokens(after)}); nothing was written"
-        )
-    return before, after
+def _is_summary(node: Node) -> bool:
+    """Whether `node` is a summary this extension wrote."""
+    return (
+        isinstance(node.body, Body.User)
+        and node.by == Author.Extension("compaction")
+        and node.derived_from is not None
+    )
+
+
+def _asked(body: list[Node], start: int) -> Node | None:
+    """The `User` node the turn in progress began with, when the head holds it: a line that
+    summarizes it away leaves the model with a paraphrase of what it is answering. `None` when
+    the turn is over or the input is not yet answered (the tail holds it), when the tail holds
+    it, or when what the head holds is a summary (the turn began before an earlier compaction)."""
+    last = body[-1]
+    if isinstance(last.body, Body.User) or _turn_ended(last):
+        return None
+    users = [i for i, n in enumerate(body) if isinstance(n.body, Body.User)]
+    if not users or users[-1] >= start or _is_summary(body[users[-1]]):
+        return None
+    return body[users[-1]]
+
+
+def _base(request: RequestCount, prefix: list[Node]) -> Count:
+    """The prefix and the request's overhead: the base of the count if a report billed them,
+    else the tool definitions it holds and the ceilings of the prefix nodes."""
+    total = request.base
+    if not request.base_nodes:
+        for node in prefix:
+            total += request.nodes.get(node.id, NONE)
+    return total
+
+
+def _summary_count(reply: Node, body: Body) -> Count:
+    """What the line pays for the summary: the summarizer reply's reported `output` and the
+    ceiling of the words around it, or the ceiling of the whole node if the reply reported
+    nothing."""
+    try:
+        usage = reading(reply)
+    except ValueError:
+        usage = None
+    if usage is None:
+        return ceiling_of(body)
+    return wrapped_count(reported(usage.output), reply.body, body)
+
+
+def _hint(request: RequestCount) -> str:
+    """What to add to a hard-limit failure when part of the request is counted by its bytes: why
+    that is a lot, and the ways to send it anyway that there are today."""
+    if request.total.bound == 0:
+        return ""
+    return (
+        ". The part of it no server has reported on yet is counted by its bytes, one token per "
+        "byte at most, which can be four times too many. To send it anyway: shorten or split it, "
+        "give the model a larger `context_window`, or turn automatic compaction off "
+        "(`--set compaction.auto=false`, or `/config compaction`), and the provider decides"
+    )
+
+
+def _held(request: RequestCount, nodes: list[Node], asked: Node | None) -> Count:
+    """What `nodes` cost together: each one's count, and for the user message `asked` (a node
+    that a lump may hold, so it has no count of its own) its ceiling."""
+    total = NONE
+    for node in nodes:
+        total += ceiling_of(node.body) if node is asked else request.nodes.get(node.id, NONE)
+    return total
 
 
 def _crowded(
-    walk: list[Node], kept: int, tail: list[Node], keep: int, room: int | None
-) -> str | None:
-    """Why the prefix and the tail alone already reach `room`, naming the part that is too big
-    (`None`: they leave room). The newest node by itself, or the prefix, is not `keep`'s doing."""
-    if room is None:
-        return None
-    prefix = _estimate(walk[:kept])
-    newest = _estimate(walk[-1:])
-    if prefix >= room:
-        return (
-            f"the prefix (system prompt, context files, skills) takes {prefix} of the {room} "
-            "tokens the model has room for"
+    plan: "_Plan", wanted: list[Node], room: int, allowance: int
+) -> tuple[str, str] | None:
+    """Why the prefix and the nodes `wanted` alone already reach `room`, with room for a summary,
+    naming the part that is too big, as `(which part, why)` (`None`: they leave room). The newest
+    node by itself, or the prefix, is not `keep`'s doing."""
+    request, base = plan.request, plan.base
+    if base.upper >= room:
+        return "prefix", (
+            f"the prefix and the request's overhead (system prompt, context files, skills, tool "
+            f"definitions) take {show(base)} of the {tokens(room)} tokens the model has room for"
         )
+    newest = max((_up(request, n) for n in wanted[-1:]), default=0)
     if newest >= room:
-        return (
-            f"the newest node alone takes {newest} tokens, over the {room} the model has room for"
+        return "newest", (
+            f"the newest node alone takes {tokens(newest)} tokens at most, over the "
+            f"{tokens(room)} the model has room for"
         )
-    if prefix + _estimate(tail) >= room:
-        return (
-            f"the prefix and the newest nodes kept (keep = {keep}) take {prefix + _estimate(tail)} "
-            f"of the {room} tokens the model has room for; lower keep"
+    held = _held(request, wanted, plan.asked)
+    if base.upper + held.upper + allowance >= room:
+        # a tail longer than the newest turn is `keep`'s doing; the newest turn is not
+        keeps = f"keep = {plan.keep}, " if plan.keeps else ""
+        return "kept", (
+            f"the prefix ({show(base)}) and the newest nodes kept ({keeps}{show(held)}) leave "
+            f"less than the {tokens(allowance)} tokens a summary may take of the {tokens(room)} "
+            f"the model has room for" + ("; lower keep" if keeps else "")
         )
     return None
 
 
-def _limits(cursor: Cursor, options: Options) -> tuple[int | None, int | None, int]:
-    """The soft and hard limits of the cursor's model (both `None`: it has no `context_window`)
-    and the `keep` to use. Hard is `hard`, else the window less `reserve`; soft is `soft`, else
-    80% of hard; `keep` is the one set, else `DEFAULT_KEEP` or half the hard limit if that is
-    less; `reserve`, when unset, is `DEFAULT_RESERVE` or a quarter of the window if that is less.
-    `ConfigError` if a limit leaves no room, a `soft` set is above the hard limit, or a
-    `keep` set does not fit under the soft limit."""
-    model = cursor.model()
-    window = cursor.resolved_model(model).context_window
-    if window is None:
-        return None, None, DEFAULT_KEEP if options.keep is None else options.keep
-    reserve = min(DEFAULT_RESERVE, window // 4) if options.reserve is None else options.reserve
-    hard = window - reserve if options.hard is None else options.hard
-    if hard <= 0 or hard > window:
-        raise ConfigError(
-            f"{model}: the hard limit {hard} is not within its {window}-token window "
-            f"(reserve {reserve})"
-        )
-    soft = hard * SOFT_PERCENT // 100 if options.soft is None else options.soft
-    if soft > hard:
-        raise ConfigError(f"{model}: soft ({soft}) is above the hard limit ({hard})")
-    if options.keep is None:
-        return soft, hard, min(DEFAULT_KEEP, soft // 2)
-    if options.keep >= soft:
-        raise ConfigError(
-            f"{model}: keep ({options.keep}) does not fit under the soft limit ({soft}); "
-            "lower keep, or raise soft, hard or the window"
-        )
-    return soft, hard, options.keep
+def _fit(tail: list[Node], request: RequestCount, avail: int, floor: int) -> int | None:
+    """The first index of `tail` at which a suffix of it may start and costs at most `avail`
+    (at most `floor`: the nodes that must stay), or `None` if even that does not fit."""
+    cost = [0] * (len(tail) + 1)
+    for i in range(len(tail) - 1, -1, -1):
+        cost[i] = cost[i + 1] + _up(request, tail[i])
+    for i in range(floor + 1):
+        if (i in (0, len(tail)) or _cut(request, tail[i])) and cost[i] <= avail:
+            return i
+    return None
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """What `_compact` settled before paying for a summary: the walk and the length of its
+    prefix, where the tail starts and where the newest turn alone would start (indexes in the walk
+    after the prefix), the user message the turn in progress began with if the head would lose
+    it, the figures, and the `keep` used. `at` is the node the summarizer is opened at when it
+    cannot take the whole walk: the end of the head, and then the tail is kept whole."""
+
+    walk: list[Node]
+    prefix: int
+    start: int
+    minimal: int
+    asked: Node | None
+    request: RequestCount
+    base: Count
+    keep: int
+    limits: Limits
+    keeps: bool  # whether `keep` made the tail longer than the newest turn
+    at: int | None = None
 
 
 class Compaction:
@@ -242,7 +353,9 @@ class Compaction:
     def __init__(self) -> None:
         self._summarizers: set[int] = set()  # the cursors opened here, until they are closed
         self._replied: dict[int, int] = {}  # per cursor: the reply its running step committed
-        self._warned: set[int] = set()  # cursors told their soft limit cannot be met
+        self._warned: set[tuple[int, Mode, str]] = set()  # (cursor, limit, part) told it is too big
+        # cursors whose summary did not fit: the limits, and the node they were on
+        self._futile: dict[int, tuple[Limits, int]] = {}
         self._made = 0
         self.commands = (self.compact,)
 
@@ -251,11 +364,17 @@ class Compaction:
         model's window."""
         if cursor.id in self._summarizers or not cursor.options().auto:
             return
-        _, hard, _ = _limits(cursor, cursor.options())
-        if hard is None:
-            cursor.show(f"compaction: {cursor.model()} has no context_window")
-        elif estimate(cursor.walk()) > hard:
-            await self._compact(cursor, "")
+        limits = _limits(cursor, cursor.options())
+        if limits.hard is None:
+            cursor.show(f"{cursor.model()} has no context_window")
+        elif (await cursor.count()).total.upper > limits.hard:
+            await self._compact(cursor, "", "hard")
+            after = (await cursor.count()).total  # what is about to be sent, counted once more
+            if after.upper > limits.hard:
+                raise CompactionFailed(
+                    f"the compacted line still takes {show(after)} tokens, more than the "
+                    f"{tokens(limits.hard)} the model has room for"
+                )
 
     async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
         """A step begins: it has committed no reply yet."""
@@ -278,9 +397,11 @@ class Compaction:
             return
         if not cursor.options().auto:
             return
-        soft, _, _ = _limits(cursor, cursor.options())
-        if soft is not None and estimate(cursor.walk()) > soft:
-            await self._compact(cursor, "", soft=True)
+        limits = _limits(cursor, cursor.options())
+        if limits.soft is None or self._tried(cursor, limits):
+            return
+        if (await cursor.count()).total.upper > limits.soft:
+            await self._compact(cursor, "", "soft")
 
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
         """Refuse any call a summarizer makes."""
@@ -289,66 +410,225 @@ class Compaction:
     async def compact(self, cursor: Cursor, focus: str = "") -> str:
         """Summarize this conversation now, on a new line (the old one stays in the tree).
         `focus` is text the summary should keep in mind."""
-        return await self._compact(cursor, focus)
+        return await self._compact(cursor, focus, "manual")
 
-    async def _compact(self, cursor: Cursor, focus: str, *, soft: bool = False) -> str:
-        """Compact `cursor`'s branch; the notice (or why nothing was written). `soft`: it was the
-        soft limit that called, so the line must end under that one."""
-        options = cursor.options()
+    async def _plan(self, cursor: Cursor, limits: Limits, mode: Mode) -> _Plan | str:
+        """Where the tail starts, or why there is nothing to compact. A `/compact` that sets no
+        `keep` keeps half of what the line costs if that is less than the default: asked for, it
+        summarizes something."""
+        request = await cursor.count()
         walk = cursor.walk()
-        kept = prefix_length(walk)
-        body = walk[kept:]
-        soft_limit, hard_limit, keep = _limits(cursor, options)
-        room = soft_limit if soft else hard_limit
-        start = tail_start(body, keep)
-        head, tail = body[:start], body[start:]
-        if not any(isinstance(n.body, (Body.User, Body.Assistant, Body.Results)) for n in head):
+        prefix = prefix_length(walk)
+        body = walk[prefix:]
+        keep = limits.keep
+        if mode == "manual" and cursor.options().keep is None:
+            keep = min(keep, max(1, request.total.upper // 2))
+        start = tail_start(body, request, keep)
+        head = body[:start]
+        messages = [
+            n for n in head if isinstance(n.body, (Body.User, Body.Assistant, Body.Results))
+        ]
+        if not messages or all(_is_summary(n) for n in messages):
             return "nothing to compact yet"
-        crowded = _crowded(walk, kept, tail, keep, room)
-        if crowded is not None:
-            return self._crowded_out(cursor, crowded, soft=soft)
+        base = _base(request, walk[:prefix])
+        minimal = max((i for i, n in enumerate(body) if _cut(request, n)), default=0)
+        return _Plan(
+            walk,
+            prefix,
+            start,
+            minimal,
+            _asked(body, start),
+            request,
+            base,
+            keep,
+            limits,
+            start < minimal,
+        )
+
+    async def _compact(self, cursor: Cursor, focus: str, mode: Mode) -> str:
+        """Compact `cursor`'s branch; the notice (or why nothing was written)."""
+        options = cursor.options()
+        limits = _limits(cursor, options)
+        plan = await self._plan(cursor, limits, mode)
+        if isinstance(plan, str):
+            if mode == "hard":
+                total = await cursor.count()
+                raise CompactionFailed(
+                    f"the request takes {show(total.total)} tokens, more than the "
+                    f"{tokens(limits.hard or 0)} the model has room for, and {plan}" + _hint(total)
+                )
+            return plan
+        summarizer = await self._summarizer_end(cursor, options, limits, plan)
+        if isinstance(summarizer, str):
+            return self._unfit(cursor, summarizer, "summarizer", mode, plan, pays=False)
+        plan = summarizer
+        room = limits.room(mode)
+        if room is not None:
+            wanted = ([plan.asked] if plan.asked is not None else []) + plan.walk[plan.prefix :][
+                plan.start :
+            ]
+            crowded = _crowded(plan, wanted, room, limits.allowance)
+            if crowded is not None:
+                return self._unfit(cursor, crowded[1], crowded[0], mode, plan, pays=False)
         cursor.show("compacting…")
         try:
-            summary = await self._summarize(cursor, focus, options.model)
+            made = await self._summarize(cursor, focus, options.model, plan.at)
         finally:
             cursor.show(None)
-        if summary is None:
+        if made is None:
+            if mode == "hard":
+                raise CompactionFailed("compaction was stopped, and the sample would not fit")
             return ABORTED
-        planned = [copy_of(n) for n in head if isinstance(n.body, Body.Config)]
-        planned.append(Planned(Body.User(SUMMARY.format(text=summary)), derived_from=head[-1].id))
+        return await self._write(cursor, plan, limits, mode, made)
+
+    async def _summarizer_end(
+        self, cursor: Cursor, options: Options, limits: Limits, plan: _Plan
+    ) -> _Plan | str:
+        """`plan`, or why the summarizer's own request cannot be made. The request is the branch
+        and the prompt, with room left for the summary, and it must fit the window of the model
+        that writes it (counted loosely for what no report covers). If the whole branch does not,
+        the summarizer is opened at the end of the head instead, and the tail, longer by the
+        user messages between the last reply of the head and the tail, is kept whole. If the head
+        does not fit either, nothing is summarized."""
+        name = options.model or cursor.model()
+        window = cursor.resolved_model(name).context_window
+        if window is None:
+            return plan
+        room = window - limits.allowance
+        prompt = ceiling_of(Body.User(PROMPT))
+        tip = (await cursor.count(at=self._summarizer_input(cursor, "")[0])).total + prompt
+        if tip.upper <= room:
+            return plan
+        body = plan.walk[plan.prefix :]
+        end = plan.start - 1
+        while end >= 0 and not isinstance(body[end].body, (Body.Assistant, Body.Results)):
+            end -= 1
+        if end >= 0:
+            head = (await cursor.count(at=body[end].id)).total + prompt
+            if head.upper <= room:
+                loose = {
+                    n.id: ceiling_of(n.body)
+                    for n in body[end + 1 : plan.start]
+                    if sent(n.body) and n.id not in plan.request.nodes
+                }
+                request = replace(plan.request, nodes={**plan.request.nodes, **loose})
+                return replace(
+                    plan,
+                    start=end + 1,
+                    asked=_asked(body, end + 1),
+                    request=request,
+                    at=body[end].id,
+                )
+        return (
+            f"the summarizer's request takes {show(tip)} tokens, more than the {tokens(room)} "
+            f"{name} has room for (its {tokens(window)}-token window less room for the summary), "
+            "and so does the part to be summarized: set extensions.compaction.model to a model "
+            "with a larger window"
+        )
+
+    async def _write(
+        self, cursor: Cursor, plan: _Plan, limits: Limits, mode: Mode, made: tuple[str, Node]
+    ) -> str:
+        """Choose the tail now the summary is known, check the line, and write it."""
+        request, body = plan.request, plan.walk[plan.prefix :]
+        wrapped = Body.User(SUMMARY.format(text=made[0]))
+        paid = _summary_count(made[1], wrapped)
+        asked = [] if plan.asked is None else [plan.asked]
+        tail = body[plan.start :]
+        asked_up = _held(request, asked, plan.asked).upper
+        floor = len(tail) - 1 if isinstance(body[-1].body, Body.User) else len(tail)
+        if plan.at is not None:
+            floor = 0  # the summary covers only the head: the tail stays whole
+        room = limits.room(mode)
+        begin = 0
+        if room is not None:
+            fits = _fit(tail, request, room - plan.base.upper - paid.upper - asked_up, floor)
+            if fits is None:
+                limit = f"{'soft ' if mode == 'soft' else ''}limit of {tokens(room)}"
+                why = (
+                    f"the summary takes {show(paid)} tokens and, with the prefix "
+                    f"({show(plan.base)}), does not fit the {limit}"
+                )
+                return self._unfit(cursor, why, "fit", mode, plan, pays=True)
+            begin = fits
+        start = plan.start + begin
+        replaced = sum(_up(request, n) for n in body[:start])
+        if paid.upper >= replaced:
+            why = (
+                f"compacting would not make it shorter: the summary takes {show(paid)} tokens "
+                f"and the {tokens(replaced)} it replaces take at most that"
+            )
+            return self._unfit(cursor, why, "shorter", mode, plan, pays=True)
+        planned = [copy_of(n) for n in body[:start] if isinstance(n.body, Body.Config)]
+        planned.append(Planned(wrapped, derived_from=made[1].id))
         summary_at = len(planned) - 1
-        planned += [copy_of(n) for n in tail]
-        before, after = _check_fits(walk, kept, planned, room)
-        ids = write_line(cursor, walk[kept - 1].id, planned)
+        kept = asked + body[start:]
+        planned += [copy_of(n) for n in kept]
+        ids = write_line(cursor, plan.walk[plan.prefix - 1].id, planned)
         cursor.move(ids[-1])
+        self._futile.pop(cursor.id, None)
+        self._warned = {w for w in self._warned if w[0] != cursor.id}
+        after = (await cursor.count()).total  # the line as the next request will be counted
+        counted_by = "reported counts only" if cursor.counter is None else f"by {cursor.counter}"
         text = (
-            f"compacted {tokens(before)} → {tokens(after)} tokens "
-            f"(nodes {head[0].id}–{head[-1].id} summarized as node {ids[summary_at]})"  # noqa: RUF001
+            f"compacted {show(request.total)} → {show(after)} tokens "
+            f"(nodes {body[0].id}–{body[start - 1].id} summarized as node {ids[summary_at]}; "  # noqa: RUF001
+            f"{counted_by})"
         )
         cursor.tell(text)
         return text
 
-    def _crowded_out(self, cursor: Cursor, crowded: str, *, soft: bool) -> str:
-        """The prefix and tail alone reach the limit: a failure at the hard limit, a notice (said
-        once per cursor, since a failure at every turn end would nag) at the soft one."""
-        if not soft:
-            raise CompactionFailed(crowded)
-        if cursor.id not in self._warned:
-            self._warned.add(cursor.id)
-            cursor.tell(f"compaction cannot keep this under its soft limit: {crowded}")
-        return crowded
+    def _tried(self, cursor: Cursor, limits: Limits) -> bool:
+        """Whether a summary was paid for on this line, with these limits, and did not fit."""
+        failed = self._futile.get(cursor.id)
+        if failed is None or failed[0] != limits:
+            return False
+        return any(n.id == failed[1] for n in cursor.walk())
 
-    async def _summarize(self, cursor: Cursor, focus: str, model: str | None) -> str | None:
-        """The summary text: a summarizer cursor at the branch's node, sent the prompt. `None`
-        if the summarizer or the branch's cursor was aborted meanwhile (nothing is kept);
-        `CompactionFailed` if the summary failed."""
+    def _unfit(  # noqa: PLR0913 - why a line cannot be made, and what that means here
+        self,
+        cursor: Cursor,
+        why: str,
+        part: str,
+        mode: Mode,
+        plan: _Plan,
+        *,
+        pays: bool,
+    ) -> str:
+        """The line cannot be made under its limit: a failure for `/compact` and at the hard limit
+        (the request cannot be sent), a notice at the soft one. A notice is said once per cursor,
+        limit and `part` that is too big, since one at every turn end would nag, and a different
+        part is told. A summary that was paid for and did not fit is not asked for again at the
+        soft limit while the limits are the same and the cursor stays on that line; the hard limit
+        and `/compact` always try."""
+        if mode != "soft":
+            raise CompactionFailed(why + (_hint(plan.request) if mode == "hard" else ""))
+        if pays:
+            self._futile[cursor.id] = (plan.limits, cursor.node().id)
+        if (cursor.id, mode, part) not in self._warned:
+            self._warned.add((cursor.id, mode, part))
+            cursor.tell(f"compaction cannot keep this under its soft limit: {why}")
+        return why
+
+    def _summarizer_input(self, cursor: Cursor, focus: str) -> tuple[int, str]:
+        """Where the summarizer starts and what it is sent. A branch that ends in an input not
+        yet answered (the hard limit, on new input) is summarized without it, from the node
+        before: the input is kept word for word after the summary, and the summarizer's request
+        is not made bigger by the very message that does not fit."""
         here = cursor.node()
-        prompt = PROMPT + (FOCUS.format(focus=focus) if focus else "")
-        at = here.id
-        if isinstance(here.body, Body.User) and here.parent is not None:
-            # The branch ends in an input not yet answered (the hard limit, on new input): the
-            # prompt goes in the same message, so two user messages never sit side by side.
-            at, prompt = here.parent, f"{here.body.text}\n\n{prompt}"
+        at = (
+            here.parent if isinstance(here.body, Body.User) and here.parent is not None else here.id
+        )
+        return at, PROMPT + (FOCUS.format(focus=focus) if focus else "")
+
+    async def _summarize(
+        self, cursor: Cursor, focus: str, model: str | None, end: int | None
+    ) -> tuple[str, Node] | None:
+        """The summary text and its reply: a summarizer cursor at the branch's node, sent the
+        prompt. `None` if the summarizer or the branch's cursor was aborted meanwhile (nothing is
+        kept); `CompactionFailed` if the summary failed."""
+        at, prompt = self._summarizer_input(cursor, focus)
+        at = at if end is None else end
         if model is not None:
             at = cursor.append(at, Body.Config(model_config(model)))
         summarizer = cursor.open(at)
@@ -356,14 +636,18 @@ class Compaction:
         try:
             cursor.set_label(self._label(cursor), summarizer)
             cursor.send(summarizer, prompt)
-            ending = await cursor.rest(summarizer)
+            try:
+                ending = await cursor.rest(summarizer)
+            except CursorClosed:  # someone closed it: as good as an abort
+                return None
             if isinstance(ending, Ending.Aborted):
                 return None
             if isinstance(ending, Ending.Failed):
                 raise CompactionFailed(f"the summary failed: {ending.error}")
             if isinstance(ending, Ending.Halted):
                 raise CompactionFailed(f"the summary was halted: {ending.reason}")
-            return _text(cursor.tree.node(cursor.cursor(summarizer).at))
+            reply = cursor.tree.node(cursor.cursor(summarizer).at)
+            return _text(reply), reply
         finally:
             await cursor.close_cursor(summarizer)
             self._summarizers.discard(summarizer)

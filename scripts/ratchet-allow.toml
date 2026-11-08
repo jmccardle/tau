@@ -29,3 +29,4 @@
 [justified]
 "tau-core::Session" = "the session's state: nodes, cursors, labels and scratchpad, each write queuing its record (I7); closing a cursor (D17) is one more write and one more read; fork (D18) builds one from a walk; append_from and write_from (D24 M1) are append and write with a source"
 "tau-py::Session" = "the Python face of Machine: one method per call a frontend, extension or driver makes, so a split changes the API; close_cursor and closed (D17) add two, read and fork (D18) two more"
+"python/tau/_handles.py::TreeHandle" = "the hook's handle on the session: one method per call a hook makes on the session itself (read it, write beside a cursor, count a walk, close or reopen a cursor), so a split changes the extension API"

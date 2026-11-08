@@ -26,6 +26,8 @@ from tau import (
 
 PRICE = {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
 
+COUNTS = "counts: reported only, with byte ceilings for what is not sent yet"
+
 
 def catalog(**models: dict[str, object]) -> ModelCatalog:
     """Models on the fake provider: `name=settings` (a `price`, a `context_window`)."""
@@ -118,7 +120,9 @@ async def test_a_reply_with_no_usage_says_so_and_costs_nothing(tmp_path: Path) -
     h = await session(tmp_path, [reply()], catalog(a={"price": PRICE}))
     await say(h)
     assert await line(h) == "a reported no usage"
-    assert await h.run("usage") == "no replies yet\n1 reply reported no usage and not counted"
+    assert await h.run("usage") == (
+        "no replies yet\n1 reply reported no usage and not counted\n" + COUNTS
+    )
     await h.close()
 
 
@@ -205,7 +209,7 @@ async def test_the_session_total_marks_a_model_it_could_not_price(tmp_path: Path
     assert (await line(h)).endswith("$3.00+ session")
     table = await h.run("usage")
     assert table is not None
-    assert table.splitlines()[-1] == "no price, so no cost: b"
+    assert table.splitlines()[-2:] == ["no price, so no cost: b", COUNTS]
     await h.close()
 
 
@@ -378,7 +382,9 @@ async def test_an_aborted_reply_is_said_to_be_aborted_and_counted_apart(tmp_path
     await h.abort()
     await h.settle()
     assert await line(h) == "a reply was aborted and reported no usage"
-    assert await h.run("usage") == "no replies yet\n1 reply was aborted and reported no usage"
+    assert await h.run("usage") == (
+        "no replies yet\n1 reply was aborted and reported no usage\n" + COUNTS
+    )
     await h.close()
 
 

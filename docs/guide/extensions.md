@@ -208,6 +208,25 @@ to the **pool**, the questions anyone may answer. While it waits, the cursor is 
 every open question, so a hook must expect `None`. With nobody connected, the question waits.
 [Writing a frontend](frontends.md) shows how a client answers.
 
+## Counting tokens
+
+`await cursor.count()` answers what the walk to the cursor's node will cost as a request: a
+`RequestCount` whose `total` is a `Count` (`tokens`, `basis`, `bound`, and `upper`, their
+sum) and whose `nodes` hold a count for each node, so an extension can see how big a part of the
+conversation is without guessing from its characters. `count(at=node_id)` counts another node's
+walk, and a tool hook's `node.count()` the batch's. Every count is what the servers reported
+where a report covers it (`basis` is `reported`), and for what none does, such as your new
+message, the node's bytes as a ceiling (`ceiling`; `upper` is the most it can be). Counts add, and
+a sum is as weak as its weakest part.
+
+An extension can do better for the nodes no report covers by offering a **counter**: an attribute
+`counter` holding an object with `count(job)`, which returns a `CounterAnswer` with a count for
+some of `job.unreported`. It runs in a thread, so it must not touch the network. It cannot change
+a report: an answer for a node a report covers fails the count with a `DefinitionError` naming the
+extension. Only one loaded extension may offer a counter, and `cursor.counter` is its key (`None`
+if there is none). [The built-ins guide](built-ins.md#a-long-conversation-can-be-shortened) shows
+what compaction does with the counts.
+
 ## Testing it
 
 Drive the extension with a scripted model: a *provider* that plays back replies. Providers are
