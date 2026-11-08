@@ -381,12 +381,12 @@ Where the code differs from the text above, or the text left a choice:
 
   | stdin | what happens |
   |---|---|
-  | a terminal | not read (unless the line has `-`) |
+  | a terminal | never read |
   | a file, `/dev/null`, a pipe that has sent its data and closed | read to its end at once |
   | a pipe that sends something within 3 s | read to its end, however long that takes |
-  | with words: a pipe left open that says nothing for 3 s (cron, ssh, a CI step) | not read: `tau: no standard input within 3 s: going on without it (the word `-` waits for it)` on stderr, and the words go alone |
-  | no words at all (`make 2>&1 \| tau -p`) | as for `-`: stdin is the only possible message, so it is waited for; stderr says `tau: waiting for standard input` and that `</dev/null` skips it |
-  | the word `-` anywhere in the line | read to its end however long it takes, from a terminal too (Ctrl-D ends it), like `cat -`; after 2 s of silence stderr says `tau: waiting for standard input` once |
+  | with words: a pipe left open that says nothing for 3 s (cron, ssh, a CI step) | not read: `tau: no standard input within 3 s: going on without it (`-` as the first word waits for it)` on stderr, and the words go alone |
+  | no words at all (`make 2>&1 \| tau -p`) | as for `-`: stdin is the only possible message, so it is waited for; after 2 s stderr says `tau: still reading standard input: it has not ended (`</dev/null` skips it)` |
+  | `-` as the first word (stdin not a terminal) | read to its end however long it takes, like `cat -`; the rest of the line is the words; after 2 s stderr says the same notice once. A `-` anywhere else, or on a terminal, is a literal word (`what is 5 - 3`) |
   | closed (`<&-`) | empty |
   | not UTF-8 | usage error (exit 2), no traceback |
 

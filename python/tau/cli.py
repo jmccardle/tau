@@ -661,29 +661,45 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     if out is None:
         err.write("tau: standard output is closed\n")
         return 1
+    given = sys.argv[1:] if argv is None else list(argv)
+    source = sys.stdin if stdin is None else stdin
+    run = _Run(
+        io.StringIO("") if source is None else source,
+        out,
+        err,
+        os.environ if environ is None else environ,
+        Path.cwd() if cwd is None else cwd,
+        given[1:],
+    )
     try:
-        given = sys.argv[1:] if argv is None else list(argv)
-        source = sys.stdin if stdin is None else stdin
-        run = _Run(
-            io.StringIO("") if source is None else source,
-            out,
-            err,
-            os.environ if environ is None else environ,
-            Path.cwd() if cwd is None else cwd,
-            given[1:],
-        )
-        status = _main(given, run)
-        try:
-            out.flush()
-        except BrokenPipeError:
-            raise
-        except OSError as e:  # the last write failed (a full disk): the answer did not get out
-            detach(out)
-            return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
+        return _flushed(_main(given, run), out, err)
     except BrokenPipeError:
-        detach(out)
+        if _reader_gone(out):
+            detach(out)
         return SIGPIPE_STATUS
+
+
+def _flushed(status: int, out: TextIO, err: TextIO) -> int:
+    """`status`, or 1 if the last of standard output cannot be written (a full disk) and nothing
+    said so yet."""
+    try:
+        out.flush()
+    except BrokenPipeError:
+        raise
+    except OSError as e:
+        detach(out)
+        return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
     return status
+
+
+def _reader_gone(out: TextIO) -> bool:
+    """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
+    If it was standard error's, standard output is left alone (its buffer may go to a file)."""
+    try:
+        out.flush()
+    except BrokenPipeError:
+        return True
+    return False
 
 
 def _main(given: Sequence[str], run: _Run) -> int:

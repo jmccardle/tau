@@ -1533,7 +1533,7 @@ modules `tau._launch`, `tau._print_mode`, `tau.cli` · D22 · new
 
 **`tau -p [flags] [MESSAGE...]`** is the one-shot client: one `Client`, one cursor, nobody to ask.
 The message is the words joined with spaces, then (stdin not a terminal and either speaking within
-3 s or asked for with the word `-`) a blank line and stdin;
+3 s or asked for with `-` as the first word) a blank line and stdin;
 a message that starts with `/` is a command line (`parse_line`; an unknown command is sent as
 text). It opens the session as a frontend does (**open_client**), sends, and waits for **rest**:
 the first `CursorView` of the cursor, read after the call returned, that is not busy. stdout is the

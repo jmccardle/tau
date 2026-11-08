@@ -271,7 +271,7 @@ def _read_stdin(stdin: TextIO, stderr: TextIO) -> str:
 
     def say() -> None:
         stderr.write(
-            "tau: waiting for standard input (end it with Ctrl-D, or EOF; `</dev/null` skips it)\n"
+            "tau: still reading standard input: it has not ended (`</dev/null` skips it)\n"
         )
         stderr.flush()
 
@@ -293,32 +293,33 @@ def message_of(words: Sequence[str], stdin: TextIO, stderr: TextIO) -> tuple[str
     message is the first, or, if there are no words, the second. The second is otherwise kept
     apart, so a command can take it as its own and never as its arguments.
 
-    Standard input is read, to its end, when the line has the word `-` (even from a terminal, and
-    however long it takes), or when there are no words and it is not a terminal (the only possible
-    message, so the same wait), or when it is not a terminal and says something (a byte or its
-    end) within `STDIN_WAIT` seconds. A pipe or file that has already sent its data, `/dev/null`,
-    and
-    a closed descriptor are all read at once; one that stays silent (cron, ssh or a CI step that
-    left it open) is said so on `stderr` and `-p` goes on without it. `UsageError` if there is
-    no message."""
-    text = " ".join(w for w in words if w != STDIN_WORD)
+    Standard input is never read from a terminal. Otherwise it is read to its end, however long
+    that takes, when the first word is `-` (as `cat -` does; a `-` anywhere else is a word), or
+    when there are no words (the only possible message). With other words it is read when it says
+    something (a byte or its end) within `STDIN_WAIT` seconds: a pipe or file that has already
+    sent its data, `/dev/null` and a closed descriptor are read at once; one that stays silent
+    (cron, ssh or a CI step that left it open) is said so on `stderr` and `-p` goes on without it.
+    `UsageError` if there is no message."""
+    piped_in = not stdin.isatty()
+    marked = piped_in and bool(words) and words[0] == STDIN_WORD
+    text = " ".join(words[1:] if marked else words)
     text = text if text.strip() else ""
     piped = ""
-    # no words: standard input is the only possible message, so it is waited for as `-` does
-    if STDIN_WORD in words or (not text and not stdin.isatty()):
+    if marked or (piped_in and not words):
         piped = _read_stdin(stdin, stderr)
-    elif not stdin.isatty():
+    elif piped_in:
         if _stdin_speaks(stdin):
             piped = _read_stdin(stdin, stderr)
         else:
             stderr.write(
                 f"tau: no standard input within {STDIN_WAIT:g} s: going on without it "
-                f"(the word `{STDIN_WORD}` waits for it)\n"
+                f"(`{STDIN_WORD}` as the first word waits for it)\n"
             )
     piped = piped if piped.strip() else ""
     if not text and not piped:
         raise UsageError(
             "nothing to send: give the message as arguments, or on standard input "
-            f"(a pipe or file; the word `{STDIN_WORD}` waits for it, `</dev/null` has none)"
+            f"(a pipe or file; `{STDIN_WORD}` as the first word waits for it, "
+            "`</dev/null` has none)"
         )
     return (text, piped) if text else (piped, "")

@@ -75,9 +75,9 @@ blank line, so `git diff | tau -p "review this"` works. `tau -p` never waits on 
 without saying so. A file, `/dev/null` or a pipe that has sent its data is read at once. A pipe
 left open that sends nothing for three seconds (cron, ssh, a CI step) is given up on, when there are words: `tau` says
 `tau: no standard input within 3 s: going on without it` on standard error and sends the words
-alone. To wait for a slow producer, put a `-` among the words: `slow-command | tau -p "review" -`
-reads standard input to its end however long it takes (from a terminal, to Ctrl-D), and
-`tau -p -` makes it the whole message. With no words at all, standard input is the only possible message and is waited for like `-`; after two seconds `tau` says so, and `</dev/null` skips it. Standard input that is not UTF-8 text is a usage error.
+alone. To wait for a slow producer, make `-` the first word: `slow-command | tau -p - review`
+reads standard input to its end however long it takes, and `tau -p -` makes it the whole message.
+A `-` anywhere else is an ordinary word (`tau -p what is 5 - 3`), and a terminal is never read. With no words at all, standard input is the only possible message and is waited for like `-`; after two seconds `tau` says so, and `</dev/null` skips it. Standard input that is not UTF-8 text is a usage error.
 If the reader of standard output goes away (`tau -p ... | head -1`), `tau` stops quietly with
 status 141; if standard output is closed it says so and exits 1. With a command, `tau -p "/review a.rs"`, standard input follows the command's text after a
 blank line and is never part of its arguments ([What τ does for you](built-ins.md)).

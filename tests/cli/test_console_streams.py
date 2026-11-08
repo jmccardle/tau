@@ -148,7 +148,7 @@ def test_a_stdin_that_stays_open_and_silent_is_given_up_on_with_a_message(
         err
         == (
             f"tau: no standard input within {SILENT_WAIT} s: going on without it "
-            "(the word `-` waits for it)\n"
+            "(`-` as the first word waits for it)\n"
         ).encode()
     )
 
@@ -186,20 +186,18 @@ def test_a_pipe_that_speaks_within_the_wait_is_read_to_its_end(configured: World
 def test_a_lone_dash_waits_for_stdin_as_long_as_it_takes_and_says_so_once(
     configured: World,
 ) -> None:
-    code, out, err = piped(configured, "review", "-", delay=4, data=b"slow diff\n")
+    code, out, err = piped(configured, "-", "review", delay=4, data=b"slow diff\n")
     assert code == 0
     assert out == "mock: review\n\nslow diff\n"
-    assert err == (
-        "tau: waiting for standard input (end it with Ctrl-D, or EOF; `</dev/null` skips it)\n"
-    )
+    assert err == ("tau: still reading standard input: it has not ended (`</dev/null` skips it)\n")
 
 
 def test_a_dash_alone_makes_stdin_the_message(configured: World) -> None:
     assert tau(configured, "-p", "-", stdin="from the pipe").out == "mock: from the pipe\n"
 
 
-def test_a_dash_is_not_part_of_the_words(configured: World) -> None:
-    result = tau(configured, "-p", "review", "-", "this", stdin="data")
+def test_a_first_dash_is_not_part_of_the_words(configured: World) -> None:
+    result = tau(configured, "-p", "-", "review", "this", stdin="data")
     assert result.out == "mock: review this\n\ndata\n"
 
 
@@ -284,6 +282,69 @@ def test_no_words_waits_for_stdin_like_a_dash_and_says_so(configured: World) -> 
     code, out, err = piped(configured, delay=4, data=b"make output\n")
     assert code == 0
     assert out == "mock: make output\n"
-    assert err == (
-        "tau: waiting for standard input (end it with Ctrl-D, or EOF; `</dev/null` skips it)\n"
+    assert err == ("tau: still reading standard input: it has not ended (`</dev/null` skips it)\n")
+
+
+def test_a_dash_after_the_first_word_is_a_word(configured: World) -> None:
+    assert tau(configured, "-p", "what", "is", "5", "-", "3", stdin="x").out == (
+        "mock: what is 5 - 3\n\nx\n"
     )
+
+
+def test_a_dash_on_a_terminal_is_a_word(configured: World) -> None:
+    master, slave = pty.openpty()
+    try:
+        with os.fdopen(slave, "rb", closefd=False) as stdin:
+            done = run(configured, "what", "is", "5", "-", "3", stdin=stdin)
+    finally:
+        os.close(master)
+        os.close(slave)
+    assert (done.returncode, done.stdout, done.stderr) == (0, b"mock: what is 5 - 3\n", b"")
+
+
+def test_data_that_arrived_but_has_not_ended_is_not_called_nothing(configured: World) -> None:
+    read, write = os.pipe()
+    os.write(write, b"hi\n")
+    err = io.StringIO()
+    out = io.StringIO()
+    closer = threading.Timer(3.5, os.close, (write,))
+    closer.start()
+    with os.fdopen(read, encoding="utf-8") as stdin:
+        code = main(
+            ["-p", "--no-session", "words"],
+            stdin=stdin,
+            stdout=out,
+            stderr=err,
+            environ=configured.environ,
+            cwd=configured.home,
+        )
+    closer.join()
+    assert code == 0
+    assert out.getvalue() == "mock: words\n\nhi\n"
+    assert (
+        err.getvalue()
+        == "tau: still reading standard input: it has not ended (`</dev/null` skips it)\n"
+    )
+
+
+class _BrokenErr(io.StringIO):
+    def write(self, s: str, /) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+def test_a_broken_stderr_does_not_discard_what_stdout_holds(configured: World) -> None:
+    """Standard output is a file with text still buffered; the usage error cannot be written to
+    the broken standard error. The buffered text must still reach the file."""
+    path = configured.home / "out.txt"
+    with path.open("w", encoding="utf-8", buffering=1 << 16) as out:
+        out.write("earlier output\n")
+        code = main(
+            ["-p"],
+            stdin=io.StringIO(""),
+            stdout=out,
+            stderr=_BrokenErr(),
+            environ=configured.environ,
+            cwd=configured.home,
+        )
+    assert code == 141
+    assert path.read_text(encoding="utf-8") == "earlier output\n"
