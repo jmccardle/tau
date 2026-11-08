@@ -135,8 +135,9 @@ def prompt_candidates(
     """The paths under `.tau/` that are, or look like they were meant to be, a template or a skill
     file: `prompts/*.md` and `skills/*/SKILL.md`, and the places they are mistaken for (a `.md` in
     any case, one level inside a `prompts/` subdirectory, a flat `skills/*.md`, a `skill.md` of
-    another case). `names(relative)` lists a directory under `.tau/` (none if absent) and
-    `is_dir(relative)` says whether a path is one; both leave out names starting with `.`."""
+    another case, a skill one directory too deep). `names(relative)` lists a directory under
+    `.tau/` (none if absent) and `is_dir(relative)` says whether a path is one; both leave out
+    names starting with `.`."""
     found: list[str] = []
     for top in (PROMPTS_DIR, SKILLS_DIR):
         for name in names(top):
@@ -149,6 +150,12 @@ def prompt_candidates(
                 wanted = _is_markdown(inner) if top == PROMPTS_DIR else inner.lower() == "skill.md"
                 if wanted:
                     found.append(f"{path}/{inner}")
+                elif top == SKILLS_DIR and is_dir(f"{path}/{inner}"):  # skills/GROUP/NAME/SKILL.md
+                    found += [
+                        f"{path}/{inner}/{deep}"
+                        for deep in names(f"{path}/{inner}")
+                        if deep.lower() == "skill.md"
+                    ]
     return sorted(found)
 
 

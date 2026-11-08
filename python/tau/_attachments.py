@@ -15,7 +15,9 @@ stays as text, and a file named twice is attached once. A `</attachment>` inside
 written `<\\/attachment>`, so a file cannot end its own block and start another.
 
 A token is `@` followed by non-space characters, at the start of the text or after whitespace, or
-`@"` and a path with spaces up to the next `"` (`@"my notes.txt"`). If the whole token names no
+`@"` and a path with spaces up to the next `"` (`@"my notes.txt"`). As in a shell, a backslash
+makes the next character an ordinary one (`@my\\ notes.txt`; `\\\\` is a backslash); inside
+quotes nothing is special but the closing `"`. If the whole token names no
 regular file, trailing punctuation is stripped one character at a time until one does (`see
 @notes.txt.` attaches `notes.txt`). `~` expands to the home directory of whoever runs the session,
 and a relative path is taken against the session's working directory, which is where `base_tools`
@@ -42,7 +44,8 @@ from tau._config import ConfigError
 from tau._core import Author, Body, Draft
 from tau._handles import Cursor, Subject
 
-_TOKEN = re.compile(r'(?<!\S)@(?:"([^"\n]+)"|(\S+))')
+_TOKEN = re.compile(r'(?<!\S)@(?:"([^"\n]+)"|((?:\\.|\S)+))')
+_ESCAPE = re.compile(r"\\(.)")
 _CLOSE_TAG = re.compile(r"</(attachment)", re.IGNORECASE)
 _CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
 _PATH_LIKE = re.compile(r"[\w~.+/-]*(?:/|\.\w|:\d+(?:-\d+)?$)[\w~.+/:-]*")
@@ -143,8 +146,9 @@ def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
     missed: list[str] = []
     code = [m.span() for m in _CODE.finditer(text)]
     for match in _TOKEN.finditer(text):
-        quoted_word, bare = match.group(1), match.group(2)
-        found = [quoted_word] if quoted_word is not None else _candidates(bare)
+        quoted_word = match.group(1)
+        typed: str = quoted_word if quoted_word is not None else _ESCAPE.sub(r"\1", match.group(2))
+        found = [quoted_word] if quoted_word is not None else _candidates(typed)
         for word in found:
             path = _resolve(word, cwd)
             if path is None:
@@ -155,7 +159,6 @@ def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
                 blocks.append(_block(word, path, limit))
             break
         else:
-            typed = quoted_word if quoted_word is not None else bare
             in_code = any(a <= match.start() < b for a, b in code)
             if not in_code and (quoted_word is not None or _looks_like_a_path(typed)):
                 missed.append(typed)

@@ -82,7 +82,8 @@ fn main() {}
 to the session's working directory, and `~` is the home directory of whoever runs the session; over
 `tau serve` that is the server's, not your terminal's. A token is `@` and the non-space characters
 after it, at the start of the message or after a space, and trailing punctuation does not count:
-`see @notes.txt.` attaches `notes.txt`. A path with spaces goes in quotes: `@"my notes.txt"`. A word
+`see @notes.txt.` attaches `notes.txt`. A path with spaces goes in quotes, `@"my notes.txt"`, or has each space escaped as in a shell,
+`@my\ notes.txt` (`\\` is a backslash); Tab writes the quoted form. A word
 that names no regular file stays as you typed it (`@alice`, a missing file, a directory), and a
 file named twice is attached once. When a word looks like a path (it has a `/`, an extension or a
 `:10` after it) but attaches nothing, τ tells you in a notice (a toast in the terminal UI, a line
@@ -144,7 +145,9 @@ as your message, and the model answers it. How the arguments are read:
   `$10` and up are numbers of more than one digit: `$10` is the tenth word, not `$1` and `0`.
 - A word the arguments do not have is empty text, so `/review main.rs` works with the hint
   `<file> [focus]` above: `$2` is nothing.
-- `$$` writes a literal `$` (`costs $$5`). A `$` followed by anything else is left as it is.
+- `${2}` is `$2` where a digit follows (`${1}0` is the first word and a `0`). `$$` writes a literal
+  `$` (`costs $$5`), the way `make` does; a backslash is a character in the arguments, so `\$` is
+  not an escape. A `$` followed by anything else is left as it is.
 - `@file` words in the arguments attach their files after the whole text (once each), as they do
   in a message; the template's own `@` words do not.
 - A template with no placeholder gets the arguments after a blank line, which makes `Be brief.` a
@@ -215,7 +218,8 @@ A name is ASCII letters, digits, `_` and `-`. A template and a skill with one na
 directory, a bad name, a file that is not UTF-8 and a skill without a description each stop the
 start with a message naming the file, because a command that quietly went missing would be harder
 to find. So does a file in the wrong place: `skills/pdf/skill.md` (the file is `SKILL.md`,
-in capitals), a flat `skills/pdf.md` (a skill is a directory), `prompts/sub/x.md` (templates are
+in capitals), a flat `skills/pdf.md` (a skill is a directory), `skills/group/pdf/SKILL.md` (skills are not
+read from subdirectories), `prompts/sub/x.md` (templates are
 not read from subdirectories) and `prompts/x.MD` (`.md` in lower case). All the problems are listed
 at once, and `tau trust` refuses a project whose files have any, listing all of them.
 `tau ext disable skills` starts without them. A byte order mark at the start of a file is ignored.

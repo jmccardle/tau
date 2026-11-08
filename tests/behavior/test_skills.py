@@ -359,6 +359,16 @@ async def test_two_dollars_write_one_and_numbers_past_nine_are_numbers(
 
 
 @scenario
+async def test_braces_end_a_number_so_a_digit_can_follow_it(tmp_path: Path, world: World) -> None:
+    template(world, "braced", "${1}0 and ${10} and $1 0")
+    h = await session(tmp_path, world)
+    await h.run("braced", {"args": "a b c d e f g h i j"})
+    await h.settle()
+    assert users(h) == ["a0 and j and a 0"]
+    await h.close()
+
+
+@scenario
 async def test_a_body_with_only_dollar_signs_still_gets_the_arguments(
     tmp_path: Path, world: World
 ) -> None:

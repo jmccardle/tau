@@ -208,7 +208,8 @@ attached after it:
 unreadable becomes `<reference path="/abs/src/big.log" size="2.1 MB" reason="over the 10 kB
 limit"/>` (the size is in bytes when it would read like the limit), so the model can `read` the
 part it needs. A token is `@` followed by non-spaces, at the start of the line or after
-whitespace, with trailing punctuation retried stripped; `@"a b.txt"` names a path with spaces. A
+whitespace, with trailing punctuation retried stripped; `@"a b.txt"` or `@a\ b.txt` (backslash escapes the next character, as in a shell) names a path
+with spaces. A
 `</attachment>` in a file's text is written `<\/attachment>`. `~` expands, and a relative
 path resolves against the driver's working directory, as `complete` does. A word that names no
 regular file, or names a directory, stays as text. A file named twice is attached once. A word
@@ -242,7 +243,8 @@ expand it: it is not a person's typing, §5), and the cursor samples.
 
 - **Template expansion:** `$ARGUMENTS` is the whole argument text and `$N` (any number of digits)
   its words, split on whitespace with `"` grouping and `'` literal. A missing `$N` is empty text.
-  `$$` is a literal `$`. A body with no placeholder gets the arguments appended after a blank
+  `${N}` is `$N` before a digit. `$$` is a literal `$` (the `make` spelling: a backslash is an
+  ordinary character in the arguments, and apostrophes are common in prose). A body with no placeholder gets the arguments appended after a blank
   line. 0.15's `${N:-default}`, `${@:N:L}` and `$@` are dropped. (8E-5: it was `$1`…`$9` as a
   shell splits them, and a missing one failed the command.)
 - **A skill** sends `<skill name="NAME" path="/abs/…/SKILL.md">body</skill>`, the line "A relative
