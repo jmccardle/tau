@@ -417,4 +417,5 @@ def base_tools(
 ```
 
 `read`, `write`, `edit`, `grep`, `find` and `bash`, all working in `cwd` (default: the
-current directory).
+current directory). Where `bash` does not run (Windows), the other
+five.

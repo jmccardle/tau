@@ -96,10 +96,12 @@ scripts/check.sh                          # the gate
 - Forgejo, not GitHub: `runs-on` is a single string. Job containers cannot
   reach the forge's public URL, so anything that calls back to it (artifact
   upload, cache) fails with ECONNREFUSED; checkout works.
-- PyPI publishing for 0.15 ran from GitHub (`.github/workflows/publish.yml`,
-  trusted publishing, removed by the merge; see `git show v0.15.0:.github/workflows/publish.yml`).
-  A trusted publisher is bound to the workflow's file name, so its maturin
-  replacement keeps that name.
+- `github`: the public GitHub repository, which builds the release.
+  `.github/workflows/publish.yml` (the name is bound to PyPI's trusted
+  publisher, environment `pypi`) builds and tests the wheels on Linux x86_64
+  and aarch64, macOS arm64 and x86_64 and Windows x86_64, and publishes only
+  for a pushed `v*` tag. Push a branch named `publish-draft` there to run it
+  without publishing. The Forgejo CI stays Linux x86_64 only.
 
 ## Python versions and wheels
 
@@ -107,6 +109,11 @@ scripts/check.sh                          # the gate
 - Free-threaded: no stable ABI before 3.15 (`abi3t`), so 3.14t gets a
   version-specific `cp314t` wheel. maturin does this automatically from the
   same config.
+- Targets: Linux x86_64 and aarch64 (manylinux2014), macOS arm64 and x86_64
+  (11.0 and up), Windows x86_64: two wheels each. Platform code lives in its
+  own `cfg` modules (`tau-tools/src/session/`, `limit/{unix,windows}.rs`,
+  `bash_unavailable.rs`; `tau-store/src/lease.rs`). What Windows lacks fails
+  naming the platform, and its tests are skipped there with the reason.
 - `gil_used = false` is PyO3 0.30's default; the module states it anyway, as a
   claim the tests hold it to. `tests/core/test_threads.py` fails on a
   free-threaded build if importing us turns the GIL back on. Every `#[pyclass]`

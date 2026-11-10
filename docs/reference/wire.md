@@ -80,7 +80,7 @@ async def start(
 
 Serve `driver` (running, in the loop) at `path`, as session `session` in `cwd`. `idle`
 seconds is how long `wait` lets the server rest before it returns (`None`: never).
-`OSError` if the socket cannot be bound.
+`OSError` if the socket cannot be bound (on Windows, always: see `require_unix_sockets`).
 
 ### Server.wait
 

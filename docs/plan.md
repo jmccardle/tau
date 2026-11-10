@@ -80,8 +80,10 @@ directly, so:
 **Deferred (2026-10-29):**
 - Overflow-file pruning: a user config or an option of the base tools
   extension, by age and/or total size (e.g. last 60 days, last 0.25 GB).
-- A macOS implementation of the base tools (`bash` finds leftover processes
-  through `/proc`, so it is Linux-only), and a `powershell` tool for Windows.
+- ~~A macOS implementation of the base tools~~: done in Phase 9 (libproc and a
+  kqueue in place of `/proc` and `waitid`; the same Rust tests pass on both macOS
+  runners). A shell tool for Windows (`powershell`, Git Bash, or none) is still
+  open; see Phase 9.
 
 4. **Config overhaul** (approved 2026-10-27; built 2026-10-29), in Python: the config file
    parser, project trust, and `tau config check`. Written up as
@@ -112,8 +114,8 @@ directly, so:
 ## Phases
 
 ### Phase 0: scaffold — done
-Cargo workspace, maturin, wheels (Linux x86_64 only; aarch64 and macOS need
-runners we don't have — revisit before release), clippy, rustfmt, ruff,
+Cargo workspace, maturin, wheels (Linux x86_64 at the time; Phase 9 adds
+aarch64, macOS and Windows on GitHub's runners), clippy, rustfmt, ruff,
 pyright strict, proptest. Exit met: the wheel imports next to `ffwf-tau` 0.15,
 including on free-threaded 3.14t without re-enabling the GIL.
 
@@ -363,11 +365,33 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   notice when the cache is not being read.
 
 ### Phase 9: release 0.16.0
-- Wheels beyond Linux x86_64. aarch64 and macOS need runners; the base tools
-  are Linux-only.
-- The PyPI publish workflow on GitHub. It is rewritten for maturin but keeps
-  `publish.yml` as its name, because the trusted publisher is bound to that
-  name.
+- Wheels beyond Linux x86_64: built (2026-11-10). `.github/workflows/publish.yml`
+  builds a `cp312-abi3` and a `cp314t` wheel for Linux x86_64 and aarch64
+  (manylinux2014, zig), macOS arm64 and x86_64, and Windows x86_64, plus the
+  sdist (and a wheel built from it); each wheel is installed in a clean venv on
+  a fresh runner of its platform and the whole suite runs against it, and
+  `cargo test` runs on all five. It publishes only for a pushed `v*` tag; a
+  push to `publish-draft` or a manual run builds and tests. A second package
+  is one entry in its `matrix` job.
+- Platforms, as built: Linux and macOS have everything, the `bash` tool at
+  parity (`tau-tools/src/session/{linux,macos}.rs`). Windows builds and
+  imports, and has the core, the store (its lease is a byte-range lock, since
+  a Windows lock is mandatory), `tau -p`, the TUI and the other five base
+  tools (the overflow directory checked by owner and access list). Not ported
+  to Windows, each an error naming the platform where it is used: the `bash`
+  tool (`base_tools()` returns five there), `tau serve` and its clients (the
+  wire is a Unix domain socket, which asyncio does not offer on Windows), and
+  projects (D13's owner and mode checks). Open decisions: the Windows shell
+  tool; the Windows transport for `tau serve`; Windows project trust; how
+  path rules (`permissions`) and `@file` read Windows paths.
+- Not yet green, as of the run that ends this pass (see its report): the
+  Windows suite's long tail (tests that write text files with `\n` and read
+  them back as `\r\n`, tests that expect `bash` among the base tools, path
+  spelling in permission rules and attachments, the console's code page);
+  on macOS, permission tests that name `/tmp` and `/etc`, which are symlinks
+  into `/private` there (and a deny rule on `/etc/*` does not match a path that
+  resolves to `/private/etc`: a finding, not yet fixed); and one test on 3.14t
+  that fails on `master` too (`test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step[eager]`).
 - The docs site, and release notes written from `docs/from-0.15.md`
   (what changed, what was dropped, what comes later). There is no 0.15
   session converter (D9 superseded), and no 0.15 extension shim.
