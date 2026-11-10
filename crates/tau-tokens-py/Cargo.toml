@@ -9,11 +9,11 @@ repository.workspace = true
 publish = false
 
 [lib]
-name = "_core"
+# Not `_core`: tau-py's library has that name, and two libraries of one name in a workspace are
+# one file in target/, so each build would hand the other's module to maturin. The Python module
+# is still `tau_tokens._core` (the `#[pymodule]`'s name, and `module-name` in tokens/pyproject.toml).
+name = "tau_tokens_core"
 crate-type = ["cdylib"]
-# Two crates of this workspace build a library named `_core` (this one and tau-py); rustdoc would
-# write both to one path. Neither has documentation of its own to publish.
-doc = false
 
 [features]
 # Enabled for every maturin build (tokens/pyproject.toml), as in tau-py: one wheel for every GIL

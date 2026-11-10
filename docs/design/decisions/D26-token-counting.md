@@ -795,6 +795,12 @@ templates`) are compared whole, 120 renderings, byte for byte.
   hashes for the real models and whole text for the templates written here. The free-threading
   test is `tests/tokens/test_tokenizer.py`, not `tests/core/test_threads.py`, so that the main
   wheel's tests do not import the second wheel.
+- **The second library is not named `_core` in Cargo.** Two libraries of one name in a workspace
+  are one file in `target/`, and the gate caught each build handing the other's module to
+  maturin (`import tau` failed). `tau-tokens-py`'s library is `tau_tokens_core`; the Python
+  module is `tau_tokens._core` all the same. The wheel has its own `README.md` and a copy of
+  `LICENSE` in `tokens/`, since a wheel's metadata reads them from beside its `pyproject.toml`;
+  `maturin sdist` builds from there (building a wheel from that sdist was not tried).
 - **`tau_tokens` is a group of `docs/api/groups.toml`** (`package = "tau_tokens"`), as §7.1 says;
   `scripts/api_docs.py` learned that a group may belong to another package, and
   `scripts/stub_docs.py` holds both stubs' docstrings to the built modules.
