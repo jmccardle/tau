@@ -578,19 +578,19 @@ def with_branch(home: World, binary: Path) -> Screen:
     # The title alone is drawn while the tree is still being read, and keys are dropped then;
     # the follow state in it says the tree is drawn and takes keys.
     screen.wait_for("The session's tree · following", on_screen=True)
+    # A frame can be read part way (the title, then the rest): the detail pane is the last of it.
+    screen.wait_for("cursor 0: a walk of", on_screen=True)
     return screen
 
 
 def test_the_tree_shows_a_second_clients_branch_as_a_stub_with_its_cursor(
     home: World, binary: Path
 ) -> None:
-    screen = with_branch(home, binary)
-    screen.wait_for("following", on_screen=True)
-    shown = screen.display()
-    assert "├┄" in shown, shown
-    assert "◀ 1 scout" in shown, shown
-    assert "◀ [0]" in shown, "the viewed cursor is bracketed"
-    assert "cursor 0: a walk of" in shown, "the detail pane measures the walk"
+    screen = with_branch(home, binary)  # the detail pane measures the walk: "cursor 0: a walk of"
+    screen.wait_for("├┄", on_screen=True)  # the branch, as a stub
+    screen.wait_for("◀ 1 scout", on_screen=True)
+    screen.wait_for("◀ [0]", on_screen=True)  # the viewed cursor is bracketed
+    assert "following" in screen.display()
     screen.type(DOWN)
     screen.wait_for("paused (f follows)", on_screen=True)
     screen.type("f")
