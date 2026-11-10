@@ -17,7 +17,8 @@ written `<\\/attachment>`, so a file cannot end its own block and start another.
 A token is `@` followed by non-space characters, at the start of the text or after whitespace, or
 `@"` and a path with spaces up to the next `"` (`@"my notes.txt"`). As in a shell, a backslash
 makes the next character an ordinary one (`@my\\ notes.txt`; `\\\\` is a backslash); inside
-quotes nothing is special but the closing `"`. If the whole token names no
+quotes nothing is special but the closing `"`. On Windows a backslash separates directories
+(`@src\\main.rs`, `@C:\\work\\a.txt`), so it escapes only a space. If the whole token names no
 regular file, trailing punctuation is stripped one character at a time until one does (`see
 @notes.txt.` attaches `notes.txt`). `~` expands to the home directory of whoever runs the session,
 and a relative path is taken against the session's working directory, which is where `base_tools`
@@ -36,6 +37,7 @@ name a file the person's rules deny the model.
 import asyncio
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -45,7 +47,7 @@ from tau._core import Author, Body, Draft
 from tau._handles import Cursor, Subject
 
 _TOKEN = re.compile(r'(?<!\S)@(?:"([^"\n]+)"|((?:\\.|\S)+))')
-_ESCAPE = re.compile(r"\\(.)")
+_ESCAPE = re.compile(r"\\( )" if sys.platform == "win32" else r"\\(.)")
 _CLOSE_TAG = re.compile(r"</(attachment)", re.IGNORECASE)
 _CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
 _PATH_LIKE = re.compile(r"[\w~.+/-]*(?:/|\.\w|:\d+(?:-\d+)?$)[\w~.+/:-]*")
@@ -94,6 +96,8 @@ def _candidates(token: str) -> list[str]:
 
 def _resolve(word: str, cwd: Path) -> Path | None:
     """The regular file `word` names (`~` expanded; relative to `cwd`), else `None`."""
+    if sys.platform == "win32" and word.endswith((".", " ")):
+        return None  # Windows ignores a trailing dot or space, so `a.txt.` would name `a.txt`
     path = Path(os.path.expanduser(word))
     path = path if path.is_absolute() else cwd / path
     try:

@@ -1,6 +1,7 @@
 """`/` commands: the popup, Tab, the form for missing arguments, results and refusals (D23)."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -176,10 +177,14 @@ from tuikit import greet as tuikit_greet  # noqa: E402
 def make_files(tmp_path: Path) -> Path:
     where = tmp_path / "files"
     where.mkdir()
-    (where / "a b.txt").write_text("x", encoding="utf-8")
+    (where / "a b.txt").write_bytes(b"x")
+    return where
+
+
+def make_specials(where: Path) -> None:
+    """A link to nothing and a FIFO, which an `@` word never offers."""
     (where / "dangling").symlink_to(where / "nowhere")
     os.mkfifo(where / "fifo")
-    return where
 
 
 @scenario
@@ -195,10 +200,12 @@ async def test_tab_on_an_at_word_quotes_a_path_with_spaces(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("name", ["d", "f"])
 @scenario
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no os.mkfifo")
 async def test_tab_on_an_at_word_does_not_offer_a_link_to_nothing_or_a_fifo(
     tmp_path: Path, name: str
 ) -> None:
     where = make_files(tmp_path)
+    make_specials(where)
     h = await harness(tmp_path)
     async with running(h, tmp_path) as (app, pilot):
         await type_line(pilot, f"@{where}/{name}")

@@ -29,6 +29,13 @@ def harness_mode() -> None:
     """One mode: the cost is the screen's, not the wire's (this replaces the suite's two)."""
 
 
+@pytest.fixture
+def seeded(tmp_path: Path) -> tuple[int, int]:
+    """The session `seed` makes, built before the scenario's clock starts: 30,000 appends are
+    most of this test's cost on a slow disk, and the scenario's budget is for the screen."""
+    return seed(tmp_path)
+
+
 def seed(tmp_path: Path) -> tuple[int, int]:
     """A session of `TURNS` turns in `tmp_path`, its cursor at the end; the middle node."""
     session = Session.create(FAKE_CONFIG, "sys", 0, tmp_path / "session")
@@ -47,8 +54,10 @@ def seed(tmp_path: Path) -> tuple[int, int]:
 
 
 @scenario
-async def test_a_redraw_with_thirty_thousand_nodes_changes_rows_in_place(tmp_path: Path) -> None:
-    tip, middle = seed(tmp_path)
+async def test_a_redraw_with_thirty_thousand_nodes_changes_rows_in_place(
+    tmp_path: Path, seeded: tuple[int, int]
+) -> None:
+    tip, middle = seeded
     h = await Harness.load(tmp_path, provider=FakeProvider([say(f"more {i}") for i in range(8)]))
     assert len(h.nodes()) == 2 * TURNS + 2
     async with running(h, tmp_path) as (app, pilot):

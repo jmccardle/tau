@@ -338,7 +338,14 @@ def test_trust_escapes_every_error_whatever_its_source_and_directory_names(world
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
     assert ESC not in result.both
-    odd = world.home / os.fsdecode(b"np\xff")  # a name that is not UTF-8
+    # A name that is not UTF-8. APFS (macOS) refuses one (EILSEQ): there, a name with an escape
+    # character stands in, so the rest of the test still runs.
+    odd_name, escaped = (
+        ("np" + ESC + "[2J", "np\\x1b[2J")
+        if sys.platform == "darwin"
+        else (os.fsdecode(b"np\xff"), "np\\xff")
+    )
+    odd = world.home / odd_name
     (odd / ".tau").mkdir(parents=True)
     (odd / ".tau" / "config.json").write_text(
         json.dumps(models(p={"base_url": "http://h/v1\u202e\U000e0041"})), encoding="utf-8"
@@ -346,7 +353,7 @@ def test_trust_escapes_every_error_whatever_its_source_and_directory_names(world
     trusted = tau(world, "trust", cwd=odd)
     assert trusted.code == 0
     trusted.out.encode("utf-8")  # strictly encodable
-    assert "np\\xff" in trusted.out
+    assert escaped in trusted.out
     assert "\u202e" not in trusted.out
     assert "\\u202e" in trusted.out
     checked = tau(world, "config", "check", cwd=odd)

@@ -233,7 +233,8 @@ async def test_ctrl_z_on_a_busy_cursor_asks_before_aborting(tmp_path: Path) -> N
         await until(pilot, lambda: bool(app.screen.query("#confirm-dialog")))
         await pilot.click("#confirm-yes")
         await until(pilot, lambda: app.draft == "go")
-        assert not (await h.view()).busy
+        # The abort cancels the sample as a task: the step has ended a pass of the loop later.
+        await until(pilot, lambda: not h.session.cursor(h.cursor).busy)
         assert (await h.view()).at == SYS
     await h.close()
 

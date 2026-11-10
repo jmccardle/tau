@@ -9,6 +9,7 @@ and `Busy` error toasts. Completion is the session's: `complete_line` for a comm
 lines only), `commandline.values` for the field of a form or a question.
 """
 
+import os
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -154,7 +155,7 @@ class CommandLine:
         words: list[str] = []
         for path in found:
             if quoted or " " in path:
-                words.append(f'{_PATH_MARK}"{path}' + ("" if path.endswith("/") else '"'))
+                words.append(f'{_PATH_MARK}"{path}' + ("" if path.endswith(("/", os.sep)) else '"'))
             else:
                 words.append(_PATH_MARK + path)
         return words

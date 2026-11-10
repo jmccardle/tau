@@ -6,7 +6,8 @@ what could finish the word being typed. `value` and `values` do the same for one
 schema: a question's answer typed as text is read and completed as a command's argument is.
 A command is typed `/name`, or `/extension:name`, the qualified name nothing can take: a bare
 name that two extensions share is ambiguous (`LookupError`) and is completed qualified.
-Words are shell words (`shlex`): quote a value with spaces. Positional words fill the
+Words are shell words (`shlex`): quote a value with spaces. On Windows a backslash is not an
+escape but part of a path (`/load C:\\work\\a.txt`); quotes still group. Positional words fill the
 parameters in order, skipping those set by `name=value`; except that when the last parameter
 is a plain `str` (or a `str | None`; not a `Literal` or a named type) it takes the rest of the
 line from the word that would fill it, as typed, quotes and spacing included
@@ -27,6 +28,7 @@ every session (`Client.configure(save=True)`); without it they change only the b
 
 import json
 import shlex
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -147,9 +149,29 @@ def _properties(form: Form) -> Json:
     return {k: v for k, v in cast("Json", form.schema["properties"]).items() if k != STDIN}
 
 
+def _lexer(text: str) -> shlex.shlex:
+    """`shlex.split`'s lexer: shell words, with no comments, and on Windows no escape character."""
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split, lexer.commenters = True, ""
+    if sys.platform == "win32":
+        lexer.escape = ""
+    return lexer
+
+
+def _words(text: str) -> list[str]:
+    """`text` as shell words; `ValueError` for an open quote."""
+    return list(_lexer(text))
+
+
+def _quote(word: str) -> str:
+    """`word` as one shell word; on Windows a backslash alone needs no quote."""
+    slashed = word.replace("\\", "/") if sys.platform == "win32" else word
+    return word if shlex.quote(slashed) == slashed else shlex.quote(word)
+
+
 def _split(line: str) -> list[str]:
     try:
-        return shlex.split(line)
+        return _words(line)
     except ValueError as e:
         raise ValueError(f"cannot read the line: {e}") from None
 
@@ -221,8 +243,7 @@ def _words_and_rest(form: Form, text: str) -> tuple[list[str], str | None]:
     named: set[str] = set()
     positional = 0
     while text.strip():
-        lexer = shlex.shlex(text, posix=True)
-        lexer.whitespace_split, lexer.commenters = True, ""
+        lexer = _lexer(text)
         word: str | None = None
         problem = ""
         try:
@@ -248,7 +269,7 @@ def _one_word(rest: str) -> str:
     """The rest of a line: the one shell word it is, if it is exactly one (`"what is 2+2"`
     is `what is 2+2`); otherwise as typed."""
     try:
-        words = shlex.split(rest)
+        words = _words(rest)
     except ValueError:  # an open quote: the text is as typed
         return rest
     return words[0] if len(words) == 1 else rest
@@ -290,7 +311,7 @@ def _typing(line: str) -> tuple[list[str], str]:
     a space). A quote not yet closed is closed for the purpose."""
     for closing in ("", "'", '"'):
         try:
-            words = shlex.split(line + closing)
+            words = _words(line + closing)
         except ValueError:
             continue
         if closing or (line and not line[-1].isspace()):
@@ -356,7 +377,7 @@ async def completions(
         return []
     name, prefix, lead = wanted
     found = await values(cast("Json", _properties(form)[name]), prefix, client, cursor)
-    return [lead + shlex.quote(v) for v in found]
+    return [lead + _quote(v) for v in found]
 
 
 def _command_names(prefix: str, commands: Sequence[Form]) -> list[str]:

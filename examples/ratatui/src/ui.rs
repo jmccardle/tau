@@ -283,6 +283,29 @@ fn status(screen: &Screen) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The header line: the session, the directory, this client's id. The id is what names this
+/// client to the others, so when the line is too wide the directory gives way (its start is cut,
+/// as its end is the part that tells directories apart) rather than the id falling off the end.
+fn header_text(screen: &Screen, width: usize) -> String {
+    let before = format!("tau {} | ", screen.session);
+    let after = format!(" | {}", screen.client);
+    let text_width = |s: &str| s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+    let room = width.saturating_sub(text_width(&before) + text_width(&after));
+    let mut cwd: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in screen.cwd.chars().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        cwd.push(c);
+    }
+    cwd.reverse();
+    let cwd: String = cwd.into_iter().collect();
+    format!("{before}{cwd}{after}")
+}
+
 /// Draw the whole screen. The terminal's cursor goes to the editor, or to the open question's
 /// field. Returns how far up the transcript can be scrolled at this size, for the caller to
 /// keep the scroll within.
@@ -313,10 +336,7 @@ pub fn draw(f: &mut Canvas, screen: &Screen) -> usize {
 
     f.render_widget(
         Line::styled(
-            format!(
-                "tau {} | {} | {}",
-                screen.session, screen.cwd, screen.client
-            ),
+            header_text(screen, width),
             Style::new().add_modifier(Modifier::REVERSED),
         ),
         header,

@@ -135,11 +135,27 @@ class Screen:
 
 
 def lock_holder(log: Path) -> int | None:
-    """The process holding the lease (an exclusive `flock`) on the session log `log`, from
-    `/proc/locks`."""
-    inode = log.stat().st_ino
-    for line in Path("/proc/locks").read_text().splitlines():
-        fields = line.split()
-        if "FLOCK" in fields and fields[5].endswith(f":{inode}"):
-            return int(fields[4])
-    return None
+    """The process holding the lease (an exclusive `flock`) on the session log `log`. Linux lists
+    the locks in `/proc/locks`. macOS has no such list: a shared `flock` that is refused says
+    some process holds it, and `lsof` names the one that has the file open (the lease holder is
+    the only process with a session log open, so exactly one is expected)."""
+    if sys.platform != "darwin":
+        inode = log.stat().st_ino
+        for line in Path("/proc/locks").read_text().splitlines():
+            fields = line.split()
+            if "FLOCK" in fields and fields[5].endswith(f":{inode}"):
+                return int(fields[4])
+        return None
+    with log.open("rb") as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            return None  # nobody holds it exclusively; our probe lock goes with `probe`
+    done = subprocess.run(
+        ["lsof", "-t", "--", str(log)], capture_output=True, text=True, check=False
+    )
+    holders = [int(p) for p in done.stdout.split() if int(p) != os.getpid()]
+    assert len(holders) == 1, f"{log} is locked; the processes with it open are {holders}"
+    return holders[0]

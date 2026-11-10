@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 
@@ -337,6 +338,10 @@ async def until(condition: Callable[[], bool]) -> None:
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: the example imports readline, which Python on Windows does not have",
+)
 async def test_a_line_client_lists_plan_asks_inline_and_says_it_is_in_plan_mode(
     tmp_path: Path,
 ) -> None:

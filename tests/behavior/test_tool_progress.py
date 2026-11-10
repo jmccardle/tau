@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -162,6 +163,7 @@ async def test_progress_after_the_call_is_over_does_nothing(tmp_path: Path, how:
 
 
 @scenario
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported (README)")
 async def test_bash_shows_its_output_as_it_arrives(tmp_path: Path) -> None:
     command = "echo a; sleep 1; echo b"
     provider = calling(Part.Call("c1", "bash", json.dumps({"command": command})))
