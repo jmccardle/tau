@@ -155,8 +155,8 @@ async def test_sending_from_here_brings_the_window_to_the_tail(tmp_path: Path) -
     await h.close()
 
 
-def flood(progress: Progress) -> str:
-    """Say a lot at once."""
+async def flood(progress: Progress) -> str:
+    """Say a lot at once: async, so no event waits on a worker thread's hop to the loop."""
     for i in range(20):
         progress(f"line {i}")
     return "flooded"

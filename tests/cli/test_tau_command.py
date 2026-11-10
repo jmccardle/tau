@@ -470,13 +470,15 @@ def test_the_no_extensions_help_names_every_built_in_that_load_switches(world: W
     assert listed.code == 0, listed.err
     rows = [json.loads(line) for line in listed.out.splitlines()]
     switched = [r["key"] for r in rows if r["kind"] == "built-in" and r["state"] != "always"]
+    system = {k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}  # Winsock needs it
     helped = subprocess.run(
         [sys.executable, "-m", "tau", "-p", "--help"],
-        env=dict(world.environ),
+        env={**system, **world.environ},
         capture_output=True,
         encoding="utf-8",
-        check=True,
+        check=False,
     )
+    assert helped.returncode == 0, helped.stderr
     assert helped.stdout.startswith("usage:"), "a pipe takes the help, its τ included (Windows)"
     shown = " ".join(helped.stdout.split())  # argparse wraps the help
     assert switched, "the built-ins are listed"

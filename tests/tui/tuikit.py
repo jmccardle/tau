@@ -76,6 +76,15 @@ async def shows(pilot: Pilot[None], app: TauApp, text: str) -> None:
         raise AssertionError(f"{text!r} is not on the screen:\n{app.screen_text()}") from None
 
 
+async def answer(
+    pilot: Pilot[None], app: TauApp, selector: str = ".question-buttons Button"
+) -> None:
+    """Click a question's button once it has its place on the screen: a click before the layout
+    gave it one lands on nothing (seen on Windows)."""
+    await until(pilot, lambda: any(b.region.area for b in app.query(selector)))
+    await pilot.click(selector)
+
+
 async def type_line(pilot: Pilot[None], text: str) -> None:
     """Type `text` into the editor (a space is the `space` key)."""
     await pilot.press(*("space" if c == " " else c for c in text))
