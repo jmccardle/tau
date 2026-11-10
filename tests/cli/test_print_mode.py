@@ -329,12 +329,21 @@ def test_auto_step_turned_off_is_exit_3_and_says_so(configured: World) -> None:
     assert "tau: stopped before finishing: auto-step is off" in result.err
 
 
+def interrupt_me() -> None:
+    """Ctrl+C to this process. On Windows `os.kill` with SIGINT terminates it, so the signal is
+    raised in the process instead (the handler runs in the main thread either way)."""
+    if sys.platform == "win32":
+        signal.raise_signal(signal.SIGINT)
+    else:
+        os.kill(os.getpid(), signal.SIGINT)
+
+
 def test_an_interrupt_before_any_reply_takes_the_message_back(world: World) -> None:
     """The unanswered `User` node stays in the tree (nodes are written once), but the cursor goes
     back before it: the next `-c` sends one user message after the last answered turn, not two in
     a row."""
     world.user_config(NO_REPLY)
-    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT))
+    timer = threading.Timer(0.5, interrupt_me)
     timer.start()
     try:
         assert p(world, "lost question").code == 130
@@ -355,7 +364,7 @@ def test_a_run_that_finishes_is_exit_0_whatever_the_limit(configured: World) -> 
 
 def test_interrupt_aborts_the_step_and_exits_130(world: World) -> None:
     world.user_config(SLOW)
-    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT))
+    timer = threading.Timer(0.5, interrupt_me)
     timer.start()
     try:
         result = p(world, "go")
@@ -792,6 +801,10 @@ def wait_for(path: Path) -> None:
         time.sleep(0.02)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Popen.send_signal cannot send SIGINT to a child",
+)
 def test_a_second_interrupt_leaves_at_once_though_a_hook_never_returns(
     configured: World,
 ) -> None:
@@ -846,6 +859,10 @@ extensions = [SlowHook()]
 """
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Popen.send_signal cannot send SIGINT to a child",
+)
 def test_a_stop_that_waits_for_a_hook_says_why_and_still_takes_the_message_back(
     configured: World,
 ) -> None:

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -378,6 +379,7 @@ def test_a_writable_trusted_json_is_reported_under_its_own_path(world: World) ->
 # -- interruption
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: no pseudo-terminals")
 def test_ctrl_c_at_a_prompt_exits_130_without_a_traceback(world: World) -> None:
     sample(world)
     master, slave = os.openpty()

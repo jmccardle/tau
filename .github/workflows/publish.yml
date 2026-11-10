@@ -155,7 +155,7 @@ jobs:
           "$py" -m pip install --group "$GITHUB_WORKSPACE/${{ matrix.package.dir }}/pyproject.toml:dev" dist/*.whl
           cd "$RUNNER_TEMP"
           "$py" -c "import tau, tau._core, sys; print(tau.__file__, sys.version)"
-          "$py" -m pytest -q -p no:cacheprovider -rs "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
+          "$py" -m pytest -q -p no:cacheprovider -rfEs "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
 
   # The Rust tests (the base tools' own suite among them) on every platform: the
   # Python suite reaches the tools only through the wheel.

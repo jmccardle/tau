@@ -44,7 +44,11 @@ def served() -> Iterator[World]:
     """A throwaway TAU_HOME and project, under a short directory (a socket path has a limit).
     Whatever `tau serve` the test left running is killed, even when the test failed."""
     # macOS: the default temp directory is too long a prefix for a socket path.
-    base = Path(tempfile.mkdtemp(prefix="tau", dir="/tmp" if sys.platform == "darwin" else None))
+    base = Path(
+        tempfile.mkdtemp(
+            prefix="tau", dir=os.path.realpath("/tmp") if sys.platform == "darwin" else None
+        )
+    )
     home = base / "h"
     home.mkdir()
     world = World(home, home / ".tau", {"HOME": str(home)})

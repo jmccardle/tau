@@ -165,6 +165,8 @@ class Terminal:
 @contextmanager
 def terminal(typed: str) -> Iterator[Terminal]:
     """A pseudo-terminal that has been typed `typed` (`EOF`: end of input)."""
+    if sys.platform == "win32":
+        pytest.skip("Windows: no pseudo-terminals (os.openpty is Unix only)")
     master, slave = os.openpty()
     with (
         os.fdopen(os.dup(slave), "w") as tty_out,
