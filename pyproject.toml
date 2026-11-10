@@ -4,21 +4,39 @@ build-backend = "maturin"  # rules: allow(backend): PEP 517 key
 
 [project]
 name = "ffwf-tau"
-description = "τ next (\"Trusty\"): Rust core, Python extensions."
+description = "τ (tau): an agent harness with a Rust core, a Python driver, extensions and a terminal UI."
+readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
+keywords = ["agent", "llm", "harness", "coding-agent", "tui", "openai", "anthropic", "gemini", "llama.cpp"]
 dynamic = ["version"]
 dependencies = ["httpx>=0.28", "websockets>=15", "textual>=8.2"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
 ]
 
 [project.optional-dependencies]
 # Local tokenizers for the `tokens` extension (D26 §7): a second wheel built from this repository,
 # always at this wheel's version (scripts/check_tokens_wheel.py holds the pin to it).
 tokens = ["ffwf-tau-tokens==0.16.0.dev0"]
+
+# The public repository only: pyproject.toml and README.md ship in the sdist and on PyPI.
+[project.urls]
+Repository = "https://github.com/jmccardle/tau"
+Documentation = "https://github.com/jmccardle/tau/blob/master/docs/guide/README.md"
+Issues = "https://github.com/jmccardle/tau/issues"
 
 [project.scripts]
 tau = "tau.cli:main"

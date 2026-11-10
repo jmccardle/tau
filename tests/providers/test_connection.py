@@ -3,6 +3,7 @@ tested once and run through each: one long-lived client, the loop it belongs to,
 the key, what follows a finish, and a cancel."""
 
 import asyncio
+import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -218,6 +219,22 @@ async def test_a_transport_error_is_a_sample_error_caused_by_it_and_not_a_closin
     assert (error.status, error.retry_after) == (None, None)
     assert type(trouble).__name__ in str(error)
     assert error.__cause__ is trouble
+
+
+@EACH
+@scenario
+async def test_a_server_that_cannot_be_reached_is_named_without_its_path(dialect: Dialect) -> None:
+    with socket.socket() as probe:  # a port nothing listens on: bound, then closed
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    providers = builtin_providers({KEY_ENV: SECRET})
+    _, error = await sample_all(providers[dialect.name], dialect.model(f"http://127.0.0.1:{port}"))
+    for provider in providers.values():
+        await provider.aclose()
+    assert type(error) is SampleError
+    assert f"(cannot reach http://127.0.0.1:{port})" in str(error)
+    assert isinstance(error.__cause__, httpx.ConnectError)
+    assert SECRET not in str(error)
 
 
 @EACH
