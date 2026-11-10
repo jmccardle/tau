@@ -300,12 +300,19 @@ async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step
         name = "explodes"
         commands = (explode,)
 
-    recorder = Recorder()
-    h = await Harness.create(tmp_path, extensions=[Explodes(), recorder])
+    # The step's `post_step` is held, so the step cannot end until the test lets it: `run` must
+    # raise without waiting for it. (With nothing left to wait for, the step ends in the driver's
+    # next turn, and which of two tasks the loop runs first is no promise of τ's.)
+    gate = Gate()
+    recorder = Recorder(gates={"post_step": gate})
+    h = await Harness.create(tmp_path, extensions=[Explodes(), recorder], gates=[gate])
     with pytest.raises(CommandFailed, match=r"^RuntimeError: boom$"):
         await h.run("explode")
-    if not h.remote:  # over a wire the step may end before the answer arrives
-        assert h.session.cursor(h.cursor).busy, "it raises at once, before the step has ended"
+    assert h.session.cursor(h.cursor).busy, "it raises at once, before the step has ended"
+    await h.settle()
+    assert gate.held == 1, "the step is ending: its post_step is running"
+    assert h.session.cursor(h.cursor).busy
+    gate.release()
     await h.settle()
     assert not h.session.cursor(h.cursor).busy
     assert h.notices() == []

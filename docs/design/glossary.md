@@ -2700,7 +2700,7 @@ reply gets none. `abort` and `go_to` cancel a running command (and drop one not 
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the
-extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` at once, before the step has ended. A command with no `Cursor` runs at once as a task on the
+extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` at once, without waiting for the step to end (its `post_step` hooks may still be running). A command with no `Cursor` runs at once as a task on the
 loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 
 ### tau (extension), /model, /config
