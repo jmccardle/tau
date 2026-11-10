@@ -3,6 +3,16 @@ pipe, a file, /dev/null, an open pipe that never speaks, a closed descriptor) an
 standard output (a pipe, a closed descriptor, a reader that went away). Real descriptors, so
 these start the command in a subprocess or hand `main` a pipe."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: no pseudo-terminals (the pty, fcntl and termios modules are Unix only)",
+        allow_module_level=True,
+    )
+
 import io
 import os
 import pty

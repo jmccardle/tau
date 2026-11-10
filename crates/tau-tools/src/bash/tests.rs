@@ -364,20 +364,14 @@ fn processes_that_moved_to_their_own_group_are_killed_with_the_session() {
     )
     .unwrap();
     assert_eq!(out, "ok\n");
-    assert!(
-        !running_with(&first),
-        "a process of the session survived"
-    );
+    assert!(!running_with(&first), "a process of the session survived");
     let err = run(
         &tool,
         &json!({"command": format!("{OWN_GROUP} sleep {second}; echo after"), "timeout": 300}),
     )
     .unwrap_err();
     assert!(err.0.contains("timed out after 300 ms"), "{err}");
-    assert!(
-        !running_with(&second),
-        "a process of the session survived"
-    );
+    assert!(!running_with(&second), "a process of the session survived");
 }
 
 #[test]

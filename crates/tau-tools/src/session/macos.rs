@@ -89,15 +89,8 @@ fn live(pid: libc::pid_t) -> bool {
     let size = c_int::try_from(size_of::<libc::proc_bsdinfo>()).unwrap_or(c_int::MAX);
     // SAFETY: `info` is a `proc_bsdinfo` of `size` bytes, which is what
     // PROC_PIDTBSDINFO writes into.
-    let got = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            (&raw mut info).cast(),
-            size,
-        )
-    };
+    let got =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
     if got == size {
         info.pbi_status != libc::SZOMB
     } else {

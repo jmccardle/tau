@@ -178,6 +178,7 @@ def spill_dir(tmp_path: Path, **env: str) -> Path:
     return path.parent
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the default ignores XDG_RUNTIME_DIR")
 def test_the_default_directory_is_under_xdg_runtime_dir_when_that_is_set(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
@@ -187,7 +188,10 @@ def test_the_default_directory_is_under_xdg_runtime_dir_when_that_is_set(tmp_pat
 def test_the_default_directory_is_tau_euid_in_the_temp_dir_otherwise(tmp_path: Path) -> None:
     temp = tmp_path / "tmp"
     temp.mkdir()
-    assert spill_dir(tmp_path / "w2", TMPDIR=str(temp)) == temp / f"tau-{os.geteuid()}"
+    if sys.platform == "win32":  # the temp directory there is the user's own: no uid in the name
+        assert spill_dir(tmp_path / "w2", TMP=str(temp), TEMP=str(temp)) == temp / "tau"
+    else:
+        assert spill_dir(tmp_path / "w2", TMPDIR=str(temp)) == temp / f"tau-{os.geteuid()}"
 
 
 def test_old_overflow_files_are_removed_when_the_directory_is_opened(

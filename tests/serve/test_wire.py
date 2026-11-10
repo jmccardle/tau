@@ -2,6 +2,16 @@
 events and responses, each way a stream ends, and what a disconnect does. The behavior suite run
 remote is the test of the whole `Client`; these are the things only a wire has."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os

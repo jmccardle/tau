@@ -2,6 +2,16 @@
 record, `--stop`, `--schema`. The servers are real processes with a mock model, started in a
 throwaway TAU_HOME under a short directory and killed when the test is over."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
@@ -15,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from proctable import alive
 from world import Result, World, tau
 
 from tau import (
@@ -55,15 +66,6 @@ def record_of(result: Result) -> dict[str, object]:
 def existing(world: World) -> Path:
     """A session in the project, by hand: it is not deleted when its server stops unused."""
     return world.session(OLD, cwd=work(world))
-
-
-def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
-        return stat.read().split(") ")[1][0] != "Z"  # a zombie is dead, only unreaped
 
 
 def wait_gone(pid: int, seconds: float = 10) -> None:

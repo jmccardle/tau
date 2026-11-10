@@ -41,9 +41,11 @@ impl PrivateDir {
             },
             e => format!("the overflow directory {shown} cannot be opened: {e}"),
         })?;
-        let stat =
-            fstat(&fd).map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?;
-        if let Some(problem) = dir_problem(stat.st_uid, u32::from(stat.st_mode)) {
+        let stat = fstat(&fd)
+            .map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?;
+        #[allow(clippy::useless_conversion)] // `st_mode` is a u16 on macOS
+        let mode = u32::from(stat.st_mode);
+        if let Some(problem) = dir_problem(stat.st_uid, mode) {
             return Err(format!("the overflow directory {shown} {problem}"));
         }
         remove_old_files(&fd);
@@ -88,8 +90,7 @@ fn remove_old_files(fd: &OwnedFd) {
         let Ok(stat) = fstatat(fd, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) else {
             continue;
         };
-        let regular =
-            SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
+        let regular = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
         let age = now.saturating_sub(u64::try_from(stat.st_mtime).unwrap_or(0));
         if regular && age > KEEP_FILES.as_secs() {
             let _ = unlinkat(fd, name.as_c_str(), UnlinkatFlags::NoRemoveDir);

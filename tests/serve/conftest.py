@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from harness import Harness
+from proctable import with_argument
 from world import World
 
 
@@ -34,17 +35,7 @@ def remote() -> Iterator[None]:
 def _processes_for(base: Path) -> list[int]:
     """Every process whose command line names `base`: a `tau serve -d` of the test, which has
     its TAU_HOME's pending-log path in its arguments."""
-    found: list[int] = []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) == os.getpid():
-            continue
-        try:
-            command = (proc / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if str(base).encode() in command:
-            found.append(int(proc.name))
-    return found
+    return with_argument(str(base))
 
 
 @pytest.fixture

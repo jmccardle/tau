@@ -2,6 +2,16 @@
 picker first; Ctrl+O and Ctrl+N leave the screen and `tau` replaces itself (the same process id)
 with `tau` started for the other session. A real process, a throwaway TAU_HOME, the mock model."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import time
 from pathlib import Path
 

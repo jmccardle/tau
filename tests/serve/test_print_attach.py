@@ -3,6 +3,16 @@ failing, refuses what a running server would ignore, and answers or declines onl
 its own cursor. The servers are real processes with a mock model, started in a throwaway TAU_HOME
 and killed when the test is over."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import argparse
 import asyncio
 import json
@@ -16,6 +26,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from proctable import alive
 from world import Result, World, tau
 
 from tau import (
@@ -187,7 +198,7 @@ def test_a_record_whose_server_is_dead_is_stale_and_the_session_opens_here(home:
     assert isinstance(pid, int)
     os.kill(pid, signal.SIGKILL)
     deadline = time.monotonic() + 10
-    while os.path.exists(f"/proc/{pid}") and time.monotonic() < deadline:
+    while alive(pid) and time.monotonic() < deadline:
         time.sleep(0.02)
     result = p(home, "--session", OLD, "hello")
     assert result.code == 0, result.err

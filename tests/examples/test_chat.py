@@ -1,5 +1,15 @@
 """examples/chat.py: a line client over `LocalClient`, driven with scripted input."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: the example imports readline, which Python on Windows does not have",
+        allow_module_level=True,
+    )
+
 import asyncio
 import importlib.util
 import sys

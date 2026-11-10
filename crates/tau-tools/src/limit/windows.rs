@@ -111,7 +111,10 @@ fn remove_old_files(dir: &Path) {
     let now = SystemTime::now();
     for item in listing.flatten() {
         let name = item.file_name();
-        if !name.to_str().is_some_and(|n| is_overflow_name(n.as_bytes())) {
+        if !name
+            .to_str()
+            .is_some_and(|n| is_overflow_name(n.as_bytes()))
+        {
             continue;
         }
         let Ok(meta) = std::fs::symlink_metadata(item.path()) else {
@@ -199,7 +202,15 @@ fn token_info(token: &Token, class: i32) -> std::io::Result<Vec<u64>> {
     let mut buf = vec![0_u64; (size as usize).div_ceil(8)];
     let bytes = u32::try_from(buf.len() * 8).map_err(std::io::Error::other)?;
     // SAFETY: `buf` is `bytes` long and 8-aligned, which suits the struct written.
-    let ok = unsafe { GetTokenInformation(token.0, class, buf.as_mut_ptr().cast(), bytes, &raw mut size) };
+    let ok = unsafe {
+        GetTokenInformation(
+            token.0,
+            class,
+            buf.as_mut_ptr().cast(),
+            bytes,
+            &raw mut size,
+        )
+    };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -231,7 +242,9 @@ fn sid_text(sid: PSID) -> String {
     }
     let _free = Local(text.cast());
     // SAFETY: the call wrote a NUL-terminated UTF-16 string at `text`.
-    let len = (0..usize::MAX).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+    let len = (0..usize::MAX)
+        .take_while(|&i| unsafe { *text.add(i) } != 0)
+        .count();
     // SAFETY: `len` UTF-16 units precede the NUL.
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) })
 }
@@ -258,12 +271,18 @@ fn dir_problem(dir: &File) -> std::io::Result<Option<String>> {
         )
     };
     if status != 0 {
-        return Err(std::io::Error::from_raw_os_error(i32::try_from(status).unwrap_or(i32::MAX)));
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(status).unwrap_or(i32::MAX),
+        ));
     }
     let _free = Local(descriptor);
     // SAFETY: `owner` points into the live descriptor.
-    if unsafe { EqualSid(owner, ours.user()) } == 0 && unsafe { EqualSid(owner, ours.owner()) } == 0 {
-        return Ok(Some(format!("is owned by {}, not by this process", sid_text(owner))));
+    if unsafe { EqualSid(owner, ours.user()) } == 0 && unsafe { EqualSid(owner, ours.owner()) } == 0
+    {
+        return Ok(Some(format!(
+            "is owned by {}, not by this process",
+            sid_text(owner)
+        )));
     }
     if dacl.is_null() {
         return Ok(Some(
@@ -285,7 +304,9 @@ fn dir_problem(dir: &File) -> std::io::Result<Option<String>> {
         }
         // SAFETY: every entry starts with an ACE_HEADER.
         let header = unsafe { *ace.cast::<ACE_HEADER>() };
-        if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 || header.AceType == ACCESS_DENIED_ACE_TYPE {
+        if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0
+            || header.AceType == ACCESS_DENIED_ACE_TYPE
+        {
             continue; // grants nothing on the directory itself
         }
         if header.AceType != ACCESS_ALLOWED_ACE_TYPE {

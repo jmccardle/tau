@@ -234,7 +234,8 @@ fn files_older_than_a_day_go_when_the_directory_is_opened() {
     fs::set_permissions(&tau, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let aged = |name: &str, age: Duration| {
         let file = File::create(tau.join(name)).unwrap();
-        file.set_modified(std::time::SystemTime::now() - age).unwrap();
+        file.set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
     };
     aged("old00000.out", Duration::from_secs(2 * 24 * 60 * 60));
     aged("new00000.out", Duration::from_secs(60 * 60));
@@ -251,6 +252,8 @@ fn files_older_than_a_day_go_when_the_directory_is_opened() {
         tau.join("notes.out").exists(),
         "only names we generate are ours"
     );
+    // macOS and Windows file systems ignore case: there `Old00000.out` is `old00000.out`.
+    #[cfg(target_os = "linux")]
     assert!(
         tau.join("Old00000.out").exists(),
         "only names we generate are ours"

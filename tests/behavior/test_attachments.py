@@ -3,6 +3,7 @@ the model saw. The files are the session's, not the client's: in `remote` mode t
 another process's view of the same driver, and the path is read where the driver is."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -101,7 +102,10 @@ async def test_a_file_that_is_not_utf8_is_a_reference(tmp_path: Path) -> None:
 
 
 @scenario
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads any file; Windows file modes cannot deny reading",
+)
 async def test_a_file_that_cannot_be_read_is_a_reference_saying_why(tmp_path: Path) -> None:
     path = write(tmp_path, "secret.txt", "no")
     path.chmod(0)

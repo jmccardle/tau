@@ -4,6 +4,16 @@ own package; the server has the mock model, a throwaway TAU_HOME, and dies with 
 screen is read back through a terminal emulator (the program draws only what changed), the session
 through its log after the server has stopped."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
@@ -16,6 +26,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from proctable import alive
 from ptykit import Screen
 from websockets.asyncio.server import ServerConnection, unix_serve
 from world import World, tau
@@ -188,11 +199,7 @@ def kill_server(pid: int) -> None:
     os.kill(pid, signal.SIGKILL)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return
-        if stat.rpartition(")")[2].split()[0] == "Z":
+        if not alive(pid):
             return
         time.sleep(0.02)
     raise AssertionError(f"server {pid} did not die")

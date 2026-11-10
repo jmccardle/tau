@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Coroutine, Iterator
 from pathlib import Path
 
@@ -368,7 +369,10 @@ def test_a_context_file_error_is_a_config_error() -> None:
     assert issubclass(ContextFileError, ConfigError)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads any file; Windows file modes cannot deny reading",
+)
 def test_an_unreadable_file_stops_the_assembly(world: World) -> None:
     path = write(world.home / "AGENTS.md", "secret")
     path.chmod(0)

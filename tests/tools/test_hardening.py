@@ -10,16 +10,9 @@ from pathlib import Path
 
 import pytest
 from calls import call, err, ok
+from proctable import LEAVE, commands
 
 from tau import BashTool, GrepTool, Outcome
-
-# Starts `sleep 13` in a session of its own, and goes on once it is there (a bare
-# `setsid ... &` races with the end of the command), saving its pid.
-LEAVE = (
-    "setsid sleep 13 & p=$!; "
-    'until [ "$(cut -d\' \' -f6 /proc/$p/stat)" = "$p" ]; do sleep 0.02; done; '
-    "echo $p > pid;"
-)
 
 
 def end(pid: int) -> None:
@@ -122,18 +115,8 @@ def test_cancelling_a_grep_over_a_big_tree_returns_promptly(tmp_path: Path) -> N
 
 
 def running(marker: str) -> bool:
-    """Whether a live process has `marker` in its command line."""
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            cmdline = (proc / "cmdline").read_bytes()
-            state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-        if state != "Z" and marker.encode() in cmdline:
-            return True
-    return False
+    """Whether a live process has `marker` in its command line (its arguments, NUL after each)."""
+    return any(marker in "".join(f"{arg}\0" for arg in args) for args in commands().values())
 
 
 def test_cancelling_right_after_the_call_starts_always_ends_the_command(tmp_path: Path) -> None:

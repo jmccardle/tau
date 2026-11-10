@@ -12,6 +12,7 @@ is the frontend's (D16, D17). The events read are kept, so a frontend loses none
 """
 
 import os
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -78,6 +79,8 @@ async def _server_of(choice: SessionChoice, home: Path) -> tuple[ServeRecord, We
     """The record and `Welcome` of the live server that holds the chosen session, if it is an
     existing one and one answers; a record whose socket does not is stale (removed)."""
     if choice.kind != "existing" or choice.source is None or not (home / SERVE).is_dir():
+        return None
+    if sys.platform == "win32":  # no server runs there (`require_unix_sockets`)
         return None
     return await live_server(serve_directory(home), choice.source.id)
 

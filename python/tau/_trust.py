@@ -22,6 +22,7 @@ import json
 import os
 import shlex
 import stat
+import sys
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,6 +179,19 @@ def _not_a_project(tau: Path, info: os.stat_result) -> str | None:
     return None
 
 
+def _owned_by_you(tau: Path, info: os.stat_result) -> bool:
+    """Whether the directory `tau` (its `lstat` is `info`) is the effective user's. On Windows a
+    file has no owner uid, and checking its owner and who may write it (D13) is not ported:
+    finding a project there is a `TrustError` that says so."""
+    if sys.platform == "win32":
+        raise TrustError(
+            f"{shown(tau)}: projects are not available on Windows yet: tau cannot check there "
+            f"who owns {TAU_DIR}/ and who may change it",
+            tau,
+        )
+    return info.st_uid == os.geteuid()
+
+
 def _holds_tau_home(directory: Path, config_dir: Path) -> bool:
     """Whether `directory/.tau` is `TAU_HOME`: that directory is never a project."""
     return config_dir.name == TAU_DIR and config_dir.parent == directory
@@ -204,7 +218,7 @@ def find_project(start: Path, environ: Mapping[str, str]) -> ProjectSearch:
             info = tau.lstat()
         except OSError:
             continue
-        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid():
+        if stat.S_ISDIR(info.st_mode) and _owned_by_you(tau, info):
             if not _holds_tau_home(directory, config_dir):
                 return ProjectSearch(directory, None)
         elif skipped is None:

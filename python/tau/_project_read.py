@@ -10,6 +10,7 @@ import contextlib
 import errno
 import os
 import stat
+import sys
 import unicodedata
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -79,18 +80,53 @@ def unless_io_fails(path: Path, doing: str) -> Generator[None]:
         raise refusal(path, f"cannot be {doing}: {e.strerror or e}") from e
 
 
-def read_regular(path: Path) -> bytes | None:
-    """The bytes of a regular file, or `None` if absent. A symlink or other kind of file is a
-    `TrustError` naming the path, and so is one over the size limit or one that cannot be
-    read. Opened non-blocking, so a FIFO swapped in cannot hang us."""
+_SYMLINK = "is a symlink; tau refuses symlinks inside a project"
+
+
+def _open_unix(path: Path) -> int | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as e:
         if e.errno == errno.ELOOP:
-            raise refusal(path, "is a symlink; tau refuses symlinks inside a project") from e
+            raise refusal(path, _SYMLINK) from e
         raise refusal(path, f"cannot be read: {e.strerror}") from e
+
+
+def _open_windows(path: Path) -> int | None:
+    """Windows has no `O_NOFOLLOW`: the path is judged by `lstat` (a symlink or junction is a
+    reparse point), then opened, and the open file must be the one judged (same volume and file
+    index), so a swap between the two is refused rather than followed."""
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise refusal(path, f"cannot be read: {e.strerror}") from e
+    reparse = getattr(before, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    if stat.S_ISLNK(before.st_mode) or reparse:
+        raise refusal(path, _SYMLINK)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise refusal(path, f"cannot be read: {e.strerror}") from e
+    after = os.fstat(fd)
+    if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+        os.close(fd)
+        raise refusal(path, "was replaced while it was being read")
+    return fd
+
+
+def read_regular(path: Path) -> bytes | None:
+    """The bytes of a regular file, or `None` if absent. A symlink or other kind of file is a
+    `TrustError` naming the path, and so is one over the size limit or one that cannot be
+    read. Opened non-blocking, so a FIFO swapped in cannot hang us."""
+    fd = _open_windows(path) if sys.platform == "win32" else _open_unix(path)
+    if fd is None:
+        return None
     with unless_io_fails(path, "read"), os.fdopen(fd, "rb") as f:
         info = os.fstat(f.fileno())
         if not stat.S_ISREG(info.st_mode):

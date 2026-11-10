@@ -27,8 +27,9 @@ import json
 import os
 import signal
 import socket
+import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, TextIO, cast
@@ -642,6 +643,24 @@ async def _main(process: Process, args: object, message: str, piped: str) -> int
         await opened.close()
 
 
+def _on_sigint(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> None:
+    """Run `then` in `loop` on the next SIGINT (Ctrl+C), in place of any handler before it.
+    Windows' event loop has no `add_signal_handler`: there the handler is the interpreter's,
+    which runs in the main thread and hands `then` to the loop."""
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, lambda _number, _frame: loop.call_soon_threadsafe(then))
+    else:
+        loop.add_signal_handler(signal.SIGINT, then)
+
+
+def _off_sigint(loop: asyncio.AbstractEventLoop) -> None:
+    """SIGINT back to the interpreter's default."""
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    else:
+        loop.remove_signal_handler(signal.SIGINT)
+
+
 def _leave(process: Process) -> None:
     """The second SIGINT: say so and exit now, though a hook never returns. No cleanup runs."""
     try:
@@ -705,16 +724,15 @@ def print_mode(process: Process, args: object) -> int:
         hint: list[asyncio.TimerHandle] = []
 
         def first() -> None:
-            loop.remove_signal_handler(signal.SIGINT)
-            loop.add_signal_handler(signal.SIGINT, again)
+            _on_sigint(loop, again)
             hint.append(loop.call_later(STOP_NOTICE, waiting))
             task.cancel()
 
-        loop.add_signal_handler(signal.SIGINT, first)
+        _on_sigint(loop, first)
         try:
             return await _main(process, args, *message)
         finally:
-            loop.remove_signal_handler(signal.SIGINT)
+            _off_sigint(loop)
             for timer in hint:
                 timer.cancel()
 

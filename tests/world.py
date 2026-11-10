@@ -4,11 +4,14 @@ import io
 import json
 import os
 import select
+import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from tau import (
     Author,
@@ -37,6 +40,8 @@ class World:
     environ: dict[str, str]
 
     def project(self, name: str = "proj", config: object | None = None) -> Path:
+        if sys.platform == "win32":
+            pytest.skip("Windows: projects (D13 trust) are not ported; finding one is an error")
         root = self.home / name
         (root / ".tau").mkdir(parents=True)
         if config is not None:

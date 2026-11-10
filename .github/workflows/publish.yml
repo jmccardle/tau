@@ -63,8 +63,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: build venv
         run: |
@@ -88,9 +88,9 @@ jobs:
           # macOS: the oldest release the wheel claims to run on.
           if [ "$RUNNER_OS" = macOS ]; then export MACOSX_DEPLOYMENT_TARGET=11.0; fi
           PATH="$bin:$PATH" "$bin/maturin" build --release --locked --out "$GITHUB_WORKSPACE/dist" \
-            --interpreter "$py" "${extra[@]}"
+            --interpreter "$py" ${extra[@]+"${extra[@]}"}
           ls -l "$GITHUB_WORKSPACE/dist"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: wheel-${{ matrix.package.dist }}-${{ matrix.target.name }}-py${{ matrix.python }}
           path: dist/*.whl
@@ -120,9 +120,9 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v6
         with:
           name: wheel-${{ matrix.package.dist }}-${{ matrix.target.name }}-py${{ matrix.python }}
           path: dist
@@ -160,8 +160,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -181,8 +181,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: build the sdist, then a wheel from it
         working-directory: ${{ matrix.package.dir }}
@@ -195,7 +195,7 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/sdist"
           "$RUNNER_TEMP/build/bin/pip" wheel --no-deps -w "$RUNNER_TEMP/from-sdist" "$GITHUB_WORKSPACE"/sdist/*.tar.gz
           ls -l "$RUNNER_TEMP/from-sdist"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: sdist-${{ matrix.package.dist }}
           path: sdist/*.tar.gz
@@ -216,7 +216,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true

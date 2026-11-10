@@ -4,6 +4,7 @@
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -361,7 +362,10 @@ def test_a_trusted_json_that_is_a_directory_is_one_line_not_a_traceback(world: W
     assert tau(world, "trust", cwd=root).err.count("\n") == 1
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads a file of mode 000; Windows file modes cannot deny reading",
+)
 def test_a_trusted_json_nobody_can_read_is_one_line_not_a_traceback(world: World) -> None:
     root = world.project()
     trust(world, root)
@@ -461,7 +465,10 @@ def test_a_fifo_is_refused_without_hanging(world: World, name: str) -> None:
     assert "not a regular file" in result.err
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to make a directory another user owns")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() != 0,
+    reason="needs root to make a directory another user owns; Windows has no projects yet",
+)
 def test_a_tau_dir_owned_by_someone_else_is_not_a_project_or_approvable(world: World) -> None:
     outer = world.project("outer", models(o={}))
     inner = outer / "inner"
@@ -495,7 +502,10 @@ def test_approval_writes_a_private_ignore_file_and_keeps_an_existing_one(world: 
 
 # -- permission errors are one line naming the path, never a traceback
 
-CANNOT_DENY_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="chmod cannot deny root")
+CANNOT_DENY_ROOT = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="chmod cannot deny root; Windows file modes cannot deny anyone",
+)
 
 
 def one_line_refusal(

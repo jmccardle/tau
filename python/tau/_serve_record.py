@@ -24,7 +24,7 @@ from websockets.exceptions import WebSocketException
 from tau._config import ConfigError
 from tau._project_read import TrustError
 from tau._protocol import Welcome
-from tau._remote import RemoteClient
+from tau._remote import RemoteClient, require_unix_sockets
 from tau._trust import write_atomically
 
 SERVE: Final = "serve"
@@ -59,7 +59,12 @@ class ServeRecord:
 
 def serve_directory(home: Path) -> Path:
     """`<home>/serve`, made with mode 700 if it is not there. `TrustError` if it is not a
-    directory of yours that only you can write."""
+    directory of yours that only you can write. `ServeFailed` on Windows, where no server runs
+    (`require_unix_sockets`)."""
+    try:
+        require_unix_sockets("tau serve")
+    except OSError as e:
+        raise ServeFailed(str(e)) from e
     path = home / SERVE
     try:
         path.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)

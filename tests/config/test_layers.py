@@ -6,6 +6,7 @@ problems through `check_config` and `tau config check`, which report every probl
 
 import json
 import os
+import sys
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -331,7 +332,10 @@ def test_an_unreadable_file_is_a_problem(tmp_path: Path) -> None:
     assert problem.source == str(tmp_path / "missing.json")
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads a file of mode 000; Windows file modes cannot deny reading",
+)
 def test_a_user_config_nobody_can_read_is_one_line_without_errno(world: World) -> None:
     world.user_config("{}")
     (world.tau / "config.json").chmod(0)

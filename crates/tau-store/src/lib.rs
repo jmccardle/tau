@@ -164,7 +164,7 @@ impl Store {
     /// file; `Undecodable` for an intact log record that does not decode; `Core` for records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
-        let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
+        let mut log = open_log(&path)?;
         lease(&log)?;
         let mut bytes = vec![];
         log.read_to_end(&mut bytes)?;
@@ -292,6 +292,9 @@ impl Store {
         };
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
+            // Windows: the log is open for writing, not appending (see `open_log`).
+            #[cfg(windows)]
+            io::Seek::seek(&mut self.log, io::SeekFrom::End(0))?;
             self.log.write_all(&self.pending[..end])?;
         }
         {
@@ -363,6 +366,19 @@ pub fn is_leased(dir: &Path) -> Result<bool, Error> {
             false
         }
     })
+}
+
+/// The log of an existing session, to read, cut a torn tail from, and append to. Windows
+/// opens an appending file without the right to change its length, so there the log is
+/// open for writing and every append seeks to the end first.
+fn open_log(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.append(true);
+    #[cfg(windows)]
+    options.write(true);
+    options.open(path)
 }
 
 /// Make a rename or a new name in `dir` durable. Windows cannot open a directory as a

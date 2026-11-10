@@ -14,7 +14,9 @@
 use std::time::Duration;
 
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, kill, killpg};
+#[cfg(target_os = "linux")]
+use nix::sys::signal::killpg;
+use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 use crate::{Result, ToolError};
@@ -47,7 +49,14 @@ fn failed(e: Errno) -> ToolError {
 /// A signal that failed for a reason other than the process being gone (the
 /// first such failure; every process is still signalled), or the process list unreadable.
 pub(crate) fn signal_all(leader: Pid, signal: Signal) -> Result<()> {
+    #[cfg(target_os = "linux")]
     let group = killpg(leader, signal);
+    // macOS answers EPERM to `killpg` of a group whose leader is a zombie (the shell, waited
+    // for but not reaped), so the group is not signalled as one. Every live process of the
+    // group is in the session, so the scan below reaches each of them; one started after the
+    // scan is caught by the next sweep of `kill_all`.
+    #[cfg(target_os = "macos")]
+    let group = Ok(());
     let others = members(leader)?;
     signal_each(group, others.into_iter().map(|pid| kill(pid, signal)))
 }
