@@ -106,6 +106,20 @@ async def test_picking_a_row_leaves_for_that_session(tmp_path: Path, world: Worl
 
 
 @scenario
+async def test_keys_typed_as_the_picker_opens_are_not_lost(tmp_path: Path, world: World) -> None:
+    sessions = catalog(world, tmp_path)
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
+    async with running(h, tmp_path, home=world.tau, sessions=sessions) as (app, pilot):
+        await pilot.press("ctrl+o", "down")  # no wait for the screen or its rows
+        width, height = app.size
+        await pilot.resize_terminal(width + 1, height)  # a terminal's first size can come late
+        await pilot.press("enter")
+        await until(pilot, lambda: not app.is_running)
+        assert app.switch == Switch(OLD), "the second row, as if the person had waited"
+    await h.close()
+
+
+@scenario
 async def test_a_row_with_an_error_is_listed_dimmed_and_cannot_be_picked(
     tmp_path: Path, world: World
 ) -> None:
