@@ -35,6 +35,7 @@ BUILT_INS = [
     "prune",
     "skills",
     "step_limit",
+    "tokens",
     "usage",
 ]  # the extensions, in hook order
 KEYS = sorted([*BUILT_INS, "agents", "retry"])
@@ -198,6 +199,7 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "retry",
         "skills",
         "step_limit",
+        "tokens",
         "usage",
         "search",
         "ralph",

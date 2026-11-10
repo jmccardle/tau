@@ -18,7 +18,9 @@ names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
     "StepLimit", "Attachments", "Skills", "Usage", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
-    "Count", "Basis", "RequestCount", "Counter", "CountJob", "CounterAnswer",
+    "Count", "Basis", "RequestCount", "Counter", "CountJob", "CounterAnswer", "Span", "SpanProof",
+    "Observation", "Tokens", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
+    "CalibrationNewer", "calibration_features",
 ]
 
 [[group]]
@@ -88,7 +90,7 @@ title = "Providers"
 reader = "The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()[\"mock\"]`)."
 names = [
     "Provider", "Finish", "SampleError", "ProviderClosed", "RetryProvider", "replay_for", "builtin_providers",
-    "OpenAIProvider", "AnthropicProvider", "GeminiProvider",
+    "OpenAIProvider", "AnthropicProvider", "GeminiProvider", "Rendered",
 ]
 
 [[group]]

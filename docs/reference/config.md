@@ -270,11 +270,14 @@ class Price
     output: Decimal
     cache_read: Decimal
     cache_write: Decimal
+    cache_write_1h: Decimal | None = None
 ```
 
 What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
 nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
 a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
+`cache_write_1h` is optional: the price of a cache write kept for an hour (a reply's
+`written_1h`), which is `cache_write` when it is not given (D26 section 2).
 Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
 number below 0, or one that is not a number.
 
@@ -286,7 +289,7 @@ def of(cls, fields: object) -> 'Price'
 ```
 
 The price a config's `price` object says. `ConfigError` unless it is an object with
-exactly the four fields, each a number of at least 0.
+the four fields, and `cache_write_1h` if it likes, each a number of at least 0.
 
 ## PromptSource
 

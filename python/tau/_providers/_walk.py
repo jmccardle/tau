@@ -178,6 +178,11 @@ def _base_turns(walk: Sequence[Node]) -> list[Turn]:
     return out
 
 
+def bearing(walk: Sequence[Node]) -> list[int]:
+    """The ids of the nodes `turns` reads, one per turn it returns, in order."""
+    return [n.id for n in walk if not isinstance(n.body, Body.Config | Body.Custom)]
+
+
 def _results_text(results: ToolResults) -> str:
     """A batch's results as `outcome_markup` lines."""
     return "\n".join(result_line(r.id, r.text) for r in results.results)
@@ -224,26 +229,32 @@ def _object_calls(turn: AssistantTurn) -> bool:
 class Messages:
     """Wire messages built turn by turn. `items_key` is the key of a message's list (`content`,
     `parts`). Neighbouring turns of one role are one message (the APIs want roles to
-    alternate), and a turn with nothing to send leaves none, so what it separated merges."""
+    alternate), and a turn with nothing to send leaves none, so what it separated merges.
+    `nodes` has, for each message of `out`, the ids of the nodes it was built from (those the
+    caller named with `node`)."""
 
     def __init__(self, items_key: str) -> None:
         self._key = items_key
         self._instruction: list[str] = []
         self.out: list[Json] = []
+        self.nodes: list[list[int]] = []
 
-    def add(self, role: str, items: list[Json]) -> None:
+    def add(self, role: str, items: list[Json], node: int | None = None) -> None:
         if not items:
             return
         if self.out and self.out[-1]["role"] == role:
             cast("list[Json]", self.out[-1][self._key]).extend(items)
         else:
             self.out.append({"role": role, self._key: items})
+            self.nodes.append([])
+        if node is not None:
+            self.nodes[-1].append(node)
 
-    def system(self, text: str, item: Callable[[str], Json]) -> None:
+    def system(self, text: str, item: Callable[[str], Json], node: int | None = None) -> None:
         """A `System` turn: the instruction while no message has been made, else a user `item`
         holding `system_note(text)`."""
         if self.out:
-            self.add("user", [item(system_note(text))])
+            self.add("user", [item(system_note(text))], node)
         else:
             self._instruction.append(text)
 

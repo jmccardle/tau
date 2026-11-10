@@ -11,6 +11,7 @@ bodies read.
 """
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -22,13 +23,16 @@ from typing import Protocol, cast
 import httpx
 
 from tau._config import ModelConfig
-from tau._core import Part, Stop
+from tau._core import Body, Node, Part, Stop
 from tau._events import Delta
-from tau._protocols import Finish, ProviderClosed, SampleError
+from tau._protocols import Finish, ProviderClosed, Rendered, SampleError
 
 Json = dict[str, object]
 HTTP_OK = 200
 DEFAULT_TIMEOUT = httpx.Timeout(10.0, read=300.0)
+PROBE_TIMEOUT = httpx.Timeout(5.0)
+UNREACHED = object()
+"""What `Connection.get_json` returns when the server gave no answer at all."""
 _DELAY = re.compile(r"^(\d+(?:\.\d+)?)s$")  # Google's `retryDelay`: "30s", "0.5s"
 _BAD_HEADER = "the request could not be sent: a request header holds a character HTTP can't carry"
 
@@ -183,6 +187,87 @@ def count(value: object) -> int | None:
     return value if isinstance(value, int) and is_count(value) else None
 
 
+def nested_counts(usage: Json, raw: Json, wanted: Sequence[tuple[str, str, str]]) -> bool:
+    """Add to the normalized `usage` each count a server nests one object down: `wanted` is
+    `(key, object, field)`, read as `raw[object][field]`. An object the server leaves out or
+    sends as null, or a field it leaves out, adds nothing. False if an object is not one or a
+    field that is there is not a count (null included): the report is malformed."""
+    for key, holder, field in wanted:
+        details = raw.get(holder)
+        if details is None:
+            continue
+        if not isinstance(details, dict):
+            return False
+        fields = cast("Json", details)
+        if field not in fields:
+            continue
+        if count(fields[field]) is None:
+            return False
+        usage[key] = fields[field]
+    return True
+
+
+def _compact(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def rendered(url: str, body: Json, key: str, nodes: Sequence[Sequence[int]]) -> Rendered:
+    """The `Rendered` of a request to `url` whose conversation is the list `body[key]`, each
+    message of it built from the nodes `nodes` names."""
+    conversation = cast("list[object]", body[key])
+    rest = {k: v for k, v in body.items() if k != key}
+    return Rendered(
+        url,
+        body,
+        tuple(_compact(m) for m in conversation),
+        tuple(tuple(ids) for ids in nodes),
+        f"{url}\n{_compact(rest)}",
+    )
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def _chain(messages: Sequence[str]) -> str:
+    return _digest("\n".join(messages))  # a message is JSON on one line
+
+
+def sent_stamp(request: Rendered, walk: Sequence[Node]) -> Json:
+    """What a reply's `meta.sent` says of the request that made it (D26 section 3.1): how many
+    `messages` it had, a digest of its `fixed` text and one of its messages (`chain`), and
+    `extends`, the id of the reply before it on the walk when that reply's own stamp shows its
+    request to be a byte prefix of this one (same `fixed`, and its messages are this request's
+    first ones). That is the proof of the span between the two replies, made from the bytes
+    sent, on a server whose cache report cannot make it."""
+    stamp: Json = {
+        "messages": len(request.messages),
+        "fixed": _digest(request.fixed),
+        "chain": _chain(request.messages),
+    }
+    previous = next((n for n in reversed(walk) if isinstance(n.body, Body.Assistant)), None)
+    before = _stamp_of(previous)
+    if previous is not None and before is not None:
+        held = before.get("messages")
+        if (
+            isinstance(held, int)
+            and 0 < held <= len(request.messages)
+            and before.get("fixed") == stamp["fixed"]
+            and before.get("chain") == _chain(request.messages[:held])
+        ):
+            stamp["extends"] = previous.id
+    return stamp
+
+
+def _stamp_of(node: Node | None) -> Json | None:
+    """The `meta.sent` of a reply, if it has one."""
+    if node is None or not isinstance(node.body, Body.Assistant) or node.body.meta is None:
+        return None
+    meta: object = json.loads(node.body.meta)
+    found = cast("Json", meta).get("sent") if isinstance(meta, dict) else None
+    return cast("Json", found) if isinstance(found, dict) else None
+
+
 def meta_text(meta: Json) -> str | None:
     """The `meta` of a reply as `Finish.meta` and `SampleError.meta` take it. A key whose value
     holds a NaN or infinity is dropped (JSON cannot carry it; the rest of the meta is kept)."""
@@ -191,9 +276,20 @@ def meta_text(meta: Json) -> str | None:
 
 
 def _overcounts(usage: Json) -> bool:
-    """Whether a normalized `usage` has more cached and written tokens than input."""
-    read, written = cast("int", usage.get("cached", 0)), cast("int", usage.get("written", 0))
-    return read + written > cast("int", usage["input"])
+    """Whether a normalized `usage` has more cached and written tokens than input, more written
+    for an hour than written, or more tool-prompt tokens than input: a part larger than its
+    whole. (`reasoning` is not held to `output`: Anthropic says its thinking count "may differ
+    by a small number", and what subtracts it stops at 0.)"""
+
+    def part(key: str) -> int:
+        return cast("int", usage.get(key, 0))
+
+    whole = cast("int", usage["input"])
+    return (
+        part("cached") + part("written") > whole
+        or part("written_1h") > part("written")
+        or part("tool_prompt") > whole
+    )
 
 
 def note_usage(meta: Json, raw: Json, normalize: Callable[[Json], Json | None]) -> None:
@@ -406,6 +502,22 @@ class Connection:
         error = (ProviderClosed if self._closed else SampleError)(message)
         error.__cause__ = e
         return error
+
+    async def get_json(self, url: str, headers: Mapping[str, str]) -> object:
+        """GET `url` and return the JSON it answers with, `None` for any answer that is not a
+        200 holding JSON (a 404: the server has no such page), or `UNREACHED` when no answer
+        came (the sample that follows will say why). `ProviderClosed` after `aclose()`."""
+        client = self._client()
+        try:
+            response = await client.get(url, headers=dict(headers), timeout=PROBE_TIMEOUT)
+        except httpx.HTTPError:
+            return UNREACHED
+        if response.status_code != HTTP_OK:
+            return None
+        try:
+            return strict_loads(response.text)
+        except ValueError:
+            return None
 
     async def sample(
         self,

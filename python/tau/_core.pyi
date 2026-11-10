@@ -7,7 +7,7 @@ Every value type is frozen and hashable. An enum with data is a base class
 with one nested class per variant, so `match job:` works.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from typing import Any, ClassVar, final
 
@@ -22,6 +22,10 @@ __all__ = [
     "BashRun",
     "Body",
     "Busy",
+    "Calibration",
+    "CalibrationError",
+    "CalibrationNewer",
+    "CalibrationStore",
     "Cancel",
     "Closed",
     "Config",
@@ -67,6 +71,7 @@ __all__ = [
     "Version",
     "Write",
     "WrongAnswer",
+    "calibration_features",
     "first_message",
     "stop_trace",
     "trace_clock",
@@ -141,6 +146,113 @@ class Poisoned(RuntimeError):
 
 class TraceError(RuntimeError):
     """A trace started while one runs, stopped while none runs, or that cannot be installed."""
+
+class CalibrationError(ValueError):
+    """A calibration file that is not a record this build reads, or a name that is not a record's. The file is left as it is: `tau tokens reset` removes it."""
+
+class CalibrationNewer(CalibrationError):
+    """A calibration record written by a newer tau: left alone, and not used."""
+
+def calibration_features(body: Body) -> list[float]:
+    """The features of a node's body, as the fit counts it: for each role (system, user, assistant,
+    calls, results, thinking) its text's lowercase letters, uppercase letters, digits, other
+    ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
+    (1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
+    or `Custom` body, which is never sent, is all zeros.
+    """
+
+@final
+class Calibration:
+    """One model's calibration record: what the `tokens` built-in has learned of what its tokens
+    cost. A value: `CalibrationStore.observe` returns a new one.
+    """
+
+    @property
+    def key(self) -> tuple[str, str | None, str]:
+        """The provider, base URL and model id the record is about."""
+    @property
+    def observations(self) -> int:
+        """Replies observed."""
+    @property
+    def spans(self) -> int:
+        """Proved spans learned from."""
+    @property
+    def since_reset(self) -> int:
+        """Proved spans learned from since the record was last reset (a changed drift marker, a
+        jump in what the model's tokens cost).
+        """
+    @property
+    def needed(self) -> int:
+        """How many proved spans after a reset make the record ready."""
+    @property
+    def ready(self) -> bool:
+        """Whether the record answers a prediction."""
+    @property
+    def error(self) -> float | None:
+        """The relative error the bound is made from: the 95th percentile of the sizes of the
+        record's last 200 residuals (their largest while there are fewer than 20). `None` while
+        the record is not ready.
+        """
+    @property
+    def markers(self) -> dict[str, str]:
+        """The drift markers of the newest reply observed, by name."""
+    @property
+    def updated(self) -> str:
+        """When the newest reply was observed, as it was given."""
+    @property
+    def weights(self) -> list[float]:
+        """The fitted tokens per unit of each class of text, for each role: 42 numbers, in the order
+        of `calibration_features`.
+        """
+    @property
+    def per_message(self) -> list[int]:
+        """The fitted tokens per node of each role: system, user, assistant, calls, results,
+        thinking.
+        """
+    def predict(self, features: Sequence[float]) -> tuple[int, int] | None:
+        """The count the record predicts for `features` (a node's, or a sum of nodes'), as
+        `(tokens, bound)`: the estimate, and how many more it may be (D26 section 6.4). `None`
+        while the record is not ready, or for features that hold no node.
+        """
+    def to_json(self) -> str:
+        """The record as the JSON text its file holds."""
+
+@final
+class CalibrationStore:
+    """The calibration records under one directory (`$TAU_HOME/calibration`), one file per model.
+    Making one touches nothing: the directory is created by the first `observe`. A record's
+    `name` is a relative path ending in `.json` (`tau.Tokens` names them
+    `<provider>/<digest>.json`).
+    """
+
+    def __new__(cls, directory: str | PathLike[str]) -> CalibrationStore: ...
+    def read(self, name: str) -> Calibration | None:
+        """The record named `name`, or `None` if there is none. `CalibrationNewer` for a record a
+        newer tau wrote, `CalibrationError` for a file that is not a record this build reads or
+        a name that is not a record's.
+        """
+    def observe(
+        self,
+        name: str,
+        key: tuple[str, str | None, str],
+        markers: Mapping[str, str],
+        span: tuple[Sequence[float], int] | None,
+        time: str,
+    ) -> tuple[Calibration, list[tuple[str, str, str, str, float]]]:
+        """Fold one reply into the record named `name` and return the record and what the fold
+        found. The file is locked, read, folded into and replaced, so two processes that observe
+        one model lose nothing of each other's. `key` is `(provider, base_url, model)`, for a
+        record that does not exist yet; `markers` the reply's drift markers; `span` the reply's
+        newest proved span as `(features, cost)`, or `None`; `time` when, as text the record
+        keeps. Each event is `(kind, name, was, now, by)`: `("marker", name, was, now, 0.0)`, a
+        drift marker that changed, or `("jump", "", "", "", by)`, a jump in what the model's
+        tokens cost (`by` is the relative change); either resets the record. Raises as `read`
+        does, leaving the file as it was.
+        """
+    def remove(self, name: str) -> bool:
+        """Remove the record named `name`, whatever it holds; whether there was one."""
+    def names(self) -> list[str]:
+        """The names of the records in the store, sorted; none if the directory does not exist."""
 
 def first_message(directory: str | PathLike[str]) -> str | None:
     """The text of the first `User` node in the session in `directory`, read from the start of its

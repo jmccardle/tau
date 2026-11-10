@@ -86,7 +86,7 @@ async def test_the_finish_normalizes_the_stop_and_the_usage_counts_thoughts_as_o
     assert (finish.stop, finish.reason) == (Stop.Length, "MAX_TOKENS")
     assert finish.meta is not None
     meta = json.loads(finish.meta)
-    assert meta["usage"] == {"input": 19, "output": 59 + 1437, "cached": 0}
+    assert meta["usage"] == {"input": 19, "output": 59 + 1437, "cached": 0, "reasoning": 1437}
     assert meta["usage_raw"]["thoughtsTokenCount"] == 1437
     assert meta["model"] == "gemini-3.6-flash"
 

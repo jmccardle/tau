@@ -20,13 +20,14 @@ import httpx
 from tau._config import ConfigError, ModelConfig
 from tau._core import BadReplay, Node, Part, Replay, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau._protocols import Finish, SampleError, Tool, replay_for
+from tau._protocols import Finish, Rendered, SampleError, Tool, replay_for
 from tau._providers._walk import (
     AssistantTurn,
     Messages,
     SystemTurn,
     ToolResults,
     UserTurn,
+    bearing,
     call_markup,
     call_object,
     stop_note,
@@ -44,6 +45,8 @@ from tau._providers._wire import (
     note_usage,
     option_problems,
     plain,
+    rendered,
+    sent_stamp,
 )
 
 NAME = "gemini"
@@ -153,8 +156,9 @@ def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> list[Json]:
     return parts
 
 
-def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, list[Json]]:
-    """The system instruction text and the wire `contents` for a walk.
+def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, Messages]:
+    """The system instruction text and the wire `contents` for a walk (`Messages.out`, and in
+    `Messages.nodes` the nodes each one came from).
 
     The `System` nodes before any other node are the instruction (blank-line separated; `None`
     if there are none). A `System` node later in the walk is a user turn reading
@@ -166,19 +170,19 @@ def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, lis
     out. `Config` and `Custom` nodes never reach the model."""
     messages = Messages("parts")
     calls: list[Part.Call] = []  # the previous reply's calls
-    for turn in turns(walk, structured=structured):
+    for node, turn in zip(bearing(walk), turns(walk, structured=structured), strict=True):
         match turn:
             case SystemTurn(text=text):
                 if text.strip():
-                    messages.system(text, lambda note: {"text": note})
+                    messages.system(text, lambda note: {"text": note}, node)
             case UserTurn(text=text):
-                messages.add("user", [{"text": text}] if text.strip() else [])
+                messages.add("user", [{"text": text}] if text.strip() else [], node)
             case AssistantTurn():
-                messages.add("model", _model_parts(turn))
+                messages.add("model", _model_parts(turn), node)
                 calls = [p for p in turn.parts if isinstance(p, Part.Call)]
             case ToolResults():
-                messages.add("user", _responses(turn, calls))
-    return messages.instruction, messages.out
+                messages.add("user", _responses(turn, calls), node)
+    return messages.instruction, messages
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -239,21 +243,37 @@ def _stream_error(error: object) -> SampleError:
 
 
 def _usage(raw: Json) -> Json | None:
-    """The normalized `{"input", "output", "cached"}` from `usageMetadata`, or `None` without a
-    prompt count or with a malformed one. `input` is `promptTokenCount` (it includes the cached
-    tokens). `output` is `candidatesTokenCount` plus `thoughtsTokenCount`: thinking is billed as
-    output but reported apart. A count the API leaves out is 0 (proto3 omits zeros)."""
+    """The normalized `{"input", "output", "cached"}`, with `reasoning` and `tool_prompt` when
+    the API reports them, from `usageMetadata`; `None` without a prompt count or with a malformed
+    one. `input` is every prompt token: `promptTokenCount` (it includes the cached tokens) plus
+    `toolUsePromptTokenCount`, the prompt of a built-in tool's use, which is also `tool_prompt`.
+    `output` is `candidatesTokenCount` plus `thoughtsTokenCount`: thinking is billed as output but
+    reported apart, and is `reasoning`. A count the API leaves out is 0 (proto3 omits zeros)."""
     prompt = count(raw.get("promptTokenCount"))
     if prompt is None:
         return None
     counts: list[int] = []
-    for key in ("candidatesTokenCount", "thoughtsTokenCount", "cachedContentTokenCount"):
+    for key in (
+        "candidatesTokenCount",
+        "thoughtsTokenCount",
+        "cachedContentTokenCount",
+        "toolUsePromptTokenCount",
+    ):
         value = count(raw.get(key, 0))
         if value is None:
             return None
         counts.append(value)
-    candidates, thoughts, cached = counts
-    return {"input": prompt, "output": candidates + thoughts, "cached": cached}
+    candidates, thoughts, cached, tool_prompt = counts
+    usage: Json = {
+        "input": prompt + tool_prompt,
+        "output": candidates + thoughts,
+        "cached": cached,
+    }
+    if "thoughtsTokenCount" in raw:
+        usage["reasoning"] = thoughts
+    if "toolUsePromptTokenCount" in raw:
+        usage["tool_prompt"] = tool_prompt
+    return usage
 
 
 @dataclass
@@ -567,20 +587,15 @@ class GeminiProvider:
         """Close the client and its connections. Later samples fail."""
         await self._connection.aclose()
 
-    def _request(
-        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> tuple[str, dict[str, str], Json]:
-        """The URL, headers, and JSON body of the request for this sample. `check` has passed
-        (the driver runs it first).
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered:
+        """The request `sample` would send, without sending it or reading the key (D26 section
+        3.1). The leading `System` nodes are `systemInstruction`, outside the conversation.
+        `check` has passed (the driver runs it first).
 
-        Raises `SampleError` for an unreadable key, a walk with nothing to send, or one the API
-        would reject.
+        Raises `SampleError` for a walk with nothing to send, or one the API would reject.
         """
-        try:
-            key = model.api_key(self._environ)
-        except ConfigError as e:  # `tau config check` warns of an unset variable; sampling fails
-            raise SampleError(str(e)) from e
-        system, history = contents(walk, structured=bool(tools))
+        system, conversation = contents(walk, structured=bool(tools))
+        history = conversation.out
         if not history:
             raise SampleError("the walk has no user content to send")
         if history[-1]["role"] == "model":
@@ -608,7 +623,7 @@ class GeminiProvider:
         name = quote(model.model if "/" in model.model else f"models/{model.model}", safe="/")
         base = (model.base_url or DEFAULT_BASE_URL).rstrip("/")
         url = f"{base}/{name}:streamGenerateContent?alt=sse"
-        return url, {"x-goog-api-key": cast("str", key)}, body
+        return rendered(url, body, "contents", conversation.nodes)
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
@@ -621,8 +636,15 @@ class GeminiProvider:
         after it costs only the meta not yet received. A prompt the API blocked (`promptFeedback`
         with a `blockReason`) ends as `End`, the reason in `finish_reason` and the block in
         `meta`."""
-        url, headers, body = self._request(walk, model, tools)
-        async for item in self._connection.sample(url, headers, body, _Stream()):
+        try:
+            key = model.api_key(self._environ)
+        except ConfigError as e:  # `tau config check` warns of an unset variable; sampling fails
+            raise SampleError(str(e)) from e
+        request = self.render(walk, model, tools)
+        headers = {"x-goog-api-key": cast("str", key)}
+        reply = _Stream(meta={"sent": sent_stamp(request, walk)})
+        body = cast("Json", request.body)
+        async for item in self._connection.sample(request.url, headers, body, reply):
             yield item
 
 

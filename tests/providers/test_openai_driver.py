@@ -31,14 +31,13 @@ from tau import (
     model_config,
 )
 
-# What the recorded `plain` stream says about itself; it carried no usage.
-PLAIN_META = json.dumps(
-    {
-        "model": OPENAI.model_id,
-        "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
-        "system_fingerprint": "b1637-9c7a7553",
-    }
-)
+# What the recorded `plain` stream says about itself, besides llama.cpp's `timings`; it
+# carried no usage.
+PLAIN_META = {
+    "model": OPENAI.model_id,
+    "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
+    "system_fingerprint": "b1637-9c7a7553",
+}
 
 
 @scenario
@@ -133,9 +132,17 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
         walk = bodies(session, c)
         assert isinstance(walk[-3], Body.Assistant)
         assert walk[-3].finish_reason == "tool_calls"
-        assert walk[-1] == Body.Assistant(
-            [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
+        last = walk[-1]
+        assert isinstance(last, Body.Assistant)
+        assert (last.parts, last.stop, last.finish_reason) == (
+            [Part.Text("Hello, how are you?")],
+            Stop.End,
+            "stop",
         )
+        assert last.meta is not None
+        said = json.loads(last.meta)
+        assert {k: v for k, v in said.items() if k not in {"sent", "timings"}} == PLAIN_META
+        assert said["sent"]["messages"] == 4, "system, user, the batch, its result"
         for body in walk:
             if isinstance(body, Body.Config | Body.System | Body.User | Body.Custom):
                 assert "get_weather" not in repr(body), "tools are not recorded"

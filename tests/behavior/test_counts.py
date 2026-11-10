@@ -20,6 +20,7 @@ from tau import (
     Cursor,
     DefinitionError,
     ModelCatalog,
+    Observation,
     Part,
     RequestCount,
     Stop,
@@ -60,11 +61,15 @@ class Fills:
     def __init__(self, also: tuple[int, ...] = ()) -> None:
         self.also = also
         self.jobs: list[CountJob] = []
+        self.seen: list[Observation] = []
 
     def count(self, job: CountJob) -> CounterAnswer:
         self.jobs.append(job)
         asked = (*job.unreported, *self.also)
         return CounterAnswer({i: Count(7, Basis.HEURISTIC, 1) for i in asked})
+
+    def observe(self, observation: Observation) -> None:
+        self.seen.append(observation)
 
 
 def catalog() -> ModelCatalog:
@@ -340,4 +345,49 @@ async def test_a_first_message_of_one_repeated_character_stays_in_the_base(tmp_p
     await h.settle()
     await h.run("probe")
     assert prose.counted[0].base == Count(10_000 - 32_000 // 8, Basis.HEURISTIC)
+    await h.close()
+
+
+@scenario
+async def test_the_counter_is_shown_every_reply_that_reports_its_usage(tmp_path: Path) -> None:
+    """D26 section 4: the driver's `observe` call, after each reply with usage: the reply's
+    walk, usage and markers, the digest of its request's tool set, and the span it proved."""
+    counter = Fills()
+    served = {
+        "model": "a-2026",
+        "system_fingerprint": "fp1",
+        "server": {"build_info": "b7", "n_ctx": 9},
+    }
+    usage = {"input": 5000, "output": 1000, "cached": 3000}
+    marked = Reply([Part.Text("a" * 4000)], Stop.End, meta=json.dumps({"usage": usage, **served}))
+    replies = [*proved_turns()[:2], marked, Reply([Part.Text("quiet")])]
+    h = await run(tmp_path, replies, Probe(counter))
+    first, second, third = counter.seen  # the fourth reply reported no usage: not shown
+    assert (first.kind, first.model, first.resolved.model) == ("reply", "a", "a")
+    assert first.walk == (0, 1, 2, 3)
+    assert first.usage == {"input": 1000, "output": 1000}
+    assert first.span is None, "the first reply has no request before it"
+    assert first.markers == {}
+    assert first.time == h.session.tree.node(3).time
+    assert second.span is not None
+    assert ([n.id for n in second.span.nodes], second.span.cost) == ([3, 4], 2000)
+    assert third.span is not None
+    assert ([n.id for n in third.span.nodes], third.span.proof) == ([5, 6], "cache")
+    assert third.markers == {"model": "a-2026", "system_fingerprint": "fp1", "build_info": "b7"}
+    assert len(first.tools) == 16
+    assert first.tools == second.tools == third.tools, "one tool set, one digest"
+    await h.close()
+
+
+@scenario
+async def test_a_counter_that_fails_to_observe_is_told_and_costs_no_step(tmp_path: Path) -> None:
+    class Broken(Fills):
+        def observe(self, observation: Observation) -> None:
+            raise RuntimeError("boom")
+
+    h = await run(tmp_path, proved_turns(), Probe(Broken()))
+    said = [n for n in h.notices() if "could not observe" in n]
+    assert said == ["extension 'probe' could not observe a reply: RuntimeError: boom"] * 3
+    assert len(h.provider.requests) == 3, "every turn was sampled"
+    assert (await h.view()).hook_error is None
     await h.close()
