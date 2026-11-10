@@ -1,7 +1,8 @@
 """The `tau` command: `tau config check [--show MODEL]`, `tau config set EXTENSION.FIELD=VALUE
 ...`, `tau trust [DIR]` (D13, D1), `tau ext list|enable|disable` (D19) and `tau sessions
 [--all] [--json]`, `tau sessions name REF [NAME]` and `tau export REF` (D18), `tau context
-[--show]` (D20), `tau serve` (D21; `tau._serve_cli`) and the launch command line: `tau -p
+[--show]` (D20), `tau tokens` (D26; `tau._tokens_cli`), `tau serve` (D21; `tau._serve_cli`) and
+the launch command line: `tau -p
 [MESSAGE...]` (D22; `tau._print_mode`), `tau` (D23; the terminal UI, `tau.tui`) and `tau
 --version`. A first argument that names none of the commands is the launch command line
 (`tau._launch`). `tau._session_start.start_session` is the shared start of `tau`, `tau -p`,
@@ -35,6 +36,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import NamedTuple, TextIO
 
+from tau import _tokens_cli
 from tau._config import ConfigError, Price
 from tau._config_clean import Cleaning, clean_config
 from tau._config_layers import (
@@ -242,6 +244,7 @@ def _parser() -> _Parsers:
     trust.add_argument(
         "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
     )
+    _tokens_cli.add_arguments(sub.add_parser("tokens", help=_tokens_cli.HELP))
     return _Parsers(parser, config, ext, tuple(sub.choices))
 
 
@@ -449,8 +452,7 @@ async def _close(providers: Mapping[str, Provider]) -> None:
 
 
 def _price_text(price: Price) -> dict[str, str]:
-    keys = ("input", "output", "cache_read", "cache_write", "cache_write_1h")
-    return {k: str(getattr(price, k)) for k in keys}
+    return {k: str(v) for k, v in vars(price).items()}
 
 
 def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
@@ -639,7 +641,7 @@ def _program(run: _Run, args: argparse.Namespace) -> int:
     return (serve if args.command == "serve" else print_mode)(run, args)
 
 
-def _dispatch(run: _Run, args: argparse.Namespace) -> int:
+def _dispatch(run: _Run, args: argparse.Namespace) -> int:  # noqa: PLR0911 - one per command
     match args.command:
         case "trust":
             return _trust(run, args.dir)
@@ -651,6 +653,8 @@ def _dispatch(run: _Run, args: argparse.Namespace) -> int:
             return _session_command(run, args)
         case "ext":
             return _ext_command(run, args)
+        case "tokens":
+            return _tokens_cli.command(args, run.cwd, run.environ, run.stdout, run.stderr)
         case _:
             return _config_command(run, args)
 

@@ -316,6 +316,29 @@ prompt that went at full price. It is about money, so only a model with a `price
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.
 
+## How a request is counted before it is sent
+
+What a server has billed is known exactly. What it has not seen yet (the message you just typed, a
+tool result that just came back) has to be counted some other way, and the `tokens` built-in,
+which is on by default, learns to. Each time two replies in a row show what the nodes between
+them cost, it adds that to a small record for the model under `$TAU_HOME/calibration/`: sums for
+a fit, never your text. After ten such spans it counts new nodes itself, as an estimate with a
+bound, written `~1.2k`. Before that, and for a model it has never seen, a new node is counted by
+its bytes, written `≤4.8k`, which is safe and about four times too many.
+
+`/tokens` says where each model stands:
+
+```text
+anthropic:sonnet: heuristic ±6% for new nodes, from 41 replies (no tokenizer: pip install 'ffwf-tau[tokens]')
+local:qwen: learning from 4 replies (3 of 10 proved spans since it last changed); byte ceilings until then (no tokenizer: pip install 'ffwf-tau[tokens]')
+```
+
+If the server says it changed (a new model version, a new build) or the same text suddenly costs
+much more or less, the record starts over and you are told once. `tau tokens show` lists the
+records, `tau tokens show MODEL` prints one in words, and `tau tokens reset MODEL` deletes one.
+`tau ext disable tokens` turns the whole thing off: nothing is read or written, and counts are
+bills and bytes.
+
 ## A long conversation can be shortened
 
 Two commands rewrite what the model reads, and both keep the old conversation: they write a new

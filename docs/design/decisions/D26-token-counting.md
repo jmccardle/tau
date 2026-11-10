@@ -1,7 +1,8 @@
 # D26: Token counting
 
-Status: accepted 2026-11-07; T1 built in stage 8E-6, T2 and T3 built after it (*As built*, in
-§10); T4 to T7 not built. Drafted
+Status: accepted 2026-11-07; T1 built in stage 8E-6; T2, T3 and the standalone half of T4 (the
+tokenizer wheel's crates and `tau_tokens`) built after it, not yet joined (*As built*, in §10); the
+rest of T4 and T5 to T7 not built. Drafted
 2026-11-05 from the owner's ruling of that day and revised the same day after two more rulings: (a)
 the seven open questions of the first draft are accepted as recommended, and tokenizers,
 calibration history and heuristics become optional, in layers (§0); (b) compaction must work
@@ -718,6 +719,95 @@ records each family, and start to hold the day a fixture is committed. The diffe
     absent, and compaction still works on reported counts.
   - Harness: the hard limit with a large heuristic tool result, where `upper` crosses and
     `tokens` does not.
+
+**T3 as built.** The counter, the fit, the store, `observe`, `/tokens` and `tau tokens
+show|reset` are built. What a user sees: a model τ has talked to enough counts a new message or
+tool result as `~N` tokens instead of `≤` its bytes, the hard limit reads that count's `upper`,
+and `/tokens` says how each model is counted. The differences from sections 4 and 6:
+
+- **No fitted prior ships.** Section 6.1 has a prior "fitted from the T2 fixtures and the owner's
+  sessions"; there are no fixtures, so there was nothing honest to fit, and no coefficient here
+  was invented. The fit's prior is the ceiling's own assumption: one token per byte of every
+  class, nothing per word. It only fills in what a model's spans do not determine (a class or a
+  role never seen is counted by its bytes, an over-count, never zero), and a record answers
+  nothing until that model's own replies have proved ten spans (five to fit, then five whose
+  predictions give the bound). So a first session with a model is counted by ceilings, as in T1,
+  and section 6.4's "with no observations the prior has q95 = 0.35" is not built: there is no
+  prior to be 35% off. `scripts/fit_prior.py` fits one from the fixtures the day they exist and
+  writes it as JSON; reading it into a new record is the half left to decide and build.
+- **One joint fit, not one per role.** Section 6.2 keeps `XᵀX` (7×7) per role. A span's cost is
+  one number for nodes of several roles (a reply and its results), so the per-role sums cannot
+  be formed: the cross terms are needed. The record keeps one 48-column `XᵀX` (seven classes for
+  each role, then a node count per role). The integer per-node constants are fitted second, to
+  what the weights leave, as 6.1 says.
+- **Thinking is a sixth role.** Some servers are sent a reply's thinking back and some are not;
+  with its own weights the fit learns which, where one `assistant` role would be wrong for one
+  of them. Replay data (signatures) counts with it. Non-ASCII text is counted in bytes, so the
+  prior is exactly the ceiling's.
+- **No merge.** 6.2 says sums from two processes "merge by adding", and 6.3 decays them per
+  observation; decayed sums do not add commutatively (the newer observation weighs more, which is
+  what decay is). As built there is nothing to merge: each observation is folded into the record
+  that is on disk while the file's lock is held (6.5's own write procedure), so two processes'
+  observations land in the order they took the lock. What is tested: every observation is
+  counted and in the sums with a weight between `0.995^n` and 1 whatever the order, the store's
+  file equals the same folds done in memory, and three processes (and four threads) writing one
+  record lose none.
+- **The CUSUM is on the residual less the residuals' mean so far, and starts at 20 residuals.**
+  A fit that is still settling, or that is steadily a little off, is not a jump; until 20 the
+  bound is the largest residual, which covers it. Slack 0.15, limit 1.0: a change of about 30%
+  or more in what the same text costs is caught within some ten spans (40% within 15 is the
+  property tested); a smaller one is followed by the decay and shows in the bound.
+- **One reset.** A changed drift marker and a jump do the same thing: the sums keep 5% of their
+  weight, the residuals are dropped, and the record is not ready again until ten more spans; the
+  clients are told once (`a: the server's system_fingerprint changed (fp1 → fp2);
+  recalibrating`). A marker the record or the reply lacks says nothing. `n_ctx` is not a marker.
+  If a hosted server alternates fingerprints between replies, its record never becomes ready:
+  to look at when the OpenAI fixture exists.
+- **The bound is statistical, and says so.** It is 6.4's formula over the record's own
+  residuals. It covers what the fit got wrong on text like the text it has seen; text unlike any
+  of it (the first base64 blob in a results role that only ever held prose) can cost more than
+  `upper`. Two things hold regardless: `upper` is never above the node's ceiling, and where the
+  spans say nothing the prediction is the bytes.
+- **The record's shape** differs from 6.5's example where the fit does: `heuristic` holds `xtx`
+  (the upper triangle of the joint matrix), `xty`, `n`, `weights`, `per_message` (six integers,
+  in role order), `residuals`, `cusum` and `since_reset`; there is no `constants` object (the
+  exact layer's `state`, `request` and `matches` are T5's) and `tokenizer` is `null`. `spans`
+  counts the spans learned from. A number may differ in its last bit after a write and a read.
+- **Request constants and the Anthropic tool-prompt table are not built.** `request[T]` only
+  matters before a line's first bill, and the table (286 for Opus 5.5 and the rest) is data this
+  stage could not check against anything.
+- **The bytes-over-8 ratio stays** (T1, "The base is the prefix and the overhead only", ends "T3's
+  tokenizer replaces it"). T3 has no tokenizer. Taking a node out of a bill needs a floor on
+  what the node costs, and a heuristic count is the wrong tool for that: its bound is a 95% one
+  whose safe side is up, and where the fit knows nothing it over-counts on purpose, which would
+  take too much out and leave the base too small. So the base is still T1's. What T3 does
+  replace is the ceiling of the nodes after the newest bill and of a line not yet sent, which
+  is where the hard limit read bytes. An exact base needs exact text counts: the extra, T5,
+  with the `base` in `CounterAnswer` that section 4 allows (not added here, since nothing could
+  fill it honestly).
+- **`CountJob` has `resolved`** (the model's `ModelConfig`), not the provider's `Rendered`:
+  `tokens` does not render without a tokenizer, and T5 adds it with its first use.
+- **`observe`** is called by the driver before a reply's `post_reply` hooks, in a thread, for
+  every reply that is counted and reports usage it can read. A counter that raises is told to
+  the clients and the step goes on. `Tokens` tells what a fold found at that reply's
+  `post_reply`. A counter must have both methods; with `tokens` on by default, another
+  extension's counter loads only after `tau ext disable tokens`, and the load error says so.
+- **The seam for the tokenizer wheel** is `tau.Tokenizers` (`version`, `count(model, text) ->
+  int | None`) and `Tokens(home, tokenizers=None)`. Nothing imports `tau_tokens`; T4 does
+  7.2's discovery and lockstep check and hands the adapter in. With `None`, every count is
+  `heuristic` at best and every `why` and `/tokens` line names the install command. The option
+  `download`, `notes()` and `tau tokens fetch` are T4's. `tau_tokens` as built has no call
+  keyed by a model: it has `Tokenizer.tiktoken(name)` and `Tokenizer.from_json(bytes)`, each
+  with `count(text)`, `ChatTemplate.render`, and `candidates`, `verdict` and `__version__`. So
+  `Tokenizers` is the adapter the join writes, not `tau_tokens` itself: it picks and loads a
+  model's tokenizer (the setting, the files, fingerprinting) and answers `count(model, text)`
+  with that tokenizer's `count(text)`, or `None` while none is confirmed.
+- **A record that cannot be used** (newer, damaged, another model's) is never overwritten and
+  never fails a step: `why`, `/tokens` and one notice say so, and counts stay ceilings.
+- **Portability.** The store's lock is the standard library's file lock and the write is a
+  rename over the old file; both exist on Windows. Only the files' mode (600) is Unix's.
+- **The hard-limit failure** says how the unreported part was counted: by its bytes, or "an
+  estimate (`~`), counted with the most it may be off by".
 
 **T4, `ffwf-tau-tokens`.**
 - **Builds:** §7.1–§7.2: the two crates, `tokens/pyproject.toml`, `tau_tokens` and its `.pyi`;

@@ -48,6 +48,8 @@ exceptions! {
     WrongAnswer: PyValueError = "An answer to no job; nothing changed.";
     Closed: PyRuntimeError = "The session was closed.";
     TraceError: PyRuntimeError = "A trace started while one runs, stopped while none runs, or that cannot be installed.";
+    CalibrationError: PyValueError = "A calibration file that is not a record this build reads, or a name that is not a record's. The file is left as it is: `tau tokens reset` removes it.";
+    CalibrationNewer: CalibrationError = "A calibration record written by a newer tau: left alone, and not used.";
 }
 
 /// Everything a session call can fail with.
@@ -115,7 +117,7 @@ fn tree_err(e: &tree::Error) -> PyErr {
 
 /// An `OSError` with `errno` (so the interpreter picks the subclass), its message, and
 /// `file` when known.
-fn os_err(e: &io::Error, file: Option<&Path>) -> PyErr {
+pub fn os_err(e: &io::Error, file: Option<&Path>) -> PyErr {
     let Some(errno) = e.raw_os_error() else {
         return PyOSError::new_err(e.to_string());
     };

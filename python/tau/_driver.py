@@ -50,7 +50,7 @@ from tau._commands import Commands, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
-from tau._counts import tools_ceiling
+from tau._counts import tools_ceiling, tools_hash
 from tau._effects import CallRun, SampleRun, run_hooks
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
@@ -263,6 +263,14 @@ class Driver:
         # handle tells the driver goes back to the loop's thread (`start` finds it).
         on_loop = partial(_on_loop, lambda: self._home)
         self._home: tuple[asyncio.AbstractEventLoop, int] | None = None  # the loop, its thread
+        self._counts = Counts(
+            session.tree.node,
+            self._options.model,
+            lambda name: self._catalog.resolve(name),  # noqa: PLW0108 - the catalog is replaced
+            lambda: tuple(self._tools),
+            lambda: counter_of(self._extensions),
+            lambda: tools_ceiling(self._tools.values()),
+        )
         self._handles = Handles(
             session,
             self._ask,
@@ -278,13 +286,7 @@ class Driver:
                 lambda: self._home, partial(self._hub.show, cursor, extension, text)
             ),
             lambda: tuple(self._tools),
-            Counts(
-                session.tree.node,
-                self._options.model,
-                lambda: tuple(self._tools),
-                lambda: counter_of(self._extensions),
-                lambda: tools_ceiling(self._tools.values()),
-            ),
+            self._counts,
         )
         self._changing = frontend(self._check, self._hub, self._poke)
         self._commands = Commands(
@@ -611,6 +613,10 @@ class Driver:
         )
         if job.point == Hook.PreSample:
             return self._offering(cursor, subject, effect)
+        if job.point == Hook.PostReply and at is not None:
+            names = self._made_with.get(cursor, (0, tuple(self._tools)))[1]
+            sent = tools_hash(self._tools[n] for n in names if n in self._tools)
+            return self._counts.observing(at.id, sent, effect, partial(self._hub.notify, None))
         if job.point == Hook.PreStep:
             return self._commands.before(cursor, effect)
         return effect

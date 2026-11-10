@@ -375,10 +375,11 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
         names.add(name)
         offered: object = getattr(candidate, "counter", None)
         if offered is not None:
-            if not callable(getattr(offered, "count", None)):
-                raise DefinitionError(
-                    f"extension {name!r}: `counter` must have a callable `count(job)` method"
-                )
+            for method in ("count(job)", "observe(observation)"):
+                if not callable(getattr(offered, method.partition("(")[0], None)):
+                    raise DefinitionError(
+                        f"extension {name!r}: `counter` must have a callable `{method}` method"
+                    )
             counters.append(name)
             if len(counters) > 1:
                 raise DefinitionError(

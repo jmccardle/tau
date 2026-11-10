@@ -223,8 +223,11 @@ An extension can do better for the nodes no report covers by offering a **counte
 `counter` holding an object with `count(job)`, which returns a `CounterAnswer` with a count for
 some of `job.unreported`. It runs in a thread, so it must not touch the network. It cannot change
 a report: an answer for a node a report covers fails the count with a `DefinitionError` naming the
-extension. Only one loaded extension may offer a counter, and `cursor.counter` is its key (`None`
-if there is none). [The built-ins guide](built-ins.md#a-long-conversation-can-be-shortened) shows
+extension. The counter also has `observe(observation)`: the driver calls it after every reply
+that reports its usage, with the reply's usage and the span it proved (`cursor.spans()` lists
+them), which is what a counter learns from. Only one loaded extension may offer a counter, and
+`cursor.counter` is its key (`None` if there is none). The built-in `tokens` offers one, so yours
+loads only after `tau ext disable tokens`. [The built-ins guide](built-ins.md#a-long-conversation-can-be-shortened) shows
 what compaction does with the counts.
 
 ## Testing it
@@ -367,7 +370,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
+| built-in | inside τ (`agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit`, `tokens` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |

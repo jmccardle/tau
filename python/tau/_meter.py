@@ -34,11 +34,12 @@ definitions.
 import asyncio
 import json
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import cast
 
+from tau._config import ConfigError, ModelConfig
 from tau._core import Body, Node
 from tau._counts import (
     NONE,
@@ -46,6 +47,7 @@ from tau._counts import (
     Count,
     Counter,
     CountJob,
+    Observation,
     RequestCount,
     Span,
     SpanProof,
@@ -92,6 +94,22 @@ class _Report:
 
 def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+MARKERS = ("model", "system_fingerprint")
+SERVER_MARKERS = ("build_info", "template_sha256", "model_size", "n_params", "n_vocab")
+
+
+def _markers(meta: Mapping[str, object]) -> dict[str, str]:
+    """A reply's drift markers (D26 section 2), by name, each as text: what `meta` says about
+    which model and server answered. A window (`n_ctx`) is not one: it changes no count."""
+    server = meta.get("server")
+    held: Mapping[str, object] = (
+        cast("dict[str, object]", server) if isinstance(server, dict) else {}
+    )
+    found: dict[str, object] = {k: meta.get(k) for k in MARKERS}
+    found.update({k: held.get(k) for k in SERVER_MARKERS})
+    return {k: str(v) for k, v in found.items() if isinstance(v, str | int) and v != ""}
 
 
 def _report(at: int, node: Node, usage: Reading) -> _Report:
@@ -336,17 +354,20 @@ class Counts:
     of what a request carries besides its nodes (the tool definitions), which a line with no
     report yet has to add itself."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - one reader for each thing a count needs
         self,
         node: Callable[[int], Node],
         model: Callable[[int], str],
+        resolved: Callable[[str], ModelConfig],
         tools: Callable[[], tuple[str, ...]],
         counter: Callable[[], tuple[str, Counter] | None],
         overhead: Callable[[], Count],
     ) -> None:
         self._meter = Meter(node)
+        self._node = node
         self._overhead = overhead
         self._model = model
+        self._resolved = resolved
         self._tools = tools
         self._counter = counter
 
@@ -368,6 +389,61 @@ class Counts:
         """The proved spans of the walk to `at`, oldest first."""
         return list(self._meter.measure(at).spans)
 
+    def observation(self, reply: int, tools: str) -> Observation | None:
+        """What a counter is shown of the reply at node `reply`, whose request offered the tool
+        set `tools` (its digest): `None` for a node that is not a reply that counts, one that
+        reported no usage that can be read, or one whose model the catalog no longer has."""
+        node = self._node(reply)
+        usage = _usage_of(node)
+        if usage is None:
+            return None
+        assert isinstance(node.body, Body.Assistant)
+        assert node.body.meta is not None
+        meta = cast("dict[str, object]", json.loads(node.body.meta))
+        model = self._model(reply)
+        try:
+            resolved = self._resolved(model)
+        except ConfigError:
+            return None
+        spans = self._meter.measure(reply).spans
+        newest = spans[-1] if spans and spans[-1].nodes[-1].id == node.parent else None
+        return Observation(
+            "reply",
+            model,
+            resolved,
+            tuple(n.id for n in self._meter.walk(reply)),
+            cast("dict[str, int]", meta["usage"]),
+            _markers(meta),
+            tools,
+            newest,
+            node.time,
+        )
+
+    def observing[T](
+        self,
+        reply: int,
+        tools: str,
+        then: Callable[[], Awaitable[T]],
+        tell: Callable[[str], None],
+    ) -> Callable[[], Awaitable[T]]:
+        """`then`, after the counter (if an extension offers one) has observed the reply at node
+        `reply` (D26 section 4): the driver's `observe` call, made before the reply's
+        `post_reply` hooks. A counter that fails is told to the clients with `tell`; the reply is
+        already in the tree, and the step goes on."""
+
+        async def effect() -> T:
+            found = self._counter()
+            observation = None if found is None else self.observation(reply, tools)
+            if found is not None and observation is not None:
+                key, counter = found
+                try:
+                    await asyncio.to_thread(counter.observe, observation)
+                except Exception as e:
+                    tell(f"extension {key!r} could not observe a reply: {type(e).__name__}: {e}")
+            return await then()
+
+        return effect
+
     async def count(self, at: int) -> RequestCount:
         """The request count of the walk to `at`: the meter's, with a counter's answer for the
         nodes no report covers. `DefinitionError` naming the extension if the counter counts a
@@ -379,9 +455,11 @@ class Counts:
         key, counter = found
         request = measured.request
         unreported = tuple(i for i, c in request.nodes.items() if c.basis is not Basis.REPORTED)
+        model = self._model(at)
         job = CountJob(
             tuple(self._meter.walk(at)),
-            self._model(at),
+            model,
+            self._resolved(model),
             self._tools(),
             request.base,
             request.base_nodes,

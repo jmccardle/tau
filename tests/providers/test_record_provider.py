@@ -509,3 +509,44 @@ def test_a_family_without_fixtures_has_no_cases_and_a_command_that_records_it(
     assert "--gap 360" in RECORD["anthropic"]
     assert "--case builtin-tool" in RECORD["gemini"]
     assert "--base-url http://HOST:8100/v1" in RECORD["llamacpp"]
+
+
+FIT = SCRIPT.parent / "fit_prior.py"
+
+
+def fit(fixtures: Path, out: Path) -> subprocess.CompletedProcess[str]:
+    """Run `scripts/fit_prior.py` over the fixtures under `fixtures`, writing `out`."""
+    return subprocess.run(
+        [sys.executable, str(FIT), "--fixtures", str(fixtures), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_the_prior_script_fits_each_family_from_its_recorded_spans(
+    recorded: tuple[Path, Scripted], tmp_path: Path
+) -> None:
+    """The fitting half of D26's shipped prior, run on the scripted server's case (which says
+    nothing of a real tokenizer): the day fixtures exist, a prior is this one command."""
+    case_dir, _ = recorded
+    out = tmp_path / "prior.json"
+    done = fit(case_dir.parents[1], out)
+    assert done.returncode == 0, done.stderr
+    fitted = read(out)
+    assert set(fitted) == {"version", "fitted", "tau", "families"}
+    assert list(fitted["families"]) == ["llamacpp"]
+    family = fitted["families"]["llamacpp"]
+    assert (family["cases"], family["spans"]) == (1, len(STREAMS) - 1)
+    assert (family["ready"], family["error"]) == (False, None), "five spans are not ten"
+    assert len(family["weights"]) == 42
+    assert len(family["per_message"]) == 6
+
+
+def test_the_prior_script_writes_nothing_when_there_is_nothing_to_fit(tmp_path: Path) -> None:
+    out = tmp_path / "prior.json"
+    done = fit(tmp_path / "no-fixtures", out)
+    assert done.returncode == 1
+    assert "nothing to fit" in done.stderr
+    assert not out.exists(), "it never invents a number"

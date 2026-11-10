@@ -45,6 +45,7 @@ from tau._prune import Prune
 from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
+from tau._tokens import Tokens
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -94,6 +95,7 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Prune.name: lambda loaded: Prune(),
     Skills.name: _skills,
     StepLimit.name: lambda loaded: StepLimit(),
+    Tokens.name: lambda loaded: Tokens(loaded.home),
     Usage.name: lambda loaded: Usage(),
 }
 OFF_BY_DEFAULT = frozenset({Agents.name})
@@ -609,7 +611,11 @@ class _Run:
         if provided.counter:
             before = self.counter = self.counter or c.where
             if before != c.where:
-                return f"two sources offer a counter: {before} and {c.where}"
+                off = before.removeprefix("built-in ") if before.startswith("built-in ") else c.key
+                return (
+                    f"two sources offer a counter: {before} and {c.where} "
+                    f"(one may; to keep the other: tau ext disable {off})"
+                )
         return None
 
 

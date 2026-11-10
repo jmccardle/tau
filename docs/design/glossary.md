@@ -1328,7 +1328,8 @@ provider's "prompt too long"; `/compact`, then a step, recovers.
 
 A number of tokens and what it rests on. **reported** is a server's bill, or the difference of two
 bills whose shared prefix is proved. **rendered**, **calibrated** and **heuristic** belong to a
-counter extension (D26 T2 and later); nothing makes them yet. A **ceiling** is no estimate: the
+counter extension: `tokens` makes `heuristic` ones (T3), and nothing makes the other two until the
+tokenizer wheel (T4 and later). A **ceiling** is no estimate: the
 count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning, replay data, call
 ids, names and arguments, outcomes) plus 16 tokens for the node (`CEILING_PER_NODE`). Counts add:
 tokens and bounds add, and the sum is as weak as its weakest part, so a reported bill plus the
@@ -1372,7 +1373,73 @@ thread). The job holds the walk, the model, the tools, the base, the nodes a rep
 a `why`. Core keeps every report: an answer for any other node is a `DefinitionError` naming the
 extension. At most one loaded extension may offer one: two in one source are a `DefinitionError`,
 and two sources are an `ExtensionLoadError` naming both. `TreeHandle.counter` is the key of the
-extension that offers it, or `None`. Nothing offers one yet; the `tokens` built-in is D26 T3.
+extension that offers it, or `None`. The built-in `tokens` offers one (see *Tokens*), so another
+extension's counter loads only with `tokens` turned off (`tau ext disable tokens`). From T3 the
+job also carries `resolved`, the model's settings in the catalog now, and a counter has a second
+method, `observe` (see *Observation*); one without it is a `DefinitionError`.
+
+### Observation, Counter.observe, tools_hash
+`tau.Observation` (`kind`, `model`, `resolved`, `walk`, `usage`, `markers`, `tools`, `span`,
+`time`) (`_counts.py`); `Counts.observing` (`_meter.py`) · D26 section 4 · new (T3)
+
+What the driver shows the counter of each reply that reports its usage, once the reply is in the
+tree and before its `post_reply` hooks: `counter.observe(observation)`, run in a thread. `kind` is
+`reply` (`count_call` is D26 section 8's, not built). `usage` is the reply's normalized usage,
+`markers` its drift markers as text (a window, `n_ctx`, is not one), `tools` the digest of the tool
+set its request offered (`tools_hash`: names, descriptions and schemas, whatever their order), and
+`span` the proved span that ends at this reply, or `None`. A counter that raises is told to the
+clients (`extension 'x' could not observe a reply: ...`) and costs the step nothing.
+
+### Tokens (extension), `/tokens`, ready
+`tau.Tokens` (`_tokens.py`), key `tokens`, on by default, command `/tokens`; `tau.Tokenizers` ·
+D26 section 6 · new (T3)
+
+The built-in extension that offers the counter. It learns what each model's tokens cost from the
+proved spans its replies report and counts with that what no report covers yet: such a count is
+`heuristic`, never more than the node's ceiling, and shown with `~`. A model's record answers
+only once it is **ready**: ten proved spans since it last changed (five to fit, then five whose
+predictions give the bound). Until then every count is the meter's ceiling and `why` says how far
+along it is; nothing is counted from a shipped table. Without the tokenizer wheel nothing is
+`calibrated` or `rendered`, and every `why` and `/tokens` line ends with `pip install
+'ffwf-tau[tokens]'`. `/tokens` prints one line per model the session counted or observed: `a:
+heuristic ±6% for new nodes, from 41 replies (...)`, or `a: learning from 4 replies (3 of 10
+proved spans since it last changed); byte ceilings until then (...)`. Nothing is read until a
+count is asked for and nothing written until a reply is observed, so with `load: {tokens: false}`
+no `calibration` directory appears. **`Tokenizers`** is the protocol of what `Tokens` will ask of
+the tokenizer wheel (`version`, `count(model, text)`); nothing provides one in this wheel, and
+`Tokens(home)` is "not installed".
+
+### calibration record, calibration store, Calibration, CalibrationStore
+`tau.Calibration`, `tau.CalibrationStore`, `tau.CalibrationError`, `tau.CalibrationNewer`,
+`tau.calibration_features` (`tau._core`); `tau_core::calibration`, `tau_store::calibration`;
+`$TAU_HOME/calibration/<provider>/<digest>.json` · D26 sections 6.1 to 6.5 · new (T3)
+
+A **calibration record** is what `tokens` has learned of one model (a provider, base URL and
+model id): the sums of a least squares fit over proved spans (never text), the weights and
+per-node constants fitted from them, the last 200 residuals of its own predictions, its drift
+markers, and counts of replies and spans. The **features** of a node (`calibration_features`) are
+48 numbers: for each of six **roles** (system, user, assistant, calls, results, thinking) its
+text's lowercase, uppercase, digits, other ASCII, whitespace, non-ASCII bytes and words, then one
+node count per role; a span's are the sum of its nodes'. The fit is non-negative least squares
+pulled toward the **heuristic prior**, which is the ceiling's assumption (one token per byte,
+nothing per word): where the spans say nothing, a prediction is the text's bytes, never zero. The
+**bound** of a prediction `p` is `ceil(p * q * (1 + 2 / sqrt(n))) + 2`, `q` the 95th percentile of
+the residuals' sizes (their largest under 20) and `n` how many there are. A **reset** (a drift
+marker that changed, or a **jump**: the residuals' two-sided CUSUM passing its limit) keeps 5% of
+the sums' weight and drops the residuals, so the record is not ready again until ten more spans.
+The **calibration store** is the directory of records: an observation is folded into the record
+on disk under the file's lock (lock, read, fold, write beside, rename), so two processes lose
+nothing of each other's; files are mode 600. A record a newer τ wrote is `CalibrationNewer`, a
+file that is not a record `CalibrationError`; both are left as they are, counting goes on by
+ceilings, and `tau tokens reset MODEL` removes one.
+
+### tau tokens
+`tau tokens show [MODEL]`, `tau tokens reset MODEL` (`_tokens_cli.py`) · D26 section 6.3 · new (T3)
+
+`show` lists every record under `$TAU_HOME/calibration` with how it counts, or prints one model's
+in words (its file, spans, how it counts, its per-node constants and drift markers); `reset`
+deletes one model's record. `MODEL` is a model's name in the config. Both work whether or not
+`tokens` is loaded. `fetch` is D26 T4's.
 
 ### Span, proved span, SpanProof, TreeHandle.spans
 `tau.Span` (`nodes`, `cost`, `proof`), `tau.SpanProof` (`cache`, `slot`, `prefix`) (`_counts.py`);

@@ -13,6 +13,7 @@ can start a kept tail. A **counter** is an object an extension offers as its `co
 attribute; it counts only what no report covers.
 """
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, Protocol
 
+from tau._config import ModelConfig
 from tau._core import Body, Node, Outcome, Part
 
 
@@ -193,6 +195,15 @@ def tools_ceiling(tools: Iterable[_Described]) -> Count:
     return Count(0, Basis.CEILING, size) if size else NONE
 
 
+def tools_hash(tools: Iterable[_Described]) -> str:
+    """A digest of a tool set: the name, description and schema of each tool, whatever their
+    order. Two requests with the same digest carry the same tool definitions."""
+    listed = sorted(
+        [t.name, t.description, json.dumps(t.parameters, sort_keys=True)] for t in tools
+    )
+    return hashlib.sha256(json.dumps(listed).encode()).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class RequestCount:
     """What the walk to a node will cost as a request (`Cursor.count`).
@@ -233,12 +244,14 @@ class Span:
 
 @dataclass(frozen=True)
 class CountJob:
-    """What a counter is asked: the walk to count, the model and tools of the request, and what
-    core already knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The
-    counter answers for the rest, `unreported`."""
+    """What a counter is asked: the walk to count, the model (its qualified name, and
+    `resolved`, its settings in the catalog now) and tools of the request, and what core already
+    knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The counter answers
+    for the rest, `unreported`."""
 
     walk: tuple[Node, ...]
     model: str
+    resolved: ModelConfig
     tools: tuple[str, ...]
     base: Count
     base_nodes: int
@@ -255,13 +268,43 @@ class CounterAnswer:
     why: str | None = None
 
 
+@dataclass(frozen=True)
+class Observation:
+    """One reply that reported its usage, as the driver shows it to the counter once the reply
+    is in the tree (D26 section 4). `kind` is `reply` (`count_call` is D26 section 8's, not
+    built). `model` is the qualified name of the model that replied and `resolved` its settings
+    in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage` the
+    reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
+    `system_fingerprint`, and llama.cpp's `build_info`, `template_sha256`, `model_size`,
+    `n_params` and `n_vocab`, each as text, those the reply has); `tools` the digest of the tool
+    set its request offered (`tools_hash`); `span` the proved span that ends at this reply, or
+    `None` if the reply proved none; `time` the reply's time in milliseconds."""
+
+    kind: Literal["reply", "count_call"]
+    model: str
+    resolved: ModelConfig
+    walk: tuple[int, ...]
+    usage: Mapping[str, int]
+    markers: Mapping[str, str]
+    tools: str
+    span: Span | None
+    time: int
+
+
 class Counter(Protocol):
-    """What an extension offers as its `counter` attribute (at most one extension may). `count`
-    is synchronous and does no network IO: the driver runs it in a thread. Core keeps every
-    report: an answer for a node a report covers fails the count with a `DefinitionError`."""
+    """What an extension offers as its `counter` attribute (at most one extension may). Both
+    methods are synchronous and do no network IO: the driver runs them in a thread. Core keeps
+    every report: an answer for a node a report covers fails the count with a
+    `DefinitionError`."""
 
     def count(self, job: CountJob) -> CounterAnswer:
         """Count the nodes of `job.unreported`."""
+        ...
+
+    def observe(self, observation: Observation) -> None:
+        """Learn from one reply. The driver calls it after every reply that reports its usage,
+        before the reply's `post_reply` hooks; a failure is told to the clients and costs the
+        step nothing."""
         ...
 
 
@@ -279,4 +322,9 @@ class Counting(Protocol):
 
     def spans(self, at: int) -> list[Span]:
         """The proved spans of the walk to node `at`."""
+        ...
+
+    def observation(self, reply: int, tools: str) -> Observation | None:
+        """What a counter is shown of the reply at node `reply`, or `None` if it reported no
+        usage."""
         ...

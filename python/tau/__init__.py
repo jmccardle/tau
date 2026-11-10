@@ -36,6 +36,10 @@ from tau._core import (
     BadReplay,
     Body,
     Busy,
+    Calibration,
+    CalibrationError,
+    CalibrationNewer,
+    CalibrationStore,
     Closed,
     Config,
     Corrupt,
@@ -74,6 +78,7 @@ from tau._core import (
     Undecodable,
     Version,
     WrongAnswer,
+    calibration_features,
 )
 from tau._counts import (
     Basis,
@@ -81,6 +86,7 @@ from tau._counts import (
     Counter,
     CounterAnswer,
     CountJob,
+    Observation,
     RequestCount,
     Span,
     SpanProof,
@@ -169,6 +175,7 @@ from tau._startup import (
     select_model,
 )
 from tau._step_limit import StepLimit
+from tau._tokens import Tokenizers, Tokens
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
 from tau._usage import Usage
@@ -195,6 +202,10 @@ __all__ = [
     "Basis",
     "Body",
     "Busy",
+    "Calibration",
+    "CalibrationError",
+    "CalibrationNewer",
+    "CalibrationStore",
     "CallArgs",
     "CallDraft",
     "CallNamed",
@@ -271,6 +282,7 @@ __all__ = [
     "NotInHook",
     "NotPending",
     "Notice",
+    "Observation",
     "OpenAIProvider",
     "OpenQuestion",
     "Opened",
@@ -321,6 +333,8 @@ __all__ = [
     "SystemText",
     "TextDelta",
     "ThinkingDelta",
+    "Tokenizers",
+    "Tokens",
     "TooLarge",
     "Tool",
     "ToolError",
@@ -344,6 +358,7 @@ __all__ = [
     "__version__",
     "base_tools",
     "builtin_providers",
+    "calibration_features",
     "check_config",
     "find_session",
     "first_cursor_node",
