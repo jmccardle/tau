@@ -24,6 +24,13 @@ REDRAW = 0.1  # seconds the median redraw may take, from the event to the highli
 WHO = Author.Frontend("t")
 
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: on the CI runner this does not end within faulthandler's 120 s (seen in "
+    "Textual's rendering; slow or stuck is not known yet); held on Linux and macOS",
+)
+
+
 @pytest.fixture(autouse=True)
 def harness_mode() -> None:
     """One mode: the cost is the screen's, not the wire's (this replaces the suite's two)."""

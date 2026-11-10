@@ -40,7 +40,7 @@ def client_id(kind: str) -> str:
     on POSIX, else the logon name (`os.getlogin`, which Windows answers with no variable set)."""
     try:
         user = getpass.getuser()
-    except OSError:
+    except (OSError, ImportError):  # Windows with no variable: OSError from 3.13, no `pwd` before
         user = os.getlogin()
     return f"{user}@{socket.gethostname()}:{kind}"
 

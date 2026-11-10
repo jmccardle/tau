@@ -81,7 +81,7 @@ from tau._launch import (
 )
 from tau._markdown import to_markdown
 from tau._options import save_options
-from tau._print_mode import SIGPIPE_STATUS, detach, print_mode, reader_gone
+from tau._print_mode import SIGPIPE_STATUS, detach, pipe_gone, print_mode, reader_gone
 from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
@@ -752,9 +752,9 @@ def _flushed(status: int, out: TextIO, err: TextIO) -> int:
     said so yet."""
     try:
         out.flush()
-    except BrokenPipeError:
-        raise
     except OSError as e:
+        if pipe_gone(e):
+            raise BrokenPipeError(e.errno, e.strerror) from e
         detach(out)
         return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
     return status

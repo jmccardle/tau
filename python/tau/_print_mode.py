@@ -22,6 +22,7 @@ not busy. The calls publish their events before they return, and the stream is r
 
 import asyncio
 import contextlib
+import errno
 import json
 import os
 import signal
@@ -122,8 +123,8 @@ class _Run:
             stream.write(text)
             if stream is self.out:
                 stream.flush()
-        except BrokenPipeError:
-            if stream is not self.out:
+        except OSError as e:
+            if stream is not self.out or not pipe_gone(e):
                 raise
             raise _Gone from None
 
@@ -679,13 +680,22 @@ def detach(stream: TextIO) -> None:
         os.close(null)
 
 
+def pipe_gone(error: OSError) -> bool:
+    """Whether `error` says a pipe's reader went away: `BrokenPipeError`, or on Windows the
+    `EINVAL` a write to a pipe with no reader raises there."""
+    windows = sys.platform == "win32" and error.errno == errno.EINVAL
+    return isinstance(error, BrokenPipeError) or windows
+
+
 def reader_gone(out: TextIO) -> bool:
     """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
     If it was standard error's, standard output is left alone (its buffer may go to a file)."""
     try:
         out.flush()
-    except BrokenPipeError:
-        return True
+    except OSError as e:
+        if pipe_gone(e):
+            return True
+        raise
     return False
 
 
