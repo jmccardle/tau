@@ -58,6 +58,7 @@ BUILT_INS = [
     "prune",
     "skills",
     "step_limit",
+    "tokens",
     "usage",
 ]  # the built-in extensions
 

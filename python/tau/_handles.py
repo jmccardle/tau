@@ -21,7 +21,7 @@ from tau._core import (
     Session,
     Tree,
 )
-from tau._counts import Counting, RequestCount
+from tau._counts import Counting, RequestCount, Span
 from tau._values import DefinitionError, Kind, Model, kind_of
 
 Poke = Callable[[], None]
@@ -268,6 +268,16 @@ class TreeHandle:
         if node is None:
             raise ValueError("count: this handle is on no node; say which with at=")
         return await self._counts.count(node)
+
+    def spans(self, at: int | None = None) -> list[Span]:
+        """The proved spans of the walk to node `at`, oldest first (D26 section 3): each is the
+        nodes between two consecutive requests whose cost the two bills prove, with how. A span
+        nothing proves is not listed, and neither is one a copy inherits (its count is in
+        `count`). `at` defaults as `count`'s does."""
+        node = self._here() if at is None else at
+        if node is None:
+            raise ValueError("spans: this handle is on no node; say which with at=")
+        return self._counts.spans(node)
 
     # Writes
 

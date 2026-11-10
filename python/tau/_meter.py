@@ -12,9 +12,14 @@ For the replies that report (the **reports**, in walk order):
   the ceiling of the tool definitions.
 - **A span** is the nodes from one report's reply up to the next report's. Its cost is the
   difference of the two `input`s, and that is exact only if the first request is a prefix of the
-  second as the server sees it. It is **proved** when the second reports `cached` equal to the
-  first's `input`: the server found the whole first request in its cache. A proved span is one
-  **lump**: its first node holds the cost and the others have no count of their own.
+  second as the server sees it. It is **proved** in one of three ways (`Span.proof`): `cache`,
+  the second reports `cached` equal to the first's `input` (the server found the whole first
+  request in its cache: Anthropic); `slot`, llama.cpp's `timings` say the second request read at
+  least the whole first request from its slot (`cache_n` of the second is no less than
+  `prompt_n + cache_n` of the first); `prefix`, the second reply's `meta.sent.extends` names the
+  first reply (the provider found the first request to be a byte prefix of the second when it
+  sent it: OpenAI and Gemini). A proved span is one **lump**: its first node holds the cost and
+  the others have no count of their own.
 - **The newest reply** costs its `output`.
 - **Everything else** (nodes after the newest report, nodes in a span that is not proved, every
   node while there is no report) is a **ceiling** (`tau._counts.ceiling_of`).
@@ -27,11 +32,14 @@ definitions.
 """
 
 import asyncio
+import json
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import pairwise
+from typing import cast
 
+from tau._config import ConfigError, ModelConfig
 from tau._core import Body, Node
 from tau._counts import (
     NONE,
@@ -39,7 +47,10 @@ from tau._counts import (
     Count,
     Counter,
     CountJob,
+    Observation,
     RequestCount,
+    Span,
+    SpanProof,
     ceiling_of,
     lowest_tokens,
     reported,
@@ -58,19 +69,68 @@ KEPT = 16
 class Measured:
     """A request count and what the meter keeps to answer further questions about it: `anchor`
     (the newest report's `input` and its reply's `output`; `NONE` with no report), `after` (the
-    nodes with a count after the newest report, which add to the anchor) and `lumps` (the node
-    ids each lump of more than one node covers, by its first)."""
+    nodes with a count after the newest report, which add to the anchor), `lumps` (the node
+    ids each lump of more than one node covers, by its first) and `spans` (the spans the
+    walk's own reports prove, oldest first)."""
 
     request: RequestCount
     anchor: Count
     after: tuple[int, ...]
     lumps: Mapping[int, tuple[int, ...]]
+    spans: tuple[Span, ...] = ()
 
 
-def _reports(walk: list[Node]) -> list[tuple[int, Reading]]:
-    """The replies of `walk` that report their usage, by index. A reply whose usage cannot be
-    read is a reply with none."""
-    found: list[tuple[int, Reading]] = []
+@dataclass(frozen=True)
+class _Report:
+    """A reply that reports its usage: where it is on the walk, its `usage`, and what else its
+    `meta` says that can prove a span: `extends` (`meta.sent.extends`) and `slot` (llama.cpp's
+    `timings.prompt_n` and `timings.cache_n`)."""
+
+    at: int
+    usage: Reading
+    extends: int | None = None
+    slot: tuple[int, int] | None = None
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+MARKERS = ("model", "system_fingerprint")
+SERVER_MARKERS = ("build_info", "template_sha256", "model_size", "n_params", "n_vocab")
+
+
+def _markers(meta: Mapping[str, object]) -> dict[str, str]:
+    """A reply's drift markers (D26 section 2), by name, each as text: what `meta` says about
+    which model and server answered. A window (`n_ctx`) is not one: it changes no count."""
+    server = meta.get("server")
+    held: Mapping[str, object] = (
+        cast("dict[str, object]", server) if isinstance(server, dict) else {}
+    )
+    found: dict[str, object] = {k: meta.get(k) for k in MARKERS}
+    found.update({k: held.get(k) for k in SERVER_MARKERS})
+    return {k: str(v) for k, v in found.items() if isinstance(v, str | int) and v != ""}
+
+
+def _report(at: int, node: Node, usage: Reading) -> _Report:
+    assert isinstance(node.body, Body.Assistant)
+    assert node.body.meta is not None
+    meta = cast("dict[str, object]", json.loads(node.body.meta))
+    sent, timings = meta.get("sent"), meta.get("timings")
+    extends = cast("dict[str, object]", sent).get("extends") if isinstance(sent, dict) else None
+    slot = None
+    if isinstance(timings, dict):
+        fields = cast("dict[str, object]", timings)
+        fresh, read = fields.get("prompt_n"), fields.get("cache_n")
+        if _is_count(fresh) and _is_count(read):
+            slot = (cast("int", fresh), cast("int", read))
+    return _Report(at, usage, cast("int", extends) if _is_count(extends) else None, slot)
+
+
+def _reports(walk: list[Node]) -> list[_Report]:
+    """The replies of `walk` that report their usage, in walk order. A reply whose usage cannot
+    be read is a reply with none."""
+    found: list[_Report] = []
     for i, node in enumerate(walk):
         if not counted(node):
             continue
@@ -79,7 +139,7 @@ def _reports(walk: list[Node]) -> list[tuple[int, Reading]]:
         except ValueError:
             continue
         if usage is not None:
-            found.append((i, usage))
+            found.append(_report(i, node, usage))
     return found
 
 
@@ -110,15 +170,24 @@ def _base(
     return Count(left, Basis.HEURISTIC if bounded else Basis.REPORTED)
 
 
-def _proved(walk: list[Node], first: tuple[int, Reading], second: tuple[int, Reading]) -> bool:
-    """Whether the span from one report to the next is proved (the module docstring). Another
-    reply between them, reporting or not, breaks the chain of requests."""
-    (i, before), (j, after) = first, second
-    return (
-        before.input > 0
-        and after.cached == before.input
-        and not any(counted(walk[k]) for k in range(i + 1, j))
-    )
+def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | None:
+    """How the span from one report to the next is proved (the module docstring), or `None` if it
+    is not. Another reply between them, reporting or not, breaks the chain of requests, and a
+    second bill smaller than the first is no span at all."""
+    before, after = first.usage, second.usage
+    if (
+        before.input <= 0
+        or after.input < before.input
+        or any(counted(walk[k]) for k in range(first.at + 1, second.at))
+    ):
+        return None
+    if after.cached == before.input:
+        return "cache"
+    if first.slot is not None and second.slot is not None and second.slot[1] >= sum(first.slot):
+        return "slot"
+    if second.extends == walk[first.at].id:
+        return "prefix"
+    return None
 
 
 class Meter:
@@ -161,27 +230,31 @@ class Meter:
             after = tuple(n.id for n in walk[covered:] if n.id in nodes)
             total = base + _sum(nodes[i] for i in after)
             return Measured(RequestCount(total, base, covered, nodes), base, after, lumps)
-        first, last = marks[0][0], marks[-1][0]
+        first, last = marks[0].at, marks[-1].at
+        spans: list[Span] = []
         self._fill(walk, 0, first, nodes, lumps)
         for earlier, later in pairwise(marks):
-            (i, before), (j, then) = earlier, later
-            if _proved(walk, earlier, later):
+            i, j = earlier.at, later.at
+            proof = _proof(walk, earlier, later)
+            if proof is not None:
                 ids = tuple(n.id for n in walk[i:j])
-                nodes[ids[0]] = reported(then.input - before.input)
+                cost = later.usage.input - earlier.usage.input
+                nodes[ids[0]] = reported(cost)
+                spans.append(Span(tuple(walk[i:j]), cost, proof))
                 if len(ids) > 1:
                     lumps[ids[0]] = ids
             else:
-                nodes[walk[i].id] = reported(before.output)
+                nodes[walk[i].id] = reported(earlier.usage.output)
                 self._fill(walk, i + 1, j, nodes, lumps)
-        newest = marks[-1][1]
+        newest = marks[-1].usage
         nodes[walk[last].id] = reported(newest.output)
         self._fill(walk, last + 1, len(walk), nodes, lumps)
         anchor = reported(newest.input) + reported(newest.output)
         after = tuple(n.id for n in walk[last + 1 :] if n.id in nodes)
         total = anchor + _sum(nodes[i] for i in after)
-        base = _base(walk, marks[0][1].input, first, nodes, lumps)
+        base = _base(walk, marks[0].usage.input, first, nodes, lumps)
         request = RequestCount(total, base, first, nodes)
-        return Measured(request, anchor, after, lumps)
+        return Measured(request, anchor, after, lumps, tuple(spans))
 
     def _fill(
         self,
@@ -221,13 +294,14 @@ class Meter:
 
     def _derived(self, node: Node) -> Count:
         """The count of a node nothing reports: a ceiling, except a `User` node derived from a
-        reply that reported (a summary, derived from the summarizer's reply), which is that
-        reply's count and the ceiling of its wrapper."""
+        reply that reported (a summary, derived from the summarizer's reply), which is what
+        that reply's words cost without its thinking (`Reading.said`) and the ceiling of its
+        wrapper."""
         if node.derived_from is not None and isinstance(node.body, Body.User):
             source = self._node(node.derived_from)
-            got = self.measure(source.id).request.nodes.get(source.id)
-            if isinstance(source.body, Body.Assistant) and got and got.basis is Basis.REPORTED:
-                return wrapped_count(got, source.body, node.body)
+            usage = _usage_of(source)
+            if usage is not None:
+                return wrapped_count(usage.said, source.body, node.body)
         return ceiling_of(node.body)
 
     def _inherit(
@@ -256,6 +330,16 @@ class Meter:
             k += 1
 
 
+def _usage_of(node: Node) -> Reading | None:
+    """The usage a counted reply reports, or `None` (not a counted reply, none, unreadable)."""
+    if not counted(node):
+        return None
+    try:
+        return reading(node)
+    except ValueError:
+        return None
+
+
 def _sum(counts: Iterable[Count]) -> Count:
     total = NONE
     for count in counts:
@@ -270,17 +354,20 @@ class Counts:
     of what a request carries besides its nodes (the tool definitions), which a line with no
     report yet has to add itself."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - one reader for each thing a count needs
         self,
         node: Callable[[int], Node],
         model: Callable[[int], str],
+        resolved: Callable[[str], ModelConfig],
         tools: Callable[[], tuple[str, ...]],
         counter: Callable[[], tuple[str, Counter] | None],
         overhead: Callable[[], Count],
     ) -> None:
         self._meter = Meter(node)
+        self._node = node
         self._overhead = overhead
         self._model = model
+        self._resolved = resolved
         self._tools = tools
         self._counter = counter
 
@@ -298,6 +385,65 @@ class Counts:
         request = replace(measured.request, base=overhead, total=measured.request.total + overhead)
         return replace(measured, request=request, anchor=overhead)
 
+    def spans(self, at: int) -> list[Span]:
+        """The proved spans of the walk to `at`, oldest first."""
+        return list(self._meter.measure(at).spans)
+
+    def observation(self, reply: int, tools: str) -> Observation | None:
+        """What a counter is shown of the reply at node `reply`, whose request offered the tool
+        set `tools` (its digest): `None` for a node that is not a reply that counts, one that
+        reported no usage that can be read, or one whose model the catalog no longer has."""
+        node = self._node(reply)
+        usage = _usage_of(node)
+        if usage is None:
+            return None
+        assert isinstance(node.body, Body.Assistant)
+        assert node.body.meta is not None
+        meta = cast("dict[str, object]", json.loads(node.body.meta))
+        model = self._model(reply)
+        try:
+            resolved = self._resolved(model)
+        except ConfigError:
+            return None
+        spans = self._meter.measure(reply).spans
+        newest = spans[-1] if spans and spans[-1].nodes[-1].id == node.parent else None
+        return Observation(
+            "reply",
+            model,
+            resolved,
+            tuple(n.id for n in self._meter.walk(reply)),
+            cast("dict[str, int]", meta["usage"]),
+            _markers(meta),
+            tools,
+            newest,
+            node.time,
+        )
+
+    def observing[T](
+        self,
+        reply: int,
+        tools: str,
+        then: Callable[[], Awaitable[T]],
+        tell: Callable[[str], None],
+    ) -> Callable[[], Awaitable[T]]:
+        """`then`, after the counter (if an extension offers one) has observed the reply at node
+        `reply` (D26 section 4): the driver's `observe` call, made before the reply's
+        `post_reply` hooks. A counter that fails is told to the clients with `tell`; the reply is
+        already in the tree, and the step goes on."""
+
+        async def effect() -> T:
+            found = self._counter()
+            observation = None if found is None else self.observation(reply, tools)
+            if found is not None and observation is not None:
+                key, counter = found
+                try:
+                    await asyncio.to_thread(counter.observe, observation)
+                except Exception as e:
+                    tell(f"extension {key!r} could not observe a reply: {type(e).__name__}: {e}")
+            return await then()
+
+        return effect
+
     async def count(self, at: int) -> RequestCount:
         """The request count of the walk to `at`: the meter's, with a counter's answer for the
         nodes no report covers. `DefinitionError` naming the extension if the counter counts a
@@ -309,9 +455,11 @@ class Counts:
         key, counter = found
         request = measured.request
         unreported = tuple(i for i, c in request.nodes.items() if c.basis is not Basis.REPORTED)
+        model = self._model(at)
         job = CountJob(
             tuple(self._meter.walk(at)),
-            self._model(at),
+            model,
+            self._resolved(model),
             self._tools(),
             request.base,
             request.base_nodes,

@@ -92,6 +92,8 @@ class Price:
     """What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
     nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
     a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
+    `cache_write_1h` is optional: the price of a cache write kept for an hour (a reply's
+    `written_1h`), which is `cache_write` when it is not given (D26 section 2).
     Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
     number below 0, or one that is not a number."""
 
@@ -99,15 +101,18 @@ class Price:
     output: Decimal
     cache_read: Decimal
     cache_write: Decimal
+    cache_write_1h: Decimal | None = None
 
     def __post_init__(self) -> None:
         for key in _PRICE_FIELDS:
             object.__setattr__(self, key, _money(getattr(self, key), key))
+        hour = self.cache_write if self.cache_write_1h is None else self.cache_write_1h
+        object.__setattr__(self, "cache_write_1h", _money(hour, "cache_write_1h"))
 
     @classmethod
     def of(cls, fields: object) -> "Price":
         """The price a config's `price` object says. `ConfigError` unless it is an object with
-        exactly the four fields, each a number of at least 0."""
+        the four fields, and `cache_write_1h` if it likes, each a number of at least 0."""
         if not isinstance(fields, Mapping):
             raise ConfigError(f"config 'price' must be an object, not {type(fields).__name__}")
         given = cast("Mapping[str, object]", fields)
@@ -118,10 +123,12 @@ class Price:
                 "required (USD per million tokens; a model that writes no cache repeats "
                 "its input price for cache_write)"
             )
-        extra = sorted(str(k) for k in given if k not in _PRICE_FIELDS)
+        known = (*_PRICE_FIELDS, "cache_write_1h")
+        extra = sorted(str(k) for k in given if k not in known)
         if extra:
-            raise ConfigError(f"config 'price' has unknown keys {extra}; it holds {_PRICE_FIELDS}")
-        return cls(*(cast("Decimal", given[k]) for k in _PRICE_FIELDS))
+            raise ConfigError(f"config 'price' has unknown keys {extra}; it holds {known}")
+        four = (cast("Decimal", given[k]) for k in _PRICE_FIELDS)
+        return cls(*four, cache_write_1h=cast("Decimal | None", given.get("cache_write_1h")))
 
 
 @dataclass(frozen=True)

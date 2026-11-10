@@ -48,6 +48,7 @@ def test_it_loads_before_step_limit(world: World) -> None:
         "prune",
         "skills",
         "step_limit",
+        "tokens",
         "usage",
     ]
 
@@ -61,6 +62,7 @@ def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -
         "prune",
         "skills",
         "step_limit",
+        "tokens",
         "usage",
     ]
     found = row(world)
@@ -79,6 +81,7 @@ def test_no_extensions_leaves_it_on_and_load_false_still_turns_it_off(world: Wor
         "prune",
         "skills",
         "step_limit",
+        "tokens",
         "usage",
     ]
     assert row(world, "--no-extensions")["state"] == "on"

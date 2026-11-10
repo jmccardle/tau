@@ -25,6 +25,35 @@ class Basis(StrEnum)
     RENDERED = 'rendered'
     REPORTED = 'reported'
 CURSOR_POINTS = ('pre_step', 'pre_input', 'pre_sample', 'pre_reply', 'post_reply', 'post_result', 'post_step')
+class Calibration
+    property error: float | None
+    property key: tuple[str, str | None, str]
+    property markers: dict[str, str]
+    property needed: int
+    property observations: int
+    property per_message: list[int]
+    def predict(self, features: Sequence[float]) -> tuple[int, int] | None
+    property ready: bool
+    property since_reset: int
+    property spans: int
+    def to_json(self) -> str
+    property updated: str
+    property weights: list[float]
+class CalibrationError(ValueError)
+class CalibrationNewer(CalibrationError)
+class CalibrationStore
+    def __new__(cls, directory: str | PathLike[str]) -> CalibrationStore
+    def names(self) -> list[str]
+    def observe(
+        self,
+        name: str,
+        key: tuple[str, str | None, str],
+        markers: Mapping[str, str],
+        span: tuple[Sequence[float], int] | None,
+        time: str,
+    ) -> tuple[Calibration, list[tuple[str, str, str, str, float]]]
+    def read(self, name: str) -> Calibration | None
+    def remove(self, name: str) -> bool
 class CallDraft
     def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None
     property id: str
@@ -51,11 +80,13 @@ class CountJob
     base_nodes: int
     known: Mapping[int, Count]
     model: str
+    resolved: ModelConfig
     tools: tuple[str, ...]
     unreported: tuple[int, ...]
     walk: tuple[Node, ...]
 class Counter(Protocol)
     def count(self, job: CountJob) -> CounterAnswer
+    def observe(self, observation: Observation) -> None
 @dataclass(frozen=True)
 class CounterAnswer
     nodes: Mapping[int, Count]
@@ -109,6 +140,17 @@ class NodeHandle(TreeHandle)
     def tell(self, text: str, *, to: str | None = None) -> None
     def walk(self) -> list[Node]
 NodeId = NewType('NodeId', int)
+@dataclass(frozen=True)
+class Observation
+    kind: Literal['reply', 'count_call']
+    markers: Mapping[str, str]
+    model: str
+    resolved: ModelConfig
+    span: Span | None
+    time: int
+    tools: str
+    usage: Mapping[str, int]
+    walk: tuple[int, ...]
 class Permissions
     def __init__(self, cwd: Path) -> None
     name = 'permissions'
@@ -134,6 +176,12 @@ class Skills
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
     def rescan(self) -> bool
     yields_names = True
+@dataclass(frozen=True)
+class Span
+    cost: int
+    nodes: tuple[Node, ...]
+    proof: SpanProof
+SpanProof = Literal['cache', 'slot', 'prefix']
 class StepLimit
     def __init__(self) -> None
     name = 'step_limit'
@@ -148,6 +196,16 @@ class Subject
     node: Node | None = None
     tools: Sequence[str] | None = None
 TOOL_POINTS = ('pre_tool', 'pre_result')
+class Tokenizers(Protocol)
+    def count(self, model: ModelConfig, text: str) -> int | None
+    property version: str
+class Tokens
+    def __init__(self, home: Path, tokenizers: Tokenizers | None = None) -> None
+    def count(self, job: CountJob) -> CounterAnswer
+    name = NAME
+    def observe(self, observation: Observation) -> None
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    def tokens(self, tree: TreeHandle) -> str
 class ToolHook(Protocol)
     async def __call__(self, node: NodeHandle, call: 'CallDraft', /) -> str | None
 class TreeHandle
@@ -180,6 +238,7 @@ class TreeHandle
     def retire(self) -> None
     def send(self, to: int, text: str) -> int
     def set_label(self, label: str, cursor: int) -> None
+    def spans(self, at: int | None = None) -> list[Span]
     property tree: Tree
 class Usage
     def __init__(self) -> None
@@ -187,6 +246,7 @@ class Usage
     options = Options
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
     def usage(self, tree: TreeHandle) -> str
+def calibration_features(body: Body) -> list[float]
 
 == tools: Tools
 class BashTool
@@ -770,6 +830,7 @@ class GeminiProvider
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
     property name: str
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
         self,
         walk: Sequence[Node],
@@ -784,8 +845,10 @@ class OpenAIProvider
         timeout: httpx.Timeout | None = None,
     ) -> None
     async def aclose(self) -> None
+    def chat_template(self, base_url: str) -> str | None
     def check(self, model: ModelConfig) -> list[str]
     property name: str
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
         self,
         walk: Sequence[Node],
@@ -803,6 +866,14 @@ class Provider(Protocol)
         tools: Sequence['Tool'],
     ) -> AsyncGenerator[Part | Finish | Delta, None]
 class ProviderClosed(SampleError)
+@dataclass(frozen=True)
+class Rendered
+    body: Mapping[str, object]
+    def extends(self, earlier: 'Rendered') -> bool
+    fixed: str
+    messages: tuple[str, ...]
+    nodes: tuple[tuple[int, ...], ...]
+    url: str
 class RetryProvider
     def __init__(
         self,
@@ -1049,6 +1120,7 @@ Pick = Callable[[tuple[str, ...]], str]
 class Price
     cache_read: Decimal
     cache_write: Decimal
+    cache_write_1h: Decimal | None = None
     input: Decimal
     @classmethod
     def of(cls, fields: object) -> 'Price'

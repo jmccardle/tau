@@ -7,6 +7,8 @@
 //! length and the payload (`u32` LE), then the payload: the `Record` (or, in
 //! the scratchpad file, the `Scratchpad`) as JSON.
 
+pub mod calibration;
+
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};

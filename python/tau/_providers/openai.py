@@ -5,6 +5,7 @@ request carries what the walk, the tools, and `ModelConfig` say: `model`, `messa
 `tools` when there are any, what the model's settings set (`_typed_body`), then `extra_body` last.
 """
 
+import hashlib
 import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -15,27 +16,32 @@ import httpx
 from tau._config import ConfigError, ModelConfig
 from tau._core import Node, Part, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau._protocols import Finish, SampleError, Tool
+from tau._protocols import Finish, Rendered, SampleError, Tool
 from tau._providers._walk import (
     AssistantTurn,
     SystemTurn,
     ToolResults,
     UserTurn,
+    bearing,
     call_markup,
     stop_note,
     system_note,
     turns,
 )
 from tau._providers._wire import (
+    UNREACHED,
     Connection,
     Json,
     count,
     extra_body_problems,
     finish,
     json_object,
+    nested_counts,
     note_usage,
     option_problems,
     plain,
+    rendered,
+    sent_stamp,
 )
 
 _OPTIONS = ("temperature", "top_p", "reasoning_effort", "include_usage", "extra_body")
@@ -80,32 +86,37 @@ def _assistant(turn: AssistantTurn) -> Json:
     return message
 
 
-def messages(walk: Sequence[Node], *, structured: bool) -> list[Json]:
-    """The wire messages for a walk. `Config` and `Custom` nodes never reach the model. The
+def messages(walk: Sequence[Node], *, structured: bool) -> tuple[list[Json], list[list[int]]]:
+    """The wire messages for a walk, and for each the node it came from. `Config` and `Custom`
+    nodes never reach the model. The
     `System` nodes that open the walk are `system` messages (an empty one sends none); one later
     is a user message `[system note: ...]` (llama.cpp with the Qwen template answers HTTP 500 to a
     `system` message after the first turn). A batch whose call arguments are not a JSON object, or
     any batch when `structured` is false (no tools are offered), goes as text with its results
     (llama.cpp refuses the history otherwise, HTTP 500); no arguments are sent as `{}`."""
     out: list[Json] = []
+    nodes: list[list[int]] = []
     spoken = False  # a turn other than `System` has been seen
-    for turn in turns(walk, structured=structured):
+    for node, turn in zip(bearing(walk), turns(walk, structured=structured), strict=True):
+        made: list[Json] = []
         match turn:
             case SystemTurn(text=text) if spoken:
-                out.append({"role": "user", "content": system_note(text)})
+                made.append({"role": "user", "content": system_note(text)})
             case SystemTurn(text=""):  # no instruction: no message (as Anthropic and Gemini)
                 pass
             case SystemTurn(text=text):
-                out.append({"role": "system", "content": text})
+                made.append({"role": "system", "content": text})
             case UserTurn(text=text):
-                out.append({"role": "user", "content": text})
+                made.append({"role": "user", "content": text})
             case AssistantTurn():
-                out.append(_assistant(turn))
+                made.append(_assistant(turn))
             case ToolResults(results=results):
                 for r in results:
-                    out.append({"role": "tool", "tool_call_id": r.id, "content": r.text})
+                    made.append({"role": "tool", "tool_call_id": r.id, "content": r.text})
+        out += made
+        nodes += [[node] for _ in made]
         spoken = spoken or not isinstance(turn, SystemTurn)
-    return out
+    return out, nodes
 
 
 # Response to parts
@@ -178,9 +189,15 @@ class _Stream:
             value = chunk.get(key)
             if isinstance(value, str) and value:
                 self.meta[key] = value
+        timings = chunk.get("timings")  # llama.cpp: what its slot's cache held (D26 section 2)
+        if isinstance(timings, dict):
+            self.meta["timings"] = timings
         usage = chunk.get("usage")
         if isinstance(usage, dict):
-            note_usage(self.meta, cast("Json", usage), _usage)
+            raw = cast("Json", usage)
+            note_usage(self.meta, raw, _usage)
+            _note_prediction(self.meta, raw)
+        _cached_from_timings(self.meta)
 
     def _end_open(self) -> None:
         """Complete the open part, if any, into `held`. A call with no id or name raises and
@@ -310,29 +327,86 @@ def _tools(tools: Sequence[Tool]) -> list[Json]:
 
 
 def _usage(raw: Json) -> Json | None:
-    """The normalized `{"input", "output"}`, with `cached` and `written` when the server reports
-    them, from OpenAI's `usage`; `None` if the server did not report prompt and completion
-    tokens, or sent a malformed cache count. `cached` is `prompt_tokens_details.cached_tokens`
-    and `written` is `prompt_tokens_details.cache_write_tokens` (a LiteLLM proxy sends both for
-    an Anthropic model, `0` on a miss). A server that sends no count has not said it read nothing,
-    so the key is absent, not 0 (D24 section 3: a cache notice tells a miss from silence)."""
+    """The normalized `{"input", "output"}`, with `cached`, `written` and `reasoning` when the
+    server reports them, from OpenAI's `usage`; `None` if the server did not report prompt and
+    completion tokens, or sent a malformed count. `cached` is `prompt_tokens_details.
+    cached_tokens` and `written` is `prompt_tokens_details.cache_write_tokens` (a LiteLLM proxy
+    sends both for an Anthropic model, `0` on a miss); `reasoning` is `completion_tokens_details.
+    reasoning_tokens`, the part of `output` that was thinking. A server that sends no count has
+    not said it read nothing, so the key is absent, not 0 (D24 section 3: a cache notice tells a
+    miss from silence)."""
     tokens, output = count(raw.get("prompt_tokens")), count(raw.get("completion_tokens"))
     if tokens is None or output is None:
         return None
     usage: Json = {"input": tokens, "output": output}
-    details = raw.get("prompt_tokens_details")  # servers send null for "no details"
-    if details is None:
-        return usage
+    nested = (
+        ("cached", "prompt_tokens_details", "cached_tokens"),
+        ("written", "prompt_tokens_details", "cache_write_tokens"),
+        ("reasoning", "completion_tokens_details", "reasoning_tokens"),
+    )
+    return usage if nested_counts(usage, raw, nested) else None
+
+
+def _note_prediction(meta: Json, raw: Json) -> None:
+    """Keep OpenAI's prediction counts (`completion_tokens_details.accepted_prediction_tokens`
+    and `rejected_prediction_tokens`) in `meta["prediction"]`, when the server sends any."""
+    details = raw.get("completion_tokens_details")
     if not isinstance(details, dict):
-        return None
+        return
     fields = cast("Json", details)
-    for key, name in (("cached", "cached_tokens"), ("written", "cache_write_tokens")):
-        if name in fields:
-            reported = count(fields[name])
-            if reported is None:
-                return None
-            usage[key] = reported
-    return usage
+    kept = {
+        key: fields[f"{key}_prediction_tokens"]
+        for key in ("accepted", "rejected")
+        if count(fields.get(f"{key}_prediction_tokens")) is not None
+    }
+    if kept:
+        meta["prediction"] = kept
+
+
+def _cached_from_timings(meta: Json) -> None:
+    """llama.cpp says what it read from its cache in `timings.cache_n`, not in `usage`: it is
+    the reply's `cached` when `usage` has none and it is a count no larger than `input`."""
+    usage, timings = meta.get("usage"), meta.get("timings")
+    if not isinstance(usage, dict) or not isinstance(timings, dict) or "cached" in usage:
+        return
+    read = count(cast("Json", timings).get("cache_n"))
+    if read is not None and read <= cast("int", cast("Json", usage)["input"]):
+        cast("Json", usage)["cached"] = read
+
+
+def _props_facts(props: Json) -> Json:
+    """The drift markers in llama.cpp's `/props`: `build_info`, the context of a slot (`n_ctx`,
+    the window the server really has) and a digest of its chat template."""
+    facts: Json = {}
+    if isinstance(props.get("build_info"), str):
+        facts["build_info"] = props["build_info"]
+    settings = props.get("default_generation_settings")
+    window = cast("Json", settings).get("n_ctx") if isinstance(settings, dict) else None
+    if count(window) is not None:
+        facts["n_ctx"] = window
+    template = props.get("chat_template")
+    if isinstance(template, str) and template:
+        facts["template_sha256"] = hashlib.sha256(template.encode()).hexdigest()
+    return facts
+
+
+def _model_facts(listed: object, model: str) -> Json:
+    """The drift markers in llama.cpp's `/v1/models`: the `meta` of the model named `model`, or
+    of the only model listed: its file's `size` (as `model_size`), `n_params` and `n_vocab`."""
+    data = cast("Json", listed).get("data") if isinstance(listed, dict) else None
+    models = (
+        [cast("Json", m) for m in cast("list[object]", data) if isinstance(m, dict)]
+        if (isinstance(data, list))
+        else []
+    )
+    named = [m for m in models if m.get("id") == model]
+    chosen = named[0] if named else models[0] if len(models) == 1 else None
+    meta = chosen.get("meta") if chosen is not None else None
+    if not isinstance(meta, dict):
+        return {}
+    fields = cast("Json", meta)
+    wanted = (("model_size", "size"), ("n_params", "n_params"), ("n_vocab", "n_vocab"))
+    return {key: fields[name] for key, name in wanted if count(fields.get(name)) is not None}
 
 
 def _typed_body(model: ModelConfig) -> Json:
@@ -371,6 +445,37 @@ class OpenAIProvider:
     ) -> None:
         self._environ = os.environ if environ is None else environ
         self._connection = Connection(transport, timeout)
+        self._servers: dict[str, Json] = {}  # base_url -> what the server there says of itself
+        self._templates: dict[str, str] = {}  # base_url -> its chat template
+
+    def chat_template(self, base_url: str) -> str | None:
+        """The chat template the llama.cpp server at `base_url` reported in `/props`, or `None`
+        if no sample has asked it yet or it reported none."""
+        return self._templates.get(base_url.rstrip("/"))
+
+    async def _server(self, base: str, model: str, headers: Mapping[str, str]) -> Json:
+        """What the server at `base` says of itself, asked once per `base` (D26 section 2): a
+        llama.cpp server answers `GET /props` (its `build_info`, its slots' `n_ctx`, its chat
+        template) and `GET /models` (the model's size, parameters and vocabulary). Any other
+        server answers `/props` with a 404 or something that is not llama.cpp's, which is "not
+        llama.cpp", not an error, and is not asked again. A server that could not be reached is
+        asked again by the next sample."""
+        if base in self._servers:
+            return self._servers[base]
+        props = await self._connection.get_json(base.removesuffix("/v1") + "/props", headers)
+        if props is UNREACHED:
+            return {}
+        facts: Json = {}
+        if isinstance(props, dict) and "build_info" in props:
+            fields = cast("Json", props)
+            facts.update(_props_facts(fields))
+            template = fields.get("chat_template")
+            if isinstance(template, str) and template:
+                self._templates[base] = template
+            listed = await self._connection.get_json(base + "/models", headers)
+            facts.update(_model_facts(listed, model))
+        self._servers[base] = facts
+        return facts
 
     @property
     def name(self) -> str:
@@ -402,32 +507,29 @@ class OpenAIProvider:
         """Close the client and its connections. Later samples fail."""
         await self._connection.aclose()
 
-    def _request(
-        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> tuple[str, dict[str, str], Json]:
-        """The URL, headers, and JSON body of the request for this sample. `tools` become the
-        `tools` array, omitted when there are none; `extra_body` is merged last. `check` has
-        passed (the driver runs it first).
-
-        Raises `SampleError` if the model's key cannot be read.
-        """
-        try:
-            key = model.api_key(self._environ)
-        except ConfigError as e:
-            raise SampleError(str(e)) from e
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered:
+        """The request `sample` would send, without sending it or reading the key (D26 section
+        3.1): `tools` become the `tools` array, omitted when there are none, and `extra_body` is
+        merged last. Each message is one node's (a `Results` node makes one per call). `check`
+        has passed."""
         assert model.base_url is not None  # `check` required one
-        headers = {} if key is None else {"Authorization": f"Bearer {key}"}
-        body: Json = {
-            "model": model.model,
-            "messages": messages(walk, structured=bool(tools)),
-            "stream": True,
-        }
+        wire, nodes = messages(walk, structured=bool(tools))
+        body: Json = {"model": model.model, "messages": wire, "stream": True}
         if tools:
             body["tools"] = _tools(tools)
         body.update(_typed_body(model))
         if "extra_body" in model.options:
             body.update(cast("Json", plain(model.options["extra_body"])))
-        return model.base_url.rstrip("/") + "/chat/completions", headers, body
+        url = model.base_url.rstrip("/") + "/chat/completions"
+        return rendered(url, body, "messages", nodes)
+
+    def _headers(self, model: ModelConfig) -> dict[str, str]:
+        """The request's headers. Raises `SampleError` if the model's key cannot be read."""
+        try:
+            key = model.api_key(self._environ)
+        except ConfigError as e:
+            raise SampleError(str(e)) from e
+        return {} if key is None else {"Authorization": f"Bearer {key}"}
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
@@ -440,6 +542,13 @@ class OpenAIProvider:
         still read for `usage`, but content and tool-call deltas after it are ignored, and an
         error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
         meta not yet received, never the reply. A `refusal` delta is text."""
-        url, headers, body = self._request(walk, model, tools)
-        async for item in self._connection.sample(url, headers, body, _Stream(), end="[DONE]"):
+        headers = self._headers(model)
+        request = self.render(walk, model, tools)
+        assert model.base_url is not None  # `check` required one
+        server = await self._server(model.base_url.rstrip("/"), model.model, headers)
+        reply = _Stream(meta={"sent": sent_stamp(request, walk)})
+        if server:
+            reply.meta["server"] = server
+        body = cast("Json", request.body)
+        async for item in self._connection.sample(request.url, headers, body, reply, end="[DONE]"):
             yield item

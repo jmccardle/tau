@@ -62,7 +62,10 @@ async def test_text_arrives_as_deltas_then_the_part_then_the_finish_with_what_th
     assert isinstance(finish, Finish)
     assert (finish.stop, finish.reason) == (Stop.End, "stop")
     assert finish.meta is not None
-    assert json.loads(finish.meta) == {
+    meta = json.loads(finish.meta)
+    timings = meta.pop("timings")
+    assert (timings["prompt_n"], timings["cache_n"]) == (20, 0), "llama.cpp's timings are kept"
+    assert meta == {
         "model": OPENAI_MODEL,
         "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
         "system_fingerprint": "b1637-9c7a7553",

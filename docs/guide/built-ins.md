@@ -278,7 +278,13 @@ that had to leave out replies of such a model ends in `+`.
 A price is US dollars per million tokens, and all four fields are required: a model that does not
 charge for writing the cache repeats its `input` price as `cache_write`. A price with a field
 missing, below 0, or not a number is a config error naming the model. Groups hand a price down like
-any setting, and a project can change one field (`"price": {"output": 20}`).
+any setting, and a project can change one field (`"price": {"output": 20}`). A fifth field,
+`cache_write_1h`, is optional: what a cache write kept for an hour costs, when the server reports
+those apart (Anthropic does). Without it they are priced as `cache_write`.
+
+When a server says how large its window really is (llama.cpp does) and your `context_window`
+says otherwise, `/usage` tells you (`local:qwen: the server reports a window of 32768 tokens; the
+config says 40960 (context_window)`). tau goes on using yours.
 
 A reply that was aborted before the server reported usage says so, and `/usage` counts it apart
 ("1 reply was aborted and reported no usage"). A reply whose usage could not be read says why, on
@@ -309,6 +315,29 @@ prompt that went at full price. It is about money, so only a model with a `price
 
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.
+
+## How a request is counted before it is sent
+
+What a server has billed is known exactly. What it has not seen yet (the message you just typed, a
+tool result that just came back) has to be counted some other way, and the `tokens` built-in,
+which is on by default, learns to. Each time two replies in a row show what the nodes between
+them cost, it adds that to a small record for the model under `$TAU_HOME/calibration/`: sums for
+a fit, never your text. After ten such spans it counts new nodes itself, as an estimate with a
+bound, written `~1.2k`. Before that, and for a model it has never seen, a new node is counted by
+its bytes, written `≤4.8k`, which is safe and about four times too many.
+
+`/tokens` says where each model stands:
+
+```text
+anthropic:sonnet: heuristic ±6% for new nodes, from 41 replies (no tokenizer: pip install 'ffwf-tau[tokens]')
+local:qwen: learning from 4 replies (3 of 10 proved spans since it last changed); byte ceilings until then (no tokenizer: pip install 'ffwf-tau[tokens]')
+```
+
+If the server says it changed (a new model version, a new build) or the same text suddenly costs
+much more or less, the record starts over and you are told once. `tau tokens show` lists the
+records, `tau tokens show MODEL` prints one in words, and `tau tokens reset MODEL` deletes one.
+`tau ext disable tokens` turns the whole thing off: nothing is read or written, and counts are
+bills and bytes.
 
 ## A long conversation can be shortened
 

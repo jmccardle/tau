@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `Usage`, `calibration_features`
 
 ## Agents
 
@@ -90,6 +90,208 @@ CURSOR_POINTS = ('pre_step', 'pre_input', 'pre_sample', 'pre_reply', 'post_reply
 ```
 
 The names of the cursor hook points, in the order a step reaches them.
+
+## Calibration
+
+```python
+class Calibration
+```
+
+One model's calibration record: what the `tokens` built-in has learned of what its tokens
+cost. A value: `CalibrationStore.observe` returns a new one.
+
+### Calibration.key
+
+```python
+property key: tuple[str, str | None, str]
+```
+
+The provider, base URL and model id the record is about.
+
+### Calibration.observations
+
+```python
+property observations: int
+```
+
+Replies observed.
+
+### Calibration.spans
+
+```python
+property spans: int
+```
+
+Proved spans learned from.
+
+### Calibration.since_reset
+
+```python
+property since_reset: int
+```
+
+Proved spans learned from since the record was last reset (a changed drift marker, a
+jump in what the model's tokens cost).
+
+### Calibration.needed
+
+```python
+property needed: int
+```
+
+How many proved spans after a reset make the record ready.
+
+### Calibration.ready
+
+```python
+property ready: bool
+```
+
+Whether the record answers a prediction.
+
+### Calibration.error
+
+```python
+property error: float | None
+```
+
+The relative error the bound is made from: the 95th percentile of the sizes of the
+record's last 200 residuals (their largest while there are fewer than 20). `None` while
+the record is not ready.
+
+### Calibration.markers
+
+```python
+property markers: dict[str, str]
+```
+
+The drift markers of the newest reply observed, by name.
+
+### Calibration.updated
+
+```python
+property updated: str
+```
+
+When the newest reply was observed, as it was given.
+
+### Calibration.weights
+
+```python
+property weights: list[float]
+```
+
+The fitted tokens per unit of each class of text, for each role: 42 numbers, in the order
+of `calibration_features`.
+
+### Calibration.per_message
+
+```python
+property per_message: list[int]
+```
+
+The fitted tokens per node of each role: system, user, assistant, calls, results,
+thinking.
+
+### Calibration.predict
+
+```python
+def predict(self, features: Sequence[float]) -> tuple[int, int] | None
+```
+
+The count the record predicts for `features` (a node's, or a sum of nodes'), as
+`(tokens, bound)`: the estimate, and how many more it may be (D26 section 6.4). `None`
+while the record is not ready, or for features that hold no node.
+
+### Calibration.to_json
+
+```python
+def to_json(self) -> str
+```
+
+The record as the JSON text its file holds.
+
+## CalibrationError
+
+```python
+class CalibrationError(ValueError)
+```
+
+A calibration file that is not a record this build reads, or a name that is not a record's. The file is left as it is: `tau tokens reset` removes it.
+
+## CalibrationNewer
+
+```python
+class CalibrationNewer(CalibrationError)
+```
+
+A calibration record written by a newer tau: left alone, and not used.
+
+## CalibrationStore
+
+```python
+class CalibrationStore
+```
+
+The calibration records under one directory (`$TAU_HOME/calibration`), one file per model.
+Making one touches nothing: the directory is created by the first `observe`. A record's
+`name` is a relative path ending in `.json` (`tau.Tokens` names them
+`<provider>/<digest>.json`).
+
+### CalibrationStore.__new__
+
+```python
+def __new__(cls, directory: str | PathLike[str]) -> CalibrationStore
+```
+
+### CalibrationStore.read
+
+```python
+def read(self, name: str) -> Calibration | None
+```
+
+The record named `name`, or `None` if there is none. `CalibrationNewer` for a record a
+newer tau wrote, `CalibrationError` for a file that is not a record this build reads or
+a name that is not a record's.
+
+### CalibrationStore.observe
+
+```python
+def observe(
+    self,
+    name: str,
+    key: tuple[str, str | None, str],
+    markers: Mapping[str, str],
+    span: tuple[Sequence[float], int] | None,
+    time: str,
+) -> tuple[Calibration, list[tuple[str, str, str, str, float]]]
+```
+
+Fold one reply into the record named `name` and return the record and what the fold
+found. The file is locked, read, folded into and replaced, so two processes that observe
+one model lose nothing of each other's. `key` is `(provider, base_url, model)`, for a
+record that does not exist yet; `markers` the reply's drift markers; `span` the reply's
+newest proved span as `(features, cost)`, or `None`; `time` when, as text the record
+keeps. Each event is `(kind, name, was, now, by)`: `("marker", name, was, now, 0.0)`, a
+drift marker that changed, or `("jump", "", "", "", by)`, a jump in what the model's
+tokens cost (`by` is the relative change); either resets the record. Raises as `read`
+does, leaving the file as it was.
+
+### CalibrationStore.remove
+
+```python
+def remove(self, name: str) -> bool
+```
+
+Remove the record named `name`, whatever it holds; whether there was one.
+
+### CalibrationStore.names
+
+```python
+def names(self) -> list[str]
+```
+
+The names of the records in the store, sorted; none if the directory does not exist.
 
 ## CallDraft
 
@@ -221,6 +423,7 @@ The most it can be: `tokens + bound`.
 class CountJob
     walk: tuple[Node, ...]
     model: str
+    resolved: ModelConfig
     tools: tuple[str, ...]
     base: Count
     base_nodes: int
@@ -228,9 +431,10 @@ class CountJob
     unreported: tuple[int, ...]
 ```
 
-What a counter is asked: the walk to count, the model and tools of the request, and what
-core already knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The
-counter answers for the rest, `unreported`.
+What a counter is asked: the walk to count, the model (its qualified name, and
+`resolved`, its settings in the catalog now) and tools of the request, and what core already
+knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The counter answers
+for the rest, `unreported`.
 
 ## Counter
 
@@ -238,9 +442,10 @@ counter answers for the rest, `unreported`.
 class Counter(Protocol)
 ```
 
-What an extension offers as its `counter` attribute (at most one extension may). `count`
-is synchronous and does no network IO: the driver runs it in a thread. Core keeps every
-report: an answer for a node a report covers fails the count with a `DefinitionError`.
+What an extension offers as its `counter` attribute (at most one extension may). Both
+methods are synchronous and do no network IO: the driver runs them in a thread. Core keeps
+every report: an answer for a node a report covers fails the count with a
+`DefinitionError`.
 
 ### Counter.count
 
@@ -249,6 +454,16 @@ def count(self, job: CountJob) -> CounterAnswer
 ```
 
 Count the nodes of `job.unreported`.
+
+### Counter.observe
+
+```python
+def observe(self, observation: Observation) -> None
+```
+
+Learn from one reply. The driver calls it after every reply that reports its usage,
+before the reply's `post_reply` hooks; a failure is told to the clients and costs the
+step nothing.
 
 ## CounterAnswer
 
@@ -638,6 +853,32 @@ NodeId = NewType('NodeId', int)
 
 A node that exists.
 
+## Observation
+
+```python
+@dataclass(frozen=True)
+class Observation
+    kind: Literal['reply', 'count_call']
+    model: str
+    resolved: ModelConfig
+    walk: tuple[int, ...]
+    usage: Mapping[str, int]
+    markers: Mapping[str, str]
+    tools: str
+    span: Span | None
+    time: int
+```
+
+One reply that reported its usage, as the driver shows it to the counter once the reply
+is in the tree (D26 section 4). `kind` is `reply` (`count_call` is D26 section 8's, not
+built). `model` is the qualified name of the model that replied and `resolved` its settings
+in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage` the
+reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
+`system_fingerprint`, and llama.cpp's `build_info`, `template_sha256`, `model_size`,
+`n_params` and `n_vocab`, each as text, those the reply has); `tools` the digest of the tool
+set its request offered (`tools_hash`); `span` the proved span that ends at this reply, or
+`None` if the reply proved none; `time` the reply's time in milliseconds.
+
 ## Permissions
 
 ```python
@@ -753,6 +994,32 @@ async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
 
 At a session's first step, write the skills list (the module docstring).
 
+## Span
+
+```python
+@dataclass(frozen=True)
+class Span
+    nodes: tuple[Node, ...]
+    cost: int
+    proof: SpanProof
+```
+
+A proved span (D26 section 3): `nodes` are the nodes added between two consecutive
+requests on one walk, from the first request's reply up to the node before the second's
+reply; `cost` is what they cost together, the second bill's `input` less the first's, which
+is exact because the first request is proved to be a prefix of the second; `proof` says
+how.
+
+## SpanProof
+
+```python
+SpanProof = Literal['cache', 'slot', 'prefix']
+```
+
+How a span is proved: `cache` (the second request read exactly the first from the server's
+cache), `slot` (llama.cpp's slot held at least the whole first request) or `prefix` (the
+provider found the first request to be a byte prefix of the second when it sent it).
+
 ## StepLimit
 
 ```python
@@ -849,6 +1116,87 @@ TOOL_POINTS = ('pre_tool', 'pre_result')
 ```
 
 The names of the tool hook points.
+
+## Tokenizers
+
+```python
+class Tokenizers(Protocol)
+```
+
+What `Tokens` asks of the tokenizer wheel (`ffwf-tau-tokens`, D26 section 7) when it is
+installed. Nothing in this wheel provides one: D26 T4 adapts `tau_tokens` to it and hands it
+to `Tokens`, and T5 is what counts with it. Without one (`Tokens(home)`), every count this
+extension makes is `heuristic` and its `why` names the install command.
+
+### Tokenizers.version
+
+```python
+property version: str
+```
+
+The wheel's version, which must be this wheel's (D26 section 7.2, lockstep).
+
+### Tokenizers.count
+
+```python
+def count(self, model: ModelConfig, text: str) -> int | None
+```
+
+The exact number of tokens of `text` by the tokenizer confirmed for `model`, or
+`None` if none is confirmed for it. CPU only, no network.
+
+## Tokens
+
+```python
+class Tokens
+    name = NAME
+```
+
+The built-in extension `tokens` (the module docstring): the counter, and `/tokens`.
+`home` is `TAU_HOME`; `tokenizers` is the tokenizer wheel when it is installed.
+
+### Tokens.__init__
+
+```python
+def __init__(self, home: Path, tokenizers: Tokenizers | None = None) -> None
+```
+
+### Tokens.count
+
+```python
+def count(self, job: CountJob) -> CounterAnswer
+```
+
+A `heuristic` count for each node of `job.unreported` the model's record can count,
+never more than the node's ceiling; none while the record is not ready. `why` says what
+would make the counts stronger.
+
+### Tokens.observe
+
+```python
+def observe(self, observation: Observation) -> None
+```
+
+Fold one reply into its model's record on disk (under the file's lock, so another
+process observing the same model loses nothing) and keep the record that results. A
+changed drift marker or a jump in what the model's tokens cost resets the record; the
+clients are told at the next `post_reply`.
+
+### Tokens.post_reply
+
+```python
+async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Tell the clients what the last observations found (a model that changed).
+
+### Tokens.tokens
+
+```python
+def tokens(self, tree: TreeHandle) -> str
+```
+
+How each model of this session is counted before a request is sent.
 
 ## ToolHook
 
@@ -978,6 +1326,17 @@ count for each node. Every count is a report, or a ceiling (the node's bytes) fo
 report covers, unless the `counter` extension counts it better. `at` defaults to the
 cursor's node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
 (`ValueError`). `DefinitionError` if the counter counts what a report covers.
+
+### TreeHandle.spans
+
+```python
+def spans(self, at: int | None = None) -> list[Span]
+```
+
+The proved spans of the walk to node `at`, oldest first (D26 section 3): each is the
+nodes between two consecutive requests whose cost the two bills prove, with how. A span
+nothing proves is not listed, and neither is one a copy inherits (its count is in
+`count`). `at` defaults as `count`'s does.
 
 ### TreeHandle.append
 
@@ -1139,3 +1498,15 @@ async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
 Show the reply's counts on the cursor, and tell the clients if it missed the cache.
+
+## calibration_features
+
+```python
+def calibration_features(body: Body) -> list[float]
+```
+
+The features of a node's body, as the fit counts it: for each role (system, user, assistant,
+calls, results, thinking) its text's lowercase letters, uppercase letters, digits, other
+ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
+(1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
+or `Custom` body, which is never sent, is all zeros.

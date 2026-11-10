@@ -36,6 +36,10 @@ from tau._core import (
     BadReplay,
     Body,
     Busy,
+    Calibration,
+    CalibrationError,
+    CalibrationNewer,
+    CalibrationStore,
     Closed,
     Config,
     Corrupt,
@@ -74,8 +78,19 @@ from tau._core import (
     Undecodable,
     Version,
     WrongAnswer,
+    calibration_features,
 )
-from tau._counts import Basis, Count, Counter, CounterAnswer, CountJob, RequestCount
+from tau._counts import (
+    Basis,
+    Count,
+    Counter,
+    CounterAnswer,
+    CountJob,
+    Observation,
+    RequestCount,
+    Span,
+    SpanProof,
+)
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
 from tau._events import (
@@ -123,6 +138,7 @@ from tau._protocols import (
     Progress,
     Provider,
     ProviderClosed,
+    Rendered,
     SampleError,
     Tool,
     ToolHook,
@@ -159,6 +175,7 @@ from tau._startup import (
     select_model,
 )
 from tau._step_limit import StepLimit
+from tau._tokens import Tokenizers, Tokens
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
 from tau._usage import Usage
@@ -185,6 +202,10 @@ __all__ = [
     "Basis",
     "Body",
     "Busy",
+    "Calibration",
+    "CalibrationError",
+    "CalibrationNewer",
+    "CalibrationStore",
     "CallArgs",
     "CallDraft",
     "CallNamed",
@@ -261,6 +282,7 @@ __all__ = [
     "NotInHook",
     "NotPending",
     "Notice",
+    "Observation",
     "OpenAIProvider",
     "OpenQuestion",
     "Opened",
@@ -283,6 +305,7 @@ __all__ = [
     "Prune",
     "ReadTool",
     "RemoteClient",
+    "Rendered",
     "Replay",
     "RequestCount",
     "ResolvedModel",
@@ -299,6 +322,8 @@ __all__ = [
     "Skills",
     "SourceKind",
     "SourceState",
+    "Span",
+    "SpanProof",
     "Started",
     "StepLimit",
     "Stop",
@@ -308,6 +333,8 @@ __all__ = [
     "SystemText",
     "TextDelta",
     "ThinkingDelta",
+    "Tokenizers",
+    "Tokens",
     "TooLarge",
     "Tool",
     "ToolError",
@@ -331,6 +358,7 @@ __all__ = [
     "__version__",
     "base_tools",
     "builtin_providers",
+    "calibration_features",
     "check_config",
     "find_session",
     "first_cursor_node",

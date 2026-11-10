@@ -13,13 +13,15 @@ can start a kept tail. A **counter** is an object an extension offers as its `co
 attribute; it counts only what no report covers.
 """
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
+from tau._config import ModelConfig
 from tau._core import Body, Node, Outcome, Part
 
 
@@ -126,9 +128,15 @@ def _outcome_text(outcome: Outcome) -> str:
 
 
 def wrapped_count(reply: Count, reply_body: Body, node_body: Body) -> Count:
-    """The count of a node that is a reply's words in a wrapper (a summary): the reply's own count
-    and the ceiling of the words added around them."""
-    wrapper = max(_bytes(node_body) - _bytes(reply_body), 0)
+    """The count of a node that is a reply's words in a wrapper (a summary): the count of the
+    reply's words (`Reading.said`: its thinking is not in the node) and the ceiling of the words
+    added around them."""
+    words = (
+        sum(len(p.text.encode()) for p in reply_body.parts if isinstance(p, Part.Text))
+        if isinstance(reply_body, Body.Assistant)
+        else _bytes(reply_body)
+    )
+    wrapper = max(_bytes(node_body) - words, 0)
     return reply + Count(0, Basis.CEILING, wrapper + CEILING_PER_NODE)
 
 
@@ -187,6 +195,15 @@ def tools_ceiling(tools: Iterable[_Described]) -> Count:
     return Count(0, Basis.CEILING, size) if size else NONE
 
 
+def tools_hash(tools: Iterable[_Described]) -> str:
+    """A digest of a tool set: the name, description and schema of each tool, whatever their
+    order. Two requests with the same digest carry the same tool definitions."""
+    listed = sorted(
+        [t.name, t.description, json.dumps(t.parameters, sort_keys=True)] for t in tools
+    )
+    return hashlib.sha256(json.dumps(listed).encode()).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class RequestCount:
     """What the walk to a node will cost as a request (`Cursor.count`).
@@ -206,14 +223,35 @@ class RequestCount:
     why: str | None = None
 
 
+SpanProof = Literal["cache", "slot", "prefix"]
+"""How a span is proved: `cache` (the second request read exactly the first from the server's
+cache), `slot` (llama.cpp's slot held at least the whole first request) or `prefix` (the
+provider found the first request to be a byte prefix of the second when it sent it)."""
+
+
+@dataclass(frozen=True)
+class Span:
+    """A proved span (D26 section 3): `nodes` are the nodes added between two consecutive
+    requests on one walk, from the first request's reply up to the node before the second's
+    reply; `cost` is what they cost together, the second bill's `input` less the first's, which
+    is exact because the first request is proved to be a prefix of the second; `proof` says
+    how."""
+
+    nodes: tuple[Node, ...]
+    cost: int
+    proof: SpanProof
+
+
 @dataclass(frozen=True)
 class CountJob:
-    """What a counter is asked: the walk to count, the model and tools of the request, and what
-    core already knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The
-    counter answers for the rest, `unreported`."""
+    """What a counter is asked: the walk to count, the model (its qualified name, and
+    `resolved`, its settings in the catalog now) and tools of the request, and what core already
+    knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The counter answers
+    for the rest, `unreported`."""
 
     walk: tuple[Node, ...]
     model: str
+    resolved: ModelConfig
     tools: tuple[str, ...]
     base: Count
     base_nodes: int
@@ -230,13 +268,43 @@ class CounterAnswer:
     why: str | None = None
 
 
+@dataclass(frozen=True)
+class Observation:
+    """One reply that reported its usage, as the driver shows it to the counter once the reply
+    is in the tree (D26 section 4). `kind` is `reply` (`count_call` is D26 section 8's, not
+    built). `model` is the qualified name of the model that replied and `resolved` its settings
+    in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage` the
+    reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
+    `system_fingerprint`, and llama.cpp's `build_info`, `template_sha256`, `model_size`,
+    `n_params` and `n_vocab`, each as text, those the reply has); `tools` the digest of the tool
+    set its request offered (`tools_hash`); `span` the proved span that ends at this reply, or
+    `None` if the reply proved none; `time` the reply's time in milliseconds."""
+
+    kind: Literal["reply", "count_call"]
+    model: str
+    resolved: ModelConfig
+    walk: tuple[int, ...]
+    usage: Mapping[str, int]
+    markers: Mapping[str, str]
+    tools: str
+    span: Span | None
+    time: int
+
+
 class Counter(Protocol):
-    """What an extension offers as its `counter` attribute (at most one extension may). `count`
-    is synchronous and does no network IO: the driver runs it in a thread. Core keeps every
-    report: an answer for a node a report covers fails the count with a `DefinitionError`."""
+    """What an extension offers as its `counter` attribute (at most one extension may). Both
+    methods are synchronous and do no network IO: the driver runs them in a thread. Core keeps
+    every report: an answer for a node a report covers fails the count with a
+    `DefinitionError`."""
 
     def count(self, job: CountJob) -> CounterAnswer:
         """Count the nodes of `job.unreported`."""
+        ...
+
+    def observe(self, observation: Observation) -> None:
+        """Learn from one reply. The driver calls it after every reply that reports its usage,
+        before the reply's `post_reply` hooks; a failure is told to the clients and costs the
+        step nothing."""
         ...
 
 
@@ -250,4 +318,13 @@ class Counting(Protocol):
 
     async def count(self, at: int) -> RequestCount:
         """The request count of the walk to node `at`."""
+        ...
+
+    def spans(self, at: int) -> list[Span]:
+        """The proved spans of the walk to node `at`."""
+        ...
+
+    def observation(self, reply: int, tools: str) -> Observation | None:
+        """What a counter is shown of the reply at node `reply`, or `None` if it reported no
+        usage."""
         ...

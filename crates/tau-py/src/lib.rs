@@ -1,6 +1,7 @@
 //! Python bindings. Thin by rule: conversion and error mapping only. Behavior
 //! lives in `tau-core`, where it can be tested without an interpreter.
 
+mod calibration;
 mod error;
 mod job;
 mod session;
@@ -14,6 +15,8 @@ use pyo3::prelude::*;
 
 #[pymodule(gil_used = false)]
 mod _core {
+    #[pymodule_export]
+    use super::calibration::{Calibration, CalibrationStore, calibration_features};
     #[pymodule_export]
     use super::job::{Answer, Draft, Ending, Hook, Job, RunCall, SampleEnd};
     #[pymodule_export]

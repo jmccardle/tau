@@ -17,6 +17,7 @@ from wire import (
     fresh_walk,
     recorded_error,
     sse,
+    unstamped,
 )
 
 from tau import Finish, Part, SampleError, Stop, TextDelta, ThinkingDelta
@@ -49,17 +50,22 @@ async def test_usage_arrives_after_the_finish_and_joins_the_meta() -> None:
 
 
 @scenario
-async def test_the_llama_cpp_usage_chunk_joins_the_meta_and_timings_do_not() -> None:
+async def test_the_llama_cpp_usage_chunk_and_its_timings_join_the_meta() -> None:
     """`plain_usage.sse` is `plain.sse` plus llama.cpp's trailing chunk: empty `choices`,
-    `usage`, `timings`, then `[DONE]`."""
+    `usage`, `timings`, then `[DONE]`. The `usage` has no cache count, so `cached` is
+    `timings.cache_n` (D26 section 2)."""
     items, error = await collect(OPENAI.over(sse("plain_usage")), fresh_walk())
     assert error is None
     assert items[:-1] == [Part.Text("Hello, how are you?")]
-    assert meta_of(items[-1]) == {
+    meta = meta_of(items[-1])
+    assert isinstance(meta, dict)
+    timings = meta.pop("timings")
+    assert (timings["prompt_n"], timings["cache_n"], timings["predicted_n"]) == (20, 0, 7)
+    assert meta == {
         "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
         "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
         "system_fingerprint": "b1637-9c7a7553",
-        "usage": {"input": 20, "output": 7},
+        "usage": {"input": 20, "output": 7, "cached": 0},
         "usage_raw": {"completion_tokens": 7, "prompt_tokens": 20, "total_tokens": 27},
     }
 
@@ -122,11 +128,10 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
     assert await anext(stream) == Part.Thinking("hm"), "complete once the text began"
     assert await anext(stream) == TextDelta("he")
     gate.set()
-    assert [item async for item in stream] == [
-        TextDelta("llo"),
-        Part.Text("hello"),
-        Finish(Stop.End, "stop"),
-    ]
+    *rest, finish = [item async for item in stream]
+    assert rest == [TextDelta("llo"), Part.Text("hello")]
+    assert isinstance(finish, Finish)
+    assert (finish.stop, finish.reason, unstamped(finish.meta)) == (Stop.End, "stop", None)
 
 
 @pytest.mark.parametrize(
