@@ -389,15 +389,21 @@ class Connection:
             if value:
                 reply.meta[key] = value
 
-    def _http_failure(self, e: httpx.HTTPError) -> SampleError:
+    def _http_failure(self, e: httpx.HTTPError, url: str) -> SampleError:
         """The `SampleError` for an `httpx` error, with `e` as its cause. A `LocalProtocolError`
         is h11 refusing the request, and its text quotes the offending header value, which may be
-        the API key: it gets a message of its own and no cause."""
+        the API key: it gets a message of its own and no cause. A `ConnectError` names the
+        server it could not reach (scheme, host and port of `url`: never its path or query,
+        which may hold a key)."""
         if isinstance(e, httpx.LocalProtocolError):
             if "header" in str(e).lower():
                 return SampleError(_BAD_HEADER)
             return SampleError("the request could not be sent: it is not valid HTTP")
-        error = (ProviderClosed if self._closed else SampleError)(f"{type(e).__name__}: {e}")
+        message = f"{type(e).__name__}: {e}"
+        if isinstance(e, httpx.ConnectError):
+            server = httpx.URL(url)
+            message += f" (cannot reach {server.scheme}://{server.netloc.decode('ascii')})"
+        error = (ProviderClosed if self._closed else SampleError)(message)
         error.__cause__ = e
         return error
 
@@ -434,7 +440,7 @@ class Connection:
                         for item in items:
                             yield item
         except httpx.HTTPError as e:
-            error = self._http_failure(e)
+            error = self._http_failure(e, url)
         except SampleError as e:
             error = e
         if error is None or reply.done:
