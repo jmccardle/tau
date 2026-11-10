@@ -56,7 +56,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
-| OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI, gateways) | `tau-llm/.../providers/openai.py` (2,111 lines) | **built** | `0.16: python/tau/_providers/openai.py` (445 lines), streams parts + deltas, `usage` normalized, `usage_raw` kept; live-tested against 192.168.1.100:8100 |
+| OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI, gateways) | `tau-llm/.../providers/openai.py` (2,111 lines) | **built** | `0.16: python/tau/_providers/openai.py` (445 lines), streams parts + deltas, `usage` normalized, `usage_raw` kept; live-tested against a llama.cpp server |
 | Anthropic Messages API | `providers/anthropic.py` | **built** | `0.16: _providers/anthropic.py`, `_anthropic_request.py`; thinking replay data, signatures |
 | Google Gemini | `providers/google.py` | **built** | `0.16: _providers/gemini.py`; Gemini 3 thought signatures; no fallback signature when switching providers mid tool loop (D15) |
 | Provider registry: `register_api` / `register_provider` / `ProviderSpec` (add a vendor in 6 lines) | `providers/base.py`, `providers/__init__.py` | **built** (changed) | Vendors are config groups (`base_url`, `api_key_env`, `provider`) per D13; extra providers are objects passed to `Driver` (D15). `tau config check` knows only the built-ins (D15 "Deferred") |
