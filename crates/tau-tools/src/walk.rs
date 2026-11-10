@@ -37,7 +37,9 @@ impl Glob {
     /// # Errors
     /// The glob does not parse, or is an absolute path (it would match nothing).
     pub(crate) fn new(glob: &str) -> Result<Self> {
-        if glob.starts_with('/') {
+        // `/x` anywhere; on Windows also `C:\x` and `\x` (`is_absolute` and `has_root`).
+        let as_path = Path::new(glob);
+        if glob.starts_with('/') || as_path.is_absolute() || as_path.has_root() {
             return Err(ToolError(format!(
                 "the glob `{glob}` is an absolute path, but a glob is relative to `path`: \
                  pass the directory as `path` and the rest as the glob"

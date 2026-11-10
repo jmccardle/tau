@@ -53,6 +53,8 @@ def load(
         world.user_config(user)
     root = world.home
     if project is not None:
+        if sys.platform == "win32":
+            pytest.skip("Windows: projects (D13 trust) are not ported; finding one is an error")
         root = world.home / "proj"
         (root / ".tau").mkdir(parents=True, exist_ok=True)
         write(root / ".tau" / "config.json", project)

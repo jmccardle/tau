@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import sys
 
 import pytest
 from world import World, loaded, models, tau, trust
@@ -25,8 +27,9 @@ def test_set_writes_the_extensions_option_into_the_users_file(world: World) -> N
 def test_set_creates_a_private_home_and_file_and_leaves_no_scratch_file(world: World) -> None:
     assert tau(world, "config", "set", "step_limit.limit=7").code == 0
     assert [p.name for p in world.tau.iterdir()] == ["config.json"]
-    assert (world.tau / "config.json").stat().st_mode & 0o777 == 0o600
-    assert world.tau.stat().st_mode & 0o777 == 0o700
+    if sys.platform != "win32":  # Windows has no mode bits: its st_mode always says 666/777
+        assert (world.tau / "config.json").stat().st_mode & 0o777 == 0o600
+        assert world.tau.stat().st_mode & 0o777 == 0o700
 
 
 def test_set_keeps_what_else_the_file_holds(world: World) -> None:
@@ -112,7 +115,7 @@ def test_a_dangling_config_symlink_is_an_error_naming_it_not_no_file(world: Worl
     result = tau(world, "config", "check")
     assert result.code != 0
     assert str(link) in result.both
-    with pytest.raises(ConfigError, match=str(link)):
+    with pytest.raises(ConfigError, match=re.escape(str(link))):
         loaded(world)
 
 

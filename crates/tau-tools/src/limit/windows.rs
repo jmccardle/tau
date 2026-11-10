@@ -6,7 +6,7 @@
 //! replaced while files are made in it by path. It must be owned by this process's
 //! user (or by the token's default owner, which is `Administrators` for an elevated
 //! administrator), and every ACE (access control item) of its list that grants anything must name
-//! the user, that owner, SYSTEM or Administrators: the Windows reading of `0700`
+//! the user, that owner, OWNER RIGHTS, SYSTEM or Administrators: the Windows reading of `0700`
 //! (SYSTEM and Administrators can read anything, as root can). An ACE of a kind
 //! this check cannot judge refuses the directory. A new directory inherits its
 //! parent's access list; the user's temp directory, the default's parent, grants only
@@ -29,7 +29,7 @@ use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetTokenInformation,
     INHERIT_ONLY_ACE, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
     TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser, WinBuiltinAdministratorsSid,
-    WinLocalSystemSid,
+    WinCreatorOwnerRightsSid, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
@@ -179,7 +179,7 @@ impl Ours {
         }
     }
 
-    /// Whether `sid` is the user, the token's default owner, SYSTEM or Administrators.
+    /// Whether `sid` is the user, the token's default owner, OWNER RIGHTS, SYSTEM or Administrators.
     #[allow(unsafe_code)]
     fn may_have(&self, sid: PSID) -> bool {
         // SAFETY: every SID here is valid while `self` and the descriptor it came from
@@ -188,6 +188,9 @@ impl Ours {
             EqualSid(sid, self.user()) != 0
                 || EqualSid(sid, self.owner()) != 0
                 || IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                // OWNER RIGHTS (S-1-3-4): the directory's owner, named by role. The CI
+                // runner's temp directory carries one, and a new directory inherits it.
+                || IsWellKnownSid(sid, WinCreatorOwnerRightsSid) != 0
                 || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
         }
     }

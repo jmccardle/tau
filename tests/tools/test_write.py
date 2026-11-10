@@ -2,10 +2,11 @@
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
-from calls import call, err
+from calls import call, err, put, text_of
 
 from tau import Outcome, WriteTool
 
@@ -13,30 +14,32 @@ from tau import Outcome, WriteTool
 def test_writes_creating_parents_and_counts_lines_and_bytes(tmp_path: Path) -> None:
     out = call(WriteTool(tmp_path), path="a/b/c.txt", content="é\nx\n")
     assert out == Outcome.Ok("Wrote 2 lines (5 bytes) to a/b/c.txt")
-    assert (tmp_path / "a/b/c.txt").read_text() == "é\nx\n"
+    assert text_of(tmp_path / "a/b/c.txt") == "é\nx\n"
 
 
 def test_replacing_leaves_no_temporary_file_and_keeps_the_mode(tmp_path: Path) -> None:
     script = tmp_path / "run.sh"
-    script.write_text("old")
-    script.chmod(0o755)
+    put(script, "old")
+    if sys.platform != "win32":  # mode bits: Windows has none beyond read-only
+        script.chmod(0o755)
     call(WriteTool(tmp_path), path="run.sh", content="new")
-    assert script.read_text() == "new"
-    assert stat.S_IMODE(script.stat().st_mode) == 0o755
+    assert text_of(script) == "new"
+    if sys.platform != "win32":
+        assert stat.S_IMODE(script.stat().st_mode) == 0o755
     assert os.listdir(tmp_path) == ["run.sh"]
 
 
 def test_writes_through_a_symlink(tmp_path: Path) -> None:
-    (tmp_path / "real.txt").write_text("old")
+    put((tmp_path / "real.txt"), "old")
     (tmp_path / "link.txt").symlink_to("real.txt")
     call(WriteTool(tmp_path), path="link.txt", content="new")
     assert (tmp_path / "link.txt").is_symlink()
-    assert (tmp_path / "real.txt").read_text() == "new"
+    assert text_of(tmp_path / "real.txt") == "new"
 
 
 def test_errors_are_outcomes(tmp_path: Path) -> None:
     (tmp_path / "dir").mkdir()
-    (tmp_path / "file").write_text("x")
+    put((tmp_path / "file"), "x")
     tool = WriteTool(tmp_path)
     cases: list[tuple[dict[str, object], str]] = [
         ({"path": "dir", "content": ""}, "is a directory"),

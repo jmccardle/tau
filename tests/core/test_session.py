@@ -4,6 +4,9 @@ The job loop (`next_job` / `answer`) is the driver's: its rules are tested in
 Rust (`crates/tau-core/tests`) and through the `Harness` (`tests/behavior`).
 """
 
+import errno
+import json
+import sys
 import zlib
 from pathlib import Path
 
@@ -196,7 +199,8 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
     synced = state(session)
     block = tmp_path / "s" / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
-    with pytest.raises(IsADirectoryError):
+    # Opening a directory for writing is EISDIR on POSIX, access denied on Windows.
+    with pytest.raises(PermissionError if sys.platform == "win32" else IsADirectoryError):
         session.input(cursor, Author.Frontend("term"), "hi")
     # Closed, as `close` leaves it: every call raises `Closed`, reads included.
     for call_ in (
@@ -315,16 +319,25 @@ def test_an_os_error_keeps_its_errno_and_the_directory(tmp_path: Path) -> None:
     missing = tmp_path / "missing"
     with pytest.raises(FileNotFoundError) as caught:
         Session.load(missing)
-    assert caught.value.errno == 2
-    assert caught.value.strerror == "No such file or directory"
+    assert caught.value.errno == errno.ENOENT
+    if sys.platform == "win32":
+        assert caught.value.winerror == 3  # ERROR_PATH_NOT_FOUND
+    else:
+        assert caught.value.strerror == "No such file or directory"
     assert caught.value.filename == str(missing)
 
 
 def test_a_directory_that_cannot_be_made_names_itself(tmp_path: Path) -> None:
     (tmp_path / "file").write_text("")
-    with pytest.raises(NotADirectoryError) as caught:
+    # Making a directory under a file: ENOTDIR on POSIX; Windows says the parent exists.
+    gone, number = (
+        (FileExistsError, errno.EEXIST)
+        if sys.platform == "win32"
+        else (NotADirectoryError, errno.ENOTDIR)
+    )
+    with pytest.raises(gone) as caught:
         Session.create(Config("{}"), "sys", 0, tmp_path / "file" / "s")
-    assert caught.value.errno == 20
+    assert caught.value.errno == number
     assert caught.value.filename == str(tmp_path / "file" / "s")
 
 
@@ -465,7 +478,7 @@ def test_a_listing_reads_the_first_user_message_without_the_lease(tmp_path: Path
     empty, _ = new(tmp_path / "empty")
     for directory in ("s", "empty"):
         (tmp_path / directory / "info.json").write_text(
-            f'{{"cwd": "{tmp_path}"}}', encoding="utf-8"
+            json.dumps({"cwd": str(tmp_path)}), encoding="utf-8"
         )
     first = {row.id: row.first for row in tau.list_sessions(tmp_path)}  # both are held
     assert first == {"s": "hello", "empty": None}

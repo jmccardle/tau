@@ -5,6 +5,7 @@ shadowing, `load`, `-e` and `--no-extensions`, every message of a start that doe
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -27,6 +28,15 @@ SEARCH_SITE = Path(__file__).parents[1] / "fixtures" / "search_site"
 OTHER_SITE = Path(__file__).parents[1] / "fixtures" / "search_site_other"
 PACKAGE = "ffwf-tau-search-fixture 0.4.0"
 POINTS_FILE = "entry_points.txt"  # rules: allow(entry): the file a distribution registers in
+BASE_TOOLS = [
+    "read",
+    "write",
+    "edit",
+    "grep",
+    "find",
+    *([] if sys.platform == "win32" else ["bash"]),
+]
+"""The base tools the platform has: Windows leaves `bash` out (README: not ported there)."""
 BUILT_INS = [
     "attachments",
     "base_tools",
@@ -307,16 +317,18 @@ def test_a_key_with_other_characters_is_a_failed_source(world: World) -> None:
 def test_an_extension_named_for_a_built_in_is_a_name_clash_naming_both(world: World) -> None:
     path = user_file(world, "imposter", MODULE.format(name="tau", extra=""))
     with pytest.raises(
-        ExtensionLoadError, match=f"two extensions are named 'tau': built-in tau and {path}"
+        ExtensionLoadError,
+        match=f"two extensions are named 'tau': built-in tau and {re.escape(str(path))}",
     ):
         load_extensions(start(world))
 
 
 def test_an_extension_named_session_name_is_a_name_clash(world: World) -> None:
     path = user_file(world, "imposter", MODULE.format(name="session_name", extra=""))
+    escaped = re.escape(str(path))
     with pytest.raises(
         ExtensionLoadError,
-        match=f"two extensions are named 'session_name': built-in session_name and {path}",
+        match=f"two extensions are named 'session_name': built-in session_name and {escaped}",
     ):
         load_extensions(start(world))
 
@@ -342,7 +354,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         "attachments   on         built-in",
         f"{pad}commands: none; tools: none",
         "base_tools    on         built-in",
-        f"{pad}commands: none; tools: read, write, edit, grep, find, bash",
+        f"{pad}commands: none; tools: {', '.join(BASE_TOOLS)}",
         "compaction    on         built-in",
         f"{pad}commands: /compact; tools: none",
         "permissions   on         built-in",
@@ -372,6 +384,10 @@ def test_ext_alone_and_a_failed_json_listing_follow_the_usual_exit_codes(world: 
     assert all(json.loads(line)["key"] for line in result.out.splitlines())
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows has no mode bits to be writable by others (its drop-in check is not ported)",
+)
 def test_a_user_extensions_directory_writable_by_others_is_refused_with_the_chmod(
     world: World,
 ) -> None:
@@ -782,6 +798,10 @@ def test_a_source_that_fails_a_definition_check_is_pinned_to_it(world: World) ->
     assert "DefinitionError: extension 'typo': `pre_stp` is not a hook point" in str(row["detail"])
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows has no mode bits to be writable by others (its drop-in check is not ported)",
+)
 def test_a_user_drop_in_directory_writable_by_others_is_refused_with_the_chmod(
     world: World,
 ) -> None:
@@ -845,7 +865,9 @@ class Hermetic:
 def run_tau(environ: dict[str, str], cwd: Path, sites: Sequence[Path], *argv: str) -> Hermetic:
     """`tau` with `argv` in a fresh process whose PYTHONPATH holds `sites`: directories with
     packages and the `.dist-info` that registers them, as an install leaves them."""
-    env = {**environ, "PYTHONPATH": os.pathsep.join(str(s) for s in sites)}
+    # Python on Windows needs SYSTEMROOT to start (Winsock fails to initialise without it)
+    system = {k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}
+    env = {**system, **environ, "PYTHONPATH": os.pathsep.join(str(s) for s in sites)}
     code = "import sys; from tau.cli import main; raise SystemExit(main(sys.argv[1:]))"
     done = subprocess.run(
         [sys.executable, "-c", code, *argv],
@@ -877,12 +899,12 @@ def hermetic(tmp_path: Path, points: dict[str, tuple[str, str]], dist: str = "pk
     site = tmp_path / "site"
     info = site / f"{dist}-1.0.dist-info"
     info.mkdir(parents=True)
-    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 1.0\n")
+    (info / "METADATA").write_bytes(f"Metadata-Version: 2.1\nName: {dist}\nVersion: 1.0\n".encode())
     lines = "[tau.extensions]\n"
     for key, (module, source) in points.items():
         lines += f"{key} = {module}\n"
         (site / f"{module.partition(':')[0]}.py").write_text(source, encoding="utf-8")
-    (info / POINTS_FILE).write_text(lines)
+    (info / POINTS_FILE).write_bytes(lines.encode())
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     return run_tau({"HOME": str(home)}, home, [site], "ext", "list", "--json")

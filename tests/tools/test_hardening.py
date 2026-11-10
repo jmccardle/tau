@@ -21,7 +21,12 @@ def end(pid: int) -> None:
 
 # bash: a process that left the group
 
+NO_BASH = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: the bash tool is not ported (README)"
+)
 
+
+@NO_BASH
 def test_cancelling_while_a_process_outside_the_group_holds_the_pipe(tmp_path: Path) -> None:
     async def scenario() -> float:
         tool = BashTool(tmp_path)
@@ -40,6 +45,7 @@ def test_cancelling_while_a_process_outside_the_group_holds_the_pipe(tmp_path: P
     end(int((tmp_path / "pid").read_text()))
 
 
+@NO_BASH
 def test_a_timeout_over_the_maximum_is_an_error_naming_it(tmp_path: Path) -> None:
     tool = BashTool(tmp_path, timeout_ms=500, max_timeout_ms=1000)
     assert err(call(tool, command="true", timeout=1001)) == (
@@ -51,6 +57,7 @@ def test_a_timeout_over_the_maximum_is_an_error_naming_it(tmp_path: Path) -> Non
         BashTool(tmp_path, timeout_ms=2000, max_timeout_ms=1000)
 
 
+@NO_BASH
 def test_each_call_has_its_own_thread(tmp_path: Path) -> None:
     """Each command waits until 100 are running at once: with fewer threads than that, none
     could finish (the pool of asyncio's default executor is far smaller)."""
@@ -80,6 +87,7 @@ print((after - before) // unit, "line 1 is cut at byte" in out.value)
 """
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: no resource module (ru_maxrss)")
 def test_a_file_of_one_enormous_line_is_not_held_in_memory(tmp_path: Path) -> None:
     """Measured in a fresh process, so the baseline is not the test run's own peak."""
     with (tmp_path / "one.txt").open("wb") as f:
@@ -121,6 +129,7 @@ def running(marker: str) -> bool:
     return any(marker in "".join(f"{arg}\0" for arg in args) for args in commands().values())
 
 
+@NO_BASH
 def test_cancelling_right_after_the_call_starts_always_ends_the_command(tmp_path: Path) -> None:
     async def scenario() -> float:
         tool = BashTool(tmp_path)

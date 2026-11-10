@@ -1528,7 +1528,11 @@ of the tool) or `TOOL:GLOB` (`bash`: the command; `read`, `write`, `edit`, `grep
 sensitive, over the whole `bash` command, or over a path as written and as resolved (against the
 session's working directory, symlinks followed; `deny` and `ask` fire if any named path matches,
 `allow` needs every one to, resolved; a glob that starts with a relative name starts in the working
-directory; a search whose root lies inside a `deny` glob is refused, and any other `grep` or `find`
+directory; for `deny` and `ask` the glob's directories are also made real, so `/etc/*` meets what
+lands in `/private/etc` on macOS, and there `deny` and `ask` ignore case in a path (`FOLDS`: a macOS
+volume folds it), while an `allow` is never widened by a link or a fold; on Windows a path glob is
+refused where it is configured, since how one meets a Windows path is not decided, and only the
+bare `TOOL` works; a search whose root lies inside a `deny` glob is refused, and any other `grep` or `find`
 is given the `deny` patterns about it as `exclude`, so the tool leaves out the paths they match,
 symlinks followed, and says how many (an `ask` still fires when the root could hold the pattern); a `read` deny with a glob guards `grep` too). The extension
 is an example guardrail for the file tools, not a security boundary; `bash` is out of its scope
@@ -1537,7 +1541,7 @@ is a tool's whole name. An `allow` glob never matches a command that chains or r
 a backtick `$(` `<` `>` a newline) unless it holds the operator, and `deny` and `ask` try each piece
 of a chain (`tau._shell`; best effort, `ask: [bash]` is safe). A rule naming a tool no extension
 provides is a `ConfigError` (at the start, and from `/config`); a built-in's tool that is not
-loaded (`agent`) is known. A `pre_tool` hook checks `deny`, then
+loaded (`agent`, or `bash` on Windows) is known. A `pre_tool` hook checks `deny`, then
 `allow`, then `ask`; a call no rule matches runs, and with no rules configured nothing is ever
 asked. An `ask` match holds the cursor with a question, `TOOL: ARGUMENT` (a line per resolved path) and `(ask rule: RULE)`,
 answered `yes`, `always` (run it and append its exact rule to the user's file's `allow`; for a call
@@ -3537,8 +3541,11 @@ by `Store::read` and `first_user` (`tau-store/src/lease.rs`; `Taken` is its answ
 What is not ported says so where it is used, naming the platform, and is never imitated: on
 Windows the `bash` tool (see *base tools*), `tau serve` and its clients
 (`require_unix_sockets`: the wire is a Unix domain socket, which Python's asyncio does not
-offer there) and projects (D13: finding a `.tau/` is a `TrustError`, since the owner and
-mode checks are not ported). `tests/proctable.py` is the process table for the tests
+offer there), projects (D13: finding a `.tau/` is a `TrustError`, since the owner and
+mode checks are not ported) and path patterns in permission rules (`read:GLOB` and the other path
+tools: a `ValueError` where the rule is configured). One check is left out there rather than
+refused: that the user's extension drop-ins are writable by the user alone (`require_private`
+reads mode bits, which Windows does not have; its access-list reading is not ported). `tests/proctable.py` is the process table for the tests
 (`/proc` on Linux, `ps` on macOS), and a test of something Windows lacks is skipped there with
 the reason.
 

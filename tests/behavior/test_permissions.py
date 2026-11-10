@@ -4,6 +4,7 @@ question's `yes | always | no`."""
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +28,11 @@ from tau import (
 )
 
 REFUSED = "the user refused this call"
+PATH_PATTERNS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: permission rules with a path pattern are not ported; they are refused there "
+    "(README, docs/plan.md Phase 9)",
+)
 
 
 def call(id: str, tool: str, **args: object) -> Part.Call:
@@ -131,11 +137,12 @@ async def test_a_question_shows_the_tool_its_argument_and_the_rule(tmp_path: Pat
 async def test_a_path_tool_shows_its_path_and_a_tool_without_one_its_arguments(
     tmp_path: Path,
 ) -> None:
-    reply = calls(call("a", "write", path="/tmp/x", content="text"), call("b", "other", n=1))
+    path = os.path.realpath(tmp_path / "x")  # a real path: shown as it is
+    reply = calls(call("a", "write", path=path, content="text"), call("b", "other", n=1))
     tools = [FakeTool("write", "w"), FakeTool("other", "o")]
     h, _ = await start(tmp_path, [reply, say("ok")], {"ask": ["write", "other"]}, tools)
     first, second = (await h.view()).questions
-    assert first.text == "write: /tmp/x\n(ask rule: write)"
+    assert first.text == f"write: {path}\n(ask rule: write)"
     assert second.text == 'other: {"n": 1}\n(ask rule: other)'
     await h.close()
 
@@ -296,11 +303,12 @@ PATHS = [
     ("write:/etc/*", "//etc/x", True),
     ("write:/etc/*", "/./etc/x", True),
     ("write:/etc/*", "../" * 40 + "etc/x", True),  # relative to the session's directory
-    ("write:/etc/*", "/ETC/x", False),
+    ("write:/etc/*", "/ETC/x", sys.platform == "darwin"),  # case matters, but macOS folds it
     ("write:*.env", "/home/me/prod.env", True),
 ]
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize(("rule", "path", "matches"), PATHS)
 @scenario
 async def test_a_path_pattern_matches_the_path_argument(
@@ -312,6 +320,7 @@ async def test_a_path_pattern_matches_the_path_argument(
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_relative_deny_matches_the_path_as_written_and_as_resolved(
     tmp_path: Path,
@@ -333,6 +342,7 @@ async def test_a_relative_deny_matches_the_path_as_written_and_as_resolved(
         await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_deny_on_grep_looks_at_every_file_it_is_given(tmp_path: Path) -> None:
     reply = calls(call("a", "grep", pattern="root", files=["ok.txt", "/etc/shadow"]))
@@ -344,6 +354,7 @@ async def test_a_deny_on_grep_looks_at_every_file_it_is_given(tmp_path: Path) ->
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_grep_with_no_path_searches_the_working_directory(tmp_path: Path) -> None:
     reply = calls(call("a", "grep", pattern="x"))
@@ -356,6 +367,7 @@ async def test_a_grep_with_no_path_searches_the_working_directory(tmp_path: Path
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("tool", ["grep", "find"])
 @pytest.mark.parametrize("root", ["/etc/ssh", "/etc/ssh/", "/tmp/../etc/ssh", "link/ssh"])
 @scenario
@@ -374,6 +386,7 @@ async def test_a_deny_on_a_search_refuses_a_root_inside_the_denied_directory(
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("tool", ["grep", "find"])
 @pytest.mark.parametrize("root", ["/etc", "/", "/tmp/../etc", "link", "link/", ".", "/etcetera"])
 @scenario
@@ -388,10 +401,10 @@ async def test_a_search_whose_root_is_not_denied_runs_without_the_denied_files(
     reply = calls(call("a", tool, pattern="root", path=root))
     h, (fake,) = await start(tmp_path, [reply, say("ok")], {"deny": [rule]}, [FakeTool(tool, "t")])
     (sent,) = fake.calls
-    (pattern,) = cast("list[str]", sent["exclude"])
-    denied = "/etc/passwd" if root != "." else f"{here}/secret/key"
-    assert re.fullmatch(pattern, denied, re.DOTALL)
-    assert not re.fullmatch(pattern, f"{here}/open/key", re.DOTALL)
+    patterns = cast("list[str]", sent["exclude"])
+    denied = os.path.realpath("/etc/passwd") if root != "." else f"{here}/secret/key"
+    assert any(re.fullmatch(p, denied, re.DOTALL) for p in patterns)
+    assert not any(re.fullmatch(p, f"{here}/open/key", re.DOTALL) for p in patterns)
     await h.close()
 
 
@@ -414,6 +427,7 @@ def secret_tree(tmp_path: Path) -> Path:
     return real
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("exclude", [None, [], ["nothing-matches-this"]])
 @scenario
 async def test_a_model_cannot_switch_the_filter_off_with_its_own_exclude(
@@ -429,6 +443,7 @@ async def test_a_model_cannot_switch_the_filter_off_with_its_own_exclude(
     assert "b.txt" not in text
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("args_raw", ['{"pattern": "x", "exclude": "all"}', "not json", "[]"])
 @scenario
 async def test_a_search_whose_arguments_cannot_take_the_deny_patterns_is_refused(
@@ -443,6 +458,7 @@ async def test_a_search_whose_arguments_cannot_take_the_deny_patterns_is_refused
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("tool", ["grep", "find"])
 @pytest.mark.parametrize("root", ["/etc", "/", "link"])
 @scenario
@@ -462,6 +478,7 @@ async def test_an_ask_on_a_search_still_asks_when_the_root_holds_the_pattern(
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize(("tool", "pattern"), [("grep", "needle"), ("find", "*")])
 @scenario
 async def test_an_unreadable_denied_directory_is_not_entered_or_named(
@@ -487,6 +504,7 @@ async def test_an_unreadable_denied_directory_is_not_entered_or_named(
     assert "could not" not in text
 
 
+@PATH_PATTERNS
 @scenario
 async def test_the_tool_reads_a_set_and_a_newline_as_the_check_does(tmp_path: Path) -> None:
     """`--`, `&&` and `~~` in a set are no operators, and `*` crosses a newline, in the tool
@@ -508,6 +526,7 @@ async def test_the_tool_reads_a_set_and_a_newline_as_the_check_does(tmp_path: Pa
     assert shown == {"open/b", "open/kept"}
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize(
     ("rule", "path", "denied"),
     [
@@ -532,6 +551,7 @@ async def test_a_rule_pattern_means_what_fnmatch_says(
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_search_excludes_what_an_unclosed_bracket_or_a_caret_rule_names(
     tmp_path: Path,
@@ -550,6 +570,7 @@ async def test_a_search_excludes_what_an_unclosed_bracket_or_a_caret_rule_names(
     assert "b.txt" not in text
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_read_deny_also_guards_what_grep_would_read(tmp_path: Path) -> None:
     reply = calls(
@@ -563,12 +584,13 @@ async def test_a_read_deny_also_guards_what_grep_would_read(tmp_path: Path) -> N
         {"deny": ["read:/etc/*", "read"]},
         [FakeTool("grep", "g"), FakeTool("find", "f")],
     )
-    ((pattern,),) = [cast("list[str]", c["exclude"]) for c in fake.calls]
-    assert re.fullmatch(pattern, "/etc/shadow", re.DOTALL)
+    (patterns,) = [cast("list[str]", c["exclude"]) for c in fake.calls]
+    assert any(re.fullmatch(p, os.path.realpath("/etc/shadow"), re.DOTALL) for p in patterns)
     assert find.calls == [{"pattern": "x", "path": "/"}]  # names, not content: read does not cover
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("tool", ["grep", "find"])
 @scenario
 async def test_a_search_with_no_path_cannot_return_what_a_deny_hides(
@@ -597,6 +619,7 @@ async def test_a_search_with_no_path_cannot_return_what_a_deny_hides(
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_an_allow_on_grep_needs_every_file_to_match(tmp_path: Path) -> None:
     ok = os.path.realpath(tmp_path / "ok")
@@ -612,6 +635,7 @@ async def test_an_allow_on_grep_needs_every_file_to_match(tmp_path: Path) -> Non
     await h.close()
 
 
+@PATH_PATTERNS
 @pytest.mark.parametrize("tool", ["read", "write", "edit", "grep", "find"])
 @scenario
 async def test_every_path_tool_is_denied_by_the_path_it_lands_on(tmp_path: Path, tool: str) -> None:
@@ -624,6 +648,7 @@ async def test_every_path_tool_is_denied_by_the_path_it_lands_on(tmp_path: Path,
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_pattern_needs_the_argument_and_a_bare_rule_does_not(tmp_path: Path) -> None:
     """A call whose arguments are not an object or whose path is not a string matches no pattern
@@ -765,6 +790,7 @@ async def test_always_on_a_malformed_call_saves_nothing_and_says_so(
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_relative_allow_rule_starts_in_the_working_directory(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
@@ -830,6 +856,7 @@ async def test_a_deny_still_refuses_what_always_allowed(tmp_path: Path) -> None:
 # Paths: the path a call names, not the one it spells
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_deny_sees_through_a_symlink(tmp_path: Path) -> None:
     (tmp_path / "etc-link").symlink_to("/etc")
@@ -842,6 +869,99 @@ async def test_a_deny_sees_through_a_symlink(tmp_path: Path) -> None:
     await h.close()
 
 
+@PATH_PATTERNS
+@scenario
+async def test_a_rule_about_a_linked_directory_denies_the_path_it_lands_on(tmp_path: Path) -> None:
+    """macOS's `/etc` is a link to `/private/etc`: `write:/etc/*` must refuse what lands there,
+    however it is spelled. Here `link` is the link and `real` the directory."""
+    real = tmp_path.resolve() / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    for n, path in enumerate([f"{real}/x", f"{tmp_path}/real/../link/x", f"{real}/sub/../x"]):
+        reply = calls(call("a", "write", path=path, content="x"))
+        h, (tool,) = await start(
+            tmp_path / f"s{n}",
+            [reply, say("ok")],
+            {"deny": [f"write:{tmp_path}/link/*"]},
+            [FakeTool("write", "w")],
+        )
+        assert tool.calls == [], path
+        assert "deny rule" in refusal(h)
+        await h.close()
+
+
+@PATH_PATTERNS
+@scenario
+async def test_an_allow_about_a_linked_directory_is_not_widened_by_the_link(
+    tmp_path: Path,
+) -> None:
+    """An allow is read as written: a link where the rule names a directory cannot make it allow
+    the directory the link leads to."""
+    real = tmp_path.resolve() / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    reply = calls(call("a", "write", path=f"{real}/x", content="x"))
+    options = {"ask": ["write"], "allow": [f"write:{tmp_path.resolve()}/link/*"]}
+    h, (tool,) = await start(tmp_path, [reply, say("ok")], options, [FakeTool("write", "w")])
+    (question,) = (await h.view()).questions
+    assert question.text.startswith(f"write: {real}/x\n")
+    assert tool.calls == []
+    await h.close()
+
+
+@PATH_PATTERNS
+@scenario
+async def test_a_deny_ignores_case_on_macos_and_an_allow_never_does(tmp_path: Path) -> None:
+    """A macOS volume folds case: `SECRET/key` is `secret/key` there, and a deny that missed it
+    would be no guard. An allow that folded would only widen."""
+    real = tmp_path.resolve()
+    reply = calls(
+        call("a", "write", path=f"{real}/SECRET/key", content="x"),
+        call("b", "write", path=f"{real}/OK/x", content="x"),
+    )
+    options = {
+        "deny": [f"write:{real}/secret/*"],
+        "ask": ["write"],
+        "allow": [f"write:{real}/ok/*"],
+    }
+    h, _ = await start(tmp_path, [reply, say("ok")], options, [FakeTool("write", "w")])
+    asked = [q.text.split("\n")[0] for q in (await h.view()).questions]
+    if sys.platform == "darwin":
+        assert asked == [f"write: {real}/OK/x"], "the deny refused SECRET; the allow missed OK"
+    else:
+        assert asked == [f"write: {real}/SECRET/key", f"write: {real}/OK/x"]
+    await h.close()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="path patterns work on this platform; the tests above hold them",
+)
+@scenario
+async def test_on_windows_a_path_pattern_is_refused_and_always_saves_nothing(
+    tmp_path: Path,
+) -> None:
+    """How a pattern meets a Windows path is not decided: a rule with one is refused where it is
+    configured (a call under it is refused, naming why), and `always` saves no rule."""
+    reply = calls(call("a", "write", path="notes.txt", content="x"))
+    h, (tool,) = await start(
+        tmp_path, [reply, say("ok")], {"deny": ["write:secret/*"]}, [FakeTool("write", "w")]
+    )
+    assert tool.calls == []
+    assert "path patterns are not available on Windows" in refusal(h)
+    await h.close()
+    h, (tool,) = await start(
+        tmp_path / "always", [reply, say("ok")], {"ask": ["write"]}, [FakeTool("write", "w")]
+    )
+    await h.respond("always")
+    await h.settle()
+    assert len(tool.calls) == 1
+    assert not (tmp_path / "always" / "tau-home" / "config.json").exists()
+    assert any("path patterns are not available on Windows" in n for n in h.notices())
+    await h.close()
+
+
+@PATH_PATTERNS
 @scenario
 async def test_an_allow_needs_the_resolved_path_to_match(tmp_path: Path) -> None:
     ok = os.path.realpath(tmp_path / "ok")
@@ -858,6 +978,7 @@ async def test_an_allow_needs_the_resolved_path_to_match(tmp_path: Path) -> None
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_always_saves_the_resolved_absolute_path(tmp_path: Path) -> None:
     reply = calls(call("a", "write", path="sub/../notes.txt", content="x"))

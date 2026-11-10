@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
@@ -53,7 +53,7 @@ class World:
         self,
         id: str,
         *,
-        cwd: Path | None = None,
+        cwd: PurePath | None = None,
         name: str | None = None,
         forked_from: dict[str, object] | None = None,
         says: Sequence[str] = (),

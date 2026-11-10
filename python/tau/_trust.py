@@ -135,7 +135,12 @@ class _Seen:
 
 
 def _home_dir(environ: Mapping[str, str]) -> Path:
+    """`$HOME`; on Windows, where a shell need not set it, `%USERPROFILE%` when it is unset."""
     home = environ.get("HOME")
+    if not home and sys.platform == "win32":
+        home = environ.get("USERPROFILE")
+        if not home:
+            raise ConfigError("neither HOME nor USERPROFILE is set")
     if not home:
         raise ConfigError("HOME is not set")
     return Path(home).resolve()
@@ -183,13 +188,18 @@ def _owned_by_you(tau: Path, info: os.stat_result) -> bool:
     """Whether the directory `tau` (its `lstat` is `info`) is the effective user's. On Windows a
     file has no owner uid, and checking its owner and who may write it (D13) is not ported:
     finding a project there is a `TrustError` that says so."""
+    refuse_on_windows(tau)
+    return info.st_uid == os.geteuid()
+
+
+def refuse_on_windows(tau: Path) -> None:
+    """`TrustError` on Windows, naming the `.tau` directory `tau` that a project would need."""
     if sys.platform == "win32":
         raise TrustError(
             f"{shown(tau)}: projects are not available on Windows yet: tau cannot check there "
             f"who owns {TAU_DIR}/ and who may change it",
             tau,
         )
-    return info.st_uid == os.geteuid()
 
 
 def _holds_tau_home(directory: Path, config_dir: Path) -> bool:
@@ -218,10 +228,11 @@ def find_project(start: Path, environ: Mapping[str, str]) -> ProjectSearch:
             info = tau.lstat()
         except OSError:
             continue
+        if stat.S_ISDIR(info.st_mode) and _holds_tau_home(directory, config_dir):
+            continue  # TAU_HOME itself: never a project, and its owner is not asked about
         if stat.S_ISDIR(info.st_mode) and _owned_by_you(tau, info):
-            if not _holds_tau_home(directory, config_dir):
-                return ProjectSearch(directory, None)
-        elif skipped is None:
+            return ProjectSearch(directory, None)
+        if skipped is None:
             skipped = _not_a_project(tau, info)
     return ProjectSearch(None, skipped)
 
@@ -243,6 +254,7 @@ def refuse_special(path: Path, environ: Mapping[str, str]) -> None:
 def create_project(root: Path) -> None:
     """Make `<root>/.tau/` (mode 700) for `tau trust` to approve. `TrustError` if it cannot."""
     tau = root / TAU_DIR
+    refuse_on_windows(tau)
     try:
         tau.mkdir(mode=_PRIVATE)
     except OSError as e:
@@ -382,6 +394,10 @@ def _see(root: Path) -> _Seen:
 
 
 def require_private(path: Path, fix: str) -> None:
+    """`TrustError` if `path` exists and group or others can write it. Windows has no mode bits
+    (its `st_mode` always says 777), and reading its access list is not ported: no refusal there."""
+    if sys.platform == "win32":
+        return
     with unless_io_fails(path, "inspected"), contextlib.suppress(FileNotFoundError):
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & _WRITABLE_BY_OTHERS:

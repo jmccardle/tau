@@ -1,0 +1,57 @@
+# TEMPORARY (publish-draft only): find the macOS test that hangs. Removed before merge.
+name: diag macOS hang
+
+on:
+  push:
+    branches: [publish-draft]
+
+permissions:
+  contents: read
+
+jobs:
+  hang:
+    name: diag ${{ matrix.runner }} py${{ matrix.python }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15]
+        python: ["3.12", "3.14t"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build and run with a watchdog
+        run: |
+          set -euo pipefail
+          uv python install ${{ matrix.python }}
+          venv="$RUNNER_TEMP/clean"
+          uv venv --seed --python ${{ matrix.python }} "$venv"
+          py="$venv/bin/python"
+          "$py" -m pip install --upgrade pip "maturin>=1.15,<2"
+          (export MACOSX_DEPLOYMENT_TARGET=11.0; "$venv/bin/maturin" build --release --locked --out dist --interpreter "$py")
+          "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$py" -m pytest -v -p no:cacheprovider -m "not tokenizers" \
+            "$GITHUB_WORKSPACE/tests/providers/test_sent_stamp.py" \
+            "$GITHUB_WORKSPACE/tests/providers/test_usage_facts.py" \
+            "$GITHUB_WORKSPACE/tests/serve" >"$RUNNER_TEMP/out.txt" 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 10
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "=== still running after 20 minutes; processes:"
+            ps -axo pid,ppid,pgid,stat,etime,command | grep -v "ps -axo" | tail -60
+            echo "=== sample of pytest"
+            sample "$pid" 3 2>&1 | head -80 || true
+            kill -ABRT "$pid" || true
+            sleep 5
+          fi
+          wait "$pid" || true
+          tail -150 "$RUNNER_TEMP/out.txt"

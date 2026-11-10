@@ -7,11 +7,14 @@ import time
 from pathlib import Path
 
 import pytest
-from calls import call, err, ok, parse_truncated
+from calls import call, err, ok, parse_truncated, put
 
 from tau import BashTool, GrepTool, ReadTool, WriteTool
 
 LIMIT = 200
+NO_BASH = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: the bash tool is not ported (README)"
+)
 
 
 def numbered(n: int) -> str:
@@ -22,7 +25,7 @@ def test_read_stops_after_the_last_whole_line_that_fits_and_says_where_to_go_on(
     tmp_path: Path,
 ) -> None:
     text = numbered(1000)
-    (tmp_path / "big.txt").write_text(text)
+    put((tmp_path / "big.txt"), text)
     first = ok(call(ReadTool(tmp_path, max_output=LIMIT), path="big.txt"))
     kept, _, note = first.rpartition("\n[")
     assert text.startswith(kept)
@@ -35,7 +38,7 @@ def test_read_stops_after_the_last_whole_line_that_fits_and_says_where_to_go_on(
 
 
 def test_read_writes_no_overflow_file(tmp_path: Path) -> None:
-    (tmp_path / "big.txt").write_text(numbered(1000))
+    put((tmp_path / "big.txt"), numbered(1000))
     done = subprocess.run(
         [sys.executable, "-c", READ_ONCE, str(tmp_path)],
         capture_output=True,
@@ -55,6 +58,7 @@ print(asyncio.run(call).value)
 """
 
 
+@NO_BASH
 def test_bash_keeps_the_tail_and_the_file_holds_everything(tmp_path: Path, overflow: Path) -> None:
     tool = BashTool(tmp_path, max_output=LIMIT, overflow_dir=overflow)
     answer = parse_truncated(ok(call(tool, command="seq 1 2000")))
@@ -69,6 +73,7 @@ def test_bash_keeps_the_tail_and_the_file_holds_everything(tmp_path: Path, overf
     assert full[len(full) - len(answer.kept) - 1] == "\n"
 
 
+@NO_BASH
 def test_bash_failure_keeps_the_end_of_the_output_and_the_exit_code(
     tmp_path: Path, overflow: Path
 ) -> None:
@@ -80,7 +85,7 @@ def test_bash_failure_keeps_the_end_of_the_output_and_the_exit_code(
 
 
 def test_grep_keeps_the_head_and_the_file_holds_everything(tmp_path: Path, overflow: Path) -> None:
-    (tmp_path / "a.txt").write_text(numbered(500))
+    put((tmp_path / "a.txt"), numbered(500))
     tool = GrepTool(tmp_path, max_output=LIMIT, overflow_dir=overflow)
     answer = parse_truncated(ok(call(tool, pattern="line")))
     full = "".join(f"a.txt:{i}:line {i}\n" for i in range(1, 501))
@@ -91,10 +96,15 @@ def test_grep_keeps_the_head_and_the_file_holds_everything(tmp_path: Path, overf
     assert answer.full == full.removesuffix("\n").encode()
 
 
-def test_the_note_text(tmp_path: Path, overflow: Path) -> None:
-    (tmp_path / "f.txt").write_text("aaaa\nbbbb\ncccc\ndddd\n")
+def test_the_note_text_of_a_read(tmp_path: Path) -> None:
+    put(tmp_path / "f.txt", "aaaa\nbbbb\ncccc\ndddd\n")
     read = ok(call(ReadTool(tmp_path, max_output=10), path="f.txt"))
     assert read == "aaaa\nbbbb\n[showing lines 1-2; offset=3 continues]"
+
+
+@NO_BASH
+def test_the_note_text_of_a_tail(tmp_path: Path, overflow: Path) -> None:
+    put(tmp_path / "f.txt", "aaaa\nbbbb\ncccc\ndddd\n")
     tail = ok(call(BashTool(tmp_path, max_output=10, overflow_dir=overflow), command="cat f.txt"))
     path = parse_truncated(tail).path
     assert tail == (
@@ -103,10 +113,11 @@ def test_the_note_text(tmp_path: Path, overflow: Path) -> None:
     )
 
 
+@NO_BASH
 def test_output_within_the_limit_is_untouched_and_writes_no_file(
     tmp_path: Path, overflow: Path
 ) -> None:
-    (tmp_path / "f.txt").write_text("x" * 200)
+    put((tmp_path / "f.txt"), "x" * 200)
     out = call(ReadTool(tmp_path, max_output=200), path="f.txt")
     assert ok(out) == "x" * 200
     assert not overflow.exists()
@@ -116,10 +127,13 @@ def test_output_within_the_limit_is_untouched_and_writes_no_file(
     assert "truncated" in ok(call(bash, command="printf 'y%.0s' $(seq 201)"))
 
 
+@NO_BASH
 @pytest.mark.parametrize("limit", [7, 9, 13, 50])
-def test_a_cut_never_splits_a_utf8_character(tmp_path: Path, overflow: Path, limit: int) -> None:
+def test_a_bash_cut_never_splits_a_utf8_character(
+    tmp_path: Path, overflow: Path, limit: int
+) -> None:
     text = "日本語é\n" * 40
-    (tmp_path / "u.txt").write_text(text)
+    put(tmp_path / "u.txt", text)
     bash = BashTool(tmp_path, max_output=limit, overflow_dir=overflow)
     answer = parse_truncated(ok(call(bash, command="cat u.txt")))
     assert "�" not in answer.kept
@@ -131,6 +145,11 @@ def test_a_cut_never_splits_a_utf8_character(tmp_path: Path, overflow: Path, lim
         assert kept_lines == ["日本語é"] * len(kept_lines)
     assert len(answer.kept.encode()) <= limit
     assert answer.full == text.encode()
+
+
+@pytest.mark.parametrize("limit", [7, 9, 13, 50])
+def test_a_read_cut_never_splits_a_utf8_character(tmp_path: Path, limit: int) -> None:
+    put(tmp_path / "u.txt", "日本語é\n" * 40)
     read = ok(call(ReadTool(tmp_path, max_output=limit), path="u.txt"))
     assert "�" not in read
     assert len(read.partition("\n[")[0].encode()) <= limit
@@ -139,7 +158,7 @@ def test_a_cut_never_splits_a_utf8_character(tmp_path: Path, overflow: Path, lim
 def test_one_line_longer_than_the_limit_is_cut_on_a_character(
     tmp_path: Path, overflow: Path
 ) -> None:
-    (tmp_path / "long.txt").write_text("é" * 100 + "\n")
+    put((tmp_path / "long.txt"), "é" * 100 + "\n")
     head = ok(call(ReadTool(tmp_path, max_output=15), path="long.txt"))
     assert head == "é" * 7 + (
         "\n[line 1 is cut at byte 14; read cannot show the rest (use bash: cut -c or tail -c);"
@@ -164,7 +183,7 @@ def spill_dir(tmp_path: Path, **env: str) -> Path:
     """The directory the overflow file of a default grep lands in, in a fresh process whose
     environment is the test's without its XDG_RUNTIME_DIR and TMPDIR, plus `env`."""
     tmp_path.mkdir()
-    (tmp_path / "big.txt").write_text("0123456789\n" * 3000)
+    put((tmp_path / "big.txt"), "0123456789\n" * 3000)
     base = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "TMPDIR")}
     done = subprocess.run(
         [sys.executable, "-c", SPILL_ONCE, str(tmp_path)],
@@ -197,16 +216,16 @@ def test_the_default_directory_is_tau_euid_in_the_temp_dir_otherwise(tmp_path: P
 def test_old_overflow_files_are_removed_when_the_directory_is_opened(
     tmp_path: Path, overflow: Path
 ) -> None:
-    (tmp_path / "f.txt").write_text("x" * 100)
-    overflow.mkdir(mode=0o700)
+    put((tmp_path / "f.txt"), "x" * 100)
+    overflow.mkdir(mode=0o700)  # the mode is ignored on Windows: the directory is the user's own
     old, fresh, other = overflow / "old00000.out", overflow / "new00000.out", overflow / "keep.txt"
     for f in (old, fresh, other):
-        f.write_text("x")
+        put(f, "x")
     two_days_ago = time.time() - 2 * 24 * 3600
     os.utime(old, (two_days_ago, two_days_ago))
     os.utime(other, (two_days_ago, two_days_ago))
-    bash = BashTool(tmp_path, max_output=10, overflow_dir=overflow)
-    assert "full output" in ok(call(bash, command="seq 1 100"))
+    grep = GrepTool(tmp_path, max_output=10, overflow_dir=overflow)
+    assert "full output" in ok(call(grep, pattern="x"))
     assert not old.exists()
     assert fresh.exists()
     assert other.exists(), "only overflow files are removed"
@@ -215,12 +234,15 @@ def test_old_overflow_files_are_removed_when_the_directory_is_opened(
 def test_an_overflow_directory_that_cannot_be_used_costs_the_file_not_the_answer(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "f.txt").write_text("x" * 100)
-    (tmp_path / "blocker").write_text("a file where the directory should be")
+    put((tmp_path / "f.txt"), "x" * 100)
+    put((tmp_path / "blocker"), "a file where the directory should be")
     unwritable = tmp_path / "blocker" / "tau"
     grep = GrepTool(tmp_path, max_output=10, overflow_dir=unwritable)
-    bash = BashTool(tmp_path, max_output=10, overflow_dir=unwritable)
-    for text in (ok(call(grep, pattern="x")), ok(call(bash, command="seq 1 100"))):
+    answers = [ok(call(grep, pattern="x"))]
+    if sys.platform != "win32":  # Windows: the bash tool is not ported (README)
+        bash = BashTool(tmp_path, max_output=10, overflow_dir=unwritable)
+        answers.append(ok(call(bash, command="seq 1 100")))
+    for text in answers:
         assert "was not saved: the overflow directory" in text
         assert "could not be created" in text
 
@@ -228,19 +250,24 @@ def test_an_overflow_directory_that_cannot_be_used_costs_the_file_not_the_answer
 def test_an_overflow_directory_open_to_others_or_a_symlink_is_never_written_into(
     tmp_path: Path,
 ) -> None:
-    open_dir = tmp_path / "open"
-    open_dir.mkdir(mode=0o755)
-    open_dir.chmod(0o755)
+    put(tmp_path / "f.txt", "x" * 100)
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
     link = tmp_path / "link"
-    link.symlink_to(real)
-    for directory, why in ((open_dir, "has mode 0755"), (link, "is a symlink")):
-        bash = BashTool(tmp_path, max_output=10, overflow_dir=directory)
-        text = ok(call(bash, command="seq 1 100"))
+    link.symlink_to(real, target_is_directory=True)
+    refused = [(link, "is a symlink")]
+    open_dir = tmp_path / "open"
+    if sys.platform != "win32":  # mode bits: Windows has an access list, not 0755
+        open_dir.mkdir(mode=0o755)
+        open_dir.chmod(0o755)
+        refused.append((open_dir, "has mode 0755"))
+    for directory, why in refused:
+        grep = GrepTool(tmp_path, max_output=10, overflow_dir=directory)
+        text = ok(call(grep, pattern="x"))
         assert f"was not saved: the overflow directory {directory} {why}" in text
-    assert list(open_dir.iterdir()) == []
     assert list(real.iterdir()) == []
+    if open_dir.exists():
+        assert list(open_dir.iterdir()) == []
 
 
 def test_the_write_tool_has_no_limit_to_exceed(tmp_path: Path) -> None:
@@ -265,8 +292,11 @@ resource.setrlimit(resource.RLIMIT_FSIZE, (hard, hard))
 """
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: no resource module (RLIMIT_FSIZE) and no bash tool"
+)
 def test_a_full_disk_costs_the_overflow_file_not_the_answer(tmp_path: Path) -> None:
-    (tmp_path / "big.txt").write_text("hit\n" * 100000)
+    put((tmp_path / "big.txt"), "hit\n" * 100000)
     done = subprocess.run(
         [sys.executable, "-c", FILE_SIZE_LIMITED, str(tmp_path)],
         capture_output=True,

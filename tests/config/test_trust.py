@@ -22,7 +22,7 @@ from world import (
     yes,
 )
 
-from tau import TrustError, UntrustedProject, load_config
+from tau import ConfigError, TrustError, UntrustedProject, load_config
 
 LITERAL_KEY = "sk-literal-secret-9f3"
 SHELL_KEY = "sk-from-the-shell-77c"
@@ -35,13 +35,32 @@ def write_config(root: Path, config: object) -> None:
 
 # -- finding the project and TAU_HOME
 
+PROJECTS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: projects (D13 trust) are not ported; finding one is an error",
+)
+
 
 def test_tau_home_defaults_to_dot_tau_and_expands_a_tilde(world: World) -> None:
     assert loaded(world).home == world.home / ".tau"
     environ = {**world.environ, "TAU_HOME": "~/elsewhere"}
     assert load_config(world.home, environ, ask=None).home == world.home / "elsewhere"
-    environ = {**world.environ, "TAU_HOME": "/srv/tau"}
-    assert load_config(world.home, environ, ask=None).home == Path("/srv/tau")
+    absolute = world.home.parent / "srv" / "tau"  # "/srv/tau" is not absolute on Windows
+    environ = {**world.environ, "TAU_HOME": str(absolute)}
+    assert load_config(world.home, environ, ask=None).home == absolute
+
+
+def test_without_home_windows_reads_userprofile_and_elsewhere_it_is_an_error(
+    world: World,
+) -> None:
+    """A Windows shell need not set HOME; its home is `%USERPROFILE%` there."""
+    environ = {k: v for k, v in world.environ.items() if k != "HOME"}
+    environ["USERPROFILE"] = str(world.home)
+    if sys.platform == "win32":
+        assert load_config(world.home, environ, ask=None).home == world.home / ".tau"
+    else:
+        with pytest.raises(ConfigError, match="HOME is not set"):
+            load_config(world.home, environ, ask=None)
 
 
 def test_the_nearest_project_upward_wins(world: World) -> None:
@@ -65,6 +84,7 @@ def test_home_is_not_a_project_and_the_search_stops_there(world: World, tmp_path
     assert not has_project(world, world.home)
 
 
+@PROJECTS
 def test_outside_home_the_search_runs_to_the_root(world: World, tmp_path: Path) -> None:
     other = tmp_path / "elsewhere"
     (other / ".tau").mkdir(parents=True)
@@ -378,6 +398,17 @@ def test_a_trusted_json_nobody_can_read_is_one_line_not_a_traceback(world: World
     assert tau(world, "trust", cwd=root).err.count("\n") == 1
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="POSIX makes the project; see the next test")
+def test_trust_with_no_project_says_projects_are_not_available_on_windows(world: World) -> None:
+    work = world.home / "work"
+    work.mkdir()
+    result = tau(world, "trust", cwd=work)
+    assert result.code == 1
+    assert "projects are not available on Windows yet" in result.err
+    assert not (work / ".tau").exists()
+
+
+@PROJECTS
 def test_trust_makes_the_project_where_there_is_none(world: World) -> None:
     work = world.home / "work"
     (work / "src").mkdir(parents=True)
@@ -594,6 +625,7 @@ def test_an_untrusted_project_with_errors_does_not_offer_the_trust_command(world
     assert "cannot be trusted until these are fixed" in str(raised.value)
 
 
+@PROJECTS
 def test_a_symlinked_tau_above_does_not_block_trusting_below_it(
     world: World, tmp_path: Path
 ) -> None:

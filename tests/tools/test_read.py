@@ -3,26 +3,26 @@
 import asyncio
 from pathlib import Path
 
-from calls import call, err
+from calls import call, err, put
 
 from tau import Outcome, ReadTool
 
 
 def test_reads_a_file_verbatim_relative_to_the_working_directory(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("one\ntwo\n")
+    put((tmp_path / "a.txt"), "one\ntwo\n")
     assert call(ReadTool(tmp_path), path="a.txt") == Outcome.Ok("one\ntwo\n")
     assert call(ReadTool(), path=str(tmp_path / "a.txt")) == Outcome.Ok("one\ntwo\n")
 
 
 def test_non_ascii_text_and_an_empty_file(tmp_path: Path) -> None:
-    (tmp_path / "u.txt").write_text("日本語 é\n")
-    (tmp_path / "empty.txt").write_text("")
+    put((tmp_path / "u.txt"), "日本語 é\n")
+    put((tmp_path / "empty.txt"), "")
     assert call(ReadTool(tmp_path), path="u.txt") == Outcome.Ok("日本語 é\n")
     assert call(ReadTool(tmp_path), path="empty.txt") == Outcome.Ok("")
 
 
 def test_offset_and_limit_select_lines_and_say_how_to_continue(tmp_path: Path) -> None:
-    (tmp_path / "n.txt").write_text("".join(f"{i}\n" for i in range(1, 11)))
+    put((tmp_path / "n.txt"), "".join(f"{i}\n" for i in range(1, 11)))
     tool = ReadTool(tmp_path)
     middle = call(tool, path="n.txt", offset=3, limit=2)
     assert middle == Outcome.Ok("3\n4\n\n[showing lines 3-4; offset=5 continues]")
@@ -33,7 +33,7 @@ def test_offset_and_limit_select_lines_and_say_how_to_continue(tmp_path: Path) -
 def test_errors_are_outcomes_the_model_can_read(tmp_path: Path) -> None:
     (tmp_path / "dir").mkdir()
     (tmp_path / "bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
-    (tmp_path / "one.txt").write_text("x\n")
+    put((tmp_path / "one.txt"), "x\n")
     tool = ReadTool(tmp_path)
     assert "file not found: missing.txt" in err(call(tool, path="missing.txt"))
     assert "is a directory" in err(call(tool, path="dir"))

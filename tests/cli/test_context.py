@@ -83,9 +83,9 @@ def files_of(world: World, prompt: SystemPrompt) -> list[str]:
     order."""
     root = world.home.parent.resolve()
     return [
-        str(Path(s.origin).relative_to(root))
+        Path(s.origin).relative_to(root).as_posix()
         for s in prompt.sources
-        if s.origin.startswith(str(root) + "/")
+        if Path(s.origin).is_absolute() and root in Path(s.origin).parents
     ]
 
 
@@ -119,13 +119,14 @@ def test_each_file_is_wrapped_with_its_path_in_one_project_context_block(world: 
     prompt = assemble(world, cwd, context_files=True)
     assert prompt.text.count("<project_context>") == 1
     assert (
-        f'<project_instructions path="{cwd.resolve()}/AGENTS.md">\nfirst\n</project' in prompt.text
+        f'<project_instructions path="{cwd.resolve() / "AGENTS.md"}">\nfirst\n</project'
+        in prompt.text
     )
     in_order(
         prompt.text,
         "<project_context>",
-        f'path="{world.home.resolve()}/AGENTS.md"',
-        f'path="{cwd.resolve()}/AGENTS.md"',
+        f'path="{world.home.resolve() / "AGENTS.md"}"',
+        f'path="{cwd.resolve() / "AGENTS.md"}"',
         "</project_context>",
     )
 
@@ -159,6 +160,9 @@ def test_a_directory_with_a_context_files_name_is_skipped(world: World) -> None:
     assert files_of(world, assemble(world)) == ["home/CLAUDE.md"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no FIFOs in the file system (os.mkfifo)"
+)
 def test_a_fifo_named_like_a_context_file_is_not_read(world: World) -> None:
     os.mkfifo(world.home / "AGENTS.md")
     write(world.home / "CLAUDE.md", "claude")
@@ -478,7 +482,7 @@ def test_appended_sections_follow_the_base_in_order_and_precede_the_context_file
     write(world.home / "AGENTS.md", "rules")
     prompt = assemble(world, append=("one", "", "two"))
     in_order(prompt.text, "base\n\none\n\ntwo\n\n<project_context>", "rules")
-    assert [s.origin for s in prompt.sources if not s.origin.startswith("/")] == [
+    assert [s.origin for s in prompt.sources if not Path(s.origin).is_absolute()] == [
         "config",
         "flag",
         "flag",
@@ -512,7 +516,7 @@ def test_tau_context_lists_each_part_with_its_origin_and_size(configured: World)
     lines = [line.split(maxsplit=1) for line in result.out.splitlines()]
     rows = {origin: int(size) for size, origin in lines}
     assert rows["flag"] == 4
-    assert rows[f"{configured.home.resolve()}/AGENTS.md"] == 5
+    assert rows[str(configured.home.resolve() / "AGENTS.md")] == 5
     assert list(rows)[:2] == ["base", "flag"]
 
 

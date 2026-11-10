@@ -12,6 +12,15 @@ it names neither). Any other text is a tool's whole name (a name may hold a colo
   the session's working directory and made real (`..`, `//`, `.` and symlinks resolved). A call may
   name several (`grep`'s `path` and `files`): `deny` and `ask` fire if any of them matches, in
   either spelling; `allow` needs every one to match, as resolved.
+- **A rule's directories** are read two ways for `deny` and `ask`: as written (by text:
+  `/x/../etc` is `/etc`) and made real, so a rule about a directory that is a link still meets the
+  paths that land in it (on macOS `/etc` and `/tmp` are links into `/private`: `write:/etc/*`
+  refuses a write to `/etc/x`, which lands on `/private/etc/x`). An `allow` is read only as
+  written, so a link can never widen it: on macOS an allow for `/tmp` is written `/private/tmp/*`.
+- **On macOS** `deny` and `ask` ignore case in a path (`FOLDS`); `allow` does not.
+- **On Windows** a rule may not have a path glob (`read:GLOB` and the other path tools): how a glob
+  meets a Windows path (drive letters, `\\`, names that differ only in case) is not decided
+  (docs/plan.md, Phase 9), so such a rule is refused where it is configured. A bare `TOOL` works.
 - **Searches** (`grep`, `find`) read everything under their root. A search whose root is inside a
   denied pattern is refused. Any other runs with `exclude: [PATTERN]` added to its arguments
   for each deny rule about it, and the tool leaves out the matching files (also through a
@@ -38,6 +47,7 @@ import functools
 import json
 import os
 import re
+import sys
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +67,10 @@ SEARCH_TOOLS = ("grep", "find")
 PATTERN_TOOLS = (BASH, *PATH_TOOLS)
 """The tools a rule may give a glob for."""
 REFUSED = "the user refused this call"
+FOLDS = sys.platform == "darwin"
+"""Whether `deny` and `ask` ignore case in a path: a macOS volume folds case unless it was made
+case-sensitive, so `/Users/me/.SSH/key` is `/Users/me/.ssh/key` there, and a rule that missed it
+would be no guard (an `allow` never folds: a fold can only widen it)."""
 Answer = Literal["yes", "always", "no"]
 Mode = Literal["deny", "allow", "ask"]
 _GLOB_CHARS = re.compile(r"([*?\[])")
@@ -100,6 +114,13 @@ class Call:
     def as_written(self) -> str:
         """What the model wrote where it differs from the path it names, for the question."""
         return ", ".join(w for w, r in zip(self.written, self.resolved, strict=True) if w != r)
+
+
+def _unsaved(call: Call) -> str:
+    """Why `always` saved no rule for `call` (`Rule.exact` gave none)."""
+    if call.resolved and sys.platform == "win32":
+        return "path patterns are not available on Windows yet"
+    return f"this {call.tool} call's arguments are malformed"
 
 
 def _arguments(args_raw: str) -> dict[str, object]:
@@ -151,6 +172,12 @@ class Rule:
                 _compiled(glob)
             except re.error as e:
                 raise ValueError(f"rule {text!r} has an invalid pattern: {e}") from e
+            if sys.platform == "win32":
+                raise ValueError(
+                    f"rule {text!r}: path patterns are not available on Windows yet (how a "
+                    "pattern meets a Windows path is not decided); write the bare tool name, "
+                    f"{tool!r}"
+                )
         return cls(tool, glob)
 
     @classmethod
@@ -162,6 +189,8 @@ class Rule:
         subjects = [call.subject] if call.tool == BASH else list(call.resolved)
         if not subjects or subjects == [None]:
             return [] if call.tool in PATTERN_TOOLS else [cls(call.tool)]
+        if call.tool != BASH and sys.platform == "win32":
+            return []  # no path patterns there (`parse`)
         return [cls(call.tool, _GLOB_CHARS.sub(r"[\1]", str(s))) for s in dict.fromkeys(subjects)]
 
     def __str__(self) -> str:
@@ -178,11 +207,16 @@ class Rule:
         absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
             return bool(call.resolved) and all(_fits(r, absolute) for r in call.resolved)
+        forms = {self.glob, absolute, _real(absolute)}
         seen = (*call.written, *call.resolved)
-        if any(_fits(path, g) for path in seen for g in {self.glob, absolute}):
+        if any(_fits(path, g, FOLDS) for path in seen for g in forms):
             return True
         # An `ask` also fires on a search whose root could hold what the glob matches.
-        return mode == "ask" and call.tool in SEARCH_TOOLS and _searches_under(call, absolute)
+        return (
+            mode == "ask"
+            and call.tool in SEARCH_TOOLS
+            and any(_searches_under(call, g) for g in forms)
+        )
 
     def guards(self, call: Call, mode: Mode) -> bool:
         """Whether a `read` deny with a glob also covers this `grep`: grep reads the files."""
@@ -190,16 +224,19 @@ class Rule:
             mode == "deny" and self.tool == "read" and self.glob is not None and call.tool == "grep"
         )
 
-    def hides_from(self, call: Call) -> str | None:
-        """For a deny rule of a search `call`: the pattern (over real absolute paths) for the
-        files the search must leave out, or `None` if the rule is not about this search. Any
-        search may need it, even one whose root is elsewhere: a link under the root can lead to
-        a denied file. A search whose root is, or is inside, a denied path was already refused."""
+    def hides_from(self, call: Call) -> list[str]:
+        """For a deny rule of a search `call`: the patterns (over real absolute paths) for the
+        files the search must leave out, the rule's directories as written and made real; none if
+        the rule is not about this search. Any search may need them, even one whose root is
+        elsewhere: a link under the root can lead to a denied file. A search whose root is, or is
+        inside, a denied path was already refused."""
         if self.glob is None or call.tool not in SEARCH_TOOLS:
-            return None
+            return []
         if call.tool != self.tool and not self.guards(call, "deny"):
-            return None
-        return glob_regex(_absolute(self.glob, call.cwd))
+            return []
+        absolute = _absolute(self.glob, call.cwd)
+        patterns = [glob_regex(g) for g in dict.fromkeys((absolute, _real(absolute)))]
+        return [f"(?i:{p})" for p in patterns] if FOLDS else patterns
 
 
 _CLASS_ESCAPES = frozenset("\\[]^&~-")
@@ -263,13 +300,14 @@ def _set_members(members: str) -> str:
 
 
 @functools.cache
-def _compiled(glob: str) -> re.Pattern[str]:
-    """`glob` as a pattern; `re.error` if it is not one (a backwards range, `[z-a]`)."""
-    return re.compile(f"(?s:{glob_regex(glob)})")
+def _compiled(glob: str, fold: bool = False) -> re.Pattern[str]:
+    """`glob` as a pattern, ignoring case if `fold`; `re.error` if it is not one (a backwards
+    range, `[z-a]`)."""
+    return re.compile(f"(?s:{glob_regex(glob)})", re.IGNORECASE if fold else 0)
 
 
-def _fits(path: str, glob: str) -> bool:
-    return _compiled(glob).fullmatch(path) is not None
+def _fits(path: str, glob: str, fold: bool = False) -> bool:
+    return _compiled(glob, fold).fullmatch(path) is not None
 
 
 def _absolute(glob: str, cwd: str) -> str:
@@ -290,6 +328,20 @@ def _absolute(glob: str, cwd: str) -> str:
     return os.path.normpath(directory).rstrip("/") + "/" + name + tail
 
 
+def _real(glob: str) -> str:
+    """An absolute `glob` with the directories before its first wildcard made real (symlinks
+    followed, as the paths it is matched against are), so `/etc/*` is `/private/etc/*` on macOS. A
+    glob that starts with a wildcard is left as it is."""
+    if glob[0] in "*?[":
+        return glob
+    cut = _first_wildcard(glob)
+    head, tail = glob[:cut], glob[cut:]
+    if not tail:
+        return os.path.realpath(glob)
+    directory = head[: head.rfind("/") + 1]
+    return os.path.realpath(directory).rstrip("/") + "/" + head[len(directory) :] + tail
+
+
 def _first_wildcard(glob: str) -> int:
     found = _GLOB_CHARS.search(glob)
     return len(glob) if found is None else found.start()
@@ -302,11 +354,13 @@ def _searches_under(call: Call, glob: str) -> bool:
     literal = _GLOB_CHARS.split(glob, maxsplit=1)[0]
     if not literal:
         return False
+    literal = literal.casefold() if FOLDS else literal
     for root in (
         *call.resolved,
         *(os.path.normpath(os.path.join(call.cwd, w)) for w in call.written),
     ):
         inside = root.rstrip("/") + "/"
+        inside = inside.casefold() if FOLDS else inside
         if inside.startswith(literal) or literal.startswith(inside):
             return True
     return False
@@ -351,9 +405,11 @@ def _leave_out(call: CallDraft, patterns: list[str]) -> str | None:
 
 
 def _builtin_tools() -> set[str]:
-    """The names of the tools the built-in extensions provide, loaded or not."""
+    """The names of the tools the built-in extensions provide, loaded or not, and on every
+    platform: `bash` is not on Windows, but a rule for it is no misspelling (one config file may
+    serve several machines)."""
     listed, _ = assemble_tools((), [BaseTools(), Agents()])
-    return {cast("str", getattr(t, "name")) for t in listed}  # noqa: B009
+    return {BASH, *(cast("str", getattr(t, "name")) for t in listed)}  # noqa: B009
 
 
 def _rules(texts: Iterable[str]) -> list[Rule]:
@@ -403,8 +459,7 @@ class Options:
     def exclusions(self, call: Call) -> list[str]:
         """The patterns of the files a `grep` or `find` must leave out: those its `deny` rules
         name that its root holds."""
-        found = (r.hides_from(call) for r in _rules(self.deny))
-        return list(dict.fromkeys(p for p in found if p is not None))
+        return list(dict.fromkeys(p for r in _rules(self.deny) for p in r.hides_from(call)))
 
     def first(self, mode: Mode, call: Call, extra: Iterable[str] = ()) -> Rule | None:
         """The first rule of the list `mode` (and `extra`, for `allow`) that matches `call`."""
@@ -444,10 +499,7 @@ class Permissions:
         if answer == "always":
             exact = Rule.exact(seen)
             if not exact:
-                node.tell(
-                    f"permissions: this {seen.tool} call's arguments are malformed, so no rule "
-                    "was saved; it ran this once"
-                )
+                node.tell(f"permissions: {_unsaved(seen)}, so no rule was saved; it ran this once")
             for rule in exact:
                 self._always(node, str(rule))
         return None if answer in ("yes", "always") else REFUSED

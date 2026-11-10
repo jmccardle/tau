@@ -189,6 +189,15 @@ def ext(world: World, name: str, source: str) -> str:
     return str(path)
 
 
+def child_env(world: World) -> dict[str, str]:
+    """The environment of a `tau` process of its own: the home, a PATH, and on Windows the
+    SYSTEMROOT that Python itself cannot start without."""
+    env = {"HOME": str(world.home), "PATH": os.environ["PATH"]}
+    if sys.platform == "win32":
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return env
+
+
 def p(world: World, *argv: str, stdin: str = "") -> Result:
     return tau(world, "-p", *argv, stdin=stdin)
 
@@ -660,6 +669,19 @@ def test_json_is_a_welcome_then_the_events_the_wire_would_send(configured: World
     assert (welcome.session, welcome.protocol) == (kept, PROTOCOL)
     assert welcome.pid == os.getpid()
     assert welcome.cwd == str(configured.home.resolve())
+    kinds = [event["kind"] for event in events]
+    assert kinds[0] == "CursorView", "the snapshot first"
+    assert "Live" in kinds, "the watched cursor's Live"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Unix domain sockets (tau serve, D21) are not available",
+)
+def test_json_lines_decode_as_a_client_of_the_wire_hears_them(configured: World) -> None:
+    result = p(configured, "--json", "hi")
+    assert result.code == 0, result.err
+    _welcome, *events = objects(result)
     heard = decoded(events)
     # A client's stream keeps one view per cursor and drops the Live it did not ask for: what it
     # decoded is the events' end state, and every line fit the schema or it would have raised.
@@ -667,9 +689,6 @@ def test_json_is_a_welcome_then_the_events_the_wire_would_send(configured: World
     appended = [n for e in heard if isinstance(e, Appended) for n in e.nodes]
     replies = [n.body for n in appended if isinstance(n.body, Body.Assistant)]
     assert [part.text for part in replies[-1].parts] == ["mock: hi"]  # type: ignore[attr-defined]
-    kinds = [event["kind"] for event in events]
-    assert kinds[0] == "CursorView", "the snapshot first"
-    assert "Live" in kinds, "the watched cursor's Live"
     last = [e for e in heard if isinstance(e, CursorView)][-1]
     assert not last.busy
     assert last.ending == Ending.Done()
@@ -823,7 +842,7 @@ def test_a_second_interrupt_leaves_at_once_though_a_hook_never_returns(
     ]
     process = subprocess.Popen(
         command,
-        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        env=child_env(configured),
         cwd=configured.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -875,7 +894,7 @@ def test_a_stop_that_waits_for_a_hook_says_why_and_still_takes_the_message_back(
     extension = ext(configured, "slowhook", source)
     process = subprocess.Popen(
         [sys.executable, "-m", "tau", "-p", "-e", extension, "lost question"],
-        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        env=child_env(configured),
         cwd=configured.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -931,7 +950,7 @@ def test_head_closing_the_pipe_ends_the_process_quietly(world: World) -> None:
     world.user_config(SLOW)
     process = subprocess.Popen(
         [sys.executable, "-m", "tau", "-p", "--json", "hi"],
-        env={"HOME": str(world.home), "PATH": os.environ["PATH"]},
+        env=child_env(world),
         cwd=world.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,

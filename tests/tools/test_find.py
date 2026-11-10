@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from calls import call, err, ok, parse_truncated
+from calls import call, err, ok, parse_truncated, put
 
 from tau import FindTool, Outcome
 
@@ -12,7 +12,7 @@ def touch(root: Path, *names: str) -> None:
     for name in names:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x")
+        put(path, "x")
 
 
 def test_a_glob_without_a_slash_matches_file_names_at_any_depth_sorted(tmp_path: Path) -> None:
@@ -41,8 +41,8 @@ def test_paths_are_relative_to_the_searched_directory(tmp_path: Path) -> None:
 
 
 def test_the_walk_honors_ignore_rules_without_a_git_repository(tmp_path: Path) -> None:
-    (tmp_path / ".gitignore").write_text("gen.rs\nbuild/\n")
-    (tmp_path / ".ignore").write_text("scratch.rs\n")
+    put((tmp_path / ".gitignore"), "gen.rs\nbuild/\n")
+    put((tmp_path / ".ignore"), "scratch.rs\n")
     touch(tmp_path, "gen.rs", "build/out.rs", "scratch.rs", "kept.rs")
     assert call(FindTool(tmp_path), pattern="*.rs") == Outcome.Ok("kept.rs")
 
@@ -57,7 +57,7 @@ def test_hidden_files_and_the_contents_of_hidden_directories_are_listed(tmp_path
 
 
 def test_hidden_files_are_still_subject_to_ignore_files(tmp_path: Path) -> None:
-    (tmp_path / ".gitignore").write_text(".env\n.cache/\n")
+    put((tmp_path / ".gitignore"), ".env\n.cache/\n")
     touch(tmp_path, ".env", ".cache/x.txt", ".env.example")
     assert call(FindTool(tmp_path), pattern=".env*") == Outcome.Ok(".env.example")
 
@@ -71,7 +71,7 @@ def test_the_git_directory_is_never_listed(tmp_path: Path) -> None:
 
 def test_a_nested_gitignore_and_a_negation(tmp_path: Path) -> None:
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / ".gitignore").write_text("*.gen\n!keep.gen\n")
+    put((tmp_path / "pkg" / ".gitignore"), "*.gen\n!keep.gen\n")
     touch(tmp_path, "pkg/a.gen", "pkg/keep.gen")
     assert call(FindTool(tmp_path), pattern="*.gen") == Outcome.Ok("pkg/keep.gen")
 
@@ -88,7 +88,7 @@ def test_directories_are_not_listed_and_symlinks_are_listed_not_followed(tmp_pat
 
 
 def test_a_named_directory_is_searched_even_inside_an_ignored_one(tmp_path: Path) -> None:
-    (tmp_path / ".gitignore").write_text("build/\n")
+    put((tmp_path / ".gitignore"), "build/\n")
     touch(tmp_path, "build/out.rs")
     assert call(FindTool(tmp_path), pattern="*.rs") == Outcome.Ok('No files found matching "*.rs"')
     assert call(FindTool(tmp_path), pattern="*.rs", path="build") == Outcome.Ok("out.rs")

@@ -80,6 +80,7 @@ sys.exit(0)  # the command still runs and its output still arrives
 """
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported (README)")
 def test_exiting_while_bash_streams_progress_ends_cleanly() -> None:
     """The progress thread must not attach to an interpreter that is finalizing."""
     for _ in range(5):
