@@ -474,9 +474,10 @@ def test_the_no_extensions_help_names_every_built_in_that_load_switches(world: W
         [sys.executable, "-m", "tau", "-p", "--help"],
         env=dict(world.environ),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=True,
     )
+    assert helped.stdout.startswith("usage:"), "a pipe takes the help, its τ included (Windows)"
     shown = " ".join(helped.stdout.split())  # argparse wraps the help
     assert switched, "the built-ins are listed"
     for key in switched:

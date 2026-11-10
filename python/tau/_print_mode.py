@@ -23,6 +23,7 @@ not busy. The calls publish their events before they return, and the stream is r
 import asyncio
 import contextlib
 import errno
+import io
 import json
 import os
 import signal
@@ -685,6 +686,19 @@ def pipe_gone(error: OSError) -> bool:
     `EINVAL` a write to a pipe with no reader raises there."""
     windows = sys.platform == "win32" and error.errno == errno.EINVAL
     return isinstance(error, BrokenPipeError) or windows
+
+
+def utf8(stream: TextIO | None) -> TextIO | None:
+    """A process stream that writes UTF-8: on Windows a pipe or a file is the ANSI code page's
+    (cp1252 has no `τ`), which `tau --help > help.txt` or a model's reply cannot be written in.
+    A terminal's stream is left as it is (Windows writes the console in UTF-16), as is one that
+    cannot be reconfigured; Python 3.15 makes UTF-8 the default (PEP 686)."""
+    if stream is None or not issubclass(type(stream), io.TextIOWrapper):
+        return stream
+    with contextlib.suppress(OSError, ValueError):  # a stream already closed
+        if stream.encoding.lower() not in ("utf-8", "utf8") and not stream.isatty():
+            cast("io.TextIOWrapper[io.BufferedWriter]", stream).reconfigure(encoding="utf-8")
+    return stream
 
 
 def reader_gone(out: TextIO) -> bool:
