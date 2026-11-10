@@ -6,8 +6,8 @@ share. A sans-IO Rust core holds the tree and the step algorithm; Python drives 
 providers (any OpenAI-compatible server, Anthropic, Gemini), tools, hooks, extensions and the
 terminal UI live.
 
-**Status: 0.16 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`, hotfixes on
-branch `0.15.x`). Below 1.0, interfaces may change between minor versions.
+**Status: 0.16 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
+1.0, interfaces may change between minor versions.
 
 ## Install
 
