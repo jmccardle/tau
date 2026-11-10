@@ -1,7 +1,10 @@
 """What the examples share: choosing a model from the config, and failing loudly.
 
 Each example is `python examples/X.py [--model NAME]`; copy examples/config.json to
-~/.tau/config.json (or point TAU_HOME at a directory holding it) first.
+~/.tau/config.json (or point TAU_HOME at a directory holding it) first. Its `local` group is
+llama.cpp's `llama-server` at its default address, `http://localhost:8080/v1`: edit `base_url`
+for another server, or pass `--model mock:echo` to run without one. A server that cannot be
+reached is a one-line error naming it, never a fake answer.
 """
 
 import argparse

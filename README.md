@@ -1,35 +1,81 @@
 # τ (tau)
 
-An agent harness. A sans-IO Rust core holds the session tree and the step
-algorithm. Python drives it, and Python is where providers, tools, hooks,
-extensions and frontends live.
+τ is an agent harness: it runs a conversation between you, a language model and tools (read,
+write, edit, grep, find, bash), and keeps every session as a tree you can branch, continue and
+share. A sans-IO Rust core holds the tree and the step algorithm; Python drives it, and is where
+providers (any OpenAI-compatible server, Anthropic, Gemini), tools, hooks, extensions and the
+terminal UI live.
 
-τ 0.16 is codename **Trusty**: **T**au, **Rust**, and you can still see the tail
-of **Py** sticking out. It is a ground-up rewrite of 0.15, which is tag
-`v0.15.0` and is maintained on the `0.15.x` branch.
+**Status: 0.16 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
+1.0, interfaces may change between minor versions.
 
-Status: **0.16 in development.** What exists now:
+## Install
 
-- the library: sessions, cursors, hooks, extensions, providers (OpenAI-compatible,
-  Anthropic, Gemini) and the base tools. `examples/chat.py` is a small frontend;
-- the `tau` command: `tau -p MESSAGE` (send one message, print the answer, exit with a status
-  that says how it ended; `--json` for the events, `--answer` for questions, `--verbose`,
-  `--version`), `config`, `ext`, `sessions`, `export`, `context`, `trust`, and `serve`, which
-  shares a session over a Unix socket with any number of clients (`tau -p` attaches to it);
-- a wire protocol and `RemoteClient` for those clients;
-- the terminal UI: `tau` opens it (Textual, `tau.tui`) on a new, continued or attached session:
-  the transcript with thinking and tool boxes, live text, the editor, `/` commands with a popup,
-  Tab completion and forms for missing arguments, questions as boxes, themes; a cursor bar and
-  switching between cursors, Ctrl+Z to edit the last message, the tree screen (go to a node,
-  open a cursor there, label), the session picker (`tau -r`, Ctrl+O) and Ctrl+N for a new session;
-  `/config` forms (apply to this branch or save for every session), a `/model` picker, a theme
-  picker (Ctrl+P) that remembers your choice, and a window over long sessions;
-- `examples/ratatui`: a chat client of `tau serve` in Rust (its own package; wire types generated
-  from the schema), the first client outside Python.
+τ needs Linux and Python 3.12 or later. The package is `ffwf-tau` and installs the `tau` command:
 
-Start with [`docs/guide/`](docs/guide/README.md): a quickstart, the model, and how to
-write an extension or a frontend.
+```bash
+pip install 'ffwf-tau>=0.16'
+```
 
-- [`docs/design/`](docs/design/): the model, its invariants and the decisions behind them.
-- [`docs/plan.md`](docs/plan.md): the phases and where we are.
-- [`CLAUDE.md`](CLAUDE.md): the rules and commands.
+Until 0.16.0 is on PyPI that finds nothing (plain `ffwf-tau` is 0.15 there); build from a
+checkout instead, which needs a Rust toolchain:
+
+```bash
+git clone https://github.com/jmccardle/tau && cd tau
+python3.12 -m venv .venv
+.venv/bin/pip install -U 'pip>=25.1'      # --group needs pip 25.1
+.venv/bin/pip install --group dev
+VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release
+source .venv/bin/activate
+```
+
+## First run
+
+τ keeps its config and sessions in `$TAU_HOME` (`~/.tau` unless you set it). Name your models in
+`$TAU_HOME/config.json`. This one has a local OpenAI-compatible server, at the address where
+llama.cpp's `llama-server` listens by default, and `mock`, which echoes you and needs no server:
+
+```json
+{
+  "default_model": "local:qwen",
+  "models": {
+    "local": {
+      "base_url": "http://localhost:8080/v1",
+      "models": { "qwen": { "model": "qwen3" } }
+    },
+    "mock": { "provider": "mock", "models": { "echo": { "model": "echo" } } }
+  }
+}
+```
+
+```bash
+tau config check                  # prints nothing when the config is sound
+tau -p -m mock:echo "hello"       # one message, the answer on stdout: "mock: hello"
+tau -p "what is in this directory?"   # the same, with the default model and the tools
+tau                               # the terminal UI
+```
+
+For a hosted model, add `"api_key_env": "NAME_OF_YOUR_KEY_VARIABLE"` to its group: the config
+names the variable and never holds the key. A server that cannot be reached is an error that
+names it.
+
+## Documentation
+
+- [Guides](https://github.com/jmccardle/tau/blob/master/docs/guide/README.md): the quickstart,
+  the terminal UI, the model in ten minutes, configuration, writing an extension, writing a
+  frontend, and the wire protocol of `tau serve`.
+- [Reference](https://github.com/jmccardle/tau/blob/master/docs/reference/README.md): every
+  public name, generated from the docstrings.
+- [Design](https://github.com/jmccardle/tau/tree/master/docs/design): the model, its invariants,
+  and the decisions behind them.
+- [Examples](https://github.com/jmccardle/tau/tree/master/examples): small programs on the
+  library, a chat client of `tau serve` in Rust, and larger exploratory extensions.
+
+## Contributing
+
+`scripts/check.sh` is the whole gate, in the order CI runs it. The rules the code is held to
+are in [`CLAUDE.md`](https://github.com/jmccardle/tau/blob/master/CLAUDE.md).
+
+## License
+
+MIT. See [LICENSE](https://github.com/jmccardle/tau/blob/master/LICENSE).

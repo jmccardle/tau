@@ -1,4 +1,4 @@
-"""The providers that ship with τ next, and the one helper that builds them."""
+"""The providers that ship with τ, and the one helper that builds them."""
 
 from collections.abc import Mapping
 

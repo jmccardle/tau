@@ -172,9 +172,9 @@ def sample(world: World) -> None:
         {
             "models": {
                 "local": {
-                    "base_url": "http://192.168.1.100:8100/v1",
+                    "base_url": "http://llama.test:8100/v1",
                     "api_key": LITERAL,
-                    "models": {"qwen": {"model": "/fast/qwen.gguf"}},
+                    "models": {"qwen": {"model": "/models/qwen.gguf"}},
                 },
                 "hosted": {
                     "api_key_env": "HOSTED_KEY",
@@ -192,8 +192,8 @@ def test_show_prints_each_value_with_its_source_and_group_and_never_a_key(world:
     result = tau(world, "config", "check", "--show", "local:qwen")
     assert result.code == 0
     assert "local:qwen" in result.out.splitlines()
-    assert f"model        /fast/qwen.gguf  [{path}]" in result.out
-    assert f"base_url     http://192.168.1.100:8100/v1  [{path}, group local]" in result.out
+    assert f"model        /models/qwen.gguf  [{path}]" in result.out
+    assert f"base_url     http://llama.test:8100/v1  [{path}, group local]" in result.out
     assert "provider     openai  [default]" in result.out
     assert "api_key      (set)" in result.out
     assert LITERAL not in result.both

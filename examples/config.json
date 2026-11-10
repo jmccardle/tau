@@ -2,10 +2,10 @@
   "default_model": "local:qwen",
   "models": {
     "local": {
-      "base_url": "http://192.168.1.100:8100/v1",
+      "base_url": "http://localhost:8080/v1",
       "models": {
         "qwen": {
-          "model": "/fast/Qwen3.8-27B-absolute-heresy-Q4_K_M.gguf",
+          "model": "qwen3",
           "options": { "extra_body": { "return_progress": true } }
         }
       }
