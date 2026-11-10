@@ -237,6 +237,7 @@ async def test_deny_is_checked_first_then_allow_then_ask(tmp_path: Path) -> None
     await h.close()
 
 
+@PATH_PATTERNS
 @scenario
 async def test_a_deny_refuses_without_asking(tmp_path: Path) -> None:
     reply = calls(call("a", "write", path="/etc/ssh/sshd_config", content="x"))

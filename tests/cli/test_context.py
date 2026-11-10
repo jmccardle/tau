@@ -58,7 +58,7 @@ def write(path: Path, text: str | bytes = "x") -> Path:
     if isinstance(text, bytes):
         path.write_bytes(text)
     else:
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode())  # as given: Windows would write `\n` as CRLF
     return path
 
 

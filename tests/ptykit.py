@@ -103,12 +103,15 @@ class Screen:
         self._drain(seconds)
 
     def close(self) -> None:
-        """End the process if it is still running, reap it, and close the terminal."""
+        """End the process if it is still running, close the terminal, and reap it. The terminal
+        is closed first: on macOS a process exits only once its terminal's unread output has
+        drained, so with output left and nobody reading, a killed process would never be reaped.
+        Reaping has a deadline, so a process that still will not go fails the test, not hangs it."""
         if self.process.poll() is None:
             self.process.kill()
-        self.process.wait()
         with contextlib.suppress(OSError):
             os.close(self.fd)  # closed already, perhaps
+        self.process.wait(timeout=30)
 
     def type(self, keys: str) -> None:
         os.write(self.fd, keys.encode())

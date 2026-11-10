@@ -164,6 +164,13 @@ def test_one_line_longer_than_the_limit_is_cut_on_a_character(
         "\n[line 1 is cut at byte 14; read cannot show the rest (use bash: cut -c or tail -c);"
         " offset=2 continues after it]"
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported (README)")
+def test_one_line_longer_than_the_limit_is_cut_on_a_character_by_bash(
+    tmp_path: Path, overflow: Path
+) -> None:
+    put((tmp_path / "long.txt"), "é" * 100 + "\n")
     tail = parse_truncated(
         ok(call(BashTool(tmp_path, max_output=15, overflow_dir=overflow), command="cat long.txt"))
     )

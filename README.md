@@ -18,9 +18,10 @@ is `ffwf-tau` and installs the `tau` command:
 pip install 'ffwf-tau>=0.16'
 ```
 
-Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, `tau serve`
-and projects (`.tau/`) are not available and say so when used, and its test suite does not yet
-pass in full.
+Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, `tau serve`,
+projects (`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare `read` works) are
+not available and say so when used, and the check that your extension drop-ins are writable by you
+alone is not made. Its test suite runs there with the tests of those skipped, each naming why.
 
 Until 0.16.0 is on PyPI that finds nothing (plain `ffwf-tau` is 0.15 there); build from a
 checkout instead, which needs a Rust toolchain:

@@ -959,7 +959,10 @@ def test_head_closing_the_pipe_ends_the_process_quietly(world: World) -> None:
     try:
         assert process.stdout is not None
         assert process.stderr is not None
-        assert json.loads(process.stdout.readline())["kind"] == "Welcome"
+        first = process.stdout.readline()
+        if json.loads(first or "{}").get("kind") != "Welcome":
+            process.kill()
+            raise AssertionError(f"first line {first!r}; stderr: {process.stderr.read()!r}")
         process.stdout.close()  # `| head -1`
         err = process.stderr.read()
         process.wait(timeout=30)

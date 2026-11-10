@@ -381,9 +381,16 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   to Windows, each an error naming the platform where it is used: the `bash`
   tool (`base_tools()` returns five there), `tau serve` and its clients (the
   wire is a Unix domain socket, which asyncio does not offer on Windows), and
-  projects (D13's owner and mode checks). Open decisions: the Windows shell
-  tool; the Windows transport for `tau serve`; Windows project trust; how
-  path rules (`permissions`) and `@file` read Windows paths.
+  projects (D13's owner and mode checks), and path patterns in permission
+  rules (refused where configured; the bare tool name works). The drop-in
+  check (`require_private`) is not made on Windows. `@file` on Windows: a
+  backslash separates directories and escapes only a space. Open decisions:
+  the Windows shell tool; the Windows transport for `tau serve`; Windows
+  project trust; how permission path patterns meet Windows paths (drive
+  letters, `\`, case); the Windows reading of the drop-in check.
+- macOS: a deny or ask rule's directories are made real too (`/etc` is a link
+  to `/private/etc` there, and `write:/etc/*` missed every write that resolved
+  through it), and deny and ask fold case as the volume does.
 - Not yet green, as of the run that ends this pass (see its report): the
   Windows suite's long tail (tests that write text files with `\n` and read
   them back as `\r\n`, tests that expect `bash` among the base tools, path

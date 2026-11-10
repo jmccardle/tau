@@ -133,6 +133,7 @@ def binary() -> Path:
         capture_output=True,
         text=True,
         check=False,
+        timeout=1200,  # a cold build takes minutes on a CI runner; a stuck one fails here
     )
     assert built.returncode == 0, built.stderr
     return MANIFEST.parent / "target" / "debug" / "tau-ratatui"

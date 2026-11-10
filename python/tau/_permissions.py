@@ -207,16 +207,7 @@ class Rule:
         absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
             return bool(call.resolved) and all(_fits(r, absolute) for r in call.resolved)
-        forms = {self.glob, absolute, _real(absolute)}
-        seen = (*call.written, *call.resolved)
-        if any(_fits(path, g, FOLDS) for path in seen for g in forms):
-            return True
-        # An `ask` also fires on a search whose root could hold what the glob matches.
-        return (
-            mode == "ask"
-            and call.tool in SEARCH_TOOLS
-            and any(_searches_under(call, g) for g in forms)
-        )
+        return _refuses(call, mode, (self.glob, absolute, _real(absolute)))
 
     def guards(self, call: Call, mode: Mode) -> bool:
         """Whether a `read` deny with a glob also covers this `grep`: grep reads the files."""
@@ -237,6 +228,17 @@ class Rule:
         absolute = _absolute(self.glob, call.cwd)
         patterns = [glob_regex(g) for g in dict.fromkeys((absolute, _real(absolute)))]
         return [f"(?i:{p})" for p in patterns] if FOLDS else patterns
+
+
+def _refuses(call: Call, mode: Mode, forms: tuple[str, ...]) -> bool:
+    """Whether a `deny` or `ask` rule whose glob reads as any of `forms` matches `call`: a path
+    in either spelling fits one, or, for an `ask`, a search's root could hold what one matches."""
+    seen = (*call.written, *call.resolved)
+    if any(_fits(path, g, FOLDS) for path in seen for g in forms):
+        return True
+    return (
+        mode == "ask" and call.tool in SEARCH_TOOLS and any(_searches_under(call, g) for g in forms)
+    )
 
 
 _CLASS_ESCAPES = frozenset("\\[]^&~-")
