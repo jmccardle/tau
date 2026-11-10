@@ -193,7 +193,8 @@ jobs:
           "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
           cd "$RUNNER_TEMP"
           "$py" -c "import ${{ matrix.package.import }} as m, sys; print(m.__file__, sys.version)"
-          TAU_TOKENS_FILES=require "$py" -m pytest -q -p no:cacheprovider -rfEs \
+          # -v: a test that hangs or crashes the interpreter is named in the log.
+          TAU_TOKENS_FILES=require "$py" -m pytest -v -p no:cacheprovider -rfEs \
             ${{ matrix.package.pytest }} "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
 
   # The Rust tests (the base tools' own suite among them) on every platform: the

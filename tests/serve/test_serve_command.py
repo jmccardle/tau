@@ -146,7 +146,7 @@ def test_two_d_at_once_start_one_server_and_both_print_it(home: World) -> None:
     existing(home)
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: serve(home, "-d", "--json", "--session", OLD), range(2)))
-    assert [r.code for r in results] == [0, 0], [r.err for r in results]
+    assert [r.code for r in results] == [0, 0], [(r.out, r.err) for r in results]
     records = [record_of(r) for r in results]
     assert records[0]["pid"] == records[1]["pid"], "the loser prints the winner's record"
     assert sorted(bool(r["started"]) for r in records) == [False, True]

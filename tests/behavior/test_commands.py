@@ -183,6 +183,12 @@ async def test_hand_off_to_new_opens_a_cursor_at_the_running_cursors_node(tmp_pa
     await h.settle()
     (new,) = [c for c in h.session.cursors() if c != h.cursor]
     assert told_of == f"sent to cursor {new}"
+    assert len(h.provider.requests) == 1, (
+        "the new cursor stepped",
+        h.notices(),
+        h.session.cursor(new),
+        h.bodies(new),
+    )
     (request,) = h.provider.requests
     sent = h.session.tree.node(request.walk[-1])
     assert sent.body == Body.User("start here")

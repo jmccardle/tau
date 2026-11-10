@@ -22,11 +22,9 @@ not busy. The calls publish their events before they return, and the stream is r
 
 import asyncio
 import contextlib
-import getpass
 import json
 import os
 import signal
-import socket
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -48,7 +46,7 @@ from tau._events import (
     Retrying,
 )
 from tau._launch import AnswerRule, UsageError, message_of
-from tau._open import Opened, open_client
+from tau._open import Opened, client_id, open_client
 from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
@@ -407,11 +405,6 @@ def _outcome(outcome: Outcome) -> str:
             return "interrupted"
 
 
-def client_id() -> str:
-    """`<user>@<host>:print`, the id `-p` is as a client."""
-    return f"{getpass.getuser()}@{socket.gethostname()}:print"
-
-
 async def _send(run: _Run, message: str) -> int:
     """Send the message and wait for the cursor to rest."""
     run.stepped = False
@@ -611,7 +604,7 @@ async def _take_back(run: _Run) -> None:
 async def _main(process: Process, args: object, message: str, piped: str) -> int:
     opened = await open_client(
         args,
-        client=client_id(),
+        client=client_id("print"),
         environ=process.environ,
         cwd=process.cwd,
         model=getattr(args, "model"),  # noqa: B009

@@ -13,9 +13,7 @@ started for it (D23 section 5).
 """
 
 import asyncio
-import getpass
 import os
-import socket
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,7 +22,7 @@ from typing import Protocol, TextIO
 from tau._config_layers import read_models
 from tau._events import CursorView
 from tau._launch import UsageError
-from tau._open import Opened, open_client
+from tau._open import Opened, client_id, open_client
 from tau._project_read import safe_block
 from tau._session_start import start_report
 from tau._sessions import SessionFlags, UnknownSession, list_sessions, sessions_directory
@@ -48,11 +46,6 @@ class Process(Protocol):
     def environ(self) -> Mapping[str, str]: ...
     @property
     def cwd(self) -> Path: ...
-
-
-def client_id() -> str:
-    """`<user>@<host>:tui`, the id the TUI is as a client."""
-    return f"{getpass.getuser()}@{socket.gethostname()}:tui"
 
 
 def chosen_theme(home: Path, given: str | None) -> str | None:
@@ -92,7 +85,7 @@ async def launch(
 ) -> tuple[int, Switch | None]:
     """Open the session, run the app on this loop, close the session; the exit status and where
     the person asked to go next, if they did."""
-    me = client_id()
+    me = client_id("tui")
     opened = await open_client(
         args,
         client=me,
