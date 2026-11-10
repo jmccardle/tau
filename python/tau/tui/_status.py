@@ -12,6 +12,8 @@ In the manner of 0.15's `ExtensionStatusBar` and `WarningsMarker`
 
 from collections.abc import Mapping, Sequence
 
+from rich.console import Group
+from rich.text import Text
 from textual.widgets import Static
 
 from tau._core import Author, Ending, ItemData
@@ -133,6 +135,10 @@ class StatusBar(Static):
         self.text = ""
 
     def show(self, lines: list[str]) -> None:
-        """Set the bar's lines."""
+        """Set the bar's lines. The first (model, state, ending) is cut with `…` where the
+        terminal is narrow, so the bar does not grow; a failure or a shown line wraps, since all
+        of it may matter."""
         self.text = "\n".join(lines)
-        self.update(self.text)
+        head, *rest = lines or [""]
+        cut = Text(head, no_wrap=True, overflow="ellipsis")
+        self.update(Group(cut, *(Text(line) for line in rest)))

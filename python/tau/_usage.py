@@ -9,7 +9,8 @@ has a `price`, and `ctx` when it has a `context_window`. A model with no price s
 never `$0`, and a session total that leaves out replies of an unpriced model ends in `+`.
 `/usage` prints one row per model for the whole session, and a total.
 
-Cost is computed when shown, never stored, from the price in the config now: a reply is priced by
+Cost is computed when shown, never stored, from the price in the config the session started with
+(a corrected price applies from the next start): a reply is priced by
 the model its branch was on at that node (`model(at=node)`), so a model changed mid-walk is priced
 per reply. Money is `Decimal`: prices are decimal numbers such as 0.30 and 3.75, which a float
 cannot hold, and a total of thousands of replies must not drift. Summaries and sub-agents are

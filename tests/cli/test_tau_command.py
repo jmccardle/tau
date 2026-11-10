@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 from dataclasses import replace
@@ -462,3 +463,21 @@ def test_check_show_prints_max_tokens_and_options(world: World) -> None:
     assert result.code == 0
     assert "max_tokens   3  [" in result.out
     assert 'options      {"reply": "a b"}  [' in result.out
+
+
+def test_the_no_extensions_help_names_every_built_in_that_load_switches(world: World) -> None:
+    listed = tau(world, "ext", "list", "--json")
+    assert listed.code == 0, listed.err
+    rows = [json.loads(line) for line in listed.out.splitlines()]
+    switched = [r["key"] for r in rows if r["kind"] == "built-in" and r["state"] != "always"]
+    helped = subprocess.run(
+        [sys.executable, "-m", "tau", "-p", "--help"],
+        env=dict(world.environ),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    shown = " ".join(helped.stdout.split())  # argparse wraps the help
+    assert switched, "the built-ins are listed"
+    for key in switched:
+        assert key in shown, key

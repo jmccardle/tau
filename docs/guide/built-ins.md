@@ -303,9 +303,11 @@ no price, so no cost: local:qwen
 counts: reported only, with byte ceilings for what is not sent yet
 ```
 
-Cost is worked out when you look, from the prices in your config now, so correcting a price
-corrects the whole session. A reply is priced by the model it was sampled with, so a session that
-changed models half way adds up right. The sums are exact, not floating point.
+Cost is worked out when you look, from the prices in the config the session was started with:
+correct a price and start the session again (`tau -c`, `tau -r`), and the whole session is
+priced anew. A reply is priced by the model it was sampled with, so a session that changed models
+half way adds up right. The sums are exact, not floating point. A session made with `--fork`
+starts with a copy of the source's walk, and its `/usage` counts the replies it copied too.
 
 When a reply reads nothing from the prompt cache (the server said `cached: 0`) soon after a reply
 of the same model that should have written it, τ tells you once per model, with the size of the

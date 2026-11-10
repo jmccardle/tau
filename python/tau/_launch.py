@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TextIO
 
 from tau import _permissions
+from tau._extensions import BUILTIN_NAMES
 
 PERMISSIONS = "permissions"
 """The extension whose questions an `--answer` text is matched as a call (`tau._permissions`)."""
@@ -150,8 +151,8 @@ def extension_flags() -> argparse.ArgumentParser:
         "--no-extensions",
         action="store_true",
         help="skip every discovered extension source except -e: no installed package or drop-in "
-        "(the built-ins, agents, attachments, base_tools, compaction, permissions, prune, skills, "
-        "step_limit and usage, still follow `load`)",
+        f"(the built-ins, {', '.join(BUILTIN_NAMES[:-1])} and {BUILTIN_NAMES[-1]}, still follow "
+        "`load`)",
     )
     return flags
 
