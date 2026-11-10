@@ -623,10 +623,12 @@ impl Step {
 
     /// After `post_step`: sync what it wrote, then rest or restart. A step that
     /// ended `Done` with work left (auto-step on and `next != Wait`, or input
-    /// pending) starts the next at once if its cursor moved. If it did not move,
-    /// it would only try the same thing again: auto-step goes off and it rests.
-    /// An item added since the step woke is news from outside and wakes a step
-    /// regardless; that step answers to the same rule.
+    /// pending) starts the next at once if its cursor moved. If it did not move
+    /// and nothing was added since it woke, it would only try the same thing
+    /// again: auto-step goes off and it rests. An item added since the step woke
+    /// is news from outside and wakes a step regardless, auto-step as it is (a
+    /// send that landed after the input position is answered); that step answers
+    /// to the same rule.
     fn after(&mut self, s: &mut Session) {
         s.sync();
         let work = s.next(self.cursor) != Next::Wait
@@ -634,7 +636,8 @@ impl Step {
                 .any(|i| matches!(i.data, ItemData::Input { .. }));
         let changed = s.changes.get(&self.cursor).copied().unwrap_or(0) != self.seen;
         let moved = self.moves(s).next().is_some();
-        let idle = self.ending == Ending::Done && s.auto[&self.cursor] && work && !moved;
+        let idle =
+            self.ending == Ending::Done && s.auto[&self.cursor] && work && !moved && !changed;
         if idle {
             s.auto.insert(self.cursor, false);
         }
