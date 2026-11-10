@@ -578,7 +578,7 @@ def with_branch(home: World, binary: Path) -> Screen:
     # The title alone is drawn while the tree is still being read, and keys are dropped then;
     # the follow state in it says the tree is drawn and takes keys.
     screen.wait_for("The session's tree · following", on_screen=True)
-    # A frame can be read part way (the title, then the rest): the detail pane is the last of it.
+    # A screen can be read part way (the title, then the rest): the detail pane is the last of it.
     screen.wait_for("cursor 0: a walk of", on_screen=True)
     return screen
 

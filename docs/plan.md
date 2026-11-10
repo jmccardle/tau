@@ -391,14 +391,18 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
 - macOS: a deny or ask rule's directories are made real too (`/etc` is a link
   to `/private/etc` there, and `write:/etc/*` missed every write that resolved
   through it), and deny and ask fold case as the volume does.
-- Not yet green, as of the run that ends this pass (see its report): the
-  Windows suite's long tail (tests that write text files with `\n` and read
-  them back as `\r\n`, tests that expect `bash` among the base tools, path
-  spelling in permission rules and attachments, the console's code page);
-  on macOS, permission tests that name `/tmp` and `/etc`, which are symlinks
-  into `/private` there (and a deny rule on `/etc/*` does not match a path that
-  resolves to `/private/etc`: a finding, not yet fixed); and one test on 3.14t
-  that fails on `master` too (`test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step[eager]`).
+- CI on all five platforms (2026-11-10, `publish-draft`): the long tail of
+  the first runs is fixed (line endings, `bash` among the base tools, path
+  spelling, `/tmp` and `/etc` under `/private`, the 3.14t command test). What
+  the runners found since, each fixed with a test: on Windows, no username
+  without `USERNAME` (`getpass` raises there), `EINVAL` for a pipe whose reader
+  went away, cp1252 for a piped or redirected stdout (`tau --help > f` failed
+  on its `τ`; the streams now write UTF-8), the example's POSIX signals; two
+  `tau serve -d` in one process sharing a pending log (aarch64); a send to a
+  cursor that lands after its step's input position, which the rest rule
+  left pending with auto-step off (Windows 3.14t; model.md §6 now says news
+  keeps auto-step). Skipped on Windows with the reason: `tests/tui/test_tree_long.py`
+  (it does not end within faulthandler's 120 s on the runner; why is not known).
 - The docs site, and release notes written from `docs/from-0.15.md`
   (what changed, what was dropped, what comes later). There is no 0.15
   session converter (D9 superseded), and no 0.15 extension shim.
