@@ -71,6 +71,8 @@ DEFAULT_MAX_OVERFLOW = 64 * 1024 * 1024
 DEFAULT_BASH_TIMEOUT_MS = 30_000
 DEFAULT_BASH_MAX_TIMEOUT_MS = 600_000
 DEFAULT_KILL_GRACE_MS = 2_000
+# `bash` runs on Linux and macOS; on Windows `BashTool` raises and `base_tools` leaves it out.
+_BASH_RUNS_HERE = sys.platform in {"linux", "darwin"}
 
 
 class _Engine(Protocol):
@@ -263,10 +265,9 @@ class BashTool(_Described):
         max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
     ) -> None:
-        if not sys.platform.startswith("linux"):
+        if not _BASH_RUNS_HERE:
             raise OSError(
-                f"the bash tool needs Linux (it finds a command's processes in /proc), "
-                f"not {sys.platform}"
+                f"the bash tool is not available on {sys.platform}: it runs on Linux and macOS"
             )
         engine = _core.Bash(
             _working_directory(cwd),
@@ -312,23 +313,28 @@ def base_tools(  # noqa: PLR0913 - the settings the tools share
     bash_kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
 ) -> list[ReadTool | WriteTool | EditTool | GrepTool | FindTool | BashTool]:
     """`read`, `write`, `edit`, `grep`, `find` and `bash`, all working in `cwd` (default: the
-    current directory)."""
-    return [
+    current directory). Where `bash` does not run (Windows), the other
+    five."""
+    tools: list[ReadTool | WriteTool | EditTool | GrepTool | FindTool | BashTool] = [
         ReadTool(cwd, max_output=max_output),
         WriteTool(cwd),
         EditTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
         GrepTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
         FindTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
-        BashTool(
-            cwd,
-            max_output=max_output,
-            overflow_dir=overflow_dir,
-            max_overflow=max_overflow,
-            timeout_ms=bash_timeout_ms,
-            max_timeout_ms=bash_max_timeout_ms,
-            kill_grace_ms=bash_kill_grace_ms,
-        ),
     ]
+    if _BASH_RUNS_HERE:
+        tools.append(
+            BashTool(
+                cwd,
+                max_output=max_output,
+                overflow_dir=overflow_dir,
+                max_overflow=max_overflow,
+                timeout_ms=bash_timeout_ms,
+                max_timeout_ms=bash_max_timeout_ms,
+                kill_grace_ms=bash_kill_grace_ms,
+            )
+        )
+    return tools
 
 
 class BaseTools:

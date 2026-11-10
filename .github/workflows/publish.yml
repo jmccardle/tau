@@ -100,6 +100,9 @@ jobs:
   test:
     name: test ${{ matrix.package.dist }} ${{ matrix.target.name }} py${{ matrix.python }}
     needs: wheels
+    # Each cell tests its own wheel: a target whose build failed fails here, at the
+    # download, and the other targets still run.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false

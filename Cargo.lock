@@ -790,6 +790,7 @@ dependencies = [
  "tau-core",
  "tempfile",
  "tracing",
+ "windows-sys",
 ]
 
 [[package]]
@@ -802,11 +803,13 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "nix",
  "regex-automata",
  "serde",
  "serde_json",
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]

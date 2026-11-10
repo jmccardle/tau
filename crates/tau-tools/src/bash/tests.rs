@@ -2,10 +2,21 @@ use super::*;
 
 /// Starts `sleep 13` in a session of its own and returns once it is there (a
 /// bare `setsid ... &` races with the command's own end), saving its pid.
+#[cfg(target_os = "linux")]
 const LEAVE: &str = "setsid sleep 13 & p=$!; until [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$p\" ]; \
                      do sleep 0.02; done; echo $p > pid;";
+/// macOS has no `setsid(1)`: perl calls setsid(2). `s` in `ps`'s state marks a session leader.
+#[cfg(target_os = "macos")]
+const LEAVE: &str = "perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sleep 13 & p=$!; \
+                     until ps -o stat= -p $p | grep -q s; do sleep 0.02; done; echo $p > pid;";
 
-/// Whether a live process has `marker` in its command line.
+/// A prefix that runs a command in a process group of its own, as `timeout(1)` does
+/// (macOS has no `timeout`).
+#[cfg(target_os = "linux")]
+const OWN_GROUP: &str = "timeout 30";
+#[cfg(target_os = "macos")]
+const OWN_GROUP: &str = "perl -e 'setpgrp(0, 0); exec @ARGV'";
+
 /// A sleep duration, about `30 + tag` seconds, that no other process has: it ends in this
 /// test process's pid, so suites running side by side (other worktrees, CI) cannot see each
 /// other's sleeps. A `tag` for each place in a test that starts one.
@@ -13,11 +24,30 @@ fn unique_sleep(tag: u32) -> String {
     format!("{}.{}", 30 + tag, std::process::id())
 }
 
-/// The part of a command line that is exactly the argument `arg` (NUL-separated on both sides).
-fn exactly(arg: &str) -> String {
-    format!("\0{arg}\0")
+/// Whether a live process has exactly the argument `arg`.
+#[cfg(target_os = "linux")]
+fn running_with(arg: &str) -> bool {
+    // NUL-separated on both sides in /proc/<pid>/cmdline.
+    running(&format!("\0{arg}\0"))
 }
 
+/// Whether a live process has exactly the argument `arg`, as `ps` shows them.
+#[cfg(target_os = "macos")]
+fn running_with(arg: &str) -> bool {
+    let ps = std::process::Command::new("ps")
+        .args(["-axo", "stat=,args="])
+        .output()
+        .unwrap();
+    assert!(ps.status.success(), "{ps:?}");
+    String::from_utf8_lossy(&ps.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let alive = fields.next().is_some_and(|stat| !stat.starts_with('Z'));
+        alive && fields.any(|field| field == arg)
+    })
+}
+
+/// Whether a live process has `marker` in its command line.
+#[cfg(target_os = "linux")]
 fn running(marker: &str) -> bool {
     let want = marker.as_bytes();
     std::fs::read_dir("/proc").unwrap().any(|item| {
@@ -72,12 +102,13 @@ fn output_and_exit_codes() {
 #[test]
 fn runs_in_the_working_directory_with_stdin_closed() {
     let (tool, dir) = tool(10_000);
-    let out = run(&tool, &json!({"command": "pwd; cat | wc -c"})).unwrap();
+    let out = run(&tool, &json!({"command": "pwd; cat | wc -c | tr -d ' '"})).unwrap();
     let expected = dir.path().canonicalize().unwrap();
     assert_eq!(out, format!("{}\n0\n", expected.display()));
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn the_shell_leads_its_own_session_without_a_terminal() {
     let (tool, _dir) = tool(10_000);
     let out = run(&tool, &json!({"command": "cat /proc/$$/stat"})).unwrap();
@@ -88,6 +119,21 @@ fn the_shell_leads_its_own_session_without_a_terminal() {
     assert_eq!(fields[2], pid, "pgrp is the pid: {out}");
     assert_eq!(fields[3], pid, "session is the pid: {out}");
     assert_eq!(fields[4], "0", "no controlling terminal: {out}");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn the_shell_leads_its_own_session_without_a_terminal() {
+    let (tool, _dir) = tool(10_000);
+    let out = run(
+        &tool,
+        &json!({"command": "ps -o pid=,pgid=,tty=,stat= -p $$"}),
+    )
+    .unwrap();
+    let fields: Vec<&str> = out.split_whitespace().collect();
+    assert_eq!(fields[1], fields[0], "pgrp is the pid: {out}");
+    assert_eq!(fields[2], "??", "no controlling terminal: {out}");
+    assert!(fields[3].contains('s'), "a session leader: {out}");
 }
 
 #[test]
@@ -271,15 +317,32 @@ fn end_process(pid: i32) {
         .status();
 }
 
-/// Whether the process ends within two seconds. A killed process whose parent
-/// is gone stays a zombie in /proc until init reaps it; a zombie is gone.
+/// Whether `pid` is a live process. A killed process whose parent is gone stays a
+/// zombie until init reaps it; a zombie is not alive.
+#[cfg(target_os = "linux")]
+fn alive(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.contains(") Z "),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn alive(pid: i32) -> bool {
+    let ps = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&ps.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
+/// Whether the process ends within two seconds.
 fn gone(pid: i32) -> bool {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let alive = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => !stat.contains(") Z "),
-            Err(_) => false,
-        };
+        let alive = alive(pid);
         if !alive {
             return true;
         }
@@ -292,27 +355,27 @@ fn gone(pid: i32) -> bool {
 
 #[test]
 fn processes_that_moved_to_their_own_group_are_killed_with_the_session() {
-    // timeout(1) puts itself and its child in a group of their own.
+    // timeout(1) puts itself and its child in a group of their own (see OWN_GROUP).
     let (tool, _dir) = tool(10_000);
     let (first, second) = (unique_sleep(1), unique_sleep(2));
     let out = run(
         &tool,
-        &json!({"command": format!("timeout 30 sleep {first} & echo ok")}),
+        &json!({"command": format!("{OWN_GROUP} sleep {first} & echo ok")}),
     )
     .unwrap();
     assert_eq!(out, "ok\n");
     assert!(
-        !running(&exactly(&first)),
+        !running_with(&first),
         "a process of the session survived"
     );
     let err = run(
         &tool,
-        &json!({"command": format!("timeout 30 sleep {second}; echo after"), "timeout": 300}),
+        &json!({"command": format!("{OWN_GROUP} sleep {second}; echo after"), "timeout": 300}),
     )
     .unwrap_err();
     assert!(err.0.contains("timed out after 300 ms"), "{err}");
     assert!(
-        !running(&exactly(&second)),
+        !running_with(&second),
         "a process of the session survived"
     );
 }
@@ -333,7 +396,7 @@ fn killing_right_after_start_works_every_time() {
         "{:?}",
         started.elapsed()
     );
-    assert!(!running(&exactly(&sleep)), "a command survived its kill");
+    assert!(!running_with(&sleep), "a command survived its kill");
 }
 
 #[test]
@@ -350,7 +413,7 @@ fn dropping_right_after_start_is_prompt_and_kills() {
             dropped.elapsed()
         );
     }
-    assert!(!running(&exactly(&sleep)), "a command survived its drop");
+    assert!(!running_with(&sleep), "a command survived its drop");
 }
 
 #[test]

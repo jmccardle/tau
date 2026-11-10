@@ -8,7 +8,14 @@
 //! `edit` (its diff), `grep`, `find` and `bash` limit their output through [`limit::Sink`]:
 //! past the limit the full output goes to an overflow file and the model gets the kept
 //! text plus a note. `read` uses a sink that saves nothing (the file it reads is on disk).
+//!
+//! Platforms. Everything builds on Linux, macOS and Windows. `bash` runs on Linux and
+//! macOS; elsewhere [`bash::Bash::new`] is an error naming the platform (`bash_unavailable.rs`).
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod bash;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[path = "bash_unavailable.rs"]
 pub mod bash;
 pub(crate) mod diff;
 pub mod edit;
@@ -17,6 +24,7 @@ pub mod grep;
 pub mod limit;
 pub mod progress;
 pub mod read;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod session;
 pub(crate) mod walk;
 pub mod write;
@@ -138,12 +146,17 @@ impl Limits {
 
     /// The overflow directory when none is chosen: `$XDG_RUNTIME_DIR/tau` (private
     /// to the user, cleared at logout) if that is set, else `<temp dir>/tau-<euid>`.
+    /// On Windows `<temp dir>\tau`: the temp directory there is the user's own.
     #[must_use]
     pub fn default_dir() -> PathBuf {
-        match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        #[cfg(unix)]
+        let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
             Some(runtime) => PathBuf::from(runtime).join("tau"),
             None => std::env::temp_dir().join(format!("tau-{}", nix::unistd::Uid::effective())),
-        }
+        };
+        #[cfg(windows)]
+        let dir = std::env::temp_dir().join("tau");
+        dir
     }
 
     /// A limit with a cap that no test reaches by accident.

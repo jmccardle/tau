@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::Signal;
-use nix::sys::wait::{Id, WaitPidFlag, waitid};
 use nix::unistd::Pid;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -138,7 +137,7 @@ impl Bash {
     #[must_use]
     pub fn start(&self, args_raw: &str) -> BashRun {
         match self.spawn(args_raw) {
-            Ok(running) => BashRun(Inner::Running(running)),
+            Ok(running) => BashRun(Inner::Running(Box::new(running))),
             Err(e) => BashRun(Inner::Failed(e)),
         }
     }
@@ -219,7 +218,7 @@ pub struct BashRun(Inner);
 #[derive(Debug)]
 enum Inner {
     Failed(ToolError),
-    Running(Running),
+    Running(Box<Running>),
 }
 
 /// What the threads of one `wait` share, under one lock.
@@ -417,15 +416,7 @@ impl Running {
     /// group, then reap it.
     fn reap(&self, mut child: Child) {
         let _guard = ReapGuard(self);
-        let waited = loop {
-            match waitid(
-                Id::Pid(self.pgid),
-                WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT,
-            ) {
-                Err(Errno::EINTR) => {}
-                other => break other.map(|_| ()),
-            }
-        };
+        let waited = session::wait_exited(self.pgid);
         let mut ctl = lock(&self.ctl);
         self.signal(&mut ctl, Signal::SIGKILL);
         let status = child.wait().map_err(|e| e.to_string());

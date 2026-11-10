@@ -14,6 +14,13 @@ fn run<C: AsRef<[u8]>>(keep: Keep, max: usize, chunks: &[C]) -> (String, tempfil
     (sink.finish().text, dir)
 }
 
+fn symlink_dir(real: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(real, link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(real, link).unwrap();
+}
+
 fn overflow_of(dir: &tempfile::TempDir) -> Vec<u8> {
     let mut files: Vec<_> = fs::read_dir(dir.path().join("tau")).unwrap().collect();
     assert_eq!(files.len(), 1);
@@ -163,6 +170,7 @@ fn a_zero_limit_is_refused() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_directory_is_private_and_the_file_is_0600() {
     use std::os::unix::fs::PermissionsExt;
     let (_text, dir) = run(Keep::Head, 5, &[b"too long for five"]);
@@ -179,6 +187,7 @@ fn the_directory_is_private_and_the_file_is_0600() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_directory_open_to_others_is_refused_when_the_file_is_needed() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -197,14 +206,17 @@ fn a_symlink_as_the_directory_is_refused_when_the_file_is_needed() {
     let real = dir.path().join("real");
     fs::create_dir(&real).unwrap();
     let link = dir.path().join("link");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
+    symlink_dir(&real, &link);
     let text = unsaved_note(&Limits::in_dir(4, link).unwrap());
     assert!(text.contains("is a symlink"), "{text}");
     assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
 }
 
 #[test]
+#[cfg(unix)]
 fn a_directory_of_another_user_is_refused_by_the_check_on_the_open_directory() {
+    use super::unix::dir_problem;
+    use nix::unistd::Uid;
     // `dir_problem` is what the open directory's fstat is judged by; a
     // squatter's directory differs from ours in the owner.
     let ours = Uid::effective().as_raw();
@@ -218,10 +230,11 @@ fn files_older_than_a_day_go_when_the_directory_is_opened() {
     let dir = tempfile::tempdir().unwrap();
     let tau = dir.path().join("tau");
     fs::create_dir(&tau).unwrap();
+    #[cfg(unix)]
     fs::set_permissions(&tau, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let aged = |name: &str, age: Duration| {
         let file = File::create(tau.join(name)).unwrap();
-        file.set_modified(SystemTime::now() - age).unwrap();
+        file.set_modified(std::time::SystemTime::now() - age).unwrap();
     };
     aged("old00000.out", Duration::from_secs(2 * 24 * 60 * 60));
     aged("new00000.out", Duration::from_secs(60 * 60));
@@ -245,7 +258,9 @@ fn files_older_than_a_day_go_when_the_directory_is_opened() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_default_directory_follows_xdg_runtime_dir_or_the_temp_dir() {
+    use nix::unistd::Uid;
     // Reads the environment of this test process; it sets nothing.
     let dir = Limits::default_dir();
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
@@ -313,4 +328,28 @@ fn finish_reports_the_lines_kept() {
     let finished = sink.finish();
     assert!(finished.truncated);
     assert_eq!(finished.kept_lines, 2);
+}
+
+#[test]
+#[cfg(windows)]
+fn the_default_directory_is_in_the_temp_dir() {
+    assert_eq!(Limits::default_dir(), std::env::temp_dir().join("tau"));
+}
+
+#[test]
+#[cfg(windows)]
+fn a_directory_shared_with_everyone_is_refused_when_the_file_is_needed() {
+    // `icacls` is part of Windows: grant Everyone (S-1-1-0) read access.
+    let dir = tempfile::tempdir().unwrap();
+    let open = dir.path().join("open");
+    fs::create_dir(&open).unwrap();
+    let granted = std::process::Command::new("icacls")
+        .arg(&open)
+        .args(["/grant", "*S-1-1-0:(R)"])
+        .output()
+        .unwrap();
+    assert!(granted.status.success(), "{granted:?}");
+    let text = unsaved_note(&Limits::in_dir(4, open.clone()).unwrap());
+    assert!(text.contains("grants access to S-1-1-0"), "{text}");
+    assert_eq!(fs::read_dir(&open).unwrap().count(), 0, "no fallback file");
 }

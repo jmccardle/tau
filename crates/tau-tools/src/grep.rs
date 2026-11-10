@@ -478,6 +478,9 @@ mod tests {
     }
 
     #[test]
+    // Unix only: the pattern is an absolute path, and how a pattern meets a Windows path
+    // (drive letter, backslashes) is not decided yet (docs/plan.md, Phase 9).
+    #[cfg(unix)]
     fn exclude_leaves_files_out_by_path_or_by_the_link_target_and_says_so() {
         let (tool, dir) = setup(10_000);
         let root = dir.path().canonicalize().unwrap();
