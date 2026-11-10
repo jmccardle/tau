@@ -55,7 +55,8 @@ mv "$T"/*.profraw "$T/prof-rust/"
 
 echo "== python tests against the instrumented cdylib"
 "$BIN/maturin" develop --locked
-"$PY" -m pytest -q tests
+# The main wheel only: tau_tokens is another module, and its crate is covered by the Rust tests above.
+"$PY" -m pytest -q -m "not tokenizers" tests
 report py
 
 echo "== merged"

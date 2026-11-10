@@ -18,6 +18,7 @@ Written under tests/fixtures/tokens/:
 import hashlib
 import json
 import platform
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -27,10 +28,10 @@ import jinja2
 import tiktoken
 import tokenizers
 import transformers
-import transformers.utils.chat_template_utils as chat_template_utils
 from tokenizers import AddedToken, Regex, Tokenizer, models, normalizers, pre_tokenizers, trainers
 from tokens_goldens import ARTIFACTS, FIXTURES, artifact_dir
 from transformers import AutoTokenizer
+from transformers.utils import chat_template_utils
 
 # The time every `strftime_now` reads while the references are made; the tests pass the same.
 NOW = (2026, 11, 10, 9, 30, 0)
@@ -75,7 +76,12 @@ def whitespace_text() -> str:
     spaces += "\u2005\u2006\u2007\u2008\u2009\u200a\u200b\u2028\u2029\u202f\u205f\u3000\ufeff"
     parts = [f"a{c}b{c}{c}c {c} d{c}\n{c}e" for c in spaces]
     runs = ["x" + " " * n + "y" for n in range(1, 34)] + ["x" + "\n" * n + "y" for n in range(1, 9)]
-    runs += ["x" + "\t" * n + "y" for n in range(1, 6)] + ["a \n b", "a\n \nb", "a\r\n\r\nb", "a \r\n"]
+    runs += ["x" + "\t" * n + "y" for n in range(1, 6)] + [
+        "a \n b",
+        "a\n \nb",
+        "a\r\n\r\nb",
+        "a \r\n",
+    ]
     runs += ["trailing   ", "   leading", " \n ", "\n\n\n", "    def f():\n        return 1\n"]
     return "|".join(parts) + "\n" + "|".join(runs)
 
@@ -99,12 +105,12 @@ def hand_texts() -> dict[str, str]:
             "'ve 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D"
         ),
         "python": (
-            "import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n"
+            'import os\nfrom typing import Any\n\n\nclass Counter:\n    """Counts things."""\n\n'
             "    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n"
             "    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in "
             "enumerate(items):\n            if item is None or not item:\n                continue\n"
             "            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\n"
-            "if __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", "
+            'if __name__ == "__main__":\n    print(f"{Counter().add(1, 2, 3):>8.2f}", '
             "os.environ.get('HOME', '~'))\n"
         ),
         "rust": (
@@ -112,13 +118,21 @@ def hand_texts() -> dict[str, str]:
             "impl<'a> Piece<'a> {\n    pub fn len(&self) -> usize {\n        self.text.chars()"
             ".filter(|c| !c.is_whitespace()).count()\n    }\n}\n\nfn main() -> Result<(), Box<dyn "
             "std::error::Error>> {\n    let v: Vec<u32> = (1..=10).map(|x| x * x).collect();\n"
-            "    println!(\"{v:?} {:#x} {:>5.1}\", 255u8, 2.5f64);\n    Ok(())\n}\n"
+            '    println!("{v:?} {:#x} {:>5.1}", 255u8, 2.5f64);\n    Ok(())\n}\n'
         ),
         "json": json.dumps(
-            {"id": 17, "tags": ["a", "b"], "ratio": 0.25, "nested": {"ok": True, "none": None},
-             "text": "line\nbreak \"quoted\" \\ slash", "unicode": "café 日本"},
+            {
+                "id": 17,
+                "tags": ["a", "b"],
+                "ratio": 0.25,
+                "nested": {"ok": True, "none": None},
+                "text": 'line\nbreak "quoted" \\ slash',
+                "unicode": "café 日本",
+            },
             indent=2,
-        ) + "\n" + json.dumps([{"k": i, "v": [i, i * 1.5, str(i)]} for i in range(6)]),
+        )
+        + "\n"
+        + json.dumps([{"k": i, "v": [i, i * 1.5, str(i)]} for i in range(6)]),
         "markdown": (
             "# Title\n\n## Sub-title\n\n- item one\n- item **two** with `code` and [a link]"
             "(https://example.com/path?q=1&r=2#frag)\n  - nested item\n1. first\n2. second\n\n"
@@ -220,7 +234,9 @@ def tiny_bytelevel(training: list[str]) -> Tokenizer:
     tokenizer.train_from_iterator(training, trainer)
     tokenizer.add_special_tokens([special("<|im_start|>"), special("<|im_end|>")])
     tokenizer.add_special_tokens([special("<|rs|>", rstrip=True), special("<|ls|>", lstrip=True)])
-    tokenizer.add_tokens([AddedToken("<think>", normalized=False), AddedToken("</think>", normalized=False)])
+    tokenizer.add_tokens(
+        [AddedToken("<think>", normalized=False), AddedToken("</think>", normalized=False)]
+    )
     tokenizer.add_tokens([AddedToken("WORD", single_word=True, normalized=False)])
     return tokenizer
 
@@ -229,7 +245,9 @@ def tiny_metaspace(training: list[str]) -> Tokenizer:
     """BPE over Metaspace that marks only the first word of the text, with a normalizer: the
     one pipeline where a piece tokenizes differently at the start of the text."""
     tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
-    tokenizer.normalizer = normalizers.Sequence([normalizers.NFKC(), normalizers.Replace("``", '"')])
+    tokenizer.normalizer = normalizers.Sequence(
+        [normalizers.NFKC(), normalizers.Replace("``", '"')]
+    )
     tokenizer.pre_tokenizer = pre_tokenizers.Metaspace(replacement="▁", prepend_scheme="first")
     trainer = trainers.BpeTrainer(vocab_size=TINY_VOCAB, special_tokens=["<unk>", "<s>", "</s>"])
     tokenizer.train_from_iterator(training, trainer)
@@ -247,7 +265,9 @@ def tiny_wordpiece(training: list[str]) -> Tokenizer:
         vocab_size=TINY_VOCAB, special_tokens=["[UNK]", "[CLS]", "[SEP]"]
     )
     tokenizer.train_from_iterator(training, trainer)
-    tokenizer.add_tokens([AddedToken("tokenizers", normalized=True), AddedToken("[Tool]", normalized=True)])
+    tokenizer.add_tokens(
+        [AddedToken("tokenizers", normalized=True), AddedToken("[Tool]", normalized=True)]
+    )
     return tokenizer
 
 
@@ -266,20 +286,32 @@ def tiny_split(training: list[str]) -> Tokenizer:
     )
     tokenizer.train_from_iterator(training, trainer)
     tokenizer.add_special_tokens(
-        [special(t) for t in ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"]]
+        [
+            special(t)
+            for t in ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"]
+        ]
     )
     return tokenizer
 
 
 TINY = {
-    "bytelevel": (tiny_bytelevel, ["<|im_start|>", "<|im_end|>", "<|rs|>", "<|ls|>", "<think>", "</think>", "WORD"]),
+    "bytelevel": (
+        tiny_bytelevel,
+        ["<|im_start|>", "<|im_end|>", "<|rs|>", "<|ls|>", "<think>", "</think>", "WORD"],
+    ),
     "metaspace": (tiny_metaspace, ["<s>", "</s>", "[INST]", "[/INST]", "<unk>"]),
-    "wordpiece": (tiny_wordpiece, ["[CLS]", "[SEP]", "tokenizers", "[Tool]", "[tool]", "TOKENIZERS"]),
-    "split": (tiny_split, ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"]),
+    "wordpiece": (
+        tiny_wordpiece,
+        ["[CLS]", "[SEP]", "tokenizers", "[Tool]", "[tool]", "TOKENIZERS"],
+    ),
+    "split": (
+        tiny_split,
+        ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"],
+    ),
 }
 
 
-def framed(texts: dict[str, str], marks: list[str]) -> list[str]:
+def marked(texts: dict[str, str], marks: list[str]) -> list[str]:
     """Texts with a tokenizer's added tokens in them, the way a rendered request has them: at
     the start, between messages, touching words, next to spaces, doubled."""
     a, b = marks[0], marks[1]
@@ -292,18 +324,25 @@ def framed(texts: dict[str, str], marks: list[str]) -> list[str]:
     return out
 
 
-def tiny_goldens(texts: dict[str, str]) -> dict[str, Any]:
+def tiny_goldens(texts: dict[str, str], retrain: bool) -> dict[str, Any]:
+    """The tiny tokenizers' cases. A tokenizer that is checked in is read, not trained again
+    (training WordPiece does not give the same file twice); `retrain` trains them all anew."""
     training = [t for k, t in texts.items() if k not in ("bmp-sample", "astral-sample")] * 3
     cases: dict[str, Any] = {}
     for name, (build, marks) in TINY.items():
-        tokenizer = build(training)
-        (FIXTURES / "tiny").mkdir(exist_ok=True)
-        tokenizer.save(str(FIXTURES / "tiny" / f"{name}.json"))
-        every = list(texts.values()) + framed(texts, marks)
+        path = FIXTURES / "tiny" / f"{name}.json"
+        if retrain or not path.exists():
+            path.parent.mkdir(exist_ok=True)
+            build(training).save(str(path))
+        tokenizer = Tokenizer.from_file(str(path))
+        every = list(texts.values()) + marked(texts, marks)
         cases[name] = {
             "vocab": tokenizer.get_vocab_size(with_added_tokens=True),
             "marks": marks,
-            "cases": [{"text": t, **counted(tokenizer.encode(t, add_special_tokens=False).ids)} for t in every],
+            "cases": [
+                {"text": t, **counted(tokenizer.encode(t, add_special_tokens=False).ids)}
+                for t in every
+            ],
         }
     return cases
 
@@ -317,7 +356,9 @@ def template_of(directory: Path) -> Any:
     jinja = directory / "chat_template.jinja"
     if jinja.exists():
         return jinja.read_text(encoding="utf-8")
-    return json.loads((directory / "tokenizer_config.json").read_text(encoding="utf-8"))["chat_template"]
+    return json.loads((directory / "tokenizer_config.json").read_text(encoding="utf-8"))[
+        "chat_template"
+    ]
 
 
 def config_tokens(directory: Path) -> dict[str, str]:
@@ -348,7 +389,11 @@ def render_reference(template: Any, tokens: dict[str, str], request: dict[str, A
     templates of a config), as `apply_chat_template` does it."""
     if isinstance(template, list):
         named = {t["name"]: t["template"] for t in template}
-        template = named["tool_use"] if request["tools"] is not None and "tool_use" in named else named["default"]
+        template = (
+            named["tool_use"]
+            if request["tools"] is not None and "tool_use" in named
+            else named["default"]
+        )
     rendered, _ = chat_template_utils.render_jinja_template(
         conversations=[json.loads(json.dumps(request["messages"]))],
         tools=request["tools"],
@@ -364,7 +409,14 @@ def attempt(render: Any) -> tuple[str | None, str | None]:
     refuse (`raise_exception`) or fail on a request it was not written for; both are a result."""
     try:
         return render(), None
-    except (jinja2.TemplateError, TypeError, ValueError, KeyError, AttributeError, IndexError) as err:
+    except (
+        jinja2.TemplateError,
+        TypeError,
+        ValueError,
+        KeyError,
+        AttributeError,
+        IndexError,
+    ) as err:
         return None, f"{type(err).__name__}: {err}"[:200]
 
 
@@ -403,7 +455,10 @@ def artifact_requests(
 
 
 def artifact_goldens(
-    artifact: dict[str, Any], texts: dict[str, str], conversations: dict[str, Any], dump: Path | None
+    artifact: dict[str, Any],
+    texts: dict[str, str],
+    conversations: dict[str, Any],
+    dump: Path | None,
 ) -> dict[str, Any] | None:
     directory = artifact_dir(artifact)
     if not (directory / "tokenizer_config.json").exists():
@@ -424,7 +479,9 @@ def artifact_goldens(
         for key, text in texts.items():
             ids = raw.encode(text, add_special_tokens=False).ids
             served = tokenizer(text, add_special_tokens=False)["input_ids"]
-            out["texts"][key] = counted(ids) | ({} if ids == served else {"transformers": counted(served)})
+            out["texts"][key] = counted(ids) | (
+                {} if ids == served else {"transformers": counted(served)}
+            )
     out["requests"] = artifact_requests(artifact, tokenizer, conversations, dump)
     return out
 
@@ -439,7 +496,9 @@ def template_goldens(conversations: dict[str, Any]) -> dict[str, Any]:
         for conversation in conversations["conversations"]:
             request = request_of(conversation, conversations["tools"])
             rendered, why = attempt(lambda r=request, s=source: render_reference(s, tokens, r))
-            out[path.stem][conversation["name"]] = {"error": why} if rendered is None else {"rendered": rendered}
+            out[path.stem][conversation["name"]] = (
+                {"error": why} if rendered is None else {"rendered": rendered}
+            )
     return out
 
 
@@ -450,7 +509,9 @@ def request_texts(conversations: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for conversation in conversations["conversations"]:
         request = request_of(conversation, conversations["tools"])
-        text = {k: json.dumps(request[k], ensure_ascii=False) for k in ("messages", "tools", "extra")}
+        text = {
+            k: json.dumps(request[k], ensure_ascii=False) for k in ("messages", "tools", "extra")
+        }
         out.append(
             {
                 "name": conversation["name"],
@@ -469,7 +530,7 @@ def write(name: str, data: Any) -> None:
     print(f"generate: wrote tests/fixtures/tokens/{name} ({len(text.encode())} bytes)")
 
 
-def generate(dump: Path | None) -> int:
+def generate(dump: Path | None, retrain_tiny: bool) -> int:
     chat_template_utils.datetime = FixedClock  # what `strftime_now` calls `.now()` on
     texts = corpus()
     conversations = json.loads((FIXTURES / "conversations.json").read_text(encoding="utf-8"))
@@ -481,9 +542,15 @@ def generate(dump: Path | None) -> int:
             artifacts[artifact["name"]] = golden
     write("texts.json", texts)
     write("requests.json", request_texts(conversations))
-    write("templates.json", {"now": list(NOW), "tokens": {"bos_token": "<s>", "eos_token": "</s>"},
-                             "templates": template_goldens(conversations)})
-    write("tiny/cases.json", tiny_goldens(texts))
+    write(
+        "templates.json",
+        {
+            "now": list(NOW),
+            "tokens": {"bos_token": "<s>", "eos_token": "</s>"},
+            "templates": template_goldens(conversations),
+        },
+    )
+    write("tiny/cases.json", tiny_goldens(texts, retrain_tiny))
     write(
         "goldens.json",
         {
@@ -500,3 +567,90 @@ def generate(dump: Path | None) -> int:
         },
     )
     return 0
+
+
+# ---- the sweep ----------------------------------------------------------------------------
+# Not a test and nothing it prints is checked in: a wider comparison than the goldens, to run
+# when a dependency changes (the regex engine, `tokenizers`, a tiktoken table).
+
+
+def sweep_texts(marks: list[str], seed: int, rounds: int) -> list[str]:
+    """Every code point (surrogates aside) in a setting that puts it next to a letter, a space,
+    a digit, a line break and itself, sixteen to a text; then `rounds` random mixtures."""
+    points = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
+    texts = [
+        " ".join(f"x{c}y {c}{c}\n{c}1{c}" for c in points[i : i + 16])
+        for i in range(0, len(points), 16)
+    ]
+    rng = random.Random(seed)
+    words = " ".join(hand_texts().values()).split(" ")
+    spaces = [
+        " ",
+        "  ",
+        "   ",
+        "\n",
+        "\n\n",
+        "\t",
+        "\r\n",
+        " \n",
+        "\n ",
+        "\u00a0",
+        "\u3000",
+        "\u200b",
+        "",
+    ]
+    for _ in range(rounds):
+        parts = []
+        for _ in range(rng.randint(1, 30)):
+            kind = rng.random()
+            if kind < 0.6:
+                parts.append(rng.choice(words))
+            elif kind < 0.7 and marks:
+                parts.append(rng.choice(marks))
+            elif kind < 0.9:
+                parts.append("".join(rng.choice(points[:0x3000]) for _ in range(rng.randint(1, 4))))
+            else:
+                parts.append(str(rng.randint(0, 10 ** rng.randint(1, 12))))
+            parts.append(rng.choice(spaces))
+        texts.append("".join(parts))
+    return texts
+
+
+def sweep_one(name: str, reference: Any, ours: Any, texts: list[str]) -> int:
+    """Compare two encoders on every text; print the first few that differ. Returns how many."""
+    differing = 0
+    for text in texts:
+        expected = reference(text)
+        if ours.encode(text) != expected or ours.count(text) != len(expected):
+            differing += 1
+            if differing <= 5:
+                print(f"  {name}: differs on {text[:80]!r}")
+    print(f"sweep: {name}: {len(texts)} texts, {differing} differ")
+    return differing
+
+
+def sweep(seed: int, rounds: int) -> int:
+    """`tau_tokens` against the references on every code point and on random text, for the two
+    embedded encodings and every tokenizer.json that was fetched. Needs `tau_tokens` installed
+    beside the reference packages."""
+    import tau_tokens  # noqa: PLC0415  (only this command needs the wheel under test)
+
+    differing = 0
+    for name in ENCODINGS:
+        encoding = tiktoken.get_encoding(name)
+        texts = sweep_texts([], seed, rounds)
+        differing += sweep_one(
+            name, encoding.encode_ordinary, tau_tokens.Tokenizer.tiktoken(name), texts
+        )
+    for artifact in json.loads(ARTIFACTS.read_text(encoding="utf-8"))["artifacts"]:
+        path = artifact_dir(artifact) / "tokenizer.json"
+        if not artifact["count"] or not path.exists():
+            continue
+        raw = Tokenizer.from_file(str(path))
+        raw.no_truncation()
+        raw.no_padding()
+        marks = [t.content for t in raw.get_added_tokens_decoder().values()][:40]
+        ours = tau_tokens.Tokenizer.from_json(path.read_bytes())
+        reference = lambda text, raw=raw: raw.encode(text, add_special_tokens=False).ids  # noqa: E731
+        differing += sweep_one(artifact["name"], reference, ours, sweep_texts(marks, seed, rounds))
+    return 1 if differing else 0

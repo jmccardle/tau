@@ -144,7 +144,7 @@ pub fn verdict(pairs: &[Pair]) -> Verdict {
         let residual = i128::from(pair.reported) - i128::from(pair.counted);
         let large = pair.counted >= LARGE_PAIR;
         let seen = groups
-            .entry(pair.group.as_str())
+            .entry(pair.group.as_str()) // rules: allow(entry): HashMap API
             .or_insert((residual, 0, false));
         if seen.0 != residual {
             return Verdict::Dropped;

@@ -131,3 +131,15 @@ id = "diagnostics"
 title = "Tracing"
 reader = "One timeline across Rust and Python, for finding where time goes."
 names = ["trace.capture", "trace.span", "trace.start", "trace.stop"]
+
+# The tokenizer wheel (D26 §7.1). One caller, the `tokens` extension; listed so that a change to
+# what it calls is a diff in surface.txt.
+[[group]]
+id = "tokenizers"
+package = "tau_tokens"
+title = "Tokenizers"
+reader = "`tau_tokens`, the wheel `ffwf-tau-tokens`: tokenizers, chat templates and the tokenizer catalogue, for the `tokens` extension. Bytes in, counts out."
+names = [
+    "__version__", "Tokenizer", "ChatTemplate", "TokenizerError", "TemplateError", "IdentityError",
+    "parse_identity", "catalogue", "candidates", "verdict",
+]

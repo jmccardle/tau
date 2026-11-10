@@ -26,6 +26,7 @@ mod error;
 mod identity;
 mod memo;
 mod now;
+mod pyjinja;
 mod pytext;
 mod template;
 mod tokenizer;

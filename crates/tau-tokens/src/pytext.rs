@@ -89,6 +89,16 @@ fn printable(c: char) -> bool {
     pair.escape_debug().count() == 2
 }
 
+/// A character `repr` does not print as itself, as `\xNN`, `\uNNNN` or `\UNNNNNNNN`.
+fn escaped(c: char, out: &mut String) {
+    let code = u32::from(c);
+    let _ = match code {
+        0..=0xff => write!(out, "\\x{code:02x}"),
+        0x100..=0xffff => write!(out, "\\u{code:04x}"),
+        _ => write!(out, "\\U{code:08x}"),
+    };
+}
+
 /// `repr(str)`: single quotes unless the text has one and no double quote.
 pub(crate) fn repr_str(text: &str, out: &mut String) {
     let quote = if text.contains('\'') && !text.contains('"') {
@@ -103,20 +113,9 @@ pub(crate) fn repr_str(text: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
+            c if c == quote => out.extend(['\\', c]),
             c if printable(c) => out.push(c),
-            c => {
-                let code = u32::from(c);
-                let escaped = match code {
-                    0..=0xff => format!("\\x{code:02x}"),
-                    0x100..=0xffff => format!("\\u{code:04x}"),
-                    _ => format!("\\U{code:08x}"),
-                };
-                out.push_str(&escaped);
-            }
+            c => escaped(c, out),
         }
     }
     out.push(quote);
@@ -150,6 +149,39 @@ fn repr(value: &Value, out: &mut String) -> Result<(), Error> {
     }
 }
 
+/// A list as `[1, 'a']`; a tuple in parentheses, where one item keeps its comma: `(1,)`.
+fn str_seq(value: &Value, out: &mut String) -> Result<(), Error> {
+    let all = items(value)?;
+    let tuple = value.is_tuple();
+    out.push(if tuple { '(' } else { '[' });
+    for (n, item) in all.iter().enumerate() {
+        if n > 0 {
+            out.push_str(", ");
+        }
+        repr(item, out)?;
+    }
+    if tuple && all.len() == 1 {
+        out.push(',');
+    }
+    out.push(if tuple { ')' } else { ']' });
+    Ok(())
+}
+
+/// A mapping as `{'k': 1}`.
+fn str_map(value: &Value, out: &mut String) -> Result<(), Error> {
+    out.push('{');
+    for (n, key) in items(value)?.iter().enumerate() {
+        if n > 0 {
+            out.push_str(", ");
+        }
+        repr(key, out)?;
+        out.push_str(": ");
+        repr(&value.get_item(key)?, out)?;
+    }
+    out.push('}');
+    Ok(())
+}
+
 /// `str(value)`, appended to `out`: what `{{ value }}` prints.
 pub(crate) fn str_into(value: &Value, out: &mut String) -> Result<(), Error> {
     match value.kind() {
@@ -158,38 +190,8 @@ pub(crate) fn str_into(value: &Value, out: &mut String) -> Result<(), Error> {
         ValueKind::Bool => out.push_str(if truth(value) { "True" } else { "False" }),
         ValueKind::Number => out.push_str(&number(value)),
         ValueKind::String => out.push_str(value.as_str().unwrap_or_default()),
-        ValueKind::Seq => {
-            // A tuple prints in parentheses, and one item keeps its comma: `(1,)`.
-            let all = items(value)?;
-            let (open, close) = if value.is_tuple() {
-                ('(', ")")
-            } else {
-                ('[', "]")
-            };
-            out.push(open);
-            for (n, item) in all.iter().enumerate() {
-                if n > 0 {
-                    out.push_str(", ");
-                }
-                repr(item, out)?;
-            }
-            if value.is_tuple() && all.len() == 1 {
-                out.push(',');
-            }
-            out.push_str(close);
-        }
-        ValueKind::Map => {
-            out.push('{');
-            for (n, key) in items(value)?.iter().enumerate() {
-                if n > 0 {
-                    out.push_str(", ");
-                }
-                repr(key, out)?;
-                out.push_str(": ");
-                repr(&value.get_item(key)?, out)?;
-            }
-            out.push('}');
-        }
+        ValueKind::Seq => str_seq(value, out)?,
+        ValueKind::Map => str_map(value, out)?,
         _ => out.push_str(&value.to_string()),
     }
     Ok(())

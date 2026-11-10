@@ -99,6 +99,15 @@ frontend author who wants the screen, or a picture of the stream without one.
 
 `tau.trace`: one timeline across Rust and Python. For an embedder looking for where time goes.
 
+## Tokenizers
+
+`tau_tokens`, the second wheel (`ffwf-tau-tokens`, installed by `pip install 'ffwf-tau[tokens]'`,
+D26 §7): `Tokenizer`, `ChatTemplate`, the tokenizer catalogue and the identity strings. It has one
+caller, the `tokens` extension, and it is not part of `tau`: an extension author or an embedder
+has no reason to import it. It is a group all the same, so that what the extension calls is in
+`surface.txt` and a change to it is a diff to review. The group's names are the package's whole
+`__all__`.
+
 ## Decided in Phase 7C-1
 
 - `effects`, `events`, `handles`, `protocols`, `clock`, `client`, `remote`, `driver`, `sessions`,

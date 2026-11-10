@@ -1,9 +1,12 @@
 """The real tokenizer files and the reference values the `tau_tokens` tests compare against.
 
-    scripts/tokens_goldens.py fetch             download the pinned files into target/tokens-files/
-    scripts/tokens_goldens.py fetch --pin       the same, and record the sha256 of any file not yet pinned
-    scripts/tokens_goldens.py generate          rewrite tests/fixtures/tokens/ from the reference packages
-    scripts/tokens_goldens.py generate --dump DIR   also write every rendered request under DIR, to diff
+    scripts/tokens_goldens.py fetch          download the pinned files into target/tokens-files/
+    scripts/tokens_goldens.py fetch --pin    the same, and pin the sha256 of a file not yet pinned
+    scripts/tokens_goldens.py present        say whether the pinned files are all there (no network)
+    scripts/tokens_goldens.py generate       rewrite tests/fixtures/tokens/ from the references
+    scripts/tokens_goldens.py generate --dump DIR   also write every rendered request under DIR
+    scripts/tokens_goldens.py generate --retrain-tiny   also train tests/fixtures/tokens/tiny anew
+    scripts/tokens_goldens.py sweep          tau_tokens against the references, every code point
 
 `fetch` needs only the standard library and a network. Every file is pinned twice in
 tests/fixtures/tokens/artifacts.json: its repository's commit, and its own sha256, which a
@@ -18,7 +21,13 @@ a scratch environment that has them (the project's own has none of them, on purp
     python -m venv /tmp/ref && /tmp/ref/bin/pip install transformers tokenizers tiktoken jinja2
     /tmp/ref/bin/python scripts/tokens_goldens.py generate
 
-What it writes is small: hashes and counts for the real files (goldens.json), whole rendered
+`sweep` needs the reference packages and the built `tau_tokens` wheel in one environment. It
+encodes every Unicode code point, in a setting that puts it next to letters, spaces, digits and
+line breaks, and a few thousand random mixtures, with each tokenizer in both implementations,
+and prints what differs. It is the wide check behind the goldens' narrow one: run it when the
+regex engine, `tokenizers` or a tiktoken table changes.
+
+What `generate` writes is small: hashes and counts for the real files (goldens.json), whole rendered
 strings for the templates written for the tests (templates.json), and the tiny tokenizers the
 offline tests load (tiny/). The inputs (texts.json, conversations.json, templates/) are written by
 hand and read here. The versions of the reference packages are recorded in goldens.json.
@@ -104,19 +113,43 @@ def fetch(pin: bool) -> int:
     return 0
 
 
+def present() -> int:
+    """Whether every pinned file is on disk and is the pinned one: no network. Exit status 0 when
+    they all are, 1 (and what is missing) when not."""
+    missing = []
+    for artifact in json.loads(ARTIFACTS.read_text(encoding="utf-8"))["artifacts"]:
+        for name, pinned in artifact["files"].items():
+            path = artifact_dir(artifact) / name
+            if not path.exists() or sha256(path.read_bytes()) != pinned:
+                missing.append(f"{artifact['repo']} {name}")
+    if missing:
+        print(f"present: {len(missing)} pinned files are not in {FILES.relative_to(ROOT)}/")
+        print("present: scripts/tokens_goldens.py fetch downloads them (about 170 MB)")
+    return 1 if missing else 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     fetching = commands.add_parser("fetch")
     fetching.add_argument("--pin", action="store_true")
+    commands.add_parser("present")
     generating = commands.add_parser("generate")
     generating.add_argument("--dump", type=Path)
+    generating.add_argument("--retrain-tiny", action="store_true")
+    sweeping = commands.add_parser("sweep")
+    sweeping.add_argument("--seed", type=int, default=0)
+    sweeping.add_argument("--rounds", type=int, default=5000)
     args = parser.parse_args(argv)
     if args.command == "fetch":
         return fetch(args.pin)
+    if args.command == "present":
+        return present()
     import tokens_reference  # noqa: PLC0415  (needs the reference packages; `fetch` must not)
 
-    return tokens_reference.generate(args.dump)
+    if args.command == "sweep":
+        return tokens_reference.sweep(args.seed, args.rounds)
+    return tokens_reference.generate(args.dump, args.retrain_tiny)
 
 
 if __name__ == "__main__":

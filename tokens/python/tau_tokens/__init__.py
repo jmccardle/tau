@@ -1,4 +1,4 @@
-"""Local tokenizers for τ (the wheel `ffwf-tau-tokens`, installed by `pip install 'ffwf-tau[tokens]'`).
+"""Local tokenizers for τ: the wheel `ffwf-tau-tokens`, which `pip install 'ffwf-tau[tokens]'` adds.
 
 Bytes in, counts out: nothing here reads a file, opens a connection or reads a clock. The caller
 (τ's `tokens` extension) brings the bytes of a `tokenizer.json`, a chat template's text and a

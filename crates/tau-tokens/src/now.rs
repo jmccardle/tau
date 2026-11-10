@@ -106,28 +106,35 @@ impl Now {
         }
     }
 
-    /// One directive's text; `None` for a directive this does not print.
-    fn directive(self, letter: char) -> Option<String> {
+    /// A numeric directive: its value and the width it is zero-padded to.
+    fn number(self, letter: char) -> Option<(u32, usize)> {
+        Some(match letter {
+            'Y' => (self.year.unsigned_abs(), 1),
+            'y' => (self.year.unsigned_abs() % 100, 2),
+            'm' => (self.month, 2),
+            'd' => (self.day, 2),
+            'H' => (self.hour, 2),
+            'I' => (self.hour12(), 2),
+            'M' => (self.minute, 2),
+            'S' => (self.second, 2),
+            'j' => (self.year_day(), 3),
+            'u' => (self.week_day() + 1, 1),
+            'w' => ((self.week_day() + 1) % 7, 1),
+            _ => return None,
+        })
+    }
+
+    /// A directive that prints a name or fixed text.
+    fn word(self, letter: char) -> Option<String> {
         let month = MONTHS[self.month as usize - 1];
         let day = DAYS[self.week_day() as usize];
         Some(match letter {
-            'Y' => self.year.to_string(),
-            'y' => format!("{:02}", self.year % 100),
-            'm' => format!("{:02}", self.month),
-            'd' => format!("{:02}", self.day),
             'e' => format!("{:2}", self.day),
-            'H' => format!("{:02}", self.hour),
-            'I' => format!("{:02}", self.hour12()),
-            'M' => format!("{:02}", self.minute),
-            'S' => format!("{:02}", self.second),
-            'j' => format!("{:03}", self.year_day()),
             'p' => if self.hour < 12 { "AM" } else { "PM" }.to_owned(),
             'B' => month.to_owned(),
             'b' | 'h' => month[..3].to_owned(),
             'A' => day.to_owned(),
             'a' => day[..3].to_owned(),
-            'u' => (self.week_day() + 1).to_string(),
-            'w' => ((self.week_day() + 1) % 7).to_string(),
             'f' => "000000".to_owned(),
             'Z' | 'z' => String::new(),
             '%' => "%".to_owned(),
@@ -135,6 +142,14 @@ impl Now {
             't' => "\t".to_owned(),
             _ => return None,
         })
+    }
+
+    /// One directive's text; `None` for a directive this does not print.
+    fn directive(self, letter: char) -> Option<String> {
+        match self.number(letter) {
+            Some((value, width)) => Some(format!("{value:0width$}")),
+            None => self.word(letter),
+        }
     }
 
     /// A directive that stands for several (`%F` is `%Y-%m-%d`).
