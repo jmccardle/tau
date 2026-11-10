@@ -391,6 +391,7 @@ def test_a_cut_off_client_says_hello_again_and_reads_the_walk_again(
     idle(screen)
     screen.type("before\r")
     screen.wait_for("assistant: mock: before", on_screen=True)
+    idle(screen)  # the reply is drawn before its step ends, and /flood needs the cursor at rest
     screen.type("draft")
 
     async def flood(count: int, text: str, *, stopped: bool) -> None:
