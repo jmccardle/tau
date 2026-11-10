@@ -1,0 +1,195 @@
+{
+  "about": "Real tokenizer files the tau_tokens tests compare against, each pinned to a commit of its Hugging Face repository. Nothing here is checked in but this list: scripts/tokens_goldens.py fetch downloads the files into target/tokens-files/ and checks each against its sha256. `count` says whether the repository's tokenizer.json is fetched (text and request counts are tested) or only its chat template (the render is tested).",
+  "artifacts": [
+    {
+      "name": "qwen3",
+      "repo": "Qwen/Qwen3-8B",
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+        "config.json": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30",
+        "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+      }
+    },
+    {
+      "name": "llama3",
+      "repo": "unsloth/Llama-3.2-3B-Instruct",
+      "revision": "006f5dcd1393c3add266de40994ba96225e9689d",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "9ddd255c19fe319c8d4e891163540382e9fbda99f394674f2a929efc47d57458",
+        "chat_template.jinja": "5816fce10444e03c2e9ee1ef8a4a1ea61ae7e69e438613f3b17b69d0426223a4",
+        "config.json": "eadff796b79b82cefa0537004668d70a1dd099fd4986b91ef88398ed91b26311",
+        "tokenizer.json": "6b9e4e7fb171f92fd137b777cc2714bf87d11576700a1dcd7a399e7bbe39537b"
+      }
+    },
+    {
+      "name": "tekken",
+      "repo": "mistralai/Mistral-Nemo-Instruct-2407",
+      "revision": "04d8a90549d23fc6bd7f642064003592df51e9b3",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "67f3aeef765b7d78012a081dba98efd4900cd2bac24eac182296841c7e2aef2a",
+        "config.json": "8a42669219f4caadedb891be88c34712572573d42b3d02d665d527f92d94ddfe",
+        "tokenizer.json": "e11c71726323d33da7b8d6f6f269f1988931c0a52b7122bcdd8c05042974e0db"
+      }
+    },
+    {
+      "name": "gemma3",
+      "repo": "unsloth/gemma-3-4b-it",
+      "revision": "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "8925eabb556c1897ca1bed405f0612e735a56afcd4d77e76eb90fd771e706f9c",
+        "chat_template.jinja": "7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4",
+        "config.json": "6bed1ab02267c629a6937cf021c0c7bee97b5e2131d5c262e338aeac794db4df",
+        "tokenizer.json": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795"
+      }
+    },
+    {
+      "name": "gemma4",
+      "repo": "google/gemma-4-E4B-it",
+      "revision": "4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633",
+        "chat_template.jinja": "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5",
+        "config.json": "33b10c02df3c2e8536cf323d29d53262aaa2f4d11dbe19bc729373fbe90295d4",
+        "tokenizer.json": "91d9cf86906f78e197021fda88214d448e5c120665d0243a8e776e046986c6bc"
+      }
+    },
+    {
+      "name": "gpt-oss",
+      "repo": "openai/gpt-oss-20b",
+      "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "9279e942392b742d633c7adbb89ebe002c98399db8926a7af5125c726f404070",
+        "chat_template.jinja": "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146",
+        "config.json": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+        "tokenizer.json": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3"
+      }
+    },
+    {
+      "name": "deepseek",
+      "repo": "deepseek-ai/DeepSeek-V3.1",
+      "revision": "c0781d039fb7a1ba2abc4add0bdc293e92d2b8db",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "f3d66f405ce0315c754a3cc041f13be863fefcd62c240068098efdbd1924f8b5",
+        "config.json": "3e5d192d745758862b0a3e6338ee181991db49933dbbd3185e1bde34944e7bad",
+        "tokenizer.json": "32b34a41212e92f62e859cbbea121ae705a1fabbf157d9acf22d134ecd8dcf70"
+      }
+    },
+    {
+      "name": "phi4",
+      "repo": "microsoft/Phi-4-mini-instruct",
+      "revision": "cfbefacb99257ffa30c83adab238a50856ac3083",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "9c9b6bc0c94d95f69f826c41069a3e8b387ac3ced89601d201886e99240ac9db",
+        "config.json": "ac65d86061d3d0d704ee2511fd0eb8713ef19eb6eedba17c3080a4165d5b933b",
+        "tokenizer.json": "382cc235b56c725945e149cc25f191da667c836655efd0857b004320e90e91ea"
+      }
+    },
+    {
+      "name": "glm",
+      "repo": "zai-org/GLM-4.6",
+      "revision": "be72194883d968d7923a07e2f61681ea9a2826d1",
+      "count": true,
+      "files": {
+        "tokenizer_config.json": "27d01309c0ae7b5edb6511daabfcbf772b60e21c65cbb74d059acc76796f7897",
+        "chat_template.jinja": "44f815868bf02fa458dd2f741a338046f4bf45f398eb6d067766726b9d96cce3",
+        "config.json": "f713924a536ac1965d8af2a3144d3a0ce0acae94f0fbfd7407240cbafcb08c53",
+        "tokenizer.json": "9340665016419c825c4bdabbcc9acc43b7ca2c68ce142724afa829abb1be5efd"
+      }
+    },
+    {
+      "name": "qwen3-coder",
+      "repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "revision": "b2cff646eb4bb1d68355c01b18ae02e7cf42d120",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "60f6e8cb15c98dd07300a3cc465ea662de245d2095e4245616af21b2324db3fc",
+        "chat_template.jinja": "5a38bfa05833266240066aedc497decc9b00cc0d3e3b8cceea98cf530196ab06",
+        "config.json": "e2c8d8eea39471785cd93379d8b48241ad7dcda299013155dd02526e34a0de62"
+      }
+    },
+    {
+      "name": "llama3.3",
+      "repo": "unsloth/Llama-3.3-70B-Instruct",
+      "revision": "99cd0d2c829e92a67c844f9144c2509632e5c87f",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "3883f05b7e0ecf2c0550ca08cc470a628e86bd0ccdd817df516e8d6a3cf02396",
+        "chat_template.jinja": "e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65",
+        "config.json": "2427aebfcced3177803fc7cd5571cc8e4833b9560791ada65df86d8ed855efce"
+      }
+    },
+    {
+      "name": "deepseek-r1",
+      "repo": "deepseek-ai/DeepSeek-R1",
+      "revision": "56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "99e80c96269ca4430f1e67f67b5766cb096cbac96fed7a7c611c6ee088b3a039",
+        "config.json": "79ddea672a62e95d3f0be27be434375538e1988975971cffcf87c96c1de84a65"
+      }
+    },
+    {
+      "name": "phi4-14b",
+      "repo": "microsoft/phi-4",
+      "revision": "2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "2b707658c7c2b41580155a45503d7d3b42dc2f530bef678f67a39bf5d10b0510",
+        "config.json": "07eedad2c48798b6e3728e4a1b75e0e092019a375ba725a40e40c78d13664045"
+      }
+    },
+    {
+      "name": "hermes4",
+      "repo": "NousResearch/Hermes-4-14B",
+      "revision": "d6ce765c8b83f847357b98254be079afa0c6ca76",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+        "chat_template.jinja": "6a0543ce2179f4b132ec309a37a6d2889cfb889fbf8ec343cfd26d4f6c2a710e",
+        "config.json": "45dd2de4bb6818b13f2bd4dff27e91d463f5990877a8a446a4ad986a4f7140d6"
+      }
+    },
+    {
+      "name": "granite4",
+      "repo": "ibm-granite/granite-4.0-h-small",
+      "revision": "b8c0982bab7fde4eb48110f5a069527c008fab39",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "a5ec5daab12ba090a90f3dd169c8f9c275557013a87b9c1258dc7cb497a35c86",
+        "chat_template.jinja": "9524df67b77a7b25a2dfee898f75b316a157eb9d855b51e32aeac79d7c8a83ce",
+        "config.json": "8616e9f0b30e6fac9696f7c1e1dbd08f1a850ac4af0de6353f7d6009043702ae"
+      }
+    },
+    {
+      "name": "minimax-m2",
+      "repo": "MiniMaxAI/MiniMax-M2",
+      "revision": "04312f0cfbdeefb912575595b7c045512a29293c",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "60e392fea8d47660584deb3c6a716aab7b9f11fed24bc494baf5eb7ba809e882",
+        "chat_template.jinja": "86cd6e574dec52bf6d7e678c5b46ceb5223d68b3a1130bbbc09d0a2dc0909438",
+        "config.json": "03d0b726553f72ee799f30f52f77b9292b873714abda76ee7e2683953373db87"
+      }
+    },
+    {
+      "name": "kimi-k2",
+      "repo": "moonshotai/Kimi-K2-Instruct-0905",
+      "revision": "ac6c49f04883bd0a0598b790693a72061c676629",
+      "count": false,
+      "files": {
+        "tokenizer_config.json": "5ba77d5822137ac3cb9337d2b84561d10425562cf8b8f2c74c91a832516a778d",
+        "chat_template.jinja": "00938c355ca7195fd4f9c923e93af063846d4d5005e06999274f8db57b65bb0b",
+        "config.json": "4cd10b0f3cb1c1dfdbfcdd2f303057500f570b24f671ce5eb7650b6a511807cc"
+      }
+    }
+  ]
+}

@@ -10,7 +10,9 @@
 # docs/protocol.schema.json is not what the code generates (D21 §8), and the Rust example
 # examples/ratatui (fmt, clippy -D warnings, cargo test; pytest builds and drives its binary).
 # `wheels` builds portable manylinux2014 wheels (zig as the linker; no
-# docker) and tests each installed in a clean venv.
+# docker) and tests each installed in a clean venv. There are two wheels
+# (D26 §7.1): ffwf-tau, and ffwf-tau-tokens from tokens/. `gate` builds both
+# into its venv and fetches the real tokenizer files the second is tested on.
 
 name: CI
 
@@ -37,11 +39,19 @@ jobs:
         run: scripts/ci-toolchain.sh ${{ matrix.python }}
       - name: dev group
         run: .venv/bin/pip install --group dev
+      - name: tokenizer files
+        # The tau_tokens tests compare against real tokenizer files: about 170 MB
+        # from huggingface.co, each pinned to a commit and a sha256
+        # (tests/fixtures/tokens/artifacts.json). They are not checked in.
+        run: .venv/bin/python scripts/tokens_goldens.py fetch
       - name: scripts/check.sh
         # The ratchet's allowlist guard checks the whole push, not only its
         # last commit (all zeros on a new branch: ratchet.py falls back).
+        # TAU_TOKENS_FILES=require: a missing tokenizer file fails the tests
+        # that read it, where on a laptop it skips them with the reason.
         env:
           TAU_RATCHET_BASE: ${{ github.event.before }}
+          TAU_TOKENS_FILES: require
         run: scripts/check.sh
 
   # Reported, never gating: coverage (Rust tests, then Python tests through the
@@ -79,18 +89,37 @@ jobs:
           .venv/bin/pip install "maturin>=1.15,<2" "ziglang==0.17.0"
           PATH="$PWD/.venv/bin:$PATH" .venv/bin/maturin build --release --locked \
             --zig --compatibility manylinux2014 --out dist --interpreter .venv/bin/python
-      # Both test steps run from /tmp so the installed wheel, not the
-      # checkout's python/ tree, is what gets imported.
-      - name: tests/ against the installed wheel, no τ 0.15
+          # The second wheel, ffwf-tau-tokens (D26 §7.1): its own pyproject.toml,
+          # the same workspace, lockfile and version.
+          cd tokens
+          PATH="$PWD/../.venv/bin:$PATH" ../.venv/bin/maturin build --release --locked \
+            --zig --compatibility manylinux2014 --out ../dist --interpreter ../.venv/bin/python
+          ls -l ../dist
+      # Both test steps run from /tmp so the installed wheels, not the
+      # checkout's python/ trees, are what gets imported.
+      - name: tests/ against ffwf-tau alone, no τ 0.15, no tokenizers
+        # The main wheel must work without the second: `-m "not tokenizers"`
+        # leaves tests/tokens out, which is the only way a run may leave it out.
         run: |
           set -euo pipefail
           uv venv --seed --python ${{ matrix.python }} /tmp/clean
           # pytest and the test-only pins (pyte, one version in pyproject.toml's dev group)
           # come from that group; pip >= 25.1 reads a group from a pyproject path.
           /tmp/clean/bin/pip install --upgrade pip
-          /tmp/clean/bin/pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
+          /tmp/clean/bin/pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/ffwf_tau-*.whl
           cd /tmp
-          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider -m "not tokenizers" "$GITHUB_WORKSPACE/tests"
+      - name: tests/ against both wheels
+        # Everything, tests/tokens included. The real tokenizer files are not
+        # fetched in this job (`gate` requires them), so the tests that read
+        # them skip here and say why.
+        run: |
+          set -euo pipefail
+          uv venv --seed --python ${{ matrix.python }} /tmp/both
+          /tmp/both/bin/pip install --upgrade pip
+          /tmp/both/bin/pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
+          cd /tmp
+          /tmp/both/bin/python -m pytest -q -p no:cacheprovider -rs "$GITHUB_WORKSPACE/tests"
       # No artifact upload. Job containers on this runner cannot reach the
       # forge's public URL, which is where Forgejo points the artifact
       # service (ECONNREFUSED on forge.goblincorps.com:443), and nothing

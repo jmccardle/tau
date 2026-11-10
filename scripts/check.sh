@@ -25,6 +25,18 @@ step() { printf '\n== %s\n' "$*"; }
 step "rustfmt";      cargo fmt --all --check
 step "clippy";       cargo clippy --workspace --all-targets --locked -- -D warnings
 step "cargo test";   cargo test --workspace --locked
+# The tokenizer crate against real tokenizer files (D26 §7). The files are fetched, not checked
+# in, so these tests are `#[ignore]`d and run here when the files are there. Without them the gate
+# says so and goes on, unless TAU_TOKENS_FILES=require (CI), where their absence fails.
+step "real tokenizers"
+if "$PY" scripts/tokens_goldens.py present; then
+    cargo test -p tau-tokens --test artifacts --locked -- --include-ignored
+elif [ "${TAU_TOKENS_FILES:-}" = require ]; then
+    echo "check.sh: TAU_TOKENS_FILES=require and the tokenizer files are absent" >&2
+    exit 1
+else
+    echo "NOT RUN: the tests against real tokenizer files (Rust here, tests/tokens/test_artifacts.py in pytest)"
+fi
 # examples/ratatui is its own package (own lockfile, outside the workspace); pytest builds and
 # drives the binary (tests/serve/test_ratatui.py).
 step "ratatui example"
@@ -32,10 +44,15 @@ cargo fmt --check --manifest-path examples/ratatui/Cargo.toml
 cargo clippy --manifest-path examples/ratatui/Cargo.toml --all-targets --locked -- -D warnings
 cargo test --manifest-path examples/ratatui/Cargo.toml --locked
 step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop --release --locked
+# The second wheel, ffwf-tau-tokens (D26 §7.1): its own pyproject.toml, the same workspace and lockfile.
+ABS_BIN="$(cd "$BIN" && pwd)"
+(cd tokens && VIRTUAL_ENV="$(dirname "$ABS_BIN")" "$ABS_BIN/maturin" develop --release --locked)
+step "tokens wheel"; "$PY" scripts/check_tokens_wheel.py   # D26 §7: tau-py has no tokenizer crate; one version; no C; tau-tokens does no IO
 step "rules";        "$PY" scripts/check_rules.py
 step "ratchet";      "$PY" scripts/ratchet.py          # rule 7, Rust and Python; needs rust-code-analysis-cli, radon
 step "core is IO-free"; "$PY" scripts/check_core_io.py
 step "stubtest";     "$PY" -m mypy.stubtest tau._core
+"$PY" -m mypy.stubtest tau_tokens._core
 step "ruff";         "$BIN/ruff" check .
 "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"

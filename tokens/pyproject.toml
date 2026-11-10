@@ -1,0 +1,43 @@
+# The second wheel (D26 §7.1): local tokenizers for ffwf-tau's `tokens` extension, installed by
+# `pip install 'ffwf-tau[tokens]'`. Built from the same Cargo workspace as ffwf-tau, so both take
+# one version; scripts/check_tokens_wheel.py holds the extra's pin to it.
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"  # rules: allow(backend): PEP 517 key
+
+[project]
+name = "ffwf-tau-tokens"
+description = "Local tokenizers for τ: tiktoken encodings, Hugging Face tokenizers and chat templates, for exact token counts before a request is sent."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]  # a copy of the repository's: a wheel's license file is beside its pyproject.toml
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
+keywords = ["tokenizer", "token-counting", "tiktoken", "chat-template", "llm", "agent"]
+dynamic = ["version"]
+# Nothing, not even ffwf-tau: the two wheels share no Rust types, and the extra pins this one.
+dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing",
+]
+
+# The public repository only: pyproject.toml and README.md ship in the sdist and on PyPI.
+[project.urls]
+Repository = "https://github.com/jmccardle/tau"
+Documentation = "https://github.com/jmccardle/tau/blob/master/docs/reference/tokenizers.md"
+Issues = "https://github.com/jmccardle/tau/issues"
+
+[tool.maturin]
+manifest-path = "../crates/tau-tokens-py/Cargo.toml"
+module-name = "tau_tokens._core"
+python-source = "python"
+features = ["abi3"]

@@ -18,3 +18,4 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [Errors](errors.md): 22 names
 - [The terminal UI](tui.md): 8 names
 - [Tracing](diagnostics.md): 4 names
+- [Tokenizers](tokenizers.md): 10 names
