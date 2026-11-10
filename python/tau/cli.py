@@ -145,7 +145,7 @@ class _Parsers(NamedTuple):
 
 
 def _parser() -> _Parsers:
-    parser = argparse.ArgumentParser(prog="tau", description="τ next (Trusty).")
+    parser = argparse.ArgumentParser(prog="tau", description="τ, an agent harness.")
     sub = parser.add_subparsers(dest="command")
     config = sub.add_parser("config", help="inspect configuration")
     config_sub = config.add_subparsers(dest="config_command", metavar="{check,set}")
