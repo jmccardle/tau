@@ -1,0 +1,26 @@
+{#- `tojson` in every form a template calls it: transformers' own filter, which is json.dumps. -#}
+plain: {{ messages | tojson }}
+{% if tools %}
+tools: {{ tools | tojson }}
+indented: {{ tools | tojson(indent=2) }}
+indent 0: {{ tools[0].function.parameters | tojson(indent=0) }}
+tabs: {{ tools[0].function.parameters.properties | tojson(indent='\t') }}
+compact: {{ tools | tojson(separators=(',', ':')) }}
+compact indented: {{ tools[0] | tojson(indent=1, separators=(',', ':')) }}
+sorted: {{ tools | tojson(sort_keys=true) }}
+ascii: {{ tools | tojson(ensure_ascii=true) }}
+{% for tool in tools %}
+- {{ tool.function.name | tojson }}: {{ tool.function.parameters.properties | tojson }} required {{ tool.function.parameters.required | default([]) | tojson }}
+{% endfor %}
+{% endif %}
+{% for message in messages %}
+{{ loop.index0 }} {{ message.role | tojson }} {{ message.content | tojson }} {{ message.content | tojson(ensure_ascii=true) }}
+{% if message.tool_calls %}
+{% for call in message.tool_calls %}
+  call {{ call.function.name }} {{ call.function.arguments | tojson }} {{ call | tojson(indent=4) }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+scalars: {{ none | tojson }} {{ true | tojson }} {{ 1 | tojson }} {{ 1.0 | tojson }} {{ 1e-7 | tojson }} {{ 2.5e20 | tojson }} {{ 'é "q" \\ / <tag> & \t' | tojson }} {{ [] | tojson }} {{ {} | tojson }} {{ [[], {}] | tojson(indent=2) }}
+nested: {{ {'a': [1, {'b': none}], 'c': {'d': [true, 0.5]}} | tojson }} {{ {'b': 1, 'a': {'d': 1, 'c': 2}} | tojson(sort_keys=true, indent=2) }}
+extra: {{ enable_thinking | default(none) | tojson }}

@@ -1,0 +1,71 @@
+{
+  "about": "The tokenizer catalogue (D26 §7.4): the base tokenizers a model may be counted with. `id` is the tokenizer's identity and says where it comes from: an encoding embedded in tau-tokens, or a Hugging Face repository at a commit. `vocab` is how many token ids it has; `served` lists other sizes a server reports for it (the model's own embedding size, larger than the tokenizer's). `models` are patterns over a lowercased model id, `*` for any run of characters; a match is a prior, never proof. Where a model's own repository needs a login, the id names an open copy of the same tokenizer. tests/tokens/test_catalogue.py holds `vocab` and `served` to the real files.",
+  "tokenizers": [
+    {
+      "id": "tiktoken:o200k_base",
+      "vocab": 200019,
+      "served": [],
+      "models": ["gpt-4o*", "chatgpt-4o*", "gpt-4.1*", "gpt-4.5*", "gpt-5*", "o1*", "o3*", "o4-mini*", "ft:gpt-4o*"]
+    },
+    {
+      "id": "tiktoken:cl100k_base",
+      "vocab": 100277,
+      "served": [],
+      "models": ["gpt-4*", "gpt-3.5*", "gpt-35-turbo*", "ft:gpt-4*", "ft:gpt-3.5-turbo*"]
+    },
+    {
+      "id": "hf:openai/gpt-oss-20b@6cee5e81ee83917806bbde320786a8fb61efebee",
+      "vocab": 200019,
+      "served": [201088],
+      "models": ["*gpt-oss*"]
+    },
+    {
+      "id": "hf:unsloth/Llama-3.2-3B-Instruct@006f5dcd1393c3add266de40994ba96225e9689d",
+      "vocab": 128256,
+      "served": [],
+      "models": ["*llama-3*", "*llama3*"]
+    },
+    {
+      "id": "hf:Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218",
+      "vocab": 151669,
+      "served": [151936],
+      "models": ["*qwen3*", "*qwen-3*"]
+    },
+    {
+      "id": "hf:unsloth/gemma-3-4b-it@bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
+      "vocab": 262145,
+      "served": [262144, 262208],
+      "models": ["*gemma-3*", "*gemma3*", "gemini-2*", "gemini-live-2*", "gemini-3-pro-preview*", "gemini-3-flash-preview*"]
+    },
+    {
+      "id": "hf:google/gemma-4-E4B-it@4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+      "vocab": 262144,
+      "served": [],
+      "models": ["*gemma-4*", "*gemma4*", "gemini-3.5-flash*", "gemini-3.1-flash-lite*", "gemini-3.1-pro-preview*"]
+    },
+    {
+      "id": "hf:mistralai/Mistral-Nemo-Instruct-2407@04d8a90549d23fc6bd7f642064003592df51e9b3",
+      "vocab": 131072,
+      "served": [],
+      "models": ["*mistral-nemo*", "*mistral-small-3*", "*devstral*", "*magistral*", "*ministral*"]
+    },
+    {
+      "id": "hf:deepseek-ai/DeepSeek-V3.1@c0781d039fb7a1ba2abc4add0bdc293e92d2b8db",
+      "vocab": 128815,
+      "served": [129280],
+      "models": ["*deepseek*"]
+    },
+    {
+      "id": "hf:microsoft/Phi-4-mini-instruct@cfbefacb99257ffa30c83adab238a50856ac3083",
+      "vocab": 200029,
+      "served": [200064],
+      "models": ["*phi-4-mini*", "*phi4-mini*"]
+    },
+    {
+      "id": "hf:zai-org/GLM-4.6@be72194883d968d7923a07e2f61681ea9a2826d1",
+      "vocab": 151365,
+      "served": [151552],
+      "models": ["*glm-4*"]
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{#- Control flow and tests: what real chat templates are built from. -#}
+{%- macro render_type(spec, depth=0) -%}
+    {%- if spec is not mapping -%}
+        any
+    {%- elif spec.type is string -%}
+        {%- if spec.type == 'object' -%}
+            {
+            {%- for name, inner in (spec.properties or {}).items() -%}
+                {{ name }}{{ '' if name in (spec.required or []) else '?' }}: {{ render_type(inner, depth + 1) }}{{ ', ' if not loop.last }}
+            {%- endfor -%}
+            }
+        {%- elif spec.type == 'array' -%}
+            {{ render_type(spec['items'], depth + 1) }}[]
+        {%- elif spec.enum is defined -%}
+            {{ spec.enum | map('tojson') | join(' | ') }}
+        {%- else -%}
+            {{ spec.type }}
+        {%- endif -%}
+    {%- elif spec.type is iterable -%}
+        {{ spec.type | join(' | ') }}
+    {%- else -%}
+        unknown
+    {%- endif -%}
+{%- endmacro -%}
+{%- set ns = namespace(users=0, last_role=none, seen=[], system='') -%}
+{%- if messages[0].role == 'system' -%}
+    {%- set ns.system = messages[0].content -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{{- bos_token -}}
+[system:{{ ns.system | trim }}]
+{% if tools is defined and tools is not none %}
+[tools]
+{% for tool in tools %}
+    {{ tool.function.name }}({{ render_type(tool.function.parameters) }}){{ ' // ' ~ tool.function.description if tool.function.description }}
+    {%- for key, value in tool.function.parameters | dictsort %}
+
+      {{ key }} is {{ 'a mapping' if value is mapping else 'a sequence' if value is sequence and value is not string else 'a string' if value is string else 'something else' }}
+    {%- endfor %}
+
+{% endfor %}
+[/tools]
+{% endif %}
+{% for message in loop_messages %}
+    {%- if message.role not in ['user', 'assistant', 'tool'] -%}
+        {{- raise_exception('Unknown role: ' ~ message.role) -}}
+    {%- endif -%}
+    {%- if message.role == 'user' -%}
+        {%- set ns.users = ns.users + 1 -%}
+    {%- endif -%}
+    {%- if loop.first and message.role == 'assistant' -%}
+        {%- continue -%}
+    {%- endif -%}
+    <{{ message.role }} {{ loop.index }}/{{ loop.length }}{{ ' first' if loop.first }}{{ ' last' if loop.last }} prev={{ loop.previtem.role if loop.previtem is defined else '-' }} next={{ loop.nextitem.role if loop.nextitem is defined else '-' }}>
+    {%- if message.content is string -%}
+        {{ message.content }}
+    {%- elif message.content is none -%}
+        (nothing)
+    {%- elif message.content is iterable -%}
+        {%- for part in message.content -%}
+            {%- if part.type == 'text' -%}
+                {{ part.text }}{{ ' / ' if not loop.last }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- if message.reasoning_content is defined and message.reasoning_content %}
+
+(thought: {{ message.reasoning_content.split('\n')[0] }}; thinking is {{ 'the same' if message.thinking == message.reasoning_content else 'different' }})
+    {%- endif -%}
+    {%- for call in message.tool_calls or [] %}
+
+call {{ call.id }}: {{ call.function.name }}(
+        {%- if call.function.arguments is mapping -%}
+            {%- for key, value in call.function.arguments.items() -%}
+                {{ key }}={{ value | tojson }}{{ ', ' if not loop.last }}
+            {%- endfor -%}
+        {%- else -%}
+            {{ call.function.arguments }}
+        {%- endif -%}
+        )
+    {%- else %}
+        {%- if message.role == 'assistant' %} (no calls){% endif %}
+    {%- endfor -%}
+    {%- if message.get('tool_call_id') %} [answers {{ message.tool_call_id }} via {{ message.get('name', 'unnamed') }}{{ message.get('missing', '') }}]{% endif -%}
+    </{{ message.role }}>
+{% set ns.last_role = message.role %}
+{% endfor %}
+{%- for message in messages -%}
+    {%- if message.role == 'tool' -%}
+        {%- break -%}
+    {%- endif -%}
+    {{ message.role[0] }}
+{%- endfor %}
+
+users={{ ns.users }} last={{ ns.last_role }} thinking={{ enable_thinking | default('unset') }} effort={{ reasoning_effort | default('medium') }}
+tests: {{ 1 is number }} {{ 1.5 is float }} {{ 1 is integer }} {{ true is boolean }} {{ 'a' is string }} {{ 'a' is iterable }} {{ 'a' is sequence }} {{ [1] is sequence }} {{ {} is mapping }} {{ {} is iterable }} {{ none is none }} {{ nothing is defined }} {{ nothing is undefined }} {{ 3 is odd }} {{ 4 is divisibleby 2 }} {{ 'a' in 'cat' }} {{ 1 in [1, 2] }} {{ 'k' in {'k': 1} }} {{ 1 == 1.0 }} {{ [] is iterable }} {{ none is iterable }} {{ 1 is iterable }} {{ true is number }} {{ none is defined }}
+truth: {{ 'y' if '' else 'n' }}{{ 'y' if [] else 'n' }}{{ 'y' if {} else 'n' }}{{ 'y' if 0 else 'n' }}{{ 'y' if 0.0 else 'n' }}{{ 'y' if none else 'n' }}{{ 'y' if nothing else 'n' }}{{ 'y' if ' ' else 'n' }}{{ 'y' if [0] else 'n' }}{{ 'y' if 'False' else 'n' }}
+{% set block %}
+  kept {{ ns.users }} spaces
+{% endset %}
+block: [{{ block }}] [{{ block | trim }}]
+range: {% for i in range(3) %}{{ i }}{% if not loop.last %},{% endif %}{% endfor %} {% for i in range(4, 0, -2) %}{{ i }}{% endfor %} {{ range(5) | list }} {{ messages[-1].role }} {{ messages[::-1][0].role }} {{ (messages | last).role }}
+date: {{ date_string if date_string is defined else strftime_now('%d %b %Y') }} {{ strftime_now('%Y-%m-%d %H:%M:%S %A %B %j') }}
+{% if add_generation_prompt %}
+<assistant>
+{%- endif %}

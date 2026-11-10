@@ -1,0 +1,28 @@
+[package]
+name = "tau-tokens-py"
+description = "PyO3 bindings: exposes tau-tokens to Python as tau_tokens._core (the wheel ffwf-tau-tokens)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+# Two crates of this workspace build a library named `_core` (this one and tau-py); rustdoc would
+# write both to one path. Neither has documentation of its own to publish.
+doc = false
+
+[features]
+# Enabled for every maturin build (tokens/pyproject.toml), as in tau-py: one wheel for every GIL
+# CPython >= 3.12; for 3.14t maturin ignores it and builds cp314t.
+abi3 = ["pyo3/abi3-py312"]
+
+[dependencies]
+tau-tokens = { workspace = true }
+pyo3.workspace = true
+
+[lints]
+workspace = true

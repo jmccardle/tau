@@ -1,0 +1,32 @@
+{# A comment on its own line, then lines whose only content is a block tag. #}
+first line
+  {% if messages %}
+  indented text after an indented tag
+	{% endif %}
+	tab-indented text after a tab-indented tag
+{% for message in messages %}
+  {{ message.role }}:   {{ message.role | upper }}
+    {%- if loop.first %} (first){% endif %}
+
+  {%+ if loop.last %}kept indent{% endif %}
+
+{% if loop.index is odd -%}
+    odd, stripped after
+{%- else +%}
+    even, newline kept after the tag
+{%- endif %}
+
+{% endfor %}
+inline {% if true %}yes{% else %}no{% endif %} tags {{- ' left-stripped ' -}} and right-stripped.
+{% raw %}{{ not rendered }} {% nor this %}{% endraw %}
+
+{#- stripped comment -#}
+trailing spaces above
+{{ "line one\nline two\ttabbed \\ backslash é \x41 'single' \"double\"" }}
+{{ 'single \'escaped\' and "plain"' }}
+{% set long = 'a' 'b'
+   ~ 'c' %}
+{{ long }}
+{{ messages | length }}{{ '\n' }}{{ '\n' }}
+last line, then two newlines
+

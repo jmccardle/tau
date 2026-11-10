@@ -1,0 +1,20 @@
+{#- What `{{ value }}` prints: Python's str() of every kind of value a template is given. -#}
+{{ bos_token }}scalars: {{ none }} {{ true }} {{ false }} {{ 1 }} {{ -7 }} {{ 1.0 }} {{ 0.1 }} {{ 1e-7 }} {{ 2.5e20 }} {{ 123456789.125 }}
+arithmetic: {{ 3 / 2 }} {{ 4 / 2 }} {{ 7 // 2 }} {{ 7 % 3 }} {{ 2 ** 10 }} {{ 1 + 2 * 3 }} {{ 0.1 + 0.2 }} {{ 10 - 2.5 }}
+undefined: [{{ nothing }}] [{{ messages[0].nothing }}] [{{ eos_token }}] [{{ pad_token }}]
+literals: {{ [1, 'a', none, true, 1.5, "it's", 'say "hi"', 'new\nline'] }} {{ {'k': "v", 'n': [1, 2], 'f': 0.5, 'b': false, 'z': none} }} {{ [] }} {{ {} }}
+flags: {{ add_generation_prompt }} {{ tools is none }} {{ tools is defined }} {{ documents is none }} {{ documents is defined }}
+{% for message in messages %}
+message {{ loop.index }}: {{ message }}
+  content: {{ message.content }}
+  as string: {{ message.content | string }}
+  keys: {{ message.keys() | list }}
+  concat: {{ 'role=' ~ message.role ~ ' n=' ~ loop.index }}
+{% endfor %}
+{% if tools %}
+tools: {{ tools }}
+first: {{ tools[0].function.parameters }}
+names: {{ tools | map(attribute='function') | map(attribute='name') | list }}
+{% endif %}
+extra: {{ enable_thinking }} {{ reasoning_effort }} {{ date_string }}
+{{ eos_token if add_generation_prompt else '' }}
