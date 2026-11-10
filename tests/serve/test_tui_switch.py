@@ -55,6 +55,7 @@ def test_resume_shows_the_picker_first_and_opens_the_session_picked(served: Worl
     screen.wait_for("Resume a session")
     screen.wait_for("the newer one")
     screen.wait_for("the old question")
+    screen.wait_for("2 sessions; ", on_screen=True)  # the table has its cursor: keys take effect
     screen.type(DOWN + "\r")  # the second row, the older session
     screen.wait_for(OLD)  # the header of the screen that opened
     screen.type("hi\r")
@@ -70,6 +71,7 @@ def test_resume_marks_the_session_a_server_holds_and_attaches_to_it(served: Worl
     assert started.code == 0, started.err
     screen = Screen(served, "-r", cwd=work)
     screen.wait_for("served")
+    screen.wait_for("1 session; ", on_screen=True)  # the table has its cursor: keys take effect
     screen.type("\r")
     screen.wait_for("idle", on_screen=True)  # the chat screen, not the picker's own line naming OLD
     screen.wait_for(OLD, on_screen=True)
@@ -127,9 +129,14 @@ def test_ctrl_o_picks_another_session_and_the_process_becomes_it(served: World) 
     screen.wait_for(OLD)
     screen.type(CTRL_O)
     screen.wait_for("Open a session")
-    screen.wait_for("the newer one")
+    # The title and the rows are drawn before the table has its cursor, and Enter then is lost;
+    # the status line names the highlighted row once the first row has it.
+    screen.wait_for(f"2 sessions; {NEW}", on_screen=True)
     screen.type("\r")  # the first row: the newer session
-    screen.wait_for(NEW)
+    # The picker's status line names NEW too, and `wait_for` alone matches anything drawn so far:
+    # wait for the chat screen of the process that replaced this one.
+    screen.wait_for("idle", on_screen=True)
+    screen.wait_for(NEW, on_screen=True)
     screen.type("hello\r")
     screen.wait_for("mock: hello")
     assert screen.quit() == 0
@@ -143,6 +150,7 @@ def test_ctrl_o_on_the_current_unused_session_changes_nothing(served: World) -> 
     screen.type(CTRL_O)
     screen.wait_for("Open a session")
     screen.wait_for("current")
+    screen.wait_for("1 session; ", on_screen=True)  # the table has its cursor: keys take effect
     screen.type("\r")  # the only row: this session
     time.sleep(1)
     assert ids(served) == [first], "the session was not closed, and so not removed"
@@ -165,6 +173,7 @@ def test_ctrl_o_marks_a_session_another_tau_holds_and_does_not_leave_for_it(
     screen.wait_for("mock: hello")
     screen.type(CTRL_O)
     screen.wait_for("in use")
+    screen.wait_for("2 sessions; ", on_screen=True)  # the table has its cursor: keys take effect
     screen.type(DOWN + "\r")  # the row of the session the other tau holds
     screen.wait_for("cannot be opened")
     screen.type("\x1b")

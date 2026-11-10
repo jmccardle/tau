@@ -12,7 +12,8 @@ a release is on PyPI, build it from a checkout (Rust is needed for that):
 
 ```bash skip
 python3.12 -m venv .venv
-.venv/bin/pip install --group dev           # pip 25.1 or later
+.venv/bin/pip install -U 'pip>=25.1'        # --group needs pip 25.1
+.venv/bin/pip install --group dev
 VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release
 source .venv/bin/activate                   # puts `tau` on your PATH
 ```
@@ -30,7 +31,7 @@ server) and a model's **qualified name** is the group, a colon and the model: `l
   "default_model": "local:qwen",
   "models": {
     "local": {
-      "base_url": "http://localhost:8100/v1",
+      "base_url": "http://localhost:8080/v1",
       "models": { "qwen": { "model": "qwen3-27b" } }
     },
     "mock": {
@@ -41,7 +42,9 @@ server) and a model's **qualified name** is the group, a colon and the model: `l
 }
 ```
 
-`local` is any server that speaks the OpenAI chat API (llama.cpp, vLLM, a hosted service). For a
+`local` is any server that speaks the OpenAI chat API (llama.cpp, vLLM, a hosted service);
+`http://localhost:8080/v1` is where llama.cpp's `llama-server` listens by default (vLLM's default
+is port 8000). For a
 hosted one, add `"api_key_env": "NAME_OF_YOUR_KEY_VARIABLE"` to the group: the config names the
 variable and never holds the key. `mock` answers by echoing you. [Configuration](configuration.md)
 has the rest.

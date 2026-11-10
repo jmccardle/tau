@@ -342,7 +342,7 @@ it with a lock file, re-read, add, write-to-temp and rename, at mode 600.
 
 ```json
 {"version": 1,
- "key": {"provider": "openai", "base_url": "http://192.168.1.100:8100/v1", "model": "qwen3"},
+ "key": {"provider": "openai", "base_url": "http://localhost:8080/v1", "model": "qwen3"},
  "markers": {"served_model": "qwen3", "system_fingerprint": null,
              "build_info": "b7965-…", "template_sha256": "…"},
  "tokenizer": {"id": "hf:Qwen/Qwen3-8B@1a2b3c", "state": "confirmed",

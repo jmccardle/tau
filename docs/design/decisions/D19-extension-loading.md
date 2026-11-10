@@ -40,7 +40,7 @@ installed.
   later is not approved (`_trust.py:374`, the `env_sha256` precedent). `_trust.py` is 635
   lines, against the 800-line ratchet.
 - `Driver(extensions=)` takes the list in hook order with `Tau()` first.
-- **tau-search** (`~/Development/tau-search`, read only) registers
+- **tau-search** (the sibling repository, read only) registers
   `[project.entry-points."tau.extensions"] search = "tau_search.ext.search"`: a module that
   imports `tau_agent_core`, exposes 0.15's `register(api)`, and has no `name` or `extensions`.
 
