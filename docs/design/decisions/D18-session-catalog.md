@@ -73,7 +73,7 @@ opens `$TAU_HOME/chat-session/`, or creates it if it isn't there.
   file, fsync, rename, fsync the directory) before the log is created:
 
   ```json
-  {"cwd": "/home/john/Development/tau", "name": "rewrite the store",
+  {"cwd": "/home/ada/Development/tau", "name": "rewrite the store",
    "forked_from": {"session": "20261030-091502-1c2d3e", "node": 41}}
   ```
 
