@@ -2,6 +2,16 @@
 section 1). A real process, so the whole path runs: the terminal check, the theme, `open_client`,
 `run_async` on the driver's loop, `Opened.close`. The mock model, a throwaway TAU_HOME."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import json
 import time
 

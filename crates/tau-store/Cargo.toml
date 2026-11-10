@@ -14,6 +14,10 @@ serde_json.workspace = true
 crc32fast.workspace = true
 tracing = { version = "0.1.44", default-features = false }
 
+# Windows: the lease is a byte-range lock (src/lease.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true

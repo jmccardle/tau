@@ -5,9 +5,11 @@ terminal of its own)."""
 import asyncio
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
+import pytest
 from fakes import FakeProvider
 from harness import Harness, scenario
 from textual.app import App
@@ -100,6 +102,20 @@ async def test_picking_a_row_leaves_for_that_session(tmp_path: Path, world: Worl
         await until(pilot, lambda: not app.is_running)
         assert app.switch == Switch(OLD)
         assert app.return_code == 0
+    await h.close()
+
+
+@scenario
+async def test_keys_typed_as_the_picker_opens_are_not_lost(tmp_path: Path, world: World) -> None:
+    sessions = catalog(world, tmp_path)
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
+    async with running(h, tmp_path, home=world.tau, sessions=sessions) as (app, pilot):
+        await pilot.press("ctrl+o", "down")  # no wait for the screen or its rows
+        width, height = app.size
+        await pilot.resize_terminal(width + 1, height)  # a terminal's first size can come late
+        await pilot.press("enter")
+        await until(pilot, lambda: not app.is_running)
+        assert app.switch == Switch(OLD), "the second row, as if the person had waited"
     await h.close()
 
 
@@ -217,6 +233,9 @@ async def rude_server(world: World, session: str, cwd: Path) -> asyncio.Server:
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: tau serve (Unix domain sockets) is not ported, D21"
+)
 async def test_a_server_that_does_not_answer_marks_its_row_and_the_picker_still_opens(
     tmp_path: Path, world: World
 ) -> None:

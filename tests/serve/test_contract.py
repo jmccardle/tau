@@ -1,6 +1,16 @@
 """The wire's contract (D21 sections 5, 8), read from the public API and the checked-in schema:
 `docs/protocol.schema.json` is generated, and says what `Client` and `Event` say."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import inspect
 import json
 import types

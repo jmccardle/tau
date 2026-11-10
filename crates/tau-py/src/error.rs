@@ -116,17 +116,28 @@ fn tree_err(e: &tree::Error) -> PyErr {
 }
 
 /// An `OSError` with `errno` (so the interpreter picks the subclass), its message, and
-/// `file` when known.
+/// `file` when known. On Windows `raw_os_error` is a Win32 error code, not an errno, so it is
+/// passed as `winerror`: the interpreter derives the errno and the subclass from it.
 pub fn os_err(e: &io::Error, file: Option<&Path>) -> PyErr {
-    let Some(errno) = e.raw_os_error() else {
+    let Some(code) = e.raw_os_error() else {
         return PyOSError::new_err(e.to_string());
     };
     let text = e.to_string();
     // `Display` appends " (os error N)", which `OSError` says by `errno`.
     let message = text.split(" (os error").next().unwrap_or(&text).to_owned();
-    match file {
-        Some(file) => PyOSError::new_err((errno, message, file.to_string_lossy().into_owned())),
-        None => PyOSError::new_err((errno, message)),
+    let file = file.map(|file| file.to_string_lossy().into_owned());
+    #[cfg(windows)]
+    {
+        // `OSError(errno, strerror, filename, winerror)`: with an integer `winerror` the
+        // `errno` argument is ignored.
+        PyOSError::new_err((0, message, file, code))
+    }
+    #[cfg(not(windows))]
+    {
+        match file {
+            Some(file) => PyOSError::new_err((code, message, file)),
+            None => PyOSError::new_err((code, message)),
+        }
     }
 }
 

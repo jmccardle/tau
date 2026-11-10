@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
 from textual.widgets import Button
-from tuikit import Gatekeeper, running, say, shows, type_line, until
+from tuikit import Gatekeeper, answer, running, say, shows, type_line, until
 
 from tau import Author, Body, Cursor, Outcome, Part, Permissions, Stop, Subject, model_config
 
@@ -35,7 +35,7 @@ async def test_a_choice_question_is_answered_by_a_click_and_the_tool_proceeds(
         await shows(pilot, app, "run ta?  [allow / deny]")
         assert next(iter(app.query(".question-box"))).border_title == "permissions asks"
         assert tool.calls == [], "the tool waits for the answer"
-        await pilot.click(".question-buttons Button")  # the first choice: allow
+        await answer(pilot, app)  # the first choice: allow
         await shows(pilot, app, "done")
         assert gate.verdicts == ["allow"]
         assert tool.calls == [{}]
@@ -48,7 +48,7 @@ async def test_declining_gives_the_extension_none(tmp_path: Path) -> None:
     h, tool, gate = await asking(tmp_path)
     async with running(h, tmp_path) as (app, pilot):
         await shows(pilot, app, "run ta?")
-        await pilot.click(".question-buttons Button:last-child")  # Decline
+        await answer(pilot, app, ".question-buttons Button:last-child")  # Decline
         await shows(pilot, app, "done")
         assert gate.verdicts == [None]
         assert tool.calls == []
@@ -136,7 +136,7 @@ async def test_a_permission_question_shows_the_call_the_rule_and_its_three_answe
     async with running(h, tmp_path) as (app, pilot):
         await shows(pilot, app, "bash: git push origin master")
         await shows(pilot, app, "(ask rule: bash:git push*)  [yes / always / no]")
-        await pilot.click(".question-buttons Button")
+        await answer(pilot, app)
         await shows(pilot, app, "done")
         assert tool.calls == [{"command": "git push origin master"}]
     await h.close()
@@ -166,7 +166,7 @@ async def test_a_question_asked_by_a_step_the_user_started_in_the_tui_is_answere
         await type_line(pilot, "go")
         await pilot.press("enter")
         await shows(pilot, app, "proceed?")
-        await pilot.click(".question-buttons Button")
+        await answer(pilot, app)
         await shows(pilot, app, "done")
         assert asks.answers == ["yes"]
     await h.close()

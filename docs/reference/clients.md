@@ -378,7 +378,8 @@ async def connect(cls, socket: str | PathLike[str], client: str, *, buffer: int 
 
 Dial the server at `socket` as `client` with an event stream of `buffer`, and say
 `hello`. The snapshot is queued before this returns. `ProtocolMismatch` if the server
-speaks another protocol, `OSError` if nothing answers at `socket`.
+speaks another protocol, `OSError` if nothing answers at `socket` (or, on Windows,
+always: see `require_unix_sockets`).
 
 ### RemoteClient.__aiter__
 

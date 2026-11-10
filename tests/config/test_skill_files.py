@@ -26,7 +26,7 @@ def keep_cwd() -> Iterator[None]:
 def put(base: Path, relative: str, text: str) -> Path:
     path = base / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))  # not write_text: Windows would turn \n into \r\n
     return path
 
 
@@ -381,7 +381,7 @@ def test_every_problem_is_listed_at_once(world: World) -> None:
     put(world.tau, "prompts/z.MD", "x")
     message = failure(world)
     assert "a.b.md: the name 'a.b'" in message
-    assert "skills/bad/SKILL.md: no description" in message
+    assert f"{Path('skills', 'bad', 'SKILL.md')}: no description" in message
     assert "z.MD: misplaced template" in message
 
 

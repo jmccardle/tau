@@ -27,7 +27,7 @@ page is the shape they share.
    ├─ Done, and (auto-step on with work) or the scratchpad changed
    │     the cursor moved since the step woke ──▶ Step::wake again, from PreStep
    │     the cursor did not move, auto-step on ──▶ auto-step off, Rest
-   │       (a scratchpad change alone still wakes one step)
+   │       (a scratchpad change alone still wakes one step, auto-step as it is)
    └─ otherwise ──▶ Rest: Job::Rest
 ```
 

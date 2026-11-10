@@ -103,6 +103,8 @@ OFF_BY_DEFAULT = frozenset({Agents.name})
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
+BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
+"""The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
 
 

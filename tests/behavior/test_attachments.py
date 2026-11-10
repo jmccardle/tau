@@ -2,7 +2,9 @@
 the model saw. The files are the session's, not the client's: in `remote` mode the client is
 another process's view of the same driver, and the path is read where the driver is."""
 
+import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,10 +46,7 @@ async def sent(tmp_path: Path, line: str, *, limit: int | None = None) -> str:
 def write(tmp_path: Path, name: str, text: str | bytes) -> Path:
     path = tmp_path / "work" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(text, bytes):
-        path.write_bytes(text)
-    else:
-        path.write_text(text, encoding="utf-8")
+    path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))  # no CRLF
     return path
 
 
@@ -101,7 +100,10 @@ async def test_a_file_that_is_not_utf8_is_a_reference(tmp_path: Path) -> None:
 
 
 @scenario
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads any file; Windows file modes cannot deny reading",
+)
 async def test_a_file_that_cannot_be_read_is_a_reference_saying_why(tmp_path: Path) -> None:
     path = write(tmp_path, "secret.txt", "no")
     path.chmod(0)
@@ -233,10 +235,26 @@ async def test_a_quoted_path_may_hold_spaces(tmp_path: Path) -> None:
 @scenario
 async def test_a_backslash_makes_a_space_part_of_the_path_as_in_a_shell(tmp_path: Path) -> None:
     write(tmp_path, "a b.txt", "spaced")
-    write(tmp_path, "c\\d.txt", "slashed")
-    text = await sent(tmp_path, "see @a\\ b.txt and @c\\\\d.txt.")
+    text = await sent(tmp_path, "see @a\\ b.txt.")
     assert '<attachment path="a b.txt">\nspaced\n</attachment>' in text
+
+
+@scenario
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: a backslash is a path separator, not an escape"
+)
+async def test_a_double_backslash_is_a_backslash_in_the_path(tmp_path: Path) -> None:
+    write(tmp_path, "c\\d.txt", "slashed")
+    text = await sent(tmp_path, "see @c\\\\d.txt.")
     assert '<attachment path="c\\d.txt">\nslashed\n</attachment>' in text
+
+
+@scenario
+@pytest.mark.skipif(sys.platform != "win32", reason="a backslash separates directories on Windows")
+async def test_on_windows_a_backslash_separates_directories(tmp_path: Path) -> None:
+    write(tmp_path, "c/d.txt", "nested")
+    text = await sent(tmp_path, "see @c\\d.txt.")
+    assert '<attachment path="c\\d.txt">\nnested\n</attachment>' in text
 
 
 @scenario
@@ -289,7 +307,9 @@ async def test_the_node_keeps_what_was_typed_beside_what_the_model_saw(tmp_path:
     assert [n.typed for n in users] == ["explain @a.txt", None]
     assert isinstance(users[0].body, Body.User)
     assert "<attachment" in users[0].body.text
-    (tmp_path / "session" / "info.json").write_text(f'{{"cwd": "{tmp_path}"}}', encoding="utf-8")
+    (tmp_path / "session" / "info.json").write_text(
+        json.dumps({"cwd": str(tmp_path)}), encoding="utf-8"
+    )
     [row] = [r for r in list_sessions(tmp_path) if r.id == "session"]
     assert row.first == "explain @a.txt"
     await h.close()

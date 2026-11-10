@@ -4,6 +4,8 @@ import io
 import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -337,7 +339,14 @@ def test_trust_escapes_every_error_whatever_its_source_and_directory_names(world
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
     assert ESC not in result.both
-    odd = world.home / os.fsdecode(b"np\xff")  # a name that is not UTF-8
+    # A name that is not UTF-8. APFS (macOS) refuses one (EILSEQ): there, a name with an escape
+    # character stands in, so the rest of the test still runs.
+    odd_name, escaped = (
+        ("np" + ESC + "[2J", "np\\x1b[2J")
+        if sys.platform == "darwin"
+        else (os.fsdecode(b"np\xff"), "np\\xff")
+    )
+    odd = world.home / odd_name
     (odd / ".tau").mkdir(parents=True)
     (odd / ".tau" / "config.json").write_text(
         json.dumps(models(p={"base_url": "http://h/v1\u202e\U000e0041"})), encoding="utf-8"
@@ -345,7 +354,7 @@ def test_trust_escapes_every_error_whatever_its_source_and_directory_names(world
     trusted = tau(world, "trust", cwd=odd)
     assert trusted.code == 0
     trusted.out.encode("utf-8")  # strictly encodable
-    assert "np\\xff" in trusted.out
+    assert escaped in trusted.out
     assert "\u202e" not in trusted.out
     assert "\\u202e" in trusted.out
     checked = tau(world, "config", "check", cwd=odd)
@@ -378,6 +387,7 @@ def test_a_writable_trusted_json_is_reported_under_its_own_path(world: World) ->
 # -- interruption
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: no pseudo-terminals")
 def test_ctrl_c_at_a_prompt_exits_130_without_a_traceback(world: World) -> None:
     sample(world)
     master, slave = os.openpty()
@@ -453,3 +463,24 @@ def test_check_show_prints_max_tokens_and_options(world: World) -> None:
     assert result.code == 0
     assert "max_tokens   3  [" in result.out
     assert 'options      {"reply": "a b"}  [' in result.out
+
+
+def test_the_no_extensions_help_names_every_built_in_that_load_switches(world: World) -> None:
+    listed = tau(world, "ext", "list", "--json")
+    assert listed.code == 0, listed.err
+    rows = [json.loads(line) for line in listed.out.splitlines()]
+    switched = [r["key"] for r in rows if r["kind"] == "built-in" and r["state"] != "always"]
+    system = {k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ}  # Winsock needs it
+    helped = subprocess.run(
+        [sys.executable, "-m", "tau", "-p", "--help"],
+        env={**system, **world.environ},
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert helped.returncode == 0, helped.stderr
+    assert helped.stdout.startswith("usage:"), "a pipe takes the help, its τ included (Windows)"
+    shown = " ".join(helped.stdout.split())  # argparse wraps the help
+    assert switched, "the built-ins are listed"
+    for key in switched:
+        assert key in shown, key

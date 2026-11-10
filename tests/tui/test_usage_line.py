@@ -93,3 +93,17 @@ async def test_the_reply_badge_and_the_status_line_write_a_count_alike(tmp_path:
         (box,) = app.query(".box-assistant")
         assert box.border_subtitle == "↑ 1.0M  ↓ 3.4G"
     await h.close()
+
+
+@scenario
+async def test_on_a_narrow_terminal_the_state_line_is_cut_not_wrapped(tmp_path: Path) -> None:
+    name = "a-model-whose-name-is-longer-than-the-terminal-is-wide"
+    catalog = read_models(cli={"models": {name: {"model": "m", "provider": FAKE_PROVIDER}}})
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([]), catalog=catalog, config=model_config(name)
+    )
+    async with running(h, tmp_path, size=(40, 20)) as (app, pilot):
+        await until(pilot, lambda: "model: " in app.screen_text())
+        bar = app.query_one("#status-bar")
+        assert bar.size.height == 1, "one line, cut with …, as wide as the terminal"
+    await h.close()

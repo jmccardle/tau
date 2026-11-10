@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Coroutine, Iterator
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def write(path: Path, text: str | bytes = "x") -> Path:
     if isinstance(text, bytes):
         path.write_bytes(text)
     else:
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode())  # as given: Windows would write `\n` as CRLF
     return path
 
 
@@ -82,9 +83,9 @@ def files_of(world: World, prompt: SystemPrompt) -> list[str]:
     order."""
     root = world.home.parent.resolve()
     return [
-        str(Path(s.origin).relative_to(root))
+        Path(s.origin).relative_to(root).as_posix()
         for s in prompt.sources
-        if s.origin.startswith(str(root) + "/")
+        if Path(s.origin).is_absolute() and root in Path(s.origin).parents
     ]
 
 
@@ -118,13 +119,14 @@ def test_each_file_is_wrapped_with_its_path_in_one_project_context_block(world: 
     prompt = assemble(world, cwd, context_files=True)
     assert prompt.text.count("<project_context>") == 1
     assert (
-        f'<project_instructions path="{cwd.resolve()}/AGENTS.md">\nfirst\n</project' in prompt.text
+        f'<project_instructions path="{cwd.resolve() / "AGENTS.md"}">\nfirst\n</project'
+        in prompt.text
     )
     in_order(
         prompt.text,
         "<project_context>",
-        f'path="{world.home.resolve()}/AGENTS.md"',
-        f'path="{cwd.resolve()}/AGENTS.md"',
+        f'path="{world.home.resolve() / "AGENTS.md"}"',
+        f'path="{cwd.resolve() / "AGENTS.md"}"',
         "</project_context>",
     )
 
@@ -143,7 +145,11 @@ def test_claude_md_is_found_when_there_is_no_agents_md(world: World) -> None:
 
 
 def test_other_spellings_and_the_override_file_are_not_context_files(world: World) -> None:
-    for name in ("AGENTS.override.md", "AGENTS.MD", "CLAUDE.MD", "agents.md"):
+    write(world.home / "probe", "")
+    case_sensitive = not (world.home / "PROBE").exists()  # macOS and Windows ignore case
+    (world.home / "probe").unlink()
+    others = ("AGENTS.MD", "CLAUDE.MD", "agents.md") if case_sensitive else ()
+    for name in ("AGENTS.override.md", *others):
         write(world.home / name, "no")
     assert files_of(world, assemble(world)) == []
 
@@ -154,6 +160,9 @@ def test_a_directory_with_a_context_files_name_is_skipped(world: World) -> None:
     assert files_of(world, assemble(world)) == ["home/CLAUDE.md"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no FIFOs in the file system (os.mkfifo)"
+)
 def test_a_fifo_named_like_a_context_file_is_not_read(world: World) -> None:
     os.mkfifo(world.home / "AGENTS.md")
     write(world.home / "CLAUDE.md", "claude")
@@ -368,7 +377,10 @@ def test_a_context_file_error_is_a_config_error() -> None:
     assert issubclass(ContextFileError, ConfigError)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads any file; Windows file modes cannot deny reading",
+)
 def test_an_unreadable_file_stops_the_assembly(world: World) -> None:
     path = write(world.home / "AGENTS.md", "secret")
     path.chmod(0)
@@ -470,7 +482,7 @@ def test_appended_sections_follow_the_base_in_order_and_precede_the_context_file
     write(world.home / "AGENTS.md", "rules")
     prompt = assemble(world, append=("one", "", "two"))
     in_order(prompt.text, "base\n\none\n\ntwo\n\n<project_context>", "rules")
-    assert [s.origin for s in prompt.sources if not s.origin.startswith("/")] == [
+    assert [s.origin for s in prompt.sources if not Path(s.origin).is_absolute()] == [
         "config",
         "flag",
         "flag",
@@ -504,7 +516,7 @@ def test_tau_context_lists_each_part_with_its_origin_and_size(configured: World)
     lines = [line.split(maxsplit=1) for line in result.out.splitlines()]
     rows = {origin: int(size) for size, origin in lines}
     assert rows["flag"] == 4
-    assert rows[f"{configured.home.resolve()}/AGENTS.md"] == 5
+    assert rows[str(configured.home.resolve() / "AGENTS.md")] == 5
     assert list(rows)[:2] == ["base", "flag"]
 
 

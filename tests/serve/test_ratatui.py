@@ -4,6 +4,16 @@ own package; the server has the mock model, a throwaway TAU_HOME, and dies with 
 screen is read back through a terminal emulator (the program draws only what changed), the session
 through its log after the server has stopped."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
@@ -16,6 +26,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from proctable import alive
 from ptykit import Screen
 from websockets.asyncio.server import ServerConnection, unix_serve
 from world import World, tau
@@ -122,6 +133,7 @@ def binary() -> Path:
         capture_output=True,
         text=True,
         check=False,
+        timeout=1200,  # a cold build takes minutes on a CI runner; a stuck one fails here
     )
     assert built.returncode == 0, built.stderr
     return MANIFEST.parent / "target" / "debug" / "tau-ratatui"
@@ -188,11 +200,7 @@ def kill_server(pid: int) -> None:
     os.kill(pid, signal.SIGKILL)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return
-        if stat.rpartition(")")[2].split()[0] == "Z":
+        if not alive(pid):
             return
         time.sleep(0.02)
     raise AssertionError(f"server {pid} did not die")
@@ -383,6 +391,7 @@ def test_a_cut_off_client_says_hello_again_and_reads_the_walk_again(
     idle(screen)
     screen.type("before\r")
     screen.wait_for("assistant: mock: before", on_screen=True)
+    idle(screen)  # the reply is drawn before its step ends, and /flood needs the cursor at rest
     screen.type("draft")
 
     async def flood(count: int, text: str, *, stopped: bool) -> None:
@@ -570,19 +579,19 @@ def with_branch(home: World, binary: Path) -> Screen:
     # The title alone is drawn while the tree is still being read, and keys are dropped then;
     # the follow state in it says the tree is drawn and takes keys.
     screen.wait_for("The session's tree · following", on_screen=True)
+    # A screen can be read part way (the title, then the rest): the detail pane is the last of it.
+    screen.wait_for("cursor 0: a walk of", on_screen=True)
     return screen
 
 
 def test_the_tree_shows_a_second_clients_branch_as_a_stub_with_its_cursor(
     home: World, binary: Path
 ) -> None:
-    screen = with_branch(home, binary)
-    screen.wait_for("following", on_screen=True)
-    shown = screen.display()
-    assert "├┄" in shown, shown
-    assert "◀ 1 scout" in shown, shown
-    assert "◀ [0]" in shown, "the viewed cursor is bracketed"
-    assert "cursor 0: a walk of" in shown, "the detail pane measures the walk"
+    screen = with_branch(home, binary)  # the detail pane measures the walk: "cursor 0: a walk of"
+    screen.wait_for("├┄", on_screen=True)  # the branch, as a stub
+    screen.wait_for("◀ 1 scout", on_screen=True)
+    screen.wait_for("◀ [0]", on_screen=True)  # the viewed cursor is bracketed
+    assert "following" in screen.display()
     screen.type(DOWN)
     screen.wait_for("paused (f follows)", on_screen=True)
     screen.type("f")

@@ -231,6 +231,16 @@ pub fn first_message(py: Python<'_>, directory: PathBuf) -> PyResult<Option<Stri
         .map_err(|e| Failure::from(e).into_py_in(Some(&directory)))
 }
 
+/// Whether a store holds the lease of the session in `directory`, this process's included.
+/// The lease is taken and let go at once, so a session that is free stays free. `False` for a
+/// directory with no log.
+#[pyfunction]
+#[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
+pub fn is_leased(py: Python<'_>, directory: PathBuf) -> PyResult<bool> {
+    py.detach(|| tau_store::is_leased(&directory))
+        .map_err(|e| Failure::from(e).into_py_in(Some(&directory)))
+}
+
 #[pymethods]
 impl Session {
     /// A new session with a `Config` root, a `System` node, and cursor 0 on

@@ -5,12 +5,14 @@ import contextlib
 import os
 import shutil
 import signal
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from harness import Harness
+from proctable import with_argument
 from world import World
 
 
@@ -34,24 +36,19 @@ def remote() -> Iterator[None]:
 def _processes_for(base: Path) -> list[int]:
     """Every process whose command line names `base`: a `tau serve -d` of the test, which has
     its TAU_HOME's pending-log path in its arguments."""
-    found: list[int] = []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) == os.getpid():
-            continue
-        try:
-            command = (proc / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if str(base).encode() in command:
-            found.append(int(proc.name))
-    return found
+    return with_argument(str(base))
 
 
 @pytest.fixture
 def served() -> Iterator[World]:
     """A throwaway TAU_HOME and project, under a short directory (a socket path has a limit).
     Whatever `tau serve` the test left running is killed, even when the test failed."""
-    base = Path(tempfile.mkdtemp(prefix="tau"))
+    # macOS: the default temp directory is too long a prefix for a socket path.
+    base = Path(
+        tempfile.mkdtemp(
+            prefix="tau", dir=os.path.realpath("/tmp") if sys.platform == "darwin" else None
+        )
+    )
     home = base / "h"
     home.mkdir()
     world = World(home, home / ".tau", {"HOME": str(home)})

@@ -2,7 +2,7 @@
 through `tau.cli.main` on session directories laid out as the catalog writes them."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from world import World, tau
 
@@ -296,7 +296,7 @@ def long_session(world: World, **kwargs: object) -> Path:
     """The `tool_use` session, in a working directory that does not exist."""
     return world.session(
         NEW,
-        cwd=Path("/work/project"),
+        cwd=PurePosixPath("/work/project"),  # a POSIX text on every platform
         system="You are terse.",
         build=tool_use,
         **kwargs,  # type: ignore[arg-type]

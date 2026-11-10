@@ -10,13 +10,15 @@
 pub mod calibration;
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tau_core::tree::{Body, Record, Scratchpad, Session};
+
+mod lease;
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
@@ -108,6 +110,13 @@ pub struct Store {
     pub dropped: u64,
 }
 
+#[cfg(windows)]
+impl Drop for Store {
+    fn drop(&mut self) {
+        lease::release(&self.log);
+    }
+}
+
 impl Store {
     /// A new session in `dir` (created if missing), holding `session`'s
     /// records so far, synced.
@@ -157,7 +166,7 @@ impl Store {
     /// file; `Undecodable` for an intact log record that does not decode; `Core` for records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
-        let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
+        let mut log = open_log(&path)?;
         lease(&log)?;
         let mut bytes = vec![];
         log.read_to_end(&mut bytes)?;
@@ -285,6 +294,9 @@ impl Store {
         };
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
+            // Windows: the log is open for writing, not appending (see `open_log`).
+            #[cfg(windows)]
+            io::Seek::seek(&mut self.log, io::SeekFrom::End(0))?;
             self.log.write_all(&self.pending[..end])?;
         }
         {
@@ -319,8 +331,10 @@ impl Store {
 fn cut_tail(dir: &Path, log: &File, bytes: &[u8], end: usize) -> Result<(), Error> {
     if end < bytes.len() {
         let aside = dir.join(format!("dropped-{end}"));
-        File::create(&aside)?.write_all(&bytes[end..])?;
-        File::open(&aside)?.sync_all()?;
+        let mut kept = File::create(&aside)?;
+        kept.write_all(&bytes[end..])?;
+        // Through the handle that wrote it: Windows syncs only a handle open for writing.
+        kept.sync_all()?;
         log.set_len(end as u64)?;
         log.sync_all()?;
     }
@@ -328,14 +342,58 @@ fn cut_tail(dir: &Path, log: &File, bytes: &[u8], end: usize) -> Result<(), Erro
 }
 
 fn lease(f: &File) -> Result<(), Error> {
-    f.try_lock().map_err(|e| match e {
-        TryLockError::WouldBlock => Error::Leased,
-        TryLockError::Error(e) => Error::Io(e),
+    match lease::try_lease(f)? {
+        lease::Taken::Yes => Ok(()),
+        lease::Taken::Held => Err(Error::Leased),
+    }
+}
+
+/// Whether a store holds the lease of the session in `dir`, this process's included. The
+/// lease is taken and let go at once, so a session that is free stays free. A directory
+/// with no log is not leased.
+///
+/// # Errors
+///
+/// `Io`, other than the log being absent.
+pub fn is_leased(dir: &Path) -> Result<bool, Error> {
+    let log = match File::open(dir.join(LOG)) {
+        Ok(log) => log,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(match lease::try_lease(&log)? {
+        lease::Taken::Held => true,
+        lease::Taken::Yes => {
+            lease::release(&log);
+            false
+        }
     })
 }
 
+/// The log of an existing session, to read, cut a torn tail from, and append to. Windows
+/// opens an appending file without the right to change its length, so there the log is
+/// open for writing and every append seeks to the end first.
+fn open_log(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.append(true);
+    #[cfg(windows)]
+    options.write(true);
+    options.open(path)
+}
+
+/// Make a rename or a new name in `dir` durable. Windows cannot open a directory as a
+/// file to sync it; NTFS journals the change itself.
+#[cfg(unix)]
 fn sync_dir(dir: &Path) -> Result<(), Error> {
     File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)] // the Unix one fails
+fn sync_dir(_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 

@@ -156,7 +156,10 @@ class SessionPicker(TauDialog[SessionInfo | None]):
         return cast("DataTable[Text]", self.query_one(DataTable))
 
     def _populate(self) -> None:
+        """List the rows again (scope, filter or width changed), keeping the highlighted session
+        where it is still listed: a key typed before a resize keeps its effect."""
         table = self._table()
+        kept = self._highlighted(table)
         table.clear(columns=True)
         width = self._title_width(table)
         table.add_column("Session", width=width, key="title")
@@ -181,6 +184,15 @@ class SessionPicker(TauDialog[SessionInfo | None]):
             f"{self._count()} in "
             + ("every directory" if self.scope == "all" else home_relative(self._here))
         )
+        if kept is not None and kept in table.rows:
+            table.move_cursor(row=table.get_row_index(kept))
+
+    @staticmethod
+    def _highlighted(table: DataTable[Text]) -> str | None:
+        """The session id of the highlighted row; `None` for an empty table."""
+        if not table.is_valid_row_index(table.cursor_row):
+            return None
+        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
 
     def _state(self, row: SessionInfo) -> str:
         holder = self._held.get(row.id)

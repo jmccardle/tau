@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from fakes import FakeProvider, Gate, Reply
 from harness import Harness, scenario
-from tuikit import SIZE, Greeter, running, say, shows, type_line, until
+from tuikit import SIZE, Greeter, answer, running, say, shows, type_line, until
 
 from tau import Body, Cursor, Part, Progress, Subject, TextDelta
 from tau.tui import TauApp
@@ -35,7 +35,7 @@ async def test_a_line_sent_while_a_command_waits_does_not_lose_the_commands_resu
         await type_line(pilot, "meanwhile")
         await pilot.press("enter")
         await shows(pilot, app, "> meanwhile")  # pending: the command holds the step
-        await pilot.click(".question-buttons Button")
+        await answer(pilot, app)
         await until(pilot, lambda: "/ask_cmd: got yes" in app.toasts)
     await h.close()
 
@@ -146,8 +146,8 @@ async def test_an_empty_answer_is_none_when_the_question_allows_none(tmp_path: P
 
 @scenario
 async def test_a_reconnect_mid_reply_does_not_draw_the_live_text_twice(tmp_path: Path) -> None:
-    def flood(progress: Progress) -> str:
-        """Say a lot at once."""
+    async def flood(progress: Progress) -> str:
+        """Say a lot at once: async, so no event waits on a worker thread's hop to the loop."""
         for i in range(20):
             progress(f"line {i}")
         return "flooded"

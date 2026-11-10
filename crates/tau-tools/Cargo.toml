@@ -15,9 +15,21 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 fastrand = "2"
-nix = { version = "0.30", default-features = false, features = ["signal", "process", "poll", "user", "fs", "dir"] }
 globset = "0.4"
 regex-automata = "0.4"
+
+# The bash tool and the overflow directory are Unix code (see src/session/, src/limit/).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["signal", "process", "poll", "user", "fs", "dir"] }
+
+# macOS: kqueue sees the shell exit without reaping it, and libproc lists processes.
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["event"] }
+libc = "0.2.191"
+
+# Windows: the overflow directory's owner and access list (src/limit/windows.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile.workspace = true

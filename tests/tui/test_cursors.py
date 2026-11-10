@@ -7,7 +7,7 @@ from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 from textual.app import App
 from textual.widgets import Tree
-from tuikit import Gatekeeper, running, say, shows, type_line, until
+from tuikit import Gatekeeper, answer, running, say, shows, type_line, until
 
 from tau import Attachments, Author, Body, ItemData, Part, Stop, TextDelta
 
@@ -117,7 +117,7 @@ async def test_a_question_on_another_cursor_shows_when_that_cursor_is_viewed(
         await shows(pilot, app, "1 …?")
         await pilot.press("alt+right")
         await shows(pilot, app, "run ta?")
-        await pilot.click(".question-buttons Button")
+        await answer(pilot, app)  # the switch draws that cursor's walk again
         await shows(pilot, app, "done")
         assert gate.verdicts == ["allow"]
         await pilot.press("alt+left")
@@ -233,7 +233,8 @@ async def test_ctrl_z_on_a_busy_cursor_asks_before_aborting(tmp_path: Path) -> N
         await until(pilot, lambda: bool(app.screen.query("#confirm-dialog")))
         await pilot.click("#confirm-yes")
         await until(pilot, lambda: app.draft == "go")
-        assert not (await h.view()).busy
+        # The abort cancels the sample as a task: the step has ended a pass of the loop later.
+        await until(pilot, lambda: not h.session.cursor(h.cursor).busy)
         assert (await h.view()).at == SYS
     await h.close()
 

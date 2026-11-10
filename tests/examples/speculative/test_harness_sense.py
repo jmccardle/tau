@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, say, scenario
 
@@ -409,6 +410,10 @@ def load_chat() -> Any:
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: the example imports readline, which Python on Windows does not have",
+)
 async def test_a_line_client_shows_the_call_but_neither_its_answer_nor_the_probe(
     tmp_path: Path,
 ) -> None:

@@ -189,6 +189,15 @@ def ext(world: World, name: str, source: str) -> str:
     return str(path)
 
 
+def child_env(world: World) -> dict[str, str]:
+    """The environment of a `tau` process of its own: the home, a PATH, and on Windows the
+    SYSTEMROOT that Python itself cannot start without."""
+    env = {"HOME": str(world.home), "PATH": os.environ["PATH"]}
+    if sys.platform == "win32":
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return env
+
+
 def p(world: World, *argv: str, stdin: str = "") -> Result:
     return tau(world, "-p", *argv, stdin=stdin)
 
@@ -329,12 +338,21 @@ def test_auto_step_turned_off_is_exit_3_and_says_so(configured: World) -> None:
     assert "tau: stopped before finishing: auto-step is off" in result.err
 
 
+def interrupt_me() -> None:
+    """Ctrl+C to this process. On Windows `os.kill` with SIGINT terminates it, so the signal is
+    raised in the process instead (the handler runs in the main thread either way)."""
+    if sys.platform == "win32":
+        signal.raise_signal(signal.SIGINT)
+    else:
+        os.kill(os.getpid(), signal.SIGINT)
+
+
 def test_an_interrupt_before_any_reply_takes_the_message_back(world: World) -> None:
     """The unanswered `User` node stays in the tree (nodes are written once), but the cursor goes
     back before it: the next `-c` sends one user message after the last answered turn, not two in
     a row."""
     world.user_config(NO_REPLY)
-    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT))
+    timer = threading.Timer(0.5, interrupt_me)
     timer.start()
     try:
         assert p(world, "lost question").code == 130
@@ -355,7 +373,7 @@ def test_a_run_that_finishes_is_exit_0_whatever_the_limit(configured: World) -> 
 
 def test_interrupt_aborts_the_step_and_exits_130(world: World) -> None:
     world.user_config(SLOW)
-    timer = threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGINT))
+    timer = threading.Timer(0.5, interrupt_me)
     timer.start()
     try:
         result = p(world, "go")
@@ -651,6 +669,19 @@ def test_json_is_a_welcome_then_the_events_the_wire_would_send(configured: World
     assert (welcome.session, welcome.protocol) == (kept, PROTOCOL)
     assert welcome.pid == os.getpid()
     assert welcome.cwd == str(configured.home.resolve())
+    kinds = [event["kind"] for event in events]
+    assert kinds[0] == "CursorView", "the snapshot first"
+    assert "Live" in kinds, "the watched cursor's Live"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Unix domain sockets (tau serve, D21) are not available",
+)
+def test_json_lines_decode_as_a_client_of_the_wire_hears_them(configured: World) -> None:
+    result = p(configured, "--json", "hi")
+    assert result.code == 0, result.err
+    _welcome, *events = objects(result)
     heard = decoded(events)
     # A client's stream keeps one view per cursor and drops the Live it did not ask for: what it
     # decoded is the events' end state, and every line fit the schema or it would have raised.
@@ -658,9 +689,6 @@ def test_json_is_a_welcome_then_the_events_the_wire_would_send(configured: World
     appended = [n for e in heard if isinstance(e, Appended) for n in e.nodes]
     replies = [n.body for n in appended if isinstance(n.body, Body.Assistant)]
     assert [part.text for part in replies[-1].parts] == ["mock: hi"]  # type: ignore[attr-defined]
-    kinds = [event["kind"] for event in events]
-    assert kinds[0] == "CursorView", "the snapshot first"
-    assert "Live" in kinds, "the watched cursor's Live"
     last = [e for e in heard if isinstance(e, CursorView)][-1]
     assert not last.busy
     assert last.ending == Ending.Done()
@@ -792,6 +820,10 @@ def wait_for(path: Path) -> None:
         time.sleep(0.02)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Popen.send_signal cannot send SIGINT to a child",
+)
 def test_a_second_interrupt_leaves_at_once_though_a_hook_never_returns(
     configured: World,
 ) -> None:
@@ -810,7 +842,7 @@ def test_a_second_interrupt_leaves_at_once_though_a_hook_never_returns(
     ]
     process = subprocess.Popen(
         command,
-        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        env=child_env(configured),
         cwd=configured.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -846,6 +878,10 @@ extensions = [SlowHook()]
 """
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: Popen.send_signal cannot send SIGINT to a child",
+)
 def test_a_stop_that_waits_for_a_hook_says_why_and_still_takes_the_message_back(
     configured: World,
 ) -> None:
@@ -858,7 +894,7 @@ def test_a_stop_that_waits_for_a_hook_says_why_and_still_takes_the_message_back(
     extension = ext(configured, "slowhook", source)
     process = subprocess.Popen(
         [sys.executable, "-m", "tau", "-p", "-e", extension, "lost question"],
-        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        env=child_env(configured),
         cwd=configured.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -914,7 +950,7 @@ def test_head_closing_the_pipe_ends_the_process_quietly(world: World) -> None:
     world.user_config(SLOW)
     process = subprocess.Popen(
         [sys.executable, "-m", "tau", "-p", "--json", "hi"],
-        env={"HOME": str(world.home), "PATH": os.environ["PATH"]},
+        env=child_env(world),
         cwd=world.home,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -923,7 +959,10 @@ def test_head_closing_the_pipe_ends_the_process_quietly(world: World) -> None:
     try:
         assert process.stdout is not None
         assert process.stderr is not None
-        assert json.loads(process.stdout.readline())["kind"] == "Welcome"
+        first = process.stdout.readline()
+        if json.loads(first or "{}").get("kind") != "Welcome":
+            process.kill()
+            raise AssertionError(f"first line {first!r}; stderr: {process.stderr.read()!r}")
         process.stdout.close()  # `| head -1`
         err = process.stderr.read()
         process.wait(timeout=30)

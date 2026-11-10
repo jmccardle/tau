@@ -9,9 +9,8 @@
 //! and the owner, group and ACLs of an existing file are not carried over. The
 //! permission bits are.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -121,7 +120,9 @@ pub(crate) fn replace(target: &Path, parent: &Path, bytes: &[u8]) -> std::io::Re
         let temp = parent.join(format!(".{name}.tau-{:08x}.tmp", fastrand::u32(..)));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
+        #[cfg(unix)]
         if existing.is_some() {
+            use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600); // widened to the old file's mode below, before any content
         }
         match options.open(&temp) {
@@ -137,7 +138,11 @@ pub(crate) fn replace(target: &Path, parent: &Path, bytes: &[u8]) -> std::io::Re
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temp, target)?;
-        File::open(parent)?.sync_all()
+        // Sync the directory so the rename is durable. Windows cannot open a directory as
+        // a file to sync it; NTFS journals the rename itself.
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
     })();
     if result.is_err() {
         // Best effort: the error being returned is the write's, not the cleanup's.
@@ -149,6 +154,13 @@ pub(crate) fn replace(target: &Path, parent: &Path, bytes: &[u8]) -> std::io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn symlink(target: &str, link: impl AsRef<Path>) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_file(target, link);
+    }
 
     fn call(dir: &tempfile::TempDir, args: &Value) -> Result<String> {
         Write::new(dir.path().to_owned()).run(&args.to_string())
@@ -176,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Windows files have no mode bits
     fn keeps_the_mode_of_the_file_it_replaces() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -193,8 +206,8 @@ mod tests {
     fn writes_through_a_symlink_even_a_dangling_one() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("real.txt"), "old").unwrap();
-        std::os::unix::fs::symlink("real.txt", dir.path().join("link.txt")).unwrap();
-        std::os::unix::fs::symlink("sub/target.txt", dir.path().join("dangling.txt")).unwrap();
+        symlink("real.txt", dir.path().join("link.txt")).unwrap();
+        symlink("sub/target.txt", dir.path().join("dangling.txt")).unwrap();
         call(&dir, &json!({"path": "link.txt", "content": "new"})).unwrap();
         assert!(dir.path().join("link.txt").is_symlink());
         assert_eq!(
@@ -212,8 +225,8 @@ mod tests {
     #[test]
     fn a_symlink_loop_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink("b", dir.path().join("a")).unwrap();
-        std::os::unix::fs::symlink("a", dir.path().join("b")).unwrap();
+        symlink("b", dir.path().join("a")).unwrap();
+        symlink("a", dir.path().join("b")).unwrap();
         let err = call(&dir, &json!({"path": "a", "content": ""})).unwrap_err();
         assert!(err.0.contains("too many levels"), "{err}");
     }

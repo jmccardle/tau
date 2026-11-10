@@ -1,8 +1,8 @@
 # CI for τ on forge.goblincorps.com. Fail early: no continue-on-error,
 # no `|| true`.
 #
-# One runner, Linux x86_64. Nothing here builds or tests aarch64 or macOS,
-# and nothing claims to (docs/plan.md amendments).
+# One runner, Linux x86_64. Nothing here builds or tests aarch64, macOS or
+# Windows: .github/workflows/publish.yml does, on GitHub's runners.
 #
 # `gate` runs scripts/check.sh, the same file developers run locally, with
 # only the dev group installed: the test suite must pass without τ 0.15. It

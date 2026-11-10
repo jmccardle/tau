@@ -282,7 +282,7 @@ is answered from the move records alone.
 | ending | work | moved | after `post_step` |
 |---|---|---|---|
 | `Done` | yes, auto-step on | yes | the next step starts at once |
-| `Done` | yes, auto-step on | no | auto-step goes off; `Rest` |
+| `Done` | yes, auto-step on | no, and no news (below) | auto-step goes off; `Rest` |
 | anything else | | | `Rest` |
 
 A cursor never tries the same thing twice. A hook that declines every input,
@@ -295,9 +295,12 @@ decides, so it still sees auto-step on.
 An item added to the cursor's scratchpad since this step woke
 (`Session::changes`; removing or delivering an item is not a change) is news
 from outside, not spinning: with a `Done` ending it starts a step even when
-the table says rest. That step follows the same rule: if it does not move the
-cursor either, it rests, with auto-step off if it was on and there was work.
-There is no delay and no timer.
+the table says rest, and auto-step stays as it is. A send that lands after the
+step passed its input position (an extension's `send` from a worker thread, to
+a cursor it just opened) is so answered by the next step, not left pending with
+auto-step off. That step follows the same rule: if it does not move the cursor
+and nothing new came, it rests, with auto-step off if it was on and there was
+work. There is no delay and no timer.
 
 An input left pending after a step that moved is work: with auto-step on the
 next step offers it again. A hook that keeps leaving input pending while it

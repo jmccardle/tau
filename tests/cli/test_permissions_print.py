@@ -2,6 +2,8 @@
 rule that asks, and `--answer` or a decline. The model is an OpenAI-compatible endpoint."""
 
 import json
+import os
+import sys
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +15,9 @@ from world import Result, World, tau
 COMMAND = "touch ran"
 
 ASK = {"extensions": {"permissions": {"ask": ["bash", "read"]}}}
+RUNS_BASH = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: the bash tool is not ported (README)"
+)
 
 
 class Model(BaseHTTPRequestHandler):
@@ -80,6 +85,7 @@ def ran(world: World) -> bool:
     return (world.home / "ran").exists()
 
 
+@RUNS_BASH
 def test_no_rules_asks_nothing_and_the_call_runs(model: World) -> None:
     model.user_config(json.loads((model.tau / "config.json").read_text()) | {"extensions": {}})
     result = p(model)
@@ -97,6 +103,7 @@ def test_without_an_answer_rule_the_question_is_declined_and_the_call_refused(mo
     assert result.out == "done\n"
 
 
+@RUNS_BASH
 def test_an_answer_rule_says_yes(model: World) -> None:
     result = p(model, "--answer", "permissions=yes")
     assert result.code == 0, result.err
@@ -112,6 +119,7 @@ def test_an_answer_rule_can_match_the_command(model: World) -> None:
     assert Model.told == ["Error: the user refused this call"]
 
 
+@RUNS_BASH
 def test_always_saves_the_rule_to_the_users_file(model: World) -> None:
     result = p(model, "--answer", "permissions=always")
     assert result.code == 0, result.err
@@ -136,7 +144,9 @@ def test_a_rule_naming_a_tool_nothing_provides_is_a_warning_at_the_start_and_the
     model: World,
 ) -> None:
     config = json.loads((model.tau / "config.json").read_text())
-    config["extensions"]["permissions"]["deny"] = ["Bash", "wirte:/etc/*", "write:/etc/*"]
+    # Windows refuses a path pattern (tau._permissions): there the good rule is the bare tool.
+    good = "write" if sys.platform == "win32" else "write:/etc/*"
+    config["extensions"]["permissions"]["deny"] = ["Bash", "wirte:/etc/*", good]
     model.user_config(config)
     result = p(model)
     assert result.code == 0, result.err
@@ -160,6 +170,7 @@ def test_an_empty_pattern_stops_the_start(model: World) -> None:
     assert not ran(model)
 
 
+@RUNS_BASH
 def test_an_answer_text_never_matches_a_command_that_chains_unless_it_says_so(
     model: World,
 ) -> None:
@@ -173,6 +184,7 @@ def test_an_answer_text_never_matches_a_command_that_chains_unless_it_says_so(
     assert ran(model)
 
 
+@RUNS_BASH
 def test_a_blanket_answer_still_answers_every_question(model: World) -> None:
     Model.run = "touch ran; touch other"
     result = p(model, "--answer", "permissions=yes")
@@ -180,6 +192,7 @@ def test_a_blanket_answer_still_answers_every_question(model: World) -> None:
     assert ran(model)
 
 
+@RUNS_BASH
 def test_an_answer_text_is_matched_against_the_call_not_the_rule_line(model: World) -> None:
     result = p(model, "--answer", "permissions:bash: touch ran=yes")
     assert result.code == 0, result.err
@@ -187,16 +200,19 @@ def test_an_answer_text_is_matched_against_the_call_not_the_rule_line(model: Wor
 
 
 def test_an_answer_text_is_matched_against_the_resolved_path(model: World) -> None:
-    """`/proj/*` spells the model's path, but the call lands on `/etc/shadow`."""
+    """`/proj/*` spells the model's path, but the call lands on `/etc/shadow` (made real:
+    `/private/etc/shadow` on macOS, `C:\\etc\\shadow` on Windows)."""
     Model.tool, Model.args = "read", {"path": "/proj/../etc/shadow"}
     result = p(model, "--answer", "permissions:read: /proj/*=yes")
     assert result.code == 0, result.err
     assert "declined question 0" in result.err
     assert Model.told == ["Error: the user refused this call"]
-    allowed = p(model, "--answer", "permissions:read: /etc/*=yes")
+    lands = os.path.join(os.path.realpath("/etc"), "*")
+    allowed = p(model, "--answer", f"permissions:read: {lands}=yes")
     assert "answered question 0" in allowed.err
 
 
+@RUNS_BASH
 def test_an_answer_text_may_be_written_in_rule_syntax_without_the_space(model: World) -> None:
     result = p(model, "--answer", "permissions:bash:touch*=yes")
     assert result.code == 0, result.err

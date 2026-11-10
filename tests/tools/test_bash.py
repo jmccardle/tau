@@ -1,5 +1,15 @@
 """`bash`: output, exit codes, timeout, and a real abort of the whole process group."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: the bash tool does not run there (not ported; see docs/plan.md)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
@@ -11,6 +21,7 @@ from pathlib import Path
 
 import pytest
 from calls import call, err, ok
+from proctable import alive, commands
 
 from tau import BashTool, Outcome, base_tools
 
@@ -139,15 +150,6 @@ def test_calls_run_in_parallel_and_do_not_block_the_event_loop(tmp_path: Path) -
     assert elapsed < 2.5, "eight half-second commands ran one after another"
 
 
-def alive(pid: int) -> bool:
-    """Whether the process runs. A zombie awaiting its parent's wait is not running."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
-        return False
-    return stat.rsplit(")", 1)[1].split()[0] != "Z"
-
-
 def gone(pid: int, within: float = 3.0) -> bool:
     deadline = time.monotonic() + within
     while alive(pid):
@@ -187,16 +189,7 @@ asyncio.run(main())
 
 def running(argument: str) -> list[int]:
     """The live `sleep <argument>` processes, found by their command line."""
-    want = f"sleep\0{argument}\0".encode()
-    found = []
-    for proc in Path("/proc").iterdir():
-        if proc.name.isdigit():
-            try:
-                if proc.joinpath("cmdline").read_bytes() == want and alive(int(proc.name)):
-                    found.append(int(proc.name))
-            except OSError:
-                continue
-    return found
+    return [pid for pid, args in commands().items() if args == ["sleep", argument]]
 
 
 @pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP])

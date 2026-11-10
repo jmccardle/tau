@@ -81,7 +81,7 @@ from tau._launch import (
 )
 from tau._markdown import to_markdown
 from tau._options import save_options
-from tau._print_mode import SIGPIPE_STATUS, detach, print_mode, reader_gone
+from tau._print_mode import SIGPIPE_STATUS, detach, pipe_gone, print_mode, reader_gone, utf8
 from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
@@ -722,8 +722,8 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
     is an error (status 1, said on standard error); and a standard output whose reader has gone
     (`tau -p ... | head -1`) ends the run quietly with status 141, 128 plus SIGPIPE, as a program
     killed by that signal would."""
-    out = sys.stdout if stdout is None else stdout
-    err = sys.stderr if stderr is None else stderr
+    out = utf8(sys.stdout) if stdout is None else stdout
+    err = utf8(sys.stderr) if stderr is None else stderr
     if err is None:
         err = io.StringIO()
     if out is None:
@@ -752,9 +752,9 @@ def _flushed(status: int, out: TextIO, err: TextIO) -> int:
     said so yet."""
     try:
         out.flush()
-    except BrokenPipeError:
-        raise
     except OSError as e:
+        if pipe_gone(e):
+            raise BrokenPipeError(e.errno, e.strerror) from e
         detach(out)
         return status or _fail(err, f"cannot write standard output: {e.strerror or e}")
     return status

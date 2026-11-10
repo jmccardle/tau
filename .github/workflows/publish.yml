@@ -1,0 +1,301 @@
+# Build, test and publish τ's wheels to PyPI.
+#
+# The file name is load-bearing: PyPI's trusted publisher for ffwf-tau is bound
+# to owner / repository / `publish.yml` / environment `pypi`. Renaming this file
+# breaks publishing.
+#
+# Shape: wheels (per target, per interpreter) -> test (each wheel installed into
+# a clean venv on a fresh runner of its own platform, the whole suite run
+# against it) -> publish. `sdist` builds the source distribution and then a
+# wheel from it, so a broken sdist fails here and not on a user's machine. The
+# publish job consumes only the artifacts the build jobs uploaded; it never
+# checks out or builds anything.
+#
+# Wheels per target: one cp312-abi3 wheel (every GIL build >= 3.12) and one
+# cp314t wheel (free-threaded builds have no stable ABI before 3.15). maturin
+# picks the tag from the interpreter it builds for: 3.12 gives abi3, 3.14t the
+# version-specific one.
+#
+# Publishing happens only for a pushed `v*` tag (see the `publish` job's `if`).
+# A push to `publish-draft` and a manual run build and test, nothing more.
+#
+# Fail early: no `continue-on-error`, no `|| true`. Shell steps run under
+# `set -euo pipefail`. Every job has a `timeout-minutes` about twice its usual
+# time, so a hang fails the job instead of holding a runner for six hours.
+#
+# What is built, and where, is said once, in the `matrix` job: the packages
+# and the targets. Each package entry names its distribution, the directory of
+# its pyproject.toml, the module its wheel must import, the tests run against
+# that wheel and the pytest arguments they need. Two packages: ffwf-tau, and
+# ffwf-tau-tokens (D26 §7, its own pyproject.toml in tokens/, the same
+# workspace). The dev group is always the root pyproject.toml's.
+#
+# The tokenizer files (about 170 MB, pinned by sha256 in
+# tests/fixtures/tokens/artifacts.json) are fetched on every target, cached by
+# that file's hash, and required there (TAU_TOKENS_FILES=require): the real-file
+# tests are what show the tokenizers give the reference counts on each
+# platform, so none of them is skipped in this workflow.
+
+name: Publish τ to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [publish-draft]
+  workflow_dispatch:
+
+# Never two runs for one ref at once; never cancel one mid-upload.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: what is built where
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      packages: ${{ steps.lists.outputs.packages }}
+      targets: ${{ steps.lists.outputs.targets }}
+    steps:
+      - id: lists
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages='[
+            {"dist": "ffwf-tau", "dir": ".", "import": "tau._core", "tests": "tests",
+             "pytest": "-m \"not tokenizers\""},
+            {"dist": "ffwf-tau-tokens", "dir": "tokens", "import": "tau_tokens._core",
+             "tests": "tests/tokens", "pytest": ""}
+          ]'
+          targets='[
+            {"name": "linux-x86_64", "runner": "ubuntu-24.04"},
+            {"name": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
+            {"name": "macos-arm64", "runner": "macos-15"},
+            {"name": "macos-x86_64", "runner": "macos-15-intel"},
+            {"name": "windows-x86_64", "runner": "windows-2025"}
+          ]'
+          echo "packages=$(jq -c . <<<"$packages")" >>"$GITHUB_OUTPUT"
+          echo "targets=$(jq -c . <<<"$targets")" >>"$GITHUB_OUTPUT"
+
+  wheels:
+    name: wheel ${{ matrix.package.dist }} ${{ matrix.target.name }} py${{ matrix.python }}
+    needs: matrix
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.matrix.outputs.packages) }}
+        # 3.12 gives the cp312-abi3 wheel, 3.14t the cp314t one.
+        python: ["3.12", "3.14t"]
+        target: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build venv
+        run: |
+          set -euo pipefail
+          uv python install ${{ matrix.python }}
+          uv venv --python ${{ matrix.python }} "$RUNNER_TEMP/build"
+          uv pip install --python "$RUNNER_TEMP/build" "maturin>=1.15,<2"
+          if [ "$RUNNER_OS" = Linux ]; then
+            uv pip install --python "$RUNNER_TEMP/build" "ziglang==0.17.0"
+          fi
+      - name: maturin build
+        working-directory: ${{ matrix.package.dir }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/build/Scripts"; py="$bin/python.exe"
+          else bin="$RUNNER_TEMP/build/bin"; py="$bin/python"; fi
+          # Linux: portable manylinux2014 wheels with zig as the linker, as the
+          # Forgejo CI does (no docker).
+          extra=()
+          if [ "$RUNNER_OS" = Linux ]; then extra=(--zig --compatibility manylinux2014); fi
+          # macOS: the oldest release the wheel claims to run on.
+          if [ "$RUNNER_OS" = macOS ]; then export MACOSX_DEPLOYMENT_TARGET=11.0; fi
+          PATH="$bin:$PATH" "$bin/maturin" build --release --locked --out "$GITHUB_WORKSPACE/dist" \
+            --interpreter "$py" ${extra[@]+"${extra[@]}"}
+          ls -l "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: wheel-${{ matrix.package.dist }}-${{ matrix.target.name }}-py${{ matrix.python }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: test ${{ matrix.package.dist }} ${{ matrix.target.name }} py${{ matrix.python }}
+    needs: [matrix, wheels]
+    # Each cell tests its own wheel: a target whose build failed fails here, at the
+    # download, and the other targets still run.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.matrix.outputs.packages) }}
+        # 3.12 gives the cp312-abi3 wheel, 3.14t the cp314t one.
+        python: ["3.12", "3.14t"]
+        target: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v6
+        with:
+          name: wheel-${{ matrix.package.dist }}-${{ matrix.target.name }}-py${{ matrix.python }}
+          path: dist
+      # tests/conftest.py imports tau, so the tokenizer tests run beside the ffwf-tau
+      # wheel of the same target, as `pip install 'ffwf-tau[tokens]'` installs them.
+      - uses: actions/download-artifact@v6
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        with:
+          name: wheel-ffwf-tau-${{ matrix.target.name }}-py${{ matrix.python }}
+          path: dist
+      - uses: actions/setup-python@v6
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        with:
+          python-version: "3.12"
+      - name: tokenizer files (cached)
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        uses: actions/cache@v4
+        with:
+          path: target/tokens-files
+          key: tokens-files-${{ hashFiles('tests/fixtures/tokens/artifacts.json') }}
+      - name: fetch the tokenizer files
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        run: |
+          set -euo pipefail
+          python scripts/tokens_goldens.py present || python scripts/tokens_goldens.py fetch
+          python scripts/tokens_goldens.py present
+      # A fresh runner, a fresh venv: the wheel and the dev group (pytest and the
+      # test-only pins), nothing from the checkout's python/ tree. The tests run
+      # from outside the checkout so the installed wheel is what gets imported.
+      - name: tests against the installed wheel
+        run: |
+          set -euo pipefail
+          uv python install ${{ matrix.python }}
+          venv="$RUNNER_TEMP/clean"
+          uv venv --seed --python ${{ matrix.python }} "$venv"
+          if [ "$RUNNER_OS" = Windows ]; then py="$venv/Scripts/python.exe"; else py="$venv/bin/python"; fi
+          "$py" -m pip install --upgrade pip
+          "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$py" -c "import ${{ matrix.package.import }} as m, sys; print(m.__file__, sys.version)"
+          # -v: a test that hangs or crashes the interpreter is named in the log.
+          TAU_TOKENS_FILES=require "$py" -m pytest -v -p no:cacheprovider -rfEs \
+            ${{ matrix.package.pytest }} "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
+
+  # The Rust tests (the base tools' own suite among them) on every platform: the
+  # Python suite reaches the tools only through the wheel.
+  cargo-test:
+    name: cargo test ${{ matrix.target.name }}
+    needs: matrix
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tokenizer files (cached)
+        uses: actions/cache@v4
+        with:
+          path: target/tokens-files
+          key: tokens-files-${{ hashFiles('tests/fixtures/tokens/artifacts.json') }}
+      - name: cargo test
+        run: |
+          set -euo pipefail
+          python scripts/tokens_goldens.py present || python scripts/tokens_goldens.py fetch
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          cargo test --workspace --locked
+          # The tokenizers against the real files (ignored without them, as in scripts/check.sh).
+          cargo test -p tau-tokens --test artifacts --locked -- --include-ignored
+
+  sdist:
+    name: sdist ${{ matrix.package.dist }}
+    needs: matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        package: ${{ fromJSON(needs.matrix.outputs.packages) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build the sdist, then a wheel from it
+        working-directory: ${{ matrix.package.dir }}
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv venv --seed --python 3.12 "$RUNNER_TEMP/build"
+          "$RUNNER_TEMP/build/bin/pip" install "maturin>=1.15,<2"
+          "$RUNNER_TEMP/build/bin/maturin" sdist --out "$GITHUB_WORKSPACE/sdist"
+          ls -l "$GITHUB_WORKSPACE/sdist"
+          "$RUNNER_TEMP/build/bin/pip" wheel --no-deps -w "$RUNNER_TEMP/from-sdist" "$GITHUB_WORKSPACE"/sdist/*.tar.gz
+          ls -l "$RUNNER_TEMP/from-sdist"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sdist-${{ matrix.package.dist }}
+          path: sdist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: [test, cargo-test, sdist]
+    # Only a pushed tag named v*. A branch push has ref_type `branch`; a manual
+    # run is event `workflow_dispatch` even when started on a tag. Both fail
+    # this condition, so the job is skipped and never sees the OIDC token.
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ffwf-tau/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+      - name: the tag names the version being published
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist
+          want="${GITHUB_REF_NAME#v}"
+          for f in dist/*; do
+            case "$(basename "$f")" in
+              *-"$want"-*|*-"$want".tar.gz) ;;
+              *) echo "$f is not version $want (tag $GITHUB_REF_NAME)" >&2; exit 1 ;;
+            esac
+          done
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # skip-existing stays false: re-uploading a version is an error.

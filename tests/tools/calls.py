@@ -14,6 +14,16 @@ def call(tool: Tool, **args: object) -> Outcome:
     return asyncio.run(tool.call(json.dumps(args)))
 
 
+def put(path: Path, text: str) -> None:
+    """Write `text` as it is: UTF-8 and `\\n`, on every platform (`write_text` translates)."""
+    path.write_bytes(text.encode("utf-8"))
+
+
+def text_of(path: Path) -> str:
+    """The file's text as it is: UTF-8, no newline translation."""
+    return path.read_bytes().decode("utf-8")
+
+
 def ok(outcome: Outcome) -> str:
     assert isinstance(outcome, Outcome.Ok), outcome
     return outcome.value

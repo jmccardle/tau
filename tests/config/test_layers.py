@@ -6,6 +6,7 @@ problems through `check_config` and `tau config check`, which report every probl
 
 import json
 import os
+import sys
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -52,6 +53,8 @@ def load(
         world.user_config(user)
     root = world.home
     if project is not None:
+        if sys.platform == "win32":
+            pytest.skip("Windows: projects (D13 trust) are not ported; finding one is an error")
         root = world.home / "proj"
         (root / ".tau").mkdir(parents=True, exist_ok=True)
         write(root / ".tau" / "config.json", project)
@@ -331,7 +334,10 @@ def test_an_unreadable_file_is_a_problem(tmp_path: Path) -> None:
     assert problem.source == str(tmp_path / "missing.json")
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="root reads a file of mode 000; Windows file modes cannot deny reading",
+)
 def test_a_user_config_nobody_can_read_is_one_line_without_errno(world: World) -> None:
     world.user_config("{}")
     (world.tau / "config.json").chmod(0)

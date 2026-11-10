@@ -5,6 +5,7 @@ with `asyncio.eager_task_factory`, which Textual installs: a task starts running
 exception's `__cause__`) is marked `local_only("why")`, and `tests/serve` has the wire's own
 test."""
 
+import sys
 from collections.abc import Iterator
 
 import pytest
@@ -16,6 +17,8 @@ def harness_mode(request: pytest.FixtureRequest) -> Iterator[None]:
     skip = request.node.get_closest_marker("local_only")
     if request.param == "remote" and skip is not None:
         pytest.skip(f"local clients only: {skip.args[0]}")
+    if request.param == "remote" and sys.platform == "win32":
+        pytest.skip("Windows: no wire to run remote over (tau serve is not ported, D21)")
     Harness.mode = "remote" if request.param == "remote" else "local"
     Harness.eager = request.param == "eager"
     yield

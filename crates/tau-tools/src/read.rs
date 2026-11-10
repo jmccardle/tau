@@ -6,10 +6,8 @@
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
-use nix::fcntl::OFlag;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -107,14 +105,25 @@ impl Read {
         let io = |e: std::io::Error| ToolError(format!("cannot read {shown}: {e}"));
         // Opened without blocking (a pipe with no writer would hang an open) and
         // judged by `fstat` of the open file, not by its path, which may change.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits())
-            .open(resolve(&self.cwd, shown))
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => ToolError(format!("file not found: {shown}")),
-                _ => io(e),
-            })?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // Windows has no FIFO that blocks an open: a named pipe is not a path in a directory.
+        #[cfg(unix)]
+        {
+            use nix::fcntl::OFlag;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits());
+        }
+        let path = resolve(&self.cwd, shown);
+        let file = options.open(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => ToolError(format!("file not found: {shown}")),
+            // Windows refuses to open a directory as a file (Unix opens it, and the check
+            // below says what it is).
+            _ if std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) => {
+                ToolError(format!("{shown} is a directory, not a file"))
+            }
+            _ => io(e),
+        })?;
         let meta = file.metadata().map_err(io)?;
         if meta.is_dir() {
             return Err(format!("{shown} is a directory, not a file").into());
@@ -316,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // mkfifo
     fn a_pipe_is_refused_not_opened() {
         let (tool, dir) = tool(1000);
         let fifo = dir.path().join("pipe");

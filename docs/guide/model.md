@@ -112,8 +112,9 @@ and driven by the **driver**, which does the IO (the model call, the tools):
 
 With **auto-step** on, a step that moved the cursor is followed by another if work remains (a
 reply to ask for, tools to run, or input waiting), so a model that asks for a tool gets the
-result and keeps going. If work remains but the step did not move the cursor, trying again would
-do the same thing, so auto-step turns off: **a cursor never spins in place**. A runaway loop where
+result and keeps going. If work remains but the step did not move the cursor and nothing new
+reached it while it ran, trying again would do the same thing, so auto-step turns off: **a cursor
+never spins in place**. Something new (a message, an extension's item) wakes one more step. A runaway loop where
 the cursor does move (a model calling tools forever) is stopped by the `step_limit` extension,
 which is on by default.
 

@@ -3,6 +3,16 @@ through `open_client` and the app runs over the `RemoteClient`; what a running s
 is refused before the screen. The server is a real process with a mock model, started in a
 throwaway TAU_HOME and killed when the test is over."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import argparse
 import asyncio
 import io

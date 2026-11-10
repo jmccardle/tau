@@ -73,6 +73,7 @@ __all__ = [
     "WrongAnswer",
     "calibration_features",
     "first_message",
+    "is_leased",
     "stop_trace",
     "trace_clock",
     "trace_to",
@@ -257,6 +258,12 @@ class CalibrationStore:
 def first_message(directory: str | PathLike[str]) -> str | None:
     """The text of the first `User` node in the session in `directory`, read from the start of its
     log only as far as that node; no lease. `None` if it has none.
+    """
+
+def is_leased(directory: str | PathLike[str]) -> bool:
+    """Whether a store holds the lease of the session in `directory`, this process's included.
+    The lease is taken and let go at once, so a session that is free stays free. `False` for a
+    directory with no log.
     """
 
 def trace_to(path: str | PathLike[str]) -> None:

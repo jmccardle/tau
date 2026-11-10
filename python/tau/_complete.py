@@ -17,21 +17,23 @@ NAMED = ("path", "model", "cursor", "label", "node")
 
 def _paths(prefix: str) -> list[str]:
     """The names in the directory `prefix` is in that start with the rest of it; a
-    directory ends with `/`. A leading `~` is the driver's user's home, as the path value will
-    be read, and stays as typed. Only directories and regular files (through links) are offered:
-    a link to nothing, a FIFO or a socket is not a path `@` would attach. Unreadable or missing:
-    none (there is nothing to complete)."""
+    directory ends with the separator the prefix used (`/` if it has none). A leading `~` is the
+    driver's user's home, as the path value will be read, and stays as typed. Only directories
+    and regular files (through links) are offered: a link to nothing, a FIFO or a socket is not a
+    path `@` would attach. Unreadable or missing: none (there is nothing to complete)."""
     if prefix == "~":
         return ["~/"]
-    head, slash, tail = prefix.rpartition("/")
-    shown = head + slash  # the directory as typed: "", "dir/", "/"
+    separators = "/" + (os.sep if os.sep != "/" else "")  # a Windows path may use either
+    cut = max(prefix.rfind(c) for c in separators) + 1
+    shown, tail = prefix[:cut], prefix[cut:]  # the directory as typed: "", "dir/", "/", "C:\\x\\"
+    mark = prefix[cut - 1] if cut else "/"
     try:
         with os.scandir(os.path.expanduser(shown) or ".") as scan:
             names = sorted((e.name, e.is_dir()) for e in scan if e.is_dir() or e.is_file())
     except OSError:
         return []
     return [
-        f"{shown}{name}{'/' if is_dir else ''}"
+        f"{shown}{name}{mark if is_dir else ''}"
         for name, is_dir in names
         if name.startswith(tail) and (tail.startswith(".") or not name.startswith("."))
     ]

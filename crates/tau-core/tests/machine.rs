@@ -242,6 +242,42 @@ fn an_item_added_while_busy_causes_one_more_step() {
 }
 
 #[test]
+fn a_send_that_lands_after_the_input_position_is_answered_by_the_next_step() {
+    // A command that opens a cursor (`"new"`) and sends to it from a worker thread: the input
+    // and auto-step can land once the opening step passed its input position.
+    let (mut m, first_cursor) = machine();
+    let sys = m.session.at(first_cursor).unwrap();
+    let c = m.open(sys, Author::Core, 0, None).unwrap(); // opening wakes, auto-step off
+    let mut sent = false;
+    let jobs = run(&mut m, c, |job, m| {
+        if matches!(
+            job,
+            Job::Hooks {
+                point: Hook::PostStep,
+                ..
+            }
+        ) && !sent
+        {
+            sent = true;
+            send(m, c, Author::Extension("navigation".into()), "start here");
+        }
+        plain(job, m)
+    });
+    assert!(
+        jobs.contains(&Job::Sample),
+        "the send was answered: {jobs:?}"
+    );
+    assert!(
+        m.session.items(c).next().is_none(),
+        "no input is left pending"
+    );
+    assert!(
+        m.session.auto[&c],
+        "news is not a step that would only repeat itself"
+    );
+}
+
+#[test]
 fn opening_a_cursor_wakes_it_and_an_item_for_it_wakes_it_again() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();

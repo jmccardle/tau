@@ -18,7 +18,7 @@ from textual.app import App
 from tau._config import ConfigError
 from tau._extensions import absolute_explicit
 from tau._protocol import ProtocolError
-from tau._serve_record import ServeFailed, live_server, serve_directory
+from tau._serve_record import SERVE, ServeFailed, live_server, serve_directory
 from tau._sessions import SessionFlags, SessionInfo, is_leased
 from tau.tui._picker import Holder, SessionPicker
 from tau.tui._themes import build_theme_registry, install_themes
@@ -41,8 +41,10 @@ async def session_holders(
     server that does not answer, or a record that cannot be read, is a `no reply` row with the
     reason (the listing still opens). A session with no server whose lease is held is `in use`."""
     found: dict[str, Holder] = {}
-    directory = serve_directory(home)
-    for record in sorted(directory.glob("*.json")):
+    # On Windows no server runs (`require_unix_sockets`), so there are no records to ask.
+    records = [] if sys.platform == "win32" else sorted(serve_directory(home).glob("*.json"))
+    directory = home / SERVE
+    for record in records:
         try:
             if await live_server(directory, record.stem) is not None:
                 found[record.stem] = Holder("served")

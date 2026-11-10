@@ -5,6 +5,7 @@ the process was in when it loaded. Through `tau.load_extensions` and `tau ext` o
 import asyncio
 import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,7 +14,8 @@ from world import World, loaded, tau
 
 from tau import Outcome, Tool, list_extensions, load_extensions
 
-TOOLS = ["read", "write", "edit", "grep", "find", "bash"]
+# Windows leaves the `bash` tool out (README: not ported there)
+TOOLS = ["read", "write", "edit", "grep", "find", *([] if sys.platform == "win32" else ["bash"])]
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +106,7 @@ def test_the_tools_work_in_the_directory_the_process_was_in_when_they_loaded(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / "note.txt").write_text("in the project\n")
+    (project / "note.txt").write_bytes(b"in the project\n")
     os.chdir(project)
     (base,) = [e for e in load_extensions(loaded(world)) if e.name == "base_tools"]
     os.chdir(tmp_path)

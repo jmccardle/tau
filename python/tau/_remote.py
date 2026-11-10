@@ -15,6 +15,7 @@ one: it is a `RuntimeError`, so that rule does not loop on it.
 
 import asyncio
 import json
+import sys
 from collections.abc import Collection, Mapping
 from os import PathLike
 from typing import Final, Self, cast
@@ -41,6 +42,16 @@ from tau.commandline import Parsed
 
 _END: Final = object()
 """Queued after the last event: the stream has ended."""
+
+
+def require_unix_sockets(what: str) -> None:
+    """`OSError` on Windows, naming `what`: the wire (D21) is a Unix domain socket, and Python's
+    asyncio serves and dials none there. Which transport τ uses on Windows is not decided."""
+    if sys.platform == "win32":
+        raise OSError(
+            f"{what} is not available on Windows: tau serve speaks over a Unix domain socket "
+            "(D21), which Python's asyncio does not offer there"
+        )
 
 
 class _Channel:
@@ -70,7 +81,9 @@ class _Channel:
     async def connect(cls, socket: str | PathLike[str], client: str, *, buffer: int = 256) -> Self:
         """Dial the server at `socket` as `client` with an event stream of `buffer`, and say
         `hello`. The snapshot is queued before this returns. `ProtocolMismatch` if the server
-        speaks another protocol, `OSError` if nothing answers at `socket`."""
+        speaks another protocol, `OSError` if nothing answers at `socket` (or, on Windows,
+        always: see `require_unix_sockets`)."""
+        require_unix_sockets("connecting to `tau serve`")
         channel = cls(await unix_connect(socket, max_size=None), client, buffer)
         try:
             welcome = await channel.request(

@@ -4,11 +4,14 @@ import io
 import json
 import os
 import select
+import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
+
+import pytest
 
 from tau import (
     Author,
@@ -37,6 +40,8 @@ class World:
     environ: dict[str, str]
 
     def project(self, name: str = "proj", config: object | None = None) -> Path:
+        if sys.platform == "win32":
+            pytest.skip("Windows: projects (D13 trust) are not ported; finding one is an error")
         root = self.home / name
         (root / ".tau").mkdir(parents=True)
         if config is not None:
@@ -48,7 +53,7 @@ class World:
         self,
         id: str,
         *,
-        cwd: Path | None = None,
+        cwd: PurePath | None = None,
         name: str | None = None,
         forked_from: dict[str, object] | None = None,
         says: Sequence[str] = (),
@@ -160,6 +165,8 @@ class Terminal:
 @contextmanager
 def terminal(typed: str) -> Iterator[Terminal]:
     """A pseudo-terminal that has been typed `typed` (`EOF`: end of input)."""
+    if sys.platform == "win32":
+        pytest.skip("Windows: no pseudo-terminals (os.openpty is Unix only)")
     master, slave = os.openpty()
     with (
         os.fdopen(os.dup(slave), "w") as tty_out,

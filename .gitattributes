@@ -1,0 +1,4 @@
+# Every file is checked out byte for byte as committed, on every platform: no line-ending
+# conversion (a Windows checkout with core.autocrlf would otherwise turn the fixtures, which the
+# tests compare byte for byte, into CRLF; and some fixtures are CRLF on purpose).
+* -text

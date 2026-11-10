@@ -50,6 +50,7 @@ from tau._protocol import (
     end_params,
     error_object,
 )
+from tau._remote import require_unix_sockets
 from tau._values import Json
 
 BUFFER: Final = 256
@@ -349,7 +350,8 @@ class Server:
     ) -> "Server":
         """Serve `driver` (running, in the loop) at `path`, as session `session` in `cwd`. `idle`
         seconds is how long `wait` lets the server rest before it returns (`None`: never).
-        `OSError` if the socket cannot be bound."""
+        `OSError` if the socket cannot be bound (on Windows, always: see `require_unix_sockets`)."""
+        require_unix_sockets("tau serve")
         welcome = Welcome(PROTOCOL, version("ffwf-tau"), session, str(cwd), os.getpid())
         server = cls(driver, path, welcome, idle)
         server._sockets = await unix_serve(server._handle, path, max_size=None)

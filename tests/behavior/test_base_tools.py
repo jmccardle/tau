@@ -2,20 +2,28 @@
 
 import json
 import os
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from fakes import FakeProvider, Reply
 from harness import Harness, scenario
 from world import World, models, trust
 
 from tau import Author, Body, Outcome, Part, Stop, base_tools, load_config, load_extensions
 
+BASH_GAP = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows: the bash tool is not ported (README)"
+)
+# The tools the model is offered: `bash` is not one of them on Windows.
+OFFERED = ["read", "write", "edit", "grep", "find", *([] if sys.platform == "win32" else ["bash"])]
+
 
 @scenario
 async def test_the_model_reads_a_file_with_the_read_tool(tmp_path: Path) -> None:
-    (tmp_path / "secret.txt").write_text("violet-anchor-42\n")
+    (tmp_path / "secret.txt").write_bytes(b"violet-anchor-42\n")
     args = json.dumps({"path": "secret.txt"})
     provider = FakeProvider(
         [
@@ -32,11 +40,12 @@ async def test_the_model_reads_a_file_with_the_read_tool(tmp_path: Path) -> None
     assert results == Body.Results([("c1", Outcome.Ok("violet-anchor-42\n"), Author.Tools())])
     assert final == Body.Assistant([Part.Text("The phrase is violet-anchor-42")], Stop.End, "stop")
     offered = [r.tool_names for r in provider.requests]
-    assert offered == [["read", "write", "edit", "grep", "find", "bash"]] * 2
+    assert offered == [OFFERED] * 2
     await h.close()
 
 
 @scenario
+@BASH_GAP
 async def test_a_failing_command_is_an_error_outcome_the_model_sees(tmp_path: Path) -> None:
     args = json.dumps({"command": "echo nope; exit 2"})
     provider = FakeProvider(
@@ -53,6 +62,7 @@ async def test_a_failing_command_is_an_error_outcome_the_model_sees(tmp_path: Pa
 
 
 @scenario
+@BASH_GAP
 async def test_a_project_dotenv_never_reaches_the_environment_of_a_command(
     tmp_path: Path, world: World
 ) -> None:
@@ -93,9 +103,9 @@ async def test_the_base_tools_extension_gives_a_session_the_model_can_edit_and_f
     """Loaded as the shared start loads it, in the working directory the session starts in."""
     work = tmp_path / "work"
     work.mkdir()
-    (work / "a.txt").write_text("one\ntwo\n")
+    (work / "a.txt").write_bytes(b"one\ntwo\n")
     (work / "sub").mkdir()
-    (work / "sub" / "b.txt").write_text("two\n")
+    (work / "sub" / "b.txt").write_bytes(b"two\n")
     edit = json.dumps({"path": "a.txt", "old_string": "two", "new_string": "2"})
     find = json.dumps({"pattern": "*.txt"})
     provider = FakeProvider(
@@ -109,7 +119,7 @@ async def test_the_base_tools_extension_gives_a_session_the_model_can_edit_and_f
     h = await Harness.create(tmp_path, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == ["read", "write", "edit", "grep", "find", "bash"]
+    assert provider.requests[0].tool_names == OFFERED
     diff = "Replaced 1 occurrence in a.txt\n--- a.txt\n+++ a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2"
     assert h.bodies()[-2] == Body.Results(
         [
@@ -146,5 +156,5 @@ async def test_with_no_extensions_the_model_is_still_offered_them(
     )
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == ["read", "write", "edit", "grep", "find", "bash"]
+    assert provider.requests[0].tool_names == OFFERED
     await h.close()

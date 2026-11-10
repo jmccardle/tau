@@ -2,9 +2,22 @@
 events and responses, each way a stream ends, and what a disconnect does. The behavior suite run
 remote is the test of the whole `Client`; these are the things only a wire has."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
+import shutil
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,6 +51,21 @@ from tau.commandline import UnknownCommand
 pytestmark = pytest.mark.usefixtures("remote")
 
 SYS = 1  # the system node's id: a new session is Config 0, System 1
+
+
+@pytest.fixture
+def short_dir() -> Iterator[Path]:
+    """A directory whose path is short enough to hold a socket (macOS: sun_path is 104 bytes,
+    and its temp directory is a long prefix)."""
+    base = Path(
+        tempfile.mkdtemp(
+            prefix="tau", dir=os.path.realpath("/tmp") if sys.platform == "darwin" else None
+        )
+    )
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 async def dial(h: Harness) -> ClientConnection:
@@ -114,7 +142,7 @@ async def test_another_protocol_is_refused_with_the_servers_and_the_connection_c
 
 @scenario
 async def test_a_client_is_told_a_server_speaks_another_protocol_as_protocol_mismatch(
-    tmp_path: Path,
+    short_dir: Path,
 ) -> None:
     """The error object of a server whose protocol is not ours, which only a fake can send."""
 
@@ -123,7 +151,7 @@ async def test_a_client_is_told_a_server_speaks_another_protocol_as_protocol_mis
         error = {"code": -32006, "message": "this server speaks 2", "data": {"server": 2}}
         await socket.send(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": error}))
 
-    where = tmp_path / "s"
+    where = short_dir / "s"
     async with unix_serve(other, where):
         with pytest.raises(ProtocolMismatch) as refused:
             await RemoteClient.connect(where, "test:old")
@@ -603,7 +631,7 @@ async def test_cancelling_one_call_leaves_the_other_calls_waiting_for_their_answ
 
 @scenario
 async def test_an_event_that_does_not_decode_ends_the_stream_and_fails_the_calls(
-    tmp_path: Path,
+    short_dir: Path,
 ) -> None:
     """A server whose event is not a node: the client must not hang on it."""
 
@@ -616,7 +644,7 @@ async def test_an_event_that_does_not_decode_ends_the_stream_and_fails_the_calls
         async for _ in socket:
             pass
 
-    where = tmp_path / "s"
+    where = short_dir / "s"
     async with unix_serve(broken, where):
         client = await RemoteClient.connect(where, "test:broken")
         with pytest.raises(ConnectionError):

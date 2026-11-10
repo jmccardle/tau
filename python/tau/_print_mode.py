@@ -22,13 +22,14 @@ not busy. The calls publish their events before they return, and the stream is r
 
 import asyncio
 import contextlib
-import getpass
+import errno
+import io
 import json
 import os
 import signal
-import socket
+import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, TextIO, cast
@@ -47,7 +48,7 @@ from tau._events import (
     Retrying,
 )
 from tau._launch import AnswerRule, UsageError, message_of
-from tau._open import Opened, open_client
+from tau._open import Opened, client_id, open_client
 from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
@@ -123,8 +124,8 @@ class _Run:
             stream.write(text)
             if stream is self.out:
                 stream.flush()
-        except BrokenPipeError:
-            if stream is not self.out:
+        except OSError as e:
+            if stream is not self.out or not pipe_gone(e):
                 raise
             raise _Gone from None
 
@@ -406,11 +407,6 @@ def _outcome(outcome: Outcome) -> str:
             return "interrupted"
 
 
-def client_id() -> str:
-    """`<user>@<host>:print`, the id `-p` is as a client."""
-    return f"{getpass.getuser()}@{socket.gethostname()}:print"
-
-
 async def _send(run: _Run, message: str) -> int:
     """Send the message and wait for the cursor to rest."""
     run.stepped = False
@@ -610,7 +606,7 @@ async def _take_back(run: _Run) -> None:
 async def _main(process: Process, args: object, message: str, piped: str) -> int:
     opened = await open_client(
         args,
-        client=client_id(),
+        client=client_id("print"),
         environ=process.environ,
         cwd=process.cwd,
         model=getattr(args, "model"),  # noqa: B009
@@ -642,6 +638,24 @@ async def _main(process: Process, args: object, message: str, piped: str) -> int
         await opened.close()
 
 
+def _on_sigint(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> None:
+    """Run `then` in `loop` on the next SIGINT (Ctrl+C), in place of any handler before it.
+    Windows' event loop has no `add_signal_handler`: there the handler is the interpreter's,
+    which runs in the main thread and hands `then` to the loop."""
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(then))
+    else:
+        loop.add_signal_handler(signal.SIGINT, then)
+
+
+def _off_sigint(loop: asyncio.AbstractEventLoop) -> None:
+    """SIGINT back to the interpreter's default."""
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    else:
+        loop.remove_signal_handler(signal.SIGINT)
+
+
 def _leave(process: Process) -> None:
     """The second SIGINT: say so and exit now, though a hook never returns. No cleanup runs."""
     try:
@@ -667,13 +681,35 @@ def detach(stream: TextIO) -> None:
         os.close(null)
 
 
+def pipe_gone(error: OSError) -> bool:
+    """Whether `error` says a pipe's reader went away: `BrokenPipeError`, or on Windows the
+    `EINVAL` a write to a pipe with no reader raises there."""
+    windows = sys.platform == "win32" and error.errno == errno.EINVAL
+    return isinstance(error, BrokenPipeError) or windows
+
+
+def utf8(stream: TextIO | None) -> TextIO | None:
+    """A process stream that writes UTF-8: on Windows a pipe or a file is the ANSI code page's
+    (cp1252 has no `τ`), which `tau --help > help.txt` or a model's reply cannot be written in.
+    A terminal's stream is left as it is (Windows writes the console in UTF-16), as is one that
+    cannot be reconfigured; Python 3.15 makes UTF-8 the default (PEP 686)."""
+    if stream is None or not issubclass(type(stream), io.TextIOWrapper):
+        return stream
+    with contextlib.suppress(OSError, ValueError):  # a stream already closed
+        if stream.encoding.lower() not in ("utf-8", "utf8") and not stream.isatty():
+            cast("io.TextIOWrapper[io.BufferedWriter]", stream).reconfigure(encoding="utf-8")
+    return stream
+
+
 def reader_gone(out: TextIO) -> bool:
     """Whether a `BrokenPipeError` was standard output's: what it still holds cannot be flushed.
     If it was standard error's, standard output is left alone (its buffer may go to a file)."""
     try:
         out.flush()
-    except BrokenPipeError:
-        return True
+    except OSError as e:
+        if pipe_gone(e):
+            return True
+        raise
     return False
 
 
@@ -705,16 +741,15 @@ def print_mode(process: Process, args: object) -> int:
         hint: list[asyncio.TimerHandle] = []
 
         def first() -> None:
-            loop.remove_signal_handler(signal.SIGINT)
-            loop.add_signal_handler(signal.SIGINT, again)
+            _on_sigint(loop, again)
             hint.append(loop.call_later(STOP_NOTICE, waiting))
             task.cancel()
 
-        loop.add_signal_handler(signal.SIGINT, first)
+        _on_sigint(loop, first)
         try:
             return await _main(process, args, *message)
         finally:
-            loop.remove_signal_handler(signal.SIGINT)
+            _off_sigint(loop)
             for timer in hint:
                 timer.cancel()
 

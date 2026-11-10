@@ -15,6 +15,7 @@ import contextlib
 import functools
 import shutil
 import tempfile
+import time
 import weakref
 from collections.abc import Callable, Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
@@ -53,6 +54,9 @@ Connected = LocalClient | RemoteClient
 
 CLIENT = "term"
 PASSES = 10_000
+SETTLE_SECONDS = 30.0
+"""`settle` gives up after both: passes alone end too soon on a slow machine while a worker
+thread (a token count, a tool) is out, which keeps the driver busy and never parks."""
 
 
 @dataclass(frozen=True)
@@ -332,15 +336,17 @@ class Harness:
         held gate or an open question. Never advances
         the clock. Re-raises what an effect or the pump died of.
         """
-        quiet = 0
-        for _ in range(PASSES):
+        quiet = passes = 0
+        deadline = time.monotonic() + SETTLE_SECONDS
+        while passes < PASSES or time.monotonic() < deadline:
             self.check()
             quiet = quiet + 1 if self._quiet() else 0
             if quiet == 2:
                 await self._flush()
                 return
+            passes += 1
             await asyncio.sleep(0)
-        raise AssertionError(f"settle: not quiet after {PASSES} passes")
+        raise AssertionError(f"settle: not quiet after {passes} passes and {SETTLE_SECONDS} s")
 
     async def _flush(self) -> None:
         """Remote clients have heard what the driver published: a response arrives after the

@@ -28,6 +28,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -259,7 +260,10 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
             return _announce(run, args, record, started=False)
     # What needs a person is asked here; the child has no terminal.
     load_config(choice.cwd, run.environ, ask=prompts(run.stdin, run.stdout).ask)
-    pending = directory / f".starting-{os.getpid()}.log"
+    # One name per call, not per process: two `-d` in one process must not share a log.
+    handle, name = tempfile.mkstemp(prefix=".starting-", suffix=".log", dir=directory)
+    os.close(handle)
+    pending = Path(name)
     child = _spawn(run, pending)
     found = await _record_of(directory, existing, child, pending)
     if found is not None:

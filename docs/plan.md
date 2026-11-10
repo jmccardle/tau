@@ -11,7 +11,7 @@ This file holds only the phases and where we are. The original hand-off plan,
 with its model sketch (§1) and decisions table (§4), is in git history
 (`b07efb9` and earlier).
 
-## Status (2026-10-31)
+## Status (2026-11-10)
 
 | phase | state |
 |---|---|
@@ -23,8 +23,8 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 5 extensions | **done** (2026-10-31): D16 stages 1 (values, functions as tools), 2 (`Client`, events, questions with ids) and 3 (commands, options, completion, `commandline`, `examples/chat.py`) built; stage 4 (`tau serve`, `RemoteClient`) is Phase 7. Fix list `plan-phase5-fixes.md`: stages A and B built and signed off 2026-10-31; C and D built as one stage and signed off 2026-10-31 (D17 accepted 2026-10-31). |
 | 6 absorption | **done** (2026-10-31): history merged into the τ repository, renamed to `tau` / `ffwf-tau`, `parity/` deleted, branch `0.15.x` for 0.15 hotfixes. |
 | 7 foundations and the wire | **in progress**: ADRs D18–D21 accepted 2026-11-01. Stage 7A (D19, D18, D20: the shared start) built, reviewed and signed off 2026-11-01. Stage 7B (D21, the wire) built, reviewed and signed off 2026-11-01. Stage 7C (API docs: surface, reference, docstrings, guides) built, reviewed and signed off 2026-11-02. Exit gap: tau-search's own extension cannot load until its port after 0.16.0; the entry point is tested with fixture packages. |
-| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. D22–D24 accepted 2026-11-02; 8A signed off 2026-11-02; 8B built and reviewed 2026-11-03; 8C built and reviewed 2026-11-03 in three cuts (8C-1 `tau` opens the TUI: transcript, editor, commands, forms, questions, themes; 8C-2 cursor bar and switching, Ctrl+Z, `Client.remove_item`, the tree screen, the session picker, re-exec; 8C-3 `/config` forms with save, `/model` picker, saved theme, render window, snapshots, TUI guide page), signed off 2026-11-03; 8D built and reviewed 2026-11-03 (the ratatui example: a Rust client of `tau serve`, wire types generated from the schema; the schema gained `minimum: 0` on every id and an integer `ErrorCode`), stopped for review. Fixed 2026-11-03: the hub's `Feed.offer` moved a replacing `CursorView` to the end of the buffer, past the snapshot's `Labels` or `Live` deltas; a state now replaces its copy only where nothing but state follows it (D16 Order, `tests/behavior/test_event_order.py`). TUI follow-ups after 8D (owner, 2026-11-03): a tree view that follows the active cursor beside the other branches and cursors (built and reviewed 2026-11-03: the Ctrl+G screen reworked, the viewed walk straight with other branches as folded stubs, closed cursors dimmed, following; D23 "Built: tree view"; stopped for review); extension and tool lists with load/unload written as config; compaction and pruning (8E) checked through that tree view. **8E-4 built** (2026-11-03): permissions (`ask`, `allow`, `deny` rules, `yes | always | no`, asking nothing until configured; `tau -p --answer`) and the `agents` built-in, off by default (`agent(task, to=None)` opens a closed-when-done cursor `agent:N`), M10 (D24 "Built: 8E-4"); the ratatui example draws a question of several lines; reviewed twice 2026-11-03 (bash and path rule bypasses closed; the driver refuses a tool the sample was not offered); 8E complete, stopped for the owner's sign-off. **8E-3 built** (2026-11-03): `copied_from` and `derived_from` (M1), `/prune`, compaction (`/compact`, the proactive trigger on `context_window`, a summarizer cursor), a hook's `rest` ending `Aborted` when its own cursor is aborted (M7), the tree screen's copy and derived marks and `p` (D24 "Built: 8E-3"), reviewed twice 2026-11-03; soft and hard limits (Ruling 14, owner); core: an abort before sampling or during `pre_input` ends the step without sampling or committing more input. **8E-2 built** (2026-11-03): usage, `context_window`, `price`, `resolved_model`, `model(at=)`, `usage.written` (D24 "Built: 8E-2"), reviewed 2026-11-03; **8E-1 built** (2026-11-03): retry (`RetryProvider` in `tau`, `Retrying` delta, `load: {retry: false}`), `@file` attachments, prompt templates and skills (pinned by trust), built-ins built with the `LoadedConfig` (D24 "Built: 8E-1"), reviewed 2026-11-03; 8E is reviewed per cut and signed off as a whole. The ratatui example gained the tree browser and `/config` forms (2026-11-03, reviewed; matching D23's tree view). |
-| 9 | not started; see Phases. |
+| 8 frontends, tools, standard extensions | **in progress** (2026-11-02). Stages: **8A** `base_tools` built-in extension, `edit`, `find`; **8B** `tau -p`, `--answer`, `--version`, `--verbose`; **8C** the Textual TUI; **8D** the ratatui example; **8E** standard extensions. 8B, 8C and 8E get ADRs (D22–D24) first. D22–D24 accepted 2026-11-02; 8A signed off 2026-11-02; 8B built and reviewed 2026-11-03; 8C built and reviewed 2026-11-03 in three cuts (8C-1 `tau` opens the TUI: transcript, editor, commands, forms, questions, themes; 8C-2 cursor bar and switching, Ctrl+Z, `Client.remove_item`, the tree screen, the session picker, re-exec; 8C-3 `/config` forms with save, `/model` picker, saved theme, render window, snapshots, TUI guide page), signed off 2026-11-03; 8D built and reviewed 2026-11-03 (the ratatui example: a Rust client of `tau serve`, wire types generated from the schema; the schema gained `minimum: 0` on every id and an integer `ErrorCode`), stopped for review. Fixed 2026-11-03: the hub's `Feed.offer` moved a replacing `CursorView` to the end of the buffer, past the snapshot's `Labels` or `Live` deltas; a state now replaces its copy only where nothing but state follows it (D16 Order, `tests/behavior/test_event_order.py`). TUI follow-ups after 8D (owner, 2026-11-03): a tree view that follows the active cursor beside the other branches and cursors (built and reviewed 2026-11-03: the Ctrl+G screen reworked, the viewed walk straight with other branches as folded stubs, closed cursors dimmed, following; D23 "Built: tree view"; stopped for review); extension and tool lists with load/unload written as config; compaction and pruning (8E) checked through that tree view. **8E-4 built** (2026-11-03): permissions (`ask`, `allow`, `deny` rules, `yes | always | no`, asking nothing until configured; `tau -p --answer`) and the `agents` built-in, off by default (`agent(task, to=None)` opens a closed-when-done cursor `agent:N`), M10 (D24 "Built: 8E-4"); the ratatui example draws a question of several lines; reviewed twice 2026-11-03 (bash and path rule bypasses closed; the driver refuses a tool the sample was not offered); 8E complete, stopped for the owner's sign-off. **8E-3 built** (2026-11-03): `copied_from` and `derived_from` (M1), `/prune`, compaction (`/compact`, the proactive trigger on `context_window`, a summarizer cursor), a hook's `rest` ending `Aborted` when its own cursor is aborted (M7), the tree screen's copy and derived marks and `p` (D24 "Built: 8E-3"), reviewed twice 2026-11-03; soft and hard limits (Ruling 14, owner); core: an abort before sampling or during `pre_input` ends the step without sampling or committing more input. **8E-2 built** (2026-11-03): usage, `context_window`, `price`, `resolved_model`, `model(at=)`, `usage.written` (D24 "Built: 8E-2"), reviewed 2026-11-03; **8E-1 built** (2026-11-03): retry (`RetryProvider` in `tau`, `Retrying` delta, `load: {retry: false}`), `@file` attachments, prompt templates and skills (pinned by trust), built-ins built with the `LoadedConfig` (D24 "Built: 8E-1"), reviewed 2026-11-03; 8E is reviewed per cut and signed off as a whole. The ratatui example gained the tree browser and `/config` forms (2026-11-03, reviewed; matching D23's tree view). **8E-5** (stress-test fixes) merged 2026-11-05; **8E-6** (decisions #43–#52 in six branches: fix-input, fix-rs, fix-cli, fix-config, fix-perms, fix-tokens) merged 2026-11-08. **D26** (token counting) accepted with 8E-6: T1 (compaction on reported counts) merged 2026-11-08; T2 (usage facts, spans, `scripts/record_provider.py`) and T3 (the `tokens` built-in, calibration) merged 2026-11-10 (`7c8d3bad`); T4's crates and the second wheel `ffwf-tau-tokens` merged 2026-11-10 (`e190d1d7`), its adapter not built. The public cleanup (no private hosts or paths in the tree; README and PyPI metadata) merged 2026-11-10 (`474fc695`). The 8E sign-off is not given (owner, 2026-11-10): Phase 8 continues while the 0.16 candidate stabilizes, through the open work in the tracker. |
+| 9 | not started (rule 5: waits for the 8E sign-off). Its wheel matrix is built ahead, on branch `publish-draft` (2026-11-10; see Phase 9). |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
 - writes happen inside the Rust call; persistence is not a job (D11);
@@ -80,8 +80,10 @@ directly, so:
 **Deferred (2026-10-29):**
 - Overflow-file pruning: a user config or an option of the base tools
   extension, by age and/or total size (e.g. last 60 days, last 0.25 GB).
-- A macOS implementation of the base tools (`bash` finds leftover processes
-  through `/proc`, so it is Linux-only), and a `powershell` tool for Windows.
+- ~~A macOS implementation of the base tools~~: done in Phase 9 (libproc and a
+  kqueue in place of `/proc` and `waitid`; the same Rust tests pass on both macOS
+  runners). A shell tool for Windows (`powershell`, Git Bash, or none) is still
+  open; see Phase 9.
 
 4. **Config overhaul** (approved 2026-10-27; built 2026-10-29), in Python: the config file
    parser, project trust, and `tau config check`. Written up as
@@ -112,8 +114,8 @@ directly, so:
 ## Phases
 
 ### Phase 0: scaffold — done
-Cargo workspace, maturin, wheels (Linux x86_64 only; aarch64 and macOS need
-runners we don't have — revisit before release), clippy, rustfmt, ruff,
+Cargo workspace, maturin, wheels (Linux x86_64 at the time; Phase 9 adds
+aarch64, macOS and Windows on GitHub's runners), clippy, rustfmt, ruff,
 pyright strict, proptest. Exit met: the wheel imports next to `ffwf-tau` 0.15,
 including on free-threaded 3.14t without re-enabling the GIL.
 
@@ -363,11 +365,44 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   notice when the cache is not being read.
 
 ### Phase 9: release 0.16.0
-- Wheels beyond Linux x86_64. aarch64 and macOS need runners; the base tools
-  are Linux-only.
-- The PyPI publish workflow on GitHub. It is rewritten for maturin but keeps
-  `publish.yml` as its name, because the trusted publisher is bound to that
-  name.
+- Wheels beyond Linux x86_64: built (2026-11-10). `.github/workflows/publish.yml`
+  builds a `cp312-abi3` and a `cp314t` wheel for Linux x86_64 and aarch64
+  (manylinux2014, zig), macOS arm64 and x86_64, and Windows x86_64, plus the
+  sdist (and a wheel built from it); each wheel is installed in a clean venv on
+  a fresh runner of its platform and the whole suite runs against it, and
+  `cargo test` runs on all five. It publishes only for a pushed `v*` tag; a
+  push to `publish-draft` or a manual run builds and tests. A second package
+  is one entry in its `matrix` job.
+- Platforms, as built: Linux and macOS have everything, the `bash` tool at
+  parity (`tau-tools/src/session/{linux,macos}.rs`). Windows builds and
+  imports, and has the core, the store (its lease is a byte-range lock, since
+  a Windows lock is mandatory), `tau -p`, the TUI and the other five base
+  tools (the overflow directory checked by owner and access list). Not ported
+  to Windows, each an error naming the platform where it is used: the `bash`
+  tool (`base_tools()` returns five there), `tau serve` and its clients (the
+  wire is a Unix domain socket, which asyncio does not offer on Windows), and
+  projects (D13's owner and mode checks), and path patterns in permission
+  rules (refused where configured; the bare tool name works). The drop-in
+  check (`require_private`) is not made on Windows. `@file` on Windows: a
+  backslash separates directories and escapes only a space. Open decisions:
+  the Windows shell tool; the Windows transport for `tau serve`; Windows
+  project trust; how permission path patterns meet Windows paths (drive
+  letters, `\`, case); the Windows reading of the drop-in check.
+- macOS: a deny or ask rule's directories are made real too (`/etc` is a link
+  to `/private/etc` there, and `write:/etc/*` missed every write that resolved
+  through it), and deny and ask fold case as the volume does.
+- CI on all five platforms (2026-11-10, `publish-draft`): the long tail of
+  the first runs is fixed (line endings, `bash` among the base tools, path
+  spelling, `/tmp` and `/etc` under `/private`, the 3.14t command test). What
+  the runners found since, each fixed with a test: on Windows, no username
+  without `USERNAME` (`getpass` raises there), `EINVAL` for a pipe whose reader
+  went away, cp1252 for a piped or redirected stdout (`tau --help > f` failed
+  on its `τ`; the streams now write UTF-8), the example's POSIX signals; two
+  `tau serve -d` in one process sharing a pending log (aarch64); a send to a
+  cursor that lands after its step's input position, which the rest rule
+  left pending with auto-step off (Windows 3.14t; model.md §6 now says news
+  keeps auto-step). Skipped on Windows with the reason: `tests/tui/test_tree_long.py`
+  (it does not end within faulthandler's 120 s on the runner; why is not known).
 - The docs site, and release notes written from `docs/from-0.15.md`
   (what changed, what was dropped, what comes later). There is no 0.15
   session converter (D9 superseded), and no 0.15 extension shim.

@@ -1,5 +1,6 @@
 """Tokenizer identities, the catalogue, and fingerprinting (D26 §7.4), through `tau_tokens`."""
 
+import os
 from importlib.metadata import requires
 
 import pytest
@@ -21,11 +22,9 @@ def test_an_identity_has_three_forms() -> None:
     assert parse_identity("tiktoken:o200k_base") == ("tiktoken", "o200k_base", None)
     assert parse_identity("hf:Qwen/Qwen3-8B") == ("hf", "Qwen/Qwen3-8B", None)
     assert parse_identity("hf:Qwen/Qwen3-8B@b968826d") == ("hf", "Qwen/Qwen3-8B", "b968826d")
-    assert parse_identity("file:/models/qwen/tokenizer.json") == (
-        "file",
-        "/models/qwen/tokenizer.json",
-        None,
-    )
+    # A file is a path absolute on this machine: `/models/...` here, `D:\models\...` on Windows.
+    file = os.path.abspath("/models/qwen/tokenizer.json")
+    assert parse_identity(f"file:{file}") == ("file", file, None)
 
 
 @pytest.mark.parametrize(

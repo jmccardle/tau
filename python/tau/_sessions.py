@@ -15,11 +15,11 @@ side of it is `tau.open_client`). Which session a program opens, and how it star
 `tau._session_start`.
 """
 
-import fcntl
 import json
 import os
 import secrets
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +29,7 @@ from typing import cast
 
 from tau._config import ConfigError
 from tau._core import Exists, Session, first_message
+from tau._core import is_leased as _store_is_leased
 from tau._refs import absolute_ref
 
 SESSIONS = "sessions"
@@ -135,6 +136,8 @@ def _write_info(directory: Path, data: Mapping[str, object]) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+    if sys.platform == "win32":
+        return  # a directory cannot be opened to sync there; NTFS journals the rename
     dir_fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(dir_fd)
@@ -264,20 +267,10 @@ def _age(updated: float | None, now: float) -> str:
 
 
 def is_leased(path: Path) -> bool:
-    """Whether a store holds the lease of the session in `path` (an exclusive `flock` on its log),
+    """Whether a store holds the lease of the session in `path` (an exclusive lock on its log),
     this process's included. The lease is taken and let go at once, so a session that is free
     stays free."""
-    try:
-        fd = os.open(path / _LOG, os.O_RDONLY)
-    except FileNotFoundError:
-        return False
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    finally:
-        os.close(fd)  # closing the descriptor lets the lease go
-    return False
+    return _store_is_leased(path)
 
 
 def age_of(row: SessionInfo, now: float | None = None) -> str:

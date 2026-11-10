@@ -379,6 +379,10 @@ fn the_bound_narrows_as_residuals_gather() {
 }
 
 #[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "a feature is a count or a 0/1 flag, exact in f64; equality is the claim"
+)]
 fn the_features_of_a_body_are_its_text_by_role_and_class() {
     let user = features(&Body::User("Héllo wörld 42!".into()));
     let at = CLASSES; // the user role

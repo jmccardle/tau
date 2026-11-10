@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import sys
 from collections.abc import Callable, Coroutine, Iterator, Sequence
 from pathlib import Path
 
@@ -77,7 +78,8 @@ async def which_tools(cursor: Cursor) -> str:
 
 commands = (which_tools,)
 '''
-BASE_TOOLS = "read, write, edit, grep, find, bash"
+# Windows leaves the `bash` tool out (README: not ported there)
+BASE_TOOLS = "read, write, edit, grep, find" + ("" if sys.platform == "win32" else ", bash")
 MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}}}
 
 
@@ -152,8 +154,9 @@ def test_a_new_session_is_a_directory_named_by_its_id_with_info_json(configured:
         assert path is not None
         assert path.parent == configured.tau / "sessions"
         assert ID.fullmatch(path.name)
-        assert stat.S_IMODE(path.stat().st_mode) == 0o700
-        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        if sys.platform != "win32":  # Windows has no mode bits: its st_mode always says 777
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
+            assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         info = json.loads((path / "info.json").read_text(encoding="utf-8"))
         assert info == {"cwd": str(configured.home.resolve())}
         assert sorted(p.name for p in path.iterdir()) == ["info.json", "log"]
@@ -418,7 +421,7 @@ def test_a_session_whose_working_directory_is_gone_cannot_open_but_names_it(
 ) -> None:
     gone = configured.home / "gone"
     used(configured, OLD, cwd=gone)
-    with pytest.raises(FileNotFoundError, match=f"{gone} no longer exists"):
+    with pytest.raises(FileNotFoundError, match=f"{re.escape(str(gone))} no longer exists"):
         start(configured, "--session", OLD)
     assert [r.error for r in rows(configured)] == [None], "it is still a session"
 

@@ -2,6 +2,16 @@
 picker first; Ctrl+O and Ctrl+N leave the screen and `tau` replaces itself (the same process id)
 with `tau` started for the other session. A real process, a throwaway TAU_HOME, the mock model."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import time
 from pathlib import Path
 
@@ -81,9 +91,8 @@ def test_ctrl_n_replaces_the_process_with_a_new_session_and_keeps_the_old(served
     screen.type(CTRL_N)
     deadline = time.monotonic() + 20
     while len(ids(served)) < 2:
-        screen.wait_for("idle")
+        screen.pump(0.05)  # read the terminal: one nobody reads fills up, and the program blocks
         assert time.monotonic() < deadline, "no second session"
-        time.sleep(0.05)
     (second,) = (i for i in ids(served) if i != first)
     screen.wait_for(second)
     log = served.tau / "sessions" / second / "log"
@@ -101,9 +110,8 @@ def test_ctrl_n_on_a_session_never_used_replaces_it(served: World) -> None:
     screen.type(CTRL_N)
     deadline = time.monotonic() + 20
     while ids(served) in ([first], []):
-        screen.wait_for("idle")
+        screen.pump(0.05)  # read the terminal: one nobody reads fills up, and the program blocks
         assert time.monotonic() < deadline, "the session was not replaced"
-        time.sleep(0.05)
     (second,) = ids(served)
     assert second != first
     screen.wait_for(second)

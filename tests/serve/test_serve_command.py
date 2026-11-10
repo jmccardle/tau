@@ -2,6 +2,16 @@
 record, `--stop`, `--schema`. The servers are real processes with a mock model, started in a
 throwaway TAU_HOME under a short directory and killed when the test is over."""
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip(
+        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
+        allow_module_level=True,
+    )
+
 import asyncio
 import json
 import os
@@ -15,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from proctable import alive
 from world import Result, World, tau
 
 from tau import (
@@ -55,15 +66,6 @@ def record_of(result: Result) -> dict[str, object]:
 def existing(world: World) -> Path:
     """A session in the project, by hand: it is not deleted when its server stops unused."""
     return world.session(OLD, cwd=work(world))
-
-
-def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
-        return stat.read().split(") ")[1][0] != "Z"  # a zombie is dead, only unreaped
 
 
 def wait_gone(pid: int, seconds: float = 10) -> None:
@@ -144,7 +146,7 @@ def test_two_d_at_once_start_one_server_and_both_print_it(home: World) -> None:
     existing(home)
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: serve(home, "-d", "--json", "--session", OLD), range(2)))
-    assert [r.code for r in results] == [0, 0], [r.err for r in results]
+    assert [r.code for r in results] == [0, 0], [(r.out, r.err) for r in results]
     records = [record_of(r) for r in results]
     assert records[0]["pid"] == records[1]["pid"], "the loser prints the winner's record"
     assert sorted(bool(r["started"]) for r in records) == [False, True]

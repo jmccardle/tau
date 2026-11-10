@@ -83,7 +83,11 @@ def run_until_signalled(main: Coroutine[object, object, None]) -> None:
     does: by cancelling it, so a running `bash` command is killed on the way out. Without
     this the process dies at once, the command is left running in its own session, and its
     timeout never fires. Any program that runs base tools must do the same. Exits 128 + the
-    signal number."""
+    signal number. Windows has no SIGHUP, no `add_signal_handler` and no `bash` tool, so there
+    `main` just runs."""
+    if sys.platform == "win32":
+        asyncio.run(main)
+        return
     caught: list[int] = []
 
     async def guarded() -> None:

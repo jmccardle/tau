@@ -11,7 +11,10 @@ lowest id, which the client reopens (a new id with the old labels). The choice a
 is the frontend's (D16, D17). The events read are kept, so a frontend loses none.
 """
 
+import getpass
 import os
+import socket
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -29,6 +32,17 @@ from tau._session_start import Started, SystemText, refuse_model, start_session
 from tau._sessions import PickSession, SessionFlags, SessionInfo
 from tau._startup import Prompts
 from tau._trust import tau_home
+
+
+def client_id(kind: str) -> str:
+    """`<user>@<host>:<kind>`, the id a frontend is as a client. The user is the environment's
+    (`LOGNAME`, `USER`, `LNAME`, `USERNAME`), else the operating system's: the password database
+    on POSIX, else the logon name (`os.getlogin`, which Windows answers with no variable set)."""
+    try:
+        user = getpass.getuser()
+    except (OSError, ImportError):  # Windows with no variable: OSError from 3.13, no `pwd` before
+        user = os.getlogin()
+    return f"{user}@{socket.gethostname()}:{kind}"
 
 
 @dataclass
@@ -78,6 +92,8 @@ async def _server_of(choice: SessionChoice, home: Path) -> tuple[ServeRecord, We
     """The record and `Welcome` of the live server that holds the chosen session, if it is an
     existing one and one answers; a record whose socket does not is stale (removed)."""
     if choice.kind != "existing" or choice.source is None or not (home / SERVE).is_dir():
+        return None
+    if sys.platform == "win32":  # no server runs there (`require_unix_sockets`)
         return None
     return await live_server(serve_directory(home), choice.source.id)
 
