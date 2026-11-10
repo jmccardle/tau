@@ -23,9 +23,17 @@
 # `set -euo pipefail`.
 #
 # What is built, and where, is said once, in the `matrix` job: the packages
-# and the targets. A second package (ffwf-tau-tokens, D26 §7) is one more
-# entry in its `packages` list: the distribution's name, the directory of its
-# pyproject.toml, and the tests run against its wheel.
+# and the targets. Each package entry names its distribution, the directory of
+# its pyproject.toml, the module its wheel must import, the tests run against
+# that wheel and the pytest arguments they need. Two packages: ffwf-tau, and
+# ffwf-tau-tokens (D26 §7, its own pyproject.toml in tokens/, the same
+# workspace). The dev group is always the root pyproject.toml's.
+#
+# The tokenizer files (about 170 MB, pinned by sha256 in
+# tests/fixtures/tokens/artifacts.json) are fetched on every target, cached by
+# that file's hash, and required there (TAU_TOKENS_FILES=require): the real-file
+# tests are what show the tokenizers give the reference counts on each
+# platform, so none of them is skipped in this workflow.
 
 name: Publish τ to PyPI
 
@@ -56,7 +64,10 @@ jobs:
         run: |
           set -euo pipefail
           packages='[
-            {"dist": "ffwf-tau", "dir": ".", "tests": "tests"}
+            {"dist": "ffwf-tau", "dir": ".", "import": "tau._core", "tests": "tests",
+             "pytest": "-m \"not tokenizers\""},
+            {"dist": "ffwf-tau-tokens", "dir": "tokens", "import": "tau_tokens._core",
+             "tests": "tests/tokens", "pytest": ""}
           ]'
           targets='[
             {"name": "linux-x86_64", "runner": "ubuntu-24.04"},
@@ -141,6 +152,29 @@ jobs:
         with:
           name: wheel-${{ matrix.package.dist }}-${{ matrix.target.name }}-py${{ matrix.python }}
           path: dist
+      # tests/conftest.py imports tau, so the tokenizer tests run beside the ffwf-tau
+      # wheel of the same target, as `pip install 'ffwf-tau[tokens]'` installs them.
+      - uses: actions/download-artifact@v6
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        with:
+          name: wheel-ffwf-tau-${{ matrix.target.name }}-py${{ matrix.python }}
+          path: dist
+      - uses: actions/setup-python@v6
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        with:
+          python-version: "3.12"
+      - name: tokenizer files (cached)
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        uses: actions/cache@v4
+        with:
+          path: target/tokens-files
+          key: tokens-files-${{ hashFiles('tests/fixtures/tokens/artifacts.json') }}
+      - name: fetch the tokenizer files
+        if: matrix.package.dist == 'ffwf-tau-tokens'
+        run: |
+          set -euo pipefail
+          python scripts/tokens_goldens.py present || python scripts/tokens_goldens.py fetch
+          python scripts/tokens_goldens.py present
       # A fresh runner, a fresh venv: the wheel and the dev group (pytest and the
       # test-only pins), nothing from the checkout's python/ tree. The tests run
       # from outside the checkout so the installed wheel is what gets imported.
@@ -152,10 +186,11 @@ jobs:
           uv venv --seed --python ${{ matrix.python }} "$venv"
           if [ "$RUNNER_OS" = Windows ]; then py="$venv/Scripts/python.exe"; else py="$venv/bin/python"; fi
           "$py" -m pip install --upgrade pip
-          "$py" -m pip install --group "$GITHUB_WORKSPACE/${{ matrix.package.dir }}/pyproject.toml:dev" dist/*.whl
+          "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
           cd "$RUNNER_TEMP"
-          "$py" -c "import tau, tau._core, sys; print(tau.__file__, sys.version)"
-          "$py" -m pytest -q -p no:cacheprovider -rfEs "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
+          "$py" -c "import ${{ matrix.package.import }} as m, sys; print(m.__file__, sys.version)"
+          TAU_TOKENS_FILES=require "$py" -m pytest -q -p no:cacheprovider -rfEs \
+            ${{ matrix.package.pytest }} "$GITHUB_WORKSPACE/${{ matrix.package.tests }}"
 
   # The Rust tests (the base tools' own suite among them) on every platform: the
   # Python suite reaches the tools only through the wheel.
@@ -176,10 +211,19 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+      - name: tokenizer files (cached)
+        uses: actions/cache@v4
+        with:
+          path: target/tokens-files
+          key: tokens-files-${{ hashFiles('tests/fixtures/tokens/artifacts.json') }}
       - name: cargo test
         run: |
           set -euo pipefail
-          PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')" cargo test --workspace --locked
+          python scripts/tokens_goldens.py present || python scripts/tokens_goldens.py fetch
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          cargo test --workspace --locked
+          # The tokenizers against the real files (ignored without them, as in scripts/check.sh).
+          cargo test -p tau-tokens --test artifacts --locked -- --include-ignored
 
   sdist:
     name: sdist ${{ matrix.package.dist }}
