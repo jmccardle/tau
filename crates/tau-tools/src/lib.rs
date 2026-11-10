@@ -72,6 +72,20 @@ pub(crate) fn resolve(cwd: &Path, path: &str) -> PathBuf {
     cwd.join(path)
 }
 
+/// `path` as the tools show it to the model and match `exclude` patterns against: with `/`
+/// between its parts on every platform. On Windows the separators are turned, and a verbatim
+/// prefix (`\\?\`, which `canonicalize` adds) is dropped, so `C:\x\y` reads `C:/x/y`.
+pub(crate) fn shown(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    #[cfg(windows)]
+    return text
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&text)
+        .replace('\\', "/");
+    #[cfg(not(windows))]
+    text.into_owned()
+}
+
 /// A flag a caller sets to stop a tool that is running on another thread.
 /// Clones share the flag.
 #[derive(Clone, Debug, Default)]

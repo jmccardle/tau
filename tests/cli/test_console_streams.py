@@ -236,6 +236,7 @@ def test_a_closed_stdout_is_an_error_not_a_traceback(configured: World) -> None:
     assert done.stderr == b"tau: standard output is closed\n"
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS has no /dev/full")
 def test_a_full_stdout_is_one_line_and_status_1(configured: World) -> None:
     with Path("/dev/full").open("wb") as stdout:
         done = run(configured, "hi", stdout=stdout)

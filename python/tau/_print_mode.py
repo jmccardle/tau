@@ -648,7 +648,7 @@ def _on_sigint(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> Non
     Windows' event loop has no `add_signal_handler`: there the handler is the interpreter's,
     which runs in the main thread and hands `then` to the loop."""
     if sys.platform == "win32":
-        signal.signal(signal.SIGINT, lambda _number, _frame: loop.call_soon_threadsafe(then))
+        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(then))
     else:
         loop.add_signal_handler(signal.SIGINT, then)
 

@@ -74,7 +74,9 @@ tool = ReadTool(sys.argv[1])
 before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 out = asyncio.run(tool.call(json.dumps({"path": "one.txt"})))
 after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-print((after - before) // 1024, "line 1 is cut at byte" in out.value)
+# ru_maxrss is KiB on Linux, bytes on macOS
+unit = 1024 * 1024 if sys.platform == "darwin" else 1024
+print((after - before) // unit, "line 1 is cut at byte" in out.value)
 """
 
 

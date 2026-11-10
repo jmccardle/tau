@@ -324,11 +324,7 @@ impl<'a> Search<'a> {
     }
 
     fn file(&self, searcher: &mut Searcher, path: &Path) {
-        let shown = path
-            .strip_prefix(self.cwd)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
+        let shown = crate::shown(path.strip_prefix(self.cwd).unwrap_or(path));
         let mut collect = Collect {
             search: self,
             shown: &shown,
@@ -478,9 +474,6 @@ mod tests {
     }
 
     #[test]
-    // Unix only: the pattern is an absolute path, and how a pattern meets a Windows path
-    // (drive letter, backslashes) is not decided yet (docs/plan.md, Phase 9).
-    #[cfg(unix)]
     fn exclude_leaves_files_out_by_path_or_by_the_link_target_and_says_so() {
         let (tool, dir) = setup(10_000);
         let root = dir.path().canonicalize().unwrap();
@@ -488,8 +481,12 @@ mod tests {
         fs::create_dir_all(root.join("secret")).unwrap();
         fs::write(root.join("keep/a.txt"), "needle\n").unwrap();
         fs::write(root.join("secret/b.txt"), "needle\n").unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("secret/b.txt"), root.join("keep/link.txt")).unwrap();
-        let exclude = json!([format!("{}/secret/.*", root.display())]);
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(root.join("secret/b.txt"), root.join("keep/link.txt"))
+            .unwrap();
+        let exclude = json!([format!("{}/secret/.*", crate::shown(&root))]);
         let out = call(&tool, &json!({"pattern": "needle", "exclude": exclude})).unwrap();
         assert!(out.starts_with("keep/a.txt:1:needle\n"), "{out}");
         assert!(

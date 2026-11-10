@@ -144,7 +144,11 @@ def test_claude_md_is_found_when_there_is_no_agents_md(world: World) -> None:
 
 
 def test_other_spellings_and_the_override_file_are_not_context_files(world: World) -> None:
-    for name in ("AGENTS.override.md", "AGENTS.MD", "CLAUDE.MD", "agents.md"):
+    write(world.home / "probe", "")
+    case_sensitive = not (world.home / "PROBE").exists()  # macOS and Windows ignore case
+    (world.home / "probe").unlink()
+    others = ("AGENTS.MD", "CLAUDE.MD", "agents.md") if case_sensitive else ()
+    for name in ("AGENTS.override.md", *others):
         write(world.home / name, "no")
     assert files_of(world, assemble(world)) == []
 

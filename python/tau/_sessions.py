@@ -19,6 +19,7 @@ import json
 import os
 import secrets
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -135,6 +136,8 @@ def _write_info(directory: Path, data: Mapping[str, object]) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+    if sys.platform == "win32":
+        return  # a directory cannot be opened to sync there; NTFS journals the rename
     dir_fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(dir_fd)

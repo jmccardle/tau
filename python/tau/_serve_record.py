@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import stat
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final
@@ -28,8 +29,9 @@ from tau._remote import RemoteClient, require_unix_sockets
 from tau._trust import write_atomically
 
 SERVE: Final = "serve"
-SOCKET_LIMIT: Final = 107
-"""The longest Unix socket path, in bytes (`sun_path` is 108 with its terminator)."""
+SOCKET_LIMIT: Final = 107 if sys.platform == "linux" else 103
+"""The longest Unix socket path, in bytes (`sun_path` is 108 with its terminator on Linux, 104 on
+macOS)."""
 PROBE_SECONDS: Final = 2.0
 """How long a probe waits for a `hello` to be answered."""
 _PRIVATE: Final = 0o700

@@ -86,7 +86,7 @@ impl Exclude {
     }
 
     fn matches(&self, path: &Path) -> bool {
-        self.set.is_match(&*path.to_string_lossy())
+        self.set.is_match(&crate::shown(path))
     }
 
     /// Whether `path` is left out; counts it if so. A directory is left out only if the patterns

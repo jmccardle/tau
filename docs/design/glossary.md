@@ -2727,7 +2727,7 @@ When `grep` or `bash` output passes the limit, the output (everything the tool w
 have answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
 being 8 random characters from `a-z0-9`. `read` writes none (see `read`). The
 directory is created `0700` if missing. It must be a directory (not a symlink), owned
-by the effective uid, with `mode & 0o077 == 0`. Nothing is checked at construction: a
+by the effective uid, with `mode & 0o077 == 0` (Windows: not a reparse point, owned by the user or the token's default owner, and every ACE that grants anything names the user, that owner, SYSTEM or Administrators; `PrivateDir` in `limit/windows.rs`, which holds the directory's handle without delete sharing while files are made in it by path). Nothing is checked at construction: a
 directory that fails is found when the first file is needed, by opening it with
 `O_DIRECTORY|O_NOFOLLOW`, checking it with `fstat` on that fd, and creating the file
 relative to the fd with `openat`, so a path swapped in between cannot redirect it, and
@@ -2772,7 +2772,7 @@ the process group and every other process of the session, then SIGKILL after the
 2000), so the shell, its pipeline and anything it backgrounded die together.
 The shell is waited for without being reaped (`waitid` with `WNOWAIT`, so its
 pid cannot be reused), the rest of its group is killed, and only then is it
-reaped; the SIGKILL is repeated, scanning `/proc/*/stat` for the session id (Linux only), until no live process of the session is left. A process that has called `setsid` itself leaves the session and is out of reach. Every member of the session is signalled even when one signal fails (EPERM, say); the
+reaped; the SIGKILL is repeated, scanning the process table for the session id, until no live process of the session is left. How the table is scanned and the exit seen is the platform's (`tau-tools/src/session/`): Linux reads `/proc/*/stat` and waits with `waitid(WNOWAIT)`; macOS lists pids with libproc, asks `getsid` and `proc_pidinfo` (a zombie is not live), waits with a kqueue (`EVFILT_PROC`, `NOTE_EXIT`), and signals each live process of the session rather than the group, since `killpg` answers EPERM there once the group's leader is an unreaped zombie. A process that has called `setsid` itself leaves the session and is out of reach. Every member of the session is signalled even when one signal fails (EPERM, say); the
 first failure other than "no such process" is appended to the answer as a trailer, which
 keeps the output and the exit code, and is never a panic. `timeout_ms=`
 is the timeout of a call that gives none (30_000); `max_timeout_ms=` (600_000)
@@ -2782,7 +2782,7 @@ call a thread of its own. Kill and timeout run on threads of the Python process,
 program that runs base tools must turn SIGTERM and SIGHUP into the same cancellation as
 SIGINT (`loop.add_signal_handler` cancelling the main task; `run_until_signalled` in
 `examples/common.py`): a process that simply dies leaves the command running in its own
-session with no timeout. Building `BashTool` off Linux raises `OSError` (it needs `/proc`).
+session with no timeout. `bash` runs on Linux and macOS; on Windows building `BashTool` raises `OSError` naming the platform, `base_tools()` returns the other five, and the Rust side is `bash_unavailable.rs` (the same API; `Bash::new` is the error). Which shell Windows gets is not decided (docs/plan.md, Phase 9).
 The description tells the model that background jobs (`&`, `nohup`) are killed when the
 command ends and no process outlives a call; those of `read`, `write` and `grep` that
 the working directory is a default, not a sandbox. A process of a session of its own that holds
@@ -3367,7 +3367,23 @@ the Python `Session.dropped` was removed, because nothing but a test asserting
 *spike* in `Store` · retires `SessionWriteLock`
 
 An exclusive `flock` on the log, held while a `Store` lives. Only the holder
-writes and runs steps; a second open is `Error::Leased`.
+writes and runs steps; a second open is `Error::Leased`. `tau_store::is_leased` (Python
+`tau._core.is_leased`, under `tau._sessions.is_leased`) takes it and lets it go at once, to ask.
+On Windows a lock is mandatory (a locked byte cannot be read through another handle), so the
+lease there is a `LockFileEx` on one byte far past any log's end, which leaves the log readable
+by `Store::read` and `first_user` (`tau-store/src/lease.rs`; `Taken` is its answer).
+
+### platforms, require_unix_sockets, proctable
+`.github/workflows/publish.yml`, `tau._remote.require_unix_sockets`, `tests/proctable.py` · Phase 9 · new
+
+τ builds and is tested on Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64).
+What is not ported says so where it is used, naming the platform, and is never imitated: on
+Windows the `bash` tool (see *base tools*), `tau serve` and its clients
+(`require_unix_sockets`: the wire is a Unix domain socket, which Python's asyncio does not
+offer there) and projects (D13: finding a `.tau/` is a `TrustError`, since the owner and
+mode checks are not ported). `tests/proctable.py` is the process table for the tests
+(`/proc` on Linux, `ps` on macOS), and a test of something Windows lacks is skipped there with
+the reason.
 
 ## The public API
 

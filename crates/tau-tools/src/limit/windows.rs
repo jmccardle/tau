@@ -5,9 +5,9 @@
 //! junction is refused) and held without `FILE_SHARE_DELETE`, so it cannot be renamed or
 //! replaced while files are made in it by path. It must be owned by this process's
 //! user (or by the token's default owner, which is `Administrators` for an elevated
-//! administrator), and every entry of its access list that grants anything must name
+//! administrator), and every ACE (access control item) of its list that grants anything must name
 //! the user, that owner, SYSTEM or Administrators: the Windows reading of `0700`
-//! (SYSTEM and Administrators can read anything, as root can). An entry of a kind
+//! (SYSTEM and Administrators can read anything, as root can). An ACE of a kind
 //! this check cannot judge refuses the directory. A new directory inherits its
 //! parent's access list; the user's temp directory, the default's parent, grants only
 //! those.
@@ -298,11 +298,11 @@ fn dir_problem(dir: &File) -> std::io::Result<Option<String>> {
     }
     for index in 0..size.AceCount {
         let mut ace: *mut c_void = ptr::null_mut();
-        // SAFETY: `index` is below the entry count of the live list.
+        // SAFETY: `index` is below the ACE count of the live list.
         if unsafe { GetAce(dacl, index, &raw mut ace) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // SAFETY: every entry starts with an ACE_HEADER.
+        // SAFETY: every ACE starts with an ACE_HEADER.
         let header = unsafe { *ace.cast::<ACE_HEADER>() };
         if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0
             || header.AceType == ACCESS_DENIED_ACE_TYPE
@@ -311,7 +311,7 @@ fn dir_problem(dir: &File) -> std::io::Result<Option<String>> {
         }
         if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
             return Ok(Some(format!(
-                "has an access entry of type {} that tau cannot judge; it must be accessible \
+                "has an ACE of type {} that tau cannot judge; it must be accessible \
                  only by its owner",
                 header.AceType
             )));

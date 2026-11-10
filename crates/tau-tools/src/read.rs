@@ -114,12 +114,16 @@ impl Read {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits());
         }
-        let file = options
-            .open(resolve(&self.cwd, shown))
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => ToolError(format!("file not found: {shown}")),
-                _ => io(e),
-            })?;
+        let path = resolve(&self.cwd, shown);
+        let file = options.open(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => ToolError(format!("file not found: {shown}")),
+            // Windows refuses to open a directory as a file (Unix opens it, and the check
+            // below says what it is).
+            _ if std::fs::metadata(&path).is_ok_and(|m| m.is_dir()) => {
+                ToolError(format!("{shown} is a directory, not a file"))
+            }
+            _ => io(e),
+        })?;
         let meta = file.metadata().map_err(io)?;
         if meta.is_dir() {
             return Err(format!("{shown} is a directory, not a file").into());
@@ -321,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // mkfifo
     fn a_pipe_is_refused_not_opened() {
         let (tool, dir) = tool(1000);
         let fifo = dir.path().join("pipe");

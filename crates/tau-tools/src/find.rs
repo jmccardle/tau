@@ -117,7 +117,7 @@ impl Find {
                     if below.to_str().is_none() {
                         found.lossy.store(true, Ordering::Relaxed);
                     }
-                    let shown = below.to_string_lossy().into_owned();
+                    let shown = crate::shown(below);
                     let cost = shown.len() + 1;
                     lock(&found.paths).push(shown);
                     if found.held.fetch_add(cost, Ordering::Relaxed) + cost >= cap {
@@ -214,13 +214,13 @@ mod tests {
         let (tool, dir) = setup(10_000);
         touch(&dir, &["a.rs", "secret/b.rs", "other/{x}.rs"]);
         let root = dir.path().canonicalize().unwrap();
-        let exclude = json!([format!("{}/secret/.*", root.display())]);
+        let exclude = json!([format!("{}/secret/.*", crate::shown(&root))]);
         let out = call(&tool, &json!({"pattern": "*.rs", "exclude": exclude})).unwrap();
         assert_eq!(
             out,
             "a.rs\nother/{x}.rs\n[1 path(s) left out of this search: they match its `exclude` patterns]"
         );
-        let one = json!([format!("{}/other/[{{]x[}}].rs", root.display())]);
+        let one = json!([format!("{}/other/[{{]x[}}].rs", crate::shown(&root))]);
         let out = call(&tool, &json!({"pattern": "*.rs", "exclude": one})).unwrap();
         assert_eq!(
             out,
@@ -231,13 +231,18 @@ mod tests {
     #[test]
     fn exclude_dot_matches_a_newline_and_a_directory_is_pruned_only_when_all_below_it_matches() {
         let (tool, dir) = setup(10_000);
-        touch(&dir, &["a.rs", "x\ny.rs", "secret/b.rs", "secre/c.rs"]);
+        touch(&dir, &["a.rs", "secret/b.rs", "secre/c.rs"]);
         let root = dir.path().canonicalize().unwrap();
-        let newline = json!([format!("{}/x.*y.rs", root.display())]);
-        let out = call(&tool, &json!({"pattern": "*.rs", "exclude": newline})).unwrap();
-        assert!(!out.contains("y.rs"), "{out}");
+        // Windows refuses a newline in a file name.
+        #[cfg(unix)]
+        {
+            touch(&dir, &["x\ny.rs"]);
+            let newline = json!([format!("{}/x.*y.rs", crate::shown(&root))]);
+            let out = call(&tool, &json!({"pattern": "*.rs", "exclude": newline})).unwrap();
+            assert!(!out.contains("y.rs"), "{out}");
+        }
         // `secret.` could match the directory `secret/` itself, but not what is in it.
-        let some = json!([format!("{}/secret.", root.display())]);
+        let some = json!([format!("{}/secret.", crate::shown(&root))]);
         let out = call(&tool, &json!({"pattern": "*.rs", "exclude": some})).unwrap();
         assert!(
             out.contains("secret/b.rs") && out.contains("secre/c.rs"),
