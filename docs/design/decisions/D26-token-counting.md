@@ -785,7 +785,8 @@ templates`) are compared whole, 120 renderings, byte for byte.
   `transformers` does and both refuse the other two, so it is not needed. `hf-chat-template`'s
   corpus was not adopted; the goldens here come from `transformers` itself.
 - **Sizes.** `tau_tokens/_core.abi3.so` is 12.2 MB, not the 9–10 MB estimated; the wheel is
-  5.1 MB compressed, a quarter of the 20 MB at which the tables would become downloads. The main
+  5.1 MB compressed, a quarter of the 20 MB at which the tables would become downloads. A cold
+  release build of it takes 65 s (4 minutes of CPU) on 8 shared cores. The main
   module is unchanged at 5.6 MB, and `Cargo.lock` gained 69 packages without changing the version
   of any the main wheel uses.
 - **Tests.** The real tokenizer files (170 MB) are fetched, not checked in:
