@@ -1,4 +1,5 @@
-"""The docstrings of `python/tau/_core.pyi` against the built module's `__doc__`.
+"""The docstrings of the native modules' stubs (`python/tau/_core.pyi`, and
+`tokens/python/tau_tokens/_core.pyi` for the tokenizer wheel) against the built modules' `__doc__`.
 
     scripts/stub_docs.py            copy the built module's docstrings into the stub
     scripts/stub_docs.py --check    fail if any differs (scripts/api_docs.py --check runs this too)
@@ -15,15 +16,23 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tau import _core
+from tau_tokens import _core as _tokens_core
 
-STUB = Path(__file__).parents[1] / "python" / "tau" / "_core.pyi"
+ROOT = Path(__file__).parents[1]
+STUB = ROOT / "python" / "tau" / "_core.pyi"
+# Every hand-written stub of a native module, with the module it describes (D26 §7.1: the
+# tokenizer wheel's is held the same way as the main wheel's).
+STUBS: list[tuple[Path, object]] = [
+    (STUB, _core),
+    (ROOT / "tokens" / "python" / "tau_tokens" / "_core.pyi", _tokens_core),
+]
 SHORT = 40  # characters of a docstring shown in a mismatch message
 StubNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
-def stub_nodes() -> dict[str, StubNode]:
-    """Dotted path under tau._core -> its node, for every class, nested class, function, method
-    and property the stub declares (underscore names are not documented)."""
+def stub_nodes(stub: Path = STUB) -> dict[str, StubNode]:
+    """Dotted path under the stub's module -> its node, for every class, nested class, function,
+    method and property the stub declares (underscore names are not documented)."""
     out: dict[str, StubNode] = {}
 
     def visit(body: Sequence[ast.stmt], prefix: str) -> None:
@@ -35,7 +44,7 @@ def stub_nodes() -> dict[str, StubNode]:
                 if isinstance(node, ast.ClassDef):
                     visit(node.body, f"{prefix}{node.name}.")
 
-    visit(ast.parse(STUB.read_text(encoding="utf-8")).body, "")
+    visit(ast.parse(stub.read_text(encoding="utf-8")).body, "")
     return out
 
 
@@ -64,16 +73,18 @@ def _short(doc: str | None) -> str:
 def mismatches() -> list[str]:
     """Docstrings in `_core.pyi` that differ from the built module's `__doc__`."""
     problems = []
-    for path, node in sorted(stub_nodes().items()):
-        stub = ast.get_docstring(node)
-        exists, runtime = runtime_doc(_core, path)
-        if not exists:
-            problems.append(f"_core.pyi declares {path}, which the built module lacks")
-        elif (stub or None) != (runtime or None):
-            problems.append(
-                f"_core.pyi: the docstring of {path} differs from the built module's __doc__ "
-                f"(stub: {_short(stub)}; runtime: {_short(runtime)})"
-            )
+    for file, module in STUBS:
+        name = str(file.relative_to(ROOT))
+        for path, node in sorted(stub_nodes(file).items()):
+            stub = ast.get_docstring(node)
+            exists, runtime = runtime_doc(module, path)
+            if not exists:
+                problems.append(f"{name} declares {path}, which the built module lacks")
+            elif (stub or None) != (runtime or None):
+                problems.append(
+                    f"{name}: the docstring of {path} differs from the built module's __doc__ "
+                    f"(stub: {_short(stub)}; runtime: {_short(runtime)})"
+                )
     return problems
 
 
@@ -120,19 +131,21 @@ def stub_edit(node: StubNode, doc: str, lines: list[str]) -> tuple[int, int, lis
 
 
 def sync_stub() -> int:
-    """Copy the built module's docstrings into `_core.pyi` wherever the stub's differ. The Rust
+    """Copy the built modules' docstrings into their stubs wherever a stub's differ. The Rust
     `///` is the source; this only copies it. Returns how many docstrings changed."""
-    path = STUB
-    lines = path.read_text(encoding="utf-8").split("\n")
-    edits = []
-    for name, node in stub_nodes().items():
-        exists, runtime = runtime_doc(_core, name)
-        if exists and runtime and runtime != ast.get_docstring(node):
-            edits.append(stub_edit(node, runtime, lines))
-    for first, last, replacement in sorted(edits, reverse=True):
-        lines[first : last + 1] = replacement
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return len(edits)
+    changed = 0
+    for path, module in STUBS:
+        lines = path.read_text(encoding="utf-8").split("\n")
+        edits = []
+        for name, node in stub_nodes(path).items():
+            exists, runtime = runtime_doc(module, name)
+            if exists and runtime and runtime != ast.get_docstring(node):
+                edits.append(stub_edit(node, runtime, lines))
+        for first, last, replacement in sorted(edits, reverse=True):
+            lines[first : last + 1] = replacement
+        path.write_text("\n".join(lines), encoding="utf-8")
+        changed += len(edits)
+    return changed
 
 
 def main(args: list[str]) -> int:
@@ -144,7 +157,7 @@ def main(args: list[str]) -> int:
     if args:
         print("usage: scripts/stub_docs.py [--check]", file=sys.stderr)
         return 2
-    print(f"stub_docs: {sync_stub()} docstring(s) copied into _core.pyi")
+    print(f"stub_docs: {sync_stub()} docstring(s) copied into the stubs")
     return 0
 
 

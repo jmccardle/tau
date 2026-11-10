@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/tau-core", "crates/tau-store", "crates/tau-tools", "crates/tau-py"]
+members = [
+    "crates/tau-core",
+    "crates/tau-store",
+    "crates/tau-tools",
+    "crates/tau-py",
+    # The second wheel, `ffwf-tau-tokens` (D26 §7): nothing above depends on these two.
+    "crates/tau-tokens",
+    "crates/tau-tokens-py",
+]
 # Their own workspaces and lockfiles: encoders τ does not depend on, and the Rust example client.
 exclude = ["crates/bench-formats", "examples/ratatui"]
 
@@ -15,6 +23,7 @@ repository = "https://github.com/jmccardle/tau"
 tau-core = { path = "crates/tau-core" }
 tau-store = { path = "crates/tau-store" }
 tau-tools = { path = "crates/tau-tools" }
+tau-tokens = { path = "crates/tau-tokens" }
 pyo3 = { version = "0.30.1" }
 proptest = "1.12"
 serde = { version = "1.0.229", features = ["derive"] }

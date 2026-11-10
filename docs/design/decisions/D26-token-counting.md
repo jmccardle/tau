@@ -678,6 +678,134 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
   - A version mismatch between the two modules fails the load with the `pip install` line.
   - `tests/core/test_threads.py` covers `tau_tokens` on 3.14t: importing it leaves the GIL off.
 
+**T4 as built, in part (branch `tokens-crates`).** The half of T4 that stands alone is built: the
+two crates, the second wheel, `tau_tokens` and its stub, tiktoken, Hugging Face tokenizers and
+chat templates, split-and-memo counting, the lockstep check, the dependency guard, the size and
+build-time report. The catalogue, the identity strings and the fingerprint scoring of T6 are built
+too, as far as they are data and arithmetic. **Not built**, because each needs the `tokens`
+extension (T3) or the config: `ModelConfig.tokenizer` and `chat_template`, the `ConfigError`, the
+notes in `tau ext list`, downloads and `tau tokens fetch`, `TokenizerUnavailable`, and the check of
+`tau_tokens.__version__` against `tau.__version__` at load. What those will call is the group
+*Tokenizers* of `docs/api/surface.txt`.
+
+*What "exact" was held to.* `scripts/tokens_goldens.py generate` asks the reference
+implementations (`transformers` 5.22.2, `tokenizers` 0.23.3, `tiktoken` 0.14.0, Jinja2 3.1.6) and
+writes what they print to `tests/fixtures/tokens/`; the tests compare `tau_tokens` with that.
+`transformers` is what vLLM runs. Nothing here was compared with a live llama.cpp or vLLM: the
+llama.cpp server at hand was unreachable when this was built.
+
+| tokenizer (repository at its pinned commit) | 23 texts: ids equal | 20 requests: rendered text and its ids equal | refused by both |
+|---|---|---|---|
+| `o200k_base`, `cl100k_base` (against `tiktoken`) | 23 of 23 each | no template | |
+| Qwen3 (`Qwen/Qwen3-8B`) | 23 | 20 | 0 |
+| Llama 3 (`unsloth/Llama-3.2-3B-Instruct`) | 23 | 19 | 1 |
+| Tekken (`mistralai/Mistral-Nemo-Instruct-2407`) | 23 | 16 | 4 |
+| Gemma 3 (`unsloth/gemma-3-4b-it`) | 23 | 12 | 8 |
+| Gemma 4 (`google/gemma-4-E4B-it`) | 23 | 19 | 1 |
+| gpt-oss (`openai/gpt-oss-20b`) | 23 | 18 | 2 |
+| DeepSeek (`deepseek-ai/DeepSeek-V3.1`) | 23 | 14 | 6 |
+| Phi-4-mini (`microsoft/Phi-4-mini-instruct`) | 23 | 18 | 2 |
+| GLM (`zai-org/GLM-4.6`) | 23 | 19 | 1 |
+| template only: Qwen3-Coder, Llama 3.3, DeepSeek-R1, phi-4, Hermes 4, Granite 4, MiniMax-M2, Kimi K2 | not fetched | 147 of 160 rendered equal | 13 |
+
+No mismatch is left open: every text and every request is either equal or refused by both
+(`tests/tokens/test_artifacts.py`; the same in Rust, `crates/tau-tokens/tests/artifacts.rs`). A
+request is "refused by both" when the model's template raises on it, as Gemma 3's does on a tool
+result and Mistral's on two user messages in a row. For the nine real tokenizers the two
+references agree with each other on every text, so `tokenizer.json` alone is what a server's
+`transformers` tokenizer counts with. Beyond the 23 texts, `scripts/tokens_goldens.py sweep`
+encoded every Unicode code point (1,112,064 of them, each beside a letter, a space, a digit and a
+line break) and 5,000 random mixtures with all eleven tokenizers in both implementations: 0 of
+819,544 texts differ. That is the answer to whether the pure-Rust regex engine agrees with the
+Oniguruma that the reference uses. Six templates written for the tests (`tests/fixtures/tokens/
+templates`) are compared whole, 120 renderings, byte for byte.
+
+*Differences from the text above, and why.*
+
+- **`tokenizers` 0.23.2**, the newest release that is not a candidate; its feature is
+  `fancy-regex` as §7.1 says. (1.0.0-rc.4 renames it `regex`.) `esaxx_fast` (C++) and
+  `progressbar` are off too. Nothing the wheel is built from needs a C compiler or a system
+  library, which `scripts/check_tokens_wheel.py` checks; both crates pass `cargo check` for
+  Windows (MSVC and GNU), macOS (arm64 and x86_64) and Linux aarch64.
+- **The memo is keyed by the text of a piece, not by its hash**, so a count read from it cannot be
+  another text's. A piece is what the tokenizer itself splits off between added tokens (special
+  or not), after its own normalization, and the memo also records whether the piece starts the
+  text: a Metaspace tokenizer that marks only the first word counts the same piece differently
+  there. The count runs the library's own steps on the library's own pieces, and a property test
+  holds it to `len(encode(text))` on four kinds of tokenizer. It keeps at most 16 MiB of text.
+  A recount still normalizes and splits the whole text: for a 737 kB request (400 messages,
+  164,697 tokens of Qwen3), rendering takes 3 ms, the first count 166 ms, the count after one
+  more message 33 ms, and a full `encode` 240 ms.
+- **A request crosses as JSON text.** `tau_tokens` is given lists and dicts and writes them with
+  Python's own `json.dumps`, so the template sees keys in the order given and `1.0` as a float. A
+  whole number beyond 64 bits is refused, because nothing downstream can tell it from a float.
+- **The template engine is MiniJinja with Python's behavior put in** where a rendering differed:
+  what `{{ value }}` prints (`None`, `True`, `1e-05`, `{'a': 1}`, `('a', 1)`), `tojson` as
+  `json.dumps` with all four options, the `sequence`, `iterable` and `number` tests, `strip`,
+  `title` and `splitlines`, `trim`, `escape`, tuples from `items` and `dictsort`. It **refuses**
+  (a `TemplateError`, no count) what it does not have: unary `+`, `'%s' % x`, the `center`,
+  `wordcount`, `truncate` and `xmlattr` filters, `pprint` and `attr` (removed here because
+  MiniJinja's differ), `cycler`, `joiner`, the `callable` test, `str.partition` and `zfill`, the
+  `{% generation %}` tag, and `int` of text that is not a number (Jinja2 gives 0). Two
+  **differences are silent** and not closed: a template that reads a dict's method without
+  calling it (`x.items is defined`: true in Python for any dict, here only when the dict has a
+  key `items`), and the title case of a few digraph letters (`ǆ`). None of the seventeen real
+  templates does either. This is why §1 makes a `rendered` count wait for a reported count to
+  confirm it; the crate labels nothing.
+- **`strftime_now` prints the time the caller passes** (`render(..., now=datetime)`); the crate
+  reads no clock, and a template that reads one without it is refused. The formatting is C's in
+  the "C" locale, written here; week numbers and a few rarer directives are refused. A server's
+  date is its own: T5 has to pass the date the server will print.
+- **Reasoning goes in under both names.** `transformers` 5 hands a message's reasoning to the
+  template as `reasoning_content` and as `thinking` whichever the caller used; so does this. A
+  server on an older `transformers` does not, so T5 should send both names itself.
+- **Tool-call arguments must be what the server passes.** DeepSeek's template fails on arguments
+  given as a dict; Gemma 4's, GLM's, MiniMax's and Qwen3-Coder's fail on a string. Both libraries
+  agree in every case; which one a server passes is the provider's `Rendered` to state.
+- **Special tokens are the seven named ones of `tokenizer_config.json`** (`bos_token` to
+  `mask_token`). `special_tokens_map.json` and a tokenizer class's own defaults are not read.
+  `continue_final_message` is not offered. Nothing is added around a text (no BOS): llama.cpp
+  adds one where the GGUF says so and the template does not print it, a constant for T5.
+- **The catalogue has 11 tokenizers, not about 15.** Kimi K2 has no `tokenizer.json` (it ships a
+  tiktoken-format file), and Mistral's newer models ship only `tekken.json`; both need a loader
+  that is not built. Where a model's own repository needs a login (Llama 3, Gemma 3) the
+  catalogue names an open copy of the same tokenizer. `o200k_harmony` is the Hugging Face file
+  of gpt-oss, since rendering needs its special tokens. Gemma 3 is the Hugging Face tokenizer
+  (262,145 ids), where google-genai 3.0.0 uses a SentencePiece file of 262,144; its model map
+  was re-read and is in the catalogue's patterns, as is tiktoken's.
+- **A vocabulary size is a filter with a list, not only padding.** A served model reports its
+  embedding size, which is larger than its tokenizer by no fixed rule: Qwen3 151,936 for 151,669
+  ids, gpt-oss 201,088 for 200,019, DeepSeek 129,280 for 128,815, GLM 151,552 for 151,365. The
+  catalogue lists these (`served`), read from each repository's `config.json` and held to it by
+  a test, beside the padding to 64 or 128 that §7.4 names.
+- **Mistral's `tokenizer.json` is known not to be what Mistral's own tokenizer does**
+  (`transformers` says so when it loads it: `fix_mistral_regex`). It equals the reference here,
+  and a server that counts with `mistral-common` will differ: the `calibrated` case of §7.3.
+- **`openai-harmony` was not examined**: gpt-oss's own template renders 18 of 20 requests as
+  `transformers` does and both refuse the other two, so it is not needed. `hf-chat-template`'s
+  corpus was not adopted; the goldens here come from `transformers` itself.
+- **Sizes.** `tau_tokens/_core.abi3.so` is 12.2 MB, not the 9–10 MB estimated; the wheel is
+  5.1 MB compressed, a quarter of the 20 MB at which the tables would become downloads. A cold
+  release build of it takes 65 s (4 minutes of CPU) on 8 shared cores. The main
+  module is unchanged at 5.6 MB, and `Cargo.lock` gained 69 packages without changing the version
+  of any the main wheel uses.
+- **Tests.** The real tokenizer files (170 MB) are fetched, not checked in:
+  `scripts/tokens_goldens.py fetch` downloads each at its pinned commit and checks its sha256. A
+  test that reads them is skipped with that command as its reason when they are absent, and
+  fails when `TAU_TOKENS_FILES=require`, which CI's `gate` sets after fetching. The goldens are
+  hashes for the real models and whole text for the templates written here. The free-threading
+  test is `tests/tokens/test_tokenizer.py`, not `tests/core/test_threads.py`, so that the main
+  wheel's tests do not import the second wheel.
+- **The second library is not named `_core` in Cargo.** Two libraries of one name in a workspace
+  are one file in `target/`, and the gate caught each build handing the other's module to
+  maturin (`import tau` failed). `tau-tokens-py`'s library is `tau_tokens_core`; the Python
+  module is `tau_tokens._core` all the same. The wheel has its own `README.md` and a copy of
+  `LICENSE` in `tokens/`, since a wheel's metadata reads them from beside its `pyproject.toml`;
+  `maturin sdist` builds from there (building a wheel from that sdist was not tried).
+- **`tau_tokens` is a group of `docs/api/groups.toml`** (`package = "tau_tokens"`), as §7.1 says;
+  `scripts/api_docs.py` learned that a group may belong to another package, and
+  `scripts/stub_docs.py` holds both stubs' docstrings to the built modules.
+
 **T5, rendered and calibrated counts.**
 - **Builds:** §7.3 in the `tokens` counter: open models (`rendered`, confirmation), OpenAI
   hosted (`calibrated`) and Gemini (`calibrated`).

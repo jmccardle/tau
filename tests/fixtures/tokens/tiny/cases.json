@@ -1,0 +1,852 @@
+{
+ "bytelevel": {
+  "vocab": 707,
+  "marks": [
+   "<|im_start|>",
+   "<|im_end|>",
+   "<|rs|>",
+   "<|ls|>",
+   "<think>",
+   "</think>",
+   "WORD"
+  ],
+  "cases": [
+   {
+    "text": "",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": " ",
+    "count": 1,
+    "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+   },
+   {
+    "text": "\n",
+    "count": 1,
+    "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+   },
+   {
+    "text": "hello",
+    "count": 3,
+    "ids": "a0abf98654b5ab8fbe704c1c8b1fda6b45691769b033a0b0916f5b7e5cbcb221"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 184,
+    "ids": "b302c11f701e9333eff7ab84ba458c7f3637fb037bdbba2cd4eae8f44f5e93db"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 124,
+    "ids": "d4fa124842e2669c98f00e265f55d00b454c7756b75eaf7252f15e2020fc8063"
+   },
+   {
+    "text": "import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n",
+    "count": 224,
+    "ids": "a29b2dc81e2bf67e0d5000a5c4a06ed50e0e598f712b02df1803194c112a98db"
+   },
+   {
+    "text": "#[derive(Debug, Clone)]\npub struct Piece<'a> {\n    text: &'a str,\n    first: bool,\n}\n\nimpl<'a> Piece<'a> {\n    pub fn len(&self) -> usize {\n        self.text.chars().filter(|c| !c.is_whitespace()).count()\n    }\n}\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    let v: Vec<u32> = (1..=10).map(|x| x * x).collect();\n    println!(\"{v:?} {:#x} {:>5.1}\", 255u8, 2.5f64);\n    Ok(())\n}\n",
+    "count": 236,
+    "ids": "123b33b9a16b309f272453c9091eda72f60e8ab79d9848b2ecaf58c7e014d89b"
+   },
+   {
+    "text": "{\n  \"id\": 17,\n  \"tags\": [\n    \"a\",\n    \"b\"\n  ],\n  \"ratio\": 0.25,\n  \"nested\": {\n    \"ok\": true,\n    \"none\": null\n  },\n  \"text\": \"line\\nbreak \\\"quoted\\\" \\\\ slash\",\n  \"unicode\": \"caf\\u00e9 \\u65e5\\u672c\"\n}\n[{\"k\": 0, \"v\": [0, 0.0, \"0\"]}, {\"k\": 1, \"v\": [1, 1.5, \"1\"]}, {\"k\": 2, \"v\": [2, 3.0, \"2\"]}, {\"k\": 3, \"v\": [3, 4.5, \"3\"]}, {\"k\": 4, \"v\": [4, 6.0, \"4\"]}, {\"k\": 5, \"v\": [5, 7.5, \"5\"]}]",
+    "count": 233,
+    "ids": "4443f9e15a39a42e417b452c898905bb13aeb1721336cb65cdf06c8ff2c1fcf5"
+   },
+   {
+    "text": "# Title\n\n## Sub-title\n\n- item one\n- item **two** with `code` and [a link](https://example.com/path?q=1&r=2#frag)\n  - nested item\n1. first\n2. second\n\n| name | value |\n|------|------:|\n| a    |     1 |\n| bb   |    22 |\n\n> quoted\n\n```\nfenced\n```\n\n---\n\n<details><summary>More</summary>&amp; &lt;html&gt;</details>\n",
+    "count": 175,
+    "ids": "753773c57ff3cb581d808f1406c7b01480edbd6006c94cb02f43ded3fdbf5292"
+   },
+   {
+    "text": "0 1 12 123 1234 12345 123456 1234567 12345678 123456789 1234567890 12345678901234567890 3.14159 -2.5e-10 1,000,000.00 0xDEADBEEF 0b1010 1e100 50% $9.99 2026-11-10T09:30:00Z 192.168.1.100:8100 +1 (555) 010-9999 ١٢٣٤٥ ۱۲۳ १२३ ² ³ ¹ ½ ¾ Ⅻ ⅷ ① ⑳ ㊿ 一二三 ０１２３ 𝟘𝟙𝟚",
+    "count": 185,
+    "ids": "4967443c6eed7170ba3c3773d5c6feb9e0192a080cbc5b004f1abe3ad35ff7ad"
+   },
+   {
+    "text": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ... --- === ### *** ___ !!! ??? ;;; ::: ,,, ------------------------------ ============================== “curly” ‘single’ «guillemets» „low“ … — – ‐ • · § ¶ † ‡ ° ± × ÷ ≠ ≤ ≥ ∞ → ← ↑ ↓ ✓ ✗ ©®™ ¿¡ a.b,c;d:e (a)[b]{c}<d> a/b\\c|d a-b_c+d=e x.y.z e.g. i.e. U.S.A. end.Start",
+    "count": 211,
+    "ids": "d8bc4ff3668868b90bb0b238cccdc36b110d5efde23349f961c50bc83164e27e"
+   },
+   {
+    "text": "English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ",
+    "count": 270,
+    "ids": "bbb530f947ec7f33043e75e8d747ae0dc0c7497f9f31dc3b4466bb29dd2b13b8"
+   },
+   {
+    "text": "😀 😃😄 👍🏽 👩‍👩‍👧‍👦 🇫🇷🇯🇵 🏳️‍🌈 ❤️ ❤ ☺️ ☺ 1️⃣ #️⃣ 🧑🏿‍💻 text😀text 😀\n😀 🫠 🪿 🫨 ¯\\_(ツ)_/¯ (╯°□°)╯︵ ┻━┻",
+    "count": 112,
+    "ids": "1cf295b75cf435ae809b279c10b0b70915df533f97083b0b720107d62412d4f8"
+   },
+   {
+    "text": "é ǟ ố ́start Z͑ͫ̓ą́l̡g̸o क्षि ज्ञ ก็ ทำ 각 각 ‍zwj‍ ‌zwnj‌ ⁠wj⁠ a️b a͏b ‮RTL override‬ ⁦isolate⁩",
+    "count": 97,
+    "ids": "e0894a9ebeb9e3a0385ec42af311acdfdeab25e6c8df6ae1aa5c372b4f6d8bbc"
+   },
+   {
+    "text": "<|im_start|>system\nYou are<|im_end|>\n<|im_start|>user <|endoftext|> <s> </s> <unk> <pad> [INST] [/INST] [TOOL_CALLS] <|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n<|eot_id|> <bos> <eos> <start_of_turn>model\n<end_of_turn> <think>\nhm\n</think> <tool_call> </tool_call> <|start|>assistant<|channel|>final<|message|>hi<|end|><|return|> <｜begin▁of▁sentence｜><｜User｜>x<｜Assistant｜> <|system|> <|user|> <|assistant|> <|end|> [gMASK]<sop> <|observation|> <|endofprompt|> < |im_start| > <|im_start |> <<|im_end|>> <|IM_START|>",
+    "count": 249,
+    "ids": "7df5d1fa89d1aadc7127c1428fef52abc4fc8ceb28a6a95c7493a5adedc82c16"
+   },
+   {
+    "text": "nul\u0000 soh\u0001 bel\u0007 bs\b esc\u001b us\u001f del pad nel apc shy­ bom﻿ repl� pua non￾￿ sup󰀀 unassigned͸԰ 󠀁tag󠁿 ls ps  end",
+    "count": 89,
+    "ids": "db17d1e7fc652020731bd117aa2e3539c18086c261b569fbec77cc2577261984"
+   },
+   {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1 éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "count": 218,
+    "ids": "6dcf7fe413512b645bdf1d9cce4c2cbf931cc96249c183b67ceeb02e6bccdb4b"
+   },
+   {
+    "text": "https://user:pass@sub.example.co.uk:8443/a/b%20c/d.html?x=1&y=two#top mailto:first.last+tag@example.org /usr/local/lib/python3.12/site-packages C:\\Users\\Name\\file.txt SGVsbG8sIHdvcmxkISBUaGlzIGlzIGJhc2U2NC4= d41d8cd98f00b204e9800998ecf8427e 550e8400-e29b-41d4-a716-446655440000 snake_case_name camelCaseName PascalCaseName SCREAMING_CASE kebab-case-name",
+    "count": 232,
+    "ids": "cda4de2c934f5d1b5b013a1b9b2c4622316db6af48f5cae0745841a04a12a2fb"
+   },
+   {
+    "text": "a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 708,
+    "ids": "0cfaf4050420b5f32de4dfcde541d3c54321c8ff3c00e666f5779a9867482520"
+   },
+   {
+    "text": " âŃƤȅɦ ˇ̨ΉϪыҬԍ ծ׏ذڑ۲ݓ޴ ࠕࡶࣗसঙ৺ਜ਼ ઼ଝ୾௟ీಡം ൣහลຆ໧཈ྩ ညၫ჌ᄭᆎᇯቐ ኱ጒ፳Ꮤᐵᒖᓷ ᕘᖹᘚᙻᛜ᜽ឞ ៿ᡠᣁᤢᦃ᧤ᩅ ᪦ᬇ᭨ᯉᰪ᲋ᳬ ᵍᶮḏṰốἲᾓ ῴ⁕₶℗ⅸ⇙∺ ⊛⋼⍝⎾␟⒀ⓡ ╂▣☄♥⛆✧➈ ⟩⡊⢫⤌⥭⧎⨯ ⪐⫱⭒⮳ⰔⱵⳖ ⴷ⶘ⷹ⹚⺻⼜⽽ ⿞〿゠㄁ㅢ㇃㈤ ㊅㋦㍇㎨㐉㑪㓋 㔬㖍㗮㙏㚰㜑㝲 㟓㠴㢕㣶㥗㦸㨙 㩺㫛㬼㮝㯾㱟㳀 㴡㶂㷣㹄㺥㼆㽧 㿈䀩䂊䃫䅌䆭䈎 䉯䋐䌱䎒䏳䑔䒵 䔖䕷䗘䘹䚚䛻䝜 䞽䠞䡿䣠䥁䦢䨃 䩤䫅䬦䮇䯨䱉䲪 䴋䵬䷍丮亏仰佑 侲倓側僕儶冗凸 剙劺匛卼叝吾咟 唀啡嗂嘣嚄囥坆 垧堈塩壊夫妌姭 婎媯嬐孱寒尳岔 峵嵖嶷帘幹廚弻 徜忽恞悿愠憁懢 扃护挅捦揇搨撉 擪敋斬昍普曏朰 枑柲桓梴椕楶槗 樸檙櫺歛殼氝汾 泟浀涡渂湣滄漥 澆濧灈炩焊煫燌 爭犎狯獐玱琒瑳 瓔电疖痷癘皹眚 睻矜砽碞磿祠私 稢窃竤筅箦簇籨 糉紪綋緬繍纮缏 罰翑耲肓胴腕膶 舗艸苙茺莛菼葝 蒾蔟薀藡虂蚣蜄 蝥蟆蠧袈裩襊覫 訌詭諎謯讐诱豒 貳贔赵跖踷躘軹 轚辻逜遽郞鄿醠 鈁鉢鋃錤鎅鏦鑇 钨锉镪闋阬隍雮 靏鞰頑顲飓餴馕 駶驗骸鬙魺鯛鰼 鲝鳾鵟鷀鸡麂黣 齄龥ꀆꁧꃈꄩꆊ ꇫꉌꊭꌎꍯꏐꐱ ꒒ꓳꕔꖵꘖꙷꛘ ꜹꞚꟻꡜꢽꤞ꥿ ꧠꩁꪢꬃꭤꯅ갦 겇골굉궪긋깬껍 꼮꾏꿰끑낲넓녴 뇕눶늗닸덙뎺됛 둼득딾떟똀뙡뛂 뜣랄럥롆뢧뤈륩 맊먫몌뫭뭎뮯밐 뱱볒봳붔뷵빖뺷 뼘뽹뿚쀻삜샽셞 솿술슁싢썃쎤쐅 쑦쓇씨얉엪왋욬 윍읮쟏젰좑죲쥓 즴쨕쩶쫗쬸쮙쯺 챛첼총쵾췟칀캡 켂콣쿄퀥킆탧텈 톩툊퉫틌팭펎폯 푐풱픒핳헔혵횖 훷흘ힹ         螺 沈陸勤歹﫶ﭗ﮸ ﰙﱺﳛﴼﶝ﷾﹟ ﻀＡﾂ￣",
+    "count": 2015,
+    "ids": "354eab5719b9496b72f763f700a7ed8de1f664d702dc5d1b6b31d6ec5218794e"
+   },
+   {
+    "text": "𐀀𐏱𐟢𐯓𐿄𑎵𑞦 𑮗𑾈𒍹𒝪𒭛𒽌𓌽 𓜮𓬟𓼐𔌁𔛲𔫣𔻔 𕋅𕚶𕪧𕺘𖊉𖙺𖩫 𖹜𗉍𗘾𗨯𗸠𘈑𘘂 𘧳𘷤𙇕𙗆𙦷𙶨𚆙 𚖊𚥻𚵬𛅝𛕎𛤿𛴰 𜄡𜔒𜤃𜳴𝃥𝓖𝣇 𝲸𞂩𞒚𞢋𞱼🁭👞 🡏🱀𠀱𠐢𠠓𠰄𠿵 𡏦𡟗𡯈𡾹𢎪𢞛𢮌 𢽽𣍮𣝟𣭐𣽁𤌲𤜣 𤬔𤼅𥋶𥛧𥫘𥻉𦊺 𦚫𦪜𦺍𧉾𧙯𧩠𧹑 𨉂𨘳𨨤𨸕𩈆𩗷𩧨 𩷙𪇊𪖻𪦬𪶝𫆎𫕿 𫥰𫵡𬅒𬕃𬤴𬴥𭄖 𭔇𭣸𭳩𮃚𮓋𮢼𮲭 𯂞𯒏嵼𯱱",
+    "count": 527,
+    "ids": "849ba06b05e59ea58e120983cfc930ea7e8afea25d2f42657c7eaacf1e2077e4"
+   },
+   {
+    "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſƀƁƂƃƄƅƆƇƈƉƊƋƌƍƎƏƐƑƒƓƔƕƖƗƘƙƚƛƜƝƞƟƠơƢƣƤƥƦƧƨƩƪƫƬƭƮƯưƱƲƳƴƵƶƷƸƹƺƻƼƽƾƿǀǁǂǃǄǅǆǇǈǉǊǋǌǍǎǏǐǑǒǓǔǕǖǗǘǙǚǛǜǝǞǟǠǡǢǣǤǥǦǧǨǩǪǫǬǭǮǯǰǱǲǳǴǵǶǷǸǹǺǻǼǽǾǿȀȁȂȃȄȅȆȇȈȉȊȋȌȍȎȏȐȑȒȓȔȕȖȗȘșȚțȜȝȞȟȠȡȢȣȤȥȦȧȨȩȪȫȬȭȮȯȰȱȲȳȴȵȶȷȸȹȺȻȼȽȾȿɀɁɂɃɄɅɆɇɈɉɊɋɌɍɎɏ",
+    "count": 975,
+    "ids": "ccf8bf13738585cc4f013fca7fe239854038368c1fef4ffa8fa83d274fc622bf"
+   },
+   {
+    "text": "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n",
+    "count": 12,
+    "ids": "07e861513e06bf0640db22bdd06fe20ede5c7c9f8860f6e14d5010fbb51db5df"
+   },
+   {
+    "text": "<|im_start|>user\nThe quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_end|>\n<|im_start|>assistant\n",
+    "count": 193,
+    "ids": "b84f6e2fc1946343221c5a147088eb71f6e6adc102a128a1fec4c1d38f1d1453"
+   },
+   {
+    "text": "<|im_start|>user\nI'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|im_end|>\n<|im_start|>assistant\n",
+    "count": 133,
+    "ids": "647fa4bdaeb8402f2b9d65a5a060433b61051ddd4f40c3aa476ea608790fe01f"
+   },
+   {
+    "text": "<|im_start|>user\nimport os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n<|im_end|>\n<|im_start|>assistant\n",
+    "count": 233,
+    "ids": "85daf9f88b07172d1ed49fc3b6677945b871d7f4f6e11d89ac0e2138ddae955f"
+   },
+   {
+    "text": "<|im_start|>user\nEnglish Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ<|im_end|>\n<|im_start|>assistant\n",
+    "count": 279,
+    "ids": "8b5138bd930b11903c53769a84a8d21771e424cf8f6e23ba785d5bf72fda3e28"
+   },
+   {
+    "text": "<|im_start|>user\na\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n<|im_end|>\n<|im_start|>assistant\n",
+    "count": 717,
+    "ids": "8bebb9892a85e2dc74e04eeb60254e783cc04911b9e6fc98f04c3f2f93c19acd"
+   },
+   {
+    "text": "hello<|im_start|>hello",
+    "count": 7,
+    "ids": "1ce33355bcc6d76f73b273af018cf5d27f9399cbcb72e193167db47084535811"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_start|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 369,
+    "ids": "0c6d599469e1982864a35fe2997bdbbf590bb7a5f72adde8f0c00cd0ae875efc"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|im_start|>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 249,
+    "ids": "b6393db935e14c0997953677921742d48ae119c591d07118316ef987c0a1ffa8"
+   },
+   {
+    "text": "<|im_start|> hello <|im_start|><|im_start|>x<|im_start|>  <|im_end|> hello <|im_end|><|im_end|>x<|im_end|>  <|rs|> hello <|rs|><|rs|>x<|rs|>  <|ls|> hello <|ls|><|ls|>x<|ls|>  <think> hello <think><think>x<think>  </think> hello </think></think>x</think>  WORD hello WORDWORDxWORD ",
+    "count": 77,
+    "ids": "4652d9ea8351dd5c251d0aa28b08e905bbb352ae51662ade6cf764eff2e42584"
+   },
+   {
+    "text": "<|im_start|><|im_end|><|rs|><|ls|><think></think>WORD",
+    "count": 7,
+    "ids": "1c420d619f18cdc930833b32d9f3f78e863f91a30c0a636529457f7438419567"
+   },
+   {
+    "text": "<|im_start|> <|im_end|> <|rs|> <|ls|> <think> </think> WORD",
+    "count": 12,
+    "ids": "d922f747a9c22e246cfb0255e90d3ba08fb1bf886a612b5da0e911bf440af400"
+   },
+   {
+    "text": "WORD\n</think>\n<think>\n<|ls|>\n<|rs|>\n<|im_end|>\n<|im_start|>",
+    "count": 11,
+    "ids": "bf839f5364e1b3c886ed9c8e80783e30e66d9d3d0a263859135c74f6921ac89a"
+   },
+   {
+    "text": "  <|im_start|>  <|im_end|>  ",
+    "count": 5,
+    "ids": "a9e2fe8a288eae50b2da513e147d5bcd8d98467cb9fd977fe4b30bf187f9129b"
+   },
+   {
+    "text": "x<|im_start|>",
+    "count": 2,
+    "ids": "382de9873d98cefafe5e63f3fe983d46a9b9b3673b97b3853a482d407948919e"
+   },
+   {
+    "text": "<|im_start|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_end|><|im_start|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_end|><|im_start|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_end|>",
+    "count": 558,
+    "ids": "a6440aa3d7d8a3991abf269faf2d39d79c105519675cb793e52e04d3608e20c0"
+   },
+   {
+    "text": "hello<|im_end|>\n<|im_start|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|im_end|>\n<|im_start|>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|im_end|>\n<|im_start|>import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n<|im_end|>\n<|im_start|>English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ<|im_end|>\n<|im_start|>a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 1528,
+    "ids": "a827a3d4331c0588a467fbe071212442584d584b398c020862a93090cd82e45c"
+   }
+  ]
+ },
+ "metaspace": {
+  "vocab": 749,
+  "marks": [
+   "<s>",
+   "</s>",
+   "[INST]",
+   "[/INST]",
+   "<unk>"
+  ],
+  "cases": [
+   {
+    "text": "",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": " ",
+    "count": 1,
+    "ids": "1c63ed9164d61acfd1f4f3a7b6dfacbd98d1dc01e755b7b558c6af0491154a2e"
+   },
+   {
+    "text": "\n",
+    "count": 2,
+    "ids": "358c9ccf606327615d74701e37c40aa354ed9cb27c84ea4c8eb859fd47ff60f0"
+   },
+   {
+    "text": "hello",
+    "count": 6,
+    "ids": "87121d249e6b815bf87ba88f07b073c5292d415f5e978cb948821433089e23a8"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 373,
+    "ids": "ed0a7001fc45f814e26d723d2f7c91d829a636c28f1c6267641f072e4a1117b4"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 200,
+    "ids": "6dfba9a143ab83221b47fa609176e905885b35e64764f6b5d015c6a51b68c2e9"
+   },
+   {
+    "text": "import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n",
+    "count": 488,
+    "ids": "fd4cdbb5df8f4ef46bbdc829e8d2d4811812ce7994393ca70c0f0e0332a822f5"
+   },
+   {
+    "text": "#[derive(Debug, Clone)]\npub struct Piece<'a> {\n    text: &'a str,\n    first: bool,\n}\n\nimpl<'a> Piece<'a> {\n    pub fn len(&self) -> usize {\n        self.text.chars().filter(|c| !c.is_whitespace()).count()\n    }\n}\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    let v: Vec<u32> = (1..=10).map(|x| x * x).collect();\n    println!(\"{v:?} {:#x} {:>5.1}\", 255u8, 2.5f64);\n    Ok(())\n}\n",
+    "count": 391,
+    "ids": "9de31f1a350a21964aa9cff8effb66f413855fb943d7a39c37ea85e711609f66"
+   },
+   {
+    "text": "{\n  \"id\": 17,\n  \"tags\": [\n    \"a\",\n    \"b\"\n  ],\n  \"ratio\": 0.25,\n  \"nested\": {\n    \"ok\": true,\n    \"none\": null\n  },\n  \"text\": \"line\\nbreak \\\"quoted\\\" \\\\ slash\",\n  \"unicode\": \"caf\\u00e9 \\u65e5\\u672c\"\n}\n[{\"k\": 0, \"v\": [0, 0.0, \"0\"]}, {\"k\": 1, \"v\": [1, 1.5, \"1\"]}, {\"k\": 2, \"v\": [2, 3.0, \"2\"]}, {\"k\": 3, \"v\": [3, 4.5, \"3\"]}, {\"k\": 4, \"v\": [4, 6.0, \"4\"]}, {\"k\": 5, \"v\": [5, 7.5, \"5\"]}]",
+    "count": 383,
+    "ids": "2b13f4ad38329a97eb61b837c48397c7059c3b0ffc9d7a1e60242196674b4ceb"
+   },
+   {
+    "text": "# Title\n\n## Sub-title\n\n- item one\n- item **two** with `code` and [a link](https://example.com/path?q=1&r=2#frag)\n  - nested item\n1. first\n2. second\n\n| name | value |\n|------|------:|\n| a    |     1 |\n| bb   |    22 |\n\n> quoted\n\n```\nfenced\n```\n\n---\n\n<details><summary>More</summary>&amp; &lt;html&gt;</details>\n",
+    "count": 309,
+    "ids": "b1c23eedf23df09bf87ab0b52157915065eb3e243764d5096c9cd5153eeaf0aa"
+   },
+   {
+    "text": "0 1 12 123 1234 12345 123456 1234567 12345678 123456789 1234567890 12345678901234567890 3.14159 -2.5e-10 1,000,000.00 0xDEADBEEF 0b1010 1e100 50% $9.99 2026-11-10T09:30:00Z 192.168.1.100:8100 +1 (555) 010-9999 ١٢٣٤٥ ۱۲۳ १२३ ² ³ ¹ ½ ¾ Ⅻ ⅷ ① ⑳ ㊿ 一二三 ０１２３ 𝟘𝟙𝟚",
+    "count": 268,
+    "ids": "d5b40ec079305bdc575dbd840c4fa96bd00b0b9a5b301f1c7abd4a89f9e83627"
+   },
+   {
+    "text": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ... --- === ### *** ___ !!! ??? ;;; ::: ,,, ------------------------------ ============================== “curly” ‘single’ «guillemets» „low“ … — – ‐ • · § ¶ † ‡ ° ± × ÷ ≠ ≤ ≥ ∞ → ← ↑ ↓ ✓ ✗ ©®™ ¿¡ a.b,c;d:e (a)[b]{c}<d> a/b\\c|d a-b_c+d=e x.y.z e.g. i.e. U.S.A. end.Start",
+    "count": 307,
+    "ids": "b1796acb6d0a0580cea9e0fc3732ffcd3d66f943d54231753bc1480747cfd28a"
+   },
+   {
+    "text": "English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ",
+    "count": 193,
+    "ids": "1a891c3f396d9b6621b675269ded5fad6ce44aba118e9b97dde7ea898cae96a4"
+   },
+   {
+    "text": "😀 😃😄 👍🏽 👩‍👩‍👧‍👦 🇫🇷🇯🇵 🏳️‍🌈 ❤️ ❤ ☺️ ☺ 1️⃣ #️⃣ 🧑🏿‍💻 text😀text 😀\n😀 🫠 🪿 🫨 ¯\\_(ツ)_/¯ (╯°□°)╯︵ ┻━┻",
+    "count": 94,
+    "ids": "cdcdd9c4e9966143695470c148379cf094bd0b2c469283503ceea21b036c40b4"
+   },
+   {
+    "text": "é ǟ ố ́start Z͑ͫ̓ą́l̡g̸o क्षि ज्ञ ก็ ทำ 각 각 ‍zwj‍ ‌zwnj‌ ⁠wj⁠ a️b a͏b ‮RTL override‬ ⁦isolate⁩",
+    "count": 96,
+    "ids": "c9b6e88a26f7cc9e046ff232d2feef532ef3b89f086723f1436caf078d57010a"
+   },
+   {
+    "text": "<|im_start|>system\nYou are<|im_end|>\n<|im_start|>user <|endoftext|> <s> </s> <unk> <pad> [INST] [/INST] [TOOL_CALLS] <|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n<|eot_id|> <bos> <eos> <start_of_turn>model\n<end_of_turn> <think>\nhm\n</think> <tool_call> </tool_call> <|start|>assistant<|channel|>final<|message|>hi<|end|><|return|> <｜begin▁of▁sentence｜><｜User｜>x<｜Assistant｜> <|system|> <|user|> <|assistant|> <|end|> [gMASK]<sop> <|observation|> <|endofprompt|> < |im_start| > <|im_start |> <<|im_end|>> <|IM_START|>",
+    "count": 510,
+    "ids": "01695720669a5933a4f2ac82bd8cd575d32e4719320fe732278f37cbbd06b7cd"
+   },
+   {
+    "text": "nul\u0000 soh\u0001 bel\u0007 bs\b esc\u001b us\u001f del pad nel apc shy­ bom﻿ repl� pua non￾￿ sup󰀀 unassigned͸԰ 󠀁tag󠁿 ls ps  end",
+    "count": 111,
+    "ids": "cee0ee7d469e147a5b3a255091302c4efa4966750cdb12da966f8b8b59233a7e"
+   },
+   {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1 éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "count": 1024,
+    "ids": "2e3ae7f17eead550e2a89f058becb1a61b867a6d464ab5f966a9defdff50ea44"
+   },
+   {
+    "text": "https://user:pass@sub.example.co.uk:8443/a/b%20c/d.html?x=1&y=two#top mailto:first.last+tag@example.org /usr/local/lib/python3.12/site-packages C:\\Users\\Name\\file.txt SGVsbG8sIHdvcmxkISBUaGlzIGlzIGJhc2U2NC4= d41d8cd98f00b204e9800998ecf8427e 550e8400-e29b-41d4-a716-446655440000 snake_case_name camelCaseName PascalCaseName SCREAMING_CASE kebab-case-name",
+    "count": 354,
+    "ids": "5d7c9030c6c2c65f025e300dd37ba1b7d33daa35ec56ab181b24e2b4a5e13589"
+   },
+   {
+    "text": "a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 1316,
+    "ids": "f69bdb83d74236c8aa23f681c6c174d75a6b58f794b4599dbe465ba5ade08210"
+   },
+   {
+    "text": " âŃƤȅɦ ˇ̨ΉϪыҬԍ ծ׏ذڑ۲ݓ޴ ࠕࡶࣗसঙ৺ਜ਼ ઼ଝ୾௟ీಡം ൣහลຆ໧཈ྩ ညၫ჌ᄭᆎᇯቐ ኱ጒ፳Ꮤᐵᒖᓷ ᕘᖹᘚᙻᛜ᜽ឞ ៿ᡠᣁᤢᦃ᧤ᩅ ᪦ᬇ᭨ᯉᰪ᲋ᳬ ᵍᶮḏṰốἲᾓ ῴ⁕₶℗ⅸ⇙∺ ⊛⋼⍝⎾␟⒀ⓡ ╂▣☄♥⛆✧➈ ⟩⡊⢫⤌⥭⧎⨯ ⪐⫱⭒⮳ⰔⱵⳖ ⴷ⶘ⷹ⹚⺻⼜⽽ ⿞〿゠㄁ㅢ㇃㈤ ㊅㋦㍇㎨㐉㑪㓋 㔬㖍㗮㙏㚰㜑㝲 㟓㠴㢕㣶㥗㦸㨙 㩺㫛㬼㮝㯾㱟㳀 㴡㶂㷣㹄㺥㼆㽧 㿈䀩䂊䃫䅌䆭䈎 䉯䋐䌱䎒䏳䑔䒵 䔖䕷䗘䘹䚚䛻䝜 䞽䠞䡿䣠䥁䦢䨃 䩤䫅䬦䮇䯨䱉䲪 䴋䵬䷍丮亏仰佑 侲倓側僕儶冗凸 剙劺匛卼叝吾咟 唀啡嗂嘣嚄囥坆 垧堈塩壊夫妌姭 婎媯嬐孱寒尳岔 峵嵖嶷帘幹廚弻 徜忽恞悿愠憁懢 扃护挅捦揇搨撉 擪敋斬昍普曏朰 枑柲桓梴椕楶槗 樸檙櫺歛殼氝汾 泟浀涡渂湣滄漥 澆濧灈炩焊煫燌 爭犎狯獐玱琒瑳 瓔电疖痷癘皹眚 睻矜砽碞磿祠私 稢窃竤筅箦簇籨 糉紪綋緬繍纮缏 罰翑耲肓胴腕膶 舗艸苙茺莛菼葝 蒾蔟薀藡虂蚣蜄 蝥蟆蠧袈裩襊覫 訌詭諎謯讐诱豒 貳贔赵跖踷躘軹 轚辻逜遽郞鄿醠 鈁鉢鋃錤鎅鏦鑇 钨锉镪闋阬隍雮 靏鞰頑顲飓餴馕 駶驗骸鬙魺鯛鰼 鲝鳾鵟鷀鸡麂黣 齄龥ꀆꁧꃈꄩꆊ ꇫꉌꊭꌎꍯꏐꐱ ꒒ꓳꕔꖵꘖꙷꛘ ꜹꞚꟻꡜꢽꤞ꥿ ꧠꩁꪢꬃꭤꯅ갦 겇골굉궪긋깬껍 꼮꾏꿰끑낲넓녴 뇕눶늗닸덙뎺됛 둼득딾떟똀뙡뛂 뜣랄럥롆뢧뤈륩 맊먫몌뫭뭎뮯밐 뱱볒봳붔뷵빖뺷 뼘뽹뿚쀻삜샽셞 솿술슁싢썃쎤쐅 쑦쓇씨얉엪왋욬 윍읮쟏젰좑죲쥓 즴쨕쩶쫗쬸쮙쯺 챛첼총쵾췟칀캡 켂콣쿄퀥킆탧텈 톩툊퉫틌팭펎폯 푐풱픒핳헔혵횖 훷흘ힹ         螺 沈陸勤歹﫶ﭗ﮸ ﰙﱺﳛﴼﶝ﷾﹟ ﻀＡﾂ￣",
+    "count": 769,
+    "ids": "b7a335673fc1a10bbcc30670a03061385916b093068dc0a7a8a4e07f7fea2a5f"
+   },
+   {
+    "text": "𐀀𐏱𐟢𐯓𐿄𑎵𑞦 𑮗𑾈𒍹𒝪𒭛𒽌𓌽 𓜮𓬟𓼐𔌁𔛲𔫣𔻔 𕋅𕚶𕪧𕺘𖊉𖙺𖩫 𖹜𗉍𗘾𗨯𗸠𘈑𘘂 𘧳𘷤𙇕𙗆𙦷𙶨𚆙 𚖊𚥻𚵬𛅝𛕎𛤿𛴰 𜄡𜔒𜤃𜳴𝃥𝓖𝣇 𝲸𞂩𞒚𞢋𞱼🁭👞 🡏🱀𠀱𠐢𠠓𠰄𠿵 𡏦𡟗𡯈𡾹𢎪𢞛𢮌 𢽽𣍮𣝟𣭐𣽁𤌲𤜣 𤬔𤼅𥋶𥛧𥫘𥻉𦊺 𦚫𦪜𦺍𧉾𧙯𧩠𧹑 𨉂𨘳𨨤𨸕𩈆𩗷𩧨 𩷙𪇊𪖻𪦬𪶝𫆎𫕿 𫥰𫵡𬅒𬕃𬤴𬴥𭄖 𭔇𭣸𭳩𮃚𮓋𮢼𮲭 𯂞𯒏嵼𯱱",
+    "count": 149,
+    "ids": "f3be133f0e390f086ec530e866591dfc0489cbba892899fd3bd08d8f3796f2a1"
+   },
+   {
+    "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſƀƁƂƃƄƅƆƇƈƉƊƋƌƍƎƏƐƑƒƓƔƕƖƗƘƙƚƛƜƝƞƟƠơƢƣƤƥƦƧƨƩƪƫƬƭƮƯưƱƲƳƴƵƶƷƸƹƺƻƼƽƾƿǀǁǂǃǄǅǆǇǈǉǊǋǌǍǎǏǐǑǒǓǔǕǖǗǘǙǚǛǜǝǞǟǠǡǢǣǤǥǦǧǨǩǪǫǬǭǮǯǰǱǲǳǴǵǶǷǸǹǺǻǼǽǾǿȀȁȂȃȄȅȆȇȈȉȊȋȌȍȎȏȐȑȒȓȔȕȖȗȘșȚțȜȝȞȟȠȡȢȣȤȥȦȧȨȩȪȫȬȭȮȯȰȱȲȳȴȵȶȷȸȹȺȻȼȽȾȿɀɁɂɃɄɅɆɇɈɉɊɋɌɍɎɏ",
+    "count": 587,
+    "ids": "98eba37232cbb584deadedf8c33e137aa285cecaa9882fec94ef1c965e039078"
+   },
+   {
+    "text": "<s>user\nhello</s>\n<s>assistant\n",
+    "count": 24,
+    "ids": "2b82c25b6542a825ae560507b48afe964e5932181a313440cb5c844220057161"
+   },
+   {
+    "text": "<s>user\nThe quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.</s>\n<s>assistant\n",
+    "count": 391,
+    "ids": "9b42e11e95593a2012a11ee50ec7c0fe788c510c7e1833a86584218552368834"
+   },
+   {
+    "text": "<s>user\nI'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D</s>\n<s>assistant\n",
+    "count": 218,
+    "ids": "585204f0f5bbc2aa29be99a64c3c37c3e31fd30399a12cf3b4da7ef61e2c304f"
+   },
+   {
+    "text": "<s>user\nimport os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n</s>\n<s>assistant\n",
+    "count": 506,
+    "ids": "d6397b80c3203223ec6035920eb82dd83ed6519f2d72367f926d1e494dd6b278"
+   },
+   {
+    "text": "<s>user\nEnglish Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ</s>\n<s>assistant\n",
+    "count": 211,
+    "ids": "a70b4f2893a089476d5437bd4f406fea49a88d08ed9f6333994dec493125044d"
+   },
+   {
+    "text": "<s>user\na\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n</s>\n<s>assistant\n",
+    "count": 1334,
+    "ids": "e20eebde7c79ee135cc780884c0efba122c944b9b9c7d791084d058f93823378"
+   },
+   {
+    "text": "hello<s>hello",
+    "count": 12,
+    "ids": "ba4e70c565b13194744bf6a794a38b5eafee551115bb6500bb5a7e8e14803c7e"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<s>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 746,
+    "ids": "7395f8e4ece00b9c79fae04051e054d9979f63024c3fbeb976c803235771fb3b"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<s>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 400,
+    "ids": "f0778ff6d17956c95e26666e610c190e58ea42d4218c6a30909f4379a75019b0"
+   },
+   {
+    "text": "<s> hello <s><s>x<s>  </s> hello </s></s>x</s>  [INST] hello [INST][INST]x[INST]  [/INST] hello [/INST][/INST]x[/INST]  <unk> hello <unk><unk>x<unk> ",
+    "count": 69,
+    "ids": "4dd204a436fc28719f6d76f833c3c5e0f64a3cb70ef885b49548f2d1c6608531"
+   },
+   {
+    "text": "<s></s>[INST][/INST]<unk>",
+    "count": 5,
+    "ids": "82da7f6fa5a50df83000762e507ecd2c00abd0042064d187a68a1c4061cb0077"
+   },
+   {
+    "text": "<s> </s> [INST] [/INST] <unk>",
+    "count": 9,
+    "ids": "ebf47d065ebbd0b849cc34f2b16e0b789f9c0ceab9ae6015527a62a6bddc1955"
+   },
+   {
+    "text": "<unk>\n[/INST]\n[INST]\n</s>\n<s>",
+    "count": 9,
+    "ids": "1ba0642b34c47f9435a35e8e993ba49b0dbeac0fb0728e8d784565b57235bcbc"
+   },
+   {
+    "text": "  <s>  </s>  ",
+    "count": 8,
+    "ids": "b452a90d618b79d948962d4f0b1fae289397ea0a3800f71816251ca0af30bdfb"
+   },
+   {
+    "text": "x<s>",
+    "count": 3,
+    "ids": "639eb42a1307d45fba35ada87a26843b96190668bd3bfe624fab14f2029b49af"
+   },
+   {
+    "text": "<s>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.</s><s>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.</s><s>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.</s>",
+    "count": 1122,
+    "ids": "318b4c183b716993d4f1f1b9206f2428251e9e0cfca78e18b21b3de417f93d1e"
+   },
+   {
+    "text": "hello</s>\n<s>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.</s>\n<s>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D</s>\n<s>import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n</s>\n<s>English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ</s>\n<s>a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 2586,
+    "ids": "63f77d3e53262a6c21aef17a1e120cc479fe07df6addeb3791c07cce5537071f"
+   }
+  ]
+ },
+ "wordpiece": {
+  "vocab": 702,
+  "marks": [
+   "[CLS]",
+   "[SEP]",
+   "tokenizers",
+   "[Tool]",
+   "[tool]",
+   "TOKENIZERS"
+  ],
+  "cases": [
+   {
+    "text": "",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": " ",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": "\n",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": "hello",
+    "count": 4,
+    "ids": "a5d1dacabfb7113c4e09720c604f7dc18df20d17db3733c89aace08ae1f75e10"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 265,
+    "ids": "8256dda5c8064abef92b7417e82a2e3d1a89f0591e0fa119c5e596b215fd2e40"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 146,
+    "ids": "cfb2266b244006152e576bd876248fc2dc7fcc179579af7ac2a5bc5c30b4a9b2"
+   },
+   {
+    "text": "import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n",
+    "count": 277,
+    "ids": "a9b09e8e3baf1963de19aef7e6de63a9839a6ad01b6bba89e8c1d7a1c1022443"
+   },
+   {
+    "text": "#[derive(Debug, Clone)]\npub struct Piece<'a> {\n    text: &'a str,\n    first: bool,\n}\n\nimpl<'a> Piece<'a> {\n    pub fn len(&self) -> usize {\n        self.text.chars().filter(|c| !c.is_whitespace()).count()\n    }\n}\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    let v: Vec<u32> = (1..=10).map(|x| x * x).collect();\n    println!(\"{v:?} {:#x} {:>5.1}\", 255u8, 2.5f64);\n    Ok(())\n}\n",
+    "count": 282,
+    "ids": "e3f4d1f99ccc331298bd0bf8b21c1720662967018ee057641b6998a2903d499d"
+   },
+   {
+    "text": "{\n  \"id\": 17,\n  \"tags\": [\n    \"a\",\n    \"b\"\n  ],\n  \"ratio\": 0.25,\n  \"nested\": {\n    \"ok\": true,\n    \"none\": null\n  },\n  \"text\": \"line\\nbreak \\\"quoted\\\" \\\\ slash\",\n  \"unicode\": \"caf\\u00e9 \\u65e5\\u672c\"\n}\n[{\"k\": 0, \"v\": [0, 0.0, \"0\"]}, {\"k\": 1, \"v\": [1, 1.5, \"1\"]}, {\"k\": 2, \"v\": [2, 3.0, \"2\"]}, {\"k\": 3, \"v\": [3, 4.5, \"3\"]}, {\"k\": 4, \"v\": [4, 6.0, \"4\"]}, {\"k\": 5, \"v\": [5, 7.5, \"5\"]}]",
+    "count": 279,
+    "ids": "d82288686216c728a6643204624285dd10560238c4d8dd821f93e18d347a979b"
+   },
+   {
+    "text": "# Title\n\n## Sub-title\n\n- item one\n- item **two** with `code` and [a link](https://example.com/path?q=1&r=2#frag)\n  - nested item\n1. first\n2. second\n\n| name | value |\n|------|------:|\n| a    |     1 |\n| bb   |    22 |\n\n> quoted\n\n```\nfenced\n```\n\n---\n\n<details><summary>More</summary>&amp; &lt;html&gt;</details>\n",
+    "count": 221,
+    "ids": "4a9679a1fe3b40b07517cb59e0e528c4d1ce2aae87ffd91f29d461fbbca62d1d"
+   },
+   {
+    "text": "0 1 12 123 1234 12345 123456 1234567 12345678 123456789 1234567890 12345678901234567890 3.14159 -2.5e-10 1,000,000.00 0xDEADBEEF 0b1010 1e100 50% $9.99 2026-11-10T09:30:00Z 192.168.1.100:8100 +1 (555) 010-9999 ١٢٣٤٥ ۱۲۳ १२३ ² ³ ¹ ½ ¾ Ⅻ ⅷ ① ⑳ ㊿ 一二三 ０１２３ 𝟘𝟙𝟚",
+    "count": 176,
+    "ids": "b02a16ded0d8247b073ffc5428f4db7a4acef2050585ffe35b83d666beb91eee"
+   },
+   {
+    "text": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ... --- === ### *** ___ !!! ??? ;;; ::: ,,, ------------------------------ ============================== “curly” ‘single’ «guillemets» „low“ … — – ‐ • · § ¶ † ‡ ° ± × ÷ ≠ ≤ ≥ ∞ → ← ↑ ↓ ✓ ✗ ©®™ ¿¡ a.b,c;d:e (a)[b]{c}<d> a/b\\c|d a-b_c+d=e x.y.z e.g. i.e. U.S.A. end.Start",
+    "count": 243,
+    "ids": "8cb27dbaf09fc622b46d70c1f66aeb34e3315f5c82946f26ea3cbc309a0ee15b"
+   },
+   {
+    "text": "English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ",
+    "count": 149,
+    "ids": "8f23ebb129c42435132bb12023e54b12774070e6cbf5cf02d90e793aa34b4ede"
+   },
+   {
+    "text": "😀 😃😄 👍🏽 👩‍👩‍👧‍👦 🇫🇷🇯🇵 🏳️‍🌈 ❤️ ❤ ☺️ ☺ 1️⃣ #️⃣ 🧑🏿‍💻 text😀text 😀\n😀 🫠 🪿 🫨 ¯\\_(ツ)_/¯ (╯°□°)╯︵ ┻━┻",
+    "count": 57,
+    "ids": "f47c35461990fbd116137d634ffefceb8d2a165fc1fb16edb5f4d144b9a031e7"
+   },
+   {
+    "text": "é ǟ ố ́start Z͑ͫ̓ą́l̡g̸o क्षि ज्ञ ก็ ทำ 각 각 ‍zwj‍ ‌zwnj‌ ⁠wj⁠ a️b a͏b ‮RTL override‬ ⁦isolate⁩",
+    "count": 49,
+    "ids": "bcb43b5ef2eec08bb57b13bb7964334796f0145e39ef9372db001a0ba46249e2"
+   },
+   {
+    "text": "<|im_start|>system\nYou are<|im_end|>\n<|im_start|>user <|endoftext|> <s> </s> <unk> <pad> [INST] [/INST] [TOOL_CALLS] <|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n<|eot_id|> <bos> <eos> <start_of_turn>model\n<end_of_turn> <think>\nhm\n</think> <tool_call> </tool_call> <|start|>assistant<|channel|>final<|message|>hi<|end|><|return|> <｜begin▁of▁sentence｜><｜User｜>x<｜Assistant｜> <|system|> <|user|> <|assistant|> <|end|> [gMASK]<sop> <|observation|> <|endofprompt|> < |im_start| > <|im_start |> <<|im_end|>> <|IM_START|>",
+    "count": 384,
+    "ids": "df6c3a3d4608d331f18f1b4072dd6e0f05105aa8d58a7c3d939af4a2feb108ff"
+   },
+   {
+    "text": "nul\u0000 soh\u0001 bel\u0007 bs\b esc\u001b us\u001f del pad nel apc shy­ bom﻿ repl� pua non￾￿ sup󰀀 unassigned͸԰ 󠀁tag󠁿 ls ps  end",
+    "count": 63,
+    "ids": "2eee530d8d4946a2f6181b2f3156df6a3367fe9418818d0b97af7452b3d8e9bc"
+   },
+   {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1 éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "count": 4,
+    "ids": "4040da0f376996872efefb97a0052ed3879b1ab4284522b95599e24bde16c311"
+   },
+   {
+    "text": "https://user:pass@sub.example.co.uk:8443/a/b%20c/d.html?x=1&y=two#top mailto:first.last+tag@example.org /usr/local/lib/python3.12/site-packages C:\\Users\\Name\\file.txt SGVsbG8sIHdvcmxkISBUaGlzIGlzIGJhc2U2NC4= d41d8cd98f00b204e9800998ecf8427e 550e8400-e29b-41d4-a716-446655440000 snake_case_name camelCaseName PascalCaseName SCREAMING_CASE kebab-case-name",
+    "count": 307,
+    "ids": "764a417f1a1b8e3889a7d9797ea4a23ba33ceefe1e8c0607001c09f697bd51c1"
+   },
+   {
+    "text": "a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 350,
+    "ids": "7239b4fb616accdf0f664a25d00f9dfa4d9360feb6fda5379d59864e30833ca2"
+   },
+   {
+    "text": " âŃƤȅɦ ˇ̨ΉϪыҬԍ ծ׏ذڑ۲ݓ޴ ࠕࡶࣗसঙ৺ਜ਼ ઼ଝ୾௟ీಡം ൣහลຆ໧཈ྩ ညၫ჌ᄭᆎᇯቐ ኱ጒ፳Ꮤᐵᒖᓷ ᕘᖹᘚᙻᛜ᜽ឞ ៿ᡠᣁᤢᦃ᧤ᩅ ᪦ᬇ᭨ᯉᰪ᲋ᳬ ᵍᶮḏṰốἲᾓ ῴ⁕₶℗ⅸ⇙∺ ⊛⋼⍝⎾␟⒀ⓡ ╂▣☄♥⛆✧➈ ⟩⡊⢫⤌⥭⧎⨯ ⪐⫱⭒⮳ⰔⱵⳖ ⴷ⶘ⷹ⹚⺻⼜⽽ ⿞〿゠㄁ㅢ㇃㈤ ㊅㋦㍇㎨㐉㑪㓋 㔬㖍㗮㙏㚰㜑㝲 㟓㠴㢕㣶㥗㦸㨙 㩺㫛㬼㮝㯾㱟㳀 㴡㶂㷣㹄㺥㼆㽧 㿈䀩䂊䃫䅌䆭䈎 䉯䋐䌱䎒䏳䑔䒵 䔖䕷䗘䘹䚚䛻䝜 䞽䠞䡿䣠䥁䦢䨃 䩤䫅䬦䮇䯨䱉䲪 䴋䵬䷍丮亏仰佑 侲倓側僕儶冗凸 剙劺匛卼叝吾咟 唀啡嗂嘣嚄囥坆 垧堈塩壊夫妌姭 婎媯嬐孱寒尳岔 峵嵖嶷帘幹廚弻 徜忽恞悿愠憁懢 扃护挅捦揇搨撉 擪敋斬昍普曏朰 枑柲桓梴椕楶槗 樸檙櫺歛殼氝汾 泟浀涡渂湣滄漥 澆濧灈炩焊煫燌 爭犎狯獐玱琒瑳 瓔电疖痷癘皹眚 睻矜砽碞磿祠私 稢窃竤筅箦簇籨 糉紪綋緬繍纮缏 罰翑耲肓胴腕膶 舗艸苙茺莛菼葝 蒾蔟薀藡虂蚣蜄 蝥蟆蠧袈裩襊覫 訌詭諎謯讐诱豒 貳贔赵跖踷躘軹 轚辻逜遽郞鄿醠 鈁鉢鋃錤鎅鏦鑇 钨锉镪闋阬隍雮 靏鞰頑顲飓餴馕 駶驗骸鬙魺鯛鰼 鲝鳾鵟鷀鸡麂黣 齄龥ꀆꁧꃈꄩꆊ ꇫꉌꊭꌎꍯꏐꐱ ꒒ꓳꕔꖵꘖꙷꛘ ꜹꞚꟻꡜꢽꤞ꥿ ꧠꩁꪢꬃꭤꯅ갦 겇골굉궪긋깬껍 꼮꾏꿰끑낲넓녴 뇕눶늗닸덙뎺됛 둼득딾떟똀뙡뛂 뜣랄럥롆뢧뤈륩 맊먫몌뫭뭎뮯밐 뱱볒봳붔뷵빖뺷 뼘뽹뿚쀻삜샽셞 솿술슁싢썃쎤쐅 쑦쓇씨얉엪왋욬 윍읮쟏젰좑죲쥓 즴쨕쩶쫗쬸쮙쯺 챛첼총쵾췟칀캡 켂콣쿄퀥킆탧텈 톩툊퉫틌팭펎폯 푐풱픒핳헔혵횖 훷흘ힹ         螺 沈陸勤歹﫶ﭗ﮸ ﰙﱺﳛﴼﶝ﷾﹟ ﻀＡﾂ￣",
+    "count": 343,
+    "ids": "00e2f6eb67d5f10eb6677f71797d3ef816660484a7c5729a76d7b35ecc5dc0c1"
+   },
+   {
+    "text": "𐀀𐏱𐟢𐯓𐿄𑎵𑞦 𑮗𑾈𒍹𒝪𒭛𒽌𓌽 𓜮𓬟𓼐𔌁𔛲𔫣𔻔 𕋅𕚶𕪧𕺘𖊉𖙺𖩫 𖹜𗉍𗘾𗨯𗸠𘈑𘘂 𘧳𘷤𙇕𙗆𙦷𙶨𚆙 𚖊𚥻𚵬𛅝𛕎𛤿𛴰 𜄡𜔒𜤃𜳴𝃥𝓖𝣇 𝲸𞂩𞒚𞢋𞱼🁭👞 🡏🱀𠀱𠐢𠠓𠰄𠿵 𡏦𡟗𡯈𡾹𢎪𢞛𢮌 𢽽𣍮𣝟𣭐𣽁𤌲𤜣 𤬔𤼅𥋶𥛧𥫘𥻉𦊺 𦚫𦪜𦺍𧉾𧙯𧩠𧹑 𨉂𨘳𨨤𨸕𩈆𩗷𩧨 𩷙𪇊𪖻𪦬𪶝𫆎𫕿 𫥰𫵡𬅒𬕃𬤴𬴥𭄖 𭔇𭣸𭳩𮃚𮓋𮢼𮲭 𯂞𯒏嵼𯱱",
+    "count": 68,
+    "ids": "0f9e6c6e2838d2beeef61fd3a961db4cab1341d3e41e72c24f56ee3123f2c627"
+   },
+   {
+    "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſƀƁƂƃƄƅƆƇƈƉƊƋƌƍƎƏƐƑƒƓƔƕƖƗƘƙƚƛƜƝƞƟƠơƢƣƤƥƦƧƨƩƪƫƬƭƮƯưƱƲƳƴƵƶƷƸƹƺƻƼƽƾƿǀǁǂǃǄǅǆǇǈǉǊǋǌǍǎǏǐǑǒǓǔǕǖǗǘǙǚǛǜǝǞǟǠǡǢǣǤǥǦǧǨǩǪǫǬǭǮǯǰǱǲǳǴǵǶǷǸǹǺǻǼǽǾǿȀȁȂȃȄȅȆȇȈȉȊȋȌȍȎȏȐȑȒȓȔȕȖȗȘșȚțȜȝȞȟȠȡȢȣȤȥȦȧȨȩȪȫȬȭȮȯȰȱȲȳȴȵȶȷȸȹȺȻȼȽȾȿɀɁɂɃɄɅɆɇɈɉɊɋɌɍɎɏ",
+    "count": 114,
+    "ids": "b359f76f838f5a6a8c54c44c225cab85b07ee9dd62379ac7030ce9cdf5e91f4f"
+   },
+   {
+    "text": "[CLS]user\nhello[SEP]\n[CLS]assistant\n",
+    "count": 15,
+    "ids": "0706c24a1cffceec175b1fe3669418b509f7ce2e70ca52387eed1d5e75ae791e"
+   },
+   {
+    "text": "[CLS]user\nThe quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[SEP]\n[CLS]assistant\n",
+    "count": 276,
+    "ids": "d975f9eee2d3b9528178abdeda16a4461d3dc619e1c970e2b9323aaa7a304266"
+   },
+   {
+    "text": "[CLS]user\nI'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D[SEP]\n[CLS]assistant\n",
+    "count": 157,
+    "ids": "bbcdb99671e36acb7d4b63ac480a7e49d968cb8cce2b62c34803cc565e37da16"
+   },
+   {
+    "text": "[CLS]user\nimport os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n[SEP]\n[CLS]assistant\n",
+    "count": 288,
+    "ids": "1ea0000396ba6cf89c89fa73bcac252b3a7c615962473591da858aa5cb127774"
+   },
+   {
+    "text": "[CLS]user\nEnglish Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ[SEP]\n[CLS]assistant\n",
+    "count": 160,
+    "ids": "340b630742b2a7355f1233feed44bc6292c8691c6d79586b7a248cbd6db16a71"
+   },
+   {
+    "text": "[CLS]user\na\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n[SEP]\n[CLS]assistant\n",
+    "count": 361,
+    "ids": "9bc6f1a8959dbbdb485739afee3d5a1debd96e689f0f540a59a43d9afa6a78b1"
+   },
+   {
+    "text": "hello[CLS]hello",
+    "count": 9,
+    "ids": "b58e77c60b2d7171c57ab16049de1404f23933f8db07b3507e324189d44ea7d2"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[CLS]The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 531,
+    "ids": "b8737cad1d27a237c44a1cb8ecf7109edadd1079ffa1cd082fe95c709364b42f"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D[CLS]I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 293,
+    "ids": "0880f4cae2ea056f779df65aea70671cf27fe5765c0b63ac944f9194533140b5"
+   },
+   {
+    "text": "[CLS] hello [CLS][CLS]x[CLS]  [SEP] hello [SEP][SEP]x[SEP]  tokenizers hello tokenizerstokenizersxtokenizers  [Tool] hello [Tool][Tool]x[Tool]  [tool] hello [tool][tool]x[tool]  TOKENIZERS hello TOKENIZERSTOKENIZERSxTOKENIZERS ",
+    "count": 54,
+    "ids": "151b62d844889f7ec700505146e255bac62f3539a47e320a68ed5bae38c8f17b"
+   },
+   {
+    "text": "[CLS][SEP]tokenizers[Tool][tool]TOKENIZERS",
+    "count": 6,
+    "ids": "1305de26091f58834ce94a3fb40fad0100cadcafe8469ae337d6f773a59753b4"
+   },
+   {
+    "text": "[CLS] [SEP] tokenizers [Tool] [tool] TOKENIZERS",
+    "count": 6,
+    "ids": "1305de26091f58834ce94a3fb40fad0100cadcafe8469ae337d6f773a59753b4"
+   },
+   {
+    "text": "TOKENIZERS\n[tool]\n[Tool]\ntokenizers\n[SEP]\n[CLS]",
+    "count": 6,
+    "ids": "5fcfba6adf2c4e2a6669049423322471fdea029fd80346930471f6cd1c2afcba"
+   },
+   {
+    "text": "  [CLS]  [SEP]  ",
+    "count": 2,
+    "ids": "17f8af97ad4a7f7639a4c9171d5185cbafb85462877a4746c21bdb0a4f940ca0"
+   },
+   {
+    "text": "x[CLS]",
+    "count": 2,
+    "ids": "8f39df39a32827c65a69e593fc6ca9ae038b3703b9ce4ae234c6810c3fe51e68"
+   },
+   {
+    "text": "[CLS]The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[SEP][CLS]The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[SEP][CLS]The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[SEP]",
+    "count": 801,
+    "ids": "ba7822643942a8bc08add10ec9f8469d448ab84a0da6ff155eb9f6450fe2d187"
+   },
+   {
+    "text": "hello[SEP]\n[CLS]The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.[SEP]\n[CLS]I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D[SEP]\n[CLS]import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n[SEP]\n[CLS]English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ[SEP]\n[CLS]a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 1201,
+    "ids": "3ac91bee0804840dcebe9be7e51ef221283ded3805b313814903644a1ab99ab3"
+   }
+  ]
+ },
+ "split": {
+  "vocab": 704,
+  "marks": [
+   "<|begin_of_text|>",
+   "<|start_header_id|>",
+   "<|end_header_id|>",
+   "<|eot_id|>"
+  ],
+  "cases": [
+   {
+    "text": "",
+    "count": 0,
+    "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "text": " ",
+    "count": 1,
+    "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+   },
+   {
+    "text": "\n",
+    "count": 1,
+    "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+   },
+   {
+    "text": "hello",
+    "count": 3,
+    "ids": "a0abf98654b5ab8fbe704c1c8b1fda6b45691769b033a0b0916f5b7e5cbcb221"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 184,
+    "ids": "9a15f1e236341492e7dd463f970f7f955ba5f4ace5166abb0f74f69230550af4"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 125,
+    "ids": "ed765f8df2b5184dd98879c4eac06661592256b8379bef34c01e62d9c1b8d080"
+   },
+   {
+    "text": "import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n",
+    "count": 234,
+    "ids": "77bdb72c43e25e9ba038e5f266bf68b185b04893f1f0d77256d7ef8e11438541"
+   },
+   {
+    "text": "#[derive(Debug, Clone)]\npub struct Piece<'a> {\n    text: &'a str,\n    first: bool,\n}\n\nimpl<'a> Piece<'a> {\n    pub fn len(&self) -> usize {\n        self.text.chars().filter(|c| !c.is_whitespace()).count()\n    }\n}\n\nfn main() -> Result<(), Box<dyn std::error::Error>> {\n    let v: Vec<u32> = (1..=10).map(|x| x * x).collect();\n    println!(\"{v:?} {:#x} {:>5.1}\", 255u8, 2.5f64);\n    Ok(())\n}\n",
+    "count": 234,
+    "ids": "137a535183d0af321b4e6e710074f754b0891abe0f328885a43ca32ba6fce60e"
+   },
+   {
+    "text": "{\n  \"id\": 17,\n  \"tags\": [\n    \"a\",\n    \"b\"\n  ],\n  \"ratio\": 0.25,\n  \"nested\": {\n    \"ok\": true,\n    \"none\": null\n  },\n  \"text\": \"line\\nbreak \\\"quoted\\\" \\\\ slash\",\n  \"unicode\": \"caf\\u00e9 \\u65e5\\u672c\"\n}\n[{\"k\": 0, \"v\": [0, 0.0, \"0\"]}, {\"k\": 1, \"v\": [1, 1.5, \"1\"]}, {\"k\": 2, \"v\": [2, 3.0, \"2\"]}, {\"k\": 3, \"v\": [3, 4.5, \"3\"]}, {\"k\": 4, \"v\": [4, 6.0, \"4\"]}, {\"k\": 5, \"v\": [5, 7.5, \"5\"]}]",
+    "count": 245,
+    "ids": "36162c5088e9515c12a98c92aaa4510f166370034ed909fb79029a304047e318"
+   },
+   {
+    "text": "# Title\n\n## Sub-title\n\n- item one\n- item **two** with `code` and [a link](https://example.com/path?q=1&r=2#frag)\n  - nested item\n1. first\n2. second\n\n| name | value |\n|------|------:|\n| a    |     1 |\n| bb   |    22 |\n\n> quoted\n\n```\nfenced\n```\n\n---\n\n<details><summary>More</summary>&amp; &lt;html&gt;</details>\n",
+    "count": 169,
+    "ids": "d6da2c7ec3fa0835bc7c95bbb9c450bf5eb1c588ee8e7b31bb4acb07e5261016"
+   },
+   {
+    "text": "0 1 12 123 1234 12345 123456 1234567 12345678 123456789 1234567890 12345678901234567890 3.14159 -2.5e-10 1,000,000.00 0xDEADBEEF 0b1010 1e100 50% $9.99 2026-11-10T09:30:00Z 192.168.1.100:8100 +1 (555) 010-9999 ١٢٣٤٥ ۱۲۳ १२३ ² ³ ¹ ½ ¾ Ⅻ ⅷ ① ⑳ ㊿ 一二三 ０１２３ 𝟘𝟙𝟚",
+    "count": 219,
+    "ids": "1114cdb647a03baa4c62a0315deacda4f3a149533a94d84a2016fe298e1553cf"
+   },
+   {
+    "text": "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ... --- === ### *** ___ !!! ??? ;;; ::: ,,, ------------------------------ ============================== “curly” ‘single’ «guillemets» „low“ … — – ‐ • · § ¶ † ‡ ° ± × ÷ ≠ ≤ ≥ ∞ → ← ↑ ↓ ✓ ✗ ©®™ ¿¡ a.b,c;d:e (a)[b]{c}<d> a/b\\c|d a-b_c+d=e x.y.z e.g. i.e. U.S.A. end.Start",
+    "count": 209,
+    "ids": "ffe1648063f56ff5661c0c76c70f7be522f11a0d053d59bd88e3cd285b39bb47"
+   },
+   {
+    "text": "English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ",
+    "count": 286,
+    "ids": "92355df6239c352bb1a36ff1678e864188f1031ff9e8e126ffa759528f51dc83"
+   },
+   {
+    "text": "😀 😃😄 👍🏽 👩‍👩‍👧‍👦 🇫🇷🇯🇵 🏳️‍🌈 ❤️ ❤ ☺️ ☺ 1️⃣ #️⃣ 🧑🏿‍💻 text😀text 😀\n😀 🫠 🪿 🫨 ¯\\_(ツ)_/¯ (╯°□°)╯︵ ┻━┻",
+    "count": 121,
+    "ids": "3bc6150ee43522eb69e48582a3db33ff735155b583ebd604567c55bd77f8795e"
+   },
+   {
+    "text": "é ǟ ố ́start Z͑ͫ̓ą́l̡g̸o क्षि ज्ञ ก็ ทำ 각 각 ‍zwj‍ ‌zwnj‌ ⁠wj⁠ a️b a͏b ‮RTL override‬ ⁦isolate⁩",
+    "count": 103,
+    "ids": "737451b67c8e31b00ba61031a3574a8b67d89614718496f9c2f4ad98b6585d81"
+   },
+   {
+    "text": "<|im_start|>system\nYou are<|im_end|>\n<|im_start|>user <|endoftext|> <s> </s> <unk> <pad> [INST] [/INST] [TOOL_CALLS] <|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n<|eot_id|> <bos> <eos> <start_of_turn>model\n<end_of_turn> <think>\nhm\n</think> <tool_call> </tool_call> <|start|>assistant<|channel|>final<|message|>hi<|end|><|return|> <｜begin▁of▁sentence｜><｜User｜>x<｜Assistant｜> <|system|> <|user|> <|assistant|> <|end|> [gMASK]<sop> <|observation|> <|endofprompt|> < |im_start| > <|im_start |> <<|im_end|>> <|IM_START|>",
+    "count": 230,
+    "ids": "b010733e373e312e9dabdba5ab44911345c8ad4898476bab85adcd9630683aea"
+   },
+   {
+    "text": "nul\u0000 soh\u0001 bel\u0007 bs\b esc\u001b us\u001f del pad nel apc shy­ bom﻿ repl� pua non￾￿ sup󰀀 unassigned͸԰ 󠀁tag󠁿 ls ps  end",
+    "count": 92,
+    "ids": "a479071984cfdbfd8fbc0e391091d398996d6c40c95d60b7280d5f894f95358c"
+   },
+   {
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1Aa1 éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "count": 218,
+    "ids": "cd9c74af7b5e9d1f55f986f0911af631e3bf975177a53a40f3726dc44092b95f"
+   },
+   {
+    "text": "https://user:pass@sub.example.co.uk:8443/a/b%20c/d.html?x=1&y=two#top mailto:first.last+tag@example.org /usr/local/lib/python3.12/site-packages C:\\Users\\Name\\file.txt SGVsbG8sIHdvcmxkISBUaGlzIGlzIGJhc2U2NC4= d41d8cd98f00b204e9800998ecf8427e 550e8400-e29b-41d4-a716-446655440000 snake_case_name camelCaseName PascalCaseName SCREAMING_CASE kebab-case-name",
+    "count": 230,
+    "ids": "0e9100b4c18268e356e2a3120ec42c4ec2a69089a5db1908d15edda6799a4144"
+   },
+   {
+    "text": "a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 613,
+    "ids": "c45c5ff4e9fafca8798618dd5d876c9c26c7481aa5b4ced9572b126d43da4394"
+   },
+   {
+    "text": " âŃƤȅɦ ˇ̨ΉϪыҬԍ ծ׏ذڑ۲ݓ޴ ࠕࡶࣗसঙ৺ਜ਼ ઼ଝ୾௟ీಡം ൣහลຆ໧཈ྩ ညၫ჌ᄭᆎᇯቐ ኱ጒ፳Ꮤᐵᒖᓷ ᕘᖹᘚᙻᛜ᜽ឞ ៿ᡠᣁᤢᦃ᧤ᩅ ᪦ᬇ᭨ᯉᰪ᲋ᳬ ᵍᶮḏṰốἲᾓ ῴ⁕₶℗ⅸ⇙∺ ⊛⋼⍝⎾␟⒀ⓡ ╂▣☄♥⛆✧➈ ⟩⡊⢫⤌⥭⧎⨯ ⪐⫱⭒⮳ⰔⱵⳖ ⴷ⶘ⷹ⹚⺻⼜⽽ ⿞〿゠㄁ㅢ㇃㈤ ㊅㋦㍇㎨㐉㑪㓋 㔬㖍㗮㙏㚰㜑㝲 㟓㠴㢕㣶㥗㦸㨙 㩺㫛㬼㮝㯾㱟㳀 㴡㶂㷣㹄㺥㼆㽧 㿈䀩䂊䃫䅌䆭䈎 䉯䋐䌱䎒䏳䑔䒵 䔖䕷䗘䘹䚚䛻䝜 䞽䠞䡿䣠䥁䦢䨃 䩤䫅䬦䮇䯨䱉䲪 䴋䵬䷍丮亏仰佑 侲倓側僕儶冗凸 剙劺匛卼叝吾咟 唀啡嗂嘣嚄囥坆 垧堈塩壊夫妌姭 婎媯嬐孱寒尳岔 峵嵖嶷帘幹廚弻 徜忽恞悿愠憁懢 扃护挅捦揇搨撉 擪敋斬昍普曏朰 枑柲桓梴椕楶槗 樸檙櫺歛殼氝汾 泟浀涡渂湣滄漥 澆濧灈炩焊煫燌 爭犎狯獐玱琒瑳 瓔电疖痷癘皹眚 睻矜砽碞磿祠私 稢窃竤筅箦簇籨 糉紪綋緬繍纮缏 罰翑耲肓胴腕膶 舗艸苙茺莛菼葝 蒾蔟薀藡虂蚣蜄 蝥蟆蠧袈裩襊覫 訌詭諎謯讐诱豒 貳贔赵跖踷躘軹 轚辻逜遽郞鄿醠 鈁鉢鋃錤鎅鏦鑇 钨锉镪闋阬隍雮 靏鞰頑顲飓餴馕 駶驗骸鬙魺鯛鰼 鲝鳾鵟鷀鸡麂黣 齄龥ꀆꁧꃈꄩꆊ ꇫꉌꊭꌎꍯꏐꐱ ꒒ꓳꕔꖵꘖꙷꛘ ꜹꞚꟻꡜꢽꤞ꥿ ꧠꩁꪢꬃꭤꯅ갦 겇골굉궪긋깬껍 꼮꾏꿰끑낲넓녴 뇕눶늗닸덙뎺됛 둼득딾떟똀뙡뛂 뜣랄럥롆뢧뤈륩 맊먫몌뫭뭎뮯밐 뱱볒봳붔뷵빖뺷 뼘뽹뿚쀻삜샽셞 솿술슁싢썃쎤쐅 쑦쓇씨얉엪왋욬 윍읮쟏젰좑죲쥓 즴쨕쩶쫗쬸쮙쯺 챛첼총쵾췟칀캡 켂콣쿄퀥킆탧텈 톩툊퉫틌팭펎폯 푐풱픒핳헔혵횖 훷흘ힹ         螺 沈陸勤歹﫶ﭗ﮸ ﰙﱺﳛﴼﶝ﷾﹟ ﻀＡﾂ￣",
+    "count": 2013,
+    "ids": "d94a7c62a449fc9379ee0cfe42048ea0874a1b36963f5c476f5b89ec59bdd9b2"
+   },
+   {
+    "text": "𐀀𐏱𐟢𐯓𐿄𑎵𑞦 𑮗𑾈𒍹𒝪𒭛𒽌𓌽 𓜮𓬟𓼐𔌁𔛲𔫣𔻔 𕋅𕚶𕪧𕺘𖊉𖙺𖩫 𖹜𗉍𗘾𗨯𗸠𘈑𘘂 𘧳𘷤𙇕𙗆𙦷𙶨𚆙 𚖊𚥻𚵬𛅝𛕎𛤿𛴰 𜄡𜔒𜤃𜳴𝃥𝓖𝣇 𝲸𞂩𞒚𞢋𞱼🁭👞 🡏🱀𠀱𠐢𠠓𠰄𠿵 𡏦𡟗𡯈𡾹𢎪𢞛𢮌 𢽽𣍮𣝟𣭐𣽁𤌲𤜣 𤬔𤼅𥋶𥛧𥫘𥻉𦊺 𦚫𦪜𦺍𧉾𧙯𧩠𧹑 𨉂𨘳𨨤𨸕𩈆𩗷𩧨 𩷙𪇊𪖻𪦬𪶝𫆎𫕿 𫥰𫵡𬅒𬕃𬤴𬴥𭄖 𭔇𭣸𭳩𮃚𮓋𮢼𮲭 𯂞𯒏嵼𯱱",
+    "count": 528,
+    "ids": "9e1356451a123ea062f6ff4d9bfc1fe4e815b6adadd8be5be2d9c53483137161"
+   },
+   {
+    "text": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩĪīĬĭĮįİıĲĳĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŉŊŋŌōŎŏŐőŒœŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžſƀƁƂƃƄƅƆƇƈƉƊƋƌƍƎƏƐƑƒƓƔƕƖƗƘƙƚƛƜƝƞƟƠơƢƣƤƥƦƧƨƩƪƫƬƭƮƯưƱƲƳƴƵƶƷƸƹƺƻƼƽƾƿǀǁǂǃǄǅǆǇǈǉǊǋǌǍǎǏǐǑǒǓǔǕǖǗǘǙǚǛǜǝǞǟǠǡǢǣǤǥǦǧǨǩǪǫǬǭǮǯǰǱǲǳǴǵǶǷǸǹǺǻǼǽǾǿȀȁȂȃȄȅȆȇȈȉȊȋȌȍȎȏȐȑȒȓȔȕȖȗȘșȚțȜȝȞȟȠȡȢȣȤȥȦȧȨȩȪȫȬȭȮȯȰȱȲȳȴȵȶȷȸȹȺȻȼȽȾȿɀɁɂɃɄɅɆɇɈɉɊɋɌɍɎɏ",
+    "count": 973,
+    "ids": "0b477724976e140ad4fee3fc827e16985ca537015ca97e2959895944d305a9bc"
+   },
+   {
+    "text": "<|begin_of_text|>user\nhello<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 12,
+    "ids": "e9d79e1c56950a0e470b5c06afaad6b85cbbc13d89c67a3eccfbfd66b21face9"
+   },
+   {
+    "text": "<|begin_of_text|>user\nThe quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 193,
+    "ids": "98a1881c97488acf5f5c4641c84ae280c82678f281899fd29a4afea1371aea19"
+   },
+   {
+    "text": "<|begin_of_text|>user\nI'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 134,
+    "ids": "b6e0a8ed927aa0a3d4a3fdbea6b5b8e359f296ce599d38aae742da61c4c0f7f1"
+   },
+   {
+    "text": "<|begin_of_text|>user\nimport os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 243,
+    "ids": "3c92872bef5c467f059d5183100de42a89073d0be66f8442cb9f3a820a1f87c4"
+   },
+   {
+    "text": "<|begin_of_text|>user\nEnglish Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 295,
+    "ids": "a7b3869ccb29afbbe3ad600852f266eea01c2d5fa4cb82e33e415de5e459cea5"
+   },
+   {
+    "text": "<|begin_of_text|>user\na\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n<|start_header_id|>\n<|begin_of_text|>assistant\n",
+    "count": 622,
+    "ids": "fff27e9ba42b8be03e6e6c3c429e1a80e1fa2c74210c71589458cc6869bd9c60"
+   },
+   {
+    "text": "hello<|begin_of_text|>hello",
+    "count": 7,
+    "ids": "1ce33355bcc6d76f73b273af018cf5d27f9399cbcb72e193167db47084535811"
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|begin_of_text|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.",
+    "count": 369,
+    "ids": "8cf2ae9fbb2acded9794f00b354e65ddb1685657dc2d09c05a22c653120a6738"
+   },
+   {
+    "text": "I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|begin_of_text|>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D",
+    "count": 251,
+    "ids": "486385d506fd7790bfc42887d7e56ce6937c5cf8062957b9fa4b2274e41433f4"
+   },
+   {
+    "text": "<|begin_of_text|> hello <|begin_of_text|><|begin_of_text|>x<|begin_of_text|>  <|start_header_id|> hello <|start_header_id|><|start_header_id|>x<|start_header_id|>  <|end_header_id|> hello <|end_header_id|><|end_header_id|>x<|end_header_id|>  <|eot_id|> hello <|eot_id|><|eot_id|>x<|eot_id|> ",
+    "count": 44,
+    "ids": "c7e241c50598a1c0956be47566fd2c39ff7cdd2203802c0a7eadc2f6ed414037"
+   },
+   {
+    "text": "<|begin_of_text|><|start_header_id|><|end_header_id|><|eot_id|>",
+    "count": 4,
+    "ids": "53665010cbfb5534a519d56cc511956b2bed6283c3713793e57356906a038a1c"
+   },
+   {
+    "text": "<|begin_of_text|> <|start_header_id|> <|end_header_id|> <|eot_id|>",
+    "count": 7,
+    "ids": "f93910f25135733d3125cb23f19b39ecc4a44ecae1aca37034ff90d6940214c0"
+   },
+   {
+    "text": "<|eot_id|>\n<|end_header_id|>\n<|start_header_id|>\n<|begin_of_text|>",
+    "count": 7,
+    "ids": "645aadaed339ece8729a4cd665a85f215665e7b9e1489281d2c505ba6366fef9"
+   },
+   {
+    "text": "  <|begin_of_text|>  <|start_header_id|>  ",
+    "count": 5,
+    "ids": "a9e2fe8a288eae50b2da513e147d5bcd8d98467cb9fd977fe4b30bf187f9129b"
+   },
+   {
+    "text": "x<|begin_of_text|>",
+    "count": 2,
+    "ids": "382de9873d98cefafe5e63f3fe983d46a9b9b3673b97b3853a482d407948919e"
+   },
+   {
+    "text": "<|begin_of_text|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|start_header_id|><|begin_of_text|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|start_header_id|><|begin_of_text|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|start_header_id|>",
+    "count": 558,
+    "ids": "58e04742617eb722e71ea7db55094353a7f67663ed39d5095f01673792cfc447"
+   },
+   {
+    "text": "hello<|start_header_id|>\n<|begin_of_text|>The quick brown fox jumps over the lazy dog. It wasn't the first time; she'd seen it happen before, and they'll see it again. \"Really?\" he asked — 'Really,' she said.\n\nTokenizers split text into pieces: words, parts of words, punctuation and spaces. Internationalization, antidisestablishmentarianism and pneumonoultramicroscopic are long words; I, a and o are short ones.<|start_header_id|>\n<|begin_of_text|>I'm you're he's it'll we'd they've don't can't won't shouldn't DON'T I'M YOU'RE IT'LL 'tis 'twas rock'n'roll o'clock can’t it’s we’ll James's dogs' x's 's 't 're 've 'm 'll 'd 'S 'T 'RE 'VE 'M 'LL 'D<|start_header_id|>\n<|begin_of_text|>import os\nfrom typing import Any\n\n\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start: int = 0) -> None:\n        self._n = start\n\n    def add(self, *items: Any, **kw: Any) -> int:\n        for i, item in enumerate(items):\n            if item is None or not item:\n                continue\n            self._n += 1 if i % 2 == 0 else 2\n        return self._n  # total\n\n\nif __name__ == \"__main__\":\n    print(f\"{Counter().add(1, 2, 3):>8.2f}\", os.environ.get('HOME', '~'))\n<|start_header_id|>\n<|begin_of_text|>English Ελληνικά Русский Հայերեն עברית العربية فارسی हिन्दी বাংলা தமிழ் తెలుగు ไทย ລາວ မြန်မာ ქართული 한국어 日本語 ひらがな カタカナ 中文 繁體字 Tiếng Việt Čeština Türkçe İstanbul ıi straße ǅ ﬁ ﬂ Å Å é é ñ ñ<|start_header_id|>\n<|begin_of_text|>a\tb\t\tc \t d\t\n\te|a\nb\n\nc \n d\n\n\ne|a\u000bb\u000b\u000bc \u000b d\u000b\n\u000be|a\fb\f\fc \f d\f\n\fe|a\rb\r\rc \r d\r\n\re|a\u001cb\u001c\u001cc \u001c d\u001c\n\u001ce|a\u001db\u001d\u001dc \u001d d\u001d\n\u001de|a\u001eb\u001e\u001ec \u001e d\u001e\n\u001ee|a\u001fb\u001f\u001fc \u001f d\u001f\n\u001fe|a b  c   d \n e|abc  d\ne|a b  c   d \n e|a b  c   d \n e|a᠎b᠎᠎c ᠎ d᠎\n᠎e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a​b​​c ​ d​\n​e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a b  c   d \n e|a　b　　c 　 d　\n　e|a﻿b﻿﻿c ﻿ d﻿\n﻿e\nx y|x  y|x   y|x    y|x     y|x      y|x       y|x        y|x         y|x          y|x           y|x            y|x             y|x              y|x               y|x                y|x                 y|x                  y|x                   y|x                    y|x                     y|x                      y|x                       y|x                        y|x                         y|x                          y|x                           y|x                            y|x                             y|x                              y|x                               y|x                                y|x                                 y|x\ny|x\n\ny|x\n\n\ny|x\n\n\n\ny|x\n\n\n\n\ny|x\n\n\n\n\n\ny|x\n\n\n\n\n\n\ny|x\n\n\n\n\n\n\n\ny|x\ty|x\t\ty|x\t\t\ty|x\t\t\t\ty|x\t\t\t\t\ty|a \n b|a\n \nb|a\r\n\r\nb|a \r\n|trailing   |   leading| \n |\n\n\n|    def f():\n        return 1\n",
+    "count": 1460,
+    "ids": "b073f20310f09385dc8680e05cb8e9c3d0ae421de76a1e8e88a816602e3bf509"
+   }
+  ]
+ }
+}
