@@ -11,11 +11,16 @@ terminal UI live.
 
 ## Install
 
-τ needs Linux and Python 3.12 or later. The package is `ffwf-tau` and installs the `tau` command:
+τ needs Python 3.12 or later, on Linux (x86_64, aarch64) or macOS (arm64, x86_64). The package
+is `ffwf-tau` and installs the `tau` command:
 
 ```bash
 pip install 'ffwf-tau>=0.16'
 ```
+
+Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, `tau serve`
+and projects (`.tau/`) are not available and say so when used, and its test suite does not yet
+pass in full.
 
 Until 0.16.0 is on PyPI that finds nothing (plain `ffwf-tau` is 0.15 there); build from a
 checkout instead, which needs a Rust toolchain:
