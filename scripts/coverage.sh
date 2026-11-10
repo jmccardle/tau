@@ -43,9 +43,11 @@ source <(cargo llvm-cov show-env --sh 2>/dev/null)
 export CARGO_TARGET_DIR="$T" CARGO_LLVM_COV_TARGET_DIR="$T" CARGO_LLVM_COV_BUILD_DIR="$T"
 export LLVM_PROFILE_FILE="$T/trusty-%p-%8m.profraw"
 
-report() {  # report <name>
+report() {  # report <name>; file names relative to the checkout, so no local path is committed
     cargo llvm-cov report --ignore-filename-regex "$IGNORE" >"$OUT/coverage-$1.txt"
     cargo llvm-cov report --ignore-filename-regex "$IGNORE" --json --summary-only --output-path "$OUT/coverage-$1.json"
+    sed -i -e "s|\"filename\":\"$ROOT/|\"filename\":\"|g" -e "s|\"manifest_path\":\"$ROOT/|\"manifest_path\":\"|g" \
+        "$OUT/coverage-$1.json"
 }
 
 echo "== rust tests"
@@ -55,7 +57,8 @@ mv "$T"/*.profraw "$T/prof-rust/"
 
 echo "== python tests against the instrumented cdylib"
 "$BIN/maturin" develop --locked
-"$PY" -m pytest -q tests
+# The main wheel only: tau_tokens is another module, and its crate is covered by the Rust tests above.
+"$PY" -m pytest -q -m "not tokenizers" tests
 report py
 
 echo "== merged"

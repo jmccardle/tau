@@ -273,7 +273,7 @@ scripts/coverage.sh         # rewrites data/coverage-*; ~1.5 min; swaps in and o
 
 # the τ 0.15 baseline (radon 6.0.1 in a throwaway venv, not the repo's)
 python3 -m venv /tmp/radonvenv && /tmp/radonvenv/bin/pip install radon==6.0.1
-/tmp/radonvenv/bin/python scripts/py_baseline.py ~/Development/tau \
+/tmp/radonvenv/bin/python scripts/py_baseline.py PATH/TO/TAU-0.15-CHECKOUT \
   --src tau-llm/src tau-agent-core/src tau-coding-agent/src tau-jmfts/src tau-meta/src \
   --tests tau-llm/tests tau-agent-core/tests tau-coding-agent/tests tau-jmfts/tests \
   > docs/as-built/metrics/data/tau015-python.json

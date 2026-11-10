@@ -3459,6 +3459,107 @@ the Python `Session.dropped` was removed, because nothing but a test asserting
 An exclusive `flock` on the log, held while a `Store` lives. Only the holder
 writes and runs steps; a second open is `Error::Leased`.
 
+### tokens extra, ffwf-tau-tokens, tau_tokens, lockstep
+`pip install 'ffwf-tau[tokens]'`; the wheel `ffwf-tau-tokens` (`tokens/pyproject.toml`); the
+package `tau_tokens` (`tokens/python/tau_tokens`, native module `tau_tokens._core`); the crates
+`tau-tokens` and `tau-tokens-py` · D26 section 7.1 and 7.2 · new (T4)
+
+The **tokens extra** installs a second wheel, **`ffwf-tau-tokens`**, imported as **`tau_tokens`**:
+local tokenizers for the `tokens` extension. `tau-tokens` is the pure crate (bytes in, counts out:
+no file, no connection, no clock) and `tau-tokens-py` its bindings. The wheel depends on nothing,
+and the main wheel gains nothing from it: `scripts/check_tokens_wheel.py` fails when `tau-py`
+depends on `tokenizers`, `tiktoken-rs` or `minijinja`, and when anything the second wheel is built
+from needs a C toolchain. **Lockstep**: both wheels take the Cargo workspace's version, the extra
+pins `ffwf-tau-tokens==` that version, and the same script fails when the pin is another. The
+extension's own check of `tau_tokens.__version__` against `tau.__version__` is not built yet.
+
+### Tokenizer (tau_tokens), piece, memo
+`tau_tokens.Tokenizer` (`tiktoken(name)`, `from_json(data)`, `encode`, `count`, `vocab_size`,
+`work`); `tau_tokens::Tokenizer` · D26 section 7.3 · new (T4)
+
+Text in, token ids or a count out. Two kinds: an embedded OpenAI encoding (`o200k_base`,
+`cl100k_base`) and a Hugging Face tokenizer made from the bytes of a `tokenizer.json`, with any
+truncation and padding the file asks for turned off. Nothing is added around the text (no BOS). A
+Hugging Face tokenizer finds its added and special tokens in the text, as a server does when it
+encodes a rendered request; a tiktoken encoding reads them as ordinary text. `count(text)` is
+always `len(encode(text))`. A **piece** is a run of text between two added tokens, after the
+tokenizer's own splitting and normalizing; the tokenizer counts each piece on its own, so the
+**memo** keeps each piece's count by its whole text (and whether it starts the text, which one
+kind of tokenizer treats differently) and a second count of a longer conversation tokenizes only
+the new pieces. `work()` is `(pieces tokenized, pieces read from the memo)`. The memo holds at
+most 16 MiB of text; past that it keeps only what the newest count used.
+
+### ChatTemplate, Now
+`tau_tokens.ChatTemplate` (`ChatTemplate(source, tokens)`, `from_config(config, source)`,
+`render(messages, tools, add_generation_prompt=, extra=, now=)`); `tau_tokens::ChatTemplate`,
+`tau_tokens::Now` · D26 section 7.3 · new (T4)
+
+A model's chat template: what turns a request's messages and tools into the text the model is
+given. It is rendered as `transformers`' `apply_chat_template` renders it: Jinja2's whitespace
+rules, loop controls, `tojson` as `json.dumps`, `raise_exception`, `strftime_now`, the named
+special tokens (`bos_token`, `eos_token`, ...) as variables, `tools` and `documents` `None` when
+there are none, a message's reasoning under both `reasoning_content` and `thinking`, and every
+value printed as Python prints it. A `tokenizer_config.json` gives the template (or several by
+name: `tool_use` is used when the request has tools, else `default`) and the tokens; a
+`chat_template.jinja` or a server's own template replaces the config's. **`Now`** is the date and
+time `strftime_now` prints, which the caller passes (`now=`, a `datetime`): the crate reads no
+clock, and a template that reads one without it is refused. `extra` is more variables for the
+template (`enable_thinking`). What the template or the engine refuses is a `TemplateError`.
+
+### tokenizer identity
+`tau_tokens.parse_identity(text)`; `tau_tokens::TokenizerId` (`Tiktoken`, `Hf`, `File`) · D26
+section 7.4 · new (T4)
+
+The string that names a tokenizer, in a model's `tokenizer` setting and in a calibration record:
+`tiktoken:NAME`, `hf:OWNER/REPO` or `hf:OWNER/REPO@REVISION`, `file:/abs/tokenizer.json`. A
+repository's name and a revision are letters, digits, `.`, `_` and `-` only, since they become a
+directory and part of a URL. `none` (the setting that turns tokenizers off) is not an identity.
+Anything else is an `IdentityError`.
+
+### tokenizer catalogue, prior, candidate, confirmed, dropped, residual
+`tau_tokens.catalogue()`, `candidates(model, n_vocab)`, `verdict(pairs)`;
+`tau_tokens::CatalogueTokenizer` (`id`, `vocab`, `served`, `models`), `Pair` (`group`,
+`reported`, `counted`), `Verdict`; `crates/tau-tokens/src/catalogue.json` · D26 section 7.4 · new (T4)
+
+The **tokenizer catalogue** lists the base tokenizers a model may be counted with: each one's
+identity (an embedded encoding, or a Hugging Face repository pinned to a commit), `vocab` (how
+many token ids it has), `served` (other sizes a server reports for it, such as the model's own
+embedding size) and `models` (patterns over a lowercased model id, `*` for any run of
+characters). `candidates` ranks them for a model: only those whose size fits the server's
+`n_vocab` when it reports one (its own, a served one, or its own padded to a multiple of 64 or
+128), ordered by **prior**, the length of the most specific pattern that matches the model id (0:
+the id says nothing). **Fingerprinting** scores a candidate by **residuals**: the tokens a server
+reported for some text less the tokens the candidate counts in it, which the right tokenizer
+leaves constant within a `group` (replies; a mix of roles). `verdict` is **confirmed** after
+three pairs of one group with one residual, one of them of 200 tokens or more; **dropped** as soon
+as two pairs of one group disagree; **candidate** otherwise. Fetching tokenizers, keeping the
+verdict and telling the clients are the `tokens` extension's (D26 T6).
+
+### TokenizerError, TemplateError, IdentityError
+`tau_tokens.TokenizerError`, `TemplateError`, `IdentityError` (each a `ValueError`);
+`tau_tokens::Error` (`Tokenizer`, `Template`, `Identity`) · D26 section 7 · new (T4)
+
+What `tau_tokens` refuses, by what was wrong: bytes that are not a `tokenizer.json` or a name
+that is not an embedded encoding; a template that does not parse, fails on a request, reads a
+clock it was not given or refuses the request, and a request that is not the JSON a template is
+given (a number too large to print as Python would is one); a string that is not a tokenizer
+identity. None is a fallback for another, and none returns a count.
+
+### tokenizer goldens, artifact, sweep
+`tests/fixtures/tokens/`, `scripts/tokens_goldens.py` (`fetch`, `present`, `generate`, `sweep`),
+`scripts/tokens_reference.py`; the pytest marker `tokenizers` · D26 section 10, T4 · new (T4)
+
+The **goldens** are what the reference implementations (`transformers`, `tokenizers`, `tiktoken`,
+Jinja2) print for the tests' inputs: ids and counts for every text, rendered text for every
+request, kept as hashes for real models and whole for the templates written for the tests. An
+**artifact** is a real model's tokenizer files, pinned to a commit and a sha256 in
+`artifacts.json` and fetched into `target/tokens-files/`, never checked in; a test that reads
+them is skipped (pytest) or ignored (cargo) with the fetching command as its reason, and fails
+instead when `TAU_TOKENS_FILES=require`. The **sweep** compares `tau_tokens` with the references
+on every Unicode code point; it is run by hand when a dependency changes. Every test under
+`tests/tokens` has the marker `tokenizers` and fails to import without the wheel; `-m "not
+tokenizers"` is the one way to leave them out.
+
 ## The public API
 
 ### public surface, group, made_by_tau

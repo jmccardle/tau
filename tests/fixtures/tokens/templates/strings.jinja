@@ -1,0 +1,22 @@
+{#- Python's string methods and Jinja's string filters, on each message's text. -#}
+{% for message in messages %}
+{% if message.content is string %}
+{% set c = message.content %}
+== {{ loop.index }} {{ message.role }} ({{ c | length }})
+strip: [{{ c.strip() }}] lstrip: [{{ c.lstrip() }}] rstrip: [{{ c.rstrip() }}] trim: [{{ c | trim }}]
+strip chars: [{{ c.strip('\n .!?') }}] rstrip chars: [{{ c.rstrip('\n') }}] lstrip chars: [{{ c.lstrip(' \n') }}] trim chars: [{{ c | trim('.') }}]
+tests: {{ c.startswith('H') }} {{ c.endswith('.') }} {{ c.startswith(('A', 'W')) }} {{ 'the' in c }} {{ c == 'Paris.' }} {{ c != '' }}
+split: {{ c.split(' ') }} {{ c.split() | length }} {{ c.split('\n')[0] }} {{ c.split('.', 1) }} {{ c.split(' ')[-1] }}
+case: {{ c.upper() }} | {{ c.lower() }} | {{ c | upper }} | {{ c | lower }} | {{ c.title() }} | {{ c | capitalize }}
+replace: {{ c.replace(' ', '_') }} | {{ c | replace('a', 'A') }}
+slices: [{{ c[:5] }}] [{{ c[-3:] }}] [{{ c[1:4] }}] [{{ c[::2] }}] [{{ c[::-1] }}] [{{ c[0] }}] [{{ c[-1] }}]
+join: {{ c.split(' ') | join('+') }} | {{ ', '.join(c.split(' ')) }} | {{ c.split(' ') | first }} | {{ c.split(' ') | last }}
+find: {{ c.find('a') }} {{ c.count('a') }}
+plus: {{ '<' + c + '>' }} {{ '-' * 3 }} {{ c ~ 1 ~ true ~ none }}
+{% else %}
+== {{ loop.index }} {{ message.role }} content is {{ 'none' if message.content is none else 'a list' }}
+{% endif %}
+{% endfor %}
+roles: {{ messages | map(attribute='role') | join(', ') }} / {{ messages | map(attribute='role') | unique | list }} / {{ messages | selectattr('role', 'equalto', 'user') | list | length }} / {{ messages | rejectattr('role', 'equalto', 'user') | list | length }}
+tokens: {{ bos_token | default('no bos') }} {{ eos_token | default('no eos', true) }} {{ (bos_token ~ 'x') | length }}
+numbers: {{ '5' | int + 1 }} {{ 5 | string ~ '5' }} {{ 3.7 | int }} {{ 3.14159 | round(2) }} {{ [3, 1, 2] | sort }} {{ [3, 1, 2] | max }} {{ [1, 2, 3] | sum }} {{ 7 | abs }} {{ '3.5' | float }}

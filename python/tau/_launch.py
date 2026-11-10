@@ -81,7 +81,7 @@ def launch_parser(
     `--set` flags). `commands` are the subcommands' names, listed in its help."""
     parser = argparse.ArgumentParser(
         prog="tau",
-        description="τ next (Trusty). `tau` opens the terminal UI; `tau -p MESSAGE` sends one "
+        description="τ, an agent harness. `tau` opens the terminal UI; `tau -p MESSAGE` sends one "
         "message, prints the answer and exits.",
         parents=[*parents, verbose_flag()],
         epilog="commands (tau COMMAND --help): " + ", ".join(commands),

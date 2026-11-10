@@ -1324,3 +1324,36 @@ def start(path: str | Path) -> None
 # tau.trace
 def stop() -> Path
 
+== tokenizers: Tokenizers
+# tau_tokens
+class ChatTemplate
+    def __new__(cls, source: str, tokens: Mapping[str, str] | None = None) -> ChatTemplate
+    @staticmethod
+    def from_config(config: bytes, source: str | None = None) -> ChatTemplate
+    def render(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        add_generation_prompt: bool = True,
+        extra: Mapping[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> str
+class IdentityError(ValueError)
+class TemplateError(ValueError)
+class Tokenizer
+    def count(self, text: str) -> int
+    def encode(self, text: str) -> list[int]
+    @staticmethod
+    def from_json(data: bytes) -> Tokenizer
+    @staticmethod
+    def tiktoken(name: str) -> Tokenizer
+    property vocab_size: int
+    def work(self) -> tuple[int, int]
+class TokenizerError(ValueError)
+__version__ = version('ffwf-tau-tokens')
+def candidates(model: str, n_vocab: int | None = None) -> list[tuple[str, int]]
+def catalogue() -> list[dict[str, Any]]
+def parse_identity(text: str) -> tuple[Literal['tiktoken', 'hf', 'file'], str, str | None]
+def verdict(pairs: Sequence[tuple[str, int, int]]) -> Literal['candidate', 'confirmed', 'dropped']
+

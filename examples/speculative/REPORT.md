@@ -18,7 +18,7 @@ against the code; the corrections are folded in below.
 | `forest` | 268 | MCTS where the session tree is the search tree | works; abort keeps spending, 13 cursors left open |
 | `harness_sense` | 383 | what an agent needs to use and modify its harness | partly; reload impossible, reaches the driver via `attach` |
 
-`ralph` was also run against the local Qwen (llama.cpp, 192.168.1.100:8100): a
+`ralph` was also run against a local Qwen (llama.cpp): a
 prompt asking it to increment `counter.txt` and write `DONE` at 3. Three
 iterations, three sibling branches from the root, each with a fresh context, one
 haiku per iteration in `log.txt`, stopped by `DONE`. Real model, real tools, no

@@ -1,0 +1,2804 @@
+{
+ "reference": {
+  "python": "3.12.14",
+  "transformers": "5.22.2",
+  "tokenizers": "0.23.3",
+  "tiktoken": "0.14.0",
+  "jinja2": "3.1.6"
+ },
+ "now": [
+  2026,
+  11,
+  10,
+  9,
+  30,
+  0
+ ],
+ "tiktoken": {
+  "o200k_base": {
+   "vocab": 200019,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "d1d3dd072021da9de368f95efb6cdb6738c00e373cb6c3f0f6cfa8c9efebfd12"
+    },
+    "prose": {
+     "count": 86,
+     "ids": "8002a4304a34ef1e7e47635871b9c1229737e1c39c8aeffcddbaad0783400bd8"
+    },
+    "contractions": {
+     "count": 70,
+     "ids": "f6c3c76d81b5270a2469b788aa70ea05b9fa6dc1694a7a9be6cd4c2e9f449d30"
+    },
+    "python": {
+     "count": 145,
+     "ids": "3eb000570437bc41a9999b58adabc430baec201c7e0da5bb577d03a393350137"
+    },
+    "rust": {
+     "count": 139,
+     "ids": "1d3e04230ae77ed3b25b044b729135551dc785e39e68bc87fb2a15b5799a80f3"
+    },
+    "json": {
+     "count": 212,
+     "ids": "4b072aae63a7706492e01a850db82202fe410a559eaa3128eb13a068dd93f5c9"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "58d6f63450804443163dd438b19d7ebffa1922d10418c20adec49a1ea4d92ee2"
+    },
+    "numbers": {
+     "count": 172,
+     "ids": "d9a5c6c02f73ae028f5346cc52248e38d774d588327dbed70f23e2493839a993"
+    },
+    "punctuation": {
+     "count": 130,
+     "ids": "ac827b002fb4dd94f2fdf4498c085f701d11d854135ba66cb8a7ffc9e7ef1e5b"
+    },
+    "scripts": {
+     "count": 71,
+     "ids": "0ff87b3481ce4e11b05d6ad47f189d0261739465e51b3879f2a75cacf7dc180b"
+    },
+    "emoji": {
+     "count": 93,
+     "ids": "09e34799066a4788993bd1e0c2fbb87fda7349f96cf102f5e2c83ed2fe2b021b"
+    },
+    "combining": {
+     "count": 68,
+     "ids": "1fc727ed875cfb80ba330603287b3f152dc02f1a5ca3e6851e4e11c67d2f72bd"
+    },
+    "specials": {
+     "count": 228,
+     "ids": "65c5520fc98e84bd8bda34b09cca4c0619448b957eb3f8599e700fda6555aabd"
+    },
+    "controls": {
+     "count": 66,
+     "ids": "9c0753e9323509679b6a560df29d836860804238106fbe7797c3c71bb0c6a34f"
+    },
+    "long-word": {
+     "count": 434,
+     "ids": "62e92ff5ba29d09f27d8f8d1770845b9a94b0afbae27638423662cf4babf07dc"
+    },
+    "encoded": {
+     "count": 139,
+     "ids": "d24f2bc29f35d1088504ae026555129e2e4950eaa19f0b8307aae0d30e1e4d86"
+    },
+    "whitespace": {
+     "count": 707,
+     "ids": "d488e52dae16faf39ed1e2e328886b7336b0c980976e0063b879349c96623ee3"
+    },
+    "bmp-sample": {
+     "count": 1566,
+     "ids": "c6071e19b34fba18679b69d37b8d0a48e4646a6a1f6882074d62713e6dcf2d05"
+    },
+    "astral-sample": {
+     "count": 521,
+     "ids": "4a5a376f595f6655d01153e07098321424eb68b8536c2138132df765f2b6bb58"
+    },
+    "latin-all": {
+     "count": 765,
+     "ids": "4735cbaefb383fab74a0481c1f503c25e49aba086f4e98f77cad89f835b86fe6"
+    }
+   }
+  },
+  "cl100k_base": {
+   "vocab": 100277,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "0ee3bed96d8d73c834d8734ff66932665042a7643c56bbe2c9114abb291b62f9"
+    },
+    "prose": {
+     "count": 89,
+     "ids": "0968e6e4ed7dd21fd49b2efe2ef85c7927fa39a792bbb2275828b261ae207906"
+    },
+    "contractions": {
+     "count": 81,
+     "ids": "c1f18028d103b37c517e88263e3d009e63d9f5a729874e19b4862f062fa4e72c"
+    },
+    "python": {
+     "count": 145,
+     "ids": "80a45f0e21f4777b2643fe6bd261daba87061fb7219ca0374e5cac3e2d619b72"
+    },
+    "rust": {
+     "count": 136,
+     "ids": "eef2c29dbc7583b8de673c1dcea58c733e310f87dee0eb9c8513c29940166e5b"
+    },
+    "json": {
+     "count": 212,
+     "ids": "af5fd0b285f0704d6633a816ff5c0a36b29dad285e490af058d07e113b444ee7"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "d78d30019372f9063b0070fe87732bb8643017537fca968e6f516e9ee304f1f0"
+    },
+    "numbers": {
+     "count": 188,
+     "ids": "7d1e972b8a1b7675e80104f6932b5898f65e3e0ac406b0d0f450d6b9e7a12541"
+    },
+    "punctuation": {
+     "count": 129,
+     "ids": "e891c6170518baa83eac4a99ca7c40f5a6ae1629662acb83e3aec4719522aa33"
+    },
+    "scripts": {
+     "count": 182,
+     "ids": "632075bc72817046338ec95d8cb617380e8ab396eae6a5739b6a7dd7913a011e"
+    },
+    "emoji": {
+     "count": 121,
+     "ids": "a1322aa13fe28219c34d6c30b21476b908188e01a63d35288d9e80198a44255f"
+    },
+    "combining": {
+     "count": 86,
+     "ids": "3a34c6b8e3a8e8ddaae5fce310cbfa4ced5082f15a1f3a64b37518ba14921237"
+    },
+    "specials": {
+     "count": 221,
+     "ids": "c36b41375cf5be38c589360ae236d61a4491050a1e6bad26171d868821cf7e3f"
+    },
+    "controls": {
+     "count": 70,
+     "ids": "a8aa4c29b8ab5418a5e5b4f281877d865f21133c3a7d23c4a08889e27a006e7e"
+    },
+    "long-word": {
+     "count": 608,
+     "ids": "e6dab60362223c433e92f13bbc5b707e0cf0e8a9c1c991fc5d2ceb9ef9669619"
+    },
+    "encoded": {
+     "count": 138,
+     "ids": "a340ca8181d81e7aa61cd784ec5201648e3da16488f2a0b4e9cf855b9cd1ab3c"
+    },
+    "whitespace": {
+     "count": 700,
+     "ids": "7d54a78369247c576980db5a3f909ba4ee5279101d37f9b6845f9a01568db352"
+    },
+    "bmp-sample": {
+     "count": 1750,
+     "ids": "f40dfb9b159bd85a8fcdd5f0d415f3f3614522fde7c44da2c44e128a465453a4"
+    },
+    "astral-sample": {
+     "count": 522,
+     "ids": "5f86981fb7e0bf6ef3d2edfde9434cf40a313159866b969addfb64d8b76607fd"
+    },
+    "latin-all": {
+     "count": 841,
+     "ids": "81b69404fd03feb293a26944230c5f3b5de2bac80641392614fe1da7ddb4cd5f"
+    }
+   }
+  }
+ },
+ "artifacts": {
+  "qwen3": {
+   "repo": "Qwen/Qwen3-8B",
+   "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+   "vocab": 151669,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "0b63e8776a8036c3344fe7334df49c66078a2cce5890fe5493445651dac0ed82"
+    },
+    "prose": {
+     "count": 89,
+     "ids": "44e22dca0752a7a4bc5c75fb91472c0a9442979320a84f787a501f55ff9a939e"
+    },
+    "contractions": {
+     "count": 81,
+     "ids": "52aa18e695f306b47beea66a05f58a57841f77bf00c43e63a14ef939414e1fca"
+    },
+    "python": {
+     "count": 145,
+     "ids": "19929f057ca25714309d308092eabe58e931256b5d09d287e753fa050990c95f"
+    },
+    "rust": {
+     "count": 141,
+     "ids": "a30647f41cb88b714f87380910e17bbdf7d30caa23652ad52a48e2028f52165c"
+    },
+    "json": {
+     "count": 218,
+     "ids": "3655b0e98eeed85968d89a183856aa00dcb16cca518ad95d7785416b249485e1"
+    },
+    "markdown": {
+     "count": 110,
+     "ids": "214eaa8d85f2955f75271defde49d2a5d2b62a9ee7eb6e578ec77fbea0983333"
+    },
+    "numbers": {
+     "count": 268,
+     "ids": "1f501c7747baa1197c3aa4cb0cf6519a8004ae399f144a0652ce8d2f38fdeb29"
+    },
+    "punctuation": {
+     "count": 129,
+     "ids": "33071b37e49e9d0bbef20317c541155ec9d355daf09496b2945fbc1157d6b20c"
+    },
+    "scripts": {
+     "count": 135,
+     "ids": "31df691fd38571a8bed5d83dfa51a86ea6d54f3837f0ea1fe80b969b3b1f696c"
+    },
+    "emoji": {
+     "count": 92,
+     "ids": "6f8f623951739f77d579db371a86b051eab0b88b6755ec90676a12256acf892c"
+    },
+    "combining": {
+     "count": 74,
+     "ids": "772a58a9607c2425436a53fe4fd480c1f50a311f524194d29ecfc8dd0f1a1a1b"
+    },
+    "specials": {
+     "count": 188,
+     "ids": "c96c9e724d42e478e81e5e4c7b6363bd3da483600de8c644977a5894a47a686f"
+    },
+    "controls": {
+     "count": 70,
+     "ids": "54dd9d46493ec1d7550c466d4dd365f7a5163275c59430ebf9bc62227c6df975"
+    },
+    "long-word": {
+     "count": 608,
+     "ids": "5236575b7d47d45b79b4d323e54c26108b61f06d67762f4c0d1769186d8afe15"
+    },
+    "encoded": {
+     "count": 169,
+     "ids": "5e0dd65fc250444ab2d826180cfa0293f45245cd63452ce7a4cbc19be949458d"
+    },
+    "whitespace": {
+     "count": 690,
+     "ids": "44a38592e37b12b9f65e9581508a82a27383f26767925b2e033f45705edaf6c7"
+    },
+    "bmp-sample": {
+     "count": 1375,
+     "ids": "00117eacdeee3183d20b35e99d007ccdd18ebaa15c8f4f6bb846d8044b7dc155"
+    },
+    "astral-sample": {
+     "count": 443,
+     "ids": "1b0cc8ab49acebfa6fad6f65769698ab8dbbccf9e29c8363628482e66e178c0a"
+    },
+    "latin-all": {
+     "count": 615,
+     "ids": "502e4e243b65d5fdc4c08994287add27c2eebe209026e1ed48206e1ea2fe532c"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "575e4bfcc9cc410b18ce01353526568dc0551e329d0d86f5b8c947bba99a9b67",
+     "bytes": 73,
+     "count": 15,
+     "ids": "9c17ca618570d8cce9388ac69949fbc73f349e3038c31ea23df03017704adb42"
+    },
+    "system-turns": {
+     "rendered": "3cfafbc186420848be4dd8e1d5215a499b04441348eb5b0758e13299c7f90a79",
+     "bytes": 244,
+     "count": 47,
+     "ids": "cad12513bf84237791a2759519c67888b3bbe22ea504bb8e7dd4bb9315b1afec"
+    },
+    "no-prompt": {
+     "rendered": "0bae88b5764bd10525af7100427df03e81ad7c00d75d305e2832169273f29ae9",
+     "bytes": 90,
+     "count": 19,
+     "ids": "b21360eb67b60ee9ccbaaf6d9cb8404c184073e0b6140e71a9bb5db5b873eebe"
+    },
+    "tools-offered": {
+     "rendered": "8f8f0dd48c5b1f025cc6c3a17dc404a9667ad51180236102d4bf903879c71ae8",
+     "bytes": 1854,
+     "count": 487,
+     "ids": "089bcc93b00c91efc2db51239bd9a88d9bd29ac6231c72500b51b280966eaf83"
+    },
+    "tools-no-system": {
+     "rendered": "4f72cc28d3a3eefffe781f29f6cf1ae67edf282babbffdb3a35f2fc93dc6af3f",
+     "bytes": 605,
+     "count": 133,
+     "ids": "c9c20698674b953c75b825af1121b7fd63a75787a082e4d7b1a709c3d0dcd021"
+    },
+    "tool-round": {
+     "rendered": "0ad656e2df29b08803ce6aafe23619f0d14c7251ef4c644e7bddf1d082df5b73",
+     "bytes": 2331,
+     "count": 622,
+     "ids": "9145e5b2f60e4a4e08810d2146dfe2e71231a591203849e74ca1247d869d2847"
+    },
+    "tool-round-open": {
+     "rendered": "1a26edc330106b988f2bcc5c6ae75ddee39d762937aabb604217bd8e631657fb",
+     "bytes": 2092,
+     "count": 556,
+     "ids": "23a67d67dd63e49e3323b07afca5318ab82a88dd91a21ebda43997e171c32a09"
+    },
+    "parallel-calls": {
+     "rendered": "fa107b7f79235ea88be0cd3a58966b201e54cd4fd6aabaa657daeae1925ba0c4",
+     "bytes": 2255,
+     "count": 584,
+     "ids": "a81ebe915bfa718a43fdf17c8056cebc5c627b812cf40db83ddc36c35a33a67c"
+    },
+    "string-arguments": {
+     "rendered": "be44702c2c8ce4acd332b962a3263e23186a67b645a9bf207e01f5f8dbd7ade5",
+     "bytes": 1970,
+     "count": 512,
+     "ids": "7f0526a72536fb56c26488877272975c58bf8fc9915c89d4679f58cc7820dfbd"
+    },
+    "reasoning": {
+     "rendered": "7b61f422b99d1c341cf51b5bde7680c09dfd2306d73705faa0f82aa3c38c0cf2",
+     "bytes": 232,
+     "count": 62,
+     "ids": "a332fd1c47ecde884bcbe823e74c01c41744f0e04b7529908edc43e33889ca89"
+    },
+    "reasoning-then-call": {
+     "rendered": "57af83c2cd5ce29193d37a4484ff9e79c4580bc512fd618700843b7c234cf390",
+     "bytes": 2047,
+     "count": 533,
+     "ids": "ecf7b3b24129804d0bf69f6b427da14c967d133e1cee5d3aaf6e28ee6a4b8850"
+    },
+    "thinking-off": {
+     "rendered": "7e3d85319953cd5e60093371d576e049b66534c0cb4ca6d5af4bfe01fd9ac738",
+     "bytes": 120,
+     "count": 26,
+     "ids": "5deccc476fcce82d46a46d1530ede880ffe37bea5fc0b5bbf47f80c762e73d0f"
+    },
+    "thinking-on": {
+     "rendered": "a4ddb10472cd995b02f859ab182ca5d5e4150d8033b367ba8f9b199746be6836",
+     "bytes": 62,
+     "count": 14,
+     "ids": "ef0d3edaa812988197e55232ca52ce195de5aad4a3f34bc05eec19b86efbf60a"
+    },
+    "dated": {
+     "rendered": "2e8fcce536598da37687bc643d746bd53d6cdb88e5c7cafe1002abbf17121892",
+     "bytes": 615,
+     "count": 136,
+     "ids": "e8d6af56bb80af73d658652644baa401c37c8b7e17a7b92e22553e9fa00c71ca"
+    },
+    "unicode": {
+     "rendered": "2fc7511956e280ce7f720b32cb1569173bffa58afff14b548a49ba665ffceb7a",
+     "bytes": 654,
+     "count": 209,
+     "ids": "2f6ae2cb36d7a198553262e26ac226f68edcc9fb167edf87a678cec54e9ce5eb"
+    },
+    "content-parts": {
+     "rendered": "1dafd365d43087acf71825b1db0732f8027838045366cd39bc7d05278a21d486",
+     "bytes": 111,
+     "count": 18,
+     "ids": "77d705c181897464e7a07c2e3f2e647c8b9909114f0de766c6b6e47372b4cdc0"
+    },
+    "assistant-first": {
+     "rendered": "a1b0cc1d8e5aea2b985a04ef36560c6b5d5ae2c2ad8b3b3c6ae78596198b1ca6",
+     "bytes": 104,
+     "count": 20,
+     "ids": "b84eba027b3c46d1191f02303b9c7a95f1a95c09bb64f764780ebd683c11bde1"
+    },
+    "two-users": {
+     "rendered": "5103298ad708c78ea5f84069d24e873163cad74d90c3dd2e09a63a537ee2edda",
+     "bytes": 86,
+     "count": 17,
+     "ids": "d9bfa9e6cbab59b458f1f9015da1f79d1a235da6fa0200a1a18bc6ecd2880c1a"
+    },
+    "unknown-role": {
+     "rendered": "042b883651e1d6a991e39f288e78063e91e7e17fd2965ee7f4b3bbe4b1fe4f08",
+     "bytes": 56,
+     "count": 10,
+     "ids": "764811e78c4b9eb1310a49a6931e2cb31f1da6db445cb8fb610ac83669c8ae96"
+    },
+    "long-run": {
+     "rendered": "62192e985ad5467d18f53347cc91394335454c53d5ac7fa1a206492da14d754e",
+     "bytes": 3171,
+     "count": 836,
+     "ids": "2c02589d6ce061dd814a83bf2d3dd33008664c1785a1543a2759600eebb64e6a"
+    }
+   }
+  },
+  "llama3": {
+   "repo": "unsloth/Llama-3.2-3B-Instruct",
+   "revision": "006f5dcd1393c3add266de40994ba96225e9689d",
+   "vocab": 128256,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "0ee3bed96d8d73c834d8734ff66932665042a7643c56bbe2c9114abb291b62f9"
+    },
+    "prose": {
+     "count": 89,
+     "ids": "0968e6e4ed7dd21fd49b2efe2ef85c7927fa39a792bbb2275828b261ae207906"
+    },
+    "contractions": {
+     "count": 81,
+     "ids": "c1f18028d103b37c517e88263e3d009e63d9f5a729874e19b4862f062fa4e72c"
+    },
+    "python": {
+     "count": 145,
+     "ids": "80a45f0e21f4777b2643fe6bd261daba87061fb7219ca0374e5cac3e2d619b72"
+    },
+    "rust": {
+     "count": 136,
+     "ids": "eef2c29dbc7583b8de673c1dcea58c733e310f87dee0eb9c8513c29940166e5b"
+    },
+    "json": {
+     "count": 212,
+     "ids": "af5fd0b285f0704d6633a816ff5c0a36b29dad285e490af058d07e113b444ee7"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "d78d30019372f9063b0070fe87732bb8643017537fca968e6f516e9ee304f1f0"
+    },
+    "numbers": {
+     "count": 174,
+     "ids": "218b8594bf55a54c7c5afc835db263cc17491f4cdb22d1c26bbbe6564724c31a"
+    },
+    "punctuation": {
+     "count": 127,
+     "ids": "19cce0d38f3f2d8a4e873e709ba4a928638bff4861ea757e3dd05b1beb1b1e5c"
+    },
+    "scripts": {
+     "count": 139,
+     "ids": "de54f229ee106daf6052f517165d68046a7bcdcc12432094ad0312da5c16f107"
+    },
+    "emoji": {
+     "count": 113,
+     "ids": "d5b97e49af7476c270ef1e2562278b2a52efa99179c92369b4f08bfb7f9c3f49"
+    },
+    "combining": {
+     "count": 73,
+     "ids": "69708435e0d0a1cbe6530d864850b5d8d5f7335949486bec943f6659c129eb9d"
+    },
+    "specials": {
+     "count": 195,
+     "ids": "bfcf0d04d32c1dbf825d393bd81ae5cff1189ce577371e94017e8ededf2d3389"
+    },
+    "controls": {
+     "count": 67,
+     "ids": "0511f3ccc4d9ab1f4ce89246b5ac974570fa8ae4047b9b4afc80e4edd07705ab"
+    },
+    "long-word": {
+     "count": 608,
+     "ids": "e6dab60362223c433e92f13bbc5b707e0cf0e8a9c1c991fc5d2ceb9ef9669619"
+    },
+    "encoded": {
+     "count": 138,
+     "ids": "a340ca8181d81e7aa61cd784ec5201648e3da16488f2a0b4e9cf855b9cd1ab3c"
+    },
+    "whitespace": {
+     "count": 659,
+     "ids": "62bb64c0bb759f537d994b242e4c832d8c165d2c79f1fc464b32aa5df895b661"
+    },
+    "bmp-sample": {
+     "count": 1583,
+     "ids": "1df9dec7b68e8b8e35866142f9c707c984515056be3e04bee81c1c73e2c3c61a"
+    },
+    "astral-sample": {
+     "count": 503,
+     "ids": "9c8b70fabe676f73b98ad823e8bcf2b267f93dcf9e1b3efd4af4aa21a8e29834"
+    },
+    "latin-all": {
+     "count": 772,
+     "ids": "b3c5b38e9c3a55a324bc6f94cda3e1f5d80a8ccfdde0806b0682ffc908d813b8"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "0c51dabb6a413edb289bede5c6fc7778dc479d514c4a0e093d0ded46ad45668e",
+     "bytes": 256,
+     "count": 42,
+     "ids": "6fb0025942027721df0329c1ec7633c62adaac36f9461ff58c96c6fa12419234"
+    },
+    "system-turns": {
+     "rendered": "a8d8ac3d0a7e6ad12a0e76b929bceb0a737dabccff40961a5a2c836eaa0733aa",
+     "bytes": 445,
+     "count": 69,
+     "ids": "a6986ecb529e82014ea7a664d884afc32cc8d929ccc66af1e0d1a8311123819a"
+    },
+    "no-prompt": {
+     "rendered": "b6bb4e08254263e76746b3faaac33086dfe2707b08bca904350a756b53b52608",
+     "bytes": 253,
+     "count": 41,
+     "ids": "797d7858c044c4400ed35239ac39c4883463af142cc7ab26ba5987fe8434e1a6"
+    },
+    "tools-offered": {
+     "rendered": "729c6c4d48a579b171be5bad0af0d7d246891ba6550d1d91821d49127ba77182",
+     "bytes": 3422,
+     "count": 610,
+     "ids": "8e1b8ad473e70b740e99aae41b4a325455e1e7ee98a6ee66b8a852aad78f1408"
+    },
+    "tools-no-system": {
+     "rendered": "203a521a9aa1ed29d0178d6730eb95481c8a55cf18ce589039fada9d68abf675",
+     "bytes": 750,
+     "count": 147,
+     "ids": "905bee0f38e52f902388e43448d8cce6cb64fb4fe0346e7b8a7f68d5920486ef"
+    },
+    "tool-round": {
+     "rendered": "f7e7360c996f3ad0666eb7aadb3e9cfe3ab4e2569e037d3de9dae77e28cef02b",
+     "bytes": 3955,
+     "count": 736,
+     "ids": "658ba134d18f77ddb342fb5d470197d396603bf0366a9d8fb90edbbbeb9afc2d"
+    },
+    "tool-round-open": {
+     "rendered": "ce8fba91dc7ca84a8a62ae695cf0fa4c83fd04b6c760dffbb41e927b18f06057",
+     "bytes": 3645,
+     "count": 669,
+     "ids": "f98ba5dcc57efc7f15e38bda48aefe16f1df38f8ad3ef142351c922599884db9"
+    },
+    "parallel-calls": {
+     "error": "TemplateError: This model only supports single tool-calls at once!"
+    },
+    "string-arguments": {
+     "rendered": "28e2cfb1f9f3d0a44f94e42dab2b4385210f81710681483307bfd5f63e50c1f1",
+     "bytes": 3543,
+     "count": 634,
+     "ids": "ca40c95da9fff3ba4b5091e0c8e1ed437328801bf572f50473972f146946edb1"
+    },
+    "reasoning": {
+     "rendered": "21fb260d7bd8f94145748a2ac5cdda771c30643fd108552477698b56e0e43db2",
+     "bytes": 511,
+     "count": 84,
+     "ids": "750db9fa368bcf897f43bea16d7d82d12be51e06edb71620d31089e1e319698e"
+    },
+    "reasoning-then-call": {
+     "rendered": "453dc760e0c3964e1f1450e58dde5d2141ce2fe83e57a1f15c7518008f9e556d",
+     "bytes": 3565,
+     "count": 641,
+     "ids": "89759244ef3f8804a2d865a6d5aa9ff34cb1e3e129666096dd13a24fb5fc5886"
+    },
+    "thinking-off": {
+     "rendered": "f1b144209f38298235d98574c59d4de6a2c677e31c1fa99d2230183cb050dbb6",
+     "bytes": 254,
+     "count": 43,
+     "ids": "a52f75ba7f84dd48e1475f22378376a8dba9feae1b39eac360766c6ccee82603"
+    },
+    "thinking-on": {
+     "rendered": "5d528071ddfdf736c09ad47acd6913a3dced44a822b80b8dd2c861a9db5d515d",
+     "bytes": 245,
+     "count": 40,
+     "ids": "463330014159c35d44760f84c7b1e8934720b109e869fb3f40b2a3f0d05f54a5"
+    },
+    "dated": {
+     "rendered": "83da12541ba5946dff9d49b75d45c7dce10a1c705a992763361c18d0608554e3",
+     "bytes": 758,
+     "count": 150,
+     "ids": "b52d1b6a043e4e2de1fd4529ca4556e87b36b94ad578d936ccd5b868aa96054f"
+    },
+    "unicode": {
+     "rendered": "5b2100eb47106b6634d624018f5fe12e1731334a34d63bc3219bbe7f84f1ea62",
+     "bytes": 844,
+     "count": 230,
+     "ids": "f3813db985374bbd5f61cc6d3ec3710fb520b00f2eb2de44989e9c39cc546c8b"
+    },
+    "content-parts": {
+     "rendered": "e80a0645bf3f33df290d62fe990816cc2f62e93683139a05cff81e6d3297bef7",
+     "bytes": 500,
+     "count": 103,
+     "ids": "02363a04c6daa8a4a344871747d27011801616c2e58ae5718afef20c0abe9b30"
+    },
+    "assistant-first": {
+     "rendered": "5e7e3cddfb15db4fbde4e12cb2cca2efd545251f28256392bbc73f26077526b2",
+     "bytes": 311,
+     "count": 47,
+     "ids": "1223580df90bc2ee34be4894f3e35c542909d9f5effd336772b871ca9165d695"
+    },
+    "two-users": {
+     "rendered": "5741c19750f6c05d24bcc8c260315243a414ac2304741922c541eb8ecfa6a7dd",
+     "bytes": 293,
+     "count": 44,
+     "ids": "908c80ba0ea32a571abba4a6a7e4623018a431c6c374f99d038dc2eeac5e03a1"
+    },
+    "unknown-role": {
+     "rendered": "e2061c98652487c1abedea72d79b9bdc164d255be436de514bb187543a3e8fce",
+     "bytes": 308,
+     "count": 48,
+     "ids": "3ebc6efdaef4828e0091409ebd191ca552bfc846f83ae27d33440b7f2cbe2d76"
+    },
+    "long-run": {
+     "rendered": "2ec938fdcd877456a02c87707a4393542a23ca1f5e3ed41edcad3e8468dea39c",
+     "bytes": 4905,
+     "count": 960,
+     "ids": "b1a967bc0de3d31ca905b1ddbdba4ec1c2eff11c36ab4cc46910195e178c47dd"
+    }
+   }
+  },
+  "tekken": {
+   "repo": "mistralai/Mistral-Nemo-Instruct-2407",
+   "revision": "04d8a90549d23fc6bd7f642064003592df51e9b3",
+   "vocab": 131072,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "340ab11db8d1a7435cb4b4a0492a9eee7b8e388e3e4a1714bcd3b69df3d8f1e1"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "7a5df5ffa0dec2228d90b8d0a0f1b0767b748b0a41314c123075b8289e4e053f"
+    },
+    "word": {
+     "count": 1,
+     "ids": "cd182eac99849de8d3487db3e85feb649fcc5bda13f7a0ac3d67b40866a6c4a9"
+    },
+    "prose": {
+     "count": 91,
+     "ids": "42d3cf6027f9800306df7577722b4b2b3a1e3de50a5a32a89895c2b98f1d8a5f"
+    },
+    "contractions": {
+     "count": 83,
+     "ids": "980d54a1eab1c10f969444288d86f46f23495a94a1e90c82fc164e50b9eb4acb"
+    },
+    "python": {
+     "count": 146,
+     "ids": "0c462b391eb5289589c47a5648216c221c210ef139bdd8fae36aa39b607e8aee"
+    },
+    "rust": {
+     "count": 151,
+     "ids": "1545f963f9f18e2caa1d307bea1f02eccd884ce362e9f6e41c65efcca1f4386e"
+    },
+    "json": {
+     "count": 222,
+     "ids": "55f062d5b3e6c88dabcfed9fe5dbca79502ccd692cf164807859325bee4d96ce"
+    },
+    "markdown": {
+     "count": 112,
+     "ids": "fa4312427a55a81bf5fb39d4ab730bfab5422a68ddd9603a11a2015260ccd72e"
+    },
+    "numbers": {
+     "count": 263,
+     "ids": "90f882097b664fb129c1a0da6538e5dc3507c2dd2e8b72b8b851fc2c43cbd797"
+    },
+    "punctuation": {
+     "count": 139,
+     "ids": "a2686716fffe2f31f62073a1444ffe5d72bfe39d63ee9c41a1cd83ded12aa628"
+    },
+    "scripts": {
+     "count": 91,
+     "ids": "248a29612290dba721ad7e776b029f1df67b2ab3deb7c8686ff1837df79928a0"
+    },
+    "emoji": {
+     "count": 156,
+     "ids": "a01c2ff6ce6d825bb14adbdc43580f8ec8960c331a8dd91f524703435c143a10"
+    },
+    "combining": {
+     "count": 81,
+     "ids": "46fca5755e1254f9f38817215a4413971af105029833559759bed162ac7ce3bf"
+    },
+    "specials": {
+     "count": 230,
+     "ids": "e3510d40ccf19772cc8b8f97b5681fecee5eb66851b361ce7654942bdecbdef0"
+    },
+    "controls": {
+     "count": 75,
+     "ids": "47293c57042d150d715fffcf6fa9900dc60aecc6e3fae81d21ff960f40e7cfe7"
+    },
+    "long-word": {
+     "count": 720,
+     "ids": "673643de1764fe1f2056175ced39934f68c9e026481686a069dc4ac6ea081e44"
+    },
+    "encoded": {
+     "count": 174,
+     "ids": "0a75fbee0cf7afa80470afb75898111bce0c281e106711f89d6776851bb1891e"
+    },
+    "whitespace": {
+     "count": 758,
+     "ids": "e16bc0f4f8159110fbbfc3ee19e2434f9d3541e860900c730b5bd9df2a6af36b"
+    },
+    "bmp-sample": {
+     "count": 1634,
+     "ids": "befc691af2947e0f89125e9f8963f09906b58aa1b9867224c6ab6007b1aa54e0"
+    },
+    "astral-sample": {
+     "count": 513,
+     "ids": "4fe7f631f2bcc411c97b7996e4f5552990c454c2033ed534315124d4a87fb1a1"
+    },
+    "latin-all": {
+     "count": 856,
+     "ids": "0d87fba5ce9dcc4e639dcdb51cbd0a4605a7c32203cd85a07234524081b666eb"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "edd88c44b1e02eb8deff89cfae93460427caa2b3a770081a094a1c142d2be618",
+     "bytes": 39,
+     "count": 10,
+     "ids": "14b0dc091ce3dac2fd4f882353e148a8831b2ede3fa8557d82d1bdcab9493794"
+    },
+    "system-turns": {
+     "rendered": "694a61c6ad72eb52b045b9059280d8c12906b550bffb287ec5c31f167592577c",
+     "bytes": 138,
+     "count": 30,
+     "ids": "24a4826e6369b76d0edd58fff84da7a65bd2adb140fa143edcfb658667ff4713"
+    },
+    "no-prompt": {
+     "rendered": "210adce3f3067a4f3d885a503ff2423ff7fd26d472cfc1e69a3c126c89a7ddd3",
+     "bytes": 30,
+     "count": 9,
+     "ids": "96ee2db15532c6d7959c6a935d5658034cc85ba40619a77c0ea9611c90520eb4"
+    },
+    "tools-offered": {
+     "rendered": "3b44ee61631eec260335ab1f2a3400741ef945b7a1e76c68c852eb1c0d61f154",
+     "bytes": 1454,
+     "count": 404,
+     "ids": "23e61ebb17590b1e421b8dddb12a95086b55b40039202043accd3dae183119f3"
+    },
+    "tools-no-system": {
+     "rendered": "15c91a618304df6cba40b3612d9971e65183db6e4fbaf8a9c959dae5601fb667",
+     "bytes": 206,
+     "count": 49,
+     "ids": "1f413b8ceacb5e196b2dc6c5089506dff76c3ae65970a53c4621c3bf288ccbb1"
+    },
+    "tool-round": {
+     "rendered": "4583744503285e510b2de65b1a850cb087d503d7a08a48f9a912b4c45bd53715",
+     "bytes": 1871,
+     "count": 550,
+     "ids": "76c9d297a4e8c03ec28a46bfb1fe19e1be840bfe9c916084d725a32ed12dd897"
+    },
+    "tool-round-open": {
+     "rendered": "e800fdc7ae4fb0bb985451d96ec88303fd645ac998ba8971317f847cf0bf1e94",
+     "bytes": 1662,
+     "count": 484,
+     "ids": "2ba619b793cb1f100fd6125a6860e15ab868640f7f4f48dba571731fd6765a4a"
+    },
+    "parallel-calls": {
+     "rendered": "e263132f106934478bb258802ef39912af5adbb53541c838c7edd450e34b8e5f",
+     "bytes": 1822,
+     "count": 534,
+     "ids": "b12263137f10a90cf416d858fd1625d2449b8d6d1c9f5699b81bc1656d3f2a66"
+    },
+    "string-arguments": {
+     "rendered": "c8578d13f33b8c9ddc4618d3e6f5ff005661805ccb5d1687f6e364816a1282f3",
+     "bytes": 1560,
+     "count": 448,
+     "ids": "b4ed2162e316e6dcf6b7ce91d1fcf5d02629f8fed09a9eec5730ae45bc65a888"
+    },
+    "reasoning": {
+     "rendered": "2815fdf262cb2c681007d47864edde5bb23aaa5282cad6dc27ec2491cf91136f",
+     "bytes": 110,
+     "count": 43,
+     "ids": "3aca90fae3f421bfe269a07418c26e44a83925dc9d9953217308b3a4dcf47f0b"
+    },
+    "reasoning-then-call": {
+     "rendered": "e1cc62e9e2813ae57642a535de837308888d3ab27e1223f7ed2f2f8379e109d9",
+     "bytes": 1582,
+     "count": 455,
+     "ids": "918a67b52168a2bf282610de9f568db3e7e4d5d0530356948ba3ba9ca50fb368"
+    },
+    "thinking-off": {
+     "rendered": "08607ab0c22a73ea8b946a67a8fbd42c01685c429fe5372da1722ab0edf81081",
+     "bytes": 39,
+     "count": 12,
+     "ids": "d17b054d584847fe6b65922cd023bbbf07d38931b991d6e5a8e396d24c2fde25"
+    },
+    "thinking-on": {
+     "rendered": "7ccb87b05ed1660c07f6c52adbcd0bf8ebc5833fab04b5d4c32a8e2b6f5c3336",
+     "bytes": 28,
+     "count": 9,
+     "ids": "b0495fa564c91c480f71f0492a86d178b57168d2e543a6da60491bdad52f9989"
+    },
+    "dated": {
+     "rendered": "59366193581f16eac4a49270286ccccca270d242ff79536d90e1972861d2d7e7",
+     "bytes": 216,
+     "count": 52,
+     "ids": "c623a18f838ec554b5609be41d20377095fa3dbf6ce464d947d66379453ded41"
+    },
+    "unicode": {
+     "rendered": "4db1764ce4a026937c2bcf38b8a6e376ae7bfaa7e1e6cf7fce71a660d15c5fc4",
+     "bytes": 548,
+     "count": 227,
+     "ids": "2404c161041c9a38ccc60b2558aff75480b2a9e929fb52dcdd572c9952e4810f"
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "error": "TemplateError: After the optional system message, conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "two-users": {
+     "error": "TemplateError: After the optional system message, conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "unknown-role": {
+     "error": "TemplateError: Only user and assistant roles are supported, with the exception of an initial optional system message!"
+    },
+    "long-run": {
+     "rendered": "66543a193acfd154dc88c086a571bdd78c3f44b7ae3a7c42ea975ce0d63d2944",
+     "bytes": 2591,
+     "count": 776,
+     "ids": "d5245faca9459ff4ff5a0fdd474acfe3c98bdaa47e3e64a1c008e7a10315f011"
+    }
+   }
+  },
+  "gemma3": {
+   "repo": "unsloth/gemma-3-4b-it",
+   "revision": "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
+   "vocab": 262145,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "c51ce0518c0868c905bca2746c99aec3c38222b556dd86495980d70ce091434a"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "3346f2bbf6c34bd2dbe28bd1bb657d0e9c37392a1d5ec9929e6a5df4763ddc2d"
+    },
+    "word": {
+     "count": 1,
+     "ids": "b16778dbb0870352f3f27bf05a18e149aa430866f64fc345593ed41b901b616d"
+    },
+    "prose": {
+     "count": 92,
+     "ids": "be7f9965b5b9ba551330d5943a64e4ecc549948642b8cc0a0cca0d9f81215515"
+    },
+    "contractions": {
+     "count": 100,
+     "ids": "4722d6eb98b09c965ed0a311e4699919535f5a17a701564696a439417fbe8884"
+    },
+    "python": {
+     "count": 158,
+     "ids": "f32b5b62087da1249b4883a7d8c571dcc10cdd7590f18dca1143603a19b1eb67"
+    },
+    "rust": {
+     "count": 163,
+     "ids": "85a3ab898c7ac50fc0b93fccafeed421366dd36271df3f0765a1cbc17d87af03"
+    },
+    "json": {
+     "count": 229,
+     "ids": "07c237b9562e21fbf9ce0417b9bfa884a2df3bf241757a7f496cedabe96278ea"
+    },
+    "markdown": {
+     "count": 120,
+     "ids": "3dfbde7ea0f20ba6b791e73765fafbabe1fbca41e17dd042df445cd7a6b0345e"
+    },
+    "numbers": {
+     "count": 248,
+     "ids": "aa508c29b48a9c66a869c2962e2ad507a0d9bd4a5cc45f90da64fb3b3178a50d"
+    },
+    "punctuation": {
+     "count": 140,
+     "ids": "46f23c04ac4e8ee87a307ff12b14a248ce003f99c83d47449d455083c00d03c7"
+    },
+    "scripts": {
+     "count": 66,
+     "ids": "3699f31edea4d43654c1eb28bfd2b5897d7ec09a13a14df3f56544467941aae0"
+    },
+    "emoji": {
+     "count": 77,
+     "ids": "1f3e7732e0bb7fbcc286a7324cd67a42e0d298b8534965a1a776d14816f86774"
+    },
+    "combining": {
+     "count": 60,
+     "ids": "db0505d5a0d8d0769b523325bd9c5fc94f5018267491f5d2cd38b098d9d23102"
+    },
+    "specials": {
+     "count": 209,
+     "ids": "aeddc379745a6790682e28c53eef08c1520ac67be8fd82fc0e21fdcba577544b"
+    },
+    "controls": {
+     "count": 67,
+     "ids": "c6b74564550cc9789b08e05e706164144893d3df58184cc2b28a7c33e4d5f91e"
+    },
+    "long-word": {
+     "count": 434,
+     "ids": "e2e80d02d12c631fb8f19be25f89422f3fc408488055869c8784487986e1fe2e"
+    },
+    "encoded": {
+     "count": 191,
+     "ids": "22b34b4884ff60ceffadf09bfdac818a6b8a72ddd4a02658fa2bf1e381323606"
+    },
+    "whitespace": {
+     "count": 892,
+     "ids": "a28b86834a1c137f43dd54bedd6a431bd34dbfda69933bb1548e08d76d1071dd"
+    },
+    "bmp-sample": {
+     "count": 1712,
+     "ids": "fbba1d077db2c820af2d4733837d6f20728a400416fccdb573ebbd17a1c8bc0d"
+    },
+    "astral-sample": {
+     "count": 532,
+     "ids": "8d465c565329111af89123a1c7c048be6736685030daf46a91bc498eb1e85b50"
+    },
+    "latin-all": {
+     "count": 655,
+     "ids": "3189ea6b6f9aaf5f3274607d060d7c66742f75a45315e83fe0f6392837c39002"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "4105c1f4cc1591ef52c3da53449fb7a49a2cca3a87788b41b18a809d3fba19fe",
+     "bytes": 83,
+     "count": 16,
+     "ids": "8947c0e2ded5d26fc71f6a29e8325943eaafc67aaf30264e59cdb04d41f9db7a"
+    },
+    "system-turns": {
+     "rendered": "13ff9a55781cd0ea051a4075f141d5f74e5ed1270ea02fe343b6fd26ed9a2108",
+     "bytes": 234,
+     "count": 45,
+     "ids": "3ab78b35943baf2d6c538009004d99be2fd4fca83a4a0843b736b08d9e9b22d8"
+    },
+    "no-prompt": {
+     "rendered": "b42689e5d8779507c3a10157bd642c11f50cda3593990d8f3fcde8cfb4269dd0",
+     "bytes": 84,
+     "count": 16,
+     "ids": "1146e3fb8362f99f91115c6062ea978ed72b82f17f8a59e9f2bb2f68f82033b1"
+    },
+    "tools-offered": {
+     "rendered": "858bc4dbc3f00613a7f0eae40369b1ba5179c5a1d3a649f49aa5747389d2b638",
+     "bytes": 134,
+     "count": 26,
+     "ids": "465d376971edfad5b4cc7e362f81c313d99458f142f491df965b4c0bdaf287fa"
+    },
+    "tools-no-system": {
+     "rendered": "e539bcb194610d3a6ee458d55eaa89f51aa17b4f95813d014cc20a8eda3811f4",
+     "bytes": 76,
+     "count": 14,
+     "ids": "b29ae79c7f95f2e08c78275fad959eb235ad0007ed606c20ae93cd3457d6da8d"
+    },
+    "tool-round": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "tool-round-open": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "parallel-calls": {
+     "error": "TemplateError: Invalid content type"
+    },
+    "string-arguments": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "reasoning": {
+     "rendered": "62d207ace51a54e69957fdfaed78cd3ae8c0b96ea0a25285d3994af46a941d3f",
+     "bytes": 258,
+     "count": 63,
+     "ids": "72c8ec79e070daa954ce636f8163011f1bbd47fb809c4bf78e42fac8c2f53971"
+    },
+    "reasoning-then-call": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "thinking-off": {
+     "rendered": "0797263128dbb276a76341639e9431601b99b145d22c4fd6f72d37d20e508b3b",
+     "bytes": 83,
+     "count": 19,
+     "ids": "355256a4c2e06bfe18b6a3dd2af224fbb5fd2775f821f18db0dc6e34a40b5eb1"
+    },
+    "thinking-on": {
+     "rendered": "9722279d68529d1a0541036c7fc9e47a9ac765331a5b72051c365c2719589958",
+     "bytes": 72,
+     "count": 15,
+     "ids": "535a42c8f01b3d656df3118c02a2cc13407dfee7eb5d1bb5304e4cf9eba47cd8"
+    },
+    "dated": {
+     "rendered": "593897f96a28667f89dc82385d944d56990371139470dc3069956ba74fc70bfb",
+     "bytes": 86,
+     "count": 18,
+     "ids": "c0c89efbda88b8af0fc32235a11927f03f66d11f79b6caf7bbad2a3cb951655c"
+    },
+    "unicode": {
+     "rendered": "0598cef7b9b4ffdf46efad9185a2528f3ece889d27ca8687ed59893abb1ffc0f",
+     "bytes": 638,
+     "count": 223,
+     "ids": "c8f655e1726489aabe6e369f7615fc5a1b56c940e198c5d5d009d580f76183ff"
+    },
+    "content-parts": {
+     "rendered": "169b8d8fecfaf2e5087bc06d4da5912f2ccfcc34c2c2f6a24f640c0b91cc6eb6",
+     "bytes": 167,
+     "count": 30,
+     "ids": "80149fb79255b694b64e7c8a3e4ba39fd5f3c5d28a7878932f1cd83e1b10797f"
+    },
+    "assistant-first": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "two-users": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    },
+    "unknown-role": {
+     "rendered": "d4d4a09bdc353614c0e2d0f222a64e449024384e0a239d4d6118fcc2b3a10b0c",
+     "bytes": 117,
+     "count": 21,
+     "ids": "e25e8c65b4ef6c4f82899f0a5dca415ffdf2367a31a18365ff84768fb4ddf69d"
+    },
+    "long-run": {
+     "error": "TemplateError: Conversation roles must alternate user/assistant/user/assistant/..."
+    }
+   }
+  },
+  "gemma4": {
+   "repo": "google/gemma-4-E4B-it",
+   "revision": "4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+   "vocab": 262144,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "c51ce0518c0868c905bca2746c99aec3c38222b556dd86495980d70ce091434a"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "3346f2bbf6c34bd2dbe28bd1bb657d0e9c37392a1d5ec9929e6a5df4763ddc2d"
+    },
+    "word": {
+     "count": 1,
+     "ids": "b16778dbb0870352f3f27bf05a18e149aa430866f64fc345593ed41b901b616d"
+    },
+    "prose": {
+     "count": 92,
+     "ids": "be7f9965b5b9ba551330d5943a64e4ecc549948642b8cc0a0cca0d9f81215515"
+    },
+    "contractions": {
+     "count": 100,
+     "ids": "4722d6eb98b09c965ed0a311e4699919535f5a17a701564696a439417fbe8884"
+    },
+    "python": {
+     "count": 158,
+     "ids": "f32b5b62087da1249b4883a7d8c571dcc10cdd7590f18dca1143603a19b1eb67"
+    },
+    "rust": {
+     "count": 163,
+     "ids": "85a3ab898c7ac50fc0b93fccafeed421366dd36271df3f0765a1cbc17d87af03"
+    },
+    "json": {
+     "count": 229,
+     "ids": "07c237b9562e21fbf9ce0417b9bfa884a2df3bf241757a7f496cedabe96278ea"
+    },
+    "markdown": {
+     "count": 120,
+     "ids": "3dfbde7ea0f20ba6b791e73765fafbabe1fbca41e17dd042df445cd7a6b0345e"
+    },
+    "numbers": {
+     "count": 248,
+     "ids": "aa508c29b48a9c66a869c2962e2ad507a0d9bd4a5cc45f90da64fb3b3178a50d"
+    },
+    "punctuation": {
+     "count": 140,
+     "ids": "46f23c04ac4e8ee87a307ff12b14a248ce003f99c83d47449d455083c00d03c7"
+    },
+    "scripts": {
+     "count": 66,
+     "ids": "3699f31edea4d43654c1eb28bfd2b5897d7ec09a13a14df3f56544467941aae0"
+    },
+    "emoji": {
+     "count": 77,
+     "ids": "1f3e7732e0bb7fbcc286a7324cd67a42e0d298b8534965a1a776d14816f86774"
+    },
+    "combining": {
+     "count": 60,
+     "ids": "db0505d5a0d8d0769b523325bd9c5fc94f5018267491f5d2cd38b098d9d23102"
+    },
+    "specials": {
+     "count": 221,
+     "ids": "2a46af1ffaeffa017300318ee74980ffec268b860485aedc7ef541220721dcdc"
+    },
+    "controls": {
+     "count": 67,
+     "ids": "c6b74564550cc9789b08e05e706164144893d3df58184cc2b28a7c33e4d5f91e"
+    },
+    "long-word": {
+     "count": 434,
+     "ids": "e2e80d02d12c631fb8f19be25f89422f3fc408488055869c8784487986e1fe2e"
+    },
+    "encoded": {
+     "count": 191,
+     "ids": "22b34b4884ff60ceffadf09bfdac818a6b8a72ddd4a02658fa2bf1e381323606"
+    },
+    "whitespace": {
+     "count": 892,
+     "ids": "a28b86834a1c137f43dd54bedd6a431bd34dbfda69933bb1548e08d76d1071dd"
+    },
+    "bmp-sample": {
+     "count": 1712,
+     "ids": "fbba1d077db2c820af2d4733837d6f20728a400416fccdb573ebbd17a1c8bc0d"
+    },
+    "astral-sample": {
+     "count": 532,
+     "ids": "8d465c565329111af89123a1c7c048be6736685030daf46a91bc498eb1e85b50"
+    },
+    "latin-all": {
+     "count": 655,
+     "ids": "3189ea6b6f9aaf5f3274607d060d7c66742f75a45315e83fe0f6392837c39002"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "9de9f858ab0255a2bafe3b5a4fed9d4b9a1c39eb65b5aeecfadb5adf0bc24b69",
+     "bytes": 61,
+     "count": 16,
+     "ids": "8947c0e2ded5d26fc71f6a29e8325943eaafc67aaf30264e59cdb04d41f9db7a"
+    },
+    "system-turns": {
+     "rendered": "6d4e7d895d926e78b269db814dde1cd38f1d6e7ae6984b5accc4edd458136aaa",
+     "bytes": 204,
+     "count": 49,
+     "ids": "2cb16ae5c61deda576fc160531284725008410fa7c8581f9cf9a47085297e9b7"
+    },
+    "no-prompt": {
+     "rendered": "28c7812fada8b8c5ce859ea8111a07ac2de0ba44e560888841b67fe9d8279cb8",
+     "bytes": 56,
+     "count": 16,
+     "ids": "1146e3fb8362f99f91115c6062ea978ed72b82f17f8a59e9f2bb2f68f82033b1"
+    },
+    "tools-offered": {
+     "rendered": "48a08afccb5af772f127a70490f934f95a360b032048493afa2c76dbd2bd876d",
+     "bytes": 1368,
+     "count": 337,
+     "ids": "1297066a388e3594b0626e885eba4cfc14ad942508585dd906fb3ec143eeda1b"
+    },
+    "tools-no-system": {
+     "rendered": "c77b80812c7768c79c527330cbe1d779f5f40557dcd360d8ac3d5258b9f807c6",
+     "bytes": 181,
+     "count": 42,
+     "ids": "fc9068314bb60f80d93721b15dcf7a29bd8b1bf29017d136249c705a305fa431"
+    },
+    "tool-round": {
+     "rendered": "604d191046c900114519145d785b24cca2176d756e33e4f46eddadf2e4115f43",
+     "bytes": 1773,
+     "count": 457,
+     "ids": "63b0ec0d9487c23bd511a82a92aeedf4528caf523f1269581d3374394ac4caf4"
+    },
+    "tool-round-open": {
+     "rendered": "23c65fd54effad8a17a7aa51fd501b8e5e10256ab87223297ad1b836c96a4377",
+     "bytes": 1558,
+     "count": 398,
+     "ids": "a7742f35f00e75d196ac98dde686a23f26c26a488e7af3e8fc934e188ecb3d63"
+    },
+    "parallel-calls": {
+     "rendered": "c8fd1aaa2359e443e172eae6a0a05b1f69ad43870586d180b367d6dc9c068374",
+     "bytes": 1708,
+     "count": 427,
+     "ids": "64fda14f7c62d0c98f49b873ba6246e0ab07b28613e725a55191d23be4a31b76"
+    },
+    "string-arguments": {
+     "error": "TemplateError: chat_template: tool_calls[].function.arguments must be a JSON object (mapping), not a string. Deserialize arguments before passing to the template."
+    },
+    "reasoning": {
+     "rendered": "0c1699399536d9a967a7ea4c9e5a9644fe2c449bf7ff3d91f3e0287c44d07a5e",
+     "bytes": 180,
+     "count": 63,
+     "ids": "72c8ec79e070daa954ce636f8163011f1bbd47fb809c4bf78e42fac8c2f53971"
+    },
+    "reasoning-then-call": {
+     "rendered": "cc1ce81dbbfb31e9ee074149cb1ff2ce3c8832426357fd26a97b718a79cecf89",
+     "bytes": 1520,
+     "count": 375,
+     "ids": "5bcb70851d9f3dbdf2adf49374951d5c9d3b747c2b883670603f94e194fbdfcd"
+    },
+    "thinking-off": {
+     "rendered": "15786fe5f56a0c7a94060f4f5fbbbcf2e682c4b514618d2d8b9669561085f2b2",
+     "bytes": 81,
+     "count": 23,
+     "ids": "bab096bbc1a35798f721f9a511283a118bbcbddee2fdc7c87b878a0d17d4607f"
+    },
+    "thinking-on": {
+     "rendered": "a892912c8fc4a6ea4d9082b0da0a3ea80f214f8755f81ab2b1896c4bfe6015b0",
+     "bytes": 82,
+     "count": 22,
+     "ids": "2885034e7a713d27001c3b1da3f3a25c65f2ec469b9d863aca65f354d89d4ef5"
+    },
+    "dated": {
+     "rendered": "20422f899b55f7823e4d7552efd6f0fddf1bff396d1f9b2b50c2006032ddeb1a",
+     "bytes": 189,
+     "count": 45,
+     "ids": "2f020e495142760efede714364fada41e2a1d4400c2acc498f8c8707872ff990"
+    },
+    "unicode": {
+     "rendered": "4cfb03cf134a4f58497e1b6796d54233cf3583b56081d21986543ce0d4f3dc86",
+     "bytes": 603,
+     "count": 230,
+     "ids": "3ccfdd8405ee478662a72b034c9e80068f41f1e50471128e7afefd1f1d95cd12"
+    },
+    "content-parts": {
+     "rendered": "5f51d436fadb2dba63ddaee0c824f0b23c6144cd1a646a768d3b26db31351783",
+     "bytes": 117,
+     "count": 30,
+     "ids": "80149fb79255b694b64e7c8a3e4ba39fd5f3c5d28a7878932f1cd83e1b10797f"
+    },
+    "assistant-first": {
+     "rendered": "9f7044bbf90402aedc80759d84015fbe641f77041622f7a41dfffbdb0104e841",
+     "bytes": 80,
+     "count": 21,
+     "ids": "0514face72d17743979073a73cd2007903ef2b05a4f9f41d5eed2a17f7595d42"
+    },
+    "two-users": {
+     "rendered": "b5db993f14552f64a2516732b90398c7f074612fd1995f74f963196b9f190b38",
+     "bytes": 66,
+     "count": 18,
+     "ids": "3aef0756fb742cdf5833e37c5bff3b82b70f57ad3054d7b36415442fb447d480"
+    },
+    "unknown-role": {
+     "rendered": "935b41f129bf29c3098665eca24c426a7e07b930a220b5036c6276449b530560",
+     "bytes": 81,
+     "count": 21,
+     "ids": "e25e8c65b4ef6c4f82899f0a5dca415ffdf2367a31a18365ff84768fb4ddf69d"
+    },
+    "long-run": {
+     "rendered": "39a15e1a868c134764f84170ac8ecf8f377e3118a805cc92d9e3b9768a5e1c1f",
+     "bytes": 2478,
+     "count": 673,
+     "ids": "401cdca99e9708099106a0d074422116049b2bc42b18163d3397a44157388a06"
+    }
+   }
+  },
+  "gpt-oss": {
+   "repo": "openai/gpt-oss-20b",
+   "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+   "vocab": 200019,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "d1d3dd072021da9de368f95efb6cdb6738c00e373cb6c3f0f6cfa8c9efebfd12"
+    },
+    "prose": {
+     "count": 86,
+     "ids": "8002a4304a34ef1e7e47635871b9c1229737e1c39c8aeffcddbaad0783400bd8"
+    },
+    "contractions": {
+     "count": 70,
+     "ids": "f6c3c76d81b5270a2469b788aa70ea05b9fa6dc1694a7a9be6cd4c2e9f449d30"
+    },
+    "python": {
+     "count": 145,
+     "ids": "3eb000570437bc41a9999b58adabc430baec201c7e0da5bb577d03a393350137"
+    },
+    "rust": {
+     "count": 139,
+     "ids": "1d3e04230ae77ed3b25b044b729135551dc785e39e68bc87fb2a15b5799a80f3"
+    },
+    "json": {
+     "count": 212,
+     "ids": "4b072aae63a7706492e01a850db82202fe410a559eaa3128eb13a068dd93f5c9"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "58d6f63450804443163dd438b19d7ebffa1922d10418c20adec49a1ea4d92ee2"
+    },
+    "numbers": {
+     "count": 172,
+     "ids": "d9a5c6c02f73ae028f5346cc52248e38d774d588327dbed70f23e2493839a993"
+    },
+    "punctuation": {
+     "count": 130,
+     "ids": "ac827b002fb4dd94f2fdf4498c085f701d11d854135ba66cb8a7ffc9e7ef1e5b"
+    },
+    "scripts": {
+     "count": 71,
+     "ids": "0ff87b3481ce4e11b05d6ad47f189d0261739465e51b3879f2a75cacf7dc180b"
+    },
+    "emoji": {
+     "count": 93,
+     "ids": "09e34799066a4788993bd1e0c2fbb87fda7349f96cf102f5e2c83ed2fe2b021b"
+    },
+    "combining": {
+     "count": 68,
+     "ids": "1fc727ed875cfb80ba330603287b3f152dc02f1a5ca3e6851e4e11c67d2f72bd"
+    },
+    "specials": {
+     "count": 197,
+     "ids": "2c79c639c66ec8a59f0890f528addf85049d5fca9263b16b8e4c36372f953700"
+    },
+    "controls": {
+     "count": 66,
+     "ids": "9c0753e9323509679b6a560df29d836860804238106fbe7797c3c71bb0c6a34f"
+    },
+    "long-word": {
+     "count": 434,
+     "ids": "62e92ff5ba29d09f27d8f8d1770845b9a94b0afbae27638423662cf4babf07dc"
+    },
+    "encoded": {
+     "count": 139,
+     "ids": "d24f2bc29f35d1088504ae026555129e2e4950eaa19f0b8307aae0d30e1e4d86"
+    },
+    "whitespace": {
+     "count": 707,
+     "ids": "d488e52dae16faf39ed1e2e328886b7336b0c980976e0063b879349c96623ee3"
+    },
+    "bmp-sample": {
+     "count": 1566,
+     "ids": "c6071e19b34fba18679b69d37b8d0a48e4646a6a1f6882074d62713e6dcf2d05"
+    },
+    "astral-sample": {
+     "count": 521,
+     "ids": "4a5a376f595f6655d01153e07098321424eb68b8536c2138132df765f2b6bb58"
+    },
+    "latin-all": {
+     "count": 765,
+     "ids": "4735cbaefb383fab74a0481c1f503c25e49aba086f4e98f77cad89f835b86fe6"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "256f8aca7ff2a2b122255a668a2b70cea77469bd1d1597bc6e8d4ad836ad0980",
+     "bytes": 325,
+     "count": 74,
+     "ids": "3862183daeeefaa592cc76bb655c111774355973427f44458b2969bddc20ef8c"
+    },
+    "system-turns": {
+     "rendered": "ff0f9a839738aefa1f6b6edd6770a33bf6caa35dd9a0209713247c545dfd39f0",
+     "bytes": 542,
+     "count": 108,
+     "ids": "d8d4ee1b2a41f786f7a229a927351723a061228d62ba54510aa5b50f17ee7feb"
+    },
+    "no-prompt": {
+     "rendered": "7b082a4223b531b0c968f0a223d0a5d7ca13773cd62c95e62a24148c50233bf3",
+     "bytes": 349,
+     "count": 76,
+     "ids": "18bab61157129b509fa0bab21d57b02aff950fb639c51ce23cd30976a674501a"
+    },
+    "tools-offered": {
+     "rendered": "f6e578e462cb671c971e97409e3e55662744f35a90c6594d5f148c286aad1b51",
+     "bytes": 1310,
+     "count": 305,
+     "ids": "dfce52e1e66939cc0cd55aeea564ea89c101adf85ce98f6de8e1c90f4dfe2268"
+    },
+    "tools-no-system": {
+     "rendered": "06e5465ee238e7ae6f04290dd27279becee261c505b74f2da8f52ba26e8196fa",
+     "bytes": 537,
+     "count": 114,
+     "ids": "558dbfbde6d38bc0f16497a00366dda1ed18011c7396bafb124e5af7723efab7"
+    },
+    "tool-round": {
+     "rendered": "f6492d8ab446ccff36bfe764045b1a6f67aaf7ae27422b14abcb9d7133d19f9c",
+     "bytes": 1837,
+     "count": 432,
+     "ids": "b10bc522c3f636d25f6870afa1d80670bc8e2326f379e5ea3a65b54a8b48ac50"
+    },
+    "tool-round-open": {
+     "rendered": "877b29cc6af7c617e7b90ee934dabc5d28251092657664d322addc99489fe939",
+     "bytes": 1595,
+     "count": 374,
+     "ids": "6f36e737187320e31a8a6cdca66cb840600e308170dd1b0c3fc7151e1a5e86a2"
+    },
+    "parallel-calls": {
+     "error": "TypeError: argument of type 'NoneType' is not iterable"
+    },
+    "string-arguments": {
+     "rendered": "9515edc31cc4bc5f338256e9e0c75cab1618fd5c35380a1d72e65d472f04fd08",
+     "bytes": 1425,
+     "count": 329,
+     "ids": "8e856b8d782b6441622761d8d2b097782d20244b7a6aa4e5505dee85a83bd239"
+    },
+    "reasoning": {
+     "rendered": "eb0ea03b770e7ec99705c138e74b9a179dd3145d2cdff8842e37436837f6e97e",
+     "bytes": 528,
+     "count": 116,
+     "ids": "5385806d9fdcd395e1bc763d1f49cff8d275221a76fe96038ce50de1c138c2bc"
+    },
+    "reasoning-then-call": {
+     "rendered": "84e87de09783d38d02d1985e6a28d5ded6c165eb2582b61aedb738823397d7aa",
+     "bytes": 1532,
+     "count": 350,
+     "ids": "7ba467f0b1d950387e2e000de38094d8cf9a350193bbaef6d6ca76de94e925c1"
+    },
+    "thinking-off": {
+     "rendered": "4055a5d9bca97ce82b2c4c4ff931f70b433ebc9a6f0b27c45b614c1ce0b14a1e",
+     "bytes": 377,
+     "count": 82,
+     "ids": "fb998f5f010b4fad162c7f3a2ba30fd58b51ab3192c492ad3bdeb4e0e541930e"
+    },
+    "thinking-on": {
+     "rendered": "586f00f8abaf4b8abce9a0cb1a624d234855ac48c5b7d9ff9009e67a6860cb4f",
+     "bytes": 312,
+     "count": 72,
+     "ids": "fd4d970cfe0ed362d056b647a72106f50ebaf2ac681f65474b5c698c133547bd"
+    },
+    "dated": {
+     "rendered": "dc08f213685e61c3fae00487b9724e761c75b2967acbf48a1b8ad341bfaa7de0",
+     "bytes": 563,
+     "count": 120,
+     "ids": "44d6ab3ece5971bac252484e62c2ada945316a45903d43bf2f6c6ca9d432aa5a"
+    },
+    "unicode": {
+     "rendered": "5484c2ed83200da2cf986897d9950908a3a897bead9e13aa34f7daeab815c9a1",
+     "bytes": 952,
+     "count": 261,
+     "ids": "f9c7c6f90135d0b348c16cb41057483e7a6fd8ad3402666e16cdb176c1cf828f"
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "16cda66d4168cffb1bc13911d08f761c39e8e3f2de21aab43405808094f40372",
+     "bytes": 375,
+     "count": 80,
+     "ids": "b7766fc495c99aa367d25b07e289c441642f4615fbe6d50ee77021ec0b4dd9f1"
+    },
+    "two-users": {
+     "rendered": "e3df1c9effca534a76db3750a8555d663efa20a0df4e42361472ceb45dec8ce9",
+     "bytes": 341,
+     "count": 75,
+     "ids": "54cf57fe253f22976540984d86637763f7f6ee1e6f87ae8cadd8f676665019d0"
+    },
+    "unknown-role": {
+     "rendered": "f7a736d78cdab5719f69db8004d6190fa1e16de873eeae3ae37c44a8cd10b97a",
+     "bytes": 308,
+     "count": 69,
+     "ids": "5512971e31e5cc93e7e4aa95ecef8753631d70f66acfbc4da9110702bed3ee2b"
+    },
+    "long-run": {
+     "rendered": "94a3d6742769a3bac956fdd462d92b3ac7bd685bb89e0d6539c9fec671b04d51",
+     "bytes": 2751,
+     "count": 664,
+     "ids": "6d6a08d7326ce7399f611c49518bdd0fd3c8f28160311bb650a99497b1597777"
+    }
+   }
+  },
+  "deepseek": {
+   "repo": "deepseek-ai/DeepSeek-V3.1",
+   "revision": "c0781d039fb7a1ba2abc4add0bdc293e92d2b8db",
+   "vocab": 128815,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "56f4da26ed956730309fa1488611ee0f13b0ac95ebb1bc9b5d210e31ff70e79c"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "43974ed74066b207c30ffd0fed5146762e6c60745ac977004bc14507c7c42b50"
+    },
+    "word": {
+     "count": 1,
+     "ids": "dadcd458c8a5e0fa0db5943fe3025dfec0f00e21836a7f37f040fc35b91ff42c"
+    },
+    "prose": {
+     "count": 90,
+     "ids": "27820fe877afe7969d85409b3ce00ca01e0af5917dbbd16a1bb12c9fad400572"
+    },
+    "contractions": {
+     "count": 84,
+     "ids": "8b1ebdcfdbdfc230b5c35f7524e2f415ec8b23a90f74e990f1a6522dfedf52c8"
+    },
+    "python": {
+     "count": 149,
+     "ids": "6b1f8fcf6b09364da1dd95869a5f63de45bbc2063af049cccc413190b7a12e98"
+    },
+    "rust": {
+     "count": 149,
+     "ids": "50fc9d05f9c932fff78a0aa73bcf8cf842b91067ad04bc7618ea296619154b80"
+    },
+    "json": {
+     "count": 215,
+     "ids": "00224f1a1fe81d36824d84a0bf34119d89e43390b40b7b2ef352c7135bd2ec4e"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "52c874bbe995d16bf95f2abd4b3c324ec6edae0e77d998efd7354a7d8026f850"
+    },
+    "numbers": {
+     "count": 174,
+     "ids": "c0156ea668b2b47bf043782a53527cb4742c0e526ed578d0d6001eb4115f8e81"
+    },
+    "punctuation": {
+     "count": 134,
+     "ids": "0a31453ba6dffb3a582877b28e4d02d943256b0b32c5fa0705cb1cf00abcbaeb"
+    },
+    "scripts": {
+     "count": 94,
+     "ids": "eefb3f5efd076a4797f1712e2567aa72329cdab69f0f05caffcef4e4e2a2a719"
+    },
+    "emoji": {
+     "count": 97,
+     "ids": "353999e557a8a6ae62e447815229837f16aa58335d3f1b5d69d5e2790b32db1a"
+    },
+    "combining": {
+     "count": 79,
+     "ids": "4ccb53ed353f883c152ed2be19ee8fa324751abf6177c7f4010cc4b3ec1b11a6"
+    },
+    "specials": {
+     "count": 217,
+     "ids": "56c0775318a33c1d07cf186ca496030154bcde3e81f86060339e5f74e3eb78a2"
+    },
+    "controls": {
+     "count": 73,
+     "ids": "25f93d15139cb5d7fa43ff3ebc2382ce93047dbcb602379168ee8b759077faa3"
+    },
+    "long-word": {
+     "count": 509,
+     "ids": "c1eb8e0bff612642eb7323259a0820cff1f6c917ec4e024a4331d0a6fbfabb58"
+    },
+    "encoded": {
+     "count": 143,
+     "ids": "9fdc34b31c1ac2414170656c5b630ec4bf640e2dea10067751625b15d2b23fd9"
+    },
+    "whitespace": {
+     "count": 697,
+     "ids": "ac4766e805806283876026fb08466cd084babc34821a4236b2d3c38f12b81393"
+    },
+    "bmp-sample": {
+     "count": 1586,
+     "ids": "59a3f5c05ddf3d626f073e15bc321c62297a8e6ca0481bba32e1b1bc9f7aa463"
+    },
+    "astral-sample": {
+     "count": 507,
+     "ids": "477b84e296416df53802dc4aacbfe9cc40dd1daa289a8f7b4ad60fa90febc15a"
+    },
+    "latin-all": {
+     "count": 818,
+     "ids": "ddf1516bbc4fe901e7970904f1fefc4c68da661c6d627232bba8e6bf311d192a"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "30aac6287984083523e4cb239cb6026ddcca372946ef982e30b959b542f0f111",
+     "bytes": 89,
+     "count": 11,
+     "ids": "f782e16d74b7526db2f1280e25324a6d15d29b737da7b8292b3d8401be6f65c0"
+    },
+    "system-turns": {
+     "rendered": "b83e35ca116330e172c2a68fdfb7ac7dc0c368bc3ceccaa075900d53199105b8",
+     "bytes": 233,
+     "count": 33,
+     "ids": "46e8ae7959a8ca6803788e54aac961e87873bb75362abcda38d5a574aa301d2e"
+    },
+    "no-prompt": {
+     "rendered": "0412f4c56378a49dbfaffa15665602f46814d1cbc06764a723fea1ec0afab2f9",
+     "bytes": 103,
+     "count": 10,
+     "ids": "44ccf5758e4c0ffcecf5159d322cf2dafb0be0ecad30cf5f650d356ec8eb0f18"
+    },
+    "tools-offered": {
+     "rendered": "c3a4d1e42fad9053b3d3de8ef3707ac1e9ebd215dccb3c9f76871558f77f7d3c",
+     "bytes": 138,
+     "count": 20,
+     "ids": "5c1bf160f0bd6a7116afecbc3cbdec0ca84eb238f182818e5ea48ff4fb9806b4"
+    },
+    "tools-no-system": {
+     "rendered": "c0be5cecd380cd72857681795d4aaf4df243191d2b048098e8512375f52ca846",
+     "bytes": 82,
+     "count": 9,
+     "ids": "84b9efe915e28b775af847b09f1bb7c0cfa7e0e95a49641d5f27336af5168c52"
+    },
+    "tool-round": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "tool-round-open": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "parallel-calls": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "string-arguments": {
+     "rendered": "237a62463e2301e501f534b037f272560abc22f4e7b552409670dd064a03c2ba",
+     "bytes": 317,
+     "count": 28,
+     "ids": "8b95d331d71cdebbad05ef2087becd6235ac51f7ef13acb3d8baf6f790ef03ab"
+    },
+    "reasoning": {
+     "rendered": "23f9feb24c16c5fba401c9dd4dad568f4eb73e2f593fa08f5826c618c9ffa0fd",
+     "bytes": 254,
+     "count": 41,
+     "ids": "1b5b6fb017fc5ea75edf36ba2af2615a5138cf2a76d93185359b35c4f0032f40"
+    },
+    "reasoning-then-call": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "thinking-off": {
+     "rendered": "984087e6e95ae06d99d3c5c183ac88c143a9eb07afe09aa74ae1e955a5748f33",
+     "bytes": 87,
+     "count": 12,
+     "ids": "0629062b5dcb678e1041d3acfb399492963676312acd0373c5a05c82d6e747b6"
+    },
+    "thinking-on": {
+     "rendered": "6fd1b495f7c44aece962db40397e7cbbf8eff902cc7ad93b475958fa0bc23ba6",
+     "bytes": 78,
+     "count": 9,
+     "ids": "3b5a94669a273596fa3469ba9bc800f8c675540dc91a1a099c74800965093c62"
+    },
+    "dated": {
+     "rendered": "182b343b0774053b20bcd9a7e5702eecb97fea1ea88d6e97d0aa581c3d174e2c",
+     "bytes": 90,
+     "count": 12,
+     "ids": "2a7a6e1336f4b0dca8654e9d27bfa0c64dd0d51bb023adebdd25ed52832727a8"
+    },
+    "unicode": {
+     "rendered": "eeac53ab67c67a47ad17bdb5e72ffa5221d66082f782bfc975ebced5d9137f03",
+     "bytes": 643,
+     "count": 203,
+     "ids": "0d92f74c51d3ff79bbbd159a8499e2a3679bf50c89d11664f1f03b1804bd767f"
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "4940df324d4c204691bd876a15216937d965422823aa5c54903949c4225812d1",
+     "bytes": 114,
+     "count": 12,
+     "ids": "a6090aa2c77eda5a311da850c5c76574d2d31ed8b3152230feea6322c1dd5978"
+    },
+    "two-users": {
+     "rendered": "8c88ceceee4b0fb06af9d15057f6ce56298e15ed0b6b6e403fd5ed67cfea3663",
+     "bytes": 86,
+     "count": 9,
+     "ids": "e8d0f683386b15180794b6cbea1f448ec775fcb9389a4297c42316796ab8f5b3"
+    },
+    "unknown-role": {
+     "rendered": "f8def20d9c6eb456bf6fa2a699fa3da7e3b7d7b181e7bf67ba8c37482e6fae5c",
+     "bytes": 72,
+     "count": 6,
+     "ids": "d8b42bb3771bb8caa7d72e0f464700f40772c9594850efd02eab995b62be72dc"
+    },
+    "long-run": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    }
+   }
+  },
+  "phi4": {
+   "repo": "microsoft/Phi-4-mini-instruct",
+   "revision": "cfbefacb99257ffa30c83adab238a50856ac3083",
+   "vocab": 200029,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "d1d3dd072021da9de368f95efb6cdb6738c00e373cb6c3f0f6cfa8c9efebfd12"
+    },
+    "prose": {
+     "count": 86,
+     "ids": "8002a4304a34ef1e7e47635871b9c1229737e1c39c8aeffcddbaad0783400bd8"
+    },
+    "contractions": {
+     "count": 70,
+     "ids": "f6c3c76d81b5270a2469b788aa70ea05b9fa6dc1694a7a9be6cd4c2e9f449d30"
+    },
+    "python": {
+     "count": 145,
+     "ids": "3eb000570437bc41a9999b58adabc430baec201c7e0da5bb577d03a393350137"
+    },
+    "rust": {
+     "count": 139,
+     "ids": "1d3e04230ae77ed3b25b044b729135551dc785e39e68bc87fb2a15b5799a80f3"
+    },
+    "json": {
+     "count": 212,
+     "ids": "4b072aae63a7706492e01a850db82202fe410a559eaa3128eb13a068dd93f5c9"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "58d6f63450804443163dd438b19d7ebffa1922d10418c20adec49a1ea4d92ee2"
+    },
+    "numbers": {
+     "count": 172,
+     "ids": "d9a5c6c02f73ae028f5346cc52248e38d774d588327dbed70f23e2493839a993"
+    },
+    "punctuation": {
+     "count": 130,
+     "ids": "ac827b002fb4dd94f2fdf4498c085f701d11d854135ba66cb8a7ffc9e7ef1e5b"
+    },
+    "scripts": {
+     "count": 71,
+     "ids": "0ff87b3481ce4e11b05d6ad47f189d0261739465e51b3879f2a75cacf7dc180b"
+    },
+    "emoji": {
+     "count": 93,
+     "ids": "09e34799066a4788993bd1e0c2fbb87fda7349f96cf102f5e2c83ed2fe2b021b"
+    },
+    "combining": {
+     "count": 68,
+     "ids": "1fc727ed875cfb80ba330603287b3f152dc02f1a5ca3e6851e4e11c67d2f72bd"
+    },
+    "specials": {
+     "count": 199,
+     "ids": "604e79443b79eb02abc92b60be86e045d7128325ec7523f1ed5664e774428ce3"
+    },
+    "controls": {
+     "count": 66,
+     "ids": "9c0753e9323509679b6a560df29d836860804238106fbe7797c3c71bb0c6a34f"
+    },
+    "long-word": {
+     "count": 434,
+     "ids": "62e92ff5ba29d09f27d8f8d1770845b9a94b0afbae27638423662cf4babf07dc"
+    },
+    "encoded": {
+     "count": 139,
+     "ids": "d24f2bc29f35d1088504ae026555129e2e4950eaa19f0b8307aae0d30e1e4d86"
+    },
+    "whitespace": {
+     "count": 707,
+     "ids": "d488e52dae16faf39ed1e2e328886b7336b0c980976e0063b879349c96623ee3"
+    },
+    "bmp-sample": {
+     "count": 1566,
+     "ids": "c6071e19b34fba18679b69d37b8d0a48e4646a6a1f6882074d62713e6dcf2d05"
+    },
+    "astral-sample": {
+     "count": 521,
+     "ids": "4a5a376f595f6655d01153e07098321424eb68b8536c2138132df765f2b6bb58"
+    },
+    "latin-all": {
+     "count": 765,
+     "ids": "4735cbaefb383fab74a0481c1f503c25e49aba086f4e98f77cad89f835b86fe6"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "93482637ff51a65b3151dfff84995adc7d3dd0d473ea481c4e76c26a42e77cae",
+     "bytes": 51,
+     "count": 10,
+     "ids": "9f143ef3e47c5e7b627aa9ca14044cc730160b36df260e57d4eebdd3351c5754"
+    },
+    "system-turns": {
+     "rendered": "529f53921eb0e717de3176aba5963c5ef4de7d478c957e87d84f11e6d1953ca0",
+     "bytes": 183,
+     "count": 33,
+     "ids": "783b78a4712b455ba14cc41d37105065fdf090749a4dd3aa3872fd1e10ed1b9f"
+    },
+    "no-prompt": {
+     "rendered": "2e39ec79ceae12b10bb8a4d54c16e791be708f44c9c0b92ce76e798988e66c12",
+     "bytes": 58,
+     "count": 10,
+     "ids": "968a83cb6498da1ebe84fc66ab44ec0017c1d2552ca0e7d20756debc3a55c154"
+    },
+    "tools-offered": {
+     "rendered": "ccf8a26ecf04c50a80451cfc5e0d0817b1638ec25e998605a133887efa430294",
+     "bytes": 117,
+     "count": 21,
+     "ids": "1704a07316205008e4b19ad695007827e3b2d361383e56a025daf072053f954e"
+    },
+    "tools-no-system": {
+     "rendered": "06e45ffba1ba0408a517f8696659dc88e51d29b4fec1a2cd0ee126087efa9f28",
+     "bytes": 44,
+     "count": 8,
+     "ids": "e384eeea9cd0ac79675d8663b85989c27efaa6583dc994006a25828d031fe24d"
+    },
+    "tool-round": {
+     "rendered": "012e4c6a2300ccd7a1fc2cb62f85bd79517da5539e5770bfee62f9aa7e470fcd",
+     "bytes": 349,
+     "count": 81,
+     "ids": "c055e2ff1bf57f091b08794ce8c426c15725984d2169dee17a9ba05da13da968"
+    },
+    "tool-round-open": {
+     "rendered": "76f816cf5366b0eba1f1a4413acb41a957f76c493afac777f2eeffb85121afd1",
+     "bytes": 172,
+     "count": 41,
+     "ids": "966ed9f6a9905ce94bebca026c49200cb563196e093f2acc35bb02a12f0ae3e7"
+    },
+    "parallel-calls": {
+     "error": "TypeError: can only concatenate str (not \"NoneType\") to str"
+    },
+    "string-arguments": {
+     "rendered": "550b22b33cb043d8f89c9e8fb59d2dd808f8f8548d766a6b129f86e154a45b3e",
+     "bytes": 86,
+     "count": 13,
+     "ids": "b0b318b069c9104ea1d67627c2801bc8789e1edbccf13d468ce8bdf8e94ae44e"
+    },
+    "reasoning": {
+     "rendered": "ff64fd71b8ef6f244234371a8af5b9ef80195b4a44007b735aad0954f117bdd6",
+     "bytes": 158,
+     "count": 40,
+     "ids": "6b63ee3ee6db5186cafe213b3ff4780117ffe2d3ddc1b486947ee91eadc6f75f"
+    },
+    "reasoning-then-call": {
+     "rendered": "b860a0a4003934784a95a41853919fb827fbbb3e27a5a8809faf4409a6ad64aa",
+     "bytes": 102,
+     "count": 16,
+     "ids": "0bfc599fbb33e63d63e1631c3fd459736d8ee06fd262f2f219cc8fb1b50aabaa"
+    },
+    "thinking-off": {
+     "rendered": "bc0f0df09c7da192d701925546b7da9fccea409c761445840c757ee1f169cc2e",
+     "bytes": 66,
+     "count": 13,
+     "ids": "5f0a37e63fcf5d45bcee823868f22b74d3553df540b7bea79f76c2118dea6fcb"
+    },
+    "thinking-on": {
+     "rendered": "0e693cb0a44ce88acc231e382d049d6adcfcf4cbdcf2d9b0f83d1b63ce168015",
+     "bytes": 40,
+     "count": 8,
+     "ids": "dcae225bd4380af3048957f82bbb9001ba686f6fef305d4b7aa1891519b79781"
+    },
+    "dated": {
+     "rendered": "20670e12262d65c6fa6466ae1f7f2e90234900dc28b6be0776b10f66f75d09a9",
+     "bytes": 69,
+     "count": 13,
+     "ids": "f986965deb8f5b3f9bda946fd026c31917ef49712077c0b957a66df27b65fff0"
+    },
+    "unicode": {
+     "rendered": "8be2f3168272f5e330cf4166649cb3e329dc0065214fc973c48c1cf6c06ad7bf",
+     "bytes": 593,
+     "count": 187,
+     "ids": "a99f00f8fabcd38f9d56778e5d7bfd7223be6aee536426d37496a26ee8cb36c0"
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "1c7b40d9086ca6b212e740152072320fb6de5da4d5311b8dd9e80146fc2f2f50",
+     "bytes": 69,
+     "count": 12,
+     "ids": "bff0fd561733a88feeefdd8f1d8fb5a50764f96a5a4113c341eecd6b74d4d4bb"
+    },
+    "two-users": {
+     "rendered": "5188546ab4b55fe7cb56c7d7756a64cd28c05cd5211beadf1d024ba29107a9f7",
+     "bytes": 51,
+     "count": 9,
+     "ids": "f1e04985c60332450de8e50484b526b023551476de7ec17174770c15e0daea57"
+    },
+    "unknown-role": {
+     "rendered": "4e1de001208eeb567a48b4b24aab748c25d25f6e45288894ec38bbd609dd13f8",
+     "bytes": 66,
+     "count": 17,
+     "ids": "d9bfe175e222849462a9b08bb175b73ec70ee9f034c5201dee52c0feee33c178"
+    },
+    "long-run": {
+     "rendered": "128a0e0b70f4b63d64aa0fb114b3809934b13e918700205f4caa4f3560b1f57d",
+     "bytes": 945,
+     "count": 249,
+     "ids": "26474dbebeda75b74e47fe658a6afc32afb3d7d569e9d2b4578f72cc9b7ae413"
+    }
+   }
+  },
+  "glm": {
+   "repo": "zai-org/GLM-4.6",
+   "revision": "be72194883d968d7923a07e2f61681ea9a2826d1",
+   "vocab": 151365,
+   "texts": {
+    "empty": {
+     "count": 0,
+     "ids": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "space": {
+     "count": 1,
+     "ids": "36790ecd55c2030dc553685bef719df653f413a20cdad1bfd1dc934c76686ddd"
+    },
+    "newline": {
+     "count": 1,
+     "ids": "a4e00d7e6aa82111575438c5e5d3e63269d4c475c718b2389f6d02932c47f8a6"
+    },
+    "word": {
+     "count": 1,
+     "ids": "3437d82378391830550bdbad7c9557cc3fab9525d46ee8e5dd2b638fc6585065"
+    },
+    "prose": {
+     "count": 89,
+     "ids": "345dc97445627ff5f127ffeed28ed3ab4cc4c99a83b6c9d848d7572b15113e5b"
+    },
+    "contractions": {
+     "count": 80,
+     "ids": "0c5439fc072fc452b06ee836aa97af03fb2795d3cdf8a852dc339bb8b9672691"
+    },
+    "python": {
+     "count": 145,
+     "ids": "06f97c3156851f4ae09843467272458d96dc88d22414b74dcf3a864886dc0179"
+    },
+    "rust": {
+     "count": 136,
+     "ids": "b521fb032c97313beb2a16cc7e8166973d443535204e68628f7abb9c6f3d681a"
+    },
+    "json": {
+     "count": 213,
+     "ids": "d8e2d1a8690529a7befa14c89bb15f501b2527c9c469d19be93a917844c96ff3"
+    },
+    "markdown": {
+     "count": 109,
+     "ids": "570aa678075a9f75c5cd66ca8542eb53fca8bed03445c43733701216193483cf"
+    },
+    "numbers": {
+     "count": 196,
+     "ids": "c015d81d0f3866de1ee785ae394ad6194eeff54810410910e75fbe9ea190f8bd"
+    },
+    "punctuation": {
+     "count": 129,
+     "ids": "a3e81c5cb575f7e8acd1538b83c067f8f5f211adbf34031d41a376e0b739b904"
+    },
+    "scripts": {
+     "count": 152,
+     "ids": "0b476cc077b5620653855f8ba07670c5728af805f1527e01950e7439b8a2d152"
+    },
+    "emoji": {
+     "count": 114,
+     "ids": "b93c2ab065c81a7a970f90312bc7f8e0fb35d842eed9b5b79255443004f28bb6"
+    },
+    "combining": {
+     "count": 84,
+     "ids": "cce69e544cb1d97855d6b0119553a495aeacbf00b1e7ef8bf5793d07ac39104e"
+    },
+    "specials": {
+     "count": 193,
+     "ids": "b7fffb100419edcd28ba21cd7e59ad4793ce93fc675f4962338093663e2ea49b"
+    },
+    "controls": {
+     "count": 69,
+     "ids": "822115502685cb752d22b8d10f373c3ffe746ce5a256b9563dcf3d98dcb78efb"
+    },
+    "long-word": {
+     "count": 608,
+     "ids": "1dffbf34dc26b16fa3011956d39d5f43f4a6d6d48d21dc581491710919b4eab4"
+    },
+    "encoded": {
+     "count": 147,
+     "ids": "efc83793c5d6bc182b21d89636a5c7a8558b5438a59128e506097183aaa21135"
+    },
+    "whitespace": {
+     "count": 668,
+     "ids": "8a2cbea93aad846a0c171e2f5679840f79741a98650163b30f461dec4252152f"
+    },
+    "bmp-sample": {
+     "count": 1624,
+     "ids": "c8b584565ee5f507ad46a6b5ceb4aca78fecf09b80876663d5d5201bfbce00fa"
+    },
+    "astral-sample": {
+     "count": 520,
+     "ids": "121f3f8ca4313b1b78a2b0e8c8c79028206db6ed21e6b7e42cf50641c16ef05d"
+    },
+    "latin-all": {
+     "count": 825,
+     "ids": "9f4f27b06736d6939f54a783602bf89e41776ec7696751d42b74b981aa91b07b"
+    }
+   },
+   "requests": {
+    "hello": {
+     "rendered": "7e4147d3c3285ee366bbd8c5a8cc7f2cf26439ffe2fb48f628af2bfa21d31df6",
+     "bytes": 57,
+     "count": 12,
+     "ids": "0ef937e9066efd3187ce14f7cbfc9b23dd57a4b4bc69b0329ebbb0508393a142"
+    },
+    "system-turns": {
+     "rendered": "be31e0c91c2279e462a433d2634ed88cae4010d41f8ebef1cf0d97780e8ea449",
+     "bytes": 187,
+     "count": 38,
+     "ids": "960226d1eb7135596bb9c0dc276097045555a56b3b2f6e92e81d16794258283f"
+    },
+    "no-prompt": {
+     "rendered": "8032fa06ada59cb822859c3fc391b4472b95fb4571b75affafd53af5bd0f3460",
+     "bytes": 61,
+     "count": 14,
+     "ids": "b84fe3e073e893dc5f92d94c68a739b1653b065e1fc535ec1e9d5158cbf36883"
+    },
+    "tools-offered": {
+     "rendered": "4421f8f3db19b697d956129d1c20dcc0309ce2d0ac23897f4fddf3155306ee77",
+     "bytes": 1901,
+     "count": 501,
+     "ids": "f2280aef1fc35356fcff8caca32f7877c5e0b4c724621ddedb6e59c71076ee20"
+    },
+    "tools-no-system": {
+     "rendered": "d014dc801dfb0afaadd34d16b666d34748d4b757c8748b82d6d5a1a11b0b3371",
+     "bytes": 643,
+     "count": 148,
+     "ids": "2b76b106a0ed899452b5125765cbf9652ad4ad9736ab6c000bbbb2188173a16c"
+    },
+    "tool-round": {
+     "rendered": "3241f684eae10324e5512871cac4dd4f9be177bc4321e0eb4fc1910fdef1704e",
+     "bytes": 2501,
+     "count": 631,
+     "ids": "4185a6d3498f2a176f1ebbea206f106a272c212ca8b55f5c64732ca4139b6a59"
+    },
+    "tool-round-open": {
+     "rendered": "69c0b5229d46df546a19363f55b79384074ede30fb99622df804fdfe8a3c439e",
+     "bytes": 2199,
+     "count": 562,
+     "ids": "76164eac79baaf16f7bd5f516f2d03253f1426ace62d44f3bae6cd7f394f502e"
+    },
+    "parallel-calls": {
+     "rendered": "837b44ac3011a4135c92badc6941f5607db38d65142e2efbd8e47422c2cd481e",
+     "bytes": 2315,
+     "count": 583,
+     "ids": "29b54f496909b61e9708cbc2fa7bba8f399f5aba18627cef1ae3733aee7bf629"
+    },
+    "string-arguments": {
+     "error": "UndefinedError: 'str object' has no attribute 'items'"
+    },
+    "reasoning": {
+     "rendered": "ec9d7d071a53cd9a83dfd6aca9a88e7cc91618708009777dc4be8d896de24107",
+     "bytes": 172,
+     "count": 48,
+     "ids": "75ba8e3ec9953d1fb1cb961a11e4f9a98a8150d32bbdc454af12f7634fa28815"
+    },
+    "reasoning-then-call": {
+     "rendered": "fac486e366cd182121cc002a2d2e60c55dee6cdcfc1d9396d16d0ed47ab25bca",
+     "bytes": 2097,
+     "count": 534,
+     "ids": "f9e40fd178e3ff6dd653d5b7de8c7b331d0b8bcc9ae3fb52706edb426d0478ba"
+    },
+    "thinking-off": {
+     "rendered": "728dbfd6c4ab078b93dd7b615cca812f388fab4e34eed76f91741afd811453b6",
+     "bytes": 90,
+     "count": 19,
+     "ids": "fd596ae5b825b584acdc111c34977c11a7c0c47768e6013a4f6d5ae6736acbb7"
+    },
+    "thinking-on": {
+     "rendered": "792d87a4bcf2cfd817d5c0d163bff49a3fa2be1190cbaf459f9e1aa51faccb61",
+     "bytes": 46,
+     "count": 10,
+     "ids": "7926833a2faa829b8cf837a0a0e9f9e1ae3cb4498a35a6d09fa94d7289d5be84"
+    },
+    "dated": {
+     "rendered": "de0b89cdf8808d8ea6becad5d765d929414882e558fb526feb1b4653db00ed8d",
+     "bytes": 662,
+     "count": 153,
+     "ids": "77118662984db03c889619c0629bebace2eadd5ecfbe3b043772984c40ac0637"
+    },
+    "unicode": {
+     "rendered": "44e48c39d683820baefe494d043a71cbbe8061f5f077324156393dc0aaccdbf9",
+     "bytes": 596,
+     "count": 206,
+     "ids": "411c04dfae27246f197cb6c138b771e216ffcea8fc7333ca1e6069da3317f510"
+    },
+    "content-parts": {
+     "rendered": "b71b64475a3d12ec650b041a1663ec748efdea3ec0f1fff81aba194c8890a18a",
+     "bytes": 111,
+     "count": 22,
+     "ids": "5853417fa2a101fd9c30302360efc90c3613a8120c77a55011453a014b41efc6"
+    },
+    "assistant-first": {
+     "rendered": "616358c59d7968da61cdb665f58dbf842104d238b54e8ac4070f8e4e2f67bc26",
+     "bytes": 85,
+     "count": 17,
+     "ids": "b349a9e5571b8d13f951ce551a58f57590a5f4663a38d95fbe7fcd2ab11a2beb"
+    },
+    "two-users": {
+     "rendered": "7ce743a9b607d435df23641e242ba1e81b53bd25b6c1f5e9016042b7c22ae46e",
+     "bytes": 51,
+     "count": 11,
+     "ids": "259586d5d35727e7cc9c183fe0c2d25a1faa71b26e76e96c31d595ed1d2828cf"
+    },
+    "unknown-role": {
+     "rendered": "8b836ce94911ae86af54f3e39dac893d45465a141bc4c9a682d5ae23a439ff14",
+     "bytes": 40,
+     "count": 7,
+     "ids": "28993aa04ce7b4898e13374dca0a5b47f5cd927ba2d22b28ad67b125de48d5c6"
+    },
+    "long-run": {
+     "rendered": "b94dcf5c1050fa505788c0d6176925fce6cfe91483900ebcded6d7919af49dda",
+     "bytes": 3131,
+     "count": 806,
+     "ids": "b57413e28fde4e1bc47df565a0584522f8f823b67508690b8d87ef3a896c04cc"
+    }
+   }
+  },
+  "qwen3-coder": {
+   "repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+   "revision": "b2cff646eb4bb1d68355c01b18ae02e7cf42d120",
+   "requests": {
+    "hello": {
+     "rendered": "575e4bfcc9cc410b18ce01353526568dc0551e329d0d86f5b8c947bba99a9b67",
+     "bytes": 73
+    },
+    "system-turns": {
+     "rendered": "3cfafbc186420848be4dd8e1d5215a499b04441348eb5b0758e13299c7f90a79",
+     "bytes": 244
+    },
+    "no-prompt": {
+     "rendered": "ca0fa4c5efe688a4949ae6c518db900ed4e897ba0cff79b81adf365f1b8f4a8a",
+     "bytes": 71
+    },
+    "tools-offered": {
+     "rendered": "be787bfe7c7263b94eadc9ce4a5764bbb4ccbb8e32c056c7d374511e1c21e174",
+     "bytes": 2734
+    },
+    "tools-no-system": {
+     "rendered": "1f3d593729b0b77b967138ebd5c492ec545951f633c286b506641ea5df993e28",
+     "bytes": 1183
+    },
+    "tool-round": {
+     "rendered": "4882f311458c54813c8e593de54ff5c9b4370bfaa32682190bf5f6defa858a84",
+     "bytes": 3311
+    },
+    "tool-round-open": {
+     "rendered": "2d8eacbca9e0f644459306eb2d8d3ca1a6e67e6c94f4329732ebd171f32f28ce",
+     "bytes": 3119
+    },
+    "parallel-calls": {
+     "rendered": "1f2b41908b2dd1b207aac168a52e23078c51c51450785999e703957f6214f3a5",
+     "bytes": 3275
+    },
+    "string-arguments": {
+     "error": "TypeError: Can only get item pairs from a mapping."
+    },
+    "reasoning": {
+     "rendered": "7b61f422b99d1c341cf51b5bde7680c09dfd2306d73705faa0f82aa3c38c0cf2",
+     "bytes": 232
+    },
+    "reasoning-then-call": {
+     "rendered": "00325668a4064d05b6ead57eeb18cf4166bdc12ecdd940f5ad2ce7a604839f6a",
+     "bytes": 3003
+    },
+    "thinking-off": {
+     "rendered": "aba4bce3d4725eac31a85b40334d9244a9ce4c89f1c9c7d890d85113751d7c37",
+     "bytes": 101
+    },
+    "thinking-on": {
+     "rendered": "a4ddb10472cd995b02f859ab182ca5d5e4150d8033b367ba8f9b199746be6836",
+     "bytes": 62
+    },
+    "dated": {
+     "rendered": "d562f6fc86236c208e4dc670906874bf3b25967669aabd8963fcc77b98b372b0",
+     "bytes": 1105
+    },
+    "unicode": {
+     "rendered": "2fc7511956e280ce7f720b32cb1569173bffa58afff14b548a49ba665ffceb7a",
+     "bytes": 654
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "a1b0cc1d8e5aea2b985a04ef36560c6b5d5ae2c2ad8b3b3c6ae78596198b1ca6",
+     "bytes": 104
+    },
+    "two-users": {
+     "rendered": "5103298ad708c78ea5f84069d24e873163cad74d90c3dd2e09a63a537ee2edda",
+     "bytes": 86
+    },
+    "unknown-role": {
+     "rendered": "17eea685484f433fe4e55958d952b0be717e310fb3e272ed53ee0ab519b90e47",
+     "bytes": 101
+    },
+    "long-run": {
+     "rendered": "f84efb400383c926c85d869694dc32b6b2e76cd7ed4b4ac0052125dca51f1652",
+     "bytes": 4099
+    }
+   }
+  },
+  "llama3.3": {
+   "repo": "unsloth/Llama-3.3-70B-Instruct",
+   "revision": "99cd0d2c829e92a67c844f9144c2509632e5c87f",
+   "requests": {
+    "hello": {
+     "rendered": "92b2eab2a9fde0095ed91316b23cff9644ceaaa7365205da7d38ef617a61b32d",
+     "bytes": 256
+    },
+    "system-turns": {
+     "rendered": "5adec796088d1000bddb9401d5f02823a5e11fefbe7945a6128b1be8be1d859e",
+     "bytes": 445
+    },
+    "no-prompt": {
+     "rendered": "898c25e422cc00b77a512a52ab48497c8368408e4ca3bdac89c9ed81a4e30c83",
+     "bytes": 253
+    },
+    "tools-offered": {
+     "rendered": "4609b3eaeba84ba68e38b40e93815d1ac945aa4312615ef58441dd7156f6e2a8",
+     "bytes": 3422
+    },
+    "tools-no-system": {
+     "rendered": "6b6df3351832bdc92834fc8ed6b5cfc9db2428aad94c23483619e0f20c424335",
+     "bytes": 750
+    },
+    "tool-round": {
+     "rendered": "14b7d967281f501911acd3de310d4916474fe77cb91eb31e71f48ce84be63426",
+     "bytes": 3955
+    },
+    "tool-round-open": {
+     "rendered": "ba3f8e4a32cf03e3d624c5d2304c5cb77fec7c7a735d82c925a2cbad12a7c1ba",
+     "bytes": 3645
+    },
+    "parallel-calls": {
+     "error": "TemplateError: This model only supports single tool-calls at once!"
+    },
+    "string-arguments": {
+     "rendered": "619d55fdbb8e09ee4f1159603c13dd3c98327a2d5e2c269f9aa0a19ba8ddae62",
+     "bytes": 3543
+    },
+    "reasoning": {
+     "rendered": "b2056e00d7c8f58de9b932e1ee1010038382a335d653bc4597ce55698fdc83e3",
+     "bytes": 511
+    },
+    "reasoning-then-call": {
+     "rendered": "a1c903d0729e75a721d1525a97049e003c3dc4dd7fc68101d2c1b92270d07dc9",
+     "bytes": 3565
+    },
+    "thinking-off": {
+     "rendered": "e9cb107c4bb03ecdc31da29bccbb8afa5e57b562a4a72f40a26732beb8610b63",
+     "bytes": 254
+    },
+    "thinking-on": {
+     "rendered": "325a25023e15df51607bcf092e320fcdaa1d03bfe128b48e3c55ff82cd625a1b",
+     "bytes": 245
+    },
+    "dated": {
+     "rendered": "83da12541ba5946dff9d49b75d45c7dce10a1c705a992763361c18d0608554e3",
+     "bytes": 758
+    },
+    "unicode": {
+     "rendered": "6bd45b5363c0fea79766ce85b6bc901256ebe66a077f9369f0532ae3acf6ddce",
+     "bytes": 844
+    },
+    "content-parts": {
+     "rendered": "5a4fdcb549cc46adcb661f6c3516ab694c74ada9f6fed8486e5c28ef7fbfd814",
+     "bytes": 500
+    },
+    "assistant-first": {
+     "rendered": "48b2e5e993094756fca94f24326c68530ea4fa3fe0f5fb1bed2764785a8819d2",
+     "bytes": 311
+    },
+    "two-users": {
+     "rendered": "858272ac63790d0985201ecb1d84cdedf8ef4066a3e6b9105cfc6805310a79a1",
+     "bytes": 293
+    },
+    "unknown-role": {
+     "rendered": "b6ff1b91a4a1cbe927faadcd7e5345986926fee2b7b7558a281ee466cb61b1c0",
+     "bytes": 308
+    },
+    "long-run": {
+     "rendered": "0269e0ab7c2fe9e3c2a6232c34851042b52d59188ba912209034a26bfc1f5af1",
+     "bytes": 4905
+    }
+   }
+  },
+  "deepseek-r1": {
+   "repo": "deepseek-ai/DeepSeek-R1",
+   "revision": "56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad",
+   "requests": {
+    "hello": {
+     "rendered": "ad5dfa9846640927d4f8d40710f817299e726f013b9bd17a7a0eaeb744168f4b",
+     "bytes": 89
+    },
+    "system-turns": {
+     "rendered": "a6b574cfb19622b35aaaad37446e0181b39d06ca6100f31bb72bb8d7fe4a1d45",
+     "bytes": 225
+    },
+    "no-prompt": {
+     "rendered": "753a6f8993e0b4e7ae6080ef0b6931b477c5f7eceefcd3b1b0c0952686e7e158",
+     "bytes": 95
+    },
+    "tools-offered": {
+     "rendered": "d24ad65faa1fb52cc5f5e78fd372fb765bcce0f2e9fd3bdae22c086a58d41e18",
+     "bytes": 138
+    },
+    "tools-no-system": {
+     "rendered": "bbabf13b7d3486f1cb6f7e49c3d452ba2333ed5f0a6392c33828801759bbb123",
+     "bytes": 82
+    },
+    "tool-round": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "tool-round-open": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "parallel-calls": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "string-arguments": {
+     "rendered": "13c41b240965a4fe33122d562a2f3641e7f8ad6af9f20d12a1186dd11f9e2bfb",
+     "bytes": 388
+    },
+    "reasoning": {
+     "rendered": "fc17e2593cf48e9b097e178a10b22b50299b9134e3911ddcd286edb7700ad18c",
+     "bytes": 238
+    },
+    "reasoning-then-call": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    },
+    "thinking-off": {
+     "rendered": "16b24a878ba88c72e22b7afcd15ef21cd8b17821234bed28d93b63c258461481",
+     "bytes": 87
+    },
+    "thinking-on": {
+     "rendered": "91ebb46280c527a0f91419773dbadffc44c6f5d53be1d31da18fe0881dc8854d",
+     "bytes": 78
+    },
+    "dated": {
+     "rendered": "41315b56380c33afb6d9b171719f0b1bc9b4fd28bc609dce2db28f3be15549a8",
+     "bytes": 90
+    },
+    "unicode": {
+     "rendered": "5e6cb556c4b40af17fdaf206eb08ddfe0baa922d92915c6176fac3af26d64112",
+     "bytes": 635
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "e8c2da2f9a665c98a37866f965eaa6a13581a887616d294283bcb6a2ef1997d7",
+     "bytes": 131
+    },
+    "two-users": {
+     "rendered": "8fcf916c399d4ec0b77c79499a9c0b21a636aa7a3c7767e529a337684589093e",
+     "bytes": 86
+    },
+    "unknown-role": {
+     "rendered": "738cb07da6c31ac726e3ad75a91f21d57a3ee07deceed7d05b28288cf0983b3b",
+     "bytes": 72
+    },
+    "long-run": {
+     "error": "TypeError: can only concatenate str (not \"dict\") to str"
+    }
+   }
+  },
+  "phi4-14b": {
+   "repo": "microsoft/phi-4",
+   "revision": "2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+   "requests": {
+    "hello": {
+     "rendered": "4f3dd0b8aaeb0a48e4bade4123aa0c00d1156b612e33b5a22bd05e38e7cf77a8",
+     "bytes": 90
+    },
+    "system-turns": {
+     "rendered": "6b9cd8cedd3948b47d1c0d819f3fc54252c5ccec0b3cdec94f9a0ebf0ceed648",
+     "bytes": 285
+    },
+    "no-prompt": {
+     "rendered": "ee1bb373888efd2a9da94cd0a1e76dd0cb0133307ac96338b39392658efcbc66",
+     "bytes": 87
+    },
+    "tools-offered": {
+     "rendered": "b266c33e24a06d70411596d07b4a249926eabcf486937b29bf6b7665a6c1aba5",
+     "bytes": 177
+    },
+    "tools-no-system": {
+     "rendered": "aa1d4a1967aa732760d998cfeff4fa433062f3dea02f50b44ad8e70382fd45e1",
+     "bytes": 83
+    },
+    "tool-round": {
+     "rendered": "6749a6b2288972a86c8d7f511c50e1848f6093a9dc97e8dfd9739a6d05d42a07",
+     "bytes": 368
+    },
+    "tool-round-open": {
+     "rendered": "571112eee600239efc6b7a859765a91409db3f23d1f3bfa412efdec5dab7ac35",
+     "bytes": 171
+    },
+    "parallel-calls": {
+     "error": "TypeError: can only concatenate str (not \"NoneType\") to str"
+    },
+    "string-arguments": {
+     "rendered": "c8ff0b0ba4958bf84f764a85de71b9154e685b58827e5ff08aca56cd65fb38f7",
+     "bytes": 119
+    },
+    "reasoning": {
+     "rendered": "06f6162aca2b0d9458df1aa2f6743ebf52c8b6809c19c2193b45bc803616d117",
+     "bytes": 281
+    },
+    "reasoning-then-call": {
+     "rendered": "49e6270e7ad8b8bf2c1a425e6638e939f89425ab436109bf7417f3bdce853151",
+     "bytes": 135
+    },
+    "thinking-off": {
+     "rendered": "bb23a3662d034eb97d8b3506356447a7a6ed1bd5a02f6ca2ad186a82efb76483",
+     "bytes": 126
+    },
+    "thinking-on": {
+     "rendered": "55c6bb0da03937c666be4b32be67f59817704a742df171e6f44294cc94a8b523",
+     "bytes": 79
+    },
+    "dated": {
+     "rendered": "2af3089f9af5c8a43a326f5d6f8cb7dc29b6cea1720ddfaa496ef219e4d47823",
+     "bytes": 129
+    },
+    "unicode": {
+     "rendered": "008a4ecc5db721b76a39a5c821f36205e074b2a0c47be5418d222c065022607f",
+     "bytes": 695
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "ccd79b9abeb6f45b9d20a21615cc2c271168bb4e89f99710690ab56cd508312f",
+     "bytes": 129
+    },
+    "two-users": {
+     "rendered": "4102d0de30816e7476d891242e6d591a20887211db1b76a3de4f112a95a5a506",
+     "bytes": 111
+    },
+    "unknown-role": {
+     "rendered": "9fe5fa68a929f499c10d9ed994aa4d47d2f961b5ce97ba40ea3ea479c4b5d32f",
+     "bytes": 73
+    },
+    "long-run": {
+     "rendered": "f7537e046c02f3f70c71e7dc01c9ddfd0f4a3413bbc66e05a4ab53d7f7912549",
+     "bytes": 830
+    }
+   }
+  },
+  "hermes4": {
+   "repo": "NousResearch/Hermes-4-14B",
+   "revision": "d6ce765c8b83f847357b98254be079afa0c6ca76",
+   "requests": {
+    "hello": {
+     "rendered": "a335bba1255076a509e686e056865f92fae72a6d56fd9dbc6965937d77fefe19",
+     "bytes": 144
+    },
+    "system-turns": {
+     "rendered": "3cfafbc186420848be4dd8e1d5215a499b04441348eb5b0758e13299c7f90a79",
+     "bytes": 244
+    },
+    "no-prompt": {
+     "rendered": "21176af9488db3d9a1835aa1d1a0ba5a2bfd6b31ff4b6032f2b3f52f3368fdb2",
+     "bytes": 142
+    },
+    "tools-offered": {
+     "rendered": "28484569e7934224387cb9519338b9163fee398cadc5955b4efb7fa1da025d99",
+     "bytes": 1893
+    },
+    "tools-no-system": {
+     "rendered": "1744f383f0018fda982b375903972329e67d2d1537c3b8369c4b9aaea95adc96",
+     "bytes": 687
+    },
+    "tool-round": {
+     "rendered": "9f210f64a25ebee1fbb9bf57a735bf3e80e1836442baa78f1ea87602958500c5",
+     "bytes": 2370
+    },
+    "tool-round-open": {
+     "rendered": "4054178f70facff1f55235e4b1a30109e63f1014c807fbac6a1d3821560a4c81",
+     "bytes": 2174
+    },
+    "parallel-calls": {
+     "rendered": "63a725f976c14d9394db01a105ac1586ef527926ec90fd4625c8963a8282d925",
+     "bytes": 2337
+    },
+    "string-arguments": {
+     "rendered": "169b3fd02fb48e806ff98ab838f3c39b0ee15edabcbca65470634736ea378413",
+     "bytes": 2058
+    },
+    "reasoning": {
+     "rendered": "ec0d386ddda5a2cbe518961e67b191e92444dc80cc66d1276d66c22d754d4889",
+     "bytes": 303
+    },
+    "reasoning-then-call": {
+     "rendered": "47f3367ba3efcba26c05cf4cdc17a2485535c77188996bfd431116b1e0836343",
+     "bytes": 2080
+    },
+    "thinking-off": {
+     "rendered": "aba4bce3d4725eac31a85b40334d9244a9ce4c89f1c9c7d890d85113751d7c37",
+     "bytes": 101
+    },
+    "thinking-on": {
+     "rendered": "d6dd9f0ca6aef202714a58a6a536831d633a7f6812139b0f921a0a64981a782c",
+     "bytes": 133
+    },
+    "dated": {
+     "rendered": "6aae193ab2fede5b56e2b5eff8faf70cd8ef50351b5151fde1d4140f1a4a137b",
+     "bytes": 654
+    },
+    "unicode": {
+     "rendered": "2fc7511956e280ce7f720b32cb1569173bffa58afff14b548a49ba665ffceb7a",
+     "bytes": 654
+    },
+    "content-parts": {
+     "error": "TypeError: can only concatenate str (not \"list\") to str"
+    },
+    "assistant-first": {
+     "rendered": "fa0a2c7711e9e966aab84206fa595234e0ca3e46ba4fd753c59a8c05ba7a1297",
+     "bytes": 175
+    },
+    "two-users": {
+     "rendered": "434dc659711ef80e2881b135afbea0d0dd0e49e17f6fbc01c01393361b4c1080",
+     "bytes": 157
+    },
+    "unknown-role": {
+     "rendered": "6a142b4ac9cde404d6c2de975b06dfe1b09964de34e6bab283f53c5b407dd30c",
+     "bytes": 127
+    },
+    "long-run": {
+     "rendered": "99edcf2b105e0322b4c837835508a1177395b11f45583c3689467dcf7c81b217",
+     "bytes": 3210
+    }
+   }
+  },
+  "granite4": {
+   "repo": "ibm-granite/granite-4.0-h-small",
+   "revision": "b8c0982bab7fde4eb48110f5a069527c008fab39",
+   "requests": {
+    "hello": {
+     "rendered": "8267ca0eb546e4cf8ec2afae7671721aebd14a2d16aaa7676ec0532e4de8b204",
+     "bytes": 260
+    },
+    "system-turns": {
+     "rendered": "d5f6bb175448cb7eb18423fa9d7fe079d18f542def67111045a0231cf21bed2a",
+     "bytes": 359
+    },
+    "no-prompt": {
+     "rendered": "0d3e55c35952d81c0022715a05143249c83d335cd1b71907a54b5d09c9aecb70",
+     "bytes": 263
+    },
+    "tools-offered": {
+     "rendered": "a5b25ed35b4503ec3b07ae82869b29ec01ca261912abf5958fb8f59b594e9ef5",
+     "bytes": 2098
+    },
+    "tools-no-system": {
+     "rendered": "7718db3563168a71683a29c1aa723bc5ea3fe7fd0542bac622679b9b0383d9c1",
+     "bytes": 849
+    },
+    "tool-round": {
+     "rendered": "13a97250d4f838570e316957942f7f6272f68ab1d27e2d4ac043b4c4fd91254c",
+     "bytes": 2672
+    },
+    "tool-round-open": {
+     "rendered": "a879996827a8c10778f9e13cc8166f9161acf85769f4b25213b2081193ccdc8a",
+     "bytes": 2385
+    },
+    "parallel-calls": {
+     "rendered": "ffe6ed3885a12ad95d8fb9c91ca009ad68b58b603da364286034f847179d6646",
+     "bytes": 2596
+    },
+    "string-arguments": {
+     "rendered": "134b512f87acbfa5f8aec77737d21f95ce7ee4729a4f700311c334d746afd126",
+     "bytes": 2263
+    },
+    "reasoning": {
+     "rendered": "783b1108ce302f310cbb968162ec174a7b67bc741a0bf4d5cfd7dc1fe9e228e3",
+     "bytes": 515
+    },
+    "reasoning-then-call": {
+     "rendered": "12e5ac323e24e19afd6e63c149b23bd53e36ce4dd60ba3fc159ffde3b41e66c7",
+     "bytes": 2291
+    },
+    "thinking-off": {
+     "rendered": "4274317789f17025f57788f1923804bd10ad0dc613e2dbaf234a1d11e83a9641",
+     "bytes": 168
+    },
+    "thinking-on": {
+     "rendered": "a73625bb62fbf583ad4873477b73f6bc38faf2047c68b4094c0bb87ed9fedd77",
+     "bytes": 249
+    },
+    "dated": {
+     "rendered": "3314e7032be9e0c9933686586870732e198df7eb4c20f2e902d948944dd7c272",
+     "bytes": 859
+    },
+    "unicode": {
+     "rendered": "4194ad7b5f85366a021c02e9e2bf6767701c1fd8c4f9e11d5a38cd3d5c3b5061",
+     "bytes": 769
+    },
+    "content-parts": {
+     "rendered": "fe85c349806dc0862bd08d5184b5fc4651a902772403390c280c12d4abe1c938",
+     "bytes": 385
+    },
+    "assistant-first": {
+     "rendered": "261bb67a8a6c3aef7fc2b690813183981c4d60c8bfcc2f6645f3bc9bdd0b255c",
+     "bytes": 315
+    },
+    "two-users": {
+     "rendered": "9808c25b55675417134062cc1004102587e4d88614a77725f2328d0f46c8b114",
+     "bytes": 297
+    },
+    "unknown-role": {
+     "rendered": "bfb70d570ab1a5671afbfd41e91c4c019ab00877570364e82102ae2644baaaf6",
+     "bytes": 243
+    },
+    "long-run": {
+     "rendered": "2453c084e0d504cd8d7ad45341157793220adba94082be5560271ac0b8bc1644",
+     "bytes": 3706
+    }
+   }
+  },
+  "minimax-m2": {
+   "repo": "MiniMaxAI/MiniMax-M2",
+   "revision": "04312f0cfbdeefb912575595b7c045512a29293c",
+   "requests": {
+    "hello": {
+     "rendered": "334c81393b3d5d1dd0adcd40d75c09adbb44ed8f11f3422794c34fccfb30f324",
+     "bytes": 160
+    },
+    "system-turns": {
+     "rendered": "18b7cbe9a2a1d6719ab4633b484b131d4bbb2b4682f3df6b98488bd5741ba860",
+     "bytes": 179
+    },
+    "no-prompt": {
+     "rendered": "12d0178723a81f25e95a4ab01b28d04ee3ae3d0425e3c34ed561e0a8745da935",
+     "bytes": 144
+    },
+    "tools-offered": {
+     "rendered": "0a8698518ab09fb24efcebb34e70b8cdaf3cb7558519a986b40f17e726169c47",
+     "bytes": 1822
+    },
+    "tools-no-system": {
+     "rendered": "13ef25559c1a0aedef08236db4979ef7836485d39ffed9fe285b1375fcc0e9fd",
+     "bytes": 683
+    },
+    "tool-round": {
+     "rendered": "c935c3fd4e04e12c8fee312abe13256d70b6e16d4d08fc44e7f49f2f07d7c4f2",
+     "bytes": 2361
+    },
+    "tool-round-open": {
+     "rendered": "95d98095086b1b2fced8097fb8b4aeb9450e24c898060270741fad8c722f45c0",
+     "bytes": 2193
+    },
+    "parallel-calls": {
+     "rendered": "69bbb3561fb5c0b422ac70b43c55aacfa7abadfd21c7cf12f997bbe577c55b13",
+     "bytes": 2282
+    },
+    "string-arguments": {
+     "error": "UndefinedError: 'str object' has no attribute 'items'"
+    },
+    "reasoning": {
+     "rendered": "a01ff3ec28e2c74ab9a26e2ee69001a9793f5bd554a9ca0114eaeeab13ed694e",
+     "bytes": 249
+    },
+    "reasoning-then-call": {
+     "rendered": "ac766f95d4963a15346079716cd65391be326e0b42b2fec9ed6b035618bf531e",
+     "bytes": 2123
+    },
+    "thinking-off": {
+     "rendered": "76b581a90176c6f0272f61720bf44051fd157cec4c7ffc50c7b1067676d9883a",
+     "bytes": 71
+    },
+    "thinking-on": {
+     "rendered": "eff7e8f50cf34d0a85d3ff4a4e08953d174f3dd97f69f71905b723df46e5e166",
+     "bytes": 149
+    },
+    "dated": {
+     "rendered": "747a7cbe3d76471bbbcbe006ef958571eb15c15c7847163a7b84efd022db7720",
+     "bytes": 604
+    },
+    "unicode": {
+     "rendered": "bae7046609ba9871bc11f6e27c1cac3f4d39d0cd5bb084ea65a560fa71ad575e",
+     "bytes": 589
+    },
+    "content-parts": {
+     "rendered": "c8dea69eb46353efedb110141c4429e1de9ae5e7ddf1b08ed9a5539c23e8fbf7",
+     "bytes": 201
+    },
+    "assistant-first": {
+     "rendered": "797fc0ae07c83e37fc4f3cbf0419889b50e260d381056a146a6aaafbbff3903b",
+     "bytes": 170
+    },
+    "two-users": {
+     "rendered": "460b9f7da2ba74576957ce37cca8ab5338f7975903498afc078d79ac70a605f5",
+     "bytes": 159
+    },
+    "unknown-role": {
+     "rendered": "c8e532f09b5d962a5fb42d0eb6a05d3e4f33c5861fec5d5a0dabf47db6953196",
+     "bytes": 143
+    },
+    "long-run": {
+     "rendered": "1e17b395ad80820cf48bdc215b115be5720c3350e9e7dbeafc0aea7ece02bada",
+     "bytes": 3013
+    }
+   }
+  },
+  "kimi-k2": {
+   "repo": "moonshotai/Kimi-K2-Instruct-0905",
+   "revision": "ac6c49f04883bd0a0598b790693a72061c676629",
+   "requests": {
+    "hello": {
+     "rendered": "3e7a3c55a136bcaa7d27b4c4282e006172dc5afe090887c4e1083212a594c281",
+     "bytes": 195
+    },
+    "system-turns": {
+     "rendered": "085d5e04ef4308179fc81c47ed987f90d2115712d5680d1e456e1ee3c03b604f",
+     "bytes": 307
+    },
+    "no-prompt": {
+     "rendered": "1be48edd96bc99f5d9fd29094e0ffade14fd1db4ce8a39316a15535b34eda05f",
+     "bytes": 192
+    },
+    "tools-offered": {
+     "rendered": "edf3c32fba95f68bc7a223e11b48360861bcc88e208f40e758882f76884ea54a",
+     "bytes": 1478
+    },
+    "tools-no-system": {
+     "rendered": "aff34952f8e67d451c79b6d89c3571724344c084bb4c6893c692f254e91cfcab",
+     "bytes": 364
+    },
+    "tool-round": {
+     "rendered": "9ed9a48c9aac581221a4b4f3e6e33271c2c5ffdf79119940daadb7e2e6d66f68",
+     "bytes": 2068
+    },
+    "tool-round-open": {
+     "rendered": "8182549f0adef456e04f6a9e9fc2569e5ff398dfb8332edbdcae89c6ac8f1682",
+     "bytes": 1859
+    },
+    "parallel-calls": {
+     "rendered": "522c46025db44379f982e31ef4162b1c7fe35a7ea2ac03d16a13b9d7f22ee4f6",
+     "bytes": 2093
+    },
+    "string-arguments": {
+     "rendered": "d30bfb44e2b1861e4b8491ae73b5e265153d537a5c2ae8e5eb5fa5acbb9dfe98",
+     "bytes": 1738
+    },
+    "reasoning": {
+     "rendered": "8caa90066f723ab35e61b21673c0756fa1bf603b48e6806cb23c50705f1907e9",
+     "bytes": 404
+    },
+    "reasoning-then-call": {
+     "rendered": "69ce194bcf07d912fa3384f7000a749d1c7cd3a279c8c5a397d2148ce020051e",
+     "bytes": 1766
+    },
+    "thinking-off": {
+     "rendered": "0953d876df34dbbb005c13151090cf97feac04fd0852fcbc82e36c2f6a944a63",
+     "bytes": 139
+    },
+    "thinking-on": {
+     "rendered": "a899ebbebe43f0a90437033ba59f8285f1eb4f448947d81b54d2abca91a88f9f",
+     "bytes": 184
+    },
+    "dated": {
+     "rendered": "47e9dc24b2824ecdf47891b226b0ad116c187d86318d561cd83f6fb1c733a6de",
+     "bytes": 318
+    },
+    "unicode": {
+     "rendered": "f4a7dd8f425af133a3bdd05f3f00c286a6a4397ef94249e2db699cdf9969cf33",
+     "bytes": 717
+    },
+    "content-parts": {
+     "rendered": "daaa3bd55897310cfe18c1a5de293c212fd95a1bb6d796af70380bd5a1c7e51e",
+     "bytes": 296
+    },
+    "assistant-first": {
+     "rendered": "ea4114ba51a8adb3cf2f7faa51ad80dbd9cc1baa96c835bd18a63854a1079336",
+     "bytes": 241
+    },
+    "two-users": {
+     "rendered": "600405907d373d9da17c6016cb2191a93a92d4d46b9e852d74b16e157db7897e",
+     "bytes": 218
+    },
+    "unknown-role": {
+     "rendered": "09103bc74a085a830cf839fb27df7dd44ea2ddb98c180328b8696665b6787444",
+     "bytes": 235
+    },
+    "long-run": {
+     "rendered": "4fa62d88b99d45b2ebc4f8ac21873030fdcbd24d3100e4a8c98ed38a0f033b38",
+     "bytes": 3134
+    }
+   }
+  }
+ }
+}

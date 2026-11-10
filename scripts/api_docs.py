@@ -6,7 +6,9 @@
 
 What is public is `docs/api/groups.toml`: ordered groups, each a reader's reason to open it and
 the names in it. A name is `Name` (as `tau.Name`) or `module.name` (as `tau.module.name`, for the
-few public modules). The check fails when `tau.__all__` and the groups disagree, when a module
+few public modules). A group with `package = "tau_tokens"` lists the names of that package
+instead (the tokenizer wheel, D26 §7.1), which must be exactly its `__all__`. The check fails
+when `tau.__all__` and the groups disagree, when a module
 is public by name but holds no public name, when a public module defines a public-looking name
 no group lists, when a public signature mentions a type that is neither public, the standard
 library's nor on the `foreign_types` list of groups.toml, and (scripts/stub_docs.py) when
@@ -73,8 +75,9 @@ class SurfaceError(Exception):
 def tree_of(module: str) -> ast.Module:
     """The syntax of a module; a native module's is its stub."""
     path = Path(importlib.import_module(module).__file__ or "")
-    if path.suffix != ".py":
-        path = PKG / f"{module.rpartition('.')[2]}.pyi"
+    if path.suffix != ".py":  # the stub is beside the package's own source
+        package = importlib.import_module(module.rpartition(".")[0])
+        path = Path(package.__file__ or "").parent / f"{module.rpartition('.')[2]}.pyi"
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
@@ -113,10 +116,18 @@ def defined(module: str, name: str) -> tuple[ast.stmt, str | None]:
     raise SurfaceError(f"{module} does not define {name}")
 
 
+def name_parts(name: str) -> tuple[str, str, str]:
+    """(package, module in it or "", attribute) of a group's name. A name of another package's
+    group is kept as `package:Name`, so one name is one thing whatever group it is in."""
+    package, _, rest = name.rpartition(":")
+    module, _, attr = rest.rpartition(".")
+    return package or "tau", module, attr
+
+
 def resolve(name: str) -> object:
     """The object a group's name means: `Name` is `tau.Name`, `module.name` is in that module."""
-    module, _, attr = name.rpartition(".")
-    owner = importlib.import_module(f"tau.{module}") if module else tau
+    package, module, attr = name_parts(name)
+    owner = importlib.import_module(f"{package}.{module}" if module else package)
     if not hasattr(owner, attr):
         raise SurfaceError(f"{GROUPS.name}: {name} is not defined where it says")
     return getattr(owner, attr)
@@ -126,11 +137,11 @@ def home(name: str) -> tuple[str, str]:
     """(module, name) of the definition behind a group's name. A class or function says where it
     is defined; an alias or constant is where `tau` (or the public module) takes it from."""
     obj = resolve(name)
-    module, _, attr = name.rpartition(".")
+    top, module, attr = name_parts(name)
     owner = getattr(obj, "__module__", "")
-    if owner.startswith("tau.") and hasattr(obj, "__name__"):
+    if owner.startswith(f"{top}.") and hasattr(obj, "__name__"):
         return owner, obj.__name__
-    package = f"tau.{module}" if module else "tau"
+    package = f"{top}.{module}" if module else top
     for node in tree_of(package).body:
         if (
             isinstance(node, ast.ImportFrom)
@@ -376,6 +387,7 @@ class Group:
     title: str
     reader: str
     names: tuple[str, ...]
+    package: str = "tau"  # the package whose names these are
 
 
 @cache
@@ -384,10 +396,11 @@ def config() -> dict[str, typing.Any]:
 
 
 def load_groups() -> list[Group]:
-    groups = [
-        Group(g["id"], g["title"], g["reader"].strip(), tuple(g["names"]))
-        for g in config()["group"]
-    ]
+    groups = []
+    for g in config()["group"]:
+        package = g.get("package", "tau")
+        names = tuple(n if package == "tau" else f"{package}:{n}" for n in g["names"])
+        groups.append(Group(g["id"], g["title"], g["reader"].strip(), names, package))
     ids = [g.id for g in groups]
     if len(set(ids)) != len(ids):
         raise SurfaceError(f"{GROUPS.name}: a group id is used twice")
@@ -418,9 +431,19 @@ def public_items(groups: Sequence[Group]) -> dict[str, Item]:
 def check_groups(groups: Sequence[Group]) -> list[str]:
     """Where `tau.__all__`, the groups and the module names disagree."""
     problems: list[str] = []
-    listed = [n for g in groups for n in g.names]
+    listed = [n for g in groups if g.package == "tau" for n in g.names]
     for name in sorted({n for n in listed if listed.count(n) > 1}):
         problems.append(f"{name} is in more than one group")
+    for g in groups:
+        if g.package != "tau":  # another package's group is that package's whole `__all__`
+            exported = set(importlib.import_module(g.package).__all__)
+            mine = {name_parts(n)[2] for n in g.names}
+            problems += [
+                f"{g.package}.{n} is exported but not in {g.id}" for n in sorted(exported - mine)
+            ]
+            problems += [
+                f"{g.package}.{n} is in {g.id} but not exported" for n in sorted(mine - exported)
+            ]
     exported = set(tau.__all__)
     top = {n for n in listed if "." not in n}
     problems += [f"{n} is in tau.__all__ but in no group" for n in sorted(exported - top)]
@@ -490,12 +513,12 @@ def refusal(source: str, obj: object) -> str | None:
     """Why a public signature may not name `obj`, bound from module `source`; None if it may.
     A name is fine if it is public in tau, the standard library's, or on the allow list."""
     top = source.split(".", maxsplit=1)[0]
-    if top == "tau":
+    if top in {"tau", *(g.get("package", "tau") for g in config()["group"])}:
         if isinstance(obj, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
             return None
         if id(obj) in PUBLIC_IDS:
             return None
-        return f"which tau defines ({source}) but does not publish"
+        return f"which {top} defines ({source}) but does not publish"
     if top in sys.stdlib_module_names or top == "builtins" or top in config()["foreign_types"]:
         return None
     return f"which comes from {top}, neither tau, the standard library nor `foreign_types`"
@@ -524,6 +547,8 @@ def manifest(groups: Sequence[Group], items: Mapping[str, Item]) -> str:
     out = [f"# {BANNER}", "# The public surface of tau: one block per group, names sorted.", ""]
     for g in groups:
         out.append(f"== {g.id}: {g.title}")
+        if g.package != "tau":
+            out.append(f"# {g.package}")
         for name in sorted(g.names):
             if "." in name:  # a name in a public module says which
                 out.append(f"# tau.{name.rpartition('.')[0]}")
@@ -555,9 +580,11 @@ def _head_block(item: Item) -> list[str]:
 
 def reference(group: Group, items: Mapping[str, Item]) -> str:
     out = [f"# {group.title}", "", f"<!-- {BANNER} -->", "", group.reader, ""]
-    out += ["Names: " + ", ".join(f"`{n}`" for n in sorted(group.names)), ""]
+    out += ["Names: " + ", ".join(f"`{n.rpartition(':')[2]}`" for n in sorted(group.names)), ""]
     for name in sorted(group.names):
         shown = name if "." not in name else f"tau.{name}"
+        if group.package != "tau":
+            shown = f"{group.package}.{name_parts(name)[2]}"
         out += reference_item(items[name], shown, 2)
     return "\n".join(out).rstrip() + "\n"
 

@@ -1,4 +1,4 @@
-"""τ next ("Trusty"): Rust core, Python extensions."""
+"""τ (tau), an agent harness: a Rust core under a Python driver, providers, tools and hooks."""
 
 from importlib.metadata import version
 

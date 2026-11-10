@@ -1,0 +1,38 @@
+[package]
+name = "tau-tokens"
+description = "Local tokenizers for τ's token counts: tiktoken, Hugging Face tokenizers and chat templates. Bytes in, counts out; no IO."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# No `onig` (a C library) and no `http` (this crate does no IO): the regex engine is the pure-Rust
+# `fancy-regex`, and files reach this crate as bytes. No `esaxx_fast` (C++), no `progressbar`.
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+# The `o200k_base` and `cl100k_base` tables are embedded in the crate.
+tiktoken-rs = "0.12.1"
+# `preserve_order`: a template that walks a tool's parameters sees them in the order given, as
+# Python does. No `json` feature: `tojson` is ours, written to print what Python's `json.dumps`
+# prints.
+minijinja = { version = "3.1.0", default-features = false, features = [
+    "builtins",
+    "macros",
+    "adjacent_loop_items",
+    "loop_controls",
+    "preserve_order",
+    "serde",
+] }
+minijinja-contrib = { version = "3.1.0", default-features = false, features = ["pycompat"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The goldens keep ids and rendered text as hashes (tests/fixtures/tokens/goldens.json).
+sha2 = "0.10"
+
+[lints]
+workspace = true
