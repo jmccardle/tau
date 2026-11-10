@@ -12,7 +12,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -56,17 +56,32 @@ UNUSED = "http://unused.test"  # a root nothing listens at: the transport answer
 class Server:
     """A transport that answers requests with `response` and keeps each request seen. Given
     a list, it answers the first request with the first, and so on, then repeats the last. An
-    exception is raised from the transport instead of answering."""
+    exception is raised from the transport instead of answering.
 
-    def __init__(self, response: httpx.Response | Exception | list[httpx.Response]) -> None:
+    That is for a `POST`, a sample. A `GET` is the OpenAI provider asking the server about
+    itself (`/props`, `/models`: D26 section 2): it is kept in `asked` and answered from `pages`
+    (path to JSON), with a 404 for a path not there, as a server that is not llama.cpp answers."""
+
+    def __init__(
+        self,
+        response: httpx.Response | Exception | list[httpx.Response],
+        pages: Mapping[str, object] | None = None,
+    ) -> None:
         self._responses = response if isinstance(response, list) else [response]
+        self._pages = pages or {}
         self.requests: list[httpx.Request] = []
+        self.asked: list[httpx.Request] = []
 
     @property
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            self.asked.append(request)
+            if request.url.path in self._pages:
+                return httpx.Response(200, json=self._pages[request.url.path])
+            return httpx.Response(404, text="not found")
         self.requests.append(request)
         response = self._responses[min(len(self.requests), len(self._responses)) - 1]
         if isinstance(response, Exception):
@@ -467,15 +482,28 @@ async def collect_all(
     tools: Sequence[Tool] = (),
 ) -> tuple[list[Part | Finish | Delta], SampleError | None]:
     """Everything `sample` yielded, deltas included, and the `SampleError` it ended with, if any.
-    `model` is the provider's dialect's own by default."""
+    `model` is the provider's dialect's own by default. The stamp of the request (`meta.sent`,
+    D26 section 3.1) is taken out of the `Finish` and the error (`unstamped`): it says nothing
+    of the response, and `test_sent_stamp.py` is where it is tested."""
     items: list[Part | Finish | Delta] = []
     config = model or DIALECTS[provider.name].model()
     try:
         async for item in provider.sample(walk, config, tools):
-            items.append(item)
+            items.append(
+                replace(item, meta=unstamped(item.meta)) if isinstance(item, Finish) else item
+            )
     except SampleError as e:
+        e.meta = unstamped(e.meta)
         return items, e
     return items, None
+
+
+def unstamped(meta: str | None) -> str | None:
+    """`meta` without its `sent` stamp; `None` if nothing else is in it."""
+    if meta is None:
+        return None
+    fields = {k: v for k, v in json.loads(meta).items() if k != "sent"}
+    return json.dumps(fields) if fields else None
 
 
 async def collect(

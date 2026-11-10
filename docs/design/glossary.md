@@ -113,7 +113,10 @@ when finite; `internal: true` and a message of `"<Type>: <msg>"` when the provid
 something other than a `SampleError`; `provider` is an `error` value the provider's own `meta`
 held. A call cut off by the failure is not saved; its raw text is in the message (D15, D1). `None`
 when the provider had nothing to report, or the reply was interrupted. The
-driver refuses a `Finish` whose `meta` is not a JSON object.
+driver refuses a `Finish` whose `meta` is not a JSON object. D26 T2 adds `sent` (the stamp of
+the request, see *Rendered*), `timings` and `server` (llama.cpp, see *drift marker*), and what a
+bill says besides counts (Anthropic's `service_tier`, `speed`, `inference_geo` and
+`server_tool_use`; OpenAI's `prediction`).
 
 ### call
 *spike* `Part::Call` · retires toolCall block, `BlockedCall`
@@ -819,7 +822,9 @@ will trigger on it. **`price`** is a model's cost in USD per million tokens, a `
 `Decimal`s: `input` (prompt tokens neither read from nor written to the cache), `output`,
 `cache_read` and `cache_write`. All four are required: a model that charges nothing for writing
 the cache repeats its `input` price (D24 ruling 6), and a `price` with a field missing, below 0 or
-not a number is a `ConfigError`. Money is `Decimal`, built from the text of a JSON number, so
+not a number is a `ConfigError`. A fifth, **`cache_write_1h`**, is optional (D26 section 2): the
+price of a cache write kept for an hour (a reply's `written_1h`), which is `cache_write` when it
+is not given. Money is `Decimal`, built from the text of a JSON number, so
 `0.15` is 0.15 and a sum of thousands of replies does not drift. Both keys layer like the others
 (a `price` object merges by field across layers and down through groups) and show in `tau config
 show`.
@@ -851,14 +856,22 @@ model, after a reply with `cached` reported as 0 and at least 4,096 input tokens
 reply of the same model by under 300 seconds. `/usage` ends with one line on how counts are made before
 a request is sent (D26): `counts: reported only, with byte ceilings for what is not sent yet`, or
 `counts: reported, and by the NAME extension for what is not sent yet` when a counter is loaded.
+Before that line comes the **window note**, one line for each model whose server reported a
+window (`meta.server.n_ctx`, llama.cpp) other than the config's `context_window`: `local:qwen:
+the server reports a window of 32768 tokens; the config says 40960 (context_window)`. The config's
+is the one τ uses (D24 ruling 9); the difference is said, never applied.
 
 ### Reading
 `tau._usage.Reading` (private) · D24 section 3 · new (8E-2)
 
-One reply's normalized `meta.usage` as `usage` reads it: `input`, `output`, and `cached` and
-`written`, each `None` when the server did not report it. Not public; a reply whose usage cannot
-be read (not the normalized shape, or more `cached` plus `written` than `input`) has no `Reading`
-and is listed by `/usage` as reporting no usage, with the reason.
+One reply's normalized `meta.usage` as `usage` reads it: `input`, `output`, and `cached`,
+`written`, `reasoning`, `tool_prompt` and `written_1h` (D26 section 2, see *usage facts*), each
+`None` when the server did not report it. Not public; a reply whose usage cannot
+be read (not the normalized shape, more `cached` plus `written` than `input`, or more
+`written_1h` than `written`) has no `Reading`
+and is listed by `/usage` as reporting no usage, with the reason. **`said`** is what the reply's
+words cost without its thinking: `output` less `reasoning`, a `reported` count whose bound is 8
+(`REASONING_BOUND`) where thinking was taken out. A summary's count is its reply's `said`.
 
 ### options
 `ModelConfig.options`, the model key `options` · D15 · new
@@ -1344,9 +1357,8 @@ own, so a cut never lands inside one. The newest reply's count is its `output`.
 
 `await cursor.count()` is the `RequestCount` of the walk to `at` (default: the cursor's node, a
 batch's node for a tool hook; a plain tree handle must say). The **meter** is what core answers
-with no counter: it reads the reports in the walk and nothing else. A **span** is proved when the
-second request reports `cached` equal to the first's `input` with no other reply between them
-(Anthropic caches the whole of every request); a copy that holds a whole lump takes its original's
+with no counter: it reads the reports in the walk and nothing else. A span it can prove (see
+*Span*) is a lump; a copy that holds a whole lump takes its original's
 count from the original's walk. Counts are kept by node, since nodes never change.
 
 ### counter, Counter, CountJob, CounterAnswer, TreeHandle.counter
@@ -1361,6 +1373,84 @@ a `why`. Core keeps every report: an answer for any other node is a `DefinitionE
 extension. At most one loaded extension may offer one: two in one source are a `DefinitionError`,
 and two sources are an `ExtensionLoadError` naming both. `TreeHandle.counter` is the key of the
 extension that offers it, or `None`. Nothing offers one yet; the `tokens` built-in is D26 T3.
+
+### Span, proved span, SpanProof, TreeHandle.spans
+`tau.Span` (`nodes`, `cost`, `proof`), `tau.SpanProof` (`cache`, `slot`, `prefix`) (`_counts.py`);
+`TreeHandle.spans(at=None)` · D26 section 3 · new (T2)
+
+A **span** (of a walk; not a `tracing` span, below) is the nodes added between two consecutive
+requests: the first request's reply, then the inputs before the second request. Its cost is the
+second bill's `input` less the first's, and that is exact only if the first request is a prefix of
+the second as the server sees it. A span is **proved**, and is a lump with a `reported` count, in
+one of three ways: **`cache`**, the second reply reports `cached` equal to the first's `input`
+(Anthropic, where τ marks the last block of every request for caching); **`slot`**, llama.cpp's
+`timings` say the second request read at least the whole first request from its slot (`cache_n` of
+the second is no less than `prompt_n + cache_n` of the first; more is usual, since the slot also
+holds the reply it generated); **`prefix`**, the second reply's `meta.sent.extends` names the first
+reply (see *Rendered*). In every case no other reply may sit between the two, and the second bill
+may not be smaller than the first. `cursor.spans()` lists the spans the walk's own replies prove,
+oldest first; a span a copy inherits from its original is in `count`, not here. Proved spans are
+the only data the `tokens` built-in learns from.
+
+### Rendered, Provider.render, meta.sent, byte prefix
+`tau.Rendered` (`url`, `body`, `messages`, `nodes`, `fixed`, `extends`) (`_protocols.py`);
+`OpenAIProvider.render`, `GeminiProvider.render`; a reply's `meta.sent` · D26 section 3.1 · new (T2)
+
+A provider **may** have `render(walk, model, tools) -> Rendered`: the request `sample` would send,
+without sending it or reading a key. `messages` is each message of its conversation as the text
+it is sent as and `nodes` the ids of the nodes each came from; `fixed` is the rest as one text
+(the URL, the model, the system text, the tools, the options). Request A is a **byte prefix** of
+request B when their `fixed` are equal and A's messages are B's first ones. A provider that
+renders builds its request with `render` and stamps the reply: **`meta.sent`** is `{messages,
+fixed, chain}` (how many messages, a digest of `fixed`, a digest of the messages), and
+**`extends`**, the id of the reply before it on the walk, when that reply's own stamp shows its
+request to be a byte prefix of this one. The proof is made once, from the bytes sent, when they
+are sent; the meter only reads it. Anthropic does not render: its cache report proves its spans.
+
+### usage facts: reasoning, tool_prompt, written_1h
+keys of the normalized `meta.usage` · D26 section 2 · new (T2)
+
+Each is absent when the server does not report it. **`reasoning`** is the part of `output` that
+was thinking (Anthropic `output_tokens_details.thinking_tokens`, OpenAI
+`completion_tokens_details.reasoning_tokens`, Gemini `thoughtsTokenCount`). **`tool_prompt`** is
+the part of `input` a built-in tool's use added (Gemini `toolUsePromptTokenCount`; Gemini's
+`input` is `promptTokenCount` plus it, so `input` still counts every prompt token).
+**`written_1h`** is the part of `written` kept for an hour (Anthropic
+`cache_creation.ephemeral_1h_input_tokens`), priced at `price.cache_write_1h`. llama.cpp's
+`cached` is `timings.cache_n` when its `usage` has no cache count. A nested count that is there
+and is not a non-negative integer drops the whole `usage`, as a bad cache count does, and so does
+more `written_1h` than `written`.
+
+### drift marker, meta.server, meta.timings
+a reply's `meta` · D26 section 2 · new (T2)
+
+A **drift marker** is something a reply's `meta` says about which model and server answered,
+whose change means earlier calibration may no longer hold: the served model id (`model`),
+`system_fingerprint`, and for llama.cpp **`meta.server`**: `build_info`, `n_ctx` (the window a
+slot really has), `template_sha256` (a digest of its chat template) from `GET /props`, and
+`model_size`, `n_params` and `n_vocab` from `GET /v1/models`. The OpenAI provider asks both once
+per `base_url` for each provider it builds, before the first sample there; a server that answers
+`/props` with anything but llama.cpp's page (a 404) is "not llama.cpp", is not an error and is not
+asked again, and one that could not be reached is asked again by the next sample.
+`OpenAIProvider.chat_template(base_url)` is the template text it read. **`meta.timings`** is
+llama.cpp's `timings` object as sent (`prompt_n`, `cache_n`, the speeds), which proves `slot`
+spans.
+
+### provider fixture, record_provider.py
+`scripts/record_provider.py`, `tests/fixtures/providers/<family>/<case>/`,
+`tests/providers/replay.py` · D26 section 10 · new (T2)
+
+A **provider fixture** is one recorded conversation with a real server: every request and
+response in order (`NN.request.json`, `NN.response.json`, `NN.response.body`), how to run it again
+(`case.json`: the model settings, the system text, the scripted turns, the **table tool** that
+answers from a table) and what τ computed (`expected.json`: each reply's normalized usage, stop
+and finish reason). The script's docstring is the format's spec. It writes nothing unless the run
+succeeded and no file holds the key: request and response headers are kept by whitelist, secret
+query parameters are stripped, and a key found anywhere in what would be written fails the run.
+The families are `anthropic`, `openai`, `gemini`, `llamacpp` and `vllm`. A replay runs the case
+offline through the same provider; a family with no fixture is skipped by its tests with the
+command that records it. A body written by hand is **synthetic**, lives in a test file, and is
+never under `tests/fixtures/providers/`.
 
 ### Permissions (extension), rule
 `tau.Permissions` (`_permissions.py`), key `permissions`, options `ask`, `allow`, `deny` · D24 section 7 · new (8E-4)
@@ -2365,7 +2455,7 @@ block in `meta.promptFeedback`. `meta` holds `model` (`modelVersion`), `id` (`re
 `finishMessage`, `usage_raw` and the normalized `usage`: `input` is `promptTokenCount`,
 `output` is `candidatesTokenCount` plus `thoughtsTokenCount` (thinking is billed as output),
 `cached` is `cachedContentTokenCount` (an absent count is 0, since Gemini omits zeros); there is no
-`written`. An error event in the stream
+`written`. From D26 T2 `input` also holds `toolUsePromptTokenCount` (see *usage facts*). An error event in the stream
 (`{"error": {...}}`) fails the sample with its `code` as `status`. A non-200 response is a
 `SampleError` with `status` and `retry_after` (the `Retry-After` header, else the body's
 `RetryInfo.retryDelay`). Options (`check` refuses any other): `temperature`, `top_p`, `top_k`

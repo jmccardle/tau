@@ -134,6 +134,12 @@ class Skills
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
     def rescan(self) -> bool
     yields_names = True
+@dataclass(frozen=True)
+class Span
+    cost: int
+    nodes: tuple[Node, ...]
+    proof: SpanProof
+SpanProof = Literal['cache', 'slot', 'prefix']
 class StepLimit
     def __init__(self) -> None
     name = 'step_limit'
@@ -180,6 +186,7 @@ class TreeHandle
     def retire(self) -> None
     def send(self, to: int, text: str) -> int
     def set_label(self, label: str, cursor: int) -> None
+    def spans(self, at: int | None = None) -> list[Span]
     property tree: Tree
 class Usage
     def __init__(self) -> None
@@ -770,6 +777,7 @@ class GeminiProvider
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
     property name: str
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
         self,
         walk: Sequence[Node],
@@ -784,8 +792,10 @@ class OpenAIProvider
         timeout: httpx.Timeout | None = None,
     ) -> None
     async def aclose(self) -> None
+    def chat_template(self, base_url: str) -> str | None
     def check(self, model: ModelConfig) -> list[str]
     property name: str
+    def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
         self,
         walk: Sequence[Node],
@@ -803,6 +813,14 @@ class Provider(Protocol)
         tools: Sequence['Tool'],
     ) -> AsyncGenerator[Part | Finish | Delta, None]
 class ProviderClosed(SampleError)
+@dataclass(frozen=True)
+class Rendered
+    body: Mapping[str, object]
+    def extends(self, earlier: 'Rendered') -> bool
+    fixed: str
+    messages: tuple[str, ...]
+    nodes: tuple[tuple[int, ...], ...]
+    url: str
 class RetryProvider
     def __init__(
         self,
@@ -1049,6 +1067,7 @@ Pick = Callable[[tuple[str, ...]], str]
 class Price
     cache_read: Decimal
     cache_write: Decimal
+    cache_write_1h: Decimal | None = None
     input: Decimal
     @classmethod
     def of(cls, fields: object) -> 'Price'

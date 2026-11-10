@@ -25,7 +25,7 @@ from typing import Annotated, Literal
 
 from tau._config import ConfigError, model_config
 from tau._core import Author, Body, CursorClosed, Ending, Node, NoSuchLabel, Part, Stop
-from tau._counts import NONE, Count, RequestCount, ceiling_of, reported, sent, wrapped_count
+from tau._counts import NONE, Count, RequestCount, ceiling_of, sent, wrapped_count
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._lines import Planned, copy_of, prefix_length, write_line
 from tau._protocols import CallDraft
@@ -247,16 +247,16 @@ def _base(request: RequestCount, prefix: list[Node]) -> Count:
 
 
 def _summary_count(reply: Node, body: Body) -> Count:
-    """What the line pays for the summary: the summarizer reply's reported `output` and the
-    ceiling of the words around it, or the ceiling of the whole node if the reply reported
-    nothing."""
+    """What the line pays for the summary: the summarizer reply's reported `output` less its
+    thinking (`Reading.said`: the summary holds the reply's words only) and the ceiling of the
+    words around it, or the ceiling of the whole node if the reply reported nothing."""
     try:
         usage = reading(reply)
     except ValueError:
         usage = None
     if usage is None:
         return ceiling_of(body)
-    return wrapped_count(reported(usage.output), reply.body, body)
+    return wrapped_count(usage.said, reply.body, body)
 
 
 def _hint(request: RequestCount) -> str:

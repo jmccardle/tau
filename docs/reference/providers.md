@@ -4,7 +4,7 @@
 
 The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()["mock"]`).
 
-Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `RetryProvider`, `SampleError`, `builtin_providers`, `replay_for`
+Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `Rendered`, `RetryProvider`, `SampleError`, `builtin_providers`, `replay_for`
 
 ## AnthropicProvider
 
@@ -158,6 +158,18 @@ async def aclose(self) -> None
 
 Close the client and its connections. Later samples fail.
 
+### GeminiProvider.render
+
+```python
+def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
+```
+
+The request `sample` would send, without sending it or reading the key (D26 section
+3.1). The leading `System` nodes are `systemInstruction`, outside the conversation.
+`check` has passed (the driver runs it first).
+
+Raises `SampleError` for a walk with nothing to send, or one the API would reject.
+
 ### GeminiProvider.sample
 
 ```python
@@ -208,6 +220,15 @@ def __init__(
 ) -> None
 ```
 
+### OpenAIProvider.chat_template
+
+```python
+def chat_template(self, base_url: str) -> str | None
+```
+
+The chat template the llama.cpp server at `base_url` reported in `/props`, or `None`
+if no sample has asked it yet or it reported none.
+
 ### OpenAIProvider.name
 
 ```python
@@ -231,6 +252,17 @@ async def aclose(self) -> None
 ```
 
 Close the client and its connections. Later samples fail.
+
+### OpenAIProvider.render
+
+```python
+def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
+```
+
+The request `sample` would send, without sending it or reading the key (D26 section
+3.1): `tools` become the `tools` array, omitted when there are none, and `extra_body` is
+merged last. Each message is one node's (a `Results` node makes one per call). `check`
+has passed.
 
 ### OpenAIProvider.sample
 
@@ -260,6 +292,11 @@ class Provider(Protocol)
 
 One API family, long-lived: the program that builds it closes it (D15). Owes the
 driver `model.md` section 10 (the parts of it built so far).
+
+A provider **may** also have `render(walk, model, tools) -> Rendered`: the request `sample`
+would send for the same arguments, without sending it or reading a key (D26 section 3.1).
+One that has it stamps each reply's `meta.sent` with what it sent, which is what proves a
+span on a server whose cache report cannot. `OpenAIProvider` and `GeminiProvider` have it.
 
 ### Provider.name
 
@@ -327,6 +364,34 @@ class ProviderClosed(SampleError)
 
 A sample on a provider whose `aclose()` has been called, or one cut off by it. Not a
 transient failure: a retry cannot succeed, so a retrying wrapper passes it on.
+
+## Rendered
+
+```python
+@dataclass(frozen=True)
+class Rendered
+    url: str
+    body: Mapping[str, object]
+    messages: tuple[str, ...]
+    nodes: tuple[tuple[int, ...], ...]
+    fixed: str
+```
+
+A request as a provider would send it, from `Provider.render` (D26 section 3.1): no
+network, the same body `sample` posts. `url` is where it goes and `body` its JSON body.
+`messages` is each message of its conversation as the text it is sent as, in order, and
+`nodes` the ids of the nodes each one came from (`messages[i]` renders `nodes[i]`). `fixed`
+is the rest as one text: the URL and everything in the body but the conversation (the
+model, the system text, the tools, the options). Request A is a **byte prefix** of request
+B when their `fixed` are equal and A's `messages` are B's first ones (`extends`).
+
+### Rendered.extends
+
+```python
+def extends(self, earlier: 'Rendered') -> bool
+```
+
+Whether `earlier` is a byte prefix of this request.
 
 ## RetryProvider
 

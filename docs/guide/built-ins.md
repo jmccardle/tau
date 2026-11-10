@@ -278,7 +278,13 @@ that had to leave out replies of such a model ends in `+`.
 A price is US dollars per million tokens, and all four fields are required: a model that does not
 charge for writing the cache repeats its `input` price as `cache_write`. A price with a field
 missing, below 0, or not a number is a config error naming the model. Groups hand a price down like
-any setting, and a project can change one field (`"price": {"output": 20}`).
+any setting, and a project can change one field (`"price": {"output": 20}`). A fifth field,
+`cache_write_1h`, is optional: what a cache write kept for an hour costs, when the server reports
+those apart (Anthropic does). Without it they are priced as `cache_write`.
+
+When a server says how large its window really is (llama.cpp does) and your `context_window`
+says otherwise, `/usage` tells you (`local:qwen: the server reports a window of 32768 tokens; the
+config says 40960 (context_window)`). tau goes on using yours.
 
 A reply that was aborted before the server reported usage says so, and `/usage` counts it apart
 ("1 reply was aborted and reported no usage"). A reply whose usage could not be read says why, on

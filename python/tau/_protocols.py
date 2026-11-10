@@ -86,6 +86,30 @@ class SampleError(Exception):
         self.retry_after = retry_after
 
 
+@dataclass(frozen=True)
+class Rendered:
+    """A request as a provider would send it, from `Provider.render` (D26 section 3.1): no
+    network, the same body `sample` posts. `url` is where it goes and `body` its JSON body.
+    `messages` is each message of its conversation as the text it is sent as, in order, and
+    `nodes` the ids of the nodes each one came from (`messages[i]` renders `nodes[i]`). `fixed`
+    is the rest as one text: the URL and everything in the body but the conversation (the
+    model, the system text, the tools, the options). Request A is a **byte prefix** of request
+    B when their `fixed` are equal and A's `messages` are B's first ones (`extends`)."""
+
+    url: str
+    body: Mapping[str, object]
+    messages: tuple[str, ...]
+    nodes: tuple[tuple[int, ...], ...]
+    fixed: str
+
+    def extends(self, earlier: "Rendered") -> bool:
+        """Whether `earlier` is a byte prefix of this request."""
+        return (
+            self.fixed == earlier.fixed
+            and self.messages[: len(earlier.messages)] == earlier.messages
+        )
+
+
 class ProviderClosed(SampleError):
     """A sample on a provider whose `aclose()` has been called, or one cut off by it. Not a
     transient failure: a retry cannot succeed, so a retrying wrapper passes it on."""
@@ -135,7 +159,12 @@ def takes_progress(tool: object) -> bool:
 
 class Provider(Protocol):
     """One API family, long-lived: the program that builds it closes it (D15). Owes the
-    driver `model.md` section 10 (the parts of it built so far)."""
+    driver `model.md` section 10 (the parts of it built so far).
+
+    A provider **may** also have `render(walk, model, tools) -> Rendered`: the request `sample`
+    would send for the same arguments, without sending it or reading a key (D26 section 3.1).
+    One that has it stamps each reply's `meta.sent` with what it sent, which is what proves a
+    span on a server whose cache report cannot. `OpenAIProvider` and `GeminiProvider` have it."""
 
     @property
     def name(self) -> str:

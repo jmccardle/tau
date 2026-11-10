@@ -30,6 +30,7 @@ from tau._providers._wire import (
     finish,
     is_count,
     json_object,
+    nested_counts,
     note_usage,
     option_problems,
     plain,
@@ -49,6 +50,7 @@ _OPTIONS = (
     "extra_body",
 )
 _OWNED_KEYS = ("model", "messages", "system", "stream", "tools", "max_tokens")
+_USAGE_FACTS = ("service_tier", "speed", "inference_geo", "server_tool_use")
 
 STOPS: dict[str, Stop] = {
     "end_turn": Stop.End,
@@ -123,13 +125,15 @@ def _str(value: object, what: str) -> str:
 
 
 def _usage(raw: Json) -> Json | None:
-    """The normalized `{"input", "output"}`, with `cached` and `written` when Anthropic reports
-    them, from Anthropic's `usage`; `None` if it did not report input and output tokens or sent a
-    malformed count. `input` is every prompt token: Anthropic's `input_tokens` counts only those
-    after the last cache breakpoint, so the cache reads and the cache writes
-    (`cache_creation_input_tokens`: prompt tokens that were processed and stored, not served from
-    the cache) are added. `cached` is the reads alone, `written` the writes alone; a count the
-    response leaves out is absent, not 0."""
+    """The normalized `{"input", "output"}`, with `cached`, `written`, `written_1h` and
+    `reasoning` when Anthropic reports them, from Anthropic's `usage`; `None` if it did not report
+    input and output tokens or sent a malformed count. `input` is every prompt token: Anthropic's
+    `input_tokens` counts only those after the last cache breakpoint, so the cache reads and the
+    cache writes (`cache_creation_input_tokens`: prompt tokens that were processed and stored, not
+    served from the cache) are added. `cached` is the reads alone, `written` the writes alone,
+    `written_1h` the part of the writes kept for an hour (`cache_creation.
+    ephemeral_1h_input_tokens`), and `reasoning` the part of `output` that was thinking
+    (`output_tokens_details.thinking_tokens`); a count the response leaves out is absent, not 0."""
     fresh, output = count(raw.get("input_tokens")), count(raw.get("output_tokens"))
     if fresh is None or output is None:
         return None
@@ -144,7 +148,12 @@ def _usage(raw: Json) -> Json | None:
                 return None
             reported[key] = n
     total = fresh + sum(cast("int", v) for v in reported.values())
-    return {"input": total, "output": output, **reported}
+    usage: Json = {"input": total, "output": output, **reported}
+    nested = (
+        ("written_1h", "cache_creation", "ephemeral_1h_input_tokens"),
+        ("reasoning", "output_tokens_details", "thinking_tokens"),
+    )
+    return usage if nested_counts(usage, raw, nested) else None
 
 
 @dataclass
@@ -164,6 +173,9 @@ class _Stream:
             return
         self.usage.update({k: v for k, v in cast("Json", raw).items() if v is not None})
         note_usage(self.meta, dict(self.usage), _usage)
+        for key in _USAGE_FACTS:  # what the bill says besides counts (D26 section 2)
+            if key in self.usage:
+                self.meta[key] = self.usage[key]
 
     @property
     def done(self) -> bool:

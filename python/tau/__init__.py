@@ -75,7 +75,16 @@ from tau._core import (
     Version,
     WrongAnswer,
 )
-from tau._counts import Basis, Count, Counter, CounterAnswer, CountJob, RequestCount
+from tau._counts import (
+    Basis,
+    Count,
+    Counter,
+    CounterAnswer,
+    CountJob,
+    RequestCount,
+    Span,
+    SpanProof,
+)
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
 from tau._events import (
@@ -123,6 +132,7 @@ from tau._protocols import (
     Progress,
     Provider,
     ProviderClosed,
+    Rendered,
     SampleError,
     Tool,
     ToolHook,
@@ -283,6 +293,7 @@ __all__ = [
     "Prune",
     "ReadTool",
     "RemoteClient",
+    "Rendered",
     "Replay",
     "RequestCount",
     "ResolvedModel",
@@ -299,6 +310,8 @@ __all__ = [
     "Skills",
     "SourceKind",
     "SourceState",
+    "Span",
+    "SpanProof",
     "Started",
     "StepLimit",
     "Stop",

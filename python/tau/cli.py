@@ -449,7 +449,8 @@ async def _close(providers: Mapping[str, Provider]) -> None:
 
 
 def _price_text(price: Price) -> dict[str, str]:
-    return {k: str(getattr(price, k)) for k in ("input", "output", "cache_read", "cache_write")}
+    keys = ("input", "output", "cache_read", "cache_write", "cache_write_1h")
+    return {k: str(getattr(price, k)) for k in keys}
 
 
 def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:

@@ -18,7 +18,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from tau._core import Body, Node, Outcome, Part
 
@@ -126,9 +126,15 @@ def _outcome_text(outcome: Outcome) -> str:
 
 
 def wrapped_count(reply: Count, reply_body: Body, node_body: Body) -> Count:
-    """The count of a node that is a reply's words in a wrapper (a summary): the reply's own count
-    and the ceiling of the words added around them."""
-    wrapper = max(_bytes(node_body) - _bytes(reply_body), 0)
+    """The count of a node that is a reply's words in a wrapper (a summary): the count of the
+    reply's words (`Reading.said`: its thinking is not in the node) and the ceiling of the words
+    added around them."""
+    words = (
+        sum(len(p.text.encode()) for p in reply_body.parts if isinstance(p, Part.Text))
+        if isinstance(reply_body, Body.Assistant)
+        else _bytes(reply_body)
+    )
+    wrapper = max(_bytes(node_body) - words, 0)
     return reply + Count(0, Basis.CEILING, wrapper + CEILING_PER_NODE)
 
 
@@ -206,6 +212,25 @@ class RequestCount:
     why: str | None = None
 
 
+SpanProof = Literal["cache", "slot", "prefix"]
+"""How a span is proved: `cache` (the second request read exactly the first from the server's
+cache), `slot` (llama.cpp's slot held at least the whole first request) or `prefix` (the
+provider found the first request to be a byte prefix of the second when it sent it)."""
+
+
+@dataclass(frozen=True)
+class Span:
+    """A proved span (D26 section 3): `nodes` are the nodes added between two consecutive
+    requests on one walk, from the first request's reply up to the node before the second's
+    reply; `cost` is what they cost together, the second bill's `input` less the first's, which
+    is exact because the first request is proved to be a prefix of the second; `proof` says
+    how."""
+
+    nodes: tuple[Node, ...]
+    cost: int
+    proof: SpanProof
+
+
 @dataclass(frozen=True)
 class CountJob:
     """What a counter is asked: the walk to count, the model and tools of the request, and what
@@ -250,4 +275,8 @@ class Counting(Protocol):
 
     async def count(self, at: int) -> RequestCount:
         """The request count of the walk to node `at`."""
+        ...
+
+    def spans(self, at: int) -> list[Span]:
+        """The proved spans of the walk to node `at`."""
         ...

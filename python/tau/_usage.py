@@ -25,7 +25,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Annotated
+from typing import Annotated, cast
 
 from tau._config import ConfigError, ModelConfig, Price
 from tau._core import Body, Node, Stop
@@ -37,6 +37,8 @@ NOTICE_MIN_INPUT = 4096
 Gemini from about 4,000; below that a miss means nothing)."""
 NOTICE_WITHIN_MS = 300_000
 """How soon after the previous reply a cache is still warm, in milliseconds."""
+REASONING_BOUND = 8
+"""How far a reply's count may be off once its thinking is subtracted (D26 section 3.2)."""
 _MILLION = -6  # a price is per million tokens: `scaleb(-6)` is exact
 _KILO, _MEGA, _GIGA = 1000, 1_000_000, 1_000_000_000
 
@@ -52,14 +54,28 @@ class Options:
 
 @dataclass(frozen=True)
 class Reading:
-    """One reply's normalized `meta.usage` (D15): `input` counts every prompt token, `cached` and
-    `written` the part read from and written to the cache, and are `None` when the server did not
-    report them."""
+    """One reply's normalized `meta.usage` (D15, D26 section 2): `input` counts every prompt
+    token, `cached` and `written` the part read from and written to the cache, `written_1h` the
+    part of `written` kept for an hour, `tool_prompt` the part of `input` a built-in tool's use
+    added, and `reasoning` the part of `output` that was thinking. Each but `input` and `output`
+    is `None` when the server did not report it."""
 
     input: int
     output: int
     cached: int | None
     written: int | None
+    reasoning: int | None = None
+    tool_prompt: int | None = None
+    written_1h: int | None = None
+
+    @property
+    def said(self) -> Count:
+        """What the reply's words cost without its thinking: `output` less `reasoning`, a
+        `reported` count. Where thinking is taken out the bound is `REASONING_BOUND`, since a
+        server's thinking count "may differ by a small number" (D26 section 3.2)."""
+        if not self.reasoning:
+            return Count(self.output, Basis.REPORTED)
+        return Count(max(self.output - self.reasoning, 0), Basis.REPORTED, REASONING_BOUND)
 
 
 def reading(node: Node) -> Reading | None:
@@ -79,21 +95,38 @@ def reading(node: Node) -> Reading | None:
         return None
     if not isinstance(found, dict):
         raise ValueError(f"node {node.id}: meta.usage is not an object: {found!r}")
-    fields: dict[str, object] = found  # pyright: ignore[reportUnknownVariableType]
+    return _read_fields(node.id, found)  # pyright: ignore[reportUnknownArgumentType]
+
+
+def _read_fields(node: int, fields: dict[str, object]) -> Reading:
+    """The `Reading` of a normalized `usage` object; `ValueError` naming `node` for a count that
+    is not one, or a part larger than its whole."""
 
     def count(key: str) -> int:
         value = fields.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"node {node.id}: meta.usage.{key} is not a count: {value!r}")
+            raise ValueError(f"node {node}: meta.usage.{key} is not a count: {value!r}")
         return value
 
     def optional(key: str) -> int | None:
         return count(key) if key in fields else None
 
-    got = Reading(count("input"), count("output"), optional("cached"), optional("written"))
+    got = Reading(
+        count("input"),
+        count("output"),
+        optional("cached"),
+        optional("written"),
+        optional("reasoning"),
+        optional("tool_prompt"),
+        optional("written_1h"),
+    )
     if (got.cached or 0) + (got.written or 0) > got.input:
         raise ValueError(
-            f"node {node.id}: meta.usage reports more cached and written tokens than input"
+            f"node {node}: meta.usage reports more cached and written tokens than input"
+        )
+    if (got.written_1h or 0) > (got.written or 0):
+        raise ValueError(
+            f"node {node}: meta.usage reports more tokens written for an hour than written"
         )
     return got
 
@@ -111,13 +144,16 @@ def counted(node: Node) -> bool:
 
 def cost(usage: Reading, price: Price) -> Decimal:
     """USD for one reply: the prompt tokens neither read from nor written to the cache at the
-    `input` price, reads at `cache_read`, writes at `cache_write`, and the reply at `output`."""
-    cached, written = usage.cached or 0, usage.written or 0
+    `input` price, reads at `cache_read`, writes at `cache_write` (those kept for an hour at
+    `cache_write_1h`), and the reply at `output`."""
+    cached, written, hour = usage.cached or 0, usage.written or 0, usage.written_1h or 0
     fresh = usage.input - cached - written
+    assert price.cache_write_1h is not None  # `Price` sets it
     total = (
         fresh * price.input
         + cached * price.cache_read
-        + written * price.cache_write
+        + (written - hour) * price.cache_write
+        + hour * price.cache_write_1h
         + usage.output * price.output
     )
     return total.scaleb(_MILLION)
@@ -221,11 +257,30 @@ class Usage:
         self._replies: dict[int, tuple[str, Reading | None, str | None, bool]] = {}
         self._scanned = 0
         self._told: set[str] = set()
+        self._windows: dict[str, int] = {}  # model -> the window its server last reported
         self.commands = (self.usage,)
 
     def usage(self, tree: TreeHandle) -> str:
         """What this session has spent: one row per model, and a total."""
-        return f"{table(self._rows(tree))}\n{how_counted(tree.counter)}"
+        rows = self._rows(tree)
+        notes = "".join(f"\n{note}" for note in self._window_notes(tree))
+        return f"{table(rows)}{notes}\n{how_counted(tree.counter)}"
+
+    def _window_notes(self, tree: TreeHandle) -> list[str]:
+        """One line for each model whose server reports a window other than the config's
+        `context_window` (llama.cpp's `n_ctx`): the config's is the one tau uses (D24 ruling 9),
+        so a difference is said, never applied."""
+        notes: list[str] = []
+        for model, served in self._windows.items():
+            config = _configured(tree, model)
+            ours = None if config is None else config.context_window
+            if ours != served:
+                has = "sets none" if ours is None else f"says {ours}"
+                notes.append(
+                    f"{model}: the server reports a window of {served} tokens; "
+                    f"the config {has} (context_window)"
+                )
+        return notes
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""
@@ -298,6 +353,9 @@ class Usage:
                 except ConfigError as e:
                     model, usage, problem = "(no model)", None, f"node {id}: {e}"
                 self._replies[id] = (model, usage, problem, _aborted(node))
+                served = _served_window(node)
+                if served is not None:
+                    self._windows[model] = served
 
     def _rows(self, tree: TreeHandle) -> dict[str, _Row]:
         """One row per model, in the order each first replied, priced by the config now."""
@@ -313,6 +371,17 @@ class Usage:
             row.priced = config is not None and config.price is not None
             row.add(usage, None if config is None else config.price, problem, aborted=aborted)
         return rows
+
+
+def _served_window(node: Node) -> int | None:
+    """The context window the server said it has when it made this reply (`meta.server.n_ctx`,
+    from llama.cpp's `/props`), if it said."""
+    if not isinstance(node.body, Body.Assistant) or node.body.meta is None:
+        return None
+    meta: object = json.loads(node.body.meta)
+    server = cast("dict[str, object]", meta).get("server") if isinstance(meta, dict) else None
+    window = cast("dict[str, object]", server).get("n_ctx") if isinstance(server, dict) else None
+    return window if isinstance(window, int) and not isinstance(window, bool) else None
 
 
 def _aborted(node: Node) -> bool:

@@ -1,6 +1,7 @@
 # D26: Token counting
 
-Status: accepted 2026-11-07; T1 built in stage 8E-6 (*As built*, in §10); T2 to T7 not built. Drafted
+Status: accepted 2026-11-07; T1 built in stage 8E-6, T2 and T3 built after it (*As built*, in
+§10); T4 to T7 not built. Drafted
 2026-11-05 from the owner's ruling of that day and revised the same day after two more rulings: (a)
 the seven open questions of the first draft are accepted as recommended, and tokenizers,
 calibration history and heuristics become optional, in layers (§0); (b) compaction must work
@@ -641,6 +642,68 @@ tools and thoughts, one with a built-in tool); llama.cpp + Qwen3 (three turns, p
 - **Tests:** each fixture replayed through its provider gives normalized `usage` (golden);
   malformed counts still drop `usage`; the Anthropic fixture yields proved spans and the
   cache-miss turn none; **no proved span costs more than its ceilings**, on every fixture.
+
+**T2 as built.** Everything above is built. **No fixture is recorded yet**, so every
+provider-specific claim below rests on bodies written by hand from the published formats
+(`tests/providers/test_usage_facts.py`, marked synthetic) and on one recorded llama.cpp chunk
+that was already in the repository; the fixture tests exist, skip by name with the command that
+records each family, and start to hold the day a fixture is committed. The differences:
+
+- **A span is proved when the request is sent, not when it is counted.** §3.1 has the provider
+  render request n and request n+1 and compare them. As built, a provider that renders
+  (`OpenAIProvider`, `GeminiProvider`) builds its request with `render` and stamps the reply's
+  `meta.sent`: how many messages it sent, a digest of everything else in the request (the URL,
+  the model, the system text, the tools, the options) and a digest of the messages; and
+  `extends`, the id of the reply before it, when that reply's own stamp shows its request to be
+  a byte prefix of this one. The meter proves a `prefix` span by reading `extends`. This is the
+  same proof made from the bytes that were sent, and it is the only way to know the tool set of
+  a past request, which the tree does not record: rendering both requests again when counting
+  would have compared them under today's tools and options, not the ones they went out with.
+  What a user sees: `cursor.spans()` lists the span with `proof == "prefix"`; a changed tool
+  set, system text or model between two requests leaves the span unproved (its nodes are
+  ceilings).
+- **llama.cpp: at least, not exactly.** §3.1 says `cache_n(n+1) == prompt_n(n) + cache_n(n)`. A
+  llama.cpp slot keeps the tokens it generated as well as the prompt, so the next request
+  normally reads more than the previous request from it, and equality would almost never hold.
+  The rule built is `cache_n(n+1) >= prompt_n(n) + cache_n(n)` (`slot`). It is not checked
+  against a server (none answered); a llama.cpp span is also proved by `prefix`, as any
+  OpenAI-compatible server's is, so the `slot` rule only adds evidence.
+- **`TreeHandle.spans(at=None)` returns `Span(nodes, cost, proof)`**, the nodes themselves and
+  how the span was proved. It lists what the walk's own replies prove; a copy's inherited lump
+  is in `count`, as T1 built it.
+- **§3.2, the newest reply.** A summary's count is the summarizer reply's `output` less its
+  `reasoning` (`Reading.said`, bound 8), which closes T1's known gap: the summary node holds the
+  reply's words and never its thinking. The meter does **not** subtract `reasoning` from the
+  newest reply on the walk: whether a model replays its last turn's thinking is a property of
+  the model that no setting says, and guessing wrong would under-count by the whole thinking.
+  The newest reply stays at its `output`, an over-count until the next bill.
+- **A nested count that is malformed drops the usage**, as a malformed cache count does:
+  `thinking_tokens`, `reasoning_tokens`, `ephemeral_1h_input_tokens`, `toolUsePromptTokenCount`.
+  So does more `written_1h` than `written`. `reasoning` larger than `output` does not (Anthropic
+  says its thinking count may differ by a small number); what subtracts it stops at 0.
+- **Markers.** `model` and `system_fingerprint` were already in `meta`. llama.cpp's are under
+  `meta.server` (`build_info`, `n_ctx`, `template_sha256`, `model_size`, `n_params`, `n_vocab`),
+  asked once per `base_url` per provider object (a process builds one), before the first sample
+  to that URL. `/props` is asked at the server's root (`base_url` without its `/v1`). A server
+  that could not be reached is asked again by the next sample; any answer that is not
+  llama.cpp's page is "not llama.cpp" for good. The chat template's text is
+  `OpenAIProvider.chat_template(base_url)`; only its digest goes in `meta`.
+- **`meta` also keeps** `timings` (llama.cpp, as sent), `prediction` (`{accepted, rejected}`,
+  OpenAI) and Anthropic's `service_tier`, `speed`, `inference_geo` and `server_tool_use` as sent.
+  Anthropic's `thinking_tokens` and `speed` are read where this ADR says they are; they are
+  not in the formats the implementer could check and wait for the Anthropic fixture.
+- **The window note** is one line of `/usage` per model whose replies carry a `meta.server.n_ctx`
+  other than the config's `context_window`. vLLM's `max_model_len` is T7's, as §2 says.
+- **The fixtures.** `scripts/record_provider.py FAMILY --model ID ...` drives a real driver over
+  the real provider and writes `tests/fixtures/providers/<family>/<case>/` (its docstring is the
+  format). Headers are kept by whitelist, secret query parameters stripped, and a key found in
+  any file that would be written fails the run with nothing written. Gemini's built-in tool
+  cannot be offered through `GeminiProvider`, so `--case builtin-tool` sends one request built
+  by hand and the replay reads its response through the provider. `--regolden CASE` rewrites a
+  case's `expected.json` offline.
+- **The ceiling test** (`no proved span costs more than its ceilings`) is in
+  `tests/providers/test_provider_fixtures.py` and is run today only on a scripted server's case,
+  to show that it runs. The 16 per node (decision 3) is therefore unchecked.
 
 **T3, the `tokens` built-in (main wheel only).**
 - **Builds:** `Tokens` as the counter; features, NNLS, constants, drift, the bound, the shipped

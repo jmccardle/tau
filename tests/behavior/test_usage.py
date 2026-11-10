@@ -7,6 +7,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from fakes import FAKE_PROVIDER, FakeProvider, Gate, Reply
 from harness import Harness, scenario
 
@@ -470,3 +471,102 @@ async def test_money_and_token_edges_round_consistently(tmp_path: Path) -> None:
     await say(z)
     assert await line(z) == "5 in · 0 out · $0 · $0 session"
     await z.close()
+
+
+@scenario
+async def test_hour_long_cache_writes_are_priced_at_their_own_price(tmp_path: Path) -> None:
+    """D26 section 2: 1,000 input = 200 read + 300 written (100 of them for an hour) + 500 fresh,
+    and the hour's write costs 6 per million, not the five minutes' 3.75."""
+    usage = {"input": 1000, "output": 100, "cached": 200, "written": 300, "written_1h": 100}
+    script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
+    price = {**PRICE, "cache_write_1h": 6}
+    h = await session(tmp_path, script, catalog(a={"price": price}))
+    await say(h)
+    spent = Decimal(500 * 3) + Decimal("0.3") * 200 + Decimal("3.75") * 200 + 6 * 100 + 100 * 15
+    assert spent.scaleb(-6) == Decimal("0.00441")
+    assert (await line(h)).split(" · ")[3] == "$0.004"
+    await h.close()
+
+
+@scenario
+async def test_an_hour_long_write_costs_a_write_when_the_price_names_no_other(
+    tmp_path: Path,
+) -> None:
+    usage = {"input": 2_000_000, "output": 0, "written": 2_000_000, "written_1h": 2_000_000}
+    script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
+    h = await session(tmp_path, script, catalog(a={"price": PRICE}))
+    await say(h)
+    assert "$7.50" in await line(h), "two million at 3.75, the write price"
+    await h.close()
+
+
+@scenario
+async def test_an_hour_long_write_at_its_own_price_shows_in_the_total(tmp_path: Path) -> None:
+    usage = {"input": 2_000_000, "output": 0, "written": 2_000_000, "written_1h": 2_000_000}
+    script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
+    h = await session(tmp_path, script, catalog(a={"price": {**PRICE, "cache_write_1h": 6}}))
+    await say(h)
+    assert "$12.00" in await line(h)
+    await h.close()
+
+
+def test_a_price_may_name_the_hour_long_write_and_nothing_else_new() -> None:
+    assert catalog(a={"price": {**PRICE, "cache_write_1h": 6}}).resolve("a").price is not None
+    with pytest.raises(ConfigError, match="unknown keys"):
+        catalog(a={"price": {**PRICE, "cache_write_2h": 1}})
+    with pytest.raises(ConfigError, match="cache_write_1h"):
+        catalog(a={"price": {**PRICE, "cache_write_1h": -1}})
+
+
+@scenario
+async def test_more_written_for_an_hour_than_written_is_a_usage_that_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    usage = {"input": 1000, "output": 1, "written": 10, "written_1h": 11}
+    script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
+    h = await session(tmp_path, script, catalog(a={}))
+    await say(h)
+    assert "more tokens written for an hour than written" in await line(h)
+    await h.close()
+
+
+def served(window: int) -> Reply:
+    """A reply whose server said its window (`meta.server.n_ctx`, from llama.cpp's `/props`)."""
+    meta = {"usage": {"input": 10, "output": 1}, "server": {"n_ctx": window}}
+    return Reply([Part.Text("ok")], Stop.End, meta=json.dumps(meta))
+
+
+@scenario
+async def test_usage_says_when_the_server_reports_another_window_than_the_config(
+    tmp_path: Path,
+) -> None:
+    """D26 section 2: `context_window` is the config's alone; llama.cpp's `n_ctx` is only said."""
+    h = await session(tmp_path, [served(32_768)], catalog(a={"context_window": 40_960}))
+    await say(h)
+    text = await h.run("usage")
+    assert text is not None
+    note = "a: the server reports a window of 32768 tokens; the config says 40960 (context_window)"
+    assert text.splitlines()[-2:] == [note, COUNTS]
+    await h.close()
+
+
+@scenario
+async def test_usage_says_when_the_server_reports_a_window_and_the_config_sets_none(
+    tmp_path: Path,
+) -> None:
+    h = await session(tmp_path, [served(32_768)], catalog(a={}))
+    await say(h)
+    text = await h.run("usage")
+    assert text is not None
+    assert "a: the server reports a window of 32768 tokens; the config sets none" in text
+    await h.close()
+
+
+@scenario
+async def test_usage_says_nothing_of_a_window_that_agrees(tmp_path: Path) -> None:
+    h = await session(tmp_path, [served(40_960)], catalog(a={"context_window": 40_960}))
+    await say(h)
+    text = await h.run("usage")
+    assert text is not None
+    assert "window" not in text
+    await h.close()

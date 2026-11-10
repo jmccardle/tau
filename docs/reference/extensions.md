@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `ToolHook`, `TreeHandle`, `Usage`
 
 ## Agents
 
@@ -753,6 +753,32 @@ async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
 
 At a session's first step, write the skills list (the module docstring).
 
+## Span
+
+```python
+@dataclass(frozen=True)
+class Span
+    nodes: tuple[Node, ...]
+    cost: int
+    proof: SpanProof
+```
+
+A proved span (D26 section 3): `nodes` are the nodes added between two consecutive
+requests on one walk, from the first request's reply up to the node before the second's
+reply; `cost` is what they cost together, the second bill's `input` less the first's, which
+is exact because the first request is proved to be a prefix of the second; `proof` says
+how.
+
+## SpanProof
+
+```python
+SpanProof = Literal['cache', 'slot', 'prefix']
+```
+
+How a span is proved: `cache` (the second request read exactly the first from the server's
+cache), `slot` (llama.cpp's slot held at least the whole first request) or `prefix` (the
+provider found the first request to be a byte prefix of the second when it sent it).
+
 ## StepLimit
 
 ```python
@@ -978,6 +1004,17 @@ count for each node. Every count is a report, or a ceiling (the node's bytes) fo
 report covers, unless the `counter` extension counts it better. `at` defaults to the
 cursor's node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
 (`ValueError`). `DefinitionError` if the counter counts what a report covers.
+
+### TreeHandle.spans
+
+```python
+def spans(self, at: int | None = None) -> list[Span]
+```
+
+The proved spans of the walk to node `at`, oldest first (D26 section 3): each is the
+nodes between two consecutive requests whose cost the two bills prove, with how. A span
+nothing proves is not listed, and neither is one a copy inherits (its count is in
+`count`). `at` defaults as `count`'s does.
 
 ### TreeHandle.append
 
