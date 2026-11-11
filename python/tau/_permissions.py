@@ -3,10 +3,10 @@ section 7).
 
 Three lists of rules, `deny`, `allow` and `ask`, checked in that order; a call no rule matches
 runs. With no rules configured it asks nothing. A rule is `TOOL`, which matches every call of the
-tool, or `TOOL:GLOB` for `bash` and the path tools: the glob (`fnmatch`'s, case-sensitive; `*`
-crosses `/` and newlines) matches a `bash` command, or the path argument of `read`, `write`,
-`edit`, `grep` or `find` (for `grep`, every one of the `files` too, and the working directory when
-it names neither). Any other text is a tool's whole name (a name may hold a colon).
+tool, or `TOOL:GLOB` for the path tools: the glob (`fnmatch`'s, case-sensitive; `*` crosses `/`
+and newlines) matches the path argument of `read`, `write`, `edit`, `grep` or `find` (for `grep`,
+every one of the `files` too, and the working directory when it names neither). Any other text is a
+tool's whole name (a name may hold a colon).
 
 - **Paths** are matched as the model wrote them and as the path they name: the argument joined to
   the session's working directory and made real (`..`, `//`, `.` and symlinks resolved). A call may
@@ -25,10 +25,11 @@ it names neither). Any other text is a tool's whole name (a name may hold a colo
   denied pattern is refused. Any other runs with `exclude: [PATTERN]` added to its arguments
   for each deny rule about it, and the tool leaves out the matching files (also through a
   symlink) and says how many. A `deny` for `read:GLOB` guards `grep` too.
-- **Commands** follow `tau._shell`: an `allow` glob never vouches for a command that chains or
-  redirects (it falls to `ask`) unless the glob has the operator too, and `deny` and `ask` are tried
-  on each piece of a chained command. A `bash` deny is best effort; `ask: [bash]` is the safe
-  setting.
+- **Commands** are matched by the tool's name only: a pattern over a command's text is easy to
+  step around (a shell says one thing many ways), so it would promise a guard it is not. `deny`
+  and `ask` take `bash` alone. `allow` also takes `bash:COMMAND`, one exact command (what `always`
+  saves; `*`, `?` and `[` are written `[*]`, `[?]`, `[[]`), which matches that text and no other.
+  A finer guard belongs below τ (a separate user, a container), or in an extension of one's own.
 
 An `ask` rule holds the call with a question, `yes | always | no`. `yes` runs the call. `always`
 runs it and appends the exact rule for it (the resolved path, the whole command) to the user's
@@ -53,7 +54,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
-from tau import _shell
 from tau._agents import Agents
 from tau._base_tools import BaseTools
 from tau._handles import NodeHandle
@@ -65,7 +65,7 @@ PATH_TOOLS = ("read", "write", "edit", "grep", "find")
 SEARCH_TOOLS = ("grep", "find")
 """The path tools that read every file under their root."""
 PATTERN_TOOLS = (BASH, *PATH_TOOLS)
-"""The tools a rule may give a glob for."""
+"""The tools a rule may give an argument for (`bash`: one exact command, in `allow` only)."""
 REFUSED = "the user refused this call"
 FOLDS = sys.platform == "darwin"
 """Whether `deny` and `ask` ignore case in a path: a macOS volume folds case unless it was made
@@ -73,6 +73,7 @@ case-sensitive, so `/Users/me/.SSH/key` is `/Users/me/.ssh/key` there, and a rul
 would be no guard (an `allow` never folds: a fold can only widen it)."""
 Answer = Literal["yes", "always", "no"]
 Mode = Literal["deny", "allow", "ask"]
+MODES: tuple[Mode, ...] = ("deny", "allow", "ask")
 _GLOB_CHARS = re.compile(r"([*?\[])")
 
 
@@ -158,8 +159,8 @@ class Rule:
     glob: str | None = None
 
     @classmethod
-    def parse(cls, text: str) -> "Rule":
-        """The rule `text` says; `ValueError` if it is not one."""
+    def parse(cls, text: str, mode: Mode = "allow") -> "Rule":
+        """The rule `text` says in the list `mode`; `ValueError` if it is not one there."""
         tool, colon, glob = text.partition(":")
         if not text:
             raise ValueError("an empty rule names no tool: write TOOL or TOOL:GLOB")
@@ -167,7 +168,9 @@ class Rule:
             return cls(text)  # a tool's whole name, which may hold a colon
         if not glob:
             raise ValueError(f"rule {text!r} has an empty pattern after the colon")
-        if tool != BASH:
+        if tool == BASH:
+            _check_command(text, glob, mode)
+        else:
             try:
                 _compiled(glob)
             except re.error as e:
@@ -202,8 +205,7 @@ class Rule:
         if self.glob is None:
             return True
         if call.tool == BASH:
-            match = _shell.allows if mode == "allow" else _shell.refuses
-            return call.subject is not None and match(self.glob, call.subject)
+            return call.subject is not None and call.subject == literal(self.glob)
         absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
             return bool(call.resolved) and all(_fits(r, absolute) for r in call.resolved)
@@ -368,11 +370,56 @@ def _searches_under(call: Call, glob: str) -> bool:
     return False
 
 
+def literal(glob: str) -> str | None:
+    """The one text `glob` matches, or `None` if it has a wildcard: `*`, `?`, or a `[...]` set
+    other than one character (`[*]` is a literal star, as `Rule.exact` writes it)."""
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "[" and i + 2 < len(glob) and glob[i + 2] == "]" and glob[i + 1] != "!":
+            out.append(glob[i + 1])
+            i += 3
+            continue
+        if c in "*?[":
+            return None
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _check_command(text: str, command: str, mode: Mode) -> None:
+    """`ValueError` unless `bash:COMMAND` is allowed in the list `mode`: one exact command, in
+    `allow`."""
+    if mode != "allow":
+        raise ValueError(
+            f"rule {text!r} in {mode}: there a bash rule is the bare name 'bash' (a pattern over "
+            "a command's text is easy to step around); for a finer guard, run tau as a user, or "
+            "in a container, that cannot do what you would refuse"
+        )
+    if literal(command) is None:
+        raise ValueError(
+            f"allow rule {text!r}: an allow rule for bash names one exact command, without "
+            "wildcards (write * ? [ as [*] [?] [[]), or is the bare name 'bash'"
+        )
+
+
+def check_answer(text: str) -> None:
+    """`ValueError` unless the `--answer` TEXT for a `permissions` question is one it can mean: a
+    `bash` TEXT is `bash` alone or one exact command, as an `allow` rule is."""
+    tool, colon, command = text.partition(":")
+    if tool == BASH and colon and literal(command.removeprefix(" ")) is None:
+        raise ValueError(
+            f"--answer text {text!r}: a bash text is 'bash' alone (every command) or one "
+            "exact command, without wildcards (write * ? [ as [*] [?] [[])"
+        )
+
+
 def answers(glob: str, text: str) -> bool:
     """Whether an `--answer` glob answers the permissions question `text`: the glob is over the
     call alone (the `(ask rule: ...)` line is left out), written `TOOL: ARGUMENT` as the question
-    shows it or in rule syntax, `TOOL:ARGUMENT`. A command is matched as `tau._shell` matches an
-    allowing pattern (a chain needs the operator in the glob). A path tool's question has a line
+    shows it or in rule syntax, `TOOL:ARGUMENT`. A `bash` glob is `bash` alone, which answers
+    every command, or one exact command (`check_answer`). A path tool's question has a line
     `TOOL: PATH` for each resolved path, and the glob must match every one (a path holding a
     newline only makes more lines). Any other tool's call is matched whole: its JSON arguments
     are no shell command."""
@@ -382,7 +429,10 @@ def answers(glob: str, text: str) -> bool:
     if glob.startswith(f"{tool}:") and not glob.startswith(f"{tool}: "):
         glob = f"{tool}: {glob[len(tool) + 1 :]}"
     if tool == BASH:
-        return _shell.allows(glob, call)
+        if glob == BASH:
+            return True
+        command = literal(glob.removeprefix(f"{BASH}: "))
+        return glob.startswith(f"{BASH}: ") and command == call.removeprefix(f"{BASH}: ")
     if tool in PATH_TOOLS:
         return all(fnmatch.fnmatchcase(line, glob) for line in call.split("\n"))
     return fnmatch.fnmatchcase(call, glob)
@@ -414,8 +464,8 @@ def _builtin_tools() -> set[str]:
     return {BASH, *(cast("str", getattr(t, "name")) for t in listed)}  # noqa: B009
 
 
-def _rules(texts: Iterable[str]) -> list[Rule]:
-    return [Rule.parse(t) for t in texts]
+def _rules(texts: Iterable[str], mode: Mode) -> list[Rule]:
+    return [Rule.parse(t, mode) for t in texts]
 
 
 @dataclass(frozen=True)
@@ -429,20 +479,22 @@ class Options:
     deny: Annotated[list[str], "rules that refuse a call without asking"] = ()  # pyright: ignore[reportAssignmentType]
 
     def __post_init__(self) -> None:
-        for name in ("deny", "allow", "ask"):
-            _rules(getattr(self, name))
+        for name in MODES:
+            _rules(getattr(self, name), name)
 
-    def missing_tools(self, tools: Sequence[str]) -> dict[str, list[str]]:
+    def missing_tools(self, tools: Sequence[str]) -> dict[Mode, list[str]]:
         """The rule lists that name a tool no extension provides, each with those rules (a
         misspelled name would match nothing, and a `deny` that matches nothing is no guard). A
         tool of a built-in extension that is not loaded (`agent`, with `agents` off) is known: a
         rule for it names nothing missing."""
         known = {*tools, *_builtin_tools()}
-        found: dict[str, list[str]] = {}
-        for name in ("deny", "allow", "ask"):
+        found: dict[Mode, list[str]] = {}
+        for name in MODES:
             texts: list[str] = list(getattr(self, name))
             bad = [
-                t for t, rule in zip(texts, _rules(texts), strict=True) if rule.tool not in known
+                t
+                for t, rule in zip(texts, _rules(texts, name), strict=True)
+                if rule.tool not in known
             ]
             if bad:
                 found[name] = bad
@@ -455,18 +507,18 @@ class Options:
             f"provides; the tools are {sorted(tools)}"
             for name, texts in self.missing_tools(tools).items()
             if only is None or name in only
-            for rule in _rules(texts)
+            for rule in _rules(texts, name)
         ]
 
     def exclusions(self, call: Call) -> list[str]:
         """The patterns of the files a `grep` or `find` must leave out: those its `deny` rules
         name that its root holds."""
-        return list(dict.fromkeys(p for r in _rules(self.deny) for p in r.hides_from(call)))
+        return list(dict.fromkeys(p for r in _rules(self.deny, "deny") for p in r.hides_from(call)))
 
     def first(self, mode: Mode, call: Call, extra: Iterable[str] = ()) -> Rule | None:
         """The first rule of the list `mode` (and `extra`, for `allow`) that matches `call`."""
         texts = [*getattr(self, mode), *extra]
-        return next((r for r in _rules(texts) if r.matches(call, mode)), None)
+        return next((r for r in _rules(texts, mode) if r.matches(call, mode)), None)
 
 
 class Permissions:

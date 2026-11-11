@@ -112,7 +112,7 @@ def test_an_answer_rule_says_yes(model: World) -> None:
 
 
 def test_an_answer_rule_can_match_the_command(model: World) -> None:
-    refuse = ["--answer", "permissions:bash: touch*=no", "--answer", "permissions=yes"]
+    refuse = ["--answer", "permissions:bash: touch ran=no", "--answer", "permissions=yes"]
     result = p(model, *refuse)
     assert result.code == 0, result.err
     assert not ran(model)
@@ -171,17 +171,36 @@ def test_an_empty_pattern_stops_the_start(model: World) -> None:
 
 
 @RUNS_BASH
-def test_an_answer_text_never_matches_a_command_that_chains_unless_it_says_so(
-    model: World,
-) -> None:
+def test_a_bash_answer_text_is_one_exact_command(model: World) -> None:
     Model.run = "touch ran; touch other"
-    plain = p(model, "--answer", "permissions:bash: touch*=yes")
+    plain = p(model, "--answer", "permissions:bash: touch ran=yes")
     assert plain.code == 0, plain.err
-    assert not ran(model), "the glob did not vouch for the chain: declined"
+    assert not ran(model), "the text did not name the chain: declined"
     assert "declined question 0" in plain.err
     chained = p(model, "--answer", "permissions:bash: touch ran; touch other=yes")
     assert chained.code == 0, chained.err
     assert ran(model)
+
+
+@RUNS_BASH
+def test_a_bash_answer_text_of_the_name_alone_answers_every_command(model: World) -> None:
+    Model.run = "touch ran; touch other"
+    result = p(model, "--answer", "permissions:bash=yes")
+    assert result.code == 0, result.err
+    assert ran(model)
+
+
+@pytest.mark.parametrize("text", ["bash: touch*", "bash:touch*", "bash: touch ?an", "bash: [ab]"])
+def test_a_bash_answer_text_with_a_wildcard_is_a_usage_error(
+    model: World, text: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pattern over a command's text is easy to step around, so it is refused, not trusted."""
+    with pytest.raises(SystemExit) as stop:
+        p(model, "--answer", f"permissions:{text}=no", "--answer", "permissions=yes")
+    assert stop.value.code == 2
+    err = capsys.readouterr().err
+    assert "a bash text is 'bash' alone (every command) or one exact command" in err
+    assert not ran(model)
 
 
 @RUNS_BASH
@@ -214,7 +233,7 @@ def test_an_answer_text_is_matched_against_the_resolved_path(model: World) -> No
 
 @RUNS_BASH
 def test_an_answer_text_may_be_written_in_rule_syntax_without_the_space(model: World) -> None:
-    result = p(model, "--answer", "permissions:bash:touch*=yes")
+    result = p(model, "--answer", "permissions:bash:touch ran=yes")
     assert result.code == 0, result.err
     assert ran(model)
     assert "answered question 0" in result.err

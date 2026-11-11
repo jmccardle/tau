@@ -130,12 +130,12 @@ async def test_a_permission_question_shows_the_call_the_rule_and_its_three_answe
         provider=FakeProvider([Reply([call], Stop.Tools), say("done")]),
         tools=[tool],
         extensions=[Permissions(tmp_path)],
-        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash:git push*"]}}),
+        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
     )
     await h.send("go")
     async with running(h, tmp_path) as (app, pilot):
         await shows(pilot, app, "bash: git push origin master")
-        await shows(pilot, app, "(ask rule: bash:git push*)  [yes / always / no]")
+        await shows(pilot, app, "(ask rule: bash)  [yes / always / no]")
         await answer(pilot, app)
         await shows(pilot, app, "done")
         assert tool.calls == [{"command": "git push origin master"}]

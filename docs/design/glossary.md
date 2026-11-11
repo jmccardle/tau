@@ -1537,9 +1537,10 @@ is given the `deny` patterns about it as `exclude`, so the tool leaves out the p
 symlinks followed, and says how many (an `ask` still fires when the root could hold the pattern); a `read` deny with a glob guards `grep` too). The extension
 is an example guardrail for the file tools, not a security boundary; `bash` is out of its scope
 and enforcement belongs at the OS level. Any other text
-is a tool's whole name. An `allow` glob never matches a command that chains or redirects (`;` `&` `|`
-a backtick `$(` `<` `>` a newline) unless it holds the operator, and `deny` and `ask` try each piece
-of a chain (`tau._shell`; best effort, `ask: [bash]` is safe). A rule naming a tool no extension
+is a tool's whole name. A `bash` rule names the tool only (a pattern over a command's text is easy
+to step around): in `deny` and `ask` it is `bash`, and in `allow` it is `bash` or `bash:COMMAND`,
+one exact command (what `always` saves; `*` `?` `[` written `[*]` `[?]` `[[]`); one with a wildcard
+is refused where it is configured, as an invalid rule is. A rule naming a tool no extension
 provides is a `ConfigError` (at the start, and from `/config`); a built-in's tool that is not
 loaded (`agent`, or `bash` on Windows) is known. A `pre_tool` hook checks `deny`, then
 `allow`, then `ask`; a call no rule matches runs, and with no rules configured nothing is ever
@@ -1561,14 +1562,6 @@ and its final reply text. `to="agent:N"` reopens that closed agent and sends it 
 ending other than `Done`, or a reply that asks for tools, is a `ToolError` naming the agent. Its
 cursor is offered the `tools` option's tools, or all but `agent`. Aborting the calling cursor
 cancels the call, whose `finally` closes (and so aborts) the agent.
-
-### shell guard (`tau._shell`)
-module `tau._shell` (private) · D24 section 7 · new (8E-4)
-
-What permissions and `--answer` know about a shell command: `allows(glob, command)` for an allowing
-pattern (the command's operators must be in the glob) and `refuses(glob, command)` for a refusing
-or asking one (the command whole and each piece between the operators, with `VAR=` words and
-wrappers stripped and the first word's basename). Best effort, not a parser.
 
 ### tool not offered
 `Err("tool not offered: X")` · D24 section 8, driver · new (8E-4)
@@ -2704,7 +2697,7 @@ reply gets none. `abort` and `go_to` cancel a running command (and drop one not 
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the
-extension that lists the command, and no hook runs after it; its `run` raises `CommandFailed` at once, without waiting for the step to end (its `post_step` hooks may still be running). A command with no `Cursor` runs at once as a task on the
+extension that lists the command, and the step goes straight to `post_step`, skipping the extensions' `pre_step` hooks and every later phase. Its `run` raises `CommandFailed` at once, before the cursor is at rest. A command with no `Cursor` runs at once as a task on the
 loop, whatever the cursor is doing; with a `TreeHandle` bound to its extension.
 
 ### tau (extension), /model, /config
@@ -3283,8 +3276,8 @@ naming the wait), else 1, 2 and 4 s. The policy has no options. `start_session` 
 provider in it unless `load` has `retry: false` (`tau ext disable retry`); `retry` is a `load`
 key and a row of `tau ext list`, but no extension. Before each wait it yields
 `Retrying(attempt, attempts, seconds, reason)`: a `Delta` that is no part of the reply, does not
-count as output for the "nothing yielded" rule, is forwarded as a `Live` and never replayed to a
-client that starts watching later. The wait is part of the sample, so an abort ends it.
+count as output for the "nothing yielded" rule, and is forwarded as a `Live`; a client that starts
+watching during the wait is told it with the seconds left (none once the wait is over). The wait is part of the sample, so an abort ends it.
 
 ### tool progress, ToolProgress
 `tau.ToolProgress(node, call_id, text)` (`_events.py`) · D15 · new

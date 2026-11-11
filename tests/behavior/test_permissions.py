@@ -118,10 +118,10 @@ async def test_the_one_config_line_that_turns_asking_on(tmp_path: Path) -> None:
 @scenario
 async def test_a_question_shows_the_tool_its_argument_and_the_rule(tmp_path: Path) -> None:
     h, (tool,) = await start(
-        tmp_path, [bash("git push origin master"), say("ok")], {"ask": ["bash:git push*"]}
+        tmp_path, [bash("git push origin master"), say("ok")], {"ask": ["bash"]}
     )
     (question,) = (await h.view()).questions
-    assert question.text == "bash: git push origin master\n(ask rule: bash:git push*)"
+    assert question.text == "bash: git push origin master\n(ask rule: bash)"
     assert question.schema == {"type": "string", "enum": ["yes", "always", "no"]}
     assert question.to is None
     assert tool.calls == [], "the tool waits for the answer"
@@ -222,18 +222,22 @@ async def test_a_wrong_answer_is_refused_and_the_question_stays_open(tmp_path: P
 
 @scenario
 async def test_deny_is_checked_first_then_allow_then_ask(tmp_path: Path) -> None:
-    options = {"ask": ["bash"], "allow": ["bash:ls*", "bash:rm*"], "deny": ["bash:rm*"]}
-    h, (tool,) = await start(tmp_path, [bash("rm x", "ls y", "git z"), say("ok")], options)
+    options = {"ask": ["read", "write"], "allow": ["write", "edit"], "deny": ["edit"]}
+    reply = calls(
+        call("a", "edit", path="x"), call("b", "write", path="y"), call("c", "read", path="z")
+    )
+    tools = [FakeTool(name, name) for name in ("edit", "write", "read")]
+    h, (edit, write, read) = await start(tmp_path, [reply, say("ok")], options, tools)
     (question,) = (await h.view()).questions
-    assert question.text.startswith("bash: git z"), "only the unmatched-by-allow call asks"
+    assert question.text.startswith("read: "), "only the unmatched-by-allow call asks"
     await h.respond("yes")
     await h.settle()
-    assert tool.calls == [{"command": "ls y"}, {"command": "git z"}]
+    assert (edit.calls, len(write.calls), len(read.calls)) == ([], 1, 1)
     first, second, third = (o for _, o in results(h))
     assert isinstance(first, Outcome.Err)
-    assert "deny rule 'bash:rm*'" in first.error
-    assert second == Outcome.Ok("output")
-    assert third == Outcome.Ok("output")
+    assert "deny rule 'edit'" in first.error
+    assert second == Outcome.Ok("write")
+    assert third == Outcome.Ok("read")
     await h.close()
 
 
@@ -256,42 +260,58 @@ async def test_a_deny_refuses_without_asking(tmp_path: Path) -> None:
 @scenario
 async def test_nothing_matching_runs_without_a_question(tmp_path: Path) -> None:
     h, (tool,) = await start(
-        tmp_path, [bash("git status"), say("ok")], {"ask": ["bash:git push*", "read"]}
+        tmp_path, [bash("git status"), say("ok")], {"ask": ["read"], "allow": ["bash:git push"]}
     )
     assert (await h.view()).questions == ()
     assert tool.calls == [{"command": "git status"}]
     await h.close()
 
 
-GLOBS = [
-    # (rule, command, matches)
+EXACT = [
+    # (allow rule, command, runs without asking)
     ("bash:git push origin master", "git push origin master", True),
     ("bash:git push origin master", "git push origin master ", False),
-    ("bash:git push*", "git push", True),
-    ("bash:git push*", "git pus", False),
-    ("bash:git push*", "git push origin master && rm -rf x", True),  # a chain is one text
-    ("bash:git*", "Git status", False),  # case matters
-    ("bash:echo*", "echo a\necho b", True),  # * crosses a newline
-    ("bash:cat /tmp/*", "cat /tmp/a/b/c", True),  # and a slash
-    ("bash:git ?ull", "git pull", True),
-    ("bash:git ?ull", "git ppull", False),
+    ("bash:git push origin master", "git push origin master && rm -rf x", False),
+    ("bash:git push origin master", "Git push origin master", False),  # case matters
     ('bash:git commit -m "wip"', 'git commit -m "wip"', True),  # quotes are ordinary text
-    ("bash:git commit -m 'a b'", "git commit -m 'a b'", True),
-    ("bash:ls [*].py", "ls *.py", True),  # [*] is a literal star
+    ("bash:ls [*].py", "ls *.py", True),  # [*] is a literal star, as always writes it
     ("bash:ls [*].py", "ls x.py", False),
-    ("bash:ls [ab]", "ls a", True),
     ("bash:a\\b", "a\\b", True),  # a backslash is itself
+    ("bash", "anything; at all", True),
 ]
 
 
-@pytest.mark.parametrize(("rule", "command", "matches"), GLOBS)
+@pytest.mark.parametrize(("rule", "command", "runs"), EXACT)
 @scenario
-async def test_a_bash_pattern_matches_the_whole_command_by_fnmatch(
-    tmp_path: Path, rule: str, command: str, matches: bool
+async def test_a_bash_allow_names_one_exact_command(
+    tmp_path: Path, rule: str, command: str, runs: bool
 ) -> None:
-    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], {"ask": [rule]})
-    assert bool((await h.view()).questions) is matches
-    assert (tool.calls == []) is matches
+    options = {"ask": ["bash"], "allow": [rule]}
+    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], options)
+    assert bool((await h.view()).questions) is not runs
+    assert (tool.calls == []) is not runs
+    await h.close()
+
+
+@pytest.mark.parametrize(
+    ("options", "problem"),
+    [
+        ({"deny": ["bash:rm *"]}, "rule 'bash:rm *' in deny: there a bash rule is the bare name"),
+        ({"ask": ["bash:git push"]}, "rule 'bash:git push' in ask: there a bash rule is the bare"),
+        ({"allow": ["bash:git status*"]}, "names one exact command, without wildcards"),
+        ({"allow": ["bash:ls [ab]"]}, "names one exact command, without wildcards"),
+        ({"allow": ["bash:git ?ull"]}, "names one exact command, without wildcards"),
+    ],
+)
+@scenario
+async def test_a_bash_rule_with_a_pattern_is_refused_rather_than_trusted(
+    tmp_path: Path, options: dict[str, list[str]], problem: str
+) -> None:
+    """A pattern over a command's text is easy to step around (`ls; rm x`, `/bin/rm`, `sudo rm`,
+    `bash -c "rm x"`), so it is no rule at all: the call is refused, naming the problem."""
+    h, (tool,) = await start(tmp_path, [bash("ls"), say("ok")], options)
+    assert tool.calls == []
+    assert problem in refusal(h)
     await h.close()
 
 
@@ -711,13 +731,15 @@ async def test_config_refuses_a_rule_naming_no_tool_and_saves_nothing(tmp_path: 
     h, _ = await start(tmp_path, [bash("ls"), say("ok")])
     saved = tmp_path / "tau-home" / "config.json"
     before = saved.read_text(encoding="utf-8") if saved.exists() else None
-    for values in ({"ask": ["Bash"]}, {"deny": ["bash:rm *", "wirte:/etc/*"]}):
+    for values in ({"ask": ["Bash"]}, {"deny": ["bash", "wirte:/etc/*"]}):
         with pytest.raises(ConfigError, match="names the tool"):
             await h.configure("permissions", values, save=True)
+    with pytest.raises(ConfigError, match="there a bash rule is the bare name"):
+        await h.configure("permissions", {"deny": ["bash:rm *"]}, save=True)
     assert (saved.read_text(encoding="utf-8") if saved.exists() else None) == before
-    await h.configure("permissions", {"deny": ["bash:rm *"]}, save=True)
+    await h.configure("permissions", {"deny": ["bash"]}, save=True)
     assert json.loads(saved.read_text(encoding="utf-8"))["extensions"]["permissions"] == {
-        "deny": ["bash:rm *"]
+        "deny": ["bash"]
     }
     await h.close()
 
@@ -847,7 +869,7 @@ async def test_always_on_a_bare_rule_for_an_extension_tool_allows_the_tool(
 @scenario
 async def test_a_deny_still_refuses_what_always_allowed(tmp_path: Path) -> None:
     h, (tool,) = await start(
-        tmp_path, [bash("rm x"), say("ok")], {"ask": ["bash"], "deny": ["bash:rm*"]}
+        tmp_path, [bash("rm x"), say("ok")], {"allow": ["bash:rm x"], "deny": ["bash"]}
     )
     assert tool.calls == []
     assert "deny rule" in refusal(h)
@@ -990,153 +1012,6 @@ async def test_always_saves_the_resolved_absolute_path(tmp_path: Path) -> None:
     assert saved["extensions"]["permissions"]["allow"] == [
         f"write:{os.path.realpath(tmp_path / 'notes.txt')}"
     ]
-    await h.close()
-
-
-# Commands: an allow never vouches for a chain, a deny looks at each piece
-
-CHAINS = [
-    "git status; rm -rf x",
-    "git status && rm -rf x",
-    "git status | sh",
-    "git status\nrm -rf x",
-    "git status $(rm -rf x)",
-    "git status `rm x`",
-    "git status > ~/.bashrc",
-    "git status < /etc/passwd",
-    "git status & rm x",
-]
-
-
-@pytest.mark.parametrize("command", CHAINS)
-@scenario
-async def test_an_allow_does_not_run_a_command_that_chains_or_redirects(
-    tmp_path: Path, command: str
-) -> None:
-    options = {"ask": ["bash"], "allow": ["bash:git status*"]}
-    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], options)
-    assert len((await h.view()).questions) == 1, "it falls to ask"
-    assert tool.calls == []
-    await h.close()
-
-
-@pytest.mark.parametrize("command", ["git status", "git status -s", "git status --short"])
-@scenario
-async def test_an_allow_runs_a_plain_command(tmp_path: Path, command: str) -> None:
-    options = {"ask": ["bash"], "allow": ["bash:git status*"]}
-    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], options)
-    assert (await h.view()).questions == ()
-    assert tool.calls == [{"command": command}]
-    await h.close()
-
-
-@scenario
-async def test_a_pattern_that_holds_the_operator_allows_a_command_that_has_it(
-    tmp_path: Path,
-) -> None:
-    options = {"ask": ["bash"], "allow": ["bash:git status && git diff*"]}
-    h, (tool,) = await start(
-        tmp_path, [bash("git status && git diff -s", "git status && rm x"), say("ok")], options
-    )
-    (question,) = (await h.view()).questions
-    assert question.text.startswith("bash: git status && rm x")
-    assert tool.calls == [{"command": "git status && git diff -s"}]
-    await h.close()
-
-
-REFUSED_BY_RM = [
-    "rm -rf x",
-    "ls; rm -rf x",
-    "ls && rm x",
-    "ls | rm x",
-    " rm -rf x",
-    "\trm x",
-    "/bin/rm -rf x",
-    "command rm x",
-    "sudo rm x",
-    "FOO=1 rm x",
-    "A=1 B=2 /usr/bin/rm x",
-    "echo $(rm x)",
-    "echo `rm x`",
-    "echo a\nrm x",
-    "(rm x)",
-    "{ rm x; }",
-    "true || rm x",
-    "rm\t-rf x",  # a tab is a space
-    "ls;\trm x",
-    "\\rm x",  # a backslash before the first word
-    "ls; \\/bin/rm x",
-    "if true; then rm x; fi",
-    "for i in 1; do rm $i; done",
-    "if false; then ls; else rm x; fi",
-    "if false; then ls; elif true; then rm x; fi",
-    "sudo -u root rm x",
-    "sudo -n -- rm x",
-    "env -i rm x",
-    "env -u HOME rm x",
-    "nice -n 10 rm x",
-    "nice rm x",
-    "timeout 5 rm x",
-    "timeout -s KILL 5 rm x",
-    "ls | xargs rm -f",
-    "xargs -n1 rm x",
-    "nohup nice -n 5 sudo rm x",
-    "if rm x; then echo gone; fi",
-    "while rm x; do :; done",
-    "until rm x; do :; done",
-    "function f { rm x; }; f",
-    "function f() { rm x; }",
-    "f() { rm x; }",
-    "sudo --user root rm x",
-    "sudo -nu root rm x",
-    "sudo --user=root rm x",
-    "env --unset HOME rm x",
-    "xargs --max-args 1 rm x",
-    "xargs -I {} rm {}",
-    "doas rm x",
-    "doas -u root rm x",
-    "ionice -c 3 rm x",
-    "ionice -c3 rm x",
-    "stdbuf -oL rm x",
-    "setsid rm x",
-    "strace -o out rm x",
-    "watch -n 5 rm x",
-    "exec rm x",
-    "exec -a other rm x",
-    "exec -c -l rm x",
-    "builtin exec rm x",
-    "coproc rm x",
-    "ls | xargs rm",  # xargs adds the arguments: bare `xargs rm` is `rm <something>`
-    "xargs -n1 rm",
-]
-
-
-@pytest.mark.parametrize("command", REFUSED_BY_RM)
-@scenario
-async def test_a_bash_deny_refuses_a_command_with_a_matching_piece(
-    tmp_path: Path, command: str
-) -> None:
-    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], {"deny": ["bash:rm *"]})
-    assert tool.calls == []
-    assert "deny rule 'bash:rm *'" in refusal(h)
-    await h.close()
-
-
-@pytest.mark.parametrize("command", ["ls", "echo rm", "grep rm file", "firm x", "echo rm -rf"])
-@scenario
-async def test_a_bash_deny_leaves_other_commands_alone(tmp_path: Path, command: str) -> None:
-    h, (tool,) = await start(tmp_path, [bash(command), say("ok")], {"deny": ["bash:rm *"]})
-    assert tool.calls == [{"command": command}]
-    await h.close()
-
-
-@scenario
-async def test_an_ask_rule_also_sees_the_pieces_of_a_chain(tmp_path: Path) -> None:
-    h, (tool,) = await start(
-        tmp_path, [bash("ls && git push origin master"), say("ok")], {"ask": ["bash:git push*"]}
-    )
-    assert len((await h.view()).questions) == 1
-    assert tool.calls == []
     await h.close()
 
 

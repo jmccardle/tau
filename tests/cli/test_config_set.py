@@ -150,13 +150,13 @@ def test_set_works_from_a_project_that_is_not_trusted_yet(world: World) -> None:
 def test_set_refuses_a_rule_that_names_a_tool_nothing_provides_and_writes_nothing(
     world: World,
 ) -> None:
-    path = world.user_config({"extensions": {"permissions": {"deny": ["bash:rm *"]}}})
+    path = world.user_config({"extensions": {"permissions": {"deny": ["bash"]}}})
     before = path.read_bytes()
-    result = tau(world, "config", "set", 'permissions.deny=["bash:rm *", "nosuch"]')
+    result = tau(world, "config", "set", 'permissions.deny=["bash", "nosuch"]')
     assert (result.code, result.out) == (1, "")
     assert "deny rule 'nosuch' names the tool 'nosuch'" in result.err
     assert path.read_bytes() == before
-    assert tau(world, "config", "set", 'permissions.deny=["bash:rm *", "write"]').code == 0
+    assert tau(world, "config", "set", 'permissions.deny=["bash", "write"]').code == 0
     assert tau(world, "config", "check").code == 0
 
 

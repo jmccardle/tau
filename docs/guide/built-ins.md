@@ -442,8 +442,9 @@ source. `tau ext disable compaction` or `tau ext disable prune` removes either.
 
 Permissions is an example guardrail for the built-in file tools (`read`, `write`, `edit` and
 `grep`, with `find`). It catches accidents: a model that wanders into `/etc`, or edits a file you
-meant to keep. It is not a security boundary, and `bash` is out of its scope: a `bash` rule is a
-pattern over the command's text, and a shell has endless ways to say the same thing. Real
+meant to keep. It is not a security boundary, and `bash` is out of its scope: a shell has endless
+ways to say the same thing, so a pattern over a command's text would promise a guard it is not, and
+`bash` rules name the tool only (or, to allow, one exact command). Real
 enforcement belongs below the agent, at the operating-system level: run τ as a separate user with
 only the access you want it to have, in a mount namespace or container that does not show the
 files, or under Landlock.
@@ -458,19 +459,19 @@ names runs:
   "extensions": {
     "permissions": {
       "ask": ["bash", "write", "edit"],
-      "allow": ["bash:git status*", "bash:git diff*", "bash:ls*"],
+      "allow": ["bash:git status", "bash:git diff"],
       "deny": ["write:/etc/*", "edit:/etc/*"]
     }
   }
 }
 ```
 
-That asks about every `bash`, `write` and `edit` call except the `git status`, `git diff` and `ls`
-commands, and refuses outright any write under `/etc`. The one line that turns asking on is
+That asks about every `bash`, `write` and `edit` call except the exact commands `git status` and
+`git diff`, and refuses outright any write under `/etc`. The one line that turns asking on is
 `/config permissions ask=bash,write,edit --save`.
 
-The pattern is a shell-style glob over the whole command (for `bash`) or the `path` argument (for
-`read`, `write`, `edit`, `grep` and `find`): `*` matches anything, including `/` and line breaks,
+The pattern is a shell-style glob over the `path` argument (for `read`, `write`, `edit`, `grep` and
+`find`): `*` matches anything, including `/` and line breaks,
 `?` one character, `[ab]` a set, and capitals are not lowercase. A tool an extension gives the model
 takes only its bare name (and a name may hold a colon: `srv:tool`). A rule that names a tool nobody
 provides (`Bash`, `wirte`) is refused when you set it: `/config permissions ...` and `tau config
@@ -509,18 +510,14 @@ of the tool is given its deny patterns, since a link under any root can lead to 
 nothing is added to the answer unless a file was left out. A rule that starts with a wildcard
 (`grep:*secret*`) works the same way. The files are left out of `grep`'s overflow file too.
 
-Commands are harder, because a glob is not a shell. An `allow` pattern never runs a command that
-chains or redirects (`;`, `&`, `|`, a backtick, `$(`, `<`, `>`, or a new line) unless the pattern
-contains that character too: `allow: ["bash:git status*"]` runs `git status -s` but asks about
-`git status; rm -rf x`. A `deny` or `ask` pattern is tried on each piece of a chained command, after
-dropping leading `VAR=value` words, `if`/`elif`/`while`/`until`/`then`/`do`/`else`, `function NAME`,
-a leading backslash and wrappers such as `sudo -u X` (or `--user X`), `env -i`, `nice -n 5`,
-`timeout 5`, `doas`, `ionice`, `stdbuf`, `setsid`, `strace`, `watch`, `xargs`, `exec` (with `-a NAME`), `builtin`, `coproc` and `command`, and
-reducing `/bin/rm` to `rm`, so `bash:rm *` refuses `ls; rm x`, `if rm x; then ...`, `ls | xargs rm` (a bare
-`xargs rm` gets arguments, so it counts as `rm ` with something after it) and `/bin/rm x`. That is best effort: quoting, `eval`, `bash -c "..."` and what `find -exec` runs
-are not seen, so **a `bash` deny is not a guarantee. `ask: ["bash"]` is the
-safe setting**: it puts every command in front of you. Rules guard against the model; they are not a
-sandbox.
+Commands are different, because a glob is not a shell: `git status*` would also allow
+`git status; rm -rf x`, and `rm *` would miss `/bin/rm x`, `sudo rm x` and `bash -c "rm x"`. So a
+`bash` rule in `deny` or `ask` is the bare name, `bash`, and an `allow` rule is `bash` or one exact
+command (`bash:git status` allows `git status` and nothing else, not even `git status -s`; write a
+literal `*`, `?` or `[` as `[*]`, `[?]`, `[[]`). A `bash` rule with a wildcard is refused where it is
+configured. **`ask: ["bash"]` puts every command in front of you**. If you want finer rules over
+commands, an extension of your own can give them (a `pre_tool` hook sees the command); rules guard
+against the model, they are not a sandbox.
 
 A call that a rule says to ask about holds the cursor with a question that names the tool, its
 command or path, and the rule that matched:
@@ -546,15 +543,15 @@ and the run still ends (`tau: declined question 0 from permissions on cursor 0: 
 
 ```bash skip
 tau -p --answer permissions=yes "tidy the imports"
-tau -p --answer 'permissions:bash: rm*=no' --answer permissions=yes "clean up"
+tau -p --answer 'permissions:bash: make test=yes' "fix the test"   # any other question is declined
 ```
 
-A `--answer` text is a glob over the call (`bash: git push origin master`; a file tool's question
-shows the resolved path, so a text for `/proj/*` does not answer `/proj/../etc/x`), so
-`--answer 'permissions:bash: git push*=yes'` is complete as written. It may also be written as a
-rule, with no space: `--answer 'permissions:bash:git push*=yes'`. Like an `allow` pattern it
-never answers a `bash` command that chains or redirects unless the text contains that character;
-other tools' arguments are no shell command, so a `;` in them means nothing. Leave the
+A `--answer` text is a glob over the call (a file tool's question shows the resolved path, so a text
+for `/proj/*` does not answer `/proj/../etc/x`). For `bash` it is as an `allow` rule is: `bash`
+alone answers every command, and `bash: git push origin master` that one command exactly (it may
+also be written as a rule, with no space: `bash:git push origin master`); a `bash` text with a
+wildcard is a usage error. Other tools' arguments are no shell command, so a `;` in them means
+nothing. Leave the
 text out (`--answer permissions=yes`) to answer every question. An empty pattern (`bash:`) stops the
 start, and `tau config check` names it.
 

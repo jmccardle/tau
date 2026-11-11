@@ -149,14 +149,14 @@ someone does answer: the `-p` client, by rule or by declining.
   It is split at the last `=` (the value), then the rest at the first `:` (extension, text).
   `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the first line of the
   question's text (default `*`). A `permissions` question is `TOOL: CALL` then a line `(ask rule:
-  RULE)`: its TEXT is matched against the call alone, with a path tool's paths resolved, and a call
-  that chains commands or redirects (`;` `&` `|` a backtick `$(` `<` `>` a newline) is matched only
-  by a TEXT that contains the operator (D24 "Built: 8E-4"); a TEXT left out answers every question. `VALUE` is read by the question's schema with `commandline.value`, as a typed
+  RULE)`: its TEXT is matched against the call alone, with a path tool's paths resolved, and a
+  `bash` TEXT is `bash` alone (every command) or one exact command, a wildcard being a usage error
+  (D24 "Built: 8E-4", amended 2026-11-11); a TEXT left out answers every question. `VALUE` is read by the question's schema with `commandline.value`, as a typed
   answer is: one of a `Literal`'s values (permissions asks `yes | always | no`, D24 §7), `yes`
   for a boolean, `3`, `a,b` for a list.
   ```
   tau -p --answer permissions=yes "tidy the imports"
-  tau -p --answer 'permissions:bash: rm *=no' --answer 'permissions=yes' "clean up"
+  tau -p --answer 'permissions:bash: make test=yes' "fix the test"
   ```
 - **No rule matches: decline** (`answer(id, None)`), and say so on stderr: `tau: declined
   question 4 from permissions: "bash: rm -rf build"`. Declining is safe by D16 §3: the asker

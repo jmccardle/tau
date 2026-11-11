@@ -524,7 +524,10 @@ shared pieces of §1. Where the build differs from the text above, or the text d
 - **`Retrying(attempt, attempts, seconds, reason)`** is a `Delta` (a new `Live` delta kind: wire
   schema regenerated, no `PROTOCOL` bump). `attempt` counts retries (1 to 3), `reason` is the first
   line of the error, cut at 200 characters. The driver forwards it as a `Live` and does not put it
-  in the reply's parts or in a late watcher's catch-up: it says what the sample is doing now. The
+  in the reply's parts: it says what the sample is doing now. (Amended 2026-11-11, John: a late
+  client must not be misled. A late watcher's catch-up during the wait is that `Retrying` with the
+  seconds left, rounded to 0.1 s, and nothing once the wait is over; before, it got nothing, and
+  saw a busy cursor with no reason for up to 60 s.) The
   TUI shows it as a status-bar line (`HTTP 529: overloaded_error: Overloaded: retry 1 of 3 in 2 s`)
   until the next delta or the end of the step. `examples/ratatui` must handle the new kind.
 - **`RetryProvider(inner, *, sleep=asyncio.sleep)`** has no `attempts` or `max_wait`: the policy is
@@ -831,20 +834,15 @@ search: ...]`, a count with no names: silence would read as "no match" and misle
 `deny: ["grep:/etc/*"]` refuses `path=/etc/ssh` and runs `path=/etc` and `path=/` without `/etc`'s
 files. A `read` deny with a glob guards `grep` this way too (`grep` reads; `find` only names).
 Refusing a broad search whole was E4's first answer; John chose filtering (8E-6).
-- **Commands (`tau._shell`).** A glob is not a shell parser. An `allow` rule (and an `--answer`
-  text) never matches a command containing `;` `&` `|` a backtick `$(` `<` `>` or a newline unless
-  the pattern holds that operator too: the command falls to `ask` (or runs, if no `ask` rule names
-  it). A `deny` or `ask` rule is tried on the command whole and on each piece between those
-  operators and parentheses, with a tab read as a space; leading `VAR=value` words, `then` `do`
-  `else` `elif`, a backslash on the first word and the wrappers `command builtin exec nohup time
-  sudo doas env nice ionice stdbuf setsid strace watch timeout xargs` stripped (with their flags,
-  long ones too: `sudo -u X`, `sudo --user X`, `sudo -nu X`, `env -i`, `nice -n N`, `timeout -s KILL
-  5`); `if` `while` `until` and `function NAME` are stripped like `then`; and the first word reduced to its basename. So `bash:rm *` refuses `ls; rm
-  x`, `/bin/rm x`, `\rm x`, `if a; then rm x; fi`, `sudo -u root rm x` and `ls | xargs rm -f`. That
-  an asking rule is also hard to step around is beyond what §7 asked. A `bash` deny is best effort
-  (quoting, `eval`, `bash -c "..."`, what `find -exec` runs and a name built by expansion are not
-  seen): `ask: [bash]` is
-  the safe setting, and the guide says so.
+- **Commands (`tau._shell`, removed 2026-11-11).** As built, a glob over a command, with an
+  `allow` that never vouched for a chain and a `deny`/`ask` tried on each piece of one after
+  stripping wrappers (`sudo`, `env`, `xargs`, ...). Best effort, and so no guard: quoting, `eval`,
+  `bash -c` and expansion step around it. **Ruling (John, D08 #3, 2026-11-11):** advertise only
+  what holds, walls or open paths, not walls with holes. A `bash` rule names the tool: `deny` and
+  `ask` take `bash` alone, `allow` takes `bash` or `bash:COMMAND`, one exact command (`always` saves
+  that form, `*` `?` `[` written `[*]` `[?]` `[[]`, so saved rules keep working). A `bash` rule
+  with a wildcard, or with a command in `deny` or `ask`, is an option error naming the rule. Finer
+  rules over commands are left to an extension of one's own (its `pre_tool` sees the command).
 - **The question** is the call, then `(ask rule: RULE)`. The call is `bash: COMMAND`, a line
   `TOOL: PATH` for each resolved path of a path tool, or `TOOL: ARGS` (the raw arguments) for any
   other tool. When a path was written differently, the rule line ends `; as written: PATH)`. The
@@ -852,8 +850,9 @@ Refusing a broad search whole was E4's first answer; John chose filtering (8E-6)
   after them. Choices are `yes | always | no`, in that order.
 - **`--answer`** (D22 §5). For a `permissions` question with an explicit TEXT the glob is over the
   call alone: the `(ask rule: ...)` line is not part of it, so no trailing `*` is needed. The TEXT
-  may be written as the question shows it (`bash: echo*`) or as a rule (`bash:echo*`). A `bash`
-  command is matched as an `allow` pattern is (a chain needs the operator in the TEXT); any other
+  may be written as the question shows it (`bash: make test`) or as a rule (`bash:make test`). A
+  `bash` TEXT is as an `allow` rule is (2026-11-11): `bash` alone answers every command, otherwise
+  one exact command; one with a wildcard is a usage error. Any other
   tool's call is matched whole by the glob, since its JSON arguments are no shell command. A path
   tool's TEXT must match every `TOOL: PATH` line, and those hold the resolved paths, so
   `permissions:read: /proj/*=yes` does not answer `/proj/../etc/shadow`. A TEXT left out
@@ -872,7 +871,7 @@ Refusing a broad search whole was E4's first answer; John chose filtering (8E-6)
 - **A refusal** from `no`, a decline, an abort or a go-to is `the user refused this call`. A `deny`
   rule says `permissions refused this call: it matches the deny rule 'RULE'`.
 - **`/config permissions ask=bash,write`** splits a list at commas; a rule that contains a comma
-  is typed as a JSON array (`ask=["bash:cp a,b *"]`), as for any list option.
+  is typed as a JSON array (`allow=["bash:cp a,b c"]`), as for any list option.
 - **Attached `tau -p`** answers (by `--answer`, else declines) the questions that open after it
   attached on its own cursor and on the cursors its own run opened, an agent's included. Nothing records who opened a cursor, so a
   cursor is the run's if an extension wrote a user message on its walk after the attach, while the

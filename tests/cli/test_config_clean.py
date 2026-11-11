@@ -12,7 +12,7 @@ DIRTY = {
         "deleted": {"x": 1},
         "retry": {"x": 1},
         "step_limit": {"limit": 4, "bogus": 1},
-        "permissions": {"deny": ["nosuch", "bash:rm *"], "ask": ["Bash"]},
+        "permissions": {"deny": ["nosuch", "bash"], "ask": ["Bash"]},
     },
 }
 
@@ -49,7 +49,7 @@ def test_clean_removes_what_is_missing_or_invalid_and_keeps_the_rest(world: Worl
         "load": {"usage": True},
         "extensions": {
             "step_limit": {"limit": 4},
-            "permissions": {"deny": ["bash:rm *"]},
+            "permissions": {"deny": ["bash"]},
         },
     }
     again = tau(world, "config", "check")

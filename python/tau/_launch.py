@@ -36,7 +36,7 @@ class AnswerRule:
     """One `--answer EXTENSION[:TEXT]=VALUE` (D22 section 5): the asking `extension` (or `*`), a
     glob over the first line of the question's `text` and the `value` to answer with, read by the
     question's schema. For `permissions` the glob is over the whole call (its `(ask rule: ...)` line
-    left out), and a call that chains commands is matched only by a glob that holds the operator.
+    left out), and a `bash` text is `bash` alone or one exact command.
     `spec` is the argument as typed."""
 
     extension: str
@@ -61,6 +61,11 @@ def answer_rule(spec: str) -> AnswerRule:
     extension, colon, text = head.partition(":")
     if not equals or not extension or (colon and not text):
         raise argparse.ArgumentTypeError(f"{spec!r} is not EXTENSION[:TEXT]=VALUE")
+    if extension == PERMISSIONS and colon:
+        try:
+            _permissions.check_answer(text)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(str(e)) from None
     return AnswerRule(extension, text if colon else "*", value, spec)
 
 
