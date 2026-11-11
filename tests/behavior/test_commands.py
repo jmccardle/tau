@@ -326,7 +326,7 @@ async def test_a_failing_cursor_command_raises_for_the_client_and_fails_the_step
     assert view.hook_error is not None
     assert (view.hook_error.extension, view.hook_error.point) == ("explodes", "pre_step")
     assert view.hook_error.error == "RuntimeError: boom"
-    assert "pre_step" not in recorder.points, "a failed step runs no other hook"
+    assert "pre_step" not in recorder.points, "a failed step skips the other pre_step hooks"
 
 
 @scenario
