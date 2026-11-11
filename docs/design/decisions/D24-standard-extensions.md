@@ -889,7 +889,8 @@ Refusing a broad search whole was E4's first answer; John chose filtering (8E-6)
 - **Known limits, not fixed.** (1) `always` holds for the run and in the user's file but is not
   written as a `Config` node on the branch: a tool hook has no cursor to write one with.
   (2) It is a guard against the model, not a sandbox: a later extension's `pre_tool` can change the
-  outcome, and a `bash` deny is best effort.
+  outcome. A `bash` rule names the tool, or (in `allow`) one exact command, so no `bash` rule
+  claims to see inside a command (§7, D08 #3).
 
 ### Driver: a tool that was not offered is not run
 
