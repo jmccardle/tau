@@ -573,8 +573,8 @@ More of call `index`'s argument text (`args_raw`).
 
 A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of
 `attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the
-reply and is never replayed to a client that starts watching later: it says what the sample
-is doing now, and the next delta (or the end of the sample) replaces it.
+reply: it says what the sample is doing now, and the next delta (or the end of the sample)
+replaces it. A client that starts watching during the wait is told it, with the seconds left.
 
 | field | type | notes |
 |---|---|---|

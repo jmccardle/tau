@@ -1021,7 +1021,7 @@
       "type": "object"
     },
     "Retrying": {
-      "description": "A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of\n`attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the\nreply and is never replayed to a client that starts watching later: it says what the sample\nis doing now, and the next delta (or the end of the sample) replaces it.",
+      "description": "A provider is waiting to try the sample again (D24 section 4): this is retry `attempt` of\n`attempts`, after `seconds`, because the last try failed with `reason`. It is no part of the\nreply: it says what the sample is doing now, and the next delta (or the end of the sample)\nreplaces it. A client that starts watching during the wait is told it, with the seconds left.",
       "type": "object",
       "properties": {
         "kind": {

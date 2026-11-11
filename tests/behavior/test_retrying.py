@@ -1,6 +1,7 @@
 """`RetryProvider` (D24 section 4): a failed sample tried again inside the sample, while nothing
 has been shown, with a `Retrying` delta before each wait that an abort cuts short."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,9 @@ from harness import Harness, scenario
 
 from tau import (
     Body,
+    Client,
     Ending,
+    Event,
     Live,
     Part,
     Provider,
@@ -51,6 +54,10 @@ async def failed_after(tmp_path: Path, script: list[Reply | Fail], waits: Waits)
     await h.send("go")
     await h.settle()
     return h
+
+
+async def first(client: Client, count: int) -> list[Event]:
+    return [await asyncio.wait_for(anext(client), 1) for _ in range(count)]
 
 
 def said(h: Harness) -> list[Retrying]:
@@ -161,6 +168,28 @@ async def test_nothing_is_retried_once_something_was_yielded(tmp_path: Path) -> 
     h = await failed_after(tmp_path, [partial, DONE], waits)
     assert len(h.provider.requests) == 1, "a second try would show `par` twice"
     assert waits.seconds == []
+    await h.close()
+
+
+@scenario
+async def test_a_client_that_starts_watching_during_the_wait_is_told_why_and_how_long(
+    tmp_path: Path,
+) -> None:
+    """Not a cursor that seems to think in silence: the wait, with the seconds it has left."""
+    gate = Gate()
+    h = await failed_after(tmp_path, [OVERLOADED, DONE], Waits(gate))
+    late = await h.connect("late")
+    await first(late, 2)
+    await late.watch([h.cursor])
+    (caught,) = await first(late, 1)
+    assert isinstance(caught, Live)
+    assert isinstance(caught.delta, Retrying)
+    assert caught.delta.attempt == 1
+    assert caught.delta.reason == "HTTP 529: overloaded_error: Overloaded"
+    assert 0 < caught.delta.seconds <= 1.0
+    gate.release()
+    await h.settle()
+    await late.close()
     await h.close()
 
 

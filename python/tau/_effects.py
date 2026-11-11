@@ -10,6 +10,7 @@ import sys
 import traceback
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import aclosing
+from dataclasses import replace
 from typing import cast
 
 from tau import trace
@@ -248,6 +249,7 @@ class SampleRun:
         self._open: _Run | None = None
         self._indices: dict[str, int] = {}  # the provider's own index of each call it named
         self._parts: list[Part] = []
+        self._waiting: tuple[Retrying, float] | None = None  # the retry wait, and when it ends
         self._task: asyncio.Future[Finish] | None = None
         self._cancelled = False
 
@@ -293,8 +295,10 @@ class SampleRun:
 
     def _delta(self, delta: Delta) -> None:
         if isinstance(delta, Retrying):  # no part is forming: nothing was yielded before a retry
+            self._waiting = (delta, asyncio.get_running_loop().time() + delta.seconds)
             self._on_delta(delta)
             return
+        self._waiting = None
         kind = (
             "text"
             if isinstance(delta, TextDelta)
@@ -330,7 +334,12 @@ class SampleRun:
         """The deltas that draw what has streamed so far, for a client that starts watching
         mid-sample: each part not in the tree yet (the reply is saved when the sample ends),
         its calls under the index the provider gave them (a call that was never named in the
-        stream was never drawn, so it is not replayed), then the text of the part still open."""
+        stream was never drawn, so it is not replayed), then the text of the part still open.
+        During a retry wait (nothing has streamed) it is that `Retrying`, with the seconds left."""
+        if self._waiting is not None:
+            said, ends = self._waiting
+            left = round(ends - asyncio.get_running_loop().time(), 1)
+            return [replace(said, seconds=left)] if left > 0 else []
         deltas: list[Delta] = []
         for part in self._parts:
             match part:
