@@ -8,7 +8,7 @@ import json
 import math
 import sys
 import traceback
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import replace
 from typing import cast
@@ -35,7 +35,6 @@ from tau._protocols import (
     Extension,
     Finish,
     Progress,
-    ProgressTool,
     Provider,
     SampleError,
     Tool,
@@ -423,7 +422,7 @@ class CallRun:
         context: Context,
         owners: Mapping[str, str],
         batch: int,
-        progress_tools: Collection[str],
+        tool_keywords: Mapping[str, frozenset[str]],
         on_progress: Callable[[ToolProgress], None],
         offered: Collection[str] | None = None,
     ) -> None:
@@ -437,7 +436,7 @@ class CallRun:
         self._context = context
         self._owners = owners
         self._batch = batch
-        self._progress_tools = progress_tools
+        self._tool_keywords = tool_keywords
         self._on_progress = on_progress
         self._task: asyncio.Future[Outcome] | None = None
         self._aborted = False
@@ -541,11 +540,15 @@ class CallRun:
         if isinstance(tool, FunctionTool):
             self._showing = True
             call = self._function_call(tool, args_raw)
-        elif self._tool in self._progress_tools:
-            self._showing = True
-            call = cast("ProgressTool", tool).call(args_raw, progress=self._progress())
         else:
-            call = tool.call(args_raw)
+            taken = self._tool_keywords.get(self._tool, frozenset())
+            self._showing = "progress" in taken
+            keywords: dict[str, object] = {}
+            if "progress" in taken:
+                keywords["progress"] = self._progress()
+            if "call_id" in taken:
+                keywords["call_id"] = self.id
+            call = cast("Callable[..., Awaitable[Outcome]]", tool.call)(args_raw, **keywords)
         return asyncio.ensure_future(call)
 
     async def _function_call(self, tool: FunctionTool, args_raw: str) -> Outcome:

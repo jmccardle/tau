@@ -282,7 +282,7 @@ whose `provider` is not its own.
    for all three.
 
 19. **Tool progress (built).** A tool opts in by giving `call` a parameter named
-   `progress`, detected once when the driver is built (`takes_progress`); the driver then
+   `progress`, detected once when the driver is built (`tool_keywords`; D15 amended 2026-11-12, it was `takes_progress`); the driver then
    passes a `Progress` (`Callable[[str], None]`) by keyword. A tool without it is called with
    `args_raw` alone. Chosen over a context-local `tau.progress(text)` because it is
    explicit in the signature (a bad `progress` fails when the driver is built), needs no
@@ -302,6 +302,13 @@ whose `provider` is not its own.
    take a parameter named `progress` the same way; it is not an argument, so it is not in
    `parameters`. A `progress` parameter annotated as anything but `Progress` (an argument
    that happens to share the name) is a `ToolDefinitionError`, not silently taken over.
+   **Amended 2026-11-12: the call id.** A tool that runs somewhere else (a remote executor)
+   needs its call's id, so `call` may also name a parameter `call_id`: the driver passes the
+   `Part.Call`'s `id` by keyword, found by the same one pass as `progress` (`tool_keywords`,
+   which replaced `takes_progress`; a positional-only keyword is a `DefinitionError`). Only
+   `Tool` objects take it. A `@tool` function takes `Progress` by annotation, and `call_id` has
+   no annotation: a new injected type would be a new public concept shared by commands (which
+   run no call), for a need that a `Tool` object already meets.
    `bash` passes its output to `progress` as it arrives. The reader thread (Rust, no GIL)
    only copies bytes into a buffer of at most 64 KiB; a thread of its own takes the GIL for
    each call and passes the buffer on at most once per 100 ms (the first bytes after a quiet

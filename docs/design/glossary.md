@@ -2822,8 +2822,24 @@ callable. A module with a `name` is an extension (D16 §6).
 `_protocols.ProgressTool` · D15 · new
 
 The `Protocol` of the `call` of a `Tool` that opted in to progress (see **progress
-callback**): `async call(args_raw, *, progress) -> Outcome`. The driver casts to it for the
-tools `check_tools` found taking progress.
+callback**): `async call(args_raw, *, progress) -> Outcome`. It documents the opt-in; the driver
+passes whichever of the optional keywords `check_tools` found (see **tool keywords**).
+
+### CallIdTool, call_id keyword, tool keywords
+`_protocols.CallIdTool`, `_protocols.TOOL_KEYWORDS`, `_protocols.tool_keywords(tool)` · new
+
+The `Protocol` of the `call` of a `Tool` that opted in to its call id: `async call(args_raw, *,
+call_id) -> Outcome`. A hand-written `Tool` opts in by giving `call` a parameter named `call_id`;
+the driver passes the call's id by keyword: the `id` of the `Part.Call` in the `Assistant` node,
+the same value as `CallDraft.id` and `ToolProgress.call_id`. It is for a tool that runs elsewhere
+and must tell its calls apart; the id alone may repeat across batches (see **progress callback**),
+so `(batch node, call_id)` is what is unique. The **tool keywords** are the optional keywords a
+`call` can take, `TOOL_KEYWORDS` = `("progress", "call_id")`; `tool_keywords(tool)` finds them in
+one pass (it replaces `takes_progress`), and `check_tools` returns, for each tool that takes any,
+the `frozenset` of them, so the driver reads the signature once. One that is positional-only is a
+`DefinitionError`. A tool made from a function (`FunctionTool`) takes neither keyword: it is given
+`Progress` by annotation and has no call-id annotation, since a new injected type would be a new
+public concept for every tool and command; a function that needs its id is a `Tool` object.
 
 ### check_meta
 `_protocols.check_meta(meta)` · new
@@ -3302,8 +3318,9 @@ buffer drops it).
 
 What a tool is given to show partial output: `progress(text)`. A hand-written `Tool` opts in by
 giving `call` a parameter named `progress`, detected once when the driver is built
-(`takes_progress`, once, in `check_tools`); a `progress` that cannot be passed by keyword
-is a `DefinitionError`.
+(`tool_keywords`, once, in `check_tools`); a `progress` that cannot be passed by keyword
+is a `DefinitionError`. A `call_id` parameter gets the call's id in the same way (see
+**CallIdTool**).
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
 nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A described
 function takes it as a parameter annotated `Progress`, whatever its name, an **injected
