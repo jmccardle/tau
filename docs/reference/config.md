@@ -151,6 +151,7 @@ class ModelCatalog
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
     system_prompt_source: str | None = None
+    context_files: bool = True
     tui: Mapping[str, str] = field(default_factory=lambda: {})
 ```
 
@@ -163,9 +164,10 @@ D16 section 4). Which options an extension has is its own to say (`check_config`
 (`NAME.FIELD`), for the problems found in them.
 `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
 `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
-that set it (`CLI` for `--system-prompt`). `tui` is the merged `tui`
-object (D23: `theme`; only the user's file and the command line set it, a project's is an
-error).
+that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
+`False`: no context files are read; true when none sets it; `-nc` forces it off). `tui` is the
+merged `tui` object (D23: `theme`; only the user's file and the command line set it, a
+project's is an error).
 
 ### ModelCatalog.names
 
@@ -665,5 +667,6 @@ def system_prompt(
 ```
 
 The prompt for a session in `cwd` (resolved here), given the loaded config: its base text,
-`append` (`--append-system-prompt`, in order) and, if `context_files`, the files as the module
-says. A part with no text is left out. `ContextFileError` for a file found and unusable.
+`append` (`--append-system-prompt`, in order) and, if `context_files` and the config's
+`context_files` key is not false, the files as the module says. A part with no text is left
+out. `ContextFileError` for a file found and unusable.

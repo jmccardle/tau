@@ -477,12 +477,9 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
     if prompt is None:
         out.write("  system_prompt  (built in)\n")
     else:
-        out.write(
-            safe_text(
-                f"  system_prompt  {len(prompt.encode())} bytes  [{catalog.system_prompt_source}]"
-            )
-            + "\n"
-        )
+        size, source = len(prompt.encode()), catalog.system_prompt_source
+        out.write(safe_text(f"  system_prompt  {size} bytes  [{source}]") + "\n")
+    out.write(f"  context_files  {'on' if catalog.context_files else 'off'}\n")
 
 
 def _trust(run: _Run, given: Path | None) -> int:

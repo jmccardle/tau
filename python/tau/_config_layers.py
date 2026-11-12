@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import cast
 
 from tau._config import ConfigError, ModelConfig, Price, key_problem, url_problem
-from tau._config_keys import extensions, load_switches, system_prompt, tui_settings
+from tau._config_keys import context_files, extensions, load_switches, system_prompt, tui_settings
 from tau._config_tree import (
     ConfigProblem,
     Leaf,
@@ -46,7 +46,15 @@ _MODEL_KEYS = (
 )
 _INT_KEYS = ("max_tokens", "context_window")
 _OBJECT_KEYS = ("options", "price")  # settings that are objects, merged by key
-_TOP_KEYS = ("models", "default_model", "extensions", "load", "system_prompt", "tui")
+_TOP_KEYS = (
+    "models",
+    "default_model",
+    "extensions",
+    "load",
+    "system_prompt",
+    "context_files",
+    "tui",
+)
 _EXCLUSIVE = {"api_key": "api_key_env", "api_key_env": "api_key"}  # one setting, two spellings
 _VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RENAMED_KEY = "backend"  # rules: allow(backend): 0.15's key name, which D13 rejects by name
@@ -97,9 +105,10 @@ class ModelCatalog:
     (`NAME.FIELD`), for the problems found in them.
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
-    that set it (`CLI` for `--system-prompt`). `tui` is the merged `tui`
-    object (D23: `theme`; only the user's file and the command line set it, a project's is an
-    error)."""
+    that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
+    `False`: no context files are read; true when none sets it; `-nc` forces it off). `tui` is the
+    merged `tui` object (D23: `theme`; only the user's file and the command line set it, a
+    project's is an error)."""
 
     models: Mapping[str, ResolvedModel]
     default_model: str | None
@@ -110,6 +119,7 @@ class ModelCatalog:
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
     system_prompt_source: str | None = None
+    context_files: bool = True
     tui: Mapping[str, str] = field(default_factory=lambda: {})
 
     def names(self) -> tuple[str, ...]:
@@ -631,6 +641,7 @@ def _build(
     default = _default_model(merged, resolver.declared, problems)
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
+    context = context_files(merged, problems)
     options, option_sources = extensions(merged, problems)
     tui = tui_settings(merged, problems)
     found = tuple(problems.found)
@@ -645,6 +656,7 @@ def _build(
         load_sources=switched_by,
         system_prompt=prompt,
         system_prompt_source=prompt_source,
+        context_files=context,
         tui=tui,
     )
     return catalog, found

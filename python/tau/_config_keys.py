@@ -74,6 +74,19 @@ def system_prompt(merged: Tree, problems: Problems) -> tuple[str | None, str | N
     return node.value, node.source
 
 
+def context_files(merged: Tree, problems: Problems) -> bool:
+    """The merged `context_files`: true when no layer sets it. A `null` drops an inherited value."""
+    node = merged.get("context_files")
+    if node is None or (isinstance(node, Leaf) and node.value is None):
+        return True
+    if not (isinstance(node, Leaf) and isinstance(node.value, bool)):
+        problems.add(
+            "error", "'context_files' must be true or false", source_of(node), "context_files"
+        )
+        return True
+    return node.value
+
+
 def tui_settings(merged: Tree, problems: Problems) -> dict[str, str]:
     """The merged `tui` object: each setting a string of a key `tui` has (`theme`). A `null` drops
     an inherited value."""

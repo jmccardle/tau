@@ -506,6 +506,67 @@ def test_config_check_show_says_which_layer_the_base_text_comes_from(world: Worl
     assert "system_prompt  (built in)" in tau(world, "config", "check", "--show", "m").out
 
 
+def test_the_context_files_key_set_false_leaves_out_every_file(world: World) -> None:
+    root = project(world)
+    write(root / "AGENTS.md", "agents")
+    write(world.tau / "AGENTS.md", "global")
+    world.user_config({"context_files": False})
+    prompt = assemble(world, root)
+    assert files_of(world, prompt) == []
+    assert "<project_context>" not in prompt.text
+    assert [s.origin for s in prompt.sources] == ["base"]
+
+
+def test_the_context_files_key_is_true_unless_a_layer_says_otherwise(world: World) -> None:
+    write(world.home / "AGENTS.md", "agents")
+    assert files_of(world, assemble(world)) == ["home/AGENTS.md"]
+    world.user_config({"context_files": True})
+    assert files_of(world, assemble(world)) == ["home/AGENTS.md"]
+
+
+def test_the_projects_context_files_key_overrides_the_users_and_null_drops_it(
+    world: World,
+) -> None:
+    world.user_config({"context_files": False})
+    root = world.project("proj", {"context_files": True})
+    trust(world, root)
+    write(root / "AGENTS.md", "agents")
+    assert files_of(world, assemble(world, root)) == ["home/proj/AGENTS.md"]
+    world.user_config({"context_files": False})
+    nulled = world.project("nulled", {"context_files": None})
+    trust(world, nulled)
+    write(nulled / "AGENTS.md", "agents")
+    assert files_of(world, assemble(world, nulled)) == ["home/nulled/AGENTS.md"]
+
+
+def test_the_context_files_key_set_false_does_not_read_what_would_have_failed(
+    world: World,
+) -> None:
+    write(world.home / "AGENTS.md", b"\xff")
+    world.user_config({"context_files": False})
+    assert "\xff" not in assemble(world).text
+
+
+def test_a_context_file_error_names_the_config_key_as_well_as_the_flag(world: World) -> None:
+    write(world.home / "AGENTS.md", b"\xff")
+    assert '"context_files": false' in refused(world)
+
+
+def test_a_non_bool_context_files_is_a_config_problem(world: World) -> None:
+    for bad in ("no", 0, 1, ["a"], {"a": 1}):
+        world.user_config({"context_files": bad})
+        result = tau(world, "config", "check")
+        assert result.code == 1, bad
+        assert "'context_files' must be true or false" in result.out
+
+
+def test_config_check_show_says_whether_context_files_are_on(world: World) -> None:
+    config = world.user_config(MOCK)
+    assert "context_files  on" in tau(world, "config", "check", "--show", "m").out
+    config.write_text(json.dumps({**MOCK, "context_files": False}), encoding="utf-8")
+    assert "context_files  off" in tau(world, "config", "check", "--show", "m").out
+
+
 # -- tau context
 
 
@@ -617,6 +678,32 @@ def test_system_prompt_and_no_context_files_flags_make_the_node(configured: Worl
     started = start(configured, "--system-prompt", "only this", "-nc")
     try:
         assert prompt_of(started.session) == "only this"
+    finally:
+        stop(started)
+
+
+def test_the_context_files_key_applies_to_tau_context_and_a_new_session(
+    configured: World,
+) -> None:
+    write(configured.home / "AGENTS.md", "zq-rules")
+    configured.user_config({**MOCK, "context_files": False})
+    assert "zq-rules" not in tau(configured, "context", "--show").out
+    started = start(configured)
+    try:
+        assert "zq-rules" not in prompt_of(started.session)
+    finally:
+        stop(started)
+
+
+def test_dash_nc_with_the_key_already_false_is_no_error(configured: World) -> None:
+    write(configured.home / "AGENTS.md", "zq-rules")
+    configured.user_config({**MOCK, "context_files": False})
+    result = tau(configured, "context", "--show", "-nc")
+    assert result.code == 0, result.err
+    assert "zq-rules" not in result.out
+    started = start(configured, "-nc")
+    try:
+        assert "zq-rules" not in prompt_of(started.session)
     finally:
         stop(started)
 

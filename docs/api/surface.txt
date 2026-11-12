@@ -1084,6 +1084,7 @@ class LoadedConfig
     user: UserConfig
 @dataclass(frozen=True)
 class ModelCatalog
+    context_files: bool = True
     default_model: str | None
     def explain(self, qualified: str) -> tuple[Origin, ...]
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})

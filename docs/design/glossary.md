@@ -2058,7 +2058,9 @@ layer, then the project's `.tau/config.json`, then the user's file), literal and
 `{{fields}}`; with none set, the built-in `prompts/base.md` (package data; 0.15's prose without its
 model sentence and tools list) with `{{cwd}}` replaced by the working directory; `"system_prompt":
 ""` is no base text, `null` drops an inherited value; (2) each `--append-system-prompt TEXT`, in
-order; (3) unless `-nc`/`--no-context-files`, the **context files** in a `<project_context>` block,
+order; (3) unless `-nc`/`--no-context-files` or the config key **`context_files`** is false (a bool, default true,
+nearest layer wins, `null` drops an inherited value, a non-bool a `ConfigError`; held as
+`ModelCatalog.context_files`; for a program with no command line), the **context files** in a `<project_context>` block,
 each as `<project_instructions path="/abs/path">`: one from `$TAU_HOME`, one from each directory
 from `/` down to the working directory (the nearest last), then the trusted project's
 `.tau/SYSTEM.md`.
@@ -2071,7 +2073,7 @@ project's `SYSTEM.md` is the bytes trust approved (`Trusted.system_md`), never t
 read from the project's `.tau/`, not only the working directory's. `AGENTS.md` and `CLAUDE.md` need
 no trust. No size limit. **`ContextFileError`** (a `ConfigError`) is a file that was found and
 cannot be used (unreadable, not strict UTF-8, a symlink to nothing, or git's own files for the
-worktree rule); it names the path and the cause and says `--no-context-files`, and no session is
+worktree rule); it names the path and the cause and says `--no-context-files` and `"context_files": false`, and no session is
 created. A leading BOM is dropped.
 
 **`SystemPrompt`** has `text` and `sources`: a tuple of **`PromptSource`** (`origin`: `"base"`,
@@ -2083,10 +2085,10 @@ TEXT` (repeatable) and `-nc`. On `-c`, `-r`, `--session` and `--fork` the first 
 `ConfigError` ("the session already has its system prompt (node 1); start a new session for a
 different one"; for a fork, "a fork copies its source's system prompt"), and `-nc` is accepted.
 `system_prompt` is a config key of the files and the command line only: a `Config` node holding it
-is refused like any key but `model` and `extensions`. **`tau context [-nc] [--system-prompt T]
+is refused like any key but `model` and `extensions`. A program's own `system` text refuses `-nc` (and the other flags) but not the key, which is config and not a flag the person just typed. **`tau context [-nc] [--system-prompt T]
 [--append-system-prompt T]... [--show]`** runs the assembly in the working directory without a
 session: a line per part (`SIZE  ORIGIN`), or with `--show` the text; `tau config check --show`
-adds a `system_prompt` line naming the layer.
+adds a `system_prompt` line naming the layer and a `context_files` line (`on` or `off`).
 
 ### session_name, /name
 `tau._builtin.SessionName` · D18 · new

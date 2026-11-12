@@ -943,6 +943,17 @@ def test_a_program_with_its_own_system_text_refuses_the_flags_that_shape_the_ass
     assert sessions_of(configured) == []
 
 
+def test_a_program_with_its_own_system_text_is_not_refused_for_the_context_files_key(
+    configured: World,
+) -> None:
+    configured.user_config({**MOCK, "context_files": False})
+    started = start(configured)
+    try:
+        assert started.prompt is None or "<project_context>" not in started.prompt.text
+    finally:
+        stop(started)
+
+
 # -- names
 
 
