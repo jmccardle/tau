@@ -106,7 +106,8 @@ class ModelCatalog:
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
     that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
-    `False`: no context files are read; true when none sets it; `-nc` forces it off). `tui` is the
+    `False`: no context files are read; true when none sets it; `-nc` forces it off) and
+    `context_files_source` the layer that set it. `tui` is the
     merged `tui` object (D23: `theme`; only the user's file and the command line set it, a
     project's is an error)."""
 
@@ -120,6 +121,7 @@ class ModelCatalog:
     system_prompt: str | None = None
     system_prompt_source: str | None = None
     context_files: bool = True
+    context_files_source: str | None = None
     tui: Mapping[str, str] = field(default_factory=lambda: {})
 
     def names(self) -> tuple[str, ...]:
@@ -641,7 +643,7 @@ def _build(
     default = _default_model(merged, resolver.declared, problems)
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
-    context = context_files(merged, problems)
+    context, context_source = context_files(merged, problems)
     options, option_sources = extensions(merged, problems)
     tui = tui_settings(merged, problems)
     found = tuple(problems.found)
@@ -657,6 +659,7 @@ def _build(
         system_prompt=prompt,
         system_prompt_source=prompt_source,
         context_files=context,
+        context_files_source=context_source,
         tui=tui,
     )
     return catalog, found

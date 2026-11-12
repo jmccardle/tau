@@ -2088,7 +2088,7 @@ different one"; for a fork, "a fork copies its source's system prompt"), and `-n
 is refused like any key but `model` and `extensions`. A program's own `system` text refuses `-nc` (and the other flags) but not the key, which is config and not a flag the person just typed. **`tau context [-nc] [--system-prompt T]
 [--append-system-prompt T]... [--show]`** runs the assembly in the working directory without a
 session: a line per part (`SIZE  ORIGIN`), or with `--show` the text; `tau config check --show`
-adds a `system_prompt` line naming the layer and a `context_files` line (`on` or `off`).
+adds a `system_prompt` line naming the layer and a `context_files` line (`on` or `off`, and the layer that set it or `default`).
 
 ### session_name, /name
 `tau._builtin.SessionName` · D18 · new
@@ -2818,18 +2818,10 @@ naming it: a missing, non-`str` or empty `name`, a `name` that is not letters, d
 (method, field, class attribute) named `pre_*` or `post_*` that is not a hook point or is not
 callable. A module with a `name` is an extension (D16 §6).
 
-### ProgressTool
-`_protocols.ProgressTool` · D15 · new
+### call_id keyword, tool keywords
+`_protocols.TOOL_KEYWORDS`, `_protocols.tool_keywords(tool)` · D15 · new
 
-The `Protocol` of the `call` of a `Tool` that opted in to progress (see **progress
-callback**): `async call(args_raw, *, progress) -> Outcome`. It documents the opt-in; the driver
-passes whichever of the optional keywords `check_tools` found (see **tool keywords**).
-
-### CallIdTool, call_id keyword, tool keywords
-`_protocols.CallIdTool`, `_protocols.TOOL_KEYWORDS`, `_protocols.tool_keywords(tool)` · new
-
-The `Protocol` of the `call` of a `Tool` that opted in to its call id: `async call(args_raw, *,
-call_id) -> Outcome`. A hand-written `Tool` opts in by giving `call` a parameter named `call_id`;
+A hand-written `Tool` opts in by giving `call` a parameter named `call_id`;
 the driver passes the call's id by keyword: the `id` of the `Part.Call` in the `Assistant` node,
 the same value as `CallDraft.id` and `ToolProgress.call_id`. It is for a tool that runs elsewhere
 and must tell its calls apart; the id alone may repeat across batches (see **progress callback**),
@@ -2837,7 +2829,8 @@ so `(batch node, call_id)` is what is unique. The **tool keywords** are the opti
 `call` can take, `TOOL_KEYWORDS` = `("progress", "call_id")`; `tool_keywords(tool)` finds them in
 one pass (it replaces `takes_progress`), and `check_tools` returns, for each tool that takes any,
 the `frozenset` of them, so the driver reads the signature once. One that is positional-only is a
-`DefinitionError`. A tool made from a function (`FunctionTool`) takes neither keyword: it is given
+`DefinitionError`, as is a `*` or `**` parameter of the name; a catch-all `**kwargs` opts in to
+nothing. A tool made from a function (`FunctionTool`) takes neither keyword: it is given
 `Progress` by annotation and has no call-id annotation, since a new injected type would be a new
 public concept for every tool and command; a function that needs its id is a `Tool` object.
 
@@ -3320,7 +3313,7 @@ What a tool is given to show partial output: `progress(text)`. A hand-written `T
 giving `call` a parameter named `progress`, detected once when the driver is built
 (`tool_keywords`, once, in `check_tools`); a `progress` that cannot be passed by keyword
 is a `DefinitionError`. A `call_id` parameter gets the call's id in the same way (see
-**CallIdTool**).
+**call_id keyword**).
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
 nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A described
 function takes it as a parameter annotated `Progress`, whatever its name, an **injected

@@ -949,7 +949,7 @@ def test_a_program_with_its_own_system_text_is_not_refused_for_the_context_files
     configured.user_config({**MOCK, "context_files": False})
     started = start(configured)
     try:
-        assert started.prompt is None or "<project_context>" not in started.prompt.text
+        assert started.prompt is None
     finally:
         stop(started)
 

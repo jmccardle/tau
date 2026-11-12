@@ -315,7 +315,8 @@ The driver then passes a `Progress` by keyword. The same opt-in, a parameter nam
 `Part.Call` the model made, as in `CallDraft.id` and `ToolProgress.call_id`, which a tool
 running elsewhere can use to tell its calls apart. A keyword that cannot be passed by
 keyword (positional-only) is a `DefinitionError` when the driver is built. A tool whose
-`call` has neither is called with `args_raw` alone, as before. (A tool made from a function
+`call` has neither is called with `args_raw` alone, as before; a catch-all `**kwargs` does not
+opt in to anything. (A tool made from a function
 takes `Progress` by annotation; it has no call id to take.)
 
 ### Tool.name

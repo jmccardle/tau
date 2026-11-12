@@ -148,8 +148,8 @@ def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], dict[str, f
 def tool_keywords(tool: object) -> frozenset[str]:
     """The optional keywords `tool.call` opts in to: those of `TOOL_KEYWORDS` it has a parameter
     named, which the driver then passes by keyword. One that cannot be passed by keyword
-    (positional-only) raises `DefinitionError`. A `call` with no inspectable signature has
-    opted in to none."""
+    (positional-only, or `*` or `**` of the name) raises `DefinitionError`. A `call` with no
+    inspectable signature has opted in to none."""
     try:
         parameters = inspect.signature(getattr(tool, "call")).parameters  # noqa: B009
     except (ValueError, TypeError):
@@ -159,9 +159,10 @@ def tool_keywords(tool: object) -> frozenset[str]:
         param = parameters.get(keyword)
         if param is None:
             continue
-        if param.kind is param.POSITIONAL_ONLY:
+        if param.kind not in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY):
             raise DefinitionError(
                 f"tool {getattr(tool, 'name', tool)!r}: `{keyword}` must be passable by keyword"
+                " (a plain or keyword-only parameter, not positional-only, `*` or `**`)"
             )
         taken.add(keyword)
     return frozenset(taken)
@@ -239,7 +240,8 @@ class Tool(Protocol):
     `Part.Call` the model made, as in `CallDraft.id` and `ToolProgress.call_id`, which a tool
     running elsewhere can use to tell its calls apart. A keyword that cannot be passed by
     keyword (positional-only) is a `DefinitionError` when the driver is built. A tool whose
-    `call` has neither is called with `args_raw` alone, as before. (A tool made from a function
+    `call` has neither is called with `args_raw` alone, as before; a catch-all `**kwargs` does not
+    opt in to anything. (A tool made from a function
     takes `Progress` by annotation; it has no call id to take.)
     """
 
@@ -262,18 +264,6 @@ class Tool(Protocol):
         """Run with the call's `args_raw`. Answer `Ok` or `Err`; an exception raised is
         the call's `Err(str(e))`."""
         ...
-
-
-class ProgressTool(Protocol):
-    """The `call` of a `Tool` that opted in to progress (see `Tool`)."""
-
-    async def call(self, args_raw: str, *, progress: Progress) -> Outcome: ...
-
-
-class CallIdTool(Protocol):
-    """The `call` of a `Tool` that opted in to its call id (see `Tool`)."""
-
-    async def call(self, args_raw: str, *, call_id: str) -> Outcome: ...
 
 
 CURSOR_POINTS = (

@@ -562,9 +562,10 @@ def test_a_non_bool_context_files_is_a_config_problem(world: World) -> None:
 
 def test_config_check_show_says_whether_context_files_are_on(world: World) -> None:
     config = world.user_config(MOCK)
-    assert "context_files  on" in tau(world, "config", "check", "--show", "m").out
+    assert "context_files  on  [default]" in tau(world, "config", "check", "--show", "m").out
     config.write_text(json.dumps({**MOCK, "context_files": False}), encoding="utf-8")
-    assert "context_files  off" in tau(world, "config", "check", "--show", "m").out
+    shown = tau(world, "config", "check", "--show", "m").out
+    assert f"context_files  off  [{config}]" in shown
 
 
 # -- tau context

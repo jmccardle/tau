@@ -177,37 +177,85 @@ async def test_a_tool_takes_progress_and_call_id_together(tmp_path: Path) -> Non
     await h.close()
 
 
-class PositionalOnly:
-    """A tool whose `call` takes the keyword where it cannot be passed by one."""
+class Malformed:
+    """A tool whose `call` declares a keyword where a driver cannot pass it by keyword."""
 
-    name = "positional"
+    name = "malformed"
     description = "Malformed."
     parameters: Mapping[str, object] = {"type": "object", "properties": {}}
 
-    async def call(self, args_raw: str, call_id: str, /) -> Outcome:
-        return Outcome.Ok(call_id)
+    def __init__(self, call: object) -> None:
+        self.call = call
 
 
-class PositionalProgress:
-    """The same, for `progress`."""
+async def positional_call_id(args_raw: str, call_id: str, /) -> Outcome:
+    return Outcome.Ok(call_id)
 
-    name = "positional"
-    description = "Malformed."
-    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
 
-    async def call(self, args_raw: str, progress: Progress, /) -> Outcome:
-        return Outcome.Ok("never")
+async def positional_progress(args_raw: str, progress: Progress, /) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def star_call_id(args_raw: str, *call_id: str) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def star_progress(args_raw: str, *progress: Progress) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def double_star_call_id(args_raw: str, **call_id: str) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def double_star_progress(args_raw: str, **progress: Progress) -> Outcome:
+    return Outcome.Ok("never")
 
 
 @scenario
 @pytest.mark.parametrize(
-    ("tool", "keyword"), [(PositionalOnly(), "call_id"), (PositionalProgress(), "progress")]
+    ("call", "keyword"),
+    [
+        (positional_call_id, "call_id"),
+        (positional_progress, "progress"),
+        (star_call_id, "call_id"),
+        (star_progress, "progress"),
+        (double_star_call_id, "call_id"),
+        (double_star_progress, "progress"),
+    ],
 )
 async def test_a_keyword_that_cannot_be_passed_by_keyword_fails_when_the_driver_is_built(
-    tmp_path: Path, tool: object, keyword: str
+    tmp_path: Path, call: object, keyword: str
 ) -> None:
-    with pytest.raises(DefinitionError, match=rf"'positional'.*`{keyword}` must be passable"):
-        await Harness.create(tmp_path, provider=calling(), tools=[cast("Any", tool)])
+    tool = cast("Any", Malformed(call))
+    with pytest.raises(DefinitionError, match=rf"'malformed'.*`{keyword}` must be passable"):
+        await Harness.create(tmp_path, provider=calling(), tools=[tool])
+
+
+class CatchAll:
+    """A tool whose `call` takes `**kwargs` only: that opts in to nothing."""
+
+    name = "catchall"
+    description = "Takes whatever it is given."
+    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.seen: list[dict[str, object]] = []
+
+    async def call(self, args_raw: str, **kwargs: object) -> Outcome:
+        self.seen.append(kwargs)
+        return Outcome.Ok("ok")
+
+
+@scenario
+async def test_a_catch_all_kwargs_tool_is_given_no_keywords(tmp_path: Path) -> None:
+    tool = CatchAll()
+    provider = calling(Part.Call("c1", "catchall", "{}"))
+    h = await Harness.create(tmp_path, provider=provider, tools=[cast("Any", tool)])
+    await h.send("go")
+    await h.settle()
+    assert tool.seen == [{}]
+    await h.close()
 
 
 def counting(n: int, progress: Progress) -> str:
