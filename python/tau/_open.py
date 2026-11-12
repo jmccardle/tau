@@ -117,9 +117,10 @@ def _refuse_ignored(
     if ignored:
         raise ConfigError(
             f"session {record.session} is served by pid {record.pid}, whose extensions, "
-            f"options and name are set; {' and '.join(ignored)} would be ignored. Stop the server "
-            f"(`tau serve --stop --session {record.session}`), or work on a copy: "
-            f"tau --fork {record.session}"
+            f"options and name are set; {' and '.join(ignored)} would be ignored. Stop that "
+            f"process "
+            f"(`tau serve --stop --session {record.session}` if it is a `tau serve`), or work on "
+            f"a copy: tau --fork {record.session}"
         )
 
 

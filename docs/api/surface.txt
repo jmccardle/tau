@@ -676,6 +676,7 @@ class Started
     property never_used: bool
     prompt: SystemPrompt | None
     providers: Mapping[str, Provider]
+    async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> 'Server'
     session: Session
     sources: tuple[ExtensionSource, ...]
     async def stop(self) -> None

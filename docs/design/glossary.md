@@ -1780,6 +1780,12 @@ while the lease is held, then closes the session and the providers; a session na
 run (`/name`) counts as used; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
 
+**`Started.serve(socket=None, *, idle=None)`** (async, D21) serves the started session as `tau serve`
+does, for a program that embeds τ: it binds `<home>/serve/<id>.sock` (or `socket`), writes the **serve
+record** naming this process, and returns the `Server`, so `tau -c` in the session's directory
+attaches to it. `Server.close()` is the whole teardown (socket, driver, `Started.stop`, then the
+record, in that order); a session in memory is a `ConfigError`.
+
 ### print mode, tau -p, rest, exit status 3
 modules `tau._launch`, `tau._print_mode`, `tau.cli` · D22 · new
 
@@ -3113,7 +3119,7 @@ in and compared by `scripts/schema.py --check`, so any wire change is a readable
 directory) on a Unix socket; **the wire** is the `Client` contract as JSON-RPC 2.0 over WebSocket
 on that socket, one message per text message (not `providers._wire`). The server is the private
 `tau._serve`; `tau.Server` (`Server.start(driver, path, *, session, cwd, idle=None)`, `wait`,
-`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` and the Harness's remote mode.
+`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` (through the private `serve_session`, the one writer of the serve record), `Started.serve` and the Harness's remote mode.
 `tau serve [session flags] [-e ...] [--socket PATH]` runs in the foreground until SIGTERM or
 SIGINT (the driver stops, each stream gets `end`, the socket and record go, exit 0) or the driver
 fails (exit 1). `-d [--json]` starts it detached (its output in `<id>.log`) and prints the record

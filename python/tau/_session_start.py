@@ -53,6 +53,8 @@ from tau._options import make_layer_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
 from tau._retry import RetryProvider
+from tau._serve import Server, serve_session
+from tau._serve_record import checked_socket, serve_directory, socket_path
 from tau._session_settings import SessionSettings
 from tau._sessions import (
     ForkedFrom,
@@ -134,6 +136,34 @@ class Started:
         if read_name(self.directory) != self._name:
             return False
         return not any(self.session.cursor(c).items for c in self.session.cursors())
+
+    async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> "Server":
+        """Serve this session as `tau serve` does, so `tau -c` in its working directory attaches
+        (D21 section 9): bind `socket` (default `<home>/serve/<id>.sock`, in the private serve
+        directory), and write the serve record `<home>/serve/<id>.json`, naming this process.
+        The home, id and working directory are this `Started`'s. `idle` is `Server.start`'s.
+        `Server.close` is the whole teardown: it stops the driver, unbinds the socket, calls
+        `stop` and removes the record; do not call `stop` as well. `ConfigError` for a session
+        in memory (`--no-session`: it has no id to name its files) or a socket path too long;
+        `TrustError` if the serve directory is not a private directory of yours; `OSError` if
+        the socket cannot be bound."""
+        if self.directory is None:
+            raise ConfigError(
+                "a session in memory has no id to name a socket and a serve record: "
+                "serve a kept session"
+            )
+        directory = serve_directory(self.loaded.home)
+        session = self.directory.name
+        path = socket_path(directory, session) if socket is None else checked_socket(socket)
+        return await serve_session(
+            self.driver,
+            path.absolute(),
+            session=session,
+            cwd=self.cwd,
+            home=self.loaded.home,
+            release=self.stop,
+            idle=idle,
+        )
 
     async def stop(self) -> None:
         """Stop the driver; delete the session's directory if it was never used (while the lease

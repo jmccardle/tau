@@ -97,9 +97,12 @@ with `idle`, has rested that long (returns `None`).
 async def close(self) -> None
 ```
 
-Let the connections finish (the driver should be stopped, so each has said `end`; one
-that has not in `GRACE` seconds is closed), then unbind. A call a connection began and
-left is cancelled.
+Close the server, in the order that keeps a client from finding a half-closed one:
+stop accepting and unlink the socket, stop the driver (each stream says `end`), let the
+connections finish (one that has not in `GRACE` seconds is closed), cancel a call a
+connection began and left. A server `Started.serve` made then also releases the session
+(`Started.stop`: its lease) and last removes the serve record, if it still holds this
+server (no record means the session is free).
 
 ## Welcome
 
