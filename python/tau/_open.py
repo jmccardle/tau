@@ -95,7 +95,7 @@ async def _server_of(choice: SessionChoice, home: Path) -> tuple[ServeRecord, We
         return None
     if sys.platform == "win32":  # no server runs there (`require_unix_sockets`)
         return None
-    return await live_server(serve_directory(home), choice.source.id)
+    return await live_server(serve_directory(home), choice.source.id, choice.source.path)
 
 
 def _refuse_ignored(
@@ -180,7 +180,8 @@ async def open_client(  # noqa: PLR0913 - the start's inputs and the client's id
     raises) and a client named `client` of it, as the module says: attached to the `tau serve`
     that holds it, else started here. `ConfigError` when attached and `-e`, `--no-extensions`,
     `--set`, `-n`, `own` or `--model` ask for what the server's loaded session cannot take;
-    `Leased` for a session another process holds that is no server;
+    `Leased` for a session another process holds that is no server; an error saying "is
+    stopping; try again" for one whose server is on its way out;
     `LookupError` for a session with no cursor. Close the result with `Opened.close`."""
     flags = SessionFlags.of(args, cwd)
     home = tau_home(environ)

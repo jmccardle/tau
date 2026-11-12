@@ -126,8 +126,6 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     explicit = None if args.socket is None else Path(os.path.abspath(run.cwd / args.socket))
     if explicit is not None:
         checked_socket(explicit)
-        if await probe(str(explicit)) is not None:
-            raise ServeFailed(f"another server already answers at {explicit}")
     started = await start_session(
         args, environ=run.environ, cwd=run.cwd, prompts=prompts(run.stdin, run.stdout)
     )
@@ -140,10 +138,10 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     assert session is not None  # `--no-session` was refused above
     try:
         socket = explicit or socket_path(directory, session)
-        return await _serving(run, args, started, _Place(home, directory, session, socket))
     except BaseException:
         await started.stop()
         raise
+    return await _serving(run, args, started, _Place(home, directory, session, socket))
 
 
 @dataclass(frozen=True)
@@ -165,16 +163,20 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
     for number in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(number, signalled.set)
     log = log_path(place.directory, session) if detached else None
-    server = await serve_session(
-        started.driver,
-        socket,
-        session=session,
-        cwd=started.cwd,
-        home=place.home,
-        release=started.stop,
-        idle=IDLE_SECONDS if detached else None,
-        log=None if log is None else (Path(args.detached_log), log),
-    )
+    try:
+        server = await serve_session(
+            started.driver,
+            socket,
+            session=session,
+            cwd=started.cwd,
+            home=place.home,
+            release=started.stop,
+            idle=IDLE_SECONDS if detached else None,
+            log=None if log is None else (Path(args.detached_log), log),
+        )
+    except BaseException:
+        await started.stop()  # once: from here the server's `close` releases the session
+        raise
     failure: Exception | None = None
     try:
         record = read_record(record_path(place.directory, session))
@@ -185,6 +187,7 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
             run.stdout.write(safe_text(f"serving {session} on {socket} (pid {record.pid})") + "\n")
         run.stdout.flush()
         failure = await _until_done(server, signalled)
+        server.stop_accepting()
         if failure is None:
             await _wind_down(started.driver)
     finally:
@@ -243,7 +246,7 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
     choice = choose_session(flags, home=home, cwd=run.cwd)
     existing = choice.source.id if choice.kind == "existing" and choice.source else None
     if existing is not None:
-        record = await live_record(directory, existing)
+        record = await live_record(directory, existing, choice.source and choice.source.path)
         if record is not None:
             return _announce(run, args, record, started=False)
     # What needs a person is asked here; the child has no terminal.
@@ -363,7 +366,7 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
     if choice.kind != "existing" or choice.source is None:
         raise ConfigError("--stop names the session to stop: -c, -r or --session REF")
     session = choice.source.id
-    found = await live_server(directory, session)
+    found = await live_server(directory, session, choice.source.path)
     if found is None:
         result: Mapping[str, object] = {"session": session, "pid": None, "stopped": False}
     else:

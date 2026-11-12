@@ -44,9 +44,10 @@ async def session_holders(
     # On Windows no server runs (`require_unix_sockets`), so there are no records to ask.
     records = [] if sys.platform == "win32" else sorted(serve_directory(home).glob("*.json"))
     directory = home / SERVE
+    paths = {row.id: row.path for row in rows}
     for record in records:
         try:
-            if await live_server(directory, record.stem) is not None:
+            if await live_server(directory, record.stem, paths.get(record.stem)) is not None:
                 found[record.stem] = Holder("served")
         except (ServeFailed, ConfigError, ProtocolError) as e:
             found[record.stem] = Holder("no reply", str(e))

@@ -55,7 +55,8 @@ class Server
 A session's `Driver` served on a Unix socket (the module docstring). `start` binds
 `path`; `welcome` is what `hello` answers. `wait` returns when the driver has failed, or
 (with `idle`) when no client has been connected and every cursor at rest for that many
-seconds; `close` lets the connections say `end` (stop the driver first) and unbinds.
+seconds; `close` stops accepting and unlinks the socket, stops the driver (each stream says
+`end`) and unbinds, so it may be called once and the driver need not be stopped first.
 
 ### Server.__init__
 

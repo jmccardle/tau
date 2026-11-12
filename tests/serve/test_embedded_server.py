@@ -47,6 +47,15 @@ async def main() -> None:
     args = argparse.ArgumentParser(parents=[extension_flags(), session_flags()]).parse_args([])
     os.chdir(work)
     started = await start_session(args, environ={"HOME": str(home)}, cwd=work)
+    slow = os.environ.get("SLOW_RELEASE")
+    if slow:  # a session that takes its time to let go, to hold the window open
+        stop = started.stop
+
+        async def slowly() -> None:
+            await asyncio.sleep(float(slow))
+            await stop()
+
+        started.stop = slowly
     server = await started.serve()
     print(started.directory.name, flush=True)
     closing = None
@@ -94,7 +103,7 @@ def home(served: World) -> World:
 
 
 @pytest.fixture
-def host(home: World) -> Iterator[Host]:
+def host(home: World, request: pytest.FixtureRequest) -> Iterator[Host]:
     script = home.home / "host.py"
     script.write_text(HOST, encoding="utf-8")
     process = subprocess.Popen(
@@ -103,7 +112,7 @@ def host(home: World) -> Iterator[Host]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=home.environ,
+        env={**home.environ, **getattr(request, "param", {})},
     )
     try:
         assert process.stdout is not None
@@ -160,9 +169,8 @@ def test_closing_the_host_removes_the_record_and_frees_the_session(home: World, 
     assert (after.code, after.out, after.err) == (0, "mock: two\n", "")
 
 
-def test_a_client_while_the_host_closes_attaches_or_opens_never_a_half_stream(
-    home: World, host: Host
-) -> None:
+@pytest.mark.parametrize("host", [{"SLOW_RELEASE": "2"}], indirect=True)
+def test_a_client_while_the_host_closes_is_told_it_is_stopping(home: World, host: Host) -> None:
     work = home.home / "work"
     assert tau(home, "-p", "-c", "kept", cwd=work).code == 0  # a session in use is kept
     assert host.say("close") == "closing"
@@ -171,9 +179,12 @@ def test_a_client_while_the_host_closes_attaches_or_opens_never_a_half_stream(
     while host.process.poll() is None and time.monotonic() < deadline:
         seen.append(tau(home, "-p", "-c", "hi", cwd=work))
     host.finish()
+    assert seen, "the host outlived the close, which holds the session for two seconds"
+    assert any("is stopping; try again" in r.err for r in seen), [r.err for r in seen]
     for result in seen:
         assert "stream ended" not in result.err, result.err
-        assert result.code == 0 or "in use" in result.err, result.err
+        assert result.code == 0 or "stopping" in result.err, result.err
+    assert record_file(home, host).exists() is False
 
 
 def test_stop_reaches_an_embedder(home: World, host: Host) -> None:
@@ -203,3 +214,122 @@ def test_a_session_in_memory_cannot_be_served(home: World) -> None:
             await started.stop()
 
     asyncio.run(serve())
+
+
+# -- in this process: what Started.serve does with its arguments and its files
+
+
+def started_in(home: World, name: str):
+    work = home.home / name
+    work.mkdir(exist_ok=True)
+    args = argparse.ArgumentParser(parents=[extension_flags(), session_flags()]).parse_args([])
+    return start_session(args, environ=home.environ, cwd=work)
+
+
+def test_a_socket_of_its_own_and_a_second_close(home: World) -> None:
+    async def scenario() -> None:
+        started = await started_in(home, "work")
+        mine = home.home / "mine.sock"
+        server = await started.serve(mine)
+        assert started.directory is not None
+        record = json.loads(
+            (home.tau / "serve" / f"{started.directory.name}.json").read_text(encoding="utf-8")
+        )
+        assert record["socket"] == str(mine)
+        client = await RemoteClient.connect(mine, "test")
+        assert client.welcome.session == started.directory.name
+        await client.close()
+        await server.close()
+        await server.close()  # harmless: the session is released once
+        assert not mine.exists()
+        assert not (home.tau / "serve" / f"{started.directory.name}.json").exists()
+
+    asyncio.run(scenario())
+
+
+def test_a_socket_a_server_answers_at_is_refused(home: World, host: Host) -> None:
+    taken = home.tau / "serve" / f"{host.session}.sock"
+
+    async def scenario() -> None:
+        started = await started_in(home, "other")
+        try:
+            with pytest.raises(ConfigError, match="another server already answers"):
+                await started.serve(taken)
+            assert taken.exists(), "the first server is untouched"
+        finally:
+            await started.stop()
+
+    asyncio.run(scenario())
+    assert tau(home, "-p", "-c", "still", cwd=home.home / "work").out == "mock: still\n"
+
+
+def test_a_record_that_is_not_ours_is_kept(home: World) -> None:
+    async def scenario() -> None:
+        started = await started_in(home, "work")
+        server = await started.serve()
+        assert started.directory is not None
+        path = home.tau / "serve" / f"{started.directory.name}.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**record, "pid": record["pid"] + 1}), encoding="utf-8")
+        await server.close()
+        assert path.exists(), "another server's record is not ours to remove"
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_record_write_unbinds(home: World) -> None:
+    async def scenario() -> None:
+        started = await started_in(home, "work")
+        assert started.directory is not None
+        (home.tau / "serve").mkdir(mode=0o700, exist_ok=True)
+        (home.tau / "serve" / f"{started.directory.name}.json").mkdir()  # cannot be written
+        try:
+            with pytest.raises(OSError, match="Is a directory"):
+                await started.serve()
+            assert not (home.tau / "serve" / f"{started.directory.name}.sock").exists()
+        finally:
+            await started.stop()
+
+    asyncio.run(scenario())
+
+
+FAILING = """
+class Fatal(BaseException):
+    pass
+
+
+class Boom:
+    name = "boom"
+
+    async def pre_sample(self, cursor, subject):
+        # A hook's Exception fails its step; a BaseException (as a core panic is) is what the
+        # driver fails of: the one thing `tau serve` must then report.
+        raise Fatal("boom")
+
+
+extensions = [Boom()]
+"""
+
+
+def test_tau_serve_reports_the_drivers_failure_and_nothing_else(home: World) -> None:
+    ext = home.home / "boom.py"
+    ext.write_text(FAILING, encoding="utf-8")
+    work = home.home / "work"
+    server = subprocess.Popen(
+        [sys.executable, "-m", "tau", "serve", "--json", "-e", str(ext)],
+        cwd=work,
+        env=home.environ,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stdout is not None
+        assert server.stdout.readline()  # the record: it is serving
+        tau(home, "-p", "-c", "hi", cwd=work)
+        out, err = server.communicate(timeout=15)
+    finally:
+        server.kill()
+    assert server.returncode == 1
+    assert "the driver failed: RuntimeError: Fatal: boom" in out + err
+    assert "Traceback" not in err

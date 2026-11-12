@@ -144,7 +144,8 @@ class Started:
         The home, id and working directory are this `Started`'s. `idle` is `Server.start`'s.
         `Server.close` is the whole teardown: it stops the driver, unbinds the socket, calls
         `stop` and removes the record; do not call `stop` as well. `ConfigError` for a session
-        in memory (`--no-session`: it has no id to name its files) or a socket path too long;
+        in memory (`--no-session`: it has no id to name its files), a socket path too long or one a
+        server already answers at;
         `TrustError` if the serve directory is not a private directory of yours; `OSError` if
         the socket cannot be bound."""
         if self.directory is None:

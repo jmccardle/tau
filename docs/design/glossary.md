@@ -1784,7 +1784,7 @@ as `(no messages)` and removed with `rm -r`.
 does, for a program that embeds τ: it binds `<home>/serve/<id>.sock` (or `socket`), writes the **serve
 record** naming this process, and returns the `Server`, so `tau -c` in the session's directory
 attaches to it. `Server.close()` is the whole teardown (socket, driver, `Started.stop`, then the
-record, in that order); a session in memory is a `ConfigError`.
+record, in that order; a second call is harmless); a session in memory is a `ConfigError`.
 
 ### print mode, tau -p, rest, exit status 3
 modules `tau._launch`, `tau._print_mode`, `tau.cli` · D22 · new
@@ -3121,7 +3121,7 @@ on that socket, one message per text message (not `providers._wire`). The server
 `tau._serve`; `tau.Server` (`Server.start(driver, path, *, session, cwd, idle=None)`, `wait`,
 `close`; nothing else is public) is what serves a running `Driver`, for `tau serve` (through the private `serve_session`, the one writer of the serve record), `Started.serve` and the Harness's remote mode.
 `tau serve [session flags] [-e ...] [--socket PATH]` runs in the foreground until SIGTERM or
-SIGINT (the driver stops, each stream gets `end`, the socket and record go, exit 0) or the driver
+SIGINT (the socket goes first, then the driver stops and each stream gets `end`, then the lease is released and last the record goes, exit 0) or the driver
 fails (exit 1). `-d [--json]` starts it detached (its output in `<id>.log`) and prints the record
 once a `hello` answers; a server already serving the session is printed with `"started": false`,
 a record whose socket does not answer is stale and replaced, and two `-d` at once race for the lease
@@ -3131,7 +3131,7 @@ connected and every cursor at rest (a cursor with an open question is not at res
 sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go. The
 server, on SIGTERM or SIGINT, first aborts every cursor and waits (3 seconds at most) for each to
 rest, so an agent's tool is cancelled and closes the agent's cursor, as an interrupted `-p` does;
-then the driver stops;
+then the server closes as above;
 `--schema` prints `schema_text()`. `--json` prints one JSON object per line: the record, an error
 `{"error": {"type", "message"}}`, `--stop`'s `{session, pid, stopped}`. The **serve record**
 `<session id>.json` is `{socket, pid, session, cwd, protocol, version, since, log}` (`since` in
