@@ -154,14 +154,22 @@ created as usual. If approval then fails, the `.tau/` just created is removed.
 
 ## Amended (D23, 2026-11-03): the top-level keys
 
-The top-level keys are `models`, `default_model`, `extensions`, `load`, `system_prompt` (D20)
-and `tui`. `tui` is "the frontend settings" this ADR named: the terminal UI's own, an object whose
+The top-level keys are `models`, `default_model`, `extensions`, `load`, `system_prompt` (D20),
+`context_files` (below) and `tui`. `tui` is "the frontend settings" this ADR named: the terminal UI's own, an object whose
 only key is `theme` (a string; an unknown key or a non-string is a `ConfigError`, like any other
 mistake in the files). A project config may not set it: a `tui` in a
 project layer is a `ConfigError` ("a person's own setting"), so a cloned repository cannot choose
 the colours of the person who opens it, and nothing is accepted and ignored. The user's file and
 the command-line layer merge as the others do. Read by `tau._config_keys.tui_settings`, held as
 `ModelCatalog.tui`.
+
+## Amended (D20, 2026-11-12): the `context_files` key
+
+A top-level `context_files` (true or false; default true) says whether D20's context files are
+read. It is read like `system_prompt`: the nearest layer wins, `null` drops an inherited value,
+anything but a bool is a `ConfigError` naming `context_files`. `-nc` forces it off; with the key
+false `-nc` is redundant, not an error. Held as `ModelCatalog.context_files`. It exists for a
+program that has no command line, such as a `tau serve` started from a generated `config.json`.
 
 ## Amended (D23 8C-3, 2026-11-03): what τ writes
 

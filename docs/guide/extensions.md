@@ -101,6 +101,28 @@ A tool that takes a handle (`NodeHandle` or `TreeHandle`) must be listed on an e
 the handle is bound to it; any other tool can also be given to a driver on its own. A `Cursor` is
 refused: a tool does not run on a cursor.
 
+A function is the easy way to make a tool. An object works too, with `name`, `description`,
+`parameters` (a JSON Schema) and `async call(self, args_raw)`, which gets the call's raw JSON text
+and answers an `Outcome`: a tool that runs somewhere else, say, in another sandbox. Name a keyword
+parameter of `call` and τ passes it, each opt-in found once when the driver is built:
+
+- `progress`: the same `Progress` function as above.
+- `call_id`: the id of the call, the `id` of the model's `Part.Call` (the `call_id` of its
+  `ToolProgress`), for a remote executor to tell its calls apart. A model's ids can repeat from
+  one reply to the next, so pair it with the batch if you need it unique.
+
+```python skip
+class Remote:
+    name, description = "remote", "Run on the sandbox."
+    parameters = {"type": "object", "properties": {}}
+
+    async def call(self, args_raw: str, *, call_id: str | None = None) -> Outcome:
+        return Outcome.Ok(await sandbox.run(call_id, args_raw))
+```
+
+A keyword that cannot be passed by keyword (positional-only) is a `DefinitionError` when the driver
+is built. A tool made from a function has no `call_id` to take.
+
 Tool names are not namespaced, since the model and the log use them as they are. Two tools
 with one name are an error.
 

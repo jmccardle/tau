@@ -45,6 +45,7 @@ The top-level keys:
 | `extensions` | per-extension options: `{"step_limit": {"limit": 30}}` |
 | `load` | which extension sources are on: `{"shouter": false}` |
 | `system_prompt` | the base text of the system prompt |
+| `context_files` | `false` leaves the context files out of the system prompt (default `true`) |
 | `tui` | the terminal UI's own settings: `{"theme": "latte"}` (below) |
 
 An unknown key is an error that names the closest key you might have meant.
@@ -237,12 +238,14 @@ these parts, joined by blank lines:
    specific), then the trusted project's `.tau/SYSTEM.md`.
 
 `--system-prompt TEXT` replaces the base text, and `-nc` (`--no-context-files`) leaves the context
-files out. To use a file, let the shell read it: `--system-prompt "$(cat my.md)"`. The flags belong
+files out. So does `"context_files": false` in a config file, for a program with no command line,
+such as a `tau serve` started from a generated `config.json`; `-nc` and the key together are fine,
+and a value that is not `true` or `false` is a config error. To use a file, let the shell read it: `--system-prompt "$(cat my.md)"`. The flags belong
 to every program that starts a session: `tau serve`, `tau context`, `examples/chat.py` and your own.
 
 `AGENTS.md` and `CLAUDE.md` need no trust: they only ask the model for things, and the model can
 read them with its tools in any case. A context file that exists but cannot be read (permissions,
-not UTF-8, a broken link) stops the start, and the message tells you about `-nc`.
+not UTF-8, a broken link) stops the start, and the message tells you about `-nc` and `context_files`.
 
 `tau context` shows what a new session in this directory would be told, without making one: one
 line for each part, with its size in bytes and where it came from (`base`, `config`, `flag`, or a
@@ -257,7 +260,8 @@ tau context --show --system-prompt "You are brief." --append-system-prompt "Use 
 
 The prompt flags apply to a *new* session. With `-c`, `-r`, `--session` or `--fork`,
 `--system-prompt` and `--append-system-prompt` are an error, since the session already has its
-prompt (`-nc` is accepted). A program that has its own prompt passes it to
+prompt (`-nc` is accepted). A program that passes its own `system=` is not told off for the
+config key, which it does not use; it is told off for the flags. A program that has its own prompt passes it to
 `start_session(system=...)` instead ([Writing a frontend](frontends.md)).
 
 ## The terminal UI's settings

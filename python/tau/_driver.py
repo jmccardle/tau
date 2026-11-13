@@ -328,13 +328,13 @@ class Driver:
         checked = check_extensions(extensions)
         every = check_extensions([Tau(), *checked])
         listed, owners = assemble_tools(self._given, every)
-        tools, progress_tools = check_tools(listed)
+        tools, keywords = check_tools(listed)
         commands = assemble_commands(every)
         self._options.reload(checked)
         self._hub.keep_shown([e.name for e in every])
         self._commands.use(commands)
         self._extensions, self._tools, self._owners = every, tools, owners
-        self._progress_tools = progress_tools
+        self._tool_keywords = keywords
 
     def _model_at(self, node: int) -> str | None:
         """The model the branch at `node` is on, for a `CursorView`: `None` if no `Config` on it
@@ -666,7 +666,7 @@ class Driver:
                         context=context,
                         owners=self._owners,
                         batch=node,
-                        progress_tools=self._progress_tools,
+                        tool_keywords=self._tool_keywords,
                         on_progress=live,
                         offered=_offer_of(
                             self._made_with.get(cursor), session.tree.node(node).parent

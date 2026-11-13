@@ -121,7 +121,7 @@ The text is the parts below, each joined by one blank line. A part with no text 
    in the tree cannot set it** (review, 2026-10-31), as with D19's `load`: the prompt is
    written once, at creation, not per branch. The base text is literal: no `{{fields}}`.
 2. **Appended sections.** Each `--append-system-prompt TEXT`, in the order given. CLI only.
-3. **Context files**, unless `--no-context-files` / `-nc`. Each is wrapped in
+3. **Context files**, unless `--no-context-files` / `-nc` or the config key `context_files` is false. Each is wrapped in
    `<project_instructions path="/abs/path">`, all inside one `<project_context>` block; the
    path tells the model which directory the instructions are about. In order:
    - one file from `$TAU_HOME`;
@@ -268,6 +268,13 @@ None. The log, the scratchpad and `VERSION` are untouched. The prompt was alread
    than a diff, and it is cheaper than a new session.
 6. **Config keys for append and `-nc`.** Recommendation: none, as in 0.15. A user who always
    wants them sets `system_prompt` or uses a shell alias. Add them when someone asks.
+   **Amended 2026-11-12:** someone asked. A program with no command line (`tau serve` from a
+   generated `config.json`) cannot pass `-nc`, so the config key `context_files` (bool, default
+   true; D13) skips the context files when false. `-nc` forces it off; the two agree, so both
+   together are no error. `--append-system-prompt` still has no key. A program that supplies its
+   own `system` text is not refused for the key, unlike for `-nc`: a flag was typed by the person
+   starting the program and silently ignoring it hides a mistake, while a config key is a
+   standing setting that applies wherever a prompt is assembled, and here none is.
 
 **Interfaces needed from siblings:**
 

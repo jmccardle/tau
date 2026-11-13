@@ -5,6 +5,7 @@ import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Reply
@@ -17,6 +18,7 @@ from tau import (
     CallDraft,
     Client,
     CursorView,
+    DefinitionError,
     Event,
     Labels,
     Live,
@@ -110,6 +112,149 @@ async def test_a_tool_that_takes_no_progress_is_called_as_before(tmp_path: Path)
     await h.send("go")
     await h.settle()
     assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("plain result"), Author.Tools())])
+    await h.close()
+
+
+class Remote:
+    """A tool that runs elsewhere: it says which call it was told, and takes the id by keyword."""
+
+    name = "remote"
+    description = "Runs in another sandbox."
+    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.ids: list[str] = []
+
+    async def call(self, args_raw: str, *, call_id: str | None = None) -> Outcome:
+        assert call_id is not None, "a driver passes it"
+        self.ids.append(call_id)
+        return Outcome.Ok(f"ran {call_id}")
+
+
+@scenario
+async def test_a_tool_that_takes_call_id_is_given_each_calls_id_by_keyword(tmp_path: Path) -> None:
+    remote = Remote()
+    provider = calling(Part.Call("first", "remote", "{}"), Part.Call("second", "remote", "{}"))
+    h = await Harness.create(tmp_path, provider=provider, tools=[remote])
+    await h.send("go")
+    await h.settle()
+    assert sorted(remote.ids) == ["first", "second"]
+    assert h.bodies()[-2] == Body.Results(
+        [
+            ("first", Outcome.Ok("ran first"), Author.Tools()),
+            ("second", Outcome.Ok("ran second"), Author.Tools()),
+        ]
+    )
+    await h.close()
+
+
+class Both:
+    """A tool that takes progress and its call id."""
+
+    name = "both"
+    description = "Shows progress and says who it is."
+    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
+
+    async def call(
+        self, args_raw: str, *, progress: Progress | None = None, call_id: str | None = None
+    ) -> Outcome:
+        assert progress is not None, "a driver passes progress"
+        assert call_id is not None, "a driver passes call_id"
+        progress("hello")
+        return Outcome.Ok(call_id)
+
+
+@scenario
+async def test_a_tool_takes_progress_and_call_id_together(tmp_path: Path) -> None:
+    provider = calling(Part.Call("c9", "both", "{}"))
+    h = await Harness.create(tmp_path, provider=provider, tools=[Both()])
+    stream = await h.connect("watcher", watching=[h.cursor])
+    await h.send("go")
+    assert await next_progress(stream) == ToolProgress(BATCH, "c9", "hello")
+    await h.settle()
+    assert h.bodies()[-2] == Body.Results([("c9", Outcome.Ok("c9"), Author.Tools())])
+    await stream.close()
+    await h.close()
+
+
+class Malformed:
+    """A tool whose `call` declares a keyword where a driver cannot pass it by keyword."""
+
+    name = "malformed"
+    description = "Malformed."
+    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
+
+    def __init__(self, call: object) -> None:
+        self.call = call
+
+
+async def positional_call_id(args_raw: str, call_id: str, /) -> Outcome:
+    return Outcome.Ok(call_id)
+
+
+async def positional_progress(args_raw: str, progress: Progress, /) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def star_call_id(args_raw: str, *call_id: str) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def star_progress(args_raw: str, *progress: Progress) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def double_star_call_id(args_raw: str, **call_id: str) -> Outcome:
+    return Outcome.Ok("never")
+
+
+async def double_star_progress(args_raw: str, **progress: Progress) -> Outcome:
+    return Outcome.Ok("never")
+
+
+@scenario
+@pytest.mark.parametrize(
+    ("call", "keyword"),
+    [
+        (positional_call_id, "call_id"),
+        (positional_progress, "progress"),
+        (star_call_id, "call_id"),
+        (star_progress, "progress"),
+        (double_star_call_id, "call_id"),
+        (double_star_progress, "progress"),
+    ],
+)
+async def test_a_keyword_that_cannot_be_passed_by_keyword_fails_when_the_driver_is_built(
+    tmp_path: Path, call: object, keyword: str
+) -> None:
+    tool = cast("Any", Malformed(call))
+    with pytest.raises(DefinitionError, match=rf"'malformed'.*`{keyword}` must be passable"):
+        await Harness.create(tmp_path, provider=calling(), tools=[tool])
+
+
+class CatchAll:
+    """A tool whose `call` takes `**kwargs` only: that opts in to nothing."""
+
+    name = "catchall"
+    description = "Takes whatever it is given."
+    parameters: Mapping[str, object] = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.seen: list[dict[str, object]] = []
+
+    async def call(self, args_raw: str, **kwargs: object) -> Outcome:
+        self.seen.append(kwargs)
+        return Outcome.Ok("ok")
+
+
+@scenario
+async def test_a_catch_all_kwargs_tool_is_given_no_keywords(tmp_path: Path) -> None:
+    tool = CatchAll()
+    provider = calling(Part.Call("c1", "catchall", "{}"))
+    h = await Harness.create(tmp_path, provider=provider, tools=[cast("Any", tool)])
+    await h.send("go")
+    await h.settle()
+    assert tool.seen == [{}]
     await h.close()
 
 

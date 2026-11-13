@@ -55,7 +55,8 @@ class Server
 A session's `Driver` served on a Unix socket (the module docstring). `start` binds
 `path`; `welcome` is what `hello` answers. `wait` returns when the driver has failed, or
 (with `idle`) when no client has been connected and every cursor at rest for that many
-seconds; `close` lets the connections say `end` (stop the driver first) and unbinds.
+seconds; `close` stops accepting and unlinks the socket, stops the driver (each stream says
+`end`) and unbinds, so it may be called once and the driver need not be stopped first.
 
 ### Server.__init__
 
@@ -97,9 +98,12 @@ with `idle`, has rested that long (returns `None`).
 async def close(self) -> None
 ```
 
-Let the connections finish (the driver should be stopped, so each has said `end`; one
-that has not in `GRACE` seconds is closed), then unbind. A call a connection began and
-left is cancelled.
+Close the server, in the order that keeps a client from finding a half-closed one:
+stop accepting and unlink the socket, stop the driver (each stream says `end`), let the
+connections finish (one that has not in `GRACE` seconds is closed), cancel a call a
+connection began and left. A server `Started.serve` made then also releases the session
+(`Started.stop`: its lease) and last removes the serve record, if it still holds this
+server (no record means the session is free).
 
 ## Welcome
 

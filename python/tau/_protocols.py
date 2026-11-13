@@ -115,12 +115,17 @@ class ProviderClosed(SampleError):
     transient failure: a retry cannot succeed, so a retrying wrapper passes it on."""
 
 
-def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], frozenset[str]]:
-    """The tools keyed by name, each checked against the `Tool` contract, and the names of
-    those that take progress; raises `DefinitionError` naming the tool for a missing or
-    wrong attribute or a duplicate name."""
+TOOL_KEYWORDS = ("progress", "call_id")
+"""The optional keyword parameters a `Tool`'s `call` opts in to by naming them."""
+
+
+def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], dict[str, frozenset[str]]]:
+    """The tools keyed by name, each checked against the `Tool` contract, and for each that takes
+    any the optional keywords it takes (`tool_keywords`); raises `DefinitionError` naming the
+    tool for a missing or wrong attribute, a duplicate name or a keyword that cannot be
+    passed by keyword."""
     out: dict[str, Tool] = {}
-    progress: set[str] = set()
+    keywords: dict[str, frozenset[str]] = {}
     for i, candidate in enumerate(tools):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
@@ -133,28 +138,34 @@ def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], frozenset[s
             raise DefinitionError(f"tool {name!r}: `call` must be callable")
         if name in out:
             raise DefinitionError(f"two tools are named {name!r}")
-        if takes_progress(candidate):  # a malformed `progress` fails here, not at the first call
-            progress.add(name)
+        taken = tool_keywords(candidate)  # a malformed keyword fails here, not at the first call
+        if taken:
+            keywords[name] = taken
         out[name] = cast("Tool", candidate)
-    return out, frozenset(progress)
+    return out, keywords
 
 
-def takes_progress(tool: object) -> bool:
-    """Whether `tool.call` opts in to progress: it has a parameter named `progress`, which the
-    driver then passes by keyword. A `progress` that cannot be passed by keyword (positional-only)
-    raises `DefinitionError`. A `call` with no inspectable signature has not opted in."""
+def tool_keywords(tool: object) -> frozenset[str]:
+    """The optional keywords `tool.call` opts in to: those of `TOOL_KEYWORDS` it has a parameter
+    named, which the driver then passes by keyword. One that cannot be passed by keyword
+    (positional-only, or `*` or `**` of the name) raises `DefinitionError`. A `call` with no
+    inspectable signature has opted in to none."""
     try:
         parameters = inspect.signature(getattr(tool, "call")).parameters  # noqa: B009
     except (ValueError, TypeError):
-        return False
-    param = parameters.get("progress")
-    if param is None:
-        return False
-    if param.kind is param.POSITIONAL_ONLY:
-        raise DefinitionError(
-            f"tool {getattr(tool, 'name', tool)!r}: `progress` must be passable by keyword"
-        )
-    return True
+        return frozenset()
+    taken: set[str] = set()
+    for keyword in TOOL_KEYWORDS:
+        param = parameters.get(keyword)
+        if param is None:
+            continue
+        if param.kind not in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY):
+            raise DefinitionError(
+                f"tool {getattr(tool, 'name', tool)!r}: `{keyword}` must be passable by keyword"
+                " (a plain or keyword-only parameter, not positional-only, `*` or `**`)"
+            )
+        taken.add(keyword)
+    return frozenset(taken)
 
 
 class Provider(Protocol):
@@ -224,8 +235,14 @@ class Tool(Protocol):
     A tool that shows partial output as it runs opts in by giving `call` a parameter named
     `progress` (`call(self, args_raw, *, progress=None)`; the `None` default keeps the tool a
     `Tool` and callable without a driver), detected once when the driver is built.
-    The driver then passes a `Progress` by keyword. A tool whose `call` has no such parameter
-    is called with `args_raw` alone, as before.
+    The driver then passes a `Progress` by keyword. The same opt-in, a parameter named `call_id`
+    (`call(self, args_raw, *, call_id=None)`), has the driver pass the call's id: the `id` of the
+    `Part.Call` the model made, as in `CallDraft.id` and `ToolProgress.call_id`, which a tool
+    running elsewhere can use to tell its calls apart. A keyword that cannot be passed by
+    keyword (positional-only) is a `DefinitionError` when the driver is built. A tool whose
+    `call` has neither is called with `args_raw` alone, as before; a catch-all `**kwargs` does not
+    opt in to anything. (A tool made from a function
+    takes `Progress` by annotation; it has no call id to take.)
     """
 
     @property
@@ -247,12 +264,6 @@ class Tool(Protocol):
         """Run with the call's `args_raw`. Answer `Ok` or `Err`; an exception raised is
         the call's `Err(str(e))`."""
         ...
-
-
-class ProgressTool(Protocol):
-    """The `call` of a `Tool` that opted in to progress (see `Tool`)."""
-
-    async def call(self, args_raw: str, *, progress: Progress) -> Outcome: ...
 
 
 CURSOR_POINTS = (

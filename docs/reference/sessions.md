@@ -180,6 +180,23 @@ property never_used: bool
 This run created the session and it still has only the nodes it was created with, no
 pending item and the name it was created with.
 
+### Started.serve
+
+```python
+async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> 'Server'
+```
+
+Serve this session as `tau serve` does, so `tau -c` in its working directory attaches
+(D21 section 9): bind `socket` (default `<home>/serve/<id>.sock`, in the private serve
+directory), and write the serve record `<home>/serve/<id>.json`, naming this process.
+The home, id and working directory are this `Started`'s. `idle` is `Server.start`'s.
+`Server.close` is the whole teardown: it stops the driver, unbinds the socket, calls
+`stop` and removes the record; do not call `stop` as well. `ConfigError` for a session
+in memory (`--no-session`: it has no id to name its files), a socket path too long or one a
+server already answers at;
+`TrustError` if the serve directory is not a private directory of yours; `OSError` if
+the socket cannot be bound.
+
 ### Started.stop
 
 ```python
@@ -319,7 +336,8 @@ Open the session `args` choose (see `start_session` for the arguments and what i
 raises) and a client named `client` of it, as the module says: attached to the `tau serve`
 that holds it, else started here. `ConfigError` when attached and `-e`, `--no-extensions`,
 `--set`, `-n`, `own` or `--model` ask for what the server's loaded session cannot take;
-`Leased` for a session another process holds that is no server;
+`Leased` for a session another process holds that is no server; an error saying "is
+stopping; try again" for one whose server is on its way out;
 `LookupError` for a session with no cursor. Close the result with `Opened.close`.
 
 ## rename_session

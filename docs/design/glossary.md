@@ -1780,6 +1780,12 @@ while the lease is held, then closes the session and the providers; a session na
 run (`/name`) counts as used; a crash can leave one, listed
 as `(no messages)` and removed with `rm -r`.
 
+**`Started.serve(socket=None, *, idle=None)`** (async, D21) serves the started session as `tau serve`
+does, for a program that embeds τ: it binds `<home>/serve/<id>.sock` (or `socket`), writes the **serve
+record** naming this process, and returns the `Server`, so `tau -c` in the session's directory
+attaches to it. `Server.close()` is the whole teardown (socket, driver, `Started.stop`, then the
+record, in that order; a second call is harmless); a session in memory is a `ConfigError`.
+
 ### print mode, tau -p, rest, exit status 3
 modules `tau._launch`, `tau._print_mode`, `tau.cli` · D22 · new
 
@@ -2058,7 +2064,9 @@ layer, then the project's `.tau/config.json`, then the user's file), literal and
 `{{fields}}`; with none set, the built-in `prompts/base.md` (package data; 0.15's prose without its
 model sentence and tools list) with `{{cwd}}` replaced by the working directory; `"system_prompt":
 ""` is no base text, `null` drops an inherited value; (2) each `--append-system-prompt TEXT`, in
-order; (3) unless `-nc`/`--no-context-files`, the **context files** in a `<project_context>` block,
+order; (3) unless `-nc`/`--no-context-files` or the config key **`context_files`** is false (a bool, default true,
+nearest layer wins, `null` drops an inherited value, a non-bool a `ConfigError`; held as
+`ModelCatalog.context_files`; for a program with no command line), the **context files** in a `<project_context>` block,
 each as `<project_instructions path="/abs/path">`: one from `$TAU_HOME`, one from each directory
 from `/` down to the working directory (the nearest last), then the trusted project's
 `.tau/SYSTEM.md`.
@@ -2071,7 +2079,7 @@ project's `SYSTEM.md` is the bytes trust approved (`Trusted.system_md`), never t
 read from the project's `.tau/`, not only the working directory's. `AGENTS.md` and `CLAUDE.md` need
 no trust. No size limit. **`ContextFileError`** (a `ConfigError`) is a file that was found and
 cannot be used (unreadable, not strict UTF-8, a symlink to nothing, or git's own files for the
-worktree rule); it names the path and the cause and says `--no-context-files`, and no session is
+worktree rule); it names the path and the cause and says `--no-context-files` and `"context_files": false`, and no session is
 created. A leading BOM is dropped.
 
 **`SystemPrompt`** has `text` and `sources`: a tuple of **`PromptSource`** (`origin`: `"base"`,
@@ -2083,10 +2091,10 @@ TEXT` (repeatable) and `-nc`. On `-c`, `-r`, `--session` and `--fork` the first 
 `ConfigError` ("the session already has its system prompt (node 1); start a new session for a
 different one"; for a fork, "a fork copies its source's system prompt"), and `-nc` is accepted.
 `system_prompt` is a config key of the files and the command line only: a `Config` node holding it
-is refused like any key but `model` and `extensions`. **`tau context [-nc] [--system-prompt T]
+is refused like any key but `model` and `extensions`. A program's own `system` text refuses `-nc` (and the other flags) but not the key, which is config and not a flag the person just typed. **`tau context [-nc] [--system-prompt T]
 [--append-system-prompt T]... [--show]`** runs the assembly in the working directory without a
 session: a line per part (`SIZE  ORIGIN`), or with `--show` the text; `tau config check --show`
-adds a `system_prompt` line naming the layer.
+adds a `system_prompt` line naming the layer and a `context_files` line (`on` or `off`, and the layer that set it or `default`).
 
 ### session_name, /name
 `tau._builtin.SessionName` · D18 · new
@@ -2816,12 +2824,21 @@ naming it: a missing, non-`str` or empty `name`, a `name` that is not letters, d
 (method, field, class attribute) named `pre_*` or `post_*` that is not a hook point or is not
 callable. A module with a `name` is an extension (D16 §6).
 
-### ProgressTool
-`_protocols.ProgressTool` · D15 · new
+### call_id keyword, tool keywords
+`_protocols.TOOL_KEYWORDS`, `_protocols.tool_keywords(tool)` · D15 · new
 
-The `Protocol` of the `call` of a `Tool` that opted in to progress (see **progress
-callback**): `async call(args_raw, *, progress) -> Outcome`. The driver casts to it for the
-tools `check_tools` found taking progress.
+A hand-written `Tool` opts in by giving `call` a parameter named `call_id`;
+the driver passes the call's id by keyword: the `id` of the `Part.Call` in the `Assistant` node,
+the same value as `CallDraft.id` and `ToolProgress.call_id`. It is for a tool that runs elsewhere
+and must tell its calls apart; the id alone may repeat across batches (see **progress callback**),
+so `(batch node, call_id)` is what is unique. The **tool keywords** are the optional keywords a
+`call` can take, `TOOL_KEYWORDS` = `("progress", "call_id")`; `tool_keywords(tool)` finds them in
+one pass (it replaces `takes_progress`), and `check_tools` returns, for each tool that takes any,
+the `frozenset` of them, so the driver reads the signature once. One that is positional-only is a
+`DefinitionError`, as is a `*` or `**` parameter of the name; a catch-all `**kwargs` opts in to
+nothing. A tool made from a function (`FunctionTool`) takes neither keyword: it is given
+`Progress` by annotation and has no call-id annotation, since a new injected type would be a new
+public concept for every tool and command; a function that needs its id is a `Tool` object.
 
 ### check_meta
 `_protocols.check_meta(meta)` · new
@@ -3102,9 +3119,9 @@ in and compared by `scripts/schema.py --check`, so any wire change is a readable
 directory) on a Unix socket; **the wire** is the `Client` contract as JSON-RPC 2.0 over WebSocket
 on that socket, one message per text message (not `providers._wire`). The server is the private
 `tau._serve`; `tau.Server` (`Server.start(driver, path, *, session, cwd, idle=None)`, `wait`,
-`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` and the Harness's remote mode.
+`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` (through the private `serve_session`, the one writer of the serve record), `Started.serve` and the Harness's remote mode.
 `tau serve [session flags] [-e ...] [--socket PATH]` runs in the foreground until SIGTERM or
-SIGINT (the driver stops, each stream gets `end`, the socket and record go, exit 0) or the driver
+SIGINT (the socket goes first, then the driver stops and each stream gets `end`, then the lease is released and last the record goes, exit 0) or the driver
 fails (exit 1). `-d [--json]` starts it detached (its output in `<id>.log`) and prints the record
 once a `hello` answers; a server already serving the session is printed with `"started": false`,
 a record whose socket does not answer is stale and replaced, and two `-d` at once race for the lease
@@ -3114,7 +3131,7 @@ connected and every cursor at rest (a cursor with an open question is not at res
 sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go. The
 server, on SIGTERM or SIGINT, first aborts every cursor and waits (3 seconds at most) for each to
 rest, so an agent's tool is cancelled and closes the agent's cursor, as an interrupted `-p` does;
-then the driver stops;
+then the server closes as above;
 `--schema` prints `schema_text()`. `--json` prints one JSON object per line: the record, an error
 `{"error": {"type", "message"}}`, `--stop`'s `{session, pid, stopped}`. The **serve record**
 `<session id>.json` is `{socket, pid, session, cwd, protocol, version, since, log}` (`since` in
@@ -3300,8 +3317,9 @@ buffer drops it).
 
 What a tool is given to show partial output: `progress(text)`. A hand-written `Tool` opts in by
 giving `call` a parameter named `progress`, detected once when the driver is built
-(`takes_progress`, once, in `check_tools`); a `progress` that cannot be passed by keyword
-is a `DefinitionError`.
+(`tool_keywords`, once, in `check_tools`); a `progress` that cannot be passed by keyword
+is a `DefinitionError`. A `call_id` parameter gets the call's id in the same way (see
+**call_id keyword**).
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
 nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A described
 function takes it as a parameter annotated `Progress`, whatever its name, an **injected

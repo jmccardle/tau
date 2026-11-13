@@ -16,6 +16,25 @@ these differences from the text below, which stays as decided:
   clean exit and kept when the driver failed.
 - `tau.Server` is public (`Server.start(driver, path, *, session, cwd, idle=None)`), because
   the Harness's remote mode serves in process through the public API (CLAUDE.md rule 4).
+- `Started.serve(socket=None, *, idle=None)` serves a session this process started, as `tau serve`
+  does, for a program that embeds τ (`start_session` -> `Started.serve`; amended 2026-11-12, for
+  tau-substrate): it binds `<home>/serve/<id>.sock` (or `socket`) and writes the serve record, so
+  `tau -c` in the session's directory attaches. `Server.close` is then the whole teardown, in this
+  order: stop accepting and unlink the socket, stop the driver (each stream says `end`), let the
+  connections finish, `Started.stop` (the lease), and last remove the record, if it still holds this
+  server: no record still means the lease is free. `tau serve` goes through the same private helper
+  (`serve_session`), the one writer of the record. `Server.start` itself is unchanged and writes
+  nothing. `--stop` also counts as stopped a server whose socket refuses and whose session nobody
+  holds (an embedder that died of the signal), and removes its stale record; the "served by pid N"
+  advice names `tau serve --stop` only as the way if it is a `tau serve`.
+  Follow-ups (2026-11-12): `Server.close` now, for every server, stops accepting and unlinks its
+  socket, then stops the driver (so the driver need not be stopped first, and a second `close` is
+  harmless); `Started.serve` refuses a socket a server already answers at (`tau serve --socket`'s
+  check, now in the one helper); `tau serve` stops accepting before it winds its cursors down; and
+  a client that finds a record whose socket refuses while its (live) process still holds the
+  session is told "session X (pid N) is stopping; try again", the record kept: the record goes
+  after the lease, so a record with no answering socket is stale only once nothing holds the
+  session.
 - `-d`'s wait is 5 seconds from the spawn, for the record to appear and answer (not only for a
   held lease): a server that is slower is left running, and `-d` again finds it. The child's output
   goes to a pending log until its id names `<id>.log`; a child that fails leaves

@@ -36,6 +36,8 @@ from websockets.asyncio.server import ServerConnection, unix_serve
 from websockets.exceptions import ConnectionClosed
 
 from tau._client import LocalClient
+from tau._clock import SystemClock
+from tau._config import ConfigError
 from tau._driver import Driver
 from tau._events import Event
 from tau._protocol import (
@@ -51,6 +53,14 @@ from tau._protocol import (
     error_object,
 )
 from tau._remote import require_unix_sockets
+from tau._serve_record import (
+    ServeRecord,
+    probe,
+    read_record,
+    record_path,
+    serve_directory,
+    write_record,
+)
 from tau._values import Json
 
 BUFFER: Final = 256
@@ -329,7 +339,8 @@ class Server:
     """A session's `Driver` served on a Unix socket (the module docstring). `start` binds
     `path`; `welcome` is what `hello` answers. `wait` returns when the driver has failed, or
     (with `idle`) when no client has been connected and every cursor at rest for that many
-    seconds; `close` lets the connections say `end` (stop the driver first) and unbinds."""
+    seconds; `close` stops accepting and unlinks the socket, stops the driver (each stream says
+    `end`) and unbinds, so it may be called once and the driver need not be stopped first."""
 
     def __init__(
         self, driver: Driver, path: Path, welcome: Welcome, idle: float | None = None
@@ -394,10 +405,22 @@ class Server:
                 return None
             await asyncio.sleep(self._poll)
 
+    def _stop_accepting(self) -> None:
+        """Close the listener only (no new connection; the ones open say `end` at `close`) and
+        unlink the socket. Idempotent."""
+        if self._sockets is not None:
+            self._sockets.server.close()
+            self.path.unlink(missing_ok=True)
+
     async def close(self) -> None:
-        """Let the connections finish (the driver should be stopped, so each has said `end`; one
-        that has not in `GRACE` seconds is closed), then unbind. A call a connection began and
-        left is cancelled."""
+        """Close the server, in the order that keeps a client from finding a half-closed one:
+        stop accepting and unlink the socket, stop the driver (each stream says `end`), let the
+        connections finish (one that has not in `GRACE` seconds is closed), cancel a call a
+        connection began and left. A server `Started.serve` made then also releases the session
+        (`Started.stop`: its lease) and last removes the serve record, if it still holds this
+        server (no record means the session is free)."""
+        self._stop_accepting()
+        await self.driver.stop()
         if self._finished:
             await asyncio.wait(set(self._finished), timeout=GRACE)
         if self._sockets is not None:
@@ -406,3 +429,106 @@ class Server:
         for call in self._calls:
             call.cancel()
         await asyncio.gather(*self._calls, return_exceptions=True)
+
+
+class HostedServer(Server):
+    """A `Server` of a session kept in a τ home: it writes the serve record and on `close` also
+    releases the session and removes the record."""
+
+    def __init__(
+        self,
+        driver: Driver,
+        path: Path,
+        welcome: Welcome,
+        idle: float | None,
+    ) -> None:
+        super().__init__(driver, path, welcome, idle)
+        self._about = welcome
+        self._release: Callable[[], Awaitable[None]] | None = None
+        self._record_file: Path | None = None
+        self._record: ServeRecord | None = None
+
+    async def close(self) -> None:
+        """`Server.close`, then `release` (once: a second `close` finds it done), then the record
+        goes (last, even if one failed)."""
+        release, self._release = self._release, None
+        try:
+            await super().close()
+        finally:
+            try:
+                if release is not None:
+                    await release()
+            finally:
+                self._unrecord()
+
+    def stop_accepting(self) -> None:
+        """No new client, from now: what `tau serve` does before it winds down its cursors."""
+        self._stop_accepting()
+
+    def _unrecord(self) -> None:
+        """Remove the serve record if it is still this server's (another may have replaced it)."""
+        if self._record_file is None:
+            return
+        with contextlib.suppress(ConfigError):  # not a record: not ours to remove
+            if read_record(self._record_file) == self._record:
+                self._record_file.unlink(missing_ok=True)
+
+    async def host(
+        self, release: Callable[[], Awaitable[None]], record: Path, log: tuple[Path, Path] | None
+    ) -> None:
+        """Bind, then move `log` (a detached server's pending file and the `<id>.log` it becomes)
+        and write the record. If either fails the socket is unbound and unlinked, and the log is
+        moved back, so the error a parent prints points to a real file."""
+        self._sockets = await unix_serve(self._handle, self.path, max_size=None)
+        moved = False
+        try:
+            if log is not None:
+                os.replace(*log)
+                moved = True
+            self._record = ServeRecord(
+                str(self.path),
+                os.getpid(),
+                self._about.session,
+                self._about.cwd,
+                PROTOCOL,
+                version("ffwf-tau"),
+                SystemClock().now(),
+                None if log is None else str(log[1]),
+            )
+            write_record(record, self._record)
+        except BaseException:
+            self._sockets.close()
+            await self._sockets.wait_closed()
+            self.path.unlink(missing_ok=True)
+            if moved and log is not None:
+                with contextlib.suppress(OSError):
+                    os.replace(log[1], log[0])
+            raise
+        self._release, self._record_file = release, record
+
+
+async def serve_session(  # noqa: PLR0913 - the session's files and what releases it
+    driver: Driver,
+    path: Path,
+    *,
+    session: str,
+    cwd: Path,
+    home: Path,
+    release: Callable[[], Awaitable[None]],
+    idle: float | None = None,
+    log: tuple[Path, Path] | None = None,
+) -> HostedServer:
+    """`Server.start` for a session kept in `home`: once the socket is bound, `log` is moved and
+    the serve record `<home>/serve/<session>.json` is written, so `tau -c` attaches (D21 section
+    9). `Server.close` then also awaits `release` (`Started.stop`) and removes the record. The one
+    writer of the record: `Started.serve` and `tau serve` both come here. If the move or the
+    write fails the socket is unbound and unlinked and nothing is released. `ConfigError` if a
+    server already answers at `path`."""
+    require_unix_sockets("tau serve")
+    if await probe(str(path)) is not None:
+        raise ConfigError(f"another server already answers at {path}")
+    record = record_path(serve_directory(home), session)
+    welcome = Welcome(PROTOCOL, version("ffwf-tau"), session, str(cwd), os.getpid())
+    server = HostedServer(driver, path, welcome, idle)
+    await server.host(release, record, log)
+    return server

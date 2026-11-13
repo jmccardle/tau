@@ -31,18 +31,16 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from importlib.metadata import version
 from pathlib import Path
 from typing import Final, Protocol, TextIO
 
 from tau._choice import choose_session
-from tau._clock import SystemClock
 from tau._config import ConfigError
 from tau._core import CursorClosed
 from tau._driver import Driver
 from tau._project_read import safe_block, safe_text
-from tau._protocol import PROTOCOL, schema_text
-from tau._serve import Server
+from tau._protocol import schema_text
+from tau._serve import Server, serve_session
 from tau._serve_record import (
     ServeFailed,
     ServeRecord,
@@ -55,10 +53,9 @@ from tau._serve_record import (
     record_path,
     serve_directory,
     socket_path,
-    write_record,
 )
 from tau._session_start import Started, start_report, start_session
-from tau._sessions import SessionFlags
+from tau._sessions import SessionFlags, is_leased
 from tau._startup import load_config, prompts
 from tau._trust import tau_home
 
@@ -129,8 +126,6 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     explicit = None if args.socket is None else Path(os.path.abspath(run.cwd / args.socket))
     if explicit is not None:
         checked_socket(explicit)
-        if await probe(str(explicit)) is not None:
-            raise ServeFailed(f"another server already answers at {explicit}")
     started = await start_session(
         args, environ=run.environ, cwd=run.cwd, prompts=prompts(run.stdin, run.stdout)
     )
@@ -143,17 +138,18 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     assert session is not None  # `--no-session` was refused above
     try:
         socket = explicit or socket_path(directory, session)
-        return await _serving(run, args, started, _Place(directory, session, socket))
     except BaseException:
         await started.stop()
         raise
+    return await _serving(run, args, started, _Place(home, directory, session, socket))
 
 
 @dataclass(frozen=True)
 class _Place:
-    """Where a served session's files are: the serve `directory`, the `session` id, the
-    `socket`."""
+    """Where a served session's files are: the τ `home`, its serve `directory`, the `session`
+    id, the `socket`."""
 
+    home: Path
     directory: Path
     session: str
     socket: Path
@@ -166,45 +162,40 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
     signalled = asyncio.Event()  # before the record says we are up: SIGTERM then means a clean stop
     for number in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(number, signalled.set)
-    server = await Server.start(
-        started.driver,
-        socket,
-        session=session,
-        cwd=started.cwd,
-        idle=IDLE_SECONDS if detached else None,
-    )
     log = log_path(place.directory, session) if detached else None
-    path = record_path(place.directory, session)
     try:
-        if log is not None:
-            os.replace(args.detached_log, log)
-        record = ServeRecord(
-            str(socket),
-            os.getpid(),
-            session,
-            str(started.cwd),
-            PROTOCOL,
-            version("ffwf-tau"),
-            SystemClock().now(),
-            None if log is None else str(log),
+        server = await serve_session(
+            started.driver,
+            socket,
+            session=session,
+            cwd=started.cwd,
+            home=place.home,
+            release=started.stop,
+            idle=IDLE_SECONDS if detached else None,
+            log=None if log is None else (Path(args.detached_log), log),
         )
-        write_record(path, record)
+    except BaseException:
+        await started.stop()  # once: from here the server's `close` releases the session
+        raise
+    failure: Exception | None = None
+    try:
+        record = read_record(record_path(place.directory, session))
+        assert record is not None  # `serve_session` wrote it
         if args.json:
             _emit(run, json.loads(record.text()))
         else:
             run.stdout.write(safe_text(f"serving {session} on {socket} (pid {record.pid})") + "\n")
         run.stdout.flush()
         failure = await _until_done(server, signalled)
+        server.stop_accepting()
         if failure is None:
             await _wind_down(started.driver)
     finally:
-        for number in (signal.SIGTERM, signal.SIGINT):
-            loop.remove_signal_handler(number)
-        await started.driver.stop()  # each stream is told `end`, then the server unbinds
-        await server.close()
-        socket.unlink(missing_ok=True)
-        await started.stop()
-        path.unlink(missing_ok=True)  # last: no record means the lease is free
+        try:
+            for number in (signal.SIGTERM, signal.SIGINT):
+                loop.remove_signal_handler(number)
+        finally:
+            await server.close()  # the driver, the socket, the lease, then the record
     if failure is None and log is not None:
         log.unlink(missing_ok=True)  # kept when the driver failed: it says why
     if failure is not None:
@@ -255,7 +246,7 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
     choice = choose_session(flags, home=home, cwd=run.cwd)
     existing = choice.source.id if choice.kind == "existing" and choice.source else None
     if existing is not None:
-        record = await live_record(directory, existing)
+        record = await live_record(directory, existing, choice.source and choice.source.path)
         if record is not None:
             return _announce(run, args, record, started=False)
     # What needs a person is asked here; the child has no terminal.
@@ -375,7 +366,7 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
     if choice.kind != "existing" or choice.source is None:
         raise ConfigError("--stop names the session to stop: -c, -r or --session REF")
     session = choice.source.id
-    found = await live_server(directory, session)
+    found = await live_server(directory, session, choice.source.path)
     if found is None:
         result: Mapping[str, object] = {"session": session, "pid": None, "stopped": False}
     else:
@@ -386,7 +377,7 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
                 f"but the server at {record.socket} is pid {welcome.pid}"
             )
         os.kill(record.pid, signal.SIGTERM)
-        await _gone(record_path(directory, session), record.pid)
+        await _gone(record_path(directory, session), record, choice.source.path)
         result = {"session": session, "pid": record.pid, "stopped": True}
     if args.json:
         _emit(run, result)
@@ -397,11 +388,22 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
     return 0
 
 
-async def _gone(record: Path, pid: int) -> None:
-    """Wait for the server's record to go (it goes last, after the lease is released)."""
+async def _gone(path: Path, record: ServeRecord, session: Path) -> None:
+    """Wait for the server to be gone: its record is (it goes last, after the lease is released),
+    or its socket refuses and nothing holds the session, which is what a program that embeds τ
+    and dies of the signal leaves: a stale record, removed here."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + BOUND_SECONDS
-    while record.exists():
+    while path.exists():
+        try:
+            answered = await probe(record.socket)
+        except ServeFailed:
+            answered = record  # a server mid-exit is no proof it is gone: ask again
+        if answered is None and not is_leased(session):
+            path.unlink(missing_ok=True)
+            return
         if loop.time() > deadline:
-            raise ServeFailed(f"the server (pid {pid}) did not stop within {BOUND_SECONDS:g} s")
+            raise ServeFailed(
+                f"the server (pid {record.pid}) did not stop within {BOUND_SECONDS:g} s"
+            )
         await asyncio.sleep(_POLL)

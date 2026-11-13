@@ -61,8 +61,9 @@ def system_prompt(
     context_files: bool = True,
 ) -> SystemPrompt:
     """The prompt for a session in `cwd` (resolved here), given the loaded config: its base text,
-    `append` (`--append-system-prompt`, in order) and, if `context_files`, the files as the module
-    says. A part with no text is left out. `ContextFileError` for a file found and unusable."""
+    `append` (`--append-system-prompt`, in order) and, if `context_files` and the config's
+    `context_files` key is not false, the files as the module says. A part with no text is left
+    out. `ContextFileError` for a file found and unusable."""
     here = cwd.resolve()
     parts: list[tuple[str, str]] = []
     catalog = loaded.catalog
@@ -74,7 +75,7 @@ def system_prompt(
         parts.append((origin, catalog.system_prompt))
     parts += [("flag", text) for text in append]
     parts = [(origin, text) for origin, text in parts if text]
-    found = _context_files(here, loaded) if context_files else []
+    found = _context_files(here, loaded) if context_files and catalog.context_files else []
     sources = [PromptSource(origin, len(text.encode())) for origin, text in parts]
     sources += [PromptSource(str(path), len(text.encode())) for path, text in found]
     texts = [text for _, text in parts]
@@ -150,7 +151,7 @@ def _decoded(raw: bytes, path: Path) -> str:
 def _unusable(path: Path, cause: str) -> ContextFileError:
     return ContextFileError(
         f"context file {path} cannot be used: {cause}. Fix it, or start with "
-        "--no-context-files to skip the context files"
+        '--no-context-files (or set "context_files": false in the config) to skip the context files'
     )
 
 
@@ -158,7 +159,8 @@ def _git_unreadable(path: Path, cause: Exception) -> ContextFileError:
     return ContextFileError(
         f"{path} cannot be read ({getattr(cause, 'strerror', None) or cause}), so it is not "
         "known whether a worktree's context file hides its main checkout's. Fix it, or start "
-        "with --no-context-files to skip the context files"
+        'with --no-context-files (or set "context_files": false in the config) to skip the '
+        "context files"
     )
 
 

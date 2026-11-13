@@ -26,6 +26,7 @@ from tau._config import ConfigError
 from tau._project_read import TrustError
 from tau._protocol import Welcome
 from tau._remote import RemoteClient, require_unix_sockets
+from tau._sessions import is_leased
 from tau._trust import write_atomically
 
 SERVE: Final = "serve"
@@ -153,21 +154,41 @@ async def probe(socket: str) -> Welcome | None:
         ) from e
 
 
-async def live_server(directory: Path, session: str) -> tuple[ServeRecord, Welcome] | None:
+def _alive(pid: int) -> bool:
+    """Whether a process with `pid` exists (this user's, or one we may not signal)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def live_server(
+    directory: Path, session: str, lease: Path | None
+) -> tuple[ServeRecord, Welcome] | None:
     """The record of the server of `session` and what it answered `hello`, if its socket answers;
-    a record whose socket is gone or refuses is stale and is removed (`None`)."""
+    a record whose socket is gone or refuses is stale and is removed (`None`). Unless the server is
+    stopping: its socket is gone but its process still holds the session (`lease` is the session's
+    directory), which is a `ServeFailed` ("try again") and keeps the record, as the record is
+    removed after the lease is let go. `lease` of `None` skips that check."""
     path = record_path(directory, session)
     record = read_record(path)
     if record is None:
         return None
     welcome = await probe(record.socket)
     if welcome is None:
+        if lease is not None and _alive(record.pid) and is_leased(lease):
+            raise ServeFailed(
+                f"session {session} (pid {record.pid}) is stopping; try again", "Stopping"
+            )
         path.unlink(missing_ok=True)
         return None
     return record, welcome
 
 
-async def live_record(directory: Path, session: str) -> ServeRecord | None:
+async def live_record(directory: Path, session: str, lease: Path | None) -> ServeRecord | None:
     """`live_server`'s record."""
-    found = await live_server(directory, session)
+    found = await live_server(directory, session, lease)
     return None if found is None else found[0]

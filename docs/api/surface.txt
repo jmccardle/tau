@@ -676,6 +676,7 @@ class Started
     property never_used: bool
     prompt: SystemPrompt | None
     providers: Mapping[str, Provider]
+    async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> 'Server'
     session: Session
     sources: tuple[ExtensionSource, ...]
     async def stop(self) -> None
@@ -1084,6 +1085,8 @@ class LoadedConfig
     user: UserConfig
 @dataclass(frozen=True)
 class ModelCatalog
+    context_files: bool = True
+    context_files_source: str | None = None
     default_model: str | None
     def explain(self, qualified: str) -> tuple[Origin, ...]
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
