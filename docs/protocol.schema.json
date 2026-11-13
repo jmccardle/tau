@@ -1054,7 +1054,8 @@
         "Tools",
         "Length",
         "Interrupted",
-        "Error"
+        "Error",
+        "Refused"
       ],
       "type": "string"
     },

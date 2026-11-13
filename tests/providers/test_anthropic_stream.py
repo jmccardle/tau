@@ -136,7 +136,7 @@ async def test_omitted_thinking_keeps_its_signature_on_an_empty_part() -> None:
         ("max_tokens", Stop.Length),
         ("model_context_window_exceeded", Stop.Length),
         ("pause_turn", Stop.Length),
-        ("refusal", Stop.End),
+        ("refusal", Stop.Refused),
     ],
 )
 async def test_each_stop_reason_the_docs_list_maps_and_keeps_its_own_string(

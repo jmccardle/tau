@@ -456,6 +456,7 @@ class Stop
     Error: ClassVar[Stop]
     Interrupted: ClassVar[Stop]
     Length: ClassVar[Stop]
+    Refused: ClassVar[Stop]
     Tools: ClassVar[Stop]
 class Tree
     def __len__(self) -> int

@@ -22,7 +22,12 @@ from tau._core import Author, Body, Node, Outcome, Part, Stop
 from tau._sessions import SessionInfo
 
 _TICKS = re.compile(r"`+")
-_STOPS = ((Stop.Length, "length"), (Stop.Interrupted, "interrupted"), (Stop.Error, "error"))
+_STOPS = (
+    (Stop.Length, "length"),
+    (Stop.Interrupted, "interrupted"),
+    (Stop.Error, "error"),
+    (Stop.Refused, "refused"),
+)
 
 
 def _fence(text: str, language: str = "") -> str:

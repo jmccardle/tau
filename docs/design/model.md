@@ -74,7 +74,7 @@ body   = System(text)
 
 part    = Text(text) | Thinking(text, signature*) | Call { id, tool, args_raw }
 outcome = Ok(value) | Err(error) | Interrupted
-stop    = End | Tools | Length | Interrupted | Error
+stop    = End | Tools | Length | Interrupted | Error | Refused
 by      = Frontend(client) | Provider | Tools | Core | Extension(name)
 
 Move   { cursor, from?, to, by, time, opened_by* }
@@ -446,7 +446,8 @@ detected: the user's abort is the way out. An item the receiving extension turns
   `Custom { kind: "sample_error" }` under `at` without moving, and
   `post_step` gets `Failed`. A conversion error is a failed sample (Q11).
 - **A tool fails**: an `Err` outcome.
-- **`Length`**: an ordinary reply; `next` is `Wait`.
+- **`Length`, `Refused`**: ordinary replies; `next` is `Wait` (`Refused` restored 2026-11-12,
+  D15).
 - **Crash during a sample**: the input's commit was not synced yet, so its
   item is pending again; the next step delivers it once and samples
   (`crash_during_a_sample_*`).

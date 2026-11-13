@@ -38,7 +38,7 @@ from typing import Protocol, TextIO, cast
 
 from tau._client import Client
 from tau._commands import CommandFailed
-from tau._core import Author, Body, Busy, Ending, ItemData, Node, Outcome, Part
+from tau._core import Author, Body, Busy, Ending, ItemData, Node, Outcome, Part, Stop
 from tau._events import (
     Appended,
     CursorView,
@@ -46,16 +46,16 @@ from tau._events import (
     HookFailure,
     Live,
     Notice,
-    OpenQuestion,
     Retrying,
 )
 from tau._launch import AnswerRule, UsageError, message_of
 from tau._open import Opened, client_id, open_client
+from tau._print_questions import RuleRefused, Unanswered, questions, unanswered
 from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
 from tau._values import Json
-from tau.commandline import STDIN, Parsed, UnknownCommand, value
+from tau.commandline import STDIN, Parsed, UnknownCommand
 
 _INTERRUPTED = 130
 STOP_NOTICE = 2.0  # seconds a stop takes before it is said why
@@ -78,20 +78,12 @@ class Process(Protocol):
     def cwd(self) -> Path: ...
 
 
-class _Refused(Exception):
-    """An `--answer` rule whose value the question's schema refused."""
-
-
-class _Unanswered(Exception):
-    """Questions the run may answer that no rule matches: `args[0]`, their ids."""
-
-
 class _Gone(Exception):
     """Standard output has no reader any more (`tau -p --json ... | head -1`)."""
 
 
 @dataclass
-class _Run:
+class Run:
     """One run's state: the client's view of its cursor and of the nodes, and what was said."""
 
     opened: Opened
@@ -171,7 +163,7 @@ class _Run:
             self.views[event.cursor] = event
             if event.cursor == self.cursor:
                 self.watch_cursor(event, snapshot=snapshot)
-            await _questions(self, event, snapshot=snapshot)
+            await questions(self, event, snapshot=snapshot)
 
     def watch_cursor(self, view: CursorView, *, snapshot: bool) -> None:
         """The own cursor's view: what changed since the last one is noted."""
@@ -320,8 +312,11 @@ class _Run:
         return 1
 
     def verdict(self, view: CursorView, *, message: bool) -> int:
-        """The exit status of a rest, said on stderr when it is not 0 (D22 section 6)."""
+        """The exit status of a rest, said on stderr when it is not 0 (D22 section 6). A turn
+        whose last reply was refused failed: its text, if any, is still the answer."""
         code = self.ended(view.ending) if self.stepped else 0
+        if code == 0 and (refused := self.refused(view.at)) is not None:
+            return refused
         if code == 0 and message and view.items:
             return self.stopped("the message is still pending")
         if code == 0 and message and not view.auto:
@@ -329,6 +324,18 @@ class _Run:
                 "auto-step is off (a step limit, a hook, or a step that did not move)"
             )
         return code
+
+    def refused(self, at: int) -> int | None:
+        """Exit 1 if the run's last reply on the walk to `at` was refused (`Stop.Refused`), its
+        text, if any, printed first; `None` if it was not."""
+        last = next((n.body for n in reversed(self.turn(at)) if _replied(n)), None)
+        if not isinstance(last, Body.Assistant) or last.stop != Stop.Refused:
+            return None
+        reply = self.reply(at)
+        if reply is not None and not self.json:
+            self.write(self.out, reply + "\n")
+        reason = last.finish_reason or "none given"
+        return self.failed("Refused", f"the model refused (finish reason {reason})")
 
     def ended(self, ending: Ending | None) -> int:
         """The status of how a step ended: 0 for `Done`."""
@@ -347,6 +354,10 @@ class _Run:
     def stopped(self, why: str) -> int:
         self.note(f"stopped before finishing: {why}")
         return 3
+
+
+def _replied(node: Node) -> bool:
+    return isinstance(node.body, Body.Assistant)
 
 
 def _ending(ending: Ending) -> str:
@@ -413,7 +424,7 @@ def _outcome(outcome: Outcome) -> str:
             return "interrupted"
 
 
-async def _send(run: _Run, message: str) -> int:
+async def _send(run: Run, message: str) -> int:
     """Send the message and wait for the cursor to rest."""
     run.stepped = False
     await run.client.send(run.cursor, message)
@@ -433,7 +444,7 @@ def _with_stdin(parsed: Parsed, piped: str) -> Parsed:
     return replace(parsed, args={**parsed.args, STDIN: piped})
 
 
-async def _command(run: _Run, line: str, piped: str) -> int:
+async def _command(run: Run, line: str, piped: str) -> int:
     """Run the command line, and wait for any step it caused to end. If the command sent input,
     the reply to it is printed after the command's own result, as a message's is. `piped`, what
     standard input held, goes to the command's `stdin` parameter, which a command without one
@@ -468,7 +479,7 @@ async def _command(run: _Run, line: str, piped: str) -> int:
     return code
 
 
-async def _perform(run: _Run, message: str, piped: str) -> int:
+async def _perform(run: Run, message: str, piped: str) -> int:
     """The message: a command line if it starts with `/` (and names a command), else text, which
     is followed by what standard input held (`piped`)."""
     if message.startswith("/"):
@@ -483,7 +494,7 @@ async def _perform(run: _Run, message: str, piped: str) -> int:
     return await _send(run, f"{message}\n\n{piped}" if piped else message)
 
 
-def _check_rules(run: _Run) -> None:
+def _check_rules(run: Run) -> None:
     """`UsageError` for a rule naming an extension this process did not load: it could never
     match. (A server's extensions are not on the wire: attached, a rule is not checked.)"""
     started = run.opened.started
@@ -500,7 +511,7 @@ def _check_rules(run: _Run) -> None:
             )
 
 
-async def _drive(run: _Run, message: str, piped: str) -> int:
+async def _drive(run: Run, message: str, piped: str) -> int:
     """The run, from the snapshot to the status."""
     _check_rules(run)
     await run.client.watch([run.cursor])  # `Live`: `--json` prints it; a retry wait is told
@@ -511,115 +522,16 @@ async def _drive(run: _Run, message: str, piped: str) -> int:
             for line in run.report():
                 run.note(line)
         return await _perform(run, message, piped)
-    except _Refused as e:
+    except RuleRefused as e:
         await run.abort()
         return run.failed("RuleRefused", str(e))
-    except _Unanswered as e:
-        return await _unanswered(run, e.args[0])
+    except Unanswered as e:
+        return await unanswered(run, e.args[0])
     except (CommandFailed, Busy, ConnectionError) as e:
         return run.failed(type(e).__name__, str(e))
 
 
-def _opened_by_run(run: _Run, cursor: int) -> bool:
-    """Whether this run's cursor handed work to `cursor`, which nothing records (D24 section 7:
-    no `opened_by`). It did if an extension wrote a user message (a task) onto its walk after
-    the attach, while the run's own cursor was busy (a sub-agent: it opens on the session's
-    prefix, not on the run's turn; or an agent the session already had, sent a follow-up), or
-    its walk passes through the run's own turn. A cursor another client opens on a node that
-    exists (`open(at)`) is not. Remembered once it is."""
-    if cursor == run.cursor or cursor in run.sub:
-        return True
-    own = run.views.get(run.cursor)
-    view = run.views.get(cursor)
-    if own is None or view is None:
-        return False
-    mine = {n.id for n in run.turn(own.at)}
-    task = False  # a task was written onto the walk during the run
-    node = run.nodes.get(view.at)
-    while node is not None:
-        if node.id in mine:
-            run.sub.add(cursor)
-            return True
-        task = task or node.id in run.tasks
-        node = None if node.parent is None else run.nodes.get(node.parent)
-    if task:
-        run.sub.add(cursor)
-        return True
-    return False
-
-
-def _ours(run: _Run, cursor: int, *, snapshot: bool) -> bool:
-    """Whether the run may answer the questions on `cursor`. Local, every cursor's. Attached,
-    those of the cursor it attached to, open already or not, and of a cursor the run opened since
-    (a sub-agent its step started); every other cursor's are the server's other clients' (D22
-    section 5)."""
-    if not run.attached or cursor == run.cursor:
-        return True
-    return not snapshot and _opened_by_run(run, cursor)
-
-
-async def _questions(run: _Run, view: CursorView, *, snapshot: bool) -> None:
-    """Deal with the open questions `-p` may answer (`_ours`): each by the first rule that
-    matches. `_Unanswered` names those no rule matches, after every answer is given."""
-    unanswered: list[int] = []
-    for question in view.questions:
-        if question.id not in run.seen and run.verbose:
-            run.note(f'question {question.id} from {question.extension}: "{question.text}"')
-        run.seen.add(question.id)
-        if question.id in run.handled or question.to not in (None, run.client.id):
-            continue
-        run.handled.add(question.id)
-        if not _ours(run, view.cursor, snapshot=snapshot):
-            run.note(
-                f"question {question.id} from {question.extension} on cursor {view.cursor} "
-                "is left to the server's other clients"
-            )
-        elif not await _resolve(run, question, view.cursor):
-            unanswered.append(question.id)
-    if unanswered:
-        raise _Unanswered(unanswered)
-
-
-async def _resolve(run: _Run, question: OpenQuestion, cursor: int) -> bool:
-    """Answer the question by the first rule that matches (a `--decline` one declines it).
-    False, and the question shown, if none does: it is never declined for want of a rule."""
-    asked = f"question {question.id} from {question.extension}"
-    said = f'"{question.text}"'
-    rule = next((r for r in run.rules if r.matches(question.extension, question.text)), None)
-    if rule is None:
-        run.note(f"{asked} on cursor {cursor} has no rule: {said}")
-        return False
-    if rule.value is None:
-        await _answer(run, question.id, None)
-        run.note(f"declined {asked} on cursor {cursor} ({rule.flag}): {said}")
-        return True
-    try:
-        await _answer(run, question.id, value(rule.value, question.schema))
-    except ValueError as e:
-        raise _Refused(f"{rule.flag}: {asked} ({said}): {e}") from None
-    run.note(f"answered {asked} with {rule.value}: {said}")
-    return True
-
-
-async def _unanswered(run: _Run, questions: list[int]) -> int:
-    """Stop for the questions no rule matches. Attached, they stay open for the server's other
-    clients or the next `-p`. Local, nobody else can answer them: the run's cursor is aborted."""
-    ids = ", ".join(map(str, questions))
-    if run.attached:
-        return run.stopped(
-            f"question {ids} has no --answer or --decline rule; it stays open: answer it in "
-            "another client, or with tau -p -c --answer (or --decline)"
-        )
-    await run.abort()
-    return run.stopped(f"question {ids} has no --answer or --decline rule")
-
-
-async def _answer(run: _Run, question: int, given: object) -> None:
-    with contextlib.suppress(LookupError):  # closed already: the first good answer won
-        await run.client.answer(question, given)
-
-
-async def _take_back(run: _Run) -> None:
+async def _take_back(run: Run) -> None:
     """After an interrupt: a message nobody answered is taken back, so the next `-c` does not
     send two user messages in a row. Nodes are written once (I2), so its `User` node stays in
     the tree, and the cursor goes back to the node before it; a message still pending is
@@ -647,7 +559,7 @@ async def _main(process: Process, args: object, message: str, piped: str) -> int
         cwd=process.cwd,
         model=getattr(args, "model"),  # noqa: B009
     )
-    run = _Run(
+    run = Run(
         opened,
         process.stdout,
         process.stderr,

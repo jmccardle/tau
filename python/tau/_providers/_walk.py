@@ -20,6 +20,7 @@ _STOP_NOTES: dict[Stop, str] = {
     Stop.Length: "length",
     Stop.Interrupted: "interrupted",
     Stop.Error: "error",
+    Stop.Refused: "refused",
 }
 
 

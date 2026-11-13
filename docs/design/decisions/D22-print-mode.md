@@ -188,7 +188,7 @@ was about to answer it. Now no rule matching is never a decline:
 | status | when |
 |---|---|
 | 0 | the cursor rested with auto-step on, ending `Done`, the message delivered: the model finished. For a command line, the command returned and any step it caused ended `Done`. |
-| 1 | a failure: ending `Failed` (a sample or a hook), `CommandFailed`, a start error (`ConfigError`, `TrustError`, `Leased`, ...), a refused `--answer` value, the driver failed or the server went away |
+| 1 | a failure: ending `Failed` (a sample or a hook), `CommandFailed`, a start error (`ConfigError`, `TrustError`, `Leased`, ...), a refused `--answer` value, the driver failed or the server went away; the run's last reply was refused (`Stop.Refused`, amended 2026-11-12): stderr says `the model refused (finish reason R)`, its text, if any, is still printed, and under `--json` the error type is `Refused` |
 | 2 | usage: bad flags, nothing to send, a command line missing arguments, `-r` |
 | 3 | stopped before finishing: the cursor rested with auto-step off (`StepLimit`, a hook turned it off, a step did not move) or ending `Halted`, or the message is still pending (a `pre_input` hook refused it) |
 | 130 | interrupted |

@@ -157,7 +157,7 @@ impl From<Part> for tree::Part {
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stop {
-    /// The reply is complete (a refusal is an `End` with the provider's reason kept).
+    /// The reply is complete.
     End,
     /// The reply asks for tool calls.
     Tools,
@@ -167,6 +167,9 @@ pub enum Stop {
     Interrupted,
     /// The sample failed after producing output.
     Error,
+    /// The model or the provider declined to answer (a refusal, a safety block); the
+    /// provider's own reason is the reply's `finish_reason`.
+    Refused,
 }
 
 impl From<tree::Stop> for Stop {
@@ -177,6 +180,7 @@ impl From<tree::Stop> for Stop {
             tree::Stop::Length => Self::Length,
             tree::Stop::Interrupted => Self::Interrupted,
             tree::Stop::Error => Self::Error,
+            tree::Stop::Refused => Self::Refused,
         }
     }
 }
@@ -189,6 +193,7 @@ impl From<Stop> for tree::Stop {
             Stop::Length => Self::Length,
             Stop::Interrupted => Self::Interrupted,
             Stop::Error => Self::Error,
+            Stop::Refused => Self::Refused,
         }
     }
 }

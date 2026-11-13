@@ -75,4 +75,4 @@ async def test_candidates_in_a_blocked_chunk_are_not_turned_into_parts() -> None
     items, error = await collect(GEMINI.serving(sse(chunk)), hello_walk())
     assert error is None
     assert [type(i) for i in items] == [Finish]
-    assert (items[0].stop, items[0].reason) == (Stop.End, "SAFETY")  # type: ignore[union-attr]
+    assert (items[0].stop, items[0].reason) == (Stop.Refused, "SAFETY")  # type: ignore[union-attr]

@@ -88,7 +88,11 @@ the next provider.
 *spike* `Stop` · retires `stopReason`, `AgentEndReason`
 
 Why a reply ended: `End`, `Tools`, `Length`, `Interrupted`,
-`Error`. A refusal is an `End` with the provider's raw reason kept. Only `Tools` makes calls runnable. The provider's own string is
+`Error`, `Refused`. **`Refused`** (amended 2026-11-12; it was an `End`) is a reply the model or the
+provider declined to give: Anthropic's `refusal`, OpenAI's `content_filter`, Gemini's safety and
+recitation blocks and a blocked prompt. The provider's raw reason stays in `finish_reason`. As an
+`End` it was indistinguishable from an answer unless a frontend knew every provider's strings, so
+`tau -p` printed nothing and exited 0 (D22 §6). Only `Tools` makes calls runnable. The provider's own string is
 `finish_reason`. Python's `Stop`, `Next`, and `Hook` are not integers:
 `Stop.Tools != 1`, because equal-to-an-int with a different hash breaks sets.
 

@@ -454,6 +454,16 @@ Amended 2026-10-30: `Refused` was removed from `Stop`; refusals end as `End` wit
 reason kept in `Finish.reason` (a `refusal` delta is still text). A call forming at a cancel
 is saved as it arrived, the same rule as text.
 
+Amended 2026-11-12 (reverses the removal above): **`Stop.Refused` is back.** As an `End`, a
+refusal could not be told from an answer without knowing every provider's reason strings, so
+`tau -p` printed nothing and exited 0 on one (found in E1). Anthropic's `refusal`, OpenAI's
+`content_filter` and a `refusal` delta, Gemini's safety, recitation and blocklist reasons and
+a blocked prompt (`blockReason`) end as `Refused`; the raw reason is still `Finish.reason`, and
+the parts are still text and still replayed (D6 holds again). The question that was Open:
+a refusal replaces only an `End`; a `Length` or `Tools` stop is kept (a `refusal` delta then
+`finish_reason: length` is `Length`). Gemini's `LANGUAGE` and `ESCALATION` stay `End`: they
+are not documented as a refusal. Logs written before name no `Refused` and load as they were.
+
 **Declined:**
 
 - *Capping meta strings.* Meta records what the server said; a cap would hide it.

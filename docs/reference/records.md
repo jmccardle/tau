@@ -876,6 +876,7 @@ class Stop
     Length: ClassVar[Stop]
     Interrupted: ClassVar[Stop]
     Error: ClassVar[Stop]
+    Refused: ClassVar[Stop]
 ```
 
 Why a reply ended. Only `Tools` makes its calls runnable. It is not an integer:

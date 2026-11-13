@@ -778,7 +778,7 @@ may send it back.
 
 ### Stop
 
-One of: `"End"` or `"Tools"` or `"Length"` or `"Interrupted"` or `"Error"`
+One of: `"End"` or `"Tools"` or `"Length"` or `"Interrupted"` or `"Error"` or `"Refused"`
 
 ### Welcome
 

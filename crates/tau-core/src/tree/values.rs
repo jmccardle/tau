@@ -12,6 +12,7 @@ pub enum Stop {
     Length,
     Interrupted,
     Error,
+    Refused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

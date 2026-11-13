@@ -23,11 +23,11 @@ async def test_calls_a_chunk_finished_before_it_failed_are_kept() -> None:
 
 
 @scenario
-async def test_a_refusal_is_text_and_the_reply_ends_as_end() -> None:
+async def test_a_refusal_is_text_and_the_reply_ends_as_refused() -> None:
     text = chunk({"refusal": "I can't"}) + chunk({"refusal": " help"}, "stop") + DONE_LINE
     items, error = await collect(OPENAI.serving(text), fresh_walk())
     assert error is None
-    assert items == [Part.Text("I can't help"), Finish(Stop.End, "stop")]
+    assert items == [Part.Text("I can't help"), Finish(Stop.Refused, "stop")]
 
 
 def test_check_refuses_a_base_url_that_names_the_endpoint() -> None:

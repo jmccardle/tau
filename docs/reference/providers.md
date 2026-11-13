@@ -282,7 +282,8 @@ or begun; it carries the meta fields that had arrived. Once `finish_reason` has 
 reply is done: the stream is
 still read for `usage`, but content and tool-call deltas after it are ignored, and an
 error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
-meta not yet received, never the reply. A `refusal` delta is text.
+meta not yet received, never the reply. A `refusal` delta is text, and makes the reply's
+stop `Refused`.
 
 ## Provider
 

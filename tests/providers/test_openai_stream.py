@@ -140,7 +140,7 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
         ("stop", Stop.End),
         ("tool_calls", Stop.Tools),
         ("length", Stop.Length),
-        ("content_filter", Stop.End),
+        ("content_filter", Stop.Refused),
     ],
 )
 @scenario
