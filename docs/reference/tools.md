@@ -312,12 +312,14 @@ A tool that shows partial output as it runs opts in by giving `call` a parameter
 `Tool` and callable without a driver), detected once when the driver is built.
 The driver then passes a `Progress` by keyword. The same opt-in, a parameter named `call_id`
 (`call(self, args_raw, *, call_id=None)`), has the driver pass the call's id: the `id` of the
-`Part.Call` the model made, as in `CallDraft.id` and `ToolProgress.call_id`, which a tool
-running elsewhere can use to tell its calls apart. A keyword that cannot be passed by
-keyword (positional-only) is a `DefinitionError` when the driver is built. A tool whose
-`call` has neither is called with `args_raw` alone, as before; a catch-all `**kwargs` does not
-opt in to anything. (A tool made from a function
-takes `Progress` by annotation; it has no call id to take.)
+`Part.Call` the model made, as in `CallDraft.id` and `ToolProgress.call_id`: a label that
+ties what a tool running elsewhere logs to the call in the log. It is not a key: a model's
+server may reuse an id in a later reply, and two cursors' calls can run at once with the same
+id, so a tool that must tell its calls apart makes its own ids. A keyword that cannot be
+passed by keyword (positional-only) is a `DefinitionError` when the driver is built. A tool
+whose `call` has neither is called with `args_raw` alone, as before; a catch-all `**kwargs`
+does not opt in to anything. (A tool made from a function takes `Progress` by annotation; it
+has no call id to take.)
 
 ### Tool.name
 

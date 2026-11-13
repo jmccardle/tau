@@ -2829,9 +2829,11 @@ callable. A module with a `name` is an extension (D16 §6).
 
 A hand-written `Tool` opts in by giving `call` a parameter named `call_id`;
 the driver passes the call's id by keyword: the `id` of the `Part.Call` in the `Assistant` node,
-the same value as `CallDraft.id` and `ToolProgress.call_id`. It is for a tool that runs elsewhere
-and must tell its calls apart; the id alone may repeat across batches (see **progress callback**),
-so `(batch node, call_id)` is what is unique. The **tool keywords** are the optional keywords a
+the same value as `CallDraft.id` and `ToolProgress.call_id`. It is a label, for a tool that runs
+elsewhere to tie what it logs to the call in the log, not a key: the id may repeat across batches
+(see **progress callback**), and two cursors' batches can run at once, so only `(batch node,
+call_id)` is unique, and the tool is not given the batch. A tool that must tell its calls apart
+makes its own ids. The **tool keywords** are the optional keywords a
 `call` can take, `TOOL_KEYWORDS` = `("progress", "call_id")`; `tool_keywords(tool)` finds them in
 one pass (it replaces `takes_progress`), and `check_tools` returns, for each tool that takes any,
 the `frozenset` of them, so the driver reads the signature once. One that is positional-only is a

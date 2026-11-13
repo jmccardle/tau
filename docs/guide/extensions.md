@@ -108,8 +108,9 @@ parameter of `call` and τ passes it, each opt-in found once when the driver is 
 
 - `progress`: the same `Progress` function as above.
 - `call_id`: the id of the call, the `id` of the model's `Part.Call` (the `call_id` of its
-  `ToolProgress`), for a remote executor to tell its calls apart. A model's ids can repeat from
-  one reply to the next, so pair it with the batch if you need it unique.
+  `ToolProgress`): a label, so a remote executor's logs name the call the log holds. It is not a
+  key. A model's ids can repeat from one reply to the next, and two cursors can run calls with the
+  same id at once, so a tool that must tell its calls apart makes its own ids.
 
 ```python skip
 class Remote:
@@ -117,7 +118,8 @@ class Remote:
     parameters = {"type": "object", "properties": {}}
 
     async def call(self, args_raw: str, *, call_id: str | None = None) -> Outcome:
-        return Outcome.Ok(await sandbox.run(call_id, args_raw))
+        job = uuid.uuid4().hex  # the sandbox's own key; call_id only labels its log line
+        return Outcome.Ok(await sandbox.run(job, args_raw, label=call_id))
 ```
 
 A keyword that cannot be passed by keyword (positional-only) is a `DefinitionError` when the driver
