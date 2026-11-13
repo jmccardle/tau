@@ -94,11 +94,24 @@ def test_no_rules_asks_nothing_and_the_call_runs(model: World) -> None:
     assert "question" not in result.err
 
 
-def test_without_an_answer_rule_the_question_is_declined_and_the_call_refused(model: World) -> None:
+def test_without_a_rule_the_run_stops_at_the_question_and_the_call_never_runs(model: World) -> None:
     result = p(model)
+    assert result.code == 3, result.err
+    assert not ran(model)
+    shown = 'tau: question 0 from permissions on cursor 0 has no rule: "bash: touch ran'
+    assert shown in result.err
+    assert "stopped before finishing: question 0 has no --answer or --decline rule" in result.err
+    assert "declined" not in result.err, "a question is declined only by a rule that says so"
+
+
+def test_a_decline_rule_declines_the_question_and_the_call_is_refused(model: World) -> None:
+    result = p(model, "--decline", "permissions")
     assert result.code == 0, result.err
     assert not ran(model)
-    assert 'tau: declined question 0 from permissions on cursor 0: "bash: touch ran' in result.err
+    assert (
+        "tau: declined question 0 from permissions on cursor 0 (--decline permissions): "
+        '"bash: touch ran' in result.err
+    )
     assert Model.told == ["Error: the user refused this call"], "the model read the refusal"
     assert result.out == "done\n"
 
@@ -148,7 +161,7 @@ def test_a_rule_naming_a_tool_nothing_provides_is_a_warning_at_the_start_and_the
     good = "write" if sys.platform == "win32" else "write:/etc/*"
     config["extensions"]["permissions"]["deny"] = ["Bash", "wirte:/etc/*", good]
     model.user_config(config)
-    result = p(model)
+    result = p(model, "--decline", "permissions")
     assert result.code == 0, result.err
     assert (
         "warning: extensions.permissions: deny rule 'Bash' names the tool 'Bash', which no "
@@ -173,7 +186,7 @@ def test_an_empty_pattern_stops_the_start(model: World) -> None:
 @RUNS_BASH
 def test_a_bash_answer_text_is_one_exact_command(model: World) -> None:
     Model.run = "touch ran; touch other"
-    plain = p(model, "--answer", "permissions:bash: touch ran=yes")
+    plain = p(model, "--answer", "permissions:bash: touch ran=yes", "--decline", "permissions")
     assert plain.code == 0, plain.err
     assert not ran(model), "the text did not name the chain: declined"
     assert "declined question 0" in plain.err
@@ -222,7 +235,7 @@ def test_an_answer_text_is_matched_against_the_resolved_path(model: World) -> No
     """`/proj/*` spells the model's path, but the call lands on `/etc/shadow` (made real:
     `/private/etc/shadow` on macOS, `C:\\etc\\shadow` on Windows)."""
     Model.tool, Model.args = "read", {"path": "/proj/../etc/shadow"}
-    result = p(model, "--answer", "permissions:read: /proj/*=yes")
+    result = p(model, "--answer", "permissions:read: /proj/*=yes", "--decline", "permissions")
     assert result.code == 0, result.err
     assert "declined question 0" in result.err
     assert Model.told == ["Error: the user refused this call"]

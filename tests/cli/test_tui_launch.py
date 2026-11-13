@@ -54,7 +54,7 @@ def test_without_a_terminal_it_is_a_usage_error_that_starts_no_session(configure
     assert list_sessions(configured.tau / "sessions") == []
 
 
-@pytest.mark.parametrize("flag", [("--json",), ("--answer", "x=y")])
+@pytest.mark.parametrize("flag", [("--json",), ("--answer", "x=y"), ("--decline", "x")])
 def test_json_and_answer_are_for_print_mode(configured: World, flag: tuple[str, ...]) -> None:
     with pytest.raises(SystemExit) as stop:
         tui(configured, *flag)

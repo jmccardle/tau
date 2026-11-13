@@ -96,8 +96,8 @@ and a line per message the run adds.
 `--json` prints the session's events instead, one JSON object per line, the same objects
 [the wire](protocol.md) sends, after a `Welcome` line that holds the session's id.
 `--set step_limit.limit=5` changes an option for this run only ([Configuration](configuration.md)).
-A question an extension asks has no one to answer it under `-p`, so `tau -p` declines it unless a
-rule answers: `--answer permissions=yes`. [Frontends](frontends.md#questions) explain questions.
+A question an extension asks has no one to answer it under `-p`, so `tau -p` stops at it (exit 3)
+unless a rule answers it (`--answer permissions=yes`) or declines it (`--decline permissions`). [Frontends](frontends.md#questions) explain questions.
 
 ## Chat
 

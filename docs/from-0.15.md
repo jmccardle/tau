@@ -181,7 +181,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 |---|---|---|---|
 | Built-in permission system | none; example extensions only | **built** (8E-4, new) | D24 §7: `permissions`, rules `TOOL` or `TOOL:GLOB` in `ask`, `allow`, `deny`; `always` writes the exact rule to your config |
 | Protected paths / sandbox | `examples/31_protected_paths.py` | **built** (8E-4, changed) | `deny: ["write:/etc/*", "edit:/etc/*"]`; paths are matched as written and as resolved (`..`, symlinks). Not a sandbox; a `bash` rule names the tool, or in `allow` one exact command, not a pattern (D24 §7, `guide/built-ins.md`) |
-| Headless approval (`--ui-defaults confirm=yes,...`) | `cli.py:--ui-defaults`, `headless.py` | **built** (changed) | D22: `tau -p --answer EXTENSION[:TEXT]=VALUE`. Rules match who asked and what, not a dialog kind; a question no rule matches is declined (stderr says so), and a value the question's schema refuses aborts the run (exit 1). D16 ruling 1 holds: `-p` is the client that answers |
+| Headless approval (`--ui-defaults confirm=yes,...`) | `cli.py:--ui-defaults`, `headless.py` | **built** (changed) | D22: `tau -p --answer EXTENSION[:TEXT]=VALUE`. Rules match who asked and what, not a dialog kind; `--decline EXTENSION[:TEXT]` declines; a question no rule matches stops the run, exit 3 (D22 §5, amended 2026-11-12), and a value the question's schema refuses aborts the run (exit 1). D16 ruling 1 holds: `-p` is the client that answers |
 
 ### 2.7 Config and trust
 

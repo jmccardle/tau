@@ -1,15 +1,17 @@
 """`tau -p` (D22): the one-shot client. It opens a session (`open_client`: a new one, or the one a
 `tau serve` holds), sends one message or runs one command line, waits for the cursor to rest,
-answers the questions on the way by `--answer` rules (or declines them), prints the answer and
-exits with a status that says how it ended.
+answers the questions on the way by `--answer` rules (or declines them by `--decline` ones),
+prints the answer and exits with a status that says how it ended. A question no rule matches
+stops the run: it is never declined for want of a rule.
 
 - **stdout** is the answer: the text of the last `Assistant` node of the run's own turn (from its
   own message to the next message another client wrote), if it has no calls, taken from the node
   (`Appended`), never from `Live`. With `--json` it is instead the
   `Welcome` line and the events the client hears, one object per line, as the wire sends them.
 - **stderr** gets one line each, prefixed `tau: `: every `Notice`, a hook's failure, each wait
-  before a retry (`tau: HTTP 429: busy: retry 1 of 3 in 2 s`), each question answered by a rule
-  or declined, why a run stopped before it finished, and the failure that ended
+  before a retry (`tau: HTTP 429: busy: retry 1 of 3 in 2 s`), each question answered or
+  declined by a rule, each one no rule matches, why a run stopped before it finished, and the
+  failure that ended
   it; with `--verbose` also the start report and one line per node, step and question.
 - **Exit status**: 0 the model finished, 1 a failure, 2 usage, 3 stopped before finishing, 130
   interrupted (the first SIGINT aborts the cursor and waits for it to rest; the second leaves at
@@ -78,6 +80,10 @@ class Process(Protocol):
 
 class _Refused(Exception):
     """An `--answer` rule whose value the question's schema refused."""
+
+
+class _Unanswered(Exception):
+    """Questions the run may answer that no rule matches: `args[0]`, their ids."""
 
 
 class _Gone(Exception):
@@ -489,7 +495,7 @@ def _check_rules(run: _Run) -> None:
     for rule in run.rules:
         if rule.extension != "*" and rule.extension not in loaded:
             raise UsageError(
-                f"--answer {rule.spec}: no extension {rule.extension!r} is loaded "
+                f"{rule.flag}: no extension {rule.extension!r} is loaded "
                 f"(loaded: {', '.join(loaded)})"
             )
 
@@ -498,16 +504,18 @@ async def _drive(run: _Run, message: str, piped: str) -> int:
     """The run, from the snapshot to the status."""
     _check_rules(run)
     await run.client.watch([run.cursor])  # `Live`: `--json` prints it; a retry wait is told
-    for event in run.opened.snapshot:
-        await run.hear(event, snapshot=True)
-    if run.verbose:
-        for line in run.report():
-            run.note(line)
     try:
+        for event in run.opened.snapshot:  # attached, its questions may be answered first
+            await run.hear(event, snapshot=True)
+        if run.verbose:
+            for line in run.report():
+                run.note(line)
         return await _perform(run, message, piped)
     except _Refused as e:
         await run.abort()
         return run.failed("RuleRefused", str(e))
+    except _Unanswered as e:
+        return await _unanswered(run, e.args[0])
     except (CommandFailed, Busy, ConnectionError) as e:
         return run.failed(type(e).__name__, str(e))
 
@@ -540,42 +548,70 @@ def _opened_by_run(run: _Run, cursor: int) -> bool:
     return False
 
 
+def _ours(run: _Run, cursor: int, *, snapshot: bool) -> bool:
+    """Whether the run may answer the questions on `cursor`. Local, every cursor's. Attached,
+    those of the cursor it attached to, open already or not, and of a cursor the run opened since
+    (a sub-agent its step started); every other cursor's are the server's other clients' (D22
+    section 5)."""
+    if not run.attached or cursor == run.cursor:
+        return True
+    return not snapshot and _opened_by_run(run, cursor)
+
+
 async def _questions(run: _Run, view: CursorView, *, snapshot: bool) -> None:
-    """Deal with the open questions `-p` may answer. Local, all of them, on any cursor.
-    Attached, only those that open after the attach on the cursor it sent to or on a cursor the
-    run opened (a sub-agent its step started): the snapshot's, and every other cursor's, are
-    the server's other clients' (D22 section 5)."""
+    """Deal with the open questions `-p` may answer (`_ours`): each by the first rule that
+    matches. `_Unanswered` names those no rule matches, after every answer is given."""
+    unanswered: list[int] = []
     for question in view.questions:
         if question.id not in run.seen and run.verbose:
             run.note(f'question {question.id} from {question.extension}: "{question.text}"')
         run.seen.add(question.id)
         if question.id in run.handled or question.to not in (None, run.client.id):
             continue
-        if run.attached and (snapshot or not _opened_by_run(run, view.cursor)):
-            run.handled.add(question.id)
+        run.handled.add(question.id)
+        if not _ours(run, view.cursor, snapshot=snapshot):
             run.note(
                 f"question {question.id} from {question.extension} on cursor {view.cursor} "
                 "is left to the server's other clients"
             )
-        else:
-            run.handled.add(question.id)
-            await _resolve(run, question, view.cursor)
+        elif not await _resolve(run, question, view.cursor):
+            unanswered.append(question.id)
+    if unanswered:
+        raise _Unanswered(unanswered)
 
 
-async def _resolve(run: _Run, question: OpenQuestion, cursor: int) -> None:
-    """Answer the question by the first rule that matches, or decline it."""
+async def _resolve(run: _Run, question: OpenQuestion, cursor: int) -> bool:
+    """Answer the question by the first rule that matches (a `--decline` one declines it).
+    False, and the question shown, if none does: it is never declined for want of a rule."""
     asked = f"question {question.id} from {question.extension}"
     said = f'"{question.text}"'
     rule = next((r for r in run.rules if r.matches(question.extension, question.text)), None)
     if rule is None:
-        run.note(f"declined {asked} on cursor {cursor}: {said}")
+        run.note(f"{asked} on cursor {cursor} has no rule: {said}")
+        return False
+    if rule.value is None:
         await _answer(run, question.id, None)
-        return
+        run.note(f"declined {asked} on cursor {cursor} ({rule.flag}): {said}")
+        return True
     try:
         await _answer(run, question.id, value(rule.value, question.schema))
     except ValueError as e:
-        raise _Refused(f"--answer {rule.spec}: {asked} ({said}): {e}") from None
+        raise _Refused(f"{rule.flag}: {asked} ({said}): {e}") from None
     run.note(f"answered {asked} with {rule.value}: {said}")
+    return True
+
+
+async def _unanswered(run: _Run, questions: list[int]) -> int:
+    """Stop for the questions no rule matches. Attached, they stay open for the server's other
+    clients or the next `-p`. Local, nobody else can answer them: the run's cursor is aborted."""
+    ids = ", ".join(map(str, questions))
+    if run.attached:
+        return run.stopped(
+            f"question {ids} has no --answer or --decline rule; it stays open: answer it in "
+            "another client, or with tau -p -c --answer (or --decline)"
+        )
+    await run.abort()
+    return run.stopped(f"question {ids} has no --answer or --decline rule")
 
 
 async def _answer(run: _Run, question: int, given: object) -> None:

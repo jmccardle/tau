@@ -538,13 +538,19 @@ all its questions at once, and a [sub-agent](#sub-agents)'s questions are asked 
 cursor. Another client of the same session (`tau serve`) can answer a question; the first answer
 wins.
 
-`tau -p` has no one to ask, so a question it has no answer for is declined and the call refused,
-and the run still ends (`tau: declined question 0 from permissions on cursor 0: ...`). Give it answers with `--answer`, which matches who asked and what:
+`tau -p` has no one to ask, so it never decides a question by itself: one it has no rule for is
+shown (`tau: question 0 from permissions on cursor 0 has no rule: ...`) and the run stops, exit 3.
+Give it answers with `--answer`, which matches who asked and what, and declines with `--decline`
+(the call is refused, and the run goes on). The first rule that matches wins:
 
 ```bash skip
 tau -p --answer permissions=yes "tidy the imports"
-tau -p --answer 'permissions:bash: make test=yes' "fix the test"   # any other question is declined
+tau -p --answer 'permissions:bash: make test=yes' --decline permissions "fix the test"   # refuse the rest
 ```
+
+Attached to a `tau serve`, a question with no rule stays open for the server's other clients (a
+person in the terminal UI); `tau -p -c --answer ...` answers the questions already open on its
+cursor before it sends.
 
 A `--answer` text is a glob over the call (a file tool's question shows the resolved path, so a text
 for `/proj/*` does not answer `/proj/../etc/x`). For `bash` it is as an `allow` rule is: `bash`

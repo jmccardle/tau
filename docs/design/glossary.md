@@ -1806,18 +1806,23 @@ the cursor and waits for it to rest; the second leaves at once). `-m/--model`, `
 `--set`, `--verbose` and `-v/--version` (`tau VERSION (protocol N)`) are its flags; the first
 argument decides the parser, so `tau -p sessions` sends the word "sessions".
 
-### answer rule, --answer
-`tau._launch.AnswerRule` · D22 §5 · new
+### answer rule, --answer, --decline
+`tau._launch.AnswerRule` · D22 §5 · new (amended 2026-11-12: `--decline`, no implicit decline)
 
 **`--answer EXTENSION[:TEXT]=VALUE`** (repeatable) tells `tau -p` how to answer a question. The
 value is after the last `=`, the extension (the asker's name, or `*`) before the first `:` of the
-rest, and `TEXT` is a glob over the question's text (default `*`). The first rule that matches
-answers, with `VALUE` read by the question's schema as a typed answer is (`commandline.value`).
-No rule matches: the question is declined (`answer(id, None)`) and stderr says so. A rule whose
-value the schema refuses aborts the run and exits 1, naming the rule and the question. Attached to
-a server, `-p` handles only the questions that open after its send, on the cursor it sent to;
-the others are the server's other clients' and it never rules on them. A rule naming an extension
-that is not loaded is a usage error (exit 2).
+rest, and `TEXT` is a glob over the question's text (default `*`). **`--decline EXTENSION[:TEXT]`**
+is the same rule with no value: it declines (`answer(id, None)`). Both flags make one list in the
+order typed, and the first rule that matches wins; an answer's `VALUE` is read by the question's
+schema as a typed answer is (`commandline.value`). A rule whose value the schema refuses aborts
+the run's cursor and exits 1, naming the rule and the question. **No rule matches: the question
+is never declined for it.** `-p` shows it (`question N from EXT on cursor C has no rule: "..."`)
+and stops, exit 3. Attached to a server, the question stays open for the server's other clients
+or the next `tau -p --answer`; local, nobody else can answer it, so the run's cursor is aborted.
+Attached, `-p` rules on the questions of the cursor it attached to, those already open included
+(answering them before it sends), and of the cursors its run opens; the others are the server's
+other clients' and it never rules on them. A rule naming an extension that is not loaded is a
+usage error (exit 2).
 
 ### TUI, tau.tui, TauApp
 modules `tau.tui` (public), `tau.tui._app`, `_run`, `_line`, `_forms`, `_fields`, `_chat`,

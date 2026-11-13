@@ -872,8 +872,9 @@ Refusing a broad search whole was E4's first answer; John chose filtering (8E-6)
   rule says `permissions refused this call: it matches the deny rule 'RULE'`.
 - **`/config permissions ask=bash,write`** splits a list at commas; a rule that contains a comma
   is typed as a JSON array (`allow=["bash:cp a,b c"]`), as for any list option.
-- **Attached `tau -p`** answers (by `--answer`, else declines) the questions that open after it
-  attached on its own cursor and on the cursors its own run opened, an agent's included. Nothing records who opened a cursor, so a
+- **Attached `tau -p`** answers (by `--answer`, or declines by `--decline`) the questions on its own
+  cursor, those open when it attached included, and on the cursors its own run opened, an agent's
+  included; one no rule matches stops it and stays open (D22 §5, amended 2026-11-12). Nothing records who opened a cursor, so a
   cursor is the run's if an extension wrote a user message on its walk after the attach, while the
   run's own cursor was busy (a sub-agent's task; it opens on the session's prefix; a follow-up to an
   agent the session already had open, which is in the attach snapshot, counts too; 8E-5), or its walk
@@ -882,7 +883,7 @@ Refusing a broad search whole was E4's first answer; John chose filtering (8E-6)
   run's (known limit). The run's own
   turn is from its first `User` node that is not another client's to the next one that is, and the
   answer it prints is the last reply without calls in that turn. A declined question is told as
-  `declined question N from EXT on cursor C: "..."`. Clients and
+  `declined question N from EXT on cursor C (--decline RULE): "..."`. Clients and
   cursors are not separate users: one user hops between sub-agents and parallel branches, and
   every client may answer for any cursor, so there is no `opened_by` and no owner of a question
   beyond the first answer.

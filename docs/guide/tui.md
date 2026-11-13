@@ -13,7 +13,7 @@ tau --session 20261102-0915-1c2d3e   # one session; attaches if a `tau serve` ho
 ```
 
 Standard input and output must be a terminal; without one `tau` says so, and `tau -p` is the way
-to script it. `--json` and `--answer` are for `-p`. The flags that choose the session, the model
+to script it. `--json`, `--answer` and `--decline` are for `-p`. The flags that choose the session, the model
 and the extensions are the same as for `tau -p` ([Quickstart](quickstart.md)); `--theme NAME` is
 the terminal UI's own.
 

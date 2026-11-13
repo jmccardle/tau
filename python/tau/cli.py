@@ -684,7 +684,7 @@ def _launch(
     if args.print and args.theme:
         launcher.error("--theme is for the terminal UI, which -p does not open")
     if not args.print and (args.json or args.answer):
-        launcher.error("--json and --answer are for -p: the terminal UI has a person")
+        launcher.error("--json, --answer and --decline are for -p: the terminal UI has a person")
     args.command = "print" if args.print else "tui"
     return args, None
 

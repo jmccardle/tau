@@ -7,8 +7,8 @@ including nothing, is the launch command line. So `tau -p sessions` sends the wo
 The flag builders the programs share live here too (`extension_flags`, `option_flags`,
 `session_flags`, ...; `tau.cli` exports them). `launch_parser` builds the launch parser from the
 flag parsers the program already has (the session, extension and `--set` flags). `answer_rule`
-reads an `--answer` argument, and `message_of` joins the words and standard input into the
-message `-p` sends.
+reads an `--answer` argument and `decline_rule` a `--decline` one, and `message_of` joins the
+words and standard input into the message `-p` sends.
 """
 
 import argparse
@@ -33,16 +33,21 @@ class UsageError(Exception):
 
 @dataclass(frozen=True)
 class AnswerRule:
-    """One `--answer EXTENSION[:TEXT]=VALUE` (D22 section 5): the asking `extension` (or `*`), a
-    glob over the first line of the question's `text` and the `value` to answer with, read by the
-    question's schema. For `permissions` the glob is over the whole call (its `(ask rule: ...)` line
-    left out), and a `bash` text is `bash` alone or one exact command.
-    `spec` is the argument as typed."""
+    """One `--answer EXTENSION[:TEXT]=VALUE` or `--decline EXTENSION[:TEXT]` (D22 section 5): the
+    asking `extension` (or `*`), a glob over the first line of the question's `text` and the
+    `value` to answer with, read by the question's schema; `None` declines (`--decline`). For
+    `permissions` the glob is over the whole call (its `(ask rule: ...)` line left out), and a
+    `bash` text is `bash` alone or one exact command. `spec` is the argument as typed."""
 
     extension: str
     text: str
-    value: str
+    value: str | None
     spec: str
+
+    @property
+    def flag(self) -> str:
+        """The rule as typed, with its flag: `--answer gate=yes`, `--decline gate`."""
+        return f"{'--decline' if self.value is None else '--answer'} {self.spec}"
 
     def matches(self, extension: str, text: str) -> bool:
         """Whether the question `text` asked by `extension` is one this rule answers."""
@@ -58,9 +63,21 @@ def answer_rule(spec: str) -> AnswerRule:
     """`EXTENSION[:TEXT]=VALUE` as a rule: the value is after the last `=`, then the extension
     is before the first `:` of the rest. `argparse.ArgumentTypeError` if either is missing."""
     head, equals, value = spec.rpartition("=")
-    extension, colon, text = head.partition(":")
-    if not equals or not extension or (colon and not text):
+    if not equals:
         raise argparse.ArgumentTypeError(f"{spec!r} is not EXTENSION[:TEXT]=VALUE")
+    return _rule(head, value, spec, "EXTENSION[:TEXT]=VALUE")
+
+
+def decline_rule(spec: str) -> AnswerRule:
+    """`EXTENSION[:TEXT]` as a rule that declines what it matches: the extension is before the
+    first `:`. `argparse.ArgumentTypeError` if it is missing."""
+    return _rule(spec, None, spec, "EXTENSION[:TEXT]")
+
+
+def _rule(head: str, value: str | None, spec: str, shape: str) -> AnswerRule:
+    extension, colon, text = head.partition(":")
+    if not extension or (colon and not text):
+        raise argparse.ArgumentTypeError(f"{spec!r} is not {shape}")
     if extension == PERMISSIONS and colon:
         try:
             _permissions.check_answer(text)
@@ -114,7 +131,16 @@ def launch_parser(
         type=answer_rule,
         metavar="EXTENSION[:TEXT]=VALUE",
         help="answer the questions extensions ask: EXTENSION is the asker or *, TEXT a glob over "
-        "the question; the first rule that matches wins, and no match declines (repeatable)",
+        "the question; the first rule (--answer or --decline) that matches wins, and a question "
+        "no rule matches stops the run, left open (repeatable)",
+    )
+    parser.add_argument(
+        "--decline",
+        dest="answer",
+        action="append",
+        type=decline_rule,
+        metavar="EXTENSION[:TEXT]",
+        help="decline the questions this matches, as --answer matches them (repeatable)",
     )
     parser.add_argument(
         "--theme",

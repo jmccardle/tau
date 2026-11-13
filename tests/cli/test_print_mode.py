@@ -433,7 +433,7 @@ def test_an_answer_text_globs_the_first_line_of_the_question_only(configured: Wo
     assert hit.code == 0, hit.err
     assert "answered question 0 from gate with yes" in hit.err
     miss = p(configured, "-e", gate, "--answer", "gate:*second line=yes", "go")
-    assert "declined question 0 from gate" in miss.err, "the second line is not in the text"
+    assert "question 0 from gate on cursor 0 has no rule" in miss.err, "not in the first line"
 
 
 def test_a_rule_answers_the_question_and_the_run_goes_on(configured: World) -> None:
@@ -443,11 +443,51 @@ def test_a_rule_answers_the_question_and_the_run_goes_on(configured: World) -> N
     assert 'tau: answered question 0 from gate with yes: "run the thing?"' in result.err
 
 
-def test_no_rule_declines_and_says_so(configured: World) -> None:
+def test_no_rule_never_declines_it_stops_and_shows_the_question(configured: World) -> None:
     result = p(configured, "-e", ext(configured, "gate", GATE), "go")
     assert result.code == 3
     assert result.out == ""
-    assert 'tau: declined question 0 from gate on cursor 0: "run the thing?"' in result.err
+    assert 'tau: question 0 from gate on cursor 0 has no rule: "run the thing?"' in result.err
+    assert "tau: stopped before finishing: question 0 has no --answer or --decline rule" in (
+        result.err
+    )
+    assert "declined" not in result.err
+
+
+def test_a_decline_rule_declines_and_says_which_rule(configured: World) -> None:
+    result = p(configured, "-e", ext(configured, "gate", GATE), "--decline", "gate", "go")
+    assert result.code == 3, "the gate halts the step on a declined question"
+    assert (
+        'tau: declined question 0 from gate on cursor 0 (--decline gate): "run the thing?"'
+        in result.err
+    )
+    assert "halted: verdict: None" in result.err
+
+
+def test_answer_and_decline_rules_are_one_list_and_the_first_match_wins(
+    configured: World,
+) -> None:
+    gate = ext(configured, "gate", GATE)
+    declined = p(configured, "-e", gate, "--decline", "gate:run*", "--answer", "gate=yes", "go")
+    assert "declined question 0" in declined.err
+    answered = p(configured, "-e", gate, "--answer", "gate=yes", "--decline", "gate:run*", "go")
+    assert answered.code == 0, answered.err
+    assert "answered question 0 from gate with yes" in answered.err
+
+
+def test_a_decline_rule_for_an_extension_not_loaded_is_a_usage_error(configured: World) -> None:
+    result = p(configured, "--decline", "nope", "go")
+    assert result.code == 2
+    assert "--decline nope: no extension 'nope' is loaded" in result.err
+
+
+def test_a_decline_rule_needs_an_extension(
+    configured: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as stop:
+        p(configured, "--decline", ":text", "go")
+    assert stop.value.code == 2
+    assert "':text' is not EXTENSION[:TEXT]" in capsys.readouterr().err
 
 
 def test_the_first_matching_rule_wins(configured: World) -> None:
@@ -725,7 +765,7 @@ def test_json_start_error_is_only_the_error_line(world: World) -> None:
 def test_json_stderr_carries_notices_and_questions_stdout_stays_json(configured: World) -> None:
     result = p(configured, "--json", "-e", ext(configured, "gate", GATE), "go")
     assert result.code == 3
-    assert 'tau: declined question 0 from gate on cursor 0: "run the thing?"' in result.err
+    assert 'tau: question 0 from gate on cursor 0 has no rule: "run the thing?"' in result.err
     for line in result.out.splitlines():
         json.loads(line)
 

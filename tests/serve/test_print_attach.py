@@ -216,11 +216,22 @@ def test_a_question_on_its_own_cursor_is_answered_by_a_rule(home: World) -> None
     assert 'answered question 0 from gate with yes: "run the thing?"' in result.err
 
 
-def test_a_question_on_its_own_cursor_with_no_rule_is_declined(home: World) -> None:
+def test_a_question_on_its_own_cursor_with_no_rule_stays_open_and_p_stops(home: World) -> None:
     serving(home, "-e", extension(home, "gate", GATE))
     result = p(home, "--session", OLD, "go")
     assert result.code == 3
-    assert 'declined question 0 from gate on cursor 0: "run the thing?"' in result.err
+    assert 'question 0 from gate on cursor 0 has no rule: "run the thing?"' in result.err
+    assert "declined" not in result.err
+    again = p(home, "--session", OLD, "--answer", "gate=yes", "and then")
+    assert again.code == 0, again.err
+    assert "answered question 0 from gate with yes" in again.err, "the next -p answers it"
+
+
+def test_a_decline_rule_declines_a_question_on_its_own_cursor(home: World) -> None:
+    serving(home, "-e", extension(home, "gate", GATE))
+    result = p(home, "--session", OLD, "--decline", "gate", "go")
+    assert result.code == 3, "the gate halts on a declined question"
+    assert "declined question 0 from gate on cursor 0 (--decline gate)" in result.err
 
 
 def test_a_question_on_another_cursor_is_left_to_the_servers_other_clients(home: World) -> None:
@@ -383,27 +394,42 @@ def test_a_refused_value_aborts_only_the_cursor_p_sent_to(home: World) -> None:
     asyncio.run(scenario())
 
 
-def test_p_never_touches_a_question_that_was_open_before_its_send(home: World) -> None:
+def test_p_answers_by_its_rules_a_question_already_open_on_its_cursor(home: World) -> None:
     record = serving(home, "-e", extension(home, "gate", GATE))
 
     async def scenario() -> None:
         async with await RemoteClient.connect(str(record["socket"]), "test:person") as client:
             person = Person(client)
-            await person.ask(shared=True)  # the first cursor, which -p will send to as well
-            running = asyncio.create_task(
-                asyncio.to_thread(
-                    p, home, "--session", OLD, "--answer", "gate=yes", "--verbose", "go"
-                )
+            await person.ask(shared=True)  # the first cursor, which -p attaches to as well
+            result = await asyncio.to_thread(
+                p, home, "--session", OLD, "--answer", "gate=yes", "go"
             )
-            await asyncio.sleep(2)  # -p has connected, sent, and is waiting
-            assert not running.done()
-            await client.answer(person.question, "yes")  # still open: -p did not rule on it
-            result = await running
             assert result.code == 0, result.err
-            assert f"question {person.question} from gate on cursor 0 is left" in result.err
-            assert "answered question" in result.err
-            assert f"answered question {person.question} " not in result.err
+            assert f"answered question {person.question} from gate with yes" in result.err
+            assert result.out == "mock: go\n"
+
+    asyncio.run(scenario())
+
+
+def test_a_question_open_on_its_cursor_with_no_rule_stops_p_before_it_sends(home: World) -> None:
+    record = serving(home, "-e", extension(home, "gate", GATE))
+
+    async def scenario() -> None:
+        async with await RemoteClient.connect(str(record["socket"]), "test:person") as client:
+            person = Person(client)
+            await person.ask(shared=True)
+            result = await asyncio.to_thread(p, home, "--session", OLD, "go")
+            assert result.code == 3
+            assert (
+                f'question {person.question} from gate on cursor 0 has no rule: "run the thing?"'
+                in result.err
+            )
+            assert "it stays open" in result.err
+            assert result.out == "", "it stopped before it sent its message"
             assert "declined" not in result.err
+            await client.answer(person.question, "yes")  # still open: the person answers it
+            view = await person.rested()
+            assert view.ending == Ending.Done()
 
     asyncio.run(scenario())
 
@@ -519,9 +545,18 @@ def test_a_sub_agents_question_is_answered_by_the_attached_run_not_left_hanging(
     assert (work(delegating) / "ran").exists(), "the agent's bash call ran"
 
 
-def test_without_a_rule_the_attached_run_declines_a_sub_agents_question(delegating: World) -> None:
+def test_without_a_rule_the_attached_run_stops_at_a_sub_agents_question(delegating: World) -> None:
     serving(delegating)
     result = p(delegating, "--session", OLD, "go")
+    assert result.code == 3
+    assert "has no rule" in result.err
+    assert "declined" not in result.err
+    assert not (work(delegating) / "ran").exists(), "the call has not run"
+
+
+def test_a_decline_rule_declines_a_sub_agents_question(delegating: World) -> None:
+    serving(delegating)
+    result = p(delegating, "--session", OLD, "--decline", "permissions", "go")
     assert result.code == 0, result.err
     assert result.out == "done\n"
     assert "declined question" in result.err

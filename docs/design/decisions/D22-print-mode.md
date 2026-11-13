@@ -58,7 +58,7 @@ one `Client`, one cursor, no person to ask.
   stdin is read is *As built*, "Standard input and output". Nothing in either place is a usage
   error (exit 2), checked before the start, so it creates no session.
 - **Flags** are D18's session flags, D19's `-e` and `--no-extensions`, D20's prompt flags, and
-  `-m/--model`, `--json`, `--answer RULE` (§5), `--set EXTENSION.FIELD=VALUE` (§1), `--verbose`
+  `-m/--model`, `--json`, `--answer RULE` and `--decline RULE` (§5), `--set EXTENSION.FIELD=VALUE` (§1), `--verbose`
   (§7). `-r` with `-p` is a usage error (D18). `--no-extensions` skips the discovered sources
   (packages, user, project) and leaves every built-in as `load` says, `base_tools` included
   (D19 §5); only `load: {base_tools: false}` turns the tools off.
@@ -136,15 +136,29 @@ from `docs/protocol.schema.json` already reads it. There is no fourth format.
 ### 5. Questions: `--answer`
 
 Ruling 1 (fix plan): a question never declines for want of someone to answer. Under `-p`
-someone does answer: the `-p` client, by rule or by declining.
+someone does answer: the `-p` client, by a rule.
+
+**Amended 2026-11-12 (F-6, John: "the decline needs to be explicit").** `-p` used to decline every
+question no rule matched, at once. Attached, that took the question from a person in the TUI who
+was about to answer it. Now no rule matching is never a decline:
+- **`--decline EXTENSION[:TEXT]`** is the explicit decline: a rule with no value, in one list
+  with the `--answer` rules (the first that matches wins).
+- **No rule matches:** `-p` shows the question as `question N from EXT on cursor C has no rule:
+  "..."` and stops, exit 3 (`stopped before finishing: question N has no --answer or --decline
+  rule`). It neither declines nor waits. Attached, the question stays open, for the server's other
+  clients or the next `-p`. Local, nobody else can answer it, so `-p` aborts its own cursor, as an
+  interrupt does.
+- **Attached, the questions already open on the cursor `-p` attaches to are its to answer**, by
+  its rules, before it sends. One no rule matches stops it before it sends its message.
 
 - **Which questions.** Every open question `-p` may answer (`to` is `None` or this client), on
   any cursor, while the run lasts. A sub-agent's permission question is on the sub-agent's
   cursor, and the run waits on it. **Attached to a server** (§8), other clients, a person in the
-  TUI, may be connected, so `-p` handles only the questions that open after its send, on the
-  cursor it sent to or on a cursor opened since it attached (a sub-agent's: the run's own). Every
-  other question, one open before the send or on a cursor that was there already, is left to the
-  server's other clients, and `-p` says on stderr that it is. It never rules on them.
+  TUI, may be connected, so `-p` handles only the questions of the cursor it attached to (those
+  open already included, since the 2026-11-12 amendment above; before it, only those that opened
+  after its send) or of a cursor opened since it attached (a sub-agent's: the run's own). Every
+  other question, on a cursor that was there already, is left to the server's other clients, and
+  `-p` says on stderr that it is. It never rules on them.
 - **A rule** is `--answer EXTENSION[:TEXT]=VALUE`, repeatable; the first that matches wins.
   It is split at the last `=` (the value), then the rest at the first `:` (extension, text).
   `EXTENSION` is the asking extension's name or `*`. `TEXT` is a glob over the first line of the
@@ -158,7 +172,8 @@ someone does answer: the `-p` client, by rule or by declining.
   tau -p --answer permissions=yes "tidy the imports"
   tau -p --answer 'permissions:bash: make test=yes' "fix the test"
   ```
-- **No rule matches: decline** (`answer(id, None)`), and say so on stderr: `tau: declined
+- **No rule matches: decline** (*superseded 2026-11-12, above: it stops, and only `--decline`
+  declines*) (`answer(id, None)`), and say so on stderr: `tau: declined
   question 4 from permissions: "bash: rm -rf build"`. Declining is safe by D16 §3: the asker
   does as little as possible.
 - **A rule whose value the schema refuses** is the person's mistake, not the extension's: `-p`
@@ -250,7 +265,7 @@ from cron or another terminal.
 | `-e`, `--no-extensions` | kept | D19; `--no-extensions` skips discovered sources only, never built-ins; `-ne` dropped (D19 has the long form only) |
 | `--bus` | dropped | the NATS bus is post-0.16 |
 | `--max-turns N`, `--ext-config` | replaced | `StepLimit`'s option; per run, `--set` (§1) |
-| `--ui-defaults METHOD=ANSWER` | renamed `--answer EXTENSION[:TEXT]=VALUE` | matches who asked and what, not a dialog kind; no rule declines (§5) |
+| `--ui-defaults METHOD=ANSWER` | renamed `--answer EXTENSION[:TEXT]=VALUE`, and `--decline EXTENSION[:TEXT]` | matches who asked and what, not a dialog kind; no rule stops the run (§5, amended 2026-11-12) |
 | `--system-prompt`, `--append-system-prompt`, `-nc` | kept | D20 |
 | `--prompt-template`, `--skill` and their `--no-` forms | moved | the skills and templates extension's options (8E) |
 | `-c`, `--session`, `--fork`, `-n`, `--no-session`, `--session-dir` | kept | D18; no longer `-p`-only |
@@ -299,7 +314,8 @@ Decided as the drafts recommended, with the changes folded into the sections abo
 
 1. **Streaming in a terminal:** no. One rule for terminals and pipes (§3).
 2. **Final reply only** on stdout; the others under `--verbose` on stderr (§3).
-3. **Questions while attached:** `-p` answers or declines only questions on its own cursor (§5).
+3. **Questions while attached:** `-p` answers or declines only questions on its own cursor (§5;
+   amended 2026-11-12: those already open on it too, and only by a rule).
    This is narrower than the draft, which let rules answer on any cursor.
 4. **`--set EXTENSION.FIELD=VALUE`:** yes, in 8B (§1).
 5. **`-v` is `--version`;** `--verbose` stays long-only (§7).
@@ -312,7 +328,8 @@ Decided as the drafts recommended, with the changes folded into the sections abo
 
 - **print mode, `tau -p`**: the one-shot client of §1–§6; **rest** (of a run): the first
   `CursorView` of the cursor, after the call, that is not busy.
-- **answer rule, `--answer`**: `EXTENSION[:TEXT]=VALUE`; no match declines.
+- **answer rule, `--answer`**: `EXTENSION[:TEXT]=VALUE`; no match declines (amended 2026-11-12:
+  `--decline EXTENSION[:TEXT]` declines, and no match stops the run).
 - **`OpenQuestion.extension`** (amended **OpenQuestion**): the asking extension.
 - **`open_client`, `Opened`**: open a session for a client: attach or start, then the snapshot
   and the first cursor; **attach**: connecting to the `tau serve` that holds the chosen session
@@ -363,12 +380,15 @@ Where the code differs from the text above, or the text left a choice:
 - **`--json` errors.** Every failure that exits 1 ends stdout with `{"error": {"type",
   "message"}}`: a start error by its exception's name, a failed step `Failed`, a refused rule
   `RuleRefused`, a failed command `CommandFailed`, a lost server `ConnectionError`.
-- **Questions.** Local, the snapshot's open questions are dealt with too. Attached, `-p` handles
-  only the questions that open after its send, on the cursor it sent to (the lowest open cursor,
-  which a TUI may share): a question open in the snapshot, or on another cursor, is announced once
-  on stderr and left, never answered or declined, and a refused `--answer` value aborts only the
-  cursor `-p` sent to. A question `to` another client is left alone. A question that opened
-  between the snapshot and the send is taken as opened after it.
+- **Questions** (amended 2026-11-12, F-6). Local, the snapshot's open questions are dealt with
+  too. Attached, `-p` handles the questions of the cursor it sends to (the lowest open cursor,
+  which a TUI may share), those open in the snapshot included: it answers them by its rules
+  before it sends. A question on another cursor is announced once on stderr and left, never
+  answered or declined, and a refused `--answer` value aborts only the cursor `-p` sent to. A
+  question `to` another client is left alone. A question no rule matches is shown, `question N
+  from EXT on cursor C has no rule: "..."`, after the others found with it are answered, and the
+  run stops with exit 3: before the send if it was open in the snapshot. Attached it stays open;
+  local, `-p` aborts its own cursor (nobody else can answer). Only a `--decline` rule declines.
 - **A rule for an extension this process did not load** is a usage error (exit 2) after the start,
   naming the extensions loaded (not only those that ask: nothing says which do). Attached it is
   not checked: the wire does not carry a server's extension names.
