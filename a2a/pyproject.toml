@@ -1,0 +1,31 @@
+# The A2A server for τ: a separate distribution, a client of `tau serve` (D21) through τ's public
+# API only. It changes nothing in τ, and τ does not depend on it.
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"  # rules: allow(backend): PEP 517 key
+
+[project]
+name = "ffwf-tau-a2a"
+version = "0.1.0.dev0"
+description = "An A2A 1.0 server for a τ session: each A2A context is a τ cursor."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
+keywords = ["a2a", "agent", "llm", "tau"]
+dependencies = [
+    "ffwf-tau>=0.16.0.dev0",
+    "a2a-sdk[http-server,sqlite]>=1.3,<2",
+    "uvicorn>=0.30",
+    "pyjwt[crypto]>=2.9",
+]
+
+[project.scripts]
+tau-a2a = "tau_a2a.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/tau_a2a"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
