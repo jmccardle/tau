@@ -26,10 +26,14 @@ if ! command -v curl >/dev/null; then
     apt-get install -y --no-install-recommends curl ca-certificates build-essential
 fi
 
-curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy,rustfmt \
-    ${TAU_CI_METRICS:+-c llvm-tools-preview}
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 curl -LsSf "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-installer.sh" | sh
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+# The toolchain is the one rust-toolchain.toml pins, with its components.
+rustup toolchain install
+if [ -n "${TAU_CI_METRICS:-}" ]; then
+    rustup component add llvm-tools-preview
+fi
 if [ -n "${GITHUB_PATH:-}" ]; then
     echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
     echo "$HOME/.local/bin" >>"$GITHUB_PATH"

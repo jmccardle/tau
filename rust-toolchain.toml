@@ -1,0 +1,8 @@
+# The one Rust toolchain every build, test and CI job uses (rustup reads this file).
+# Bump it on purpose, in a commit of its own, and let the full matrix judge it:
+# an unpinned `stable` changed `escape_debug` under us in 1.100.0.
+# `rust-version` in Cargo.toml is the floor we promise; this is what we build with.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
