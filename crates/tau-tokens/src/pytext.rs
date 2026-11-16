@@ -3,10 +3,13 @@
 //! rendering is right only if every value prints the same here: `True` and `None`, `1e-05`,
 //! `{'a': 1}`, `{"a": 1}` with a space after the colon.
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
 
 use minijinja::value::{Value, ValueKind};
 use minijinja::{Error, ErrorKind};
+
+use crate::pyprintable::NOT_PRINTABLE;
 
 /// What `json.dumps` was asked for (the keyword arguments of `tojson`).
 #[derive(Debug, Clone)]
@@ -75,18 +78,27 @@ fn positional(digits: &str, exponent: i32) -> String {
     format!("{before}.{after}")
 }
 
-/// Whether Python's `repr` prints this character as itself. Rust's `Debug` for a string keeps
-/// the same table (control, format, private-use, unassigned and separator characters are
-/// escaped); the `a` in front keeps a combining mark from counting as the start of the string,
-/// where Rust alone would escape it.
+/// Whether Python's `repr` prints this character as itself: `str.isprintable`, which is every
+/// character but a control, format, surrogate, private-use, unassigned or separator one (general
+/// category Cc, Cf, Cs, Co, Cn, Zl, Zp, Zs), U+0020 excepted. Rust's `Debug` is not that rule and
+/// has changed under us (1.100 escapes combining marks), so the table is generated from Python's
+/// own `unicodedata` (`scripts/pyprintable.py`).
 fn printable(c: char) -> bool {
     if c.is_ascii() {
         return (' '..='~').contains(&c);
     }
-    let mut pair = String::with_capacity(8);
-    pair.push('a');
-    pair.push(c);
-    pair.escape_debug().count() == 2
+    let code = u32::from(c);
+    NOT_PRINTABLE
+        .binary_search_by(|&(start, end)| {
+            if end < code {
+                Ordering::Less
+            } else if start > code {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_err()
 }
 
 /// A character `repr` does not print as itself, as `\xNN`, `\uNNNN` or `\UNNNNNNNN`.
@@ -381,6 +393,10 @@ mod tests {
             ("line\nbreak\ttab\\", "'line\\nbreak\\ttab\\\\'"),
             ("nbsp\u{a0}zwsp\u{200b}", "'nbsp\\xa0zwsp\\u200b'"),
             ("e\u{301} 日本 😀", "'e\u{301} 日本 😀'"),
+            ("a\u{3000}b", "'a\\u3000b'"),
+            ("\u{e000}", "'\\ue000'"),
+            ("\u{378}", "'\\u0378'"),
+            ("\u{10ffff}😀", "'\\U0010ffff😀'"),
             ("\u{7f}\u{1}", "'\\x7f\\x01'"),
         ];
         for (text, expected) in cases {

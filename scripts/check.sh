@@ -59,7 +59,8 @@ step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q tests
 step "wire coding";  "$PY" scripts/check_wire.py
 step "wire schema";  "$PY" scripts/schema.py --check   # docs/protocol.schema.json is generated (D21 §8)
-step "api docs";     "$PY" scripts/api_docs.py --check   # docs/api/surface.txt, docs/reference/, and _core.pyi's docstrings against the built module
+step "pyprintable";  "$PY" scripts/pyprintable.py --check --skip-other-version   # crates/tau-tokens/src/pyprintable.rs is generated from unicodedata; another Unicode version is reported, not compared
+step "api docs";    "$PY" scripts/api_docs.py --check   # docs/api/surface.txt, docs/reference/, and _core.pyi's docstrings against the built module
 step "protocol guide"; "$PY" scripts/protocol_guide.py --check   # docs/guide/protocol.md is generated from the schema
 step "guide examples"; "$PY" scripts/guide_examples.py   # every python and bash block in docs/guide runs, on a temporary TAU_HOME
 step "diagrams";     scripts/diagrams.sh --check   # rule 6; builds a feature-enabled core apart

@@ -27,6 +27,7 @@ mod identity;
 mod memo;
 mod now;
 mod pyjinja;
+mod pyprintable;
 mod pytext;
 mod template;
 mod tokenizer;
