@@ -5,6 +5,8 @@ context, contexts as cursors, the tau-fork extension, and bearer-JWT owner scopi
 
 import asyncio
 import json
+import subprocess
+import sys
 import time
 import uuid
 
@@ -75,6 +77,96 @@ async def test_card_is_a2a_1_0_jsonrpc_and_offers_tau_fork(serve) -> None:
     assert [e["uri"] for e in card["capabilities"]["extensions"]] == [FORK_EXTENSION]
     assert not card["capabilities"]["extensions"][0].get("required", False)
     assert "securitySchemes" not in card
+
+
+SKILL = "---\ndescription: Sort incoming issues by severity.\n---\nRead the issue, then...\n"
+
+
+def card_of(s) -> dict:
+    return httpx.get(s.url + "/.well-known/agent-card.json").json()
+
+
+async def test_the_card_skills_are_the_sessions_skills(serve) -> None:
+    s = serve(files={"skills/triage/SKILL.md": SKILL})
+    skills = card_of(s)["skills"]
+    assert [(k["id"], k["description"]) for k in skills] == [
+        ("triage", "Sort incoming issues by severity.")
+    ]
+
+
+async def test_a_session_without_skills_offers_converse(serve) -> None:
+    assert [k["id"] for k in card_of(serve())["skills"]] == ["converse"]
+
+
+OVERLAY = {
+    "description": "Triage for the issue tracker.",
+    "version": "1.2.0+sha256.abc",
+    "provider": {"organization": "ffwf", "url": "https://ffwf.net"},
+    "skills": [{"id": "triage", "name": "Triage", "description": "Sort issues.", "tags": ["x"]}],
+    "capabilities": {
+        "extensions": [
+            {
+                "uri": "https://example.org/ext/definition/v1",
+                "params": {"digest": "sha256:abc"},
+            }
+        ]
+    },
+}
+
+
+async def test_a_card_overlay_is_merged_over_the_stated_card(serve) -> None:
+    s = serve(
+        files={"skills/triage/SKILL.md": SKILL, "{base}/overlay.json": json.dumps(OVERLAY)},
+        a2a_args=("--auth", "none", "--card-overlay", "overlay.json"),
+    )
+    card = card_of(s)
+    assert card["description"] == OVERLAY["description"]
+    assert card["version"] == OVERLAY["version"]
+    assert card["provider"] == OVERLAY["provider"]
+    assert card["skills"] == OVERLAY["skills"]
+    extensions = card["capabilities"]["extensions"]
+    assert [e["uri"] for e in extensions] == [
+        FORK_EXTENSION,
+        "https://example.org/ext/definition/v1",
+    ]
+    assert extensions[1]["params"] == {"digest": "sha256:abc"}
+    # what the server states stays its own
+    assert card["supportedInterfaces"][0]["url"] == s.url + "/"
+    assert card["capabilities"]["streaming"] is True
+
+
+@pytest.mark.parametrize(
+    ("overlay", "says"),
+    [
+        ({"supportedInterfaces": []}, "supportedInterfaces"),
+        ({"capabilities": {"streaming": False}}, "capabilities.streaming"),
+        ({"skils": []}, "skils"),
+        ([], "JSON object"),
+    ],
+)
+async def test_a_card_overlay_that_cannot_be_believed_is_refused(tmp_path, overlay, says) -> None:
+    path = tmp_path / "overlay.json"
+    path.write_text(json.dumps(overlay), encoding="utf-8")
+    done = subprocess.run(  # noqa: PLW1510 - the code is asserted with the output
+        [
+            sys.executable,
+            "-m",
+            "tau_a2a",
+            "--socket",
+            str(tmp_path / "none.sock"),
+            "--db",
+            str(tmp_path / "db"),
+            "--auth",
+            "none",
+            "--card-overlay",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode != 0
+    assert says in done.stderr
 
 
 async def test_send_completes_with_the_reply_and_its_evidence(serve) -> None:

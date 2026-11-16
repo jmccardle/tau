@@ -55,12 +55,17 @@ class Served:
 
 @pytest.fixture
 def serve() -> Iterator[Callable[..., Served]]:
-    """`serve(model=MOCK, extensions=(), a2a_args=())`: a session and its A2A server."""
+    """`serve(model=MOCK, extensions=(), a2a_args=(), files={})`: a session and its A2A server;
+    `files` maps paths under TAU_HOME (or absolute ones) to their text, written before either
+    starts."""
     bases: list[Path] = []
     processes: list[subprocess.Popen] = []
 
     def start(
-        model: dict = MOCK, extensions: tuple[str, ...] = (), a2a_args: tuple[str, ...] = ()
+        model: dict = MOCK,
+        extensions: tuple[str, ...] = (),
+        a2a_args: tuple[str, ...] = (),
+        files: dict[str, str] | None = None,
     ) -> Served:
         base = Path(tempfile.mkdtemp(prefix="ta2a", dir="/tmp"))
         bases.append(base)
@@ -70,6 +75,10 @@ def serve() -> Iterator[Callable[..., Served]]:
         (home / ".tau" / "config.json").write_text(
             json.dumps({"default_model": "m", "models": {"m": model}}), encoding="utf-8"
         )
+        for name, text in (files or {}).items():
+            path = home / ".tau" / name.format(base=base)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
         env = {**os.environ, "HOME": str(home), "TAU_HOME": str(home / ".tau")}
         flags: list[str] = []
         for i, source in enumerate(extensions):

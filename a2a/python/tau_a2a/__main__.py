@@ -8,7 +8,7 @@ from pathlib import Path
 
 import uvicorn
 
-from tau_a2a._app import Settings, create_app
+from tau_a2a._app import Settings, create_app, read_overlay
 from tau_a2a._auth import JwtSettings
 
 
@@ -27,6 +27,12 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="the node new contexts open at; default the end of "
         "the session's prefix (before its first user message)",
+    )
+    p.add_argument(
+        "--card-overlay",
+        type=Path,
+        help="a JSON file, part of an A2A AgentCard (skills, provider, description, version, "
+        "capabilities.extensions, ...), merged over the card the server states",
     )
     p.add_argument("--client-id", default="a2a", help="this server's client id on the session")
     p.add_argument(
@@ -60,6 +66,10 @@ def settings(argv: list[str] | None = None) -> tuple[Settings, argparse.Namespac
             f"tau-a2a: --auth none on {a.host} serves anyone who reaches the port; bind to "
             "loopback, use --auth jwt, or pass --allow-unauthenticated-network"
         )
+    try:
+        overlay = read_overlay(a.card_overlay) if a.card_overlay else None
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"tau-a2a: --card-overlay: {e}") from e
     url = a.url or f"http://{a.host}:{a.port}/"
     s = Settings(
         socket=a.socket,
@@ -70,6 +80,7 @@ def settings(argv: list[str] | None = None) -> tuple[Settings, argparse.Namespac
         fork_at=a.at,
         client_id=a.client_id,
         jwt=jwt,
+        overlay=overlay,
         **({"description": a.description} if a.description else {}),
     )
     return s, a

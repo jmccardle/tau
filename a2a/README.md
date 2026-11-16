@@ -15,7 +15,7 @@ tau-a2a --socket /run/tau/s.sock --db /var/lib/tau-a2a/tasks.db --auth none   # 
 
 | A2A | τ |
 |---|---|
-| Agent card (`/.well-known/agent-card.json`) | the session at a fork point: `version` is `<session id>@<node>` unless set |
+| Agent card (`/.well-known/agent-card.json`) | the session at a fork point: `version` is `<session id>@<node>` unless set; `skills` are the session's skills and prompt templates (D24 §6, the commands of its `skills` extension), or one `converse` skill when it has none |
 | `contextId` | a cursor, opened at the fork point for each new context (the server's id, or one the client chose); one owner's contexts never meet another's |
 | Task | one message through the cursor's next rest; one task at a time per context |
 | `TASK_STATE_INPUT_REQUIRED` | an open extension question this client may answer. The status message has its text and a data part `{question, extension, schema}`; the next message on the same task answers it (its first data part, else its text read by the schema). |
@@ -33,6 +33,18 @@ their cursors in `<db>.contexts`. The τ session's log stays the truth for what 
 `A2A-Extensions` header and put `{"<uri>": {"at": "<taskId>"}}` in a new context's first message's
 metadata. The context's cursor opens at the node that task ended on: a branch of the
 conversation. Only the caller's own tasks can be named.
+
+## The card overlay
+
+`--card-overlay FILE` is a JSON object, part of an A2A `AgentCard` (A2A JSON names: `description`,
+`version`, `provider`, `skills`, `documentationUrl`, `capabilities.extensions`, ...), merged over
+the card the server states. Each field it gives replaces the server's, except
+`capabilities.extensions`, which are added to the server's (one with the URI of a server extension
+replaces it). This is how whatever deploys the server says what the agent is, in A2A's own terms:
+tau-a2a reads no other schema. The fields only the server can state truly
+(`supportedInterfaces`, `securitySchemes`, `securityRequirements`, and `capabilities.streaming`,
+`pushNotifications` and `extendedAgentCard`) are refused in an overlay, as is anything that is not
+an `AgentCard` field; the server then does not start.
 
 ## Auth
 
