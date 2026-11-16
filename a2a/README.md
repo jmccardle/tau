@@ -50,9 +50,11 @@ an `AgentCard` field; the server then does not start.
 
 - `--auth none`: no credential; every caller is one owner. Allowed on a loopback `--host` only,
   unless `--allow-unauthenticated-network` says a NetworkPolicy or a proxy guards the port.
-- `--auth jwt --issuer ISS --audience AUD [--jwks-url URL] [--scope S ...]`: a bearer JWT (RFC
-  6750, RFC 7519) checked for signature (asymmetric algorithms only), `iss`, `aud`, `exp` and
-  `sub`. The keys come from `--jwks-url`, or from the issuer's OpenID discovery document. `scope`
+- `--auth jwt --issuer ISS --audience AUD [--jwks-url URL | --jwks-file FILE] [--scope S ...]`: a
+  bearer JWT (RFC 6750, RFC 7519) checked for signature (asymmetric algorithms only), `iss`, `aud`,
+  `exp` and `sub`. The keys come from `--jwks-url`, from `--jwks-file` (a JWKS file, re-read when
+  it changes: for an issuer that serves its keys to no anonymous caller, such as a Kubernetes
+  service-account issuer), or from the issuer's OpenID discovery document. `scope`
   (space-separated, RFC 9068) must hold every `--scope`. The owner of tasks and contexts is
   `sub` (A2A §13.1). No other claim is read. The card stays public, and declares `bearer` (HTTP,
   JWT) and `oidc` (the issuer's discovery URL) schemes.

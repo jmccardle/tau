@@ -16,6 +16,7 @@ import json
 import urllib.request
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import jwt
 from starlette.authentication import (
@@ -48,13 +49,16 @@ class JwtSettings:
     jwks_url: str | None = None  # None: from the issuer's /.well-known/openid-configuration
     scopes: Sequence[str] = ()
     leeway: float = 30.0
-    _jwks: jwt.PyJWKClient | None = field(default=None, init=False, repr=False)
+    jwks_file: Path | None = None  # the issuer's keys as a local JWKS file, instead of a URL
+    _jwks: "jwt.PyJWKClient | FileKeys | None" = field(default=None, init=False, repr=False)
 
     @property
     def discovery_url(self) -> str:
         return self.issuer.rstrip("/") + "/.well-known/openid-configuration"
 
-    def keys(self) -> jwt.PyJWKClient:
+    def keys(self) -> "jwt.PyJWKClient | FileKeys":
+        if self._jwks is None and self.jwks_file is not None:
+            self._jwks = FileKeys(self.jwks_file)
         if self._jwks is None:
             url = self.jwks_url
             if url is None:
@@ -80,6 +84,30 @@ class JwtSettings:
         if missing := [s for s in self.scopes if s not in granted]:
             raise jwt.InvalidTokenError(f"missing scope: {' '.join(missing)}")
         return claims
+
+
+class FileKeys:
+    """An issuer's keys from a JWKS file (RFC 7517), for an issuer whose keys are not served to
+    anonymous callers, such as a Kubernetes service-account issuer. The file is read again when
+    it changes (a mounted ConfigMap rotating)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._seen: float | None = None
+        self._set: jwt.PyJWKSet | None = None
+
+    def get_signing_key_from_jwt(self, token: str) -> jwt.PyJWK:
+        mtime = self.path.stat().st_mtime
+        if self._set is None or mtime != self._seen:
+            self._set, self._seen = jwt.PyJWKSet.from_json(self.path.read_text()), mtime
+        kid = jwt.get_unverified_header(token).get("kid")
+        keys = self._set.keys
+        if kid is None and len(keys) == 1:
+            return keys[0]
+        for key in keys:
+            if key.key_id == kid:
+                return key
+        raise jwt.PyJWKClientError(f"no key {kid!r} in {self.path}")
 
 
 class JwtBackend(AuthenticationBackend):

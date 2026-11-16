@@ -435,3 +435,35 @@ async def test_jwt_tasks_and_contexts_belong_to_their_sub(jwt_served) -> None:
         return json_format.MessageToDict(t.artifacts[0].metadata)["tau"]["cursor"]
 
     assert cursor(theirs) != cursor(task)
+
+
+async def test_jwt_keys_may_come_from_a_jwks_file(serve) -> None:
+    key, jwks = keys()
+    s = serve(
+        files={"{base}/jwks.json": json.dumps(jwks)},
+        a2a_args=(
+            "--auth",
+            "jwt",
+            "--issuer",
+            "https://kubernetes.default.svc",
+            "--audience",
+            "tau-a2a",
+            "--jwks-file",
+            "jwks.json",
+        ),
+    )
+    alice = await client(
+        s.url, token=token(key, "alice", iss="https://kubernetes.default.svc", scope="")
+    )
+    _, task = await send(alice, msg("hi"))
+    assert task.status.state == S.TASK_STATE_COMPLETED
+    other, _ = keys()
+    r = httpx.post(
+        s.url + "/",
+        json={"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": task.id}},
+        headers={
+            "Authorization": "Bearer " + token(other, "alice", iss="https://kubernetes.default.svc")
+        },
+        timeout=30,
+    )
+    assert r.status_code == 401

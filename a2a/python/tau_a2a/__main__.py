@@ -45,6 +45,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--issuer", help="jwt: the expected `iss`; also where discovery is read")
     p.add_argument("--audience", help="jwt: the expected `aud`")
     p.add_argument("--jwks-url", help="jwt: the keys; default from the issuer's discovery document")
+    p.add_argument(
+        "--jwks-file",
+        type=Path,
+        help="jwt: the keys as a JWKS file (an issuer that serves them to no anonymous caller, "
+        "such as a Kubernetes service-account issuer); re-read when it changes",
+    )
     p.add_argument("--scope", action="append", default=[], help="jwt: a scope the token must hold")
     p.add_argument(
         "--allow-unauthenticated-network",
@@ -60,7 +66,15 @@ def settings(argv: list[str] | None = None) -> tuple[Settings, argparse.Namespac
     if a.auth == "jwt":
         if not a.issuer or not a.audience:
             raise SystemExit("tau-a2a: --auth jwt needs --issuer and --audience")
-        jwt = JwtSettings(issuer=a.issuer, audience=a.audience, jwks_url=a.jwks_url, scopes=a.scope)
+        if a.jwks_url and a.jwks_file:
+            raise SystemExit("tau-a2a: --jwks-url or --jwks-file, not both")
+        jwt = JwtSettings(
+            issuer=a.issuer,
+            audience=a.audience,
+            jwks_url=a.jwks_url,
+            jwks_file=a.jwks_file,
+            scopes=a.scope,
+        )
     elif not _loopback(a.host) and not a.allow_unauthenticated_network:
         raise SystemExit(
             f"tau-a2a: --auth none on {a.host} serves anyone who reaches the port; bind to "
