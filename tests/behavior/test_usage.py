@@ -653,7 +653,9 @@ async def test_new_input_is_refused_once_the_budget_is_spent(tmp_path: Path) -> 
 
 
 @scenario
-async def test_a_tool_loop_halts_before_the_sample_that_would_overspend(tmp_path: Path) -> None:
+async def test_a_tool_loop_halts_at_the_next_sample_once_spend_reached_the_limit(
+    tmp_path: Path,
+) -> None:
     call = Reply([Part.Call("c", "read", "{}")], Stop.Tools, meta=dollar().meta)
     tool = FakeTool("read", "r")
     provider = FakeProvider([call, call, dollar()])
@@ -669,7 +671,36 @@ async def test_a_tool_loop_halts_before_the_sample_that_would_overspend(tmp_path
     await say(h)
     assert len(provider.requests) == 1, "the first reply cost $1: no second sample"
     assert len(tool.calls) == 1, "the tools of that reply still ran"
-    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.500 spent")
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.50 spent")
+    await h.close()
+
+
+@scenario
+async def test_raising_max_usd_lets_the_user_go_on_and_resume_a_halted_loop(
+    tmp_path: Path,
+) -> None:
+    call = Reply([Part.Call("c", "read", "{}")], Stop.Tools, meta=dollar().meta)
+    tool = FakeTool("read", "r")
+    provider = FakeProvider([call, dollar("done"), dollar("again")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        tools=[tool],
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 1})
+    await say(h)
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $1.00 spent")
+    assert len(provider.requests) == 1
+    await h.configure("usage", {"max_usd": 3})
+    await h.set_auto(True)  # resume the halted loop: the tool result goes to the model
+    await h.settle()
+    assert len(provider.requests) == 2, "the loop went on"
+    assert (await h.view()).ending == Ending.Done()
+    await say(h)  # $2.00 of $3.00: new input is taken again
+    assert len(provider.requests) == 3
     await h.close()
 
 

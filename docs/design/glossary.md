@@ -858,7 +858,8 @@ now, never stored, and a reply is priced by `model(at=its node)`. Every reply in
 (summaries and sub-agents too), except a copy, a reply rewritten from another, or a reply that was
 not sampled by a provider (an extension's answer to a sample is not billed): `counted` is the
 one rule (`copied_from` and `derived_from` both unset, `by` is `Provider`). The **budget** is the
-option `max_usd` (dollars; unset: none): once the session's whole-tree spend, the same total as
+option `max_usd` (dollars; unset: none; read at the cursor's position like any option, so `save`
+or the user config covers every branch): once the session's whole-tree spend, the same total as
 above, reaches it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its
 next sample, both with `budget: $X of $Y spent`. If a model in use has no price (a counted reply
 of one, or the branch's current model), the budget cannot be held and both hooks refuse with

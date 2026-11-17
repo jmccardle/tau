@@ -1508,7 +1508,9 @@ Refuse new input once the budget (`max_usd`) is spent.
 async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
-Halt before a sample that would be billed once the budget (`max_usd`) is spent.
+Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
+before user extensions, so a hook that would have answered the sample for free is halted
+too.
 
 ### Usage.post_reply
 

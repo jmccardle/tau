@@ -181,7 +181,7 @@ reaches them:
 | `pre_step` | the step begins | nothing |
 | `pre_input` | once for each pending input, before it becomes a `User` node | `draft`: the node about to be written |
 | `pre_sample` | before the model is asked | `draft` (setting it answers the sample yourself, with no model call) and `tools`, the names of the tools to offer (`None`: all) |
-| `pre_reply` | the reply came back, before it is written | `draft`: the `Assistant` node about to be written |
+| `pre_reply` | the reply came back, before it is written | `draft`: the `Assistant` node about to be written (a hook that changes its `by` from the provider's makes it a reply `usage` no longer counts) |
 | `post_reply` | the reply is in the tree (not run if `pre_reply` left no draft: nothing was written) | `node`: that node |
 | `pre_tool` | once for each tool call, before it runs | `call`: a `CallDraft` |
 | `pre_result` | once for each tool call, after it ran | `call`, with its `outcome` |

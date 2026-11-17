@@ -323,7 +323,20 @@ not counted.
 `--set usage.max_usd=5` (or `max_usd = 5` under `[extensions.usage]`, or `/config usage`) stops the
 session at $5 of spend, the total `/usage` shows for the whole tree. Unset, the default, there is
 no limit. Once the spend reaches it, new input is refused and a running tool loop halts before its
-next request, both with `budget: $5.00 of $5.00 spent`. Raise `max_usd` to go on.
+next request, both with `budget: $5.00 of $5.00 spent`.
+
+Like every option, `max_usd` is read at the cursor's position: `/config usage` sets it for the
+branch you are on, and a branch you start elsewhere in the tree does not have it (it still counts
+all of the session's spend, though). To cover every branch, set it in your config
+(`tau config set usage.max_usd=5`, or `--set usage.max_usd=5` for one run).
+
+To go on after a halt, raise the limit (`/config usage`, or `tau config set`) and turn auto-step
+back on: a halt turns it off, and the tool results already in the tree go to the model on the
+next step. New input is accepted again as soon as the limit is above the spend.
+
+The hooks that refuse run before the ones you write, so a hook of yours that would answer a sample
+for nothing is halted too. A reply a `pre_reply` hook re-attributes (changes its `by` from the
+provider) is not counted as spend.
 
 A limit needs prices. If a model the session uses has no `price` (a reply of one is in the tree,
 or the branch is on one now), τ cannot know what was spent, and refuses rather than count it as

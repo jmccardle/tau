@@ -309,7 +309,9 @@ class Usage:
         return self._budget(cursor)
 
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Halt before a sample that would be billed once the budget (`max_usd`) is spent."""
+        """Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
+        before user extensions, so a hook that would have answered the sample for free is halted
+        too."""
         return self._budget(cursor)
 
     def _budget(self, cursor: Cursor) -> str | None:
@@ -326,10 +328,11 @@ class Usage:
         mute = [m for m, r in rows.items() if r.silent or r.aborted]
         why = [f"no price for {', '.join(unpriced)}"] if unpriced else []
         why += [f"{', '.join(mute)} reported no usage"] if mute else []
+        shown = _limit(cap)
         if why:
-            return f"budget: {money(cap)} cannot be held, {'; '.join(why)}"
+            return f"budget: {shown} cannot be held, {'; '.join(why)}"
         spent = sum((r.spent for r in rows.values()), Decimal(0))
-        return f"budget: {money(spent)} of {money(cap)} spent" if spent >= cap else None
+        return f"budget: {money(spent)} of {shown} spent" if spent >= cap else None
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""
@@ -444,6 +447,13 @@ def _read(node: Node) -> tuple[Reading | None, str | None]:
         return reading(node), None
     except ValueError as e:
         return None, str(e)
+
+
+def _limit(cap: Decimal) -> str:
+    """The limit as the user wrote it: two decimals (`$0.50`), or all of them if it has more
+    (`$0.005`)."""
+    cents = cap.quantize(Decimal("0.01"))
+    return f"${cents}" if cents == cap else f"${cap.normalize():f}"
 
 
 def _priced(tree: TreeHandle, model: str) -> bool:
