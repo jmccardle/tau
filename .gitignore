@@ -11,3 +11,5 @@ __pycache__/
 /demo/out/
 /demo/results.json
 /demo/results.md
+/demo/resources.md
+/demo/resources.json

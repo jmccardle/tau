@@ -7,6 +7,7 @@ against a fake model server, so no network, key or GPU is involved.
 ```text
 demo/render.sh          ->  demo/out/race-{a,b}-{instant,paced}.{mp4,webm,gif}
 demo/race.py bench      ->  demo/results.md
+demo/resources.py       ->  demo/resources.md   (CPU and memory of three clients; see Resources)
 ```
 
 ## Prerequisites
@@ -100,8 +101,94 @@ turn's text is on screen (*drawn*) and until text typed into the editor is echoe
 | `scenario.py` | the fixture files and the scripts |
 | `common.py` | work directory, the two sandboxes, configs for each version's format |
 | `race.py` | `prepare`, `build-b` and the headless `bench` that writes `results.md` |
+| `resources.py` | the resource benchmark: CPU, instructions and memory of three clients, writes `resources.md` |
 | `visual.py` | the tmux split-pane race a tape runs |
 | `tapes/` | one vhs tape per race, and the shared settings |
 | `render.sh`, `setup.sh`, `install-tools.sh` | the pipeline |
 
 Only one of `race.py`, `visual.py` and `render.sh` may run at a time: they share the two sandboxes.
+
+## Resources
+
+`resources.py` is separate from the races and the recordings. It asks one question: while a
+client shows the same streamed model output, what does it cost? The claim under test is that the
+0.16 frontends may use fewer resources than 0.15's, even when the model streams as fast as it can.
+`demo/resources.py [--k 5] [--workloads stream,tools,open] [--takes instant,paced] [--force]`
+writes `resources.md` and `resources.json` (both git-ignored). Prerequisites are the races' plus
+`cargo build --release --locked --manifest-path examples/ratatui/Cargo.toml` and, for instruction
+counts, `perf` (below).
+
+**Clients and process topology.** Measured, not assumed: each run's whole client-side process
+tree is followed (`/proc/PID/task/*/children`), and the tables break it down by role.
+
+| client | processes |
+|---|---|
+| 0.15 TUI (`venv15`) | one Python process does everything: UI, driver, provider, tools |
+| 0.16 `tau` (Textual) | one Python process: `tau` runs the session in-process, and the Rust core is a library inside it |
+| 0.16 ratatui | two processes: `tau-ratatui` (Rust, the UI) and a Python `tau serve -d` daemon (session, model calls), joined by a Unix socket. Both count; the per-process table shows the split, so the server's cost is not hidden |
+
+Outside the tree and never counted: the fake model server, tmux, this script. tmux's own CPU is
+reported beside each table, as a proxy for what a real terminal emulator would have to do.
+
+**Workloads**, the same scripts for every client (fresh session each run, compaction off, same
+model, theme `mocha`, 160x48 pane in a private tmux server, driven by `send-keys`):
+
+* *Stream*: one message, answered with ~4000 tokens of markdown (headings, lists, code blocks, a
+  table), in `instant` mode (the fake server sends it as fast as it can) and `paced` (400 ms to
+  first token, 70 tokens/s).
+* *Tool turn*: 20 sequential `read` calls, then a ~1000-token answer; both takes.
+* *Open*: the race B session (200 turns) opened; CPU is from process start to the last turn drawn,
+  memory is the settled PSS two seconds after.
+* *Idle*: the same run, 30 s with no input, CPU from timers and wakeups.
+
+The window of the stream and tool workloads runs from the Enter that sends the message until the
+final marker line is on the tmux screen (the same completion test as the races), after the client
+has started and the screen has been still for a second. Startup is therefore **excluded** from
+them and **included** in *open*.
+
+**Metrics.** CPU seconds are utime+stime from `/proc/PID/stat`, summed over every process in the tree
+(a process that exits keeps the CPU it had at its last sample). PSS and RSS come from
+`/proc/PID/smaps_rollup`, sampled every 50 ms; peak is the largest sample of the tree's sum, final
+the last. Prefer PSS: it splits memory shared between processes (and the shared Python and C
+libraries) in proportion, so a tree is not double counted; RSS counts shared pages in full in each
+process and is given for comparison. *Bytes to terminal* are counted by `tmux pipe-pane`: what the
+client wrote to its terminal, a proxy for redraw cost that includes the escape sequences. A
+real terminal emulator's own CPU and GPU are not measured. Wall time is Enter to marker.
+
+**Instructions.** Retired user-space instructions (`perf stat -e instructions:u -p PID` on each root,
+following the threads and children it spawns) are a measure that does not depend on the clock speed or
+the load of the machine, beside CPU seconds. They need `perf` and a kernel that lets this user count:
+`perf_event_paranoid` must be 1 or lower (`sudo sysctl kernel.perf_event_paranoid=1`, persisted in
+`/etc/sysctl.d/`) and, in a VM, a virtual PMU. When that is not so, `resources.md` says so and gives this
+fix and the instruction columns read *unavailable*; nothing stands in for them (`--require-perf`
+fails the run instead). Instructions are not taken for *open*, where the work happens at process
+start, before perf can attach.
+
+**Headline columns.** Each table gives the ratio of CPU seconds and of instructions to 0.15's, the
+average share of one core over the window, and CPU ms per 1000 displayed tokens (the answer's
+characters over four, as the fake server counts them). The machine's CPU model is in the output:
+the figures belong to it.
+
+**Method.** One discarded warm-up run per client, then K runs per cell (default 5), clients
+rotating who goes first; median with min and max. The load average is read before and after:
+above 2 the run refuses unless `--force`, and the output is then marked DRAFT (so it is for K<3).
+The fake server's request digests (as in the races) are compared: every client, in every run of a
+workload, must have been sent the same dialogue and tool calls, every request must have streamed,
+and the number of requests must be the script's. A client that fails, exits or never shows the
+marker fails the run and the pane is printed.
+
+**Caveats.**
+
+* The three clients do not draw the same thing. ratatui prints plain text and does not render
+  markdown or highlight code; it has no themes or session picker. 0.15 and 0.16 render markdown. The
+  benchmark compares the cost of showing the same words, not of the same pixels.
+* The 50 ms sampling misses CPU of a process that lives less than a tick; none of the clients spawns
+  one for these workloads (the per-process table would show a `/child` role). The sampler and the
+  `capture-pane` polling are this script's own cost, which also lands on the machine and in tmux's CPU.
+* PSS and RSS in a pane are one run's; Python's allocator does not return memory eagerly, so final
+  is near peak.
+* `instant` is a stress case: no model streams that fast. `paced` is nearer to use.
+* In *open*, "% of one core" divides CPU since process start by the wall time of the window, which for ratatui begins after its server started: read that cell as meaningless; use CPU seconds.
+* The ratatui server starts before the measured window of the stream and tool workloads, but inside *open*.
+* The 0.16 wheel in `$DEMO_WORK` is whatever `setup.sh` last built; `resources.md` is only comparable to
+  the commit stamped in `wheels/COMMIT`.
