@@ -1494,6 +1494,22 @@ def usage(self, tree: TreeHandle) -> str
 
 What this session has spent: one row per model, and a total.
 
+### Usage.pre_input
+
+```python
+async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Refuse new input once the budget (`max_usd`) is spent.
+
+### Usage.pre_sample
+
+```python
+async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Halt before a sample that would be billed once the budget (`max_usd`) is spent.
+
 ### Usage.post_reply
 
 ```python

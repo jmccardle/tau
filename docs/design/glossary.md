@@ -845,8 +845,8 @@ or the batch's, and a tree handle must give it. **`resolved_model(name=None)`** 
 `price` (`name` defaults to `model()`); `ConfigError` if the catalog has none. `handle.model_config`
 was never built; `tau.model_config` is the `Config` node builder.
 
-### Usage (extension), cache notice
-`tau.Usage` (`_usage.py`), key `usage`, option `cache_notice`, command `/usage` · D24 section 3 · new (8E-2)
+### Usage (extension), cache notice, budget
+`tau.Usage` (`_usage.py`), key `usage`, options `cache_notice` and `max_usd`, command `/usage` · D24 section 3 · new (8E-2)
 
 The built-in extension that shows what the session used and spent. At `post_reply` it shows, on
 the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session`
@@ -855,8 +855,16 @@ the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · 
 model ends in `+`). `/usage` prints a row per model (samples, input, cached share, cache
 writes, output, cost) and a total. Cost is computed when shown from the price in the config
 now, never stored, and a reply is priced by `model(at=its node)`. Every reply in the tree counts
-(summaries and sub-agents too), except a copy or a reply rewritten from another: `counted` is the
-one rule (`copied_from` and `derived_from` both unset). The **cache notice** is a `tell` to every client, once per
+(summaries and sub-agents too), except a copy, a reply rewritten from another, or a reply that was
+not sampled by a provider (an extension's answer to a sample is not billed): `counted` is the
+one rule (`copied_from` and `derived_from` both unset, `by` is `Provider`). The **budget** is the
+option `max_usd` (dollars; unset: none): once the session's whole-tree spend, the same total as
+above, reaches it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its
+next sample, both with `budget: $X of $Y spent`. If a model in use has no price (a counted reply
+of one, or the branch's current model), the budget cannot be held and both hooks refuse with
+`budget: $Y cannot be held, no price for NAMES`: an unknown cost is never counted as $0. A
+provider reply that reported no usage (or was aborted before it did) is the same: `NAMES reported
+no usage`. The **cache notice** is a `tell` to every client, once per
 model, after a reply with `cached` reported as 0 and at least 4,096 input tokens that follows a
 reply of the same model by under 300 seconds. `/usage` ends with one line on how counts are made before
 a request is sent (D26): `counts: reported only, with byte ceilings for what is not sent yet`, or

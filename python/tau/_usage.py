@@ -17,12 +17,21 @@ cannot hold, and a total of thousands of replies must not drift. Summaries and s
 counted, since their replies are in the tree. A reply that is a copy (compaction and prune
 write copies) is counted once, as its original: `counted` is that rule.
 
+The budget: with `max_usd` set (unset: no limit), once the session's spend (the total above) reaches
+it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its next sample, both
+with `budget: $X of $Y spent`. A budget is held only against known prices: if a model the session
+uses has no `price` (a counted reply of one, or the one the branch is on now), nothing says what
+was spent, so the same two hooks refuse with the models named rather than count them as $0. So
+they do for a model with a reply that reported no usage (or was aborted before it did): money
+was likely spent that nothing says.
+
 The cache notice: a reply that read nothing from the cache (`cached` reported as 0, not left
 out), with at least 4,096 input tokens, shortly after a reply of the same model, tells every
 client once per model. It is about money, so only a model with a `price` gets it.
 """
 
 import json
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
@@ -51,6 +60,15 @@ class Options:
     cache_notice: Annotated[bool, "tell the clients when a reply read nothing from the cache"] = (
         True
     )
+    max_usd: Annotated[
+        float | None,
+        "stop at this much spend in dollars: refuse new input and halt a tool loop (unset: no "
+        "limit; every model in use then needs a price)",
+    ] = None
+
+    def __post_init__(self) -> None:
+        if self.max_usd is not None and not (math.isfinite(self.max_usd) and self.max_usd >= 0):
+            raise ValueError(f"max_usd is an amount of dollars, at least 0, not {self.max_usd}")
 
 
 @dataclass(frozen=True)
@@ -286,6 +304,33 @@ class Usage:
                 )
         return notes
 
+    async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Refuse new input once the budget (`max_usd`) is spent."""
+        return self._budget(cursor)
+
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Halt before a sample that would be billed once the budget (`max_usd`) is spent."""
+        return self._budget(cursor)
+
+    def _budget(self, cursor: Cursor) -> str | None:
+        """Why no more may be spent, or `None`: under the budget, or none is set."""
+        limit = cursor.options().max_usd
+        if limit is None:
+            return None
+        cap = Decimal(repr(limit))
+        rows = self._rows(cursor)
+        here = cursor.model()
+        unpriced = [m for m, r in rows.items() if r.samples and not r.priced]
+        if here not in unpriced and not _priced(cursor, here):
+            unpriced.append(here)
+        mute = [m for m, r in rows.items() if r.silent or r.aborted]
+        why = [f"no price for {', '.join(unpriced)}"] if unpriced else []
+        why += [f"{', '.join(mute)} reported no usage"] if mute else []
+        if why:
+            return f"budget: {money(cap)} cannot be held, {'; '.join(why)}"
+        spent = sum((r.spent for r in rows.values()), Decimal(0))
+        return f"budget: {money(spent)} of {money(cap)} spent" if spent >= cap else None
+
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""
         node = subject.node
@@ -399,6 +444,12 @@ def _read(node: Node) -> tuple[Reading | None, str | None]:
         return reading(node), None
     except ValueError as e:
         return None, str(e)
+
+
+def _priced(tree: TreeHandle, model: str) -> bool:
+    """Whether `model` has a price in the config now."""
+    config = _configured(tree, model)
+    return config is not None and config.price is not None
 
 
 def _configured(tree: TreeHandle, model: str) -> ModelConfig | None:

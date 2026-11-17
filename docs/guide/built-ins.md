@@ -315,6 +315,24 @@ prompt that went at full price. It is about money, so only a model with a `price
 `--set usage.cache_notice=false` silences it, and
 `tau ext disable usage` removes all of this.
 
+A reply an extension wrote in place of a sample (a `pre_sample` draft) was never billed, and is
+not counted.
+
+### A spending limit
+
+`--set usage.max_usd=5` (or `max_usd = 5` under `[extensions.usage]`, or `/config usage`) stops the
+session at $5 of spend, the total `/usage` shows for the whole tree. Unset, the default, there is
+no limit. Once the spend reaches it, new input is refused and a running tool loop halts before its
+next request, both with `budget: $5.00 of $5.00 spent`. Raise `max_usd` to go on.
+
+A limit needs prices. If a model the session uses has no `price` (a reply of one is in the tree,
+or the branch is on one now), τ cannot know what was spent, and refuses rather than count it as
+free: `budget: $5.00 cannot be held, no price for local:qwen`. Give the model a `price`, or unset
+`max_usd`. The same goes for a reply a provider sampled that reported no usage (or was aborted
+before it did): money was probably spent and nothing says how much, so with `max_usd` set τ
+refuses with `budget: $5.00 cannot be held, local:qwen reported no usage`. Without `max_usd`,
+`/usage` lists such replies as not counted, as before.
+
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.
 

@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from fakes import FAKE_PROVIDER, FakeProvider, Gate, Reply
+from fakes import FAKE_PROVIDER, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 
 from tau import (
@@ -17,6 +17,7 @@ from tau import (
     ConfigError,
     Cursor,
     Draft,
+    Ending,
     Model,
     ModelCatalog,
     Part,
@@ -609,4 +610,124 @@ async def test_a_reply_an_extension_answered_is_not_a_sample_that_reported_no_us
     assert table is not None
     assert table.splitlines()[1].split()[:2] == ["a", "1"], "only the provider's reply counts"
     assert "reported no usage" not in table
+    await h.close()
+
+
+# The budget: `max_usd`
+
+DOLLAR = {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}  # per million tokens
+
+
+def dollar(text: str = "ok") -> Reply:
+    """A reply that cost exactly $1 at the `DOLLAR` price."""
+    return reply(1_000_000, 0, text=text)
+
+
+@scenario
+async def test_with_no_max_usd_nothing_is_limited(tmp_path: Path) -> None:
+    h = await session(tmp_path, [dollar() for _ in range(3)], catalog(a={"price": DOLLAR}))
+    await say(h, 3)
+    assert h.notices() == []
+    assert (await h.view()).ending == Ending.Done()
+    await h.close()
+
+
+@scenario
+async def test_new_input_is_refused_once_the_budget_is_spent(tmp_path: Path) -> None:
+    provider = FakeProvider([dollar() for _ in range(3)])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 1.5})
+    await say(h, 2)  # $1.00 is under $1.50, so the second goes through: $2.00 spent
+    assert len(provider.requests) == 2
+    assert h.notices() == []
+    await say(h)
+    assert len(provider.requests) == 2, "the third prompt never reached the provider"
+    assert any("budget: $2.00 of $1.50 spent" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_a_tool_loop_halts_before_the_sample_that_would_overspend(tmp_path: Path) -> None:
+    call = Reply([Part.Call("c", "read", "{}")], Stop.Tools, meta=dollar().meta)
+    tool = FakeTool("read", "r")
+    provider = FakeProvider([call, call, dollar()])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        tools=[tool],
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 0.5})
+    await say(h)
+    assert len(provider.requests) == 1, "the first reply cost $1: no second sample"
+    assert len(tool.calls) == 1, "the tools of that reply still ran"
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.500 spent")
+    await h.close()
+
+
+@scenario
+async def test_a_budget_cannot_be_held_against_a_model_with_no_price(tmp_path: Path) -> None:
+    h = await session(tmp_path, [reply(10, 10)], catalog(a={}))
+    await h.configure("usage", {"max_usd": 5})
+    await say(h)
+    assert h.provider.requests == [], "nothing was sampled: its cost could not be counted"
+    assert any("budget: $5.00 cannot be held, no price for a" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_a_reply_of_a_model_with_no_price_is_never_counted_as_free(tmp_path: Path) -> None:
+    cat = catalog(a={}, b={"price": DOLLAR})
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(10, 10), dollar()]),
+        extensions=[Usage(), Switch("b")],
+        catalog=cat,
+        config=model_config("a"),
+    )
+    await say(h)  # the first reply is a's, unpriced; no budget yet
+    await h.configure("usage", {"max_usd": 5})
+    await say(h)
+    assert len(h.provider.requests) == 1
+    assert any("no price for a" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_a_reply_that_reported_no_usage_cannot_be_held_to_a_budget(tmp_path: Path) -> None:
+    provider = FakeProvider([reply(), dollar()])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await say(h)  # no budget yet: the silent reply is only listed by /usage
+    assert h.notices() == []
+    await h.configure("usage", {"max_usd": 5})
+    await say(h)
+    assert len(provider.requests) == 1
+    assert any("budget: $5.00 cannot be held, a reported no usage" in n for n in h.notices())
+    await h.configure("usage", {"max_usd": None})
+    await say(h)
+    assert len(provider.requests) == 2, "unset again, nothing limits"
+    await h.close()
+
+
+@scenario
+async def test_max_usd_is_checked_when_set(tmp_path: Path) -> None:
+    h = await session(tmp_path, [], catalog(a={"price": DOLLAR}))
+    with pytest.raises(ConfigError):
+        await h.configure("usage", {"max_usd": -1})
+    with pytest.raises(ConfigError):
+        await h.configure("usage", {"max_usd": "lots"})
     await h.close()

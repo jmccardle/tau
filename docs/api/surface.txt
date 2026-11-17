@@ -248,6 +248,8 @@ class Usage
     name = 'usage'
     options = Options
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
     def usage(self, tree: TreeHandle) -> str
 def calibration_features(body: Body) -> list[float]
 
