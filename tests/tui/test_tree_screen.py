@@ -350,8 +350,11 @@ async def test_when_the_viewed_cursor_closes_the_tree_follows_the_apps(tmp_path:
     await h.close()
 
 
-def flood(progress: Progress) -> str:
-    """Say a lot at once: a client that reads two events behind is cut off."""
+async def flood(progress: Progress) -> str:
+    """Say a lot at once: a client that reads two events behind is cut off. A coroutine, so that
+    it runs on the loop and says all of it before the client's reader gets a turn (a sync command
+    runs in a worker thread, and a reader that is quick or a thread that is slow, as on a loaded
+    runner, would keep up and never be cut off)."""
     for i in range(20):
         progress(f"line {i}")
     return "flooded"

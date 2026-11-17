@@ -6,9 +6,11 @@ from pathlib import Path
 
 from fakes import FakeProvider
 from harness import Harness, scenario
+from textual.pilot import Pilot
 from tuikit import running, say, shows, type_line, until
 
 from tau import Body
+from tau.tui import TauApp
 
 
 async def long_walk(tmp_path: Path, turns: int) -> Harness:
@@ -23,6 +25,20 @@ async def long_walk(tmp_path: Path, turns: int) -> Harness:
 
 def drawn(text: str, turn: int) -> bool:
     return f"] turn {turn}\n" in text + "\n"
+
+
+async def slide_back(pilot: Pilot[None], app: TauApp, turn: int) -> None:
+    """Ctrl+Up three times from the tail: a page up, then at the top the window slides back one
+    turn, then a page up in the slid window. The slide is a task of its own, and it ends with the
+    window scrolled to where the reader was looking: a press before that scroll lands finds the
+    window still at its top and slides again, so each press waits for what the last one did."""
+    chat = app.query_one("#chat-display")
+    await pilot.press("ctrl+up")
+    await until(pilot, lambda: chat.scroll_y == 0)
+    await pilot.press("ctrl+up")
+    await until(pilot, lambda: drawn(app.screen_text(), turn) and chat.scroll_y > 0)
+    await pilot.press("ctrl+up")
+    await until(pilot, lambda: chat.scroll_y == 0)
 
 
 @scenario
@@ -50,10 +66,7 @@ async def test_a_short_walk_draws_whole(tmp_path: Path) -> None:
 async def test_scrolling_against_the_top_slides_the_window_back_one_turn(tmp_path: Path) -> None:
     h = await long_walk(tmp_path, 7)
     async with running(h, tmp_path) as (app, pilot):
-        await pilot.press("ctrl+up")  # a page up, or at the top of the page the window slides
-        await pilot.press("ctrl+up")
-        await pilot.press("ctrl+up")
-        await until(pilot, lambda: drawn(app.screen_text(), 3))
+        await slide_back(pilot, app, 3)
         text = app.screen_text()
         assert [drawn(text, t) for t in range(1, 8)] == [
             False,
@@ -92,9 +105,7 @@ async def test_a_message_sent_while_slid_back_brings_the_window_to_the_tail(
 ) -> None:
     h = await long_walk(tmp_path, 7)
     async with running(h, tmp_path) as (app, pilot):
-        for _ in range(3):
-            await pilot.press("ctrl+up")
-        await until(pilot, lambda: drawn(app.screen_text(), 3))
+        await slide_back(pilot, app, 3)
         await type_line(pilot, "and now")
         await pilot.press("enter")
         await shows(pilot, app, "[User] and now")
