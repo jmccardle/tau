@@ -12,6 +12,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 export DEMO_WORK="${DEMO_WORK:-${TMPDIR:-/tmp}/tau-demo-$(id -u)}"
+export PATH="${BIN_DIR:-$HOME/.local/bin}:$PATH"   # where install-tools.sh put the pinned vhs and ttyd
 RES="${RES:-1280x720}"
 GIF_MAX_BYTES="${GIF_MAX_BYTES:-10000000}"
 W="${RES%x*}"; H="${RES#*x}"

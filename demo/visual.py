@@ -70,6 +70,7 @@ class Race:
         self.ports: dict[str, int] = {}
         self.finish: dict[str, dict[str, float]] = {v: {} for v in common.VERSIONS}
         self.t0 = 0.0
+        self.errors: list[str] = []
         self.lock = threading.Lock()
 
     def label(self, v: str, state: str) -> None:
@@ -103,6 +104,12 @@ class Race:
         return " · ".join([*parts, elapsed]) if self.race == "a" or not done else " · ".join(parts)
 
     def watch_b(self, v: str, pane_id: str) -> None:
+        try:
+            self.watch_b_pane(v, pane_id)
+        except Exception as e:  # reaches track() through self.errors: a thread's exception does not
+            self.errors.append(f"0.{v}: {e}")
+
+    def watch_b_pane(self, v: str, pane_id: str) -> None:
         done = self.finish[v]
         choose_session(self.tmux, pane_id, v)
         done["drawn"] = self.tmux.wait_for(pane_id, scenario.FINISH_B, 900) - self.t0
@@ -128,6 +135,7 @@ class Race:
     def run(self) -> None:
         script = common.WORK / ("script-a.json" if self.race == "a" else "script-b.json")
         scenario.prepare(common.WORK)
+        remove_stale_rundirs()
         self.rundir.mkdir()
         (self.rundir / "sock").write_text(self.tmux.socket)
         servers = {v: common.fake_server(script, self.paced) for v in common.VERSIONS}
@@ -155,6 +163,7 @@ class Race:
             for s in servers.values():
                 s.__exit__(None, None, None)
             self.tmux.kill()
+            shutil.rmtree(self.rundir, ignore_errors=True)
 
     def layout(self) -> None:
         t = self.tmux
@@ -166,7 +175,7 @@ class Race:
             return f"exec {env} {py} {me} pane {self.race} {v} {shlex.quote(str(self.rundir))}"
 
         cols, rows = os.get_terminal_size()
-        t.run("new-session", "-d", "-s", "v", "-x", str(cols), "-y", str(rows), cmd("15"))
+        t.start("-s", "v", "-x", str(cols), "-y", str(rows), cmd("15"))
         t.run("split-window", "-h", "-t", "v", cmd("16"))
         panes = t.run("list-panes", "-t", "v", "-F", "#{pane_id}").split()
         self.panes = dict(zip(common.VERSIONS, panes, strict=True))
@@ -195,6 +204,16 @@ class Race:
             self.label(v, "ready")
         self.banner("τ 0.15  vs  τ 0.16")
 
+    def check_alive(self) -> None:
+        """Abort the race, with what the pane left on screen, if a pane's program died or a
+        watcher failed: a race that cannot finish must not hang the recording."""
+        if self.errors:
+            raise SystemExit("race failed: " + "; ".join(self.errors))
+        for v, pane_id in self.panes.items():
+            gone = self.tmux.dead(pane_id)
+            if gone is not None and not (self.race == "a" and "total" in self.finish[v]):
+                raise SystemExit(f"race failed: 0.{v}'s pane died: {gone}")
+
     def attach_hold(self) -> None:
         subprocess.run(["tmux", "-L", self.tmux.socket, "attach", "-t", "v"], check=False)
 
@@ -203,6 +222,7 @@ class Race:
             for v in common.VERSIONS:
                 threading.Thread(target=self.watch_b, args=(v, self.panes[v]), daemon=True).start()
         while not self.finished():
+            self.check_alive()
             now = time.perf_counter()
             if self.race == "a":
                 for v in common.VERSIONS:
@@ -216,6 +236,17 @@ class Race:
             self.label(v, self.state(v, time.perf_counter()))
         self.banner(self.winner_text())
         time.sleep(HOLD)
+
+
+def remove_stale_rundirs() -> None:
+    """Run directories of runs that were killed (their pid is gone)."""
+    for d in common.WORK.glob("run-*"):
+        try:
+            os.kill(int(d.name.removeprefix("run-")), 0)
+        except ProcessLookupError:
+            shutil.rmtree(d, ignore_errors=True)
+        except (ValueError, PermissionError):
+            continue
 
 
 def restore_session(version: str) -> None:

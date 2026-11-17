@@ -18,8 +18,9 @@ about four characters (one token) at N tokens a second; a tool call's arguments 
 way. The pacing is a function of the script alone, so every client sees the identical timing.
 
 Endpoints: POST /v1/chat/completions (streaming SSE when "stream" is true, JSON otherwise),
-GET /v1/models, GET /_stats (requests served, and a digest of the response indices served, so two
-runs can be shown to have seen the same sequence). On start it prints one line,
+GET /v1/models, GET /_stats: requests served, how many asked for a stream, and four digests over
+the requests received (`calls`, `results`, `system`, `tools`; see `views`), so two runs can be
+shown to have been asked the same things. On start it prints one line,
 `listening http://HOST:PORT`, on standard output.
 """
 
@@ -39,24 +40,86 @@ from typing import Any
 MODEL = "fake-model"
 
 
+def text_of(content: Any) -> str:
+    """A message's text: a string, or the text parts of a list of parts (one client sends each)."""
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return (content or "").rstrip()
+
+
+def canonical_args(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        arguments = json.loads(arguments) if arguments.strip() else {}
+    return json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+
+
+def views(request: dict[str, Any]) -> dict[str, Any]:
+    """The request as four views, each normalised so two clients that ask the same thing agree.
+
+    calls   the dialogue the model sees, minus what a tool answered: each message's role, its
+            text with trailing whitespace dropped, and its tool calls as (name, sorted-key JSON
+            arguments). Tool-call ids are left out (a client may mint its own).
+    results what the tools answered: each tool message's text, trailing whitespace dropped.
+    system  the system messages' text. Legitimately different between versions.
+    tools   the offered tools' names and schemas, sorted by name. Legitimately different too.
+    """
+    calls: list[Any] = []
+    results: list[str] = []
+    system: list[str] = []
+    for m in request.get("messages") or []:
+        role = m.get("role")
+        if role in ("system", "developer"):
+            system.append(text_of(m.get("content")))
+        elif role == "tool":
+            results.append(text_of(m.get("content")))
+            calls.append(["tool"])
+        else:
+            tcs = [
+                [t["function"]["name"], canonical_args(t["function"].get("arguments"))]
+                for t in m.get("tool_calls") or []
+            ]
+            calls.append([role, text_of(m.get("content")), tcs])
+    tools = sorted(
+        json.dumps(t.get("function", t), sort_keys=True) for t in request.get("tools") or []
+    )
+    return {"calls": calls, "results": results, "system": system, "tools": tools}
+
+
 class Script:
     def __init__(self, responses: list[dict[str, Any]]) -> None:
         self.responses = responses
         self.lock = threading.Lock()
         self.served = 0
-        self.digest = hashlib.sha256()
+        self.streamed = 0
+        self.plain = 0
+        self.digests = {k: hashlib.sha256() for k in ("calls", "results", "system", "tools")}
 
-    def pick(self, messages: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+    def pick(self, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        messages = request.get("messages") or []
         index = sum(1 for m in messages if m.get("role") == "assistant")
         if index >= len(self.responses):
             raise LookupError(
                 f"script exhausted: request carries {index} assistant messages, "
                 f"the script has {len(self.responses)} responses"
             )
+        seen = views(request)
         with self.lock:
             self.served += 1
-            self.digest.update(f"{index};".encode())
+            if request.get("stream"):
+                self.streamed += 1
+            else:
+                self.plain += 1
+            for key, digest in self.digests.items():
+                digest.update(json.dumps(seen[key], sort_keys=True).encode() + b"\n")
         return index, self.responses[index]
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "served": self.served,
+            "streamed": self.streamed,
+            "plain": self.plain,
+            **{k: d.hexdigest() for k, d in self.digests.items()},
+        }
 
 
 def tool_calls_of(index: int, response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -200,8 +263,7 @@ def handler_for(script: Script, ttft: float, tps: float) -> type[BaseHTTPRequest
                 data = [{"id": MODEL, "object": "model", "created": 0, "owned_by": "demo"}]
                 self.reply(200, json.dumps({"object": "list", "data": data}).encode())
             elif self.path == "/_stats":
-                stats = {"served": script.served, "digest": script.digest.hexdigest()}
-                self.reply(200, json.dumps(stats).encode())
+                self.reply(200, json.dumps(script.stats()).encode())
             else:
                 self.reply(404, b'{"error": {"message": "not found"}}')
 
@@ -212,7 +274,7 @@ def handler_for(script: Script, ttft: float, tps: float) -> type[BaseHTTPRequest
                 return
             request = json.loads(body)
             try:
-                index, response = script.pick(request.get("messages") or [])
+                index, response = script.pick(request)
             except LookupError as e:
                 self.reply(400, json.dumps({"error": {"message": str(e)}}).encode())
                 return

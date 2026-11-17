@@ -10,3 +10,4 @@ __pycache__/
 /examples/ratatui/target/
 /demo/out/
 /demo/results.json
+/demo/results.md

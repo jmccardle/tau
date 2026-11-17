@@ -1,6 +1,6 @@
 """Shared plumbing of the races: the work directory, the two sandboxes and the fake server.
 
-Everything lives under `$DEMO_WORK` (default `demo/.work`). A version's sandbox is its own
+Everything lives under `$DEMO_WORK` (default `$TMPDIR/tau-demo-UID`, outside the checkout; see README). A version's sandbox is its own
 `HOME` and `TAU_HOME`; nothing outside the work directory is read or written, and the real
 `~/.tau` and `~/.tau-0.15` are never touched.
 """

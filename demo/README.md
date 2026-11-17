@@ -18,8 +18,8 @@ demo/race.py bench      ->  demo/results.md
 | Rust (`cargo`) | building the 0.16 wheel | rustup; the repository pins the toolchain |
 | network | `pip install ffwf-tau==0.15.0` | PyPI |
 | `tmux`, `ffmpeg` | the split panes, the gif | your package manager |
-| `vhs`, `ttyd` | recording | `demo/install-tools.sh` (release binaries into `~/.local/bin`, checksums verified) |
-| a Chromium or Chrome | vhs renders through it | your package manager |
+| `vhs`, `ttyd` | recording | `demo/install-tools.sh` (pinned release binaries into `~/.local/bin`, SHA256 pinned in the script) |
+| a Chromium or Chrome | vhs renders through it | your package manager (`install-tools.sh` checks) |
 
 ## One command
 
@@ -33,6 +33,7 @@ demo/install-tools.sh && demo/setup.sh && demo/render.sh
   four races. `RES=1920x1080 demo/render.sh` changes the size; `demo/render.sh a-paced` records one.
 * `race.py bench [--k 5]` takes the timings (about ten minutes, most of it the paced takes).
   Run it on an idle machine: it marks `results.md` DRAFT when the load average exceeds 2.
+  `results.md` is git-ignored: a result belongs to one machine and one run.
 
 Everything lives in `$DEMO_WORK`, which defaults to `$TMPDIR/tau-demo-UID`. It is deliberately
 outside the checkout: τ looks for a project's `.tau/` in every ancestor of the working directory,
@@ -43,7 +44,16 @@ real `~/.tau` is never touched. `demo/out/` is git-ignored.
 ## What is raced
 
 The same fake model, the same script, the same prompt and the same fixture files for both
-versions. The server checks that both versions made the identical sequence of requests.
+versions. The fake server hashes what each version sends it, and `race.py bench` compares the
+hashes. Each request is normalised (trailing whitespace dropped, content parts joined, tool-call
+arguments re-serialised with sorted keys, tool-call ids ignored) and four views are hashed:
+the dialogue with its tool calls (role, text, tool name and arguments), the tool results, the
+system prompt, and the tool schemas. The bench **fails** if the dialogue and tool calls differ
+between the versions or between runs of one version, if the final answer of race A or of the
+built session lacks its marker text, or if a client does not stream. Tool results, system prompt
+and tool schemas are each version's own, so `results.md` reports whether they matched rather than
+requiring it. This is done for race A, for building the race B session, and for the live message
+of race B's paced take; the instant reopen sends no request, and the bench checks that.
 
 **Race A, a long tool chain.** `tau -p` is given one prompt. The fake model asks for 100
 `read` calls, one after another (each on a different one of 300 small files), then answers. Both
@@ -52,7 +62,7 @@ to its exit, so it includes starting τ.
 
 **Race B, reopening a large session.** Each version first runs the same scripted conversation, 200
 turns of two `read` calls and an answer each, through `tau -p -c`, building a session of 600 model
-samples. The race is `the TUI reopening it in a terminal pane (tmux, 160x48 for the benchmark), timed until the last
+samples. The race is the TUI reopening it in a terminal pane (tmux, 160x48 for the benchmark), timed until the last
 turn's text is on screen (*drawn*) and until text typed into the editor is echoed
 (*responsive*). The video stops at drawn. 0.16 opens the session with `tau -c`; in 0.15 `-c` is headless only, so the TUI is started with `--resume`, which lists the sessions, and Enter is pressed on the one there is. That picker is part of 0.15's time, as it is part of what a person does.
 
@@ -68,7 +78,7 @@ turn's text is on screen (*drawn*) and until text typed into the editor is echoe
 ## What the numbers do and do not say
 
 * They are wall-clock times of whole processes on one machine, median of five runs after a warm-up,
-  alternating which version goes first. `results.md` records the CPU, kernel and both versions.
+  alternating which version goes first. `results.md` records the CPU, kernel, both versions, their Python, Textual and Rich, and the git commit the 0.16 wheel was built from.
 * A fake model has no latency of its own, so *instant* exaggerates what a real session sees; it
   isolates the harness. *Paced* is nearer to use, and tool calls are still cheap, small files.
 * Startup is part of race A. `results.md` also gives the startup of one tool-less answer so it
