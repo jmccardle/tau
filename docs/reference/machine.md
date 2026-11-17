@@ -594,6 +594,19 @@ def input(self, cursor: int, by: Author, text: str) -> int
 Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
 Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
 
+### Session.send
+
+```python
+def send(self, cursor: int, by: Author, text: str) -> int
+```
+
+Send: add an `Input` item for `cursor`, written `by` the author, and turn auto-step on,
+as one call. The cursor takes the item at its next input phase: a cursor at rest wakes
+with auto-step on, and a step already past its input phase is followed by one that
+offers it. `input` then `set_auto` as two calls can strand the item when a step runs
+between them. Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is
+not open.
+
 ### Session.step
 
 ```python

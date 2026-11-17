@@ -65,6 +65,31 @@ impl Machine {
         Ok(id)
     }
 
+    /// A send: add an input item and turn auto-step on, as one call. A cursor
+    /// at rest wakes with auto-step already on, so its step offers the item; a
+    /// busy cursor's step either offers it at its input phase or, past that,
+    /// starts the next step, which does (`after`: an item added since a step
+    /// woke wakes the next one). `input` then `set_auto` as two calls can strand
+    /// the item: a step woken by the input can pass its input phase with
+    /// auto-step still off, and the `set_auto` that follows lands on a busy
+    /// step and wakes nothing.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
+    pub fn send(&mut self, cursor: CursorId, by: Author, text: &str) -> Result<ItemId, Error> {
+        self.session.at(cursor)?;
+        let data = ItemData::Input {
+            by,
+            text: text.into(),
+        };
+        let id = self.session.add_item(cursor, data);
+        self.session.auto.insert(cursor, true);
+        self.wake(cursor, false);
+        self.session.sync();
+        Ok(id)
+    }
+
     /// `Session.step`: run the phases once with auto-step off.
     ///
     /// # Errors

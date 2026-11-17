@@ -83,9 +83,7 @@ class Calls:
 
     def send(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "send"), self._changing():
-            item = self.session.input(cursor, Author.Frontend(client), text)
-            self.session.set_auto(cursor, True)
-            return item
+            return self.session.send(cursor, Author.Frontend(client), text)
 
     def step(self, cursor: int) -> None:
         with self._changing():

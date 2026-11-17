@@ -421,7 +421,7 @@ can be moved off or removed, but not set onto one (`CursorClosed`).
 ### machine
 *spike* `machine::Machine` · new
 
-The session plus every cursor's step: the frontend calls (`input`,
+The session plus every cursor's step: the frontend calls (`input`, `send`,
 `step`, `go_to`, `set_auto`, `abort`, `close`, which is refused with `Busy` unless the cursor is at rest (D17)), the extension calls (`open`,
 `add_item`, `remove_item`, `append`, `set_label`, `remove_label`), a hook's
 own-cursor calls (`hook_move`, `hook_write`, `hook_set_auto`), and
@@ -450,9 +450,10 @@ and the session closes itself (see **close**). Cursor ids are checked
 by core: an unknown one is `NoSuchCursor`, a closed one `CursorClosed`. `close_cursor(cursor)` is
 the core call (`Busy` unless the cursor is at rest); the waiting is the driver's. The value classes have a `__repr__`
 (the Rust `Debug` text).
-The calls are the machine's (**machine**) with these differences. `send` is
-not one: it was `input` plus auto-step on, which a frontend does itself
-(`input`, then `set_auto(cursor, True)`; `Driver.send` does both). The reads
+The calls are the machine's (**machine**). `send(cursor, by, text)` is one
+call: the input item and auto-step on under one lock (`input` then
+`set_auto(cursor, True)` as two calls can strand the item, see **Input** in
+`model.md`). The reads
 are `tree` (a **Tree**, the nodes), `cursor(c)` (a **CursorState**, one
 cursor), `cursors()` (the open cursors), `closed()` (each closed cursor and its last node, in id order), `label(l)` and `labels()` (the labels),
 and `take_notices()` (drains the notices). There is no whole-scratchpad read

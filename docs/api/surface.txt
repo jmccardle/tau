@@ -1041,6 +1041,7 @@ class Session
     def read(directory: str | PathLike[str]) -> Session
     def remove_item(self, id: int) -> None
     def remove_label(self, label: str) -> None
+    def send(self, cursor: int, by: Author, text: str) -> int
     def set_auto(self, cursor: int, on: bool) -> None
     def set_label(self, label: str, cursor: int) -> None
     def step(self, cursor: int) -> None
