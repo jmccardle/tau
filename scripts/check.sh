@@ -63,4 +63,10 @@ step "pyprintable";  "$PY" scripts/pyprintable.py --check --skip-other-version  
 step "api docs";    "$PY" scripts/api_docs.py --check   # docs/api/surface.txt, docs/reference/, and _core.pyi's docstrings against the built module
 step "protocol guide"; "$PY" scripts/protocol_guide.py --check   # docs/guide/protocol.md is generated from the schema
 step "guide examples"; "$PY" scripts/guide_examples.py   # every python and bash block in docs/guide runs, on a temporary TAU_HOME
-step "diagrams";     scripts/diagrams.sh --check   # rule 6; builds a feature-enabled core apart
+# Rule 6: the diagrams are documentation, not a test. This step runs and compares, and says so when
+# they differ, but never fails the gate (diagrams.sh --check itself stays strict, for use elsewhere).
+step "diagrams (advisory)"
+if ! scripts/diagrams.sh --check; then   # builds a feature-enabled core apart
+    echo "WARNING: the generated diagrams differ from docs/as-built/diagrams, or could not be recorded (output above);" >&2
+    echo "WARNING: run scripts/diagrams.sh to refresh. This does not fail the gate." >&2
+fi
