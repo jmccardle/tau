@@ -338,13 +338,20 @@ The hooks that refuse run before the ones you write, so a hook of yours that wou
 for nothing is halted too. A reply a `pre_reply` hook re-attributes (changes its `by` from the
 provider) is not counted as spend.
 
-A limit needs prices. If a model the session uses has no `price` (a reply of one is in the tree,
-or the branch is on one now), τ cannot know what was spent, and refuses rather than count it as
-free: `budget: $5.00 cannot be held, no price for local:qwen`. Give the model a `price`, or unset
-`max_usd`. The same goes for a reply a provider sampled that reported no usage (or was aborted
-before it did): money was probably spent and nothing says how much, so with `max_usd` set τ
-refuses with `budget: $5.00 cannot be held, local:qwen reported no usage`. Without `max_usd`,
-`/usage` lists such replies as not counted, as before.
+A reply that reported no usage (a provider that sends none, or a reply you cut off with Esc) is
+not free. τ estimates it: the request it answered from the counts of the walk (what `/usage`
+and the compaction limits use: the server's own report for the prefix, the `tokens` extension's
+count or the node's byte ceiling for what is new) and its output from the text it did produce,
+priced at its model. The estimate leans high, so a limit errs towards having spent. When a later
+reply reports its usage, τ corrects the estimate: the input that reply holds beyond the earlier
+reply's (its input and output) is what the messages, results and unreported replies between them
+cost, and it is split among them in proportion to their estimates. Nothing is rewritten; the
+correction is worked out whenever the spend is read. `/usage` shows the estimate on its own line
+(`~$0.04 of cost estimated for them`) and keeps it out of its totals.
+
+A limit needs prices. If a model the session uses has no `price`, τ cannot estimate what it
+spent, and refuses rather than count it as free: `budget: no price for model local:qwen, set its
+price or unset usage.max_usd`.
 
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.

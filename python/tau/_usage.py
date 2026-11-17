@@ -19,11 +19,16 @@ write copies) is counted once, as its original: `counted` is that rule.
 
 The budget: with `max_usd` set (unset: no limit), once the session's spend (the total above) reaches
 it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its next sample, both
-with `budget: $X of $Y spent`. A budget is held only against known prices: if a model the session
-uses has no `price` (a counted reply of one, or the one the branch is on now), nothing says what
-was spent, so the same two hooks refuse with the models named rather than count them as $0. So
-they do for a model with a reply that reported no usage (or was aborted before it did): money
-was likely spent that nothing says.
+with `budget: $X of $Y spent`. A reply that reported no usage (a finished one, or one an abort
+cut) is estimated, never counted as free: its input is what `count` says the request it answered
+cost and its output what `count` says its own node costs, both at `upper` (the `counter`
+extension's count where there is one, else the byte ceiling), priced at its model. When a later
+reply on the same walk reports its usage, the input it holds beyond the nearest earlier reporting
+reply's (that one's input and output) is what the nodes between them cost together; it is split
+among them in proportion to their estimates, and the estimate of each silent reply becomes its
+share. Nothing is edited: the correction is worked out when a reply is read. `/usage` ends a
+row's lines with the estimate; the totals leave it out. Only a model with no `price` cannot be
+held to a budget: nothing can be estimated, so both hooks refuse naming it.
 
 The cache notice: a reply that read nothing from the cache (`cached` reported as 0, not left
 out), with at least 4,096 input tokens, shortly after a reply of the same model, tells every
@@ -242,19 +247,28 @@ class _Row:
     aborted: int = 0  # replies that were aborted, and reported none
     problems: list[str] = field(default_factory=lambda: [])  # why some reported none
     spent: Decimal = Decimal(0)
+    guessed: Decimal = Decimal(0)  # what the replies that reported none are estimated to cost
     priced: bool = False
     configured: bool = True
 
     def add(
-        self, usage: Reading | None, price: Price | None, problem: str | None, *, aborted: bool
+        self,
+        usage: Reading | None,
+        price: Price | None,
+        problem: str | None,
+        guess: tuple[int, int] | None,
+        *,
+        aborted: bool,
     ) -> None:
-        if usage is None and aborted and problem is None:
-            self.aborted += 1
-            return
         if usage is None:
-            self.silent += 1
+            if aborted and problem is None:
+                self.aborted += 1
+            else:
+                self.silent += 1
             if problem is not None:
                 self.problems.append(problem)
+            if price is not None and guess is not None:
+                self.guessed += cost(Reading(guess[0], guess[1], None, None), price)
             return
         self.samples += 1
         self.input += usage.input
@@ -277,14 +291,16 @@ class Usage:
         # Per node of the session, once: nodes never change. `None`: no counted reply.
         # (model, its counts, why it has none if its usage could not be read, whether aborted).
         self._replies: dict[int, tuple[str, Reading | None, str | None, bool]] = {}
+        self._guess: dict[int, tuple[int, int]] = {}  # reply that reported none -> (input, output)
+        self._fixed: dict[int, int] = {}  # such a reply -> its output, as a later reply shows
         self._scanned = 0
         self._told: set[str] = set()
         self._windows: dict[str, int] = {}  # model -> the window its server last reported
         self.commands = (self.usage,)
 
-    def usage(self, tree: TreeHandle) -> str:
+    async def usage(self, tree: TreeHandle) -> str:
         """What this session has spent: one row per model, and a total."""
-        rows = self._rows(tree)
+        rows = await self._rows(tree)
         notes = "".join(f"\n{note}" for note in self._window_notes(tree))
         return f"{table(rows)}{notes}\n{how_counted(tree.counter)}"
 
@@ -306,33 +322,32 @@ class Usage:
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
         """Refuse new input once the budget (`max_usd`) is spent."""
-        return self._budget(cursor)
+        return await self._budget(cursor)
 
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
         """Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
         before user extensions, so a hook that would have answered the sample for free is halted
         too."""
-        return self._budget(cursor)
+        return await self._budget(cursor)
 
-    def _budget(self, cursor: Cursor) -> str | None:
+    async def _budget(self, cursor: Cursor) -> str | None:
         """Why no more may be spent, or `None`: under the budget, or none is set."""
         limit = cursor.options().max_usd
         if limit is None:
             return None
         cap = Decimal(repr(limit))
-        rows = self._rows(cursor)
+        rows = await self._rows(cursor)
         here = cursor.model()
-        unpriced = [m for m, r in rows.items() if r.samples and not r.priced]
+        unpriced = [
+            m for m, r in rows.items() if (r.samples or r.silent or r.aborted) and not r.priced
+        ]
         if here not in unpriced and not _priced(cursor, here):
             unpriced.append(here)
-        mute = [m for m, r in rows.items() if r.silent or r.aborted]
-        why = [f"no price for {', '.join(unpriced)}"] if unpriced else []
-        why += [f"{', '.join(mute)} reported no usage"] if mute else []
-        shown = _limit(cap)
-        if why:
-            return f"budget: {shown} cannot be held, {'; '.join(why)}"
-        spent = sum((r.spent for r in rows.values()), Decimal(0))
-        return f"budget: {money(spent)} of {shown} spent" if spent >= cap else None
+        if unpriced:
+            named = ", ".join(unpriced)
+            return f"budget: no price for model {named}, set its price or unset usage.max_usd"
+        spent = sum((r.spent + r.guessed for r in rows.values()), Decimal(0))
+        return f"budget: {money(spent)} of {_limit(cap)} spent" if spent >= cap else None
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""
@@ -347,12 +362,12 @@ class Usage:
         elif usage is None:
             cursor.show(f"{model} reported no usage" + (f" ({problem})" if problem else ""))
         else:
-            cursor.show(self._line(cursor, usage, config))
+            cursor.show(await self._line(cursor, usage, config))
         if cursor.options().cache_notice and usage is not None:
             self._notice(cursor, node, model, usage)
         return None
 
-    def _line(self, tree: TreeHandle, usage: Reading, config: ModelConfig | None) -> str:
+    async def _line(self, tree: TreeHandle, usage: Reading, config: ModelConfig | None) -> str:
         parts = [f"{tokens(usage.input)} in"]
         if usage.cached is not None and usage.input:
             parts.append(f"{percent(usage.cached, usage.input)} cached")
@@ -362,7 +377,7 @@ class Usage:
             parts.append(money(cost(usage, price)))
         if config is not None and config.context_window is not None:
             parts.append(f"ctx {percent(usage.input + usage.output, config.context_window)}")
-        rows = self._rows(tree).values()
+        rows = (await self._rows(tree)).values()
         if any(r.priced for r in rows):
             more = "+" if any(not r.priced and r.samples for r in rows) else ""
             parts.append(f"{money(sum((r.spent for r in rows), Decimal(0)))}{more} session")
@@ -392,12 +407,12 @@ class Usage:
             f"({tokens(usage.input)} tokens sent at full price)."
         )
 
-    def _scan(self, tree: TreeHandle) -> None:
-        """Read the session's nodes not read yet."""
+    async def _scan(self, tree: TreeHandle) -> None:
+        """Read the session's nodes not read yet, estimating each reply that reported no usage
+        and correcting the estimates before it by a reply that reports."""
         nodes = tree.tree
         for id in range(self._scanned, len(nodes)):
             node = nodes.node(id)
-            self._scanned = id + 1  # a node that cannot be read is not read again
             if counted(node):
                 usage, problem = _read(node)
                 try:
@@ -408,21 +423,71 @@ class Usage:
                 served = _served_window(node)
                 if served is not None:
                     self._windows[model] = served
+                if usage is None:
+                    self._guess[id] = await _guess(tree, node)
+                else:
+                    await self._settle(tree, node, usage)
+            self._scanned = id + 1  # a node that cannot be read is not read again
 
-    def _rows(self, tree: TreeHandle) -> dict[str, _Row]:
+    async def _settle(self, tree: TreeHandle, reply: Node, usage: Reading) -> None:
+        """Correct the output of the replies that reported none, from `reply`, which did.
+
+        Its input covers every node on its walk, so what it holds beyond the nearest earlier
+        reporting reply `before` (that one's input and output) is what the nodes between them
+        cost together. That sum is split among those nodes in proportion to their estimates
+        (`Count.upper` of `tree.count`), so the split is right whatever scale the estimates are
+        on, and each silent reply takes its share. Without such a reply `before` the input holds
+        the system prompt and the tools too, and nothing is corrected."""
+        between: list[Node] = []
+        for node in reversed(tree.tree.walk(reply.id)[:-1]):
+            known = self._replies.get(node.id)
+            if known is not None and known[1] is not None:
+                before = known[1]
+                break
+            between.append(node)
+        else:
+            return
+        silent = [n.id for n in between if n.id in self._guess]
+        if not silent or reply.parent is None:
+            return
+        counts = (await tree.count(at=reply.parent)).nodes
+        guessed = {n.id: counts[n.id].upper for n in between if n.id in counts}
+        whole = sum(guessed.values())
+        extra = max(usage.input - before.input - before.output, 0)
+        for id in silent:
+            if id in guessed and whole:
+                self._fixed[id] = extra * guessed[id] // whole
+
+    async def _rows(self, tree: TreeHandle) -> dict[str, _Row]:
         """One row per model, in the order each first replied, priced by the config now."""
-        self._scan(tree)
+        await self._scan(tree)
         rows: dict[str, _Row] = {}
         models: dict[str, ModelConfig | None] = {}
-        for model, usage, problem, aborted in self._replies.values():
+        for id, (model, usage, problem, aborted) in self._replies.items():
             if model not in models:
                 models[model] = _configured(tree, model)
             config = models[model]
             row = rows.setdefault(model, _Row())
             row.configured = config is not None
             row.priced = config is not None and config.price is not None
-            row.add(usage, None if config is None else config.price, problem, aborted=aborted)
+            guess = self._guess.get(id)
+            if guess is not None and id in self._fixed:
+                guess = (guess[0], self._fixed[id])
+            row.add(
+                usage, None if config is None else config.price, problem, guess, aborted=aborted
+            )
         return rows
+
+
+async def _guess(tree: TreeHandle, reply: Node) -> tuple[int, int]:
+    """What a reply that reported no usage probably cost, as tokens `(input, output)`: the
+    request it answered (`tree.count` of the walk to its parent) and its own parts (the count of
+    its node). Both are `upper`, so a spending limit errs towards having spent: a ceiling where
+    nothing counts better, what the `counter` extension (`tokens`) says where there is one."""
+    assert reply.parent is not None  # a reply answers something
+    asked = (await tree.count(at=reply.parent)).total.upper
+    said = (await tree.count(at=reply.id)).nodes[reply.id].upper
+    return asked, said
 
 
 def _served_window(node: Node) -> int | None:
@@ -547,4 +612,7 @@ def _silent(rows: Iterable[_Row]) -> str:
     if cut:
         who = "reply was" if cut == 1 else "replies were"
         text += f"\n{cut} {who} aborted and reported no usage"
+    guessed = sum((row.guessed for row in rows), Decimal(0))
+    if guessed:
+        text += f"\n~{money(guessed)} of cost estimated for them: in max_usd, not in these totals"
     return text

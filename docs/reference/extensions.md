@@ -1489,7 +1489,7 @@ def __init__(self) -> None
 ### Usage.usage
 
 ```python
-def usage(self, tree: TreeHandle) -> str
+async def usage(self, tree: TreeHandle) -> str
 ```
 
 What this session has spent: one row per model, and a total.

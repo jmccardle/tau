@@ -861,11 +861,15 @@ one rule (`copied_from` and `derived_from` both unset, `by` is `Provider`). The 
 option `max_usd` (dollars; unset: none; read at the cursor's position like any option, so `save`
 or the user config covers every branch): once the session's whole-tree spend, the same total as
 above, reaches it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its
-next sample, both with `budget: $X of $Y spent`. If a model in use has no price (a counted reply
-of one, or the branch's current model), the budget cannot be held and both hooks refuse with
-`budget: $Y cannot be held, no price for NAMES`: an unknown cost is never counted as $0. A
-provider reply that reported no usage (or was aborted before it did) is the same: `NAMES reported
-no usage`. The **cache notice** is a `tell` to every client, once per
+next sample, both with `budget: $X of $Y spent`. A reply that reported no usage (finished, or cut by an abort) is **estimated**, never free: its
+input is `count` of the walk to its parent and its output `count` of its own node, both `upper` (the
+counter's count, else the byte ceiling), priced at its model. A later reply that reports usage
+corrects it: the input it holds beyond the nearest earlier reporting reply's input and output is the
+cost of the nodes between them, split in proportion to their estimates, and each silent reply's
+estimate becomes its share (nothing is written; it is worked out when read; with no reporting reply
+before, nothing is corrected). `/usage` shows the estimate as `~$X` on its own line, outside its
+totals. A model with no price cannot be estimated: both hooks refuse with `budget: no price for
+model NAMES, set its price or unset usage.max_usd`. The **cache notice** is a `tell` to every client, once per
 model, after a reply with `cached` reported as 0 and at least 4,096 input tokens that follows a
 reply of the same model by under 300 seconds. `/usage` ends with one line on how counts are made before
 a request is sent (D26): `counts: reported only, with byte ceilings for what is not sent yet`, or
