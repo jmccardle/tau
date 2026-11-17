@@ -203,6 +203,10 @@ cursor, change `subject.draft` (assign a new `Draft`, or `None` to write nothing
 auto-step on or off with `set_auto`. Core checks only that the tree stays valid; it does not
 limit what a hook changes. Do not keep a handle after the hook returns: it stops working.
 
+A sample a `pre_sample` draft answers may be a tool batch (`Stop.Tools` with `Part.Call`s): its
+calls run like the model's, through `pre_tool` (so permissions apply) and `pre_result`, and the
+next sample sees the calls and their results.
+
 A tool hook may rewrite `call.args_raw`, and may set `call.outcome` to an `Ok` or `Err` outcome:
 in `pre_tool` that answers the call and the tool does not run; in `pre_result` it replaces the
 result.
