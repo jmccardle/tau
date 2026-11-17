@@ -298,7 +298,10 @@ from outside, not spinning: with a `Done` ending it starts a step even when
 the table says rest, and auto-step stays as it is. A send that lands after the
 step passed its input position (an extension's `send` from a worker thread, to
 a cursor it just opened) is so answered by the next step, not left pending with
-auto-step off. That step follows the same rule: if it does not move the cursor
+auto-step off. This holds because a send is one call: the item and auto-step
+on land together, so a step either woke after both (its input phase offers the
+item) or before both (the item is news). A bare `input` that a step outruns
+waits, by design, for the next step that runs with auto-step on. That step follows the same rule: if it does not move the cursor
 and nothing new came, it rests, with auto-step off if it was on and there was
 work. There is no delay and no timer.
 
@@ -378,8 +381,11 @@ retired handle is the driver's. The exact surface is Phase 4's.
 
 `Session.input(cursor, by, text)` adds an input item authored `by` and wakes the cursor (the
 spike's `Session::add_item`). A client's `input` and `send` pass `Frontend(client)`; a tree handle's
-`send` passes its extension's `Extension(name)` and needs no client (D17 §1). A **send** is input, then auto-step on: two calls, which the driver's `send` makes. On a
-busy cursor the item waits for the next step's input phase. After an abort it
+`send` passes its extension's `Extension(name)` and needs no client (D17 §1). A **send** is input and auto-step on as one call, `Session.send(cursor, by, text)`, which the
+driver's `send` and the tree handle's `send` make. As two calls (`input`, then `set_auto`) a step
+woken by the input could pass its input phase with auto-step still off, and the `set_auto` landing
+on that busy step woke nothing: the input was stranded, auto-step off. On a busy cursor the item
+waits for the step's input phase, or, past it, for the next step, which the item wakes. After an abort it
 stays pending (Q42). Gates are `pre_input` hooks.
 
 ### Questions (the driver's; core has none)

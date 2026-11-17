@@ -9,11 +9,9 @@ use tau_core::tree::{
     Session, Stop,
 };
 
-/// Input, then auto-step on: what a frontend does to send.
+/// What a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
-    let item = m.input(cursor, by, text).unwrap();
-    m.set_auto(cursor, true).unwrap();
-    item
+    m.send(cursor, by, text).unwrap()
 }
 
 /// What the store holds after a crash: the records up to the last `Sync` and

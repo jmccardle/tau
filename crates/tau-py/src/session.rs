@@ -330,6 +330,18 @@ impl Session {
         })
     }
 
+    /// Send: add an `Input` item for `cursor`, written `by` the author, and turn auto-step on,
+    /// as one call. The cursor takes the item at its next input phase: a cursor at rest wakes
+    /// with auto-step on, and a step already past its input phase is followed by one that
+    /// offers it. `input` then `set_auto` as two calls can strand the item when a step runs
+    /// between them. Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is
+    /// not open.
+    fn send(&self, py: Python<'_>, cursor: u64, by: Author, text: &str) -> PyResult<u64> {
+        self.shared.write(py, tracing::info_span!("py.send"), |m| {
+            Ok(m.send(cursor, by.into(), text)?)
+        })
+    }
+
     /// Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.
     /// `Busy` if a step is already running.
     fn step(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {

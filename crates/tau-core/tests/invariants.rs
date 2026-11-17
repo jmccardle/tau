@@ -277,10 +277,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     let node = |i: usize| i as NodeId % (nn + 2);
     let term = || "term".to_string();
     match *op {
-        Op::Send(i, a) => {
-            m.input(cursor(i), author(a), "hello").unwrap();
-            m.set_auto(cursor(i), true).unwrap();
-        }
+        Op::Send(i, a) => drop(m.send(cursor(i), author(a), "hello").unwrap()),
         Op::Input(i, a) => drop(m.input(cursor(i), author(a), "more").unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));

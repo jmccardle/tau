@@ -5,11 +5,9 @@ use tau_core::machine::Machine;
 use tau_core::step::{Answer, Draft, Ending, Hook, Job, SampleEnd};
 use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Provenance, Session, Stop};
 
-/// Input, then auto-step on: what a frontend does to send.
+/// What a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
-    let item = m.input(cursor, by, text).unwrap();
-    m.set_auto(cursor, true).unwrap();
-    item
+    m.send(cursor, by, text).unwrap()
 }
 
 /// The hooks' answer that changes nothing: a job's draft comes back as it was.

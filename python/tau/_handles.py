@@ -334,8 +334,7 @@ class TreeHandle:
         its auto-step on: `to` takes the text at its next step (through its `pre_input` hooks)
         and answers. Needs no client. Returns the item."""
         self._check()
-        item = self._session.input(to, self.by, text)
-        self._session.set_auto(to, True)
+        item = self._session.send(to, self.by, text)
         self._changed()
         self._poke()
         return item

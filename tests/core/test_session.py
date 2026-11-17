@@ -360,6 +360,68 @@ def test_the_job_loop_is_public_and_refuses_an_answer_to_no_job() -> None:
     assert (ended.point, ended.ending) == (tau.Hook.PostStep, Ending.Done())
 
 
+def hooks(session: Session, cursor: int) -> tau.Job.Hooks:
+    """The cursor's next job, which must be a hook job."""
+    job = session.next_job(cursor)
+    assert isinstance(job, tau.Job.Hooks), job
+    return job
+
+
+def answer_hooks(session: Session, cursor: int) -> None:
+    session.answer(cursor, tau.Answer.Hooks(None, None), 1)
+
+
+def test_input_then_set_auto_with_a_step_between_strands_the_input() -> None:
+    # Why a send is one call: what a worker thread's two calls could interleave with.
+    session, cursor = new()
+    item = session.input(cursor, Author.Frontend("term"), "hi")  # wakes, auto-step off
+    assert hooks(session, cursor).point == tau.Hook.PreStep
+    answer_hooks(session, cursor)
+    assert hooks(session, cursor).point == tau.Hook.PostStep, "no input phase: auto-step is off"
+    session.set_auto(cursor, True)  # lands on a busy step: wakes nothing
+    answer_hooks(session, cursor)
+    assert session.next_job(cursor) == tau.Job.Rest()
+    assert [i.id for i in session.cursor(cursor).items] == [item], "stranded"
+    assert not session.cursor(cursor).auto
+
+
+def test_a_send_at_rest_is_offered_by_the_step_it_wakes() -> None:
+    session, cursor = new()
+    session.send(cursor, Author.Frontend("term"), "hi")
+    assert session.cursor(cursor).auto
+    assert hooks(session, cursor).point == tau.Hook.PreStep
+    answer_hooks(session, cursor)
+    offered = hooks(session, cursor)
+    assert offered.point == tau.Hook.PreInput
+    assert offered.draft is not None
+    assert offered.draft.body == Body.User("hi")
+
+
+def test_a_send_past_the_input_phase_is_offered_by_the_next_step() -> None:
+    session, first = new()
+    cursor = session.open(session.cursor(first).at, Author.Core(), 0)  # wakes, auto-step off
+    assert hooks(session, cursor).point == tau.Hook.PreStep
+    answer_hooks(session, cursor)
+    assert hooks(session, cursor).point == tau.Hook.PostStep, "past the input phase"
+    item = session.send(cursor, Author.Frontend("term"), "hi")
+    answer_hooks(session, cursor)
+    assert hooks(session, cursor).point == tau.Hook.PreStep, "the item woke the next step"
+    answer_hooks(session, cursor)
+    offered = hooks(session, cursor)
+    assert offered.point == tau.Hook.PreInput
+    assert offered.draft is not None
+    assert offered.draft.body == Body.User("hi")
+    assert [i.id for i in session.cursor(cursor).items] == [item]
+    assert session.cursor(cursor).auto
+
+
+def test_a_send_to_a_cursor_that_is_not_open_is_refused() -> None:
+    session, _ = new()
+    with pytest.raises(tau.NoSuchCursor):
+        session.send(7, Author.Frontend("term"), "hi")
+    assert session.cursor(0).items == []
+
+
 def test_a_log_record_that_cannot_replay_is_a_bad_record(tmp_path: Path) -> None:
     session, _ = new(tmp_path)
     session.close()

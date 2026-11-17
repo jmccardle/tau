@@ -716,18 +716,32 @@ async def test_an_extensions_halted_input_notifies_no_one_and_ends_halted(tmp_pa
     recorder = Recorder(says={"pre_input": "not today"})
     nudges = Nudges()
     h = await Harness.create(tmp_path, extensions=[nudges, recorder])
+
+    def offered() -> list[str]:
+        """The text of each input offered to `pre_input`, in order: one per send."""
+        return [
+            s.draft.body.text
+            for s in recorder.subjects("pre_input")
+            if isinstance(s, Subject)
+            and s.draft is not None
+            and isinstance(s.draft.body, Body.User)
+        ]
+
     other = await h.client.open(h.session.cursor(h.cursor).at)
     await h.settle()
     await h.run("nudge", {"to": other, "text": "psst"})
     await h.settle()
+    assert offered() == ["psst"]
     assert h.notices() == [], "an extension has no stream to notify"
     await h.run("nudge_and_wait", {"to": other, "text": "again"})
+    assert offered() == ["psst", "again"], "the second send was offered, not stranded"
     assert nudges.seen == [Ending.Halted("not today")], "the sender reads the reason from rest"
     assert (await h.view(other)).ending == Ending.Halted("not today")
     assert (await h.view(other)).items == (), "the halted input is gone"
     assert users(h, other) == []
     await h.send("typed", cursor=other)  # a frontend's halted input is told to its client
     await h.settle()
+    assert offered() == ["psst", "again", "typed"]
     assert h.notices() == ["not today"]
     await h.close()
 
