@@ -382,12 +382,11 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   tool (`base_tools()` returns five there), `tau serve` and its clients (the
   wire is a Unix domain socket, which asyncio does not offer on Windows), and
   projects (D13's owner and mode checks), and path patterns in permission
-  rules (refused where configured; the bare tool name works). The drop-in
-  check (`require_private`) is not made on Windows. `@file` on Windows: a
+  rules (refused where configured; the bare tool name works). `@file` on Windows: a
   backslash separates directories and escapes only a space. Open decisions:
   the Windows shell tool; the Windows transport for `tau serve`; Windows
   project trust; how permission path patterns meet Windows paths (drive
-  letters, `\`, case); the Windows reading of the drop-in check.
+  letters, `\`, case).
 - macOS: a deny or ask rule's directories are made real too (`/etc` is a link
   to `/private/etc` there, and `write:/etc/*` missed every write that resolved
   through it), and deny and ask fold case as the volume does.

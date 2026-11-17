@@ -39,7 +39,6 @@ from tau._config_layers import ModelCatalog, read_models
 from tau._options import option_fields
 from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
-from tau._project_read import TrustError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
 from tau._prune import Prune
 from tau._skills import SkillFileError, Skills
@@ -53,7 +52,6 @@ from tau._trust import (
     ensure_trusted,
     find_project,
     project_environment,
-    require_private,
     tau_home,
     user_config_path,
 )
@@ -364,11 +362,6 @@ def _user(home: Path) -> list[_Candidate]:
 
     def importer(path: Path) -> Callable[[], list[object]]:
         def run() -> list[object]:
-            try:
-                require_private(directory, "chmod go-w")
-                require_private(path, "chmod go-w")
-            except TrustError as e:
-                raise ExtensionLoadError(str(e)) from None
             return _exports(_import_path(path), str(path))
 
         return run

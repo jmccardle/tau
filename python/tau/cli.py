@@ -271,7 +271,7 @@ def _project_findings(
         command = f"tau trust {shlex.quote(str(root))}"
         found.error(root / TAU_DIR, f"project is not trusted; run `{command}`")
         return e.layer, environ, False
-    except TrustError as e:  # a refused file, or TAU_HOME or trusted.json writable by others
+    except TrustError as e:  # a refused project file, or a trusted.json that cannot be read
         found.error(e.where or root / TAU_DIR, str(e))
         return None, environ, False
     try:

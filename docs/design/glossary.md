@@ -1066,9 +1066,10 @@ path, never the content): it opens with `O_NOFOLLOW` and checks the descriptor, 
 earlier look to race. (C) As above: hash decides, redacted copy shows. (D) A config
 with errors (or a malformed `.env`) cannot be approved; the report lists them.
 (E) `.env` is content-pinned like the config; content decides, so neither file has an
-owner check. (F) A foreign `.tau` directory is not a project. (G) `TAU_HOME` or `trusted.json`
-writable by group or others refuses all trust operations with the `chmod` to
-run; tau never changes them. (I) Every project-supplied string in a report or
+owner check. (F) A foreign `.tau` directory is not a project. (G) ~~`TAU_HOME` or `trusted.json`
+writable by group or others refuses all trust operations~~ removed 2026-11-16 (D13
+amendment): the user's account is the boundary, so trust does not look at the mode of
+`TAU_HOME` or `trusted.json`; tau never changes them. (I) Every project-supplied string in a report or
 trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes. (J) An `OSError` in trust's file
 access (a mode-000 `config.json`, `.tau/` or `TAU_HOME`, a read-only `TAU_HOME` that cannot
 take the approval) is a `TrustError` naming the path, never a traceback. (K) A record in
@@ -3565,9 +3566,7 @@ Windows the `bash` tool (see *base tools*), `tau serve` and its clients
 (`require_unix_sockets`: the wire is a Unix domain socket, which Python's asyncio does not
 offer there), projects (D13: finding a `.tau/` is a `TrustError`, since the owner and
 mode checks are not ported) and path patterns in permission rules (`read:GLOB` and the other path
-tools: a `ValueError` where the rule is configured). One check is left out there rather than
-refused: that the user's extension drop-ins are writable by the user alone (`require_private`
-reads mode bits, which Windows does not have; its access-list reading is not ported). `tests/proctable.py` is the process table for the tests
+tools: a `ValueError` where the rule is configured). `tests/proctable.py` is the process table for the tests
 (`/proc` on Linux, `ps` on macOS), and a test of something Windows lacks is skipped there with
 the reason.
 

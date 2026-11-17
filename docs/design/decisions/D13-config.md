@@ -94,8 +94,15 @@ Three needs:
   `.env` is pinned like the config: it can carry any variable, including the one
   `api_key_env` names, so a changed or added `.env` is untrusted again.
 - `trusted.json` holds a hash of each approved config and of its `.env`, and a
-  copy of the config with every `api_key` value blanked, for diffs; never a key. Trust operations refuse
-  while `$TAU_HOME` or `trusted.json` is writable by others.
+  copy of the config with every `api_key` value blanked, for diffs; never a key. 
+  *Amended 2026-11-16: trust operations no longer refuse a `$TAU_HOME` or
+  `trusted.json` that group or others can write. The user's account is the
+  boundary, as for Python, pip and editors: anything running as the user,
+  including the model's own tools, can write those files whatever their mode,
+  and mode bits misfire on user-private-group systems (umask 0002) and on
+  volumes made group-writable by the platform (Kubernetes `fsGroup`). Project
+  trust (content hashes, approval, `O_NOFOLLOW` reads, a foreign `.tau/` is not a
+  project) is unchanged.*
 
 **Environment.**
 - Shell environment variables are trusted. A project's `.env` is read only if

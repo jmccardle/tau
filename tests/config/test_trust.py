@@ -155,28 +155,14 @@ def test_a_missing_config_is_not_an_empty_one_and_adding_one_untrusts(world: Wor
         loaded(world, root)
 
 
-def test_group_readable_state_is_fine_only_writable_state_is_refused(world: World) -> None:
+def test_group_or_world_writable_state_is_not_refused_on_its_mode(world: World) -> None:
     root = world.project()
     trust(world, root)
-    world.tau.chmod(0o750)
-    (world.tau / "trusted.json").chmod(0o640)
+    world.tau.chmod(0o777)
+    (world.tau / "trusted.json").chmod(0o666)
     assert loaded(world, root).project is not None
-    (world.tau / "trusted.json").chmod(0o664)
-    with pytest.raises(TrustError, match="chmod 600"):
-        loaded(world, root)
-    check = tau(world, "config", "check", cwd=root)
-    assert check.code == 1
-    assert check.out.startswith(f"{world.tau / 'trusted.json'}: error: ")
-
-
-def test_a_group_writable_tau_home_is_refused_not_fixed(world: World) -> None:
-    root = world.project()
-    world.tau.mkdir(mode=0o700)
-    world.tau.chmod(0o770)
     result = tau(world, "trust", cwd=root)
-    assert result.code == 1
-    assert "chmod 700" in result.err
-    assert stat.S_IMODE(world.tau.stat().st_mode) == 0o770
+    assert result.code == 0, result.err
 
 
 def test_a_corrupt_state_file_fails_loudly(world: World) -> None:

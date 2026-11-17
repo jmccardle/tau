@@ -18,8 +18,7 @@ with `~`). τ owns it:
 | `serve/` | the sockets and records of `tau serve` |
 | `AGENTS.md` or `CLAUDE.md` | instructions for every session (see [Context files](#context-files-and-the-system-prompt)) |
 
-Keep `$TAU_HOME` private: τ refuses to approve a project while `$TAU_HOME` or `trusted.json` is
-writable by other users, and refuses an `extensions/` directory they can write. `tau config set`
+`tau config set`
 and `tau ext enable` rewrite `config.json`: your keys and values stay, and the layout is τ's, so
 hand edits stay valid but your formatting does not survive.
 

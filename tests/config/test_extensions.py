@@ -385,17 +385,14 @@ def test_ext_alone_and_a_failed_json_listing_follow_the_usual_exit_codes(world: 
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows has no mode bits to be writable by others (its drop-in check is not ported)",
+    sys.platform == "win32", reason="Windows has no mode bits to be writable by others"
 )
-def test_a_user_extensions_directory_writable_by_others_is_refused_with_the_chmod(
-    world: World,
-) -> None:
-    user_file(world, "ralph")
+def test_a_user_drop_in_writable_by_group_or_others_loads_like_any_other(world: World) -> None:
+    path = user_file(world, "ralph")
     user_dir(world).chmod(0o777)
+    path.chmod(0o666)
     try:
-        with pytest.raises(ExtensionLoadError, match=r"extensions is writable .*run: chmod go-w"):
-            load_extensions(start(world))
+        assert "ralph" in names(load_extensions(start(world)))
     finally:
         user_dir(world).chmod(0o755)
 
@@ -796,21 +793,6 @@ def test_a_source_that_fails_a_definition_check_is_pinned_to_it(world: World) ->
     row = rows(world)["typo"]
     assert row["state"] == "failed"
     assert "DefinitionError: extension 'typo': `pre_stp` is not a hook point" in str(row["detail"])
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows has no mode bits to be writable by others (its drop-in check is not ported)",
-)
-def test_a_user_drop_in_directory_writable_by_others_is_refused_with_the_chmod(
-    world: World,
-) -> None:
-    path = user_file(world, "ralph")
-    path.chmod(0o666)
-    with pytest.raises(ExtensionLoadError, match=r"writable by group or others .*run: chmod go-w"):
-        load_extensions(start(world))
-    path.chmod(0o644)
-    names(load_extensions(start(world)))
 
 
 def test_a_failed_start_leaves_nothing_on_disk(world: World) -> None:
