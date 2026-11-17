@@ -181,7 +181,7 @@ reaches them:
 | `pre_step` | the step begins | nothing |
 | `pre_input` | once for each pending input, before it becomes a `User` node | `draft`: the node about to be written |
 | `pre_sample` | before the model is asked | `draft` (setting it answers the sample yourself, with no model call) and `tools`, the names of the tools to offer (`None`: all) |
-| `pre_reply` | the reply came back, before it is written | `draft`: the `Assistant` node about to be written |
+| `pre_reply` | the reply came back, before it is written | `draft`: the `Assistant` node about to be written (a hook that changes its `by` from the provider's makes it a reply `usage` no longer counts) |
 | `post_reply` | the reply is in the tree (not run if `pre_reply` left no draft: nothing was written) | `node`: that node |
 | `pre_tool` | once for each tool call, before it runs | `call`: a `CallDraft` |
 | `pre_result` | once for each tool call, after it ran | `call`, with its `outcome` |
@@ -202,6 +202,10 @@ Hooks run in the order the extensions load. A cursor hook acts on its own cursor
 cursor, change `subject.draft` (assign a new `Draft`, or `None` to write nothing), and turn
 auto-step on or off with `set_auto`. Core checks only that the tree stays valid; it does not
 limit what a hook changes. Do not keep a handle after the hook returns: it stops working.
+
+A sample a `pre_sample` draft answers may be a tool batch (`Stop.Tools` with `Part.Call`s): its
+calls run like the model's, through `pre_tool` (so permissions apply) and `pre_result`, and the
+next sample sees the calls and their results.
 
 A tool hook may rewrite `call.args_raw`, and may set `call.outcome` to an `Ok` or `Err` outcome:
 in `pre_tool` that answers the call and the tool does not run; in `pre_result` it replaces the

@@ -407,6 +407,11 @@ class NodeHandle(TreeHandle):
     and `ask`, which goes to that cursor. Has none of the cursor's own operations.
     """
 
+    id: int
+    """The node that holds the batch being run."""
+    cursor_id: int
+    """The cursor whose batch it is."""
+
     def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
         self,
         session: Session,
@@ -485,6 +490,9 @@ class Cursor(TreeHandle):
     other write and `ask`. Reads still work. Core checks no more than that the
     tree stays valid (no hook edit limits).
     """
+
+    id: int
+    """This cursor's id: what `TreeHandle.cursor` and the client calls take."""
 
     def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
         self,

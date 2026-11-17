@@ -8,12 +8,16 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from fakes import FAKE_PROVIDER, FakeProvider, Gate, Reply
+from fakes import FAKE_PROVIDER, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
 
 from tau import (
+    Author,
+    Body,
     ConfigError,
     Cursor,
+    Draft,
+    Ending,
     Model,
     ModelCatalog,
     Part,
@@ -117,12 +121,14 @@ async def test_a_server_that_reports_no_cache_has_no_cached_share(tmp_path: Path
 
 
 @scenario
-async def test_a_reply_with_no_usage_says_so_and_costs_nothing(tmp_path: Path) -> None:
+async def test_a_reply_with_no_usage_says_so_and_is_not_in_the_totals(tmp_path: Path) -> None:
     h = await session(tmp_path, [reply()], catalog(a={"price": PRICE}))
     await say(h)
     assert await line(h) == "a reported no usage"
     assert await h.run("usage") == (
-        "no replies yet\n1 reply reported no usage and not counted\n" + COUNTS
+        "no replies yet\n1 reply reported no usage and not counted\n"
+        "~<$0.001 estimated for 1 reply that reported no usage "
+        "(counted toward max_usd, not in the totals above)\n" + COUNTS
     )
     await h.close()
 
@@ -384,7 +390,9 @@ async def test_an_aborted_reply_is_said_to_be_aborted_and_counted_apart(tmp_path
     await h.settle()
     assert await line(h) == "a reply was aborted and reported no usage"
     assert await h.run("usage") == (
-        "no replies yet\n1 reply was aborted and reported no usage\n" + COUNTS
+        "no replies yet\n1 reply was aborted and reported no usage\n"
+        "~<$0.001 estimated for 1 reply that reported no usage "
+        "(counted toward max_usd, not in the totals above)\n" + COUNTS
     )
     await h.close()
 
@@ -569,4 +577,285 @@ async def test_usage_says_nothing_of_a_window_that_agrees(tmp_path: Path) -> Non
     text = await h.run("usage")
     assert text is not None
     assert "window" not in text
+    await h.close()
+
+
+class Answers:
+    """Answers the first sample itself, as an extension, so the provider is never asked."""
+
+    name = "answers"
+
+    def __init__(self) -> None:
+        self.first = True
+
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> None:
+        if self.first:
+            self.first = False
+            body = Body.Assistant([Part.Text("canned")], Stop.End)
+            subject.draft = Draft(body, [], Author.Extension(self.name))
+
+
+@scenario
+async def test_a_reply_an_extension_answered_is_not_a_sample_that_reported_no_usage(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(1000, 100)]),
+        extensions=[Usage(), Answers()],
+        catalog=catalog(a={"price": PRICE}),
+        config=model_config("a"),
+    )
+    await say(h)
+    assert "usage" not in dict((await h.view()).shown), "no status line for a reply never billed"
+    assert await h.run("usage") == "no replies yet\n" + COUNTS
+    await say(h)
+    table = await h.run("usage")
+    assert table is not None
+    assert table.splitlines()[1].split()[:2] == ["a", "1"], "only the provider's reply counts"
+    assert "reported no usage" not in table
+    await h.close()
+
+
+# The budget: `max_usd`
+
+DOLLAR = {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}  # per million tokens
+
+
+def dollar(text: str = "ok") -> Reply:
+    """A reply that cost exactly $1 at the `DOLLAR` price."""
+    return reply(1_000_000, 0, text=text)
+
+
+@scenario
+async def test_with_no_max_usd_nothing_is_limited(tmp_path: Path) -> None:
+    h = await session(tmp_path, [dollar() for _ in range(3)], catalog(a={"price": DOLLAR}))
+    await say(h, 3)
+    assert h.notices() == []
+    assert (await h.view()).ending == Ending.Done()
+    await h.close()
+
+
+@scenario
+async def test_new_input_is_refused_once_the_budget_is_spent(tmp_path: Path) -> None:
+    provider = FakeProvider([dollar() for _ in range(3)])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 1.5})
+    await say(h, 2)  # $1.00 is under $1.50, so the second goes through: $2.00 spent
+    assert len(provider.requests) == 2
+    assert h.notices() == []
+    await say(h)
+    assert len(provider.requests) == 2, "the third prompt never reached the provider"
+    assert any("budget: $2.00 of $1.50" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_a_tool_loop_halts_at_the_next_sample_once_spend_reached_the_limit(
+    tmp_path: Path,
+) -> None:
+    call = Reply([Part.Call("c", "read", "{}")], Stop.Tools, meta=dollar().meta)
+    tool = FakeTool("read", "r")
+    provider = FakeProvider([call, call, dollar()])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        tools=[tool],
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 0.5})
+    await say(h)
+    assert len(provider.requests) == 1, "the first reply cost $1: no second sample"
+    assert len(tool.calls) == 1, "the tools of that reply still ran"
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.50")
+    await h.close()
+
+
+@scenario
+async def test_raising_max_usd_lets_the_user_go_on_and_resume_a_halted_loop(
+    tmp_path: Path,
+) -> None:
+    call = Reply([Part.Call("c", "read", "{}")], Stop.Tools, meta=dollar().meta)
+    tool = FakeTool("read", "r")
+    provider = FakeProvider([call, dollar("done"), dollar("again")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        tools=[tool],
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 1})
+    await say(h)
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $1.00")
+    assert len(provider.requests) == 1
+    await h.configure("usage", {"max_usd": 3})
+    await h.set_auto(True)  # resume the halted loop: the tool result goes to the model
+    await h.settle()
+    assert len(provider.requests) == 2, "the loop went on"
+    assert (await h.view()).ending == Ending.Done()
+    await say(h)  # $2.00 of $3.00: new input is taken again
+    assert len(provider.requests) == 3
+    await h.close()
+
+
+@scenario
+async def test_a_model_with_no_price_cannot_be_held_to_a_budget_and_says_what_to_do(
+    tmp_path: Path,
+) -> None:
+    h = await session(tmp_path, [reply(10, 10)], catalog(a={}))
+    await h.configure("usage", {"max_usd": 5})
+    await say(h)
+    assert h.provider.requests == [], "nothing was sampled: its cost cannot be known"
+    assert h.notices() == ["budget: no price for model a, set its price or unset usage.max_usd"]
+    await h.close()
+
+
+@scenario
+async def test_a_reply_of_a_model_with_no_price_is_never_counted_as_free(tmp_path: Path) -> None:
+    cat = catalog(a={}, b={"price": DOLLAR})
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(10, 10), dollar()]),
+        extensions=[Usage(), Switch("b")],
+        catalog=cat,
+        config=model_config("a"),
+    )
+    await say(h)  # the first reply is a's, unpriced; no budget yet
+    await h.configure("usage", {"max_usd": 5})
+    await say(h)
+    assert len(h.provider.requests) == 1
+    assert any("no price for model a" in n for n in h.notices())
+    await h.close()
+
+
+BIG = "x" * 40_000  # about 40,000 tokens at one per byte: $0.04 at DOLLAR
+
+
+@scenario
+async def test_a_finished_reply_with_no_usage_is_estimated_for_the_budget(tmp_path: Path) -> None:
+    provider = FakeProvider([reply(text=BIG), reply(text="ok")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await say(h)  # no budget yet: only /usage says it is estimated
+    assert h.notices() == []
+    table = await h.run("usage")
+    assert table is not None
+    assert "~$0.040 estimated for 1 reply that reported no usage" in table
+    await h.configure("usage", {"max_usd": 0.03})
+    await say(h)
+    assert len(provider.requests) == 1, "an estimated $0.040 is over $0.03"
+    (notice,) = h.notices()
+    assert notice.startswith("budget: $0.04 of $0.03")
+    await h.configure("usage", {"max_usd": 1})
+    await say(h)
+    assert len(provider.requests) == 2, "under the raised limit it goes on"
+    await h.close()
+
+
+@scenario
+async def test_an_aborted_reply_is_estimated_and_lets_work_continue_under_the_limit(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+    cut = Reply([Part.Text(BIG), Part.Text("more")], Stop.End, gate=gate, gate_after=1)
+    provider = FakeProvider([cut, reply(text="ok")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await h.configure("usage", {"max_usd": 1})
+    await h.send("go")
+    await h.until(lambda: gate.held == 1)
+    await h.abort()
+    await h.settle()
+    await say(h)
+    assert len(provider.requests) == 2, "an aborted reply is estimated, not a lock"
+    assert h.notices() == []
+    await h.configure("usage", {"max_usd": 0.03})
+    await say(h)
+    assert len(provider.requests) == 2
+    assert h.notices()[-1].startswith("budget: $0.08 of $0.03"), "the second reply too"
+    await h.close()
+
+
+@scenario
+async def test_a_later_reply_that_reports_usage_corrects_the_estimate(tmp_path: Path) -> None:
+    """A reports 100 in and 10 out. B reports nothing; its text is estimated at 40 tokens. C
+    reports 270 in, so the 160 it holds beyond A's 110 are the three nodes between: the two
+    messages (estimated 20 each) and B (40), split in proportion, B's share 80. At $1 per output
+    token the estimate in dollars is B's output."""
+    price = {"input": 0, "output": 1_000_000, "cache_read": 0, "cache_write": 0}
+    h = await session(
+        tmp_path,
+        [reply(100, 10), reply(text="t" * 24), reply(270, 20)],
+        catalog(a={"price": price}),
+    )
+
+    async def estimated() -> str:
+        table = await h.run("usage")
+        assert table is not None
+        (note,) = [t for t in table.splitlines() if "estimated for" in t]
+        return note.split()[0]
+
+    await say(h, 2)
+    assert await estimated() == "~$40.00"
+    await say(h)
+    assert await estimated() == "~$80.00", "C's input says B's output was more"
+    await h.close()
+
+
+@scenario
+async def test_with_no_max_usd_a_reply_that_reported_no_usage_limits_nothing(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider([reply(), reply(text="ok")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Usage()],
+        catalog=catalog(a={"price": DOLLAR}),
+        config=model_config("a"),
+    )
+    await say(h, 2)
+    assert len(provider.requests) == 2
+    assert h.notices() == []
+    await h.close()
+
+
+@scenario
+async def test_the_budget_line_shows_two_decimals_and_more_only_to_be_nonzero(
+    tmp_path: Path,
+) -> None:
+    h = await session(tmp_path, [reply(1000, 0)], catalog(a={"price": DOLLAR}))
+    await h.configure("usage", {"max_usd": 0.0004})
+    await say(h, 2)
+    assert h.notices() == ["budget: $0.001 of $0.0004"]
+    await h.close()
+
+
+@scenario
+async def test_max_usd_is_checked_when_set(tmp_path: Path) -> None:
+    h = await session(tmp_path, [], catalog(a={"price": DOLLAR}))
+    with pytest.raises(ConfigError):
+        await h.configure("usage", {"max_usd": -1})
+    with pytest.raises(ConfigError):
+        await h.configure("usage", {"max_usd": "lots"})
     await h.close()

@@ -481,6 +481,7 @@ stay as weak as they are (or `None`).
 
 ```python
 class Cursor(TreeHandle)
+    id: int
 ```
 
 What a cursor hook acts through: one cursor, bound to its extension.
@@ -775,6 +776,8 @@ A model name that is configured; a frontend offers the catalog.
 
 ```python
 class NodeHandle(TreeHandle)
+    id: int
+    cursor_id: int
 ```
 
 What a tool hook acts through: the batch's node, bound to its extension.
@@ -1486,10 +1489,28 @@ def __init__(self) -> None
 ### Usage.usage
 
 ```python
-def usage(self, tree: TreeHandle) -> str
+async def usage(self, tree: TreeHandle) -> str
 ```
 
 What this session has spent: one row per model, and a total.
+
+### Usage.pre_input
+
+```python
+async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Refuse new input once the budget (`max_usd`) is spent.
+
+### Usage.pre_sample
+
+```python
+async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
+before user extensions, so a hook that would have answered the sample for free is halted
+too.
 
 ### Usage.post_reply
 

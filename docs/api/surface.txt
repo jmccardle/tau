@@ -93,6 +93,7 @@ class CounterAnswer
     why: str | None = None
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
+    id: int
     def models(self) -> tuple[str, ...]
     def move(self, to: int) -> None
     def node(self, id: int | None = None) -> Node
@@ -133,6 +134,8 @@ LabelName = NewType('LabelName', str)
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
+    cursor_id: int
+    id: int
     property node: Node
     def options(self) -> Any
     def save_options(self, **changes: object) -> None
@@ -245,7 +248,9 @@ class Usage
     name = 'usage'
     options = Options
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
-    def usage(self, tree: TreeHandle) -> str
+    async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
+    async def usage(self, tree: TreeHandle) -> str
 def calibration_features(body: Body) -> list[float]
 
 == tools: Tools

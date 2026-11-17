@@ -315,6 +315,44 @@ prompt that went at full price. It is about money, so only a model with a `price
 `--set usage.cache_notice=false` silences it, and
 `tau ext disable usage` removes all of this.
 
+A reply an extension wrote in place of a sample (a `pre_sample` draft) was never billed, and is
+not counted.
+
+### A spending limit
+
+`--set usage.max_usd=5` (or `max_usd = 5` under `[extensions.usage]`, or `/config usage`) stops the
+session at $5 of spend, the total `/usage` shows for the whole tree. Unset, the default, there is
+no limit. Once the spend reaches it, new input is refused and a running tool loop halts before its
+next request, both with `budget: $5.00 of $5.00`.
+
+Like every option, `max_usd` is read at the cursor's position: `/config usage` sets it for the
+branch you are on, and a branch you start elsewhere in the tree does not have it (it still counts
+all of the session's spend, though). To cover every branch, set it in your config
+(`tau config set usage.max_usd=5`, or `--set usage.max_usd=5` for one run).
+
+To go on after a halt, raise the limit (`/config usage`, or `tau config set`) and turn auto-step
+back on: a halt turns it off, and the tool results already in the tree go to the model on the
+next step. New input is accepted again as soon as the limit is above the spend.
+
+The hooks that refuse run before the ones you write, so a hook of yours that would answer a sample
+for nothing is halted too. A reply a `pre_reply` hook re-attributes (changes its `by` from the
+provider) is not counted as spend.
+
+A reply that reported no usage (a provider that sends none, or a reply you cut off with Esc) is
+not free. τ estimates it: the request it answered from the counts of the walk (what `/usage`
+and the compaction limits use: the server's own report for the prefix, the `tokens` extension's
+count or the node's byte ceiling for what is new) and its output from the text it did produce,
+priced at its model. The estimate leans high, so a limit errs towards having spent. When a later
+reply reports its usage, τ corrects the estimate: the input that reply holds beyond the earlier
+reply's (its input and output) is what the messages, results and unreported replies between them
+cost, and it is split among them in proportion to their estimates. Nothing is rewritten; the
+correction is worked out whenever the spend is read. `/usage` shows the estimate on its own line
+(`~$0.04 estimated for 2 replies that reported no usage (counted toward max_usd, not in the totals above)`) and keeps it out of its totals.
+
+A limit needs prices. If a model the session uses has no `price`, τ cannot estimate what it
+spent, and refuses rather than count it as free: `budget: no price for model local:qwen, set its
+price or unset usage.max_usd`.
+
 `tau -p --verbose` prints the same line to stderr (`tau: usage: …`) whenever it changes, as it does
 for any extension that shows a line.
 
