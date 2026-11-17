@@ -196,6 +196,10 @@ class TreeScreen(TauDialog[TreeIntent | None]):
         self._redraw()
 
     def _place(self, node_id: int, key: Key | None = None) -> None:
+        """Highlight the row for `node_id`, once the rows are laid out. A redraw asks for this
+        when it begins, and the person may have pressed `f` since: following is read now."""
+        if self._following:
+            node_id, key = self._rows.viewed_at, None
         self._rows.place(node_id, key)
         self._show_highlighted()
         if self._redrawing is not None:
