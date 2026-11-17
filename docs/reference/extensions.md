@@ -481,6 +481,7 @@ stay as weak as they are (or `None`).
 
 ```python
 class Cursor(TreeHandle)
+    id: int
 ```
 
 What a cursor hook acts through: one cursor, bound to its extension.
@@ -775,6 +776,8 @@ A model name that is configured; a frontend offers the catalog.
 
 ```python
 class NodeHandle(TreeHandle)
+    id: int
+    cursor_id: int
 ```
 
 What a tool hook acts through: the batch's node, bound to its extension.

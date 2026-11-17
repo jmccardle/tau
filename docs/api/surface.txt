@@ -93,6 +93,7 @@ class CounterAnswer
     why: str | None = None
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
+    id: int
     def models(self) -> tuple[str, ...]
     def move(self, to: int) -> None
     def node(self, id: int | None = None) -> Node
@@ -133,6 +134,8 @@ LabelName = NewType('LabelName', str)
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
+    cursor_id: int
+    id: int
     property node: Node
     def options(self) -> Any
     def save_options(self, **changes: object) -> None
