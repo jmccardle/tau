@@ -90,6 +90,7 @@ max-complexity = 15
 "unittest.mock".msg = "Rule 4: fakes live at the effect boundary (FakeProvider, FakeTool), not in patches."
 
 [tool.ruff.lint.per-file-ignores]
+"demo/**" = ["E501", "PLW1510", "PLR2004"]  # scripts that drive other programs; long tmux format strings
 "tests/**" = ["PLR2004"]
 "a2a/tests/**" = ["PLR2004", "PT018"]
 "tests/tokens/**" = ["PLR2004", "RUF001"]  # text in many scripts is what a tokenizer is tested on
