@@ -12,8 +12,11 @@ from fakes import FAKE_PROVIDER, FakeProvider, Gate, Reply
 from harness import Harness, scenario
 
 from tau import (
+    Author,
+    Body,
     ConfigError,
     Cursor,
+    Draft,
     Model,
     ModelCatalog,
     Part,
@@ -569,4 +572,41 @@ async def test_usage_says_nothing_of_a_window_that_agrees(tmp_path: Path) -> Non
     text = await h.run("usage")
     assert text is not None
     assert "window" not in text
+    await h.close()
+
+
+class Answers:
+    """Answers the first sample itself, as an extension, so the provider is never asked."""
+
+    name = "answers"
+
+    def __init__(self) -> None:
+        self.first = True
+
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> None:
+        if self.first:
+            self.first = False
+            body = Body.Assistant([Part.Text("canned")], Stop.End)
+            subject.draft = Draft(body, [], Author.Extension(self.name))
+
+
+@scenario
+async def test_a_reply_an_extension_answered_is_not_a_sample_that_reported_no_usage(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(1000, 100)]),
+        extensions=[Usage(), Answers()],
+        catalog=catalog(a={"price": PRICE}),
+        config=model_config("a"),
+    )
+    await say(h)
+    assert "usage" not in dict((await h.view()).shown), "no status line for a reply never billed"
+    assert await h.run("usage") == "no replies yet\n" + COUNTS
+    await say(h)
+    table = await h.run("usage")
+    assert table is not None
+    assert table.splitlines()[1].split()[:2] == ["a", "1"], "only the provider's reply counts"
+    assert "reported no usage" not in table
     await h.close()

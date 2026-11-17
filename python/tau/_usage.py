@@ -29,7 +29,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, cast
 
 from tau._config import ConfigError, ModelConfig, Price
-from tau._core import Body, Node, Stop
+from tau._core import Author, Body, Node, Stop
 from tau._counts import Basis, Count
 from tau._handles import Cursor, Subject, TreeHandle
 
@@ -133,11 +133,14 @@ def _read_fields(node: int, fields: dict[str, object]) -> Reading:
 
 
 def counted(node: Node) -> bool:
-    """Whether `node`'s reply counts toward usage: a reply that is not a copy
-    (`node.copied_from is None`) and not rewritten from another (`derived_from`: a pruned reply
-    keeps the `meta` of the sample it came from). This is the one place the rule lives."""
+    """Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
+    `Author.Provider()`: an extension's answer to a sample reported no usage because it was never
+    billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
+    (`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
+    place the rule lives."""
     return (
         isinstance(node.body, Body.Assistant)
+        and node.by == Author.Provider()
         and node.copied_from is None
         and node.derived_from is None
     )
