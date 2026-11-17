@@ -29,7 +29,8 @@ Sibling projects are clients of τ and sync with it after 0.16.0:
 3. Banned identifiers and docstring words (lint in CI): `lane`, `suspension`, `suspend`, `responder`, `side_entry`, `incomplete`, `default_leaf`, `acting_cursor`, `head` (as a frontend), `frame`, `entry` (use `node`), `backend` (use `provider` or `frontend`), `fork` for anything in-session (use `branch`).
 4. Tests go through the `Harness` protocol, the public Python API (what `docs/api/groups.toml` lists: `tau`'s exports, and the four public modules `tau.cli`, `tau.commandline`, `tau.tui` and `tau.trace`), or the files and wire formats those read. Every other module is private, and its name starts with an underscore (`_trust`, `_events`, `_driver`, ...); `scripts/api_docs.py --check` fails when one does not. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
 5. Each phase ends with a stop for review. Do not start the next phase without sign-off.
-6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
+6. Diagrams are generated from code after Phase 3, and regenerated and compared in CI as an
+   advisory check (a difference warns, never fails). Hand-drawn diagrams exist only in Phase 1.
 7. Ratchet in CI from Phase 3, over `crates/*/src` and `python/tau` (src, not
    tests; Python measured with radon): max function CC ≤ 15, no file over 800 lines,
    banned-term count 0, I7 property test green. A type past 25 methods either

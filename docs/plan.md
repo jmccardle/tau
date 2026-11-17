@@ -197,7 +197,7 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     `cargo llvm-cov` (for coverage.py), dead code denied plus `cargo machete`
     (for vulture), `cargo-modules` and `cargo depgraph` (for grimp/`deps.py`),
     `guppy` for "tau-core depends on no IO" as a check;
-  - generated diagrams, diffed in CI (rule 6): the step's position graph
+  - generated diagrams, regenerated and compared in CI as an advisory check (rule 6): the step's position graph
     and the frontend-call refusals, recorded by driving the scenario tests
     (not `next`, which is a three-row table); `Body`/`Node`/`Session`/`Machine`
     from a small `syn` script (for `uml.py`);

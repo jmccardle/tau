@@ -21,6 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "crates" / "tau-core" / "tests"
+# What pytest_scenario.py names the time between two tests.
+BETWEEN = "py::(between tests)"
 ENDINGS = ("Done", "Halted", "Failed", "Aborted")
 
 # What each position is, in words.
@@ -119,6 +121,8 @@ def read_logs(logs: list[Path]) -> list[tuple[str, str, str, str, str]]:
             if not line.startswith("TAU-TRANSITION\t"):
                 continue
             _, scenario, kind, src, event, dst = line.split("\t")
+            if scenario == BETWEEN:  # a thread outliving its test: charged to no test
+                continue
             seen.add((prefix + scenario, kind, src, event, dst))
     return sorted(seen)
 
