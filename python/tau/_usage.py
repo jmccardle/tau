@@ -19,7 +19,7 @@ write copies) is counted once, as its original: `counted` is that rule.
 
 The budget: with `max_usd` set (unset: no limit), once the session's spend (the total above) reaches
 it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its next sample, both
-with `budget: $X of $Y spent`. A reply that reported no usage (a finished one, or one an abort
+with `budget: $X of $Y`. A reply that reported no usage (a finished one, or one an abort
 cut) is estimated, never counted as free: its input is what `count` says the request it answered
 cost and its output what `count` says its own node costs, both at `upper` (the `counter`
 extension's count where there is one, else the byte ceiling), priced at its model. When a later
@@ -247,6 +247,7 @@ class _Row:
     aborted: int = 0  # replies that were aborted, and reported none
     problems: list[str] = field(default_factory=lambda: [])  # why some reported none
     spent: Decimal = Decimal(0)
+    estimates: int = 0  # how many replies are estimated
     guessed: Decimal = Decimal(0)  # what the replies that reported none are estimated to cost
     priced: bool = False
     configured: bool = True
@@ -268,6 +269,7 @@ class _Row:
             if problem is not None:
                 self.problems.append(problem)
             if price is not None and guess is not None:
+                self.estimates += 1
                 self.guessed += cost(Reading(guess[0], guess[1], None, None), price)
             return
         self.samples += 1
@@ -347,7 +349,7 @@ class Usage:
             named = ", ".join(unpriced)
             return f"budget: no price for model {named}, set its price or unset usage.max_usd"
         spent = sum((r.spent + r.guessed for r in rows.values()), Decimal(0))
-        return f"budget: {money(spent)} of {_limit(cap)} spent" if spent >= cap else None
+        return f"budget: {_dollars(spent)} of {_dollars(cap)}" if spent >= cap else None
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
         """Show the reply's counts on the cursor, and tell the clients if it missed the cache."""
@@ -514,11 +516,14 @@ def _read(node: Node) -> tuple[Reading | None, str | None]:
         return None, str(e)
 
 
-def _limit(cap: Decimal) -> str:
-    """The limit as the user wrote it: two decimals (`$0.50`), or all of them if it has more
-    (`$0.005`)."""
-    cents = cap.quantize(Decimal("0.01"))
-    return f"${cents}" if cents == cap else f"${cap.normalize():f}"
+def _dollars(amount: Decimal) -> str:
+    """`amount` in dollars for the budget line: two decimals (`$0.42`), and more only where two
+    would show a nonzero amount as `$0.00` (`$0.003`)."""
+    for places in range(2, 12):
+        shown = amount.quantize(Decimal(1).scaleb(-places), ROUND_HALF_UP)
+        if shown > 0 or amount == 0:
+            return f"${shown}"
+    return f"${amount:f}"
 
 
 def _priced(tree: TreeHandle, model: str) -> bool:
@@ -614,5 +619,10 @@ def _silent(rows: Iterable[_Row]) -> str:
         text += f"\n{cut} {who} aborted and reported no usage"
     guessed = sum((row.guessed for row in rows), Decimal(0))
     if guessed:
-        text += f"\n~{money(guessed)} of cost estimated for them: in max_usd, not in these totals"
+        n = sum(row.estimates for row in rows)
+        who = "reply that reported" if n == 1 else "replies that reported"
+        text += (
+            f"\n~{money(guessed)} estimated for {n} {who} no usage "
+            "(counted toward max_usd, not in the totals above)"
+        )
     return text

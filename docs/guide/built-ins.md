@@ -323,7 +323,7 @@ not counted.
 `--set usage.max_usd=5` (or `max_usd = 5` under `[extensions.usage]`, or `/config usage`) stops the
 session at $5 of spend, the total `/usage` shows for the whole tree. Unset, the default, there is
 no limit. Once the spend reaches it, new input is refused and a running tool loop halts before its
-next request, both with `budget: $5.00 of $5.00 spent`.
+next request, both with `budget: $5.00 of $5.00`.
 
 Like every option, `max_usd` is read at the cursor's position: `/config usage` sets it for the
 branch you are on, and a branch you start elsewhere in the tree does not have it (it still counts
@@ -347,7 +347,7 @@ reply reports its usage, τ corrects the estimate: the input that reply holds be
 reply's (its input and output) is what the messages, results and unreported replies between them
 cost, and it is split among them in proportion to their estimates. Nothing is rewritten; the
 correction is worked out whenever the spend is read. `/usage` shows the estimate on its own line
-(`~$0.04 of cost estimated for them`) and keeps it out of its totals.
+(`~$0.04 estimated for 2 replies that reported no usage (counted toward max_usd, not in the totals above)`) and keeps it out of its totals.
 
 A limit needs prices. If a model the session uses has no `price`, τ cannot estimate what it
 spent, and refuses rather than count it as free: `budget: no price for model local:qwen, set its

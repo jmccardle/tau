@@ -861,7 +861,7 @@ one rule (`copied_from` and `derived_from` both unset, `by` is `Provider`). The 
 option `max_usd` (dollars; unset: none; read at the cursor's position like any option, so `save`
 or the user config covers every branch): once the session's whole-tree spend, the same total as
 above, reaches it, `pre_input` refuses new input and `pre_sample` halts a tool loop before its
-next sample, both with `budget: $X of $Y spent`. A reply that reported no usage (finished, or cut by an abort) is **estimated**, never free: its
+next sample, both with `budget: $X of $Y`. A reply that reported no usage (finished, or cut by an abort) is **estimated**, never free: its
 input is `count` of the walk to its parent and its output `count` of its own node, both `upper` (the
 counter's count, else the byte ceiling), priced at its model. A later reply that reports usage
 corrects it: the input it holds beyond the nearest earlier reporting reply's input and output is the

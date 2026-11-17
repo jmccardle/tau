@@ -127,7 +127,8 @@ async def test_a_reply_with_no_usage_says_so_and_is_not_in_the_totals(tmp_path: 
     assert await line(h) == "a reported no usage"
     assert await h.run("usage") == (
         "no replies yet\n1 reply reported no usage and not counted\n"
-        "~<$0.001 of cost estimated for them: in max_usd, not in these totals\n" + COUNTS
+        "~<$0.001 estimated for 1 reply that reported no usage "
+        "(counted toward max_usd, not in the totals above)\n" + COUNTS
     )
     await h.close()
 
@@ -390,7 +391,8 @@ async def test_an_aborted_reply_is_said_to_be_aborted_and_counted_apart(tmp_path
     assert await line(h) == "a reply was aborted and reported no usage"
     assert await h.run("usage") == (
         "no replies yet\n1 reply was aborted and reported no usage\n"
-        "~<$0.001 of cost estimated for them: in max_usd, not in these totals\n" + COUNTS
+        "~<$0.001 estimated for 1 reply that reported no usage "
+        "(counted toward max_usd, not in the totals above)\n" + COUNTS
     )
     await h.close()
 
@@ -650,7 +652,7 @@ async def test_new_input_is_refused_once_the_budget_is_spent(tmp_path: Path) -> 
     assert h.notices() == []
     await say(h)
     assert len(provider.requests) == 2, "the third prompt never reached the provider"
-    assert any("budget: $2.00 of $1.50 spent" in n for n in h.notices())
+    assert any("budget: $2.00 of $1.50" in n for n in h.notices())
     await h.close()
 
 
@@ -673,7 +675,7 @@ async def test_a_tool_loop_halts_at_the_next_sample_once_spend_reached_the_limit
     await say(h)
     assert len(provider.requests) == 1, "the first reply cost $1: no second sample"
     assert len(tool.calls) == 1, "the tools of that reply still ran"
-    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.50 spent")
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $0.50")
     await h.close()
 
 
@@ -694,7 +696,7 @@ async def test_raising_max_usd_lets_the_user_go_on_and_resume_a_halted_loop(
     )
     await h.configure("usage", {"max_usd": 1})
     await say(h)
-    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $1.00 spent")
+    assert (await h.view()).ending == Ending.Halted("budget: $1.00 of $1.00")
     assert len(provider.requests) == 1
     await h.configure("usage", {"max_usd": 3})
     await h.set_auto(True)  # resume the halted loop: the tool result goes to the model
@@ -753,12 +755,12 @@ async def test_a_finished_reply_with_no_usage_is_estimated_for_the_budget(tmp_pa
     assert h.notices() == []
     table = await h.run("usage")
     assert table is not None
-    assert "~$0.040 of cost estimated for them" in table
+    assert "~$0.040 estimated for 1 reply that reported no usage" in table
     await h.configure("usage", {"max_usd": 0.03})
     await say(h)
     assert len(provider.requests) == 1, "an estimated $0.040 is over $0.03"
     (notice,) = h.notices()
-    assert notice.startswith("budget: $0.040 of $0.03 spent")
+    assert notice.startswith("budget: $0.04 of $0.03")
     await h.configure("usage", {"max_usd": 1})
     await say(h)
     assert len(provider.requests) == 2, "under the raised limit it goes on"
@@ -790,7 +792,7 @@ async def test_an_aborted_reply_is_estimated_and_lets_work_continue_under_the_li
     await h.configure("usage", {"max_usd": 0.03})
     await say(h)
     assert len(provider.requests) == 2
-    assert h.notices()[-1].startswith("budget: $0.080 of $0.03 spent"), "the second reply too"
+    assert h.notices()[-1].startswith("budget: $0.08 of $0.03"), "the second reply too"
     await h.close()
 
 
@@ -810,7 +812,7 @@ async def test_a_later_reply_that_reports_usage_corrects_the_estimate(tmp_path: 
     async def estimated() -> str:
         table = await h.run("usage")
         assert table is not None
-        (note,) = [t for t in table.splitlines() if "of cost estimated" in t]
+        (note,) = [t for t in table.splitlines() if "estimated for" in t]
         return note.split()[0]
 
     await say(h, 2)
@@ -835,6 +837,17 @@ async def test_with_no_max_usd_a_reply_that_reported_no_usage_limits_nothing(
     await say(h, 2)
     assert len(provider.requests) == 2
     assert h.notices() == []
+    await h.close()
+
+
+@scenario
+async def test_the_budget_line_shows_two_decimals_and_more_only_to_be_nonzero(
+    tmp_path: Path,
+) -> None:
+    h = await session(tmp_path, [reply(1000, 0)], catalog(a={"price": DOLLAR}))
+    await h.configure("usage", {"max_usd": 0.0004})
+    await say(h, 2)
+    assert h.notices() == ["budget: $0.001 of $0.0004"]
     await h.close()
 
 
