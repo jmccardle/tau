@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from world import PROVIDERS, URL, Result, World, loaded, models, tau, trust
 
-from tau import TrustError, check_config, load_config
+from tau import TrustError, check_config
 from tau.cli import main
 
 LITERAL = "sk-literal-secret-9f3"
@@ -367,21 +367,6 @@ def test_an_error_cannot_forge_a_second_tau_line(world: World) -> None:
     assert result.err.count("\n") == 1
     assert result.err.startswith("tau: ")
     assert "\r" not in result.err
-
-
-# -- startup refusals show up in check
-
-
-def test_a_writable_trusted_json_is_reported_under_its_own_path(world: World) -> None:
-    root = world.project(config=models(p={}))
-    trust(world, root)
-    state = world.tau / "trusted.json"
-    state.chmod(0o666)
-    result = tau(world, "config", "check", cwd=root)
-    assert result.code == 1
-    assert result.out.startswith(f"{state}: error: ")
-    with pytest.raises(PermissionError):
-        load_config(root, world.environ, ask=None)
 
 
 # -- interruption

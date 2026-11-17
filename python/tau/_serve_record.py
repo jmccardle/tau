@@ -36,7 +36,6 @@ macOS)."""
 PROBE_SECONDS: Final = 2.0
 """How long a probe waits for a `hello` to be answered."""
 _PRIVATE: Final = 0o700
-_OTHERS_WRITE: Final = 0o022
 
 
 @dataclass(frozen=True)
@@ -62,7 +61,7 @@ class ServeRecord:
 
 def serve_directory(home: Path) -> Path:
     """`<home>/serve`, made with mode 700 if it is not there. `TrustError` if it is not a
-    directory of yours that only you can write. `ServeFailed` on Windows, where no server runs
+    directory of yours. `ServeFailed` on Windows, where no server runs
     (`require_unix_sockets`)."""
     try:
         require_unix_sockets("tau serve")
@@ -78,12 +77,6 @@ def serve_directory(home: Path) -> Path:
         raise TrustError(f"{path} is not a directory", path)
     if info.st_uid != os.geteuid():
         raise TrustError(f"{path} is not owned by you (uid {info.st_uid})", path)
-    if stat.S_IMODE(info.st_mode) & _OTHERS_WRITE:
-        raise TrustError(
-            f"{path} is writable by group or others (mode {stat.S_IMODE(info.st_mode):o}); "
-            f"run: chmod 700 {path}",
-            path,
-        )
     return path
 
 

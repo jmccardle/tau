@@ -424,7 +424,9 @@ tau config check
 A project can carry its own extensions in `.tau/extensions/`. They are code that runs with your
 authority, so they load only after you approve the project with `tau trust`. Approval pins the
 exact bytes, and a changed file is untrusted again. `tau ext list` says `untrusted` for them
-until then. [Configuration](configuration.md#projects-and-trust) has the details.
+until then. [Configuration](configuration.md#projects-and-trust) has the details. τ trusts anything
+running as you, including the model's own tools, so to protect your hooks and extensions from being
+changed, run τ in a sandbox where they are read-only.
 
 An installed package can offer extensions through the `tau.extensions` plugin group in its
 `pyproject.toml`. The value is a *module* that follows the same rule, not `module:attribute`:

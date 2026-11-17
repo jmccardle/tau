@@ -234,14 +234,6 @@ def test_a_socket_path_that_is_too_long_fails_naming_socket(home: World) -> None
     assert not list((deep.tau / "sessions").glob("*")), "no session was left behind"
 
 
-def test_the_serve_directory_must_be_private(home: World) -> None:
-    (home.tau / "serve").mkdir()
-    (home.tau / "serve").chmod(0o777)
-    result = serve(home, "-d")
-    assert result.code == 1
-    assert "writable by group or others" in result.err
-
-
 # --stop
 
 

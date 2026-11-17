@@ -93,8 +93,11 @@ would break a command line. A source's **key** obeys the same rule.
 - **Two extensions with one name from different keys**, and **two tools with one name**, stay
   refusals, now naming both sources. Tools are not namespaced: a tool's name is what the model
   calls and the log records.
-- `$TAU_HOME/extensions/`, or a source in it, writable by group or others is refused with the
-  `chmod` to run (D13's existing check, reused).
+- `$TAU_HOME/extensions/` and the sources in it are loaded whatever their mode. *Amended
+  2026-11-16: they were refused when group or others could write them, with the `chmod` to run
+  (D13's check, reused); D13's amendment removes that check. The user's account is the boundary:
+  the model's own tools run as the user and can write a drop-in whatever its mode. To keep
+  extensions unchanged, run τ where they are read-only.*
 
 ### 3. On and off: the `load` key
 

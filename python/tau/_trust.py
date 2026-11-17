@@ -50,7 +50,6 @@ _GITIGNORE = "*\n"
 _PRIVATE = 0o700
 _PRIVATE_FILE = 0o600
 _PUBLIC_FILE = 0o644
-_WRITABLE_BY_OTHERS = 0o022
 _SECRET = "(secret)"
 EXTENSIONS_DIR = "extensions"
 SYSTEM_MD = "SYSTEM.md"
@@ -393,27 +392,12 @@ def _see(root: Path) -> _Seen:
 # -- trusted.json
 
 
-def require_private(path: Path, fix: str) -> None:
-    """`TrustError` if `path` exists and group or others can write it. Windows has no mode bits
-    (its `st_mode` always says 777), and reading its access list is not ported: no refusal there."""
-    if sys.platform == "win32":
-        return
-    with unless_io_fails(path, "inspected"), contextlib.suppress(FileNotFoundError):
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & _WRITABLE_BY_OTHERS:
-            raise refusal(
-                path, f"is writable by group or others (mode {mode:o}); run: {fix} {shown(path)}"
-            )
-
-
 def _trusted_path(home: Path) -> Path:
     return home / "trusted.json"
 
 
 def _approved(home: Path) -> dict[str, _Approval]:
-    require_private(home, "chmod 700")
     path = _trusted_path(home)
-    require_private(path, "chmod 600")
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
