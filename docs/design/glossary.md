@@ -1846,7 +1846,7 @@ usage error (exit 2).
 ### TUI, tau.tui, TauApp
 modules `tau.tui` (public), `tau.tui._app`, `_run`, `_line`, `_forms`, `_fields`, `_chat`,
 `_transcript`, `_editor`, `_status`, `_themes`, `_dialogs`, `_moves`, `_tree`, `_picker`,
-`_switch`, `_choose`, `_palette`, `_windowed`, `_window` · D23 · new (8C-1, 8C-2, 8C-3)
+`_switch`, `_choose`, `_palette`, `_windowed`, `_window`, `_screens` · D23 · new (8C-1, 8C-2, 8C-3)
 
 The Textual frontend. **`tau`** with no `-p` opens it; **`TauApp(client, cursor, *, welcome, home,
 cwd, snapshot=(), theme=None, reconnect=None, sessions=None)`** is the app, a frontend of one
@@ -1891,6 +1891,18 @@ branch) reads `walk(at)` again. The app starts on the first cursor (`Opened.curs
 `TauApp.view(cursor)` switches: it `watch`es the new cursor (so its sample in flight is caught up),
 forgets the old one's live layer, reads the new walk and shows its questions, pending lines and
 status. Closing the viewed cursor moves the view to the lowest open one.
+
+### attached-only screen
+`tau.tui._screens.TauScreen` · D23 · new
+
+The app's default screen (`TauDialog`, every dialog's base, shares its two overrides): a screen that does
+not find a widget which has left the DOM. Textual finds the widget under the pointer from the last
+paint's map, and the transcript removes widgets between paints (a streaming reply's last block, a
+committed reply's live box, a sliding window's blocks). On a mouse down Textual reads the removed
+widget's parent, which is `None`, and crashes. Here a widget that is no longer attached is not under
+the pointer: `get_widget_at` raises `NoWidget` and `get_widget_and_offset_at` answers
+`(None, None)`, which is what Textual answers for a point with nothing at it. `TauApp` names it as
+its `_default` mode's screen.
 
 ### transcript
 `tau.tui._transcript.ChatDisplay` · D23 §2 · new
