@@ -9,6 +9,11 @@ edition = "2024"
 rust-version = "1.89"
 publish = false
 
+# The program is `trusty`: 0.16's code name, kept with the repository as its Rust client.
+[[bin]]
+name = "trusty"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 futures-util = "0.3.34"

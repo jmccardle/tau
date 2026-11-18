@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::*;
 use crate::wire::{Event, WalkResult};
 
-const ME: &str = "tester@host:ratatui";
+const ME: &str = "tester@host:trusty";
 
 /// The server's messages in the order recorded, each as the event or the response it was.
 enum Message {
@@ -166,7 +166,7 @@ fn a_pending_line_is_shown_until_it_is_delivered() {
         match message {
             Message::Event(event) => {
                 model.hear(event);
-                seen_pending |= shown(&model.pending()) == ["tester@host:ratatui (waiting): hello"]
+                seen_pending |= shown(&model.pending()) == ["tester@host:trusty (waiting): hello"]
                     || shown(&model.pending()) == ["you (waiting): hello"];
             }
             Message::Response { id: 3, result } => {

@@ -42,7 +42,7 @@ IDLE_SECONDS = 30.0
 SETTLE = 2.0  # after the open, before the idle window
 CLK = os.sysconf("SC_CLK_TCK")
 CLIENTS = ("0.15", "0.16", "ratatui")
-RATATUI = common.HERE.parent / "examples" / "ratatui" / "target" / "release" / "tau-ratatui"
+RATATUI = common.HERE.parent / "examples" / "ratatui" / "target" / "release" / "trusty"
 STREAM_CHARS = 16000  # ~4000 tokens (a token is four characters in the fake server)
 TOOLS_ANSWER_CHARS = 4000  # ~1000 tokens
 TOOL_CALLS = 20
@@ -714,7 +714,7 @@ def write_results(cells, meta: Meta) -> None:
         "|---|---|---|",
         "| 0.15 | one Python process: driver, providers, tools and Textual UI together | `tau` |",
         "| 0.16 | one Python process: `tau` runs the session in-process, with Textual UI, driver and the Rust core (`tau._core`) in the same process | `tau` |",
-        "| ratatui | two: `tau-ratatui` (Rust, the UI) and the Python `tau serve -d` daemon that runs the session and talks to the model | `ui`, `server` |",
+        "| ratatui | two: `trusty` (Rust, the UI) and the Python `tau serve -d` daemon that runs the session and talks to the model | `ui`, `server` |",
         "",
         "Anything a process spawns is added to its role (as `role/comm`). Not measured: the fake model server, tmux, this script.",
         "",

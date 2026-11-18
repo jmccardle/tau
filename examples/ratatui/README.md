@@ -1,4 +1,4 @@
-# tau-ratatui
+# trusty
 
 A terminal chat client of `tau serve`, written in Rust with [ratatui](https://ratatui.rs). It is
 the first client of τ that is not Python, and it shares no code with τ: it speaks the
@@ -18,7 +18,13 @@ From the repository root (`cargo` must be on your `PATH`; `source ~/.cargo/env`)
 ```bash
 cargo build --release --locked --manifest-path examples/ratatui/Cargo.toml
 tau serve -d                      # a server for this directory's session; prints its socket
-examples/ratatui/target/release/tau-ratatui
+examples/ratatui/target/release/trusty
+```
+
+To put `trusty` on your `PATH` (here `~/.local/bin`, where `uv tool install` puts `tau`):
+
+```bash
+cargo install --locked --path examples/ratatui --root ~/.local
 ```
 
 It finds the server in one of three ways:
@@ -29,7 +35,7 @@ It finds the server in one of three ways:
 | `--session ID` | the server of that session, from its record `$TAU_HOME/serve/ID.json` (`$TAU_HOME` is `~/.tau` unless set) |
 | neither | the one `tau serve` whose session runs in the current directory. A record whose server no longer answers is stale and does not count (as for `tau`; the record is left for `tau` to clean up). If several answer, it lists them and stops; if none, it says so and names `tau serve -d` |
 
-`--client ID` sets the client id (default `user@host:ratatui`), the name other clients see on
+`--client ID` sets the client id (default `user@host:trusty`), the name other clients see on
 what you send. A refused `hello` (a server of another protocol, say) or a connection that cannot
 be made exits with status 1 and the server's own message.
 

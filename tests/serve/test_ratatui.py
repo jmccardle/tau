@@ -136,7 +136,7 @@ def binary() -> Path:
         timeout=1200,  # a cold build takes minutes on a CI runner; a stuck one fails here
     )
     assert built.returncode == 0, built.stderr
-    return MANIFEST.parent / "target" / "debug" / "tau-ratatui"
+    return MANIFEST.parent / "target" / "debug" / "trusty"
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ OPEN: list[Screen] = []
 @pytest.fixture(autouse=True)
 def close_screens() -> Iterator[None]:
     """Whatever a test opened is closed (killed, if still running) however the test ended: no
-    `tau-ratatui` outlives its test."""
+    `trusty` outlives its test."""
     yield
     while OPEN:
         OPEN.pop().close()
@@ -229,7 +229,7 @@ def test_type_a_line_see_the_reply_and_leave_with_the_terminal_restored(
     idle(screen)
     assert f"tau {OLD}" in screen.display().splitlines()[0]
     assert "tester@" in screen.display().splitlines()[0]
-    assert screen.display().splitlines()[0].rstrip().endswith(":ratatui")
+    assert screen.display().splitlines()[0].rstrip().endswith(":trusty")
     screen.type("hello there\r")
     screen.wait_for("assistant: mock: hello there", on_screen=True)
     assert "you: hello there" in screen.display()

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{model::Need, wire::Node};
 
-const ME: &str = "tester@host:ratatui";
+const ME: &str = "tester@host:trusty";
 
 fn node(id: u64, parent: Option<u64>, body: &Value) -> Value {
     json!({"id": id, "parent": parent, "time": 0, "by": {"Frontend": "t"},
