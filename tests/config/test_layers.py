@@ -8,10 +8,10 @@ import json
 import os
 import sys
 from collections.abc import Mapping
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from shipped import shipped
 from world import PROVIDERS, URL, World, tau, trust
 
 from tau import (
@@ -40,6 +40,12 @@ ACCOUNTS = {
         },
     }
 }
+
+
+class Plain:
+    """An extension with no `model_options`."""
+
+    name = "plain"
 
 
 def load(
@@ -520,55 +526,110 @@ def test_bad_max_tokens_and_options_are_problems_at_their_key(tmp_path: Path) ->
 FULL_PRICE = {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
 
 
-def test_context_window_and_price_resolve_to_exact_amounts(world: World) -> None:
+def test_context_window_and_a_models_sections_resolve_to_what_was_written(world: World) -> None:
     config = {
         "models": {
-            "m": {**MODEL, "context_window": 200000, "price": FULL_PRICE},
+            "m": {**MODEL, "context_window": 200000, "usage": {"price": FULL_PRICE}},
             "bare": MODEL,
         }
     }
     catalog = load(world, user=config)
     m, bare = catalog.resolve("m"), catalog.resolve("bare")
     assert m.context_window == 200000
-    assert m.price is not None
-    assert (m.price.input, m.price.cache_read, m.price.cache_write) == (
-        Decimal(3),
-        Decimal("0.3"),
-        Decimal("3.75"),
-    )
-    assert (bare.context_window, bare.price) == (None, None)
+    assert m.sections == {"usage": {"price": FULL_PRICE}}
+    assert (bare.context_window, bare.sections) == (None, {})
 
 
-def test_a_price_merges_by_field_across_layers_and_down_through_groups(world: World) -> None:
-    user = {"models": {"g": {"price": FULL_PRICE, "models": {"m": MODEL}}}}
-    cli = {"models": {"g": {"models": {"m": {"price": {"output": 20}}}}}}
-    price = load(world, user=user, cli=cli).resolve("g:m").price
-    assert price is not None
-    assert (price.input, price.output) == (Decimal(3), Decimal(20))
+def test_sections_inherit_down_groups_and_merge_by_key_across_layers(world: World) -> None:
+    user = {"models": {"g": {"usage": {"price": FULL_PRICE}, "models": {"m": MODEL}}}}
+    cli = {"models": {"g": {"models": {"m": {"usage": {"note": 1}, "other": {"x": 2}}}}}}
+    sections = load(world, user=user, cli=cli).resolve("g:m").sections
+    assert sections == {"usage": {"price": FULL_PRICE, "note": 1}, "other": {"x": 2}}
 
 
-def test_a_price_missing_a_field_is_an_error_naming_it(tmp_path: Path) -> None:
-    for fields in ({"input": 3, "output": 15}, {**FULL_PRICE, "cache_write": None}):
-        config = {"models": {"a": {"model": "a", "provider": "mock", "price": fields}}}
-        problem = only_error(check(tmp_path, config))
-        assert problem.path == "models.a"
-        assert "'price' is missing" in problem.message
-        assert "cache_write" in problem.message
+def test_a_null_inside_a_section_drops_what_a_group_gave(world: World) -> None:
+    user = {"models": {"g": {"usage": {"price": FULL_PRICE}, "models": {"m": MODEL}}}}
+    cli = {"models": {"g": {"models": {"m": {"usage": {"price": None}}}}}}
+    assert load(world, user=user, cli=cli).resolve("g:m").sections == {"usage": {}}
 
 
-def test_a_bad_price_or_context_window_is_a_problem(tmp_path: Path) -> None:
+def test_the_old_top_level_price_is_an_error_naming_where_it_went(tmp_path: Path) -> None:
+    config = {"models": {"g": {"models": {"a": {**MODEL, "price": FULL_PRICE}}}}}
+    problem = only_error(check(tmp_path, config))
+    assert problem.path == "models.g.models.a.price"
+    assert "models.g.models.a.usage.price" in problem.message
+
+
+def test_the_old_top_level_price_cannot_be_loaded(world: World) -> None:
+    with pytest.raises(ConfigError, match=r"models\.a\.usage\.price"):
+        load(world, user={"models": {"a": {**MODEL, "price": FULL_PRICE}}})
+
+
+def test_a_model_key_that_is_not_an_object_and_not_a_model_key_is_an_unknown_key(
+    tmp_path: Path,
+) -> None:
+    problem = only_error(check(tmp_path, {"models": {"a": {**MODEL, "usage": 5}}}))
+    assert problem.path == "models.a.usage"
+    assert "unknown key" in problem.message
+
+
+def test_a_section_its_type_refuses_is_an_error_at_its_path(tmp_path: Path) -> None:
+    usage = [shipped("usage")]
     bad = [
-        ("price", {**FULL_PRICE, "input": -1}, "at least 0"),
-        ("price", {**FULL_PRICE, "input": "3"}, "must be a number"),
-        ("price", {**FULL_PRICE, "input": True}, "must be a number"),
-        ("price", {**FULL_PRICE, "cost": 1}, "unknown keys ['cost']"),
-        ("price", 5, "'price' must be an object"),
-        ("context_window", "big", "'context_window' must be a positive integer"),
-        ("context_window", 0, "'context_window' must be a positive integer"),
+        ({"price": {**FULL_PRICE, "input": -1}}, "at least 0"),
+        ({"price": {**FULL_PRICE, "input": "3"}}, "must be a number"),
+        ({"price": {**FULL_PRICE, "cost": 1}}, "unknown keys ['cost']"),
+        ({"price": {"input": 3, "output": 15}}, "cache_write"),
+        ({"cost": 1}, "no key ['cost']"),
     ]
-    for key, value, message in bad:
-        config = {"models": {"a": {"model": "a", "provider": "mock", key: value}}}
-        assert message in only_error(check(tmp_path, config)).message, (key, value)
+    for section, message in bad:
+        config = {"models": {"a": {**MODEL, "usage": section}}}
+        found = check_config(
+            write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=usage
+        )
+        problem = only_error(found)
+        assert problem.path == "models.a.usage", section
+        assert message in problem.message, (section, problem.message)
+
+
+def test_a_sound_section_is_no_problem(tmp_path: Path) -> None:
+    config = {"models": {"a": {**MODEL, "usage": {"price": FULL_PRICE}}}}
+    found = check_config(
+        write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=[shipped("usage")]
+    )
+    assert found == ()
+
+
+def test_a_section_naming_no_loaded_extension_is_a_warning_not_an_error(tmp_path: Path) -> None:
+    config = {"models": {"a": {**MODEL, "ghost": {"x": 1}}}}
+    found = check_config(
+        write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=[shipped("usage")]
+    )
+    assert errors(found) == []
+    (warning,) = found
+    assert warning.severity == "warning"
+    assert warning.path == "models.a.ghost"
+    assert "ghost" in warning.message
+
+
+def test_a_section_for_an_extension_with_no_model_options_is_a_warning(tmp_path: Path) -> None:
+    config = {"models": {"a": {**MODEL, "plain": {"x": 1}}}}
+    found = check_config(
+        write(tmp_path / "c.json", config),
+        providers=PROVIDERS,
+        extensions=[Plain()],  # pyright: ignore[reportArgumentType]
+    )
+    assert errors(found) == []
+    (warning,) = found
+    assert warning.severity == "warning"
+    assert warning.path == "models.a.plain"
+
+
+def test_a_bad_context_window_is_a_problem(tmp_path: Path) -> None:
+    for value in ("big", 0):
+        config = {"models": {"a": {"model": "a", "provider": "mock", "context_window": value}}}
+        message = "'context_window' must be a positive integer"
+        assert message in only_error(check(tmp_path, config)).message, value
 
 
 def test_an_invalid_group_value_is_not_repeated_as_missing_on_each_model(tmp_path: Path) -> None:

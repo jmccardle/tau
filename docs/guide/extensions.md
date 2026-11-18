@@ -197,7 +197,8 @@ What a hook returns:
 - An exception fails the step (a tool hook: that one call). The cursor's `CursorView` carries the
   error, the traceback goes to standard error, and the driver goes on.
 
-Hooks run in the order the extensions load. A cursor hook acts on its own cursor, through the
+At one point the hooks run in hook order (next section): the order the extensions load, unless an
+extension or the config sets one. A cursor hook acts on its own cursor, through the
 `cursor` it is given. It may read the tree, `write` a node under the cursor's `at`, `move` the
 cursor, change `subject.draft` (assign a new `Draft`, or `None` to write nothing), and turn
 auto-step on or off with `set_auto`. Core checks only that the tree stays valid; it does not
@@ -213,6 +214,42 @@ result.
 
 Cursors talk to each other through the scratchpad. `cursor.send(to, text)` adds an input for
 another cursor, written by your extension; `cursor.add_item` leaves a note of your own for it.
+
+## Hook order
+
+At each point the first hook that returns a string halts the rest, and every hook works on the
+same draft, so which extension runs first matters. Each hook has an **order**, an integer
+(default 0), and the hooks at a point run lowest first. Hooks with the same order run in load
+order, so with no order set anywhere nothing changes.
+
+An extension declares its own with an `order` attribute: an `int` for every hook it has, or a
+mapping from hook point to `int` for some of them.
+
+```python skip
+class Budget:
+    name = "budget"
+    order = {"pre_input": -100, "pre_sample": -100, "post_reply": 100}
+```
+
+The conventional values are -100 for a **guard** (a hook that halts: a budget, a permission, a
+limit), 0 for an edit of the draft, the call or the line, and +100 for an **observer** (a hook that
+only records or shows what happened). Any integer works.
+
+The config overrides the declaration: `extensions.NAME.order` is an integer (all the extension's
+hooks) or an object from hook point to integer (those hooks; the rest keep what the extension
+declared). `tau config set shouter.order.pre_input=-100` writes it, and `--set shouter.order=50`
+sets it for one run. A `Config` node cannot: the order is
+fixed when the session starts, so it is the same on every branch. A value that is not an integer,
+a hook the extension does not have, or an integer for an extension with no hooks is an error in
+`tau config check` and stops every start.
+
+`tau ext list --hooks` prints each hook point that has a hook, with its extensions in the order
+they run and each one's number; a number the config set says `(config)`. `--json` prints one
+object per point instead. `tau config check` prints the same table.
+
+```bash
+tau ext list --hooks
+```
 
 ## Showing a status
 
@@ -392,7 +429,7 @@ string) is itself the extension; otherwise it must define `extensions = [...]`**
 list of extension objects, added in order. A name is ASCII letters, digits, `_` and `-`: a `:` would
 break `/shouter:count`, and a `.` would break `tau config set shouter.max_chars=80`.
 
-The places an extension can come from, in the order they load (the order hooks run in). A
+The places an extension can come from, in the order they load (hooks with the same order run in it; see Hook order). A
 **drop-in** is a `.py` file or a package directory in an `extensions/` directory; names starting
 with `.` or `_` are ignored.
 

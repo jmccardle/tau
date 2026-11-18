@@ -104,7 +104,7 @@ id = "config"
 title = "Configuration and context"
 reader = "Models, the config files, trust, extension loading, the system prompt."
 names = [
-    "ModelConfig", "Price", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
+    "ModelConfig", "model_config", "ConfigError", "ModelCatalog", "ResolvedModel", "ConfigProblem",
     "LayerText", "read_models", "check_config", "LoadedConfig", "load_config", "UserConfig",
     "Prompts", "prompts", "select_model", "Trusted", "TrustError", "UntrustedProject",
     "DotenvError", "Ask", "Pick", "Layer", "Origin", "Severity", "SourceKind", "SourceState", "ExtensionSource", "ExtensionLoadError", "list_extensions",

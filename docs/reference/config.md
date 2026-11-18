@@ -4,7 +4,7 @@
 
 Models, the config files, trust, extension loading, the system prompt.
 
-Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `Price`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `select_model`, `system_prompt`
+Names: `Ask`, `ConfigError`, `ConfigProblem`, `ContextFileError`, `DotenvError`, `ExtensionLoadError`, `ExtensionSource`, `Layer`, `LayerText`, `LoadedConfig`, `ModelCatalog`, `ModelConfig`, `Origin`, `Pick`, `PromptSource`, `Prompts`, `ResolvedModel`, `Severity`, `SourceKind`, `SourceState`, `SystemPrompt`, `TrustError`, `Trusted`, `UntrustedProject`, `UserConfig`, `check_config`, `list_extensions`, `load_config`, `load_extensions`, `model_config`, `prompts`, `read_models`, `select_model`, `system_prompt`
 
 ## Ask
 
@@ -147,6 +147,7 @@ class ModelCatalog
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
+    orders: Mapping[str, object] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -162,7 +163,9 @@ D16 section 4). Which options an extension has is its own to say (`check_config`
 `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
 `load_sources` the layer (file path) that set each key: what the extension loader reads.
 `extension_sources` the layer that set each extension's options (`NAME`) and each option
-(`NAME.FIELD`), for the problems found in them.
+(`NAME.FIELD`), for the problems found in them. `orders` is each extension's
+`extensions.NAME.order` (D28: an int or an object of hook point to int, unchecked here: the
+hooks are the extension's), which is not among its `extensions` options.
 `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
 `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
 that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
@@ -218,16 +221,19 @@ class ModelConfig
     max_tokens: int | None = None
     options: Mapping[str, object] = field(default_factory=lambda: {})
     context_window: int | None = None
-    price: Price | None = None
+    sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
 ```
 
 A resolved model: which model to ask, where (`base_url`, optional: a provider that
 needs one says so in its `check`), the *name* of the variable holding its API key,
 `max_tokens` (optional, positive), and `options`: a JSON object only the named provider
 reads, which the config loader never looks inside (D15). `context_window` (optional,
-positive) is the model's context size in tokens and `price` (optional) what it costs:
-extensions read them (D24); no provider does. The driver builds it from the catalog at
-each sample; no node holds it.
+positive) is the model's context size in tokens: extensions read it (D24); no provider
+does. `sections` holds, per extension name, the JSON object the model's config sets under
+that name (`models.X.usage: {"price": ...}`, D28 section 7): core carries it unread, and
+the extension reads it as its declared `model_options` (`TreeHandle.model_options`). Both
+are deep read-only copies. The driver builds it from the catalog at each sample; no node
+holds it.
 
 The key itself is never a field: it is read from the environment at sample
 time (`api_key`) and so never reaches a node or the log.
@@ -264,36 +270,6 @@ Pick = Callable[[tuple[str, ...]], str]
 ```
 
 A choice put to the person: takes the qualified model names, returns one of them.
-
-## Price
-
-```python
-@dataclass(frozen=True)
-class Price
-    input: Decimal
-    output: Decimal
-    cache_read: Decimal
-    cache_write: Decimal
-    cache_write_1h: Decimal | None = None
-```
-
-What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
-nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
-a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
-`cache_write_1h` is optional: the price of a cache write kept for an hour (a reply's
-`written_1h`), which is `cache_write` when it is not given (D26 section 2).
-Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
-number below 0, or one that is not a number.
-
-### Price.of
-
-```python
-@classmethod
-def of(cls, fields: object) -> 'Price'
-```
-
-The price a config's `price` object says. `ConfigError` unless it is an object with
-the four fields, and `cache_write_1h` if it likes, each a number of at least 0.
 
 ## PromptSource
 
@@ -593,8 +569,8 @@ def load_extensions(
 ) -> list[Extension]
 ```
 
-The extensions to run, in hook order (the driver puts `tau` first; a program adds
-`session_name`, D18, after this returns).
+The extensions to run, in load order, which each hook point sorts by hook order (D28;
+the driver puts `tau` first; a program adds `session_name`, D18, after this returns).
 
 The sources are the built-ins that `load` leaves on and, with `discover`, the installed
 packages and the user's and the trusted project's drop-ins that it leaves on; then

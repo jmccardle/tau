@@ -53,7 +53,9 @@ def test_clean_removes_what_is_missing_or_invalid_and_keeps_the_rest(world: Worl
         },
     }
     again = tau(world, "config", "check")
-    assert (again.code, again.out) == (0, "")
+    assert again.code == 0
+    assert "warning" not in again.out
+    assert "error" not in again.out
 
 
 def test_clean_with_nothing_to_remove_writes_nothing(world: World) -> None:

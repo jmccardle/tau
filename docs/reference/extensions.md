@@ -49,6 +49,7 @@ reply. With `to`, send a follow-up to an agent you used before; it remembers its
 ```python
 class Attachments
     name = 'attachments'
+    order: ClassVar[Mapping[str, int]] = {'pre_input': BEFORE_EDITS}
     options = Options
 ```
 
@@ -332,6 +333,7 @@ The name of the tool being called. Read-only.
 ```python
 class Compaction
     name = 'compaction'
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     options = Options
 ```
 
@@ -887,6 +889,7 @@ set its request offered (`tools_hash`); `span` the proved span that ends at this
 ```python
 class Permissions
     name = 'permissions'
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     options = Options
 ```
 
@@ -1058,6 +1061,7 @@ provider found the first request to be a byte prefix of the second when it sent 
 ```python
 class StepLimit
     name = 'step_limit'
+    order = GUARD
     options = Options
 ```
 
@@ -1086,8 +1090,10 @@ happens after `post_step`: the count stays as it was until the next input.
 
 A hook that leaves an input pending offers it again every step, so
 `pre_input` restarts the count every time: this limit does not bound that.
-List it after any extension that turns auto-step back on from `post_step`,
-or that hook's `set_auto(True)` wins.
+Its hooks are guards (`order` -100, D28): they run before the edits, so a later
+`post_step` sees auto-step already off and can stop cleanly. A hook that turns
+auto-step back on from `post_step` after it wins over the limit; one that wants to
+stay bounded by it orders its `post_step` below -100.
 
 ### StepLimit.__init__
 
@@ -1183,6 +1189,7 @@ The exact number of tokens of `text` by the tokenizer confirmed for `model`, or
 ```python
 class Tokens
     name = NAME
+    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE}
 ```
 
 The built-in extension `tokens` (the module docstring): the counter, and `/tokens`.
@@ -1335,9 +1342,21 @@ def resolved_model(self, name: str | None = None) -> ModelConfig
 ```
 
 The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is now,
-the one a sample resolves, with its `context_window` and `price`. `name` defaults to
+the one a sample resolves, with its `context_window` and `sections`. `name` defaults to
 `model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
 no such model.
+
+### TreeHandle.model_options
+
+```python
+def model_options(self, name: str | None = None) -> Any
+```
+
+This extension's section of the model `name`'s config (`models.X.<extension>`, D28
+section 7), built as the extension's `model_options` type; a model with no such section
+gives the type built with no arguments. `name` defaults to `model()`, so a tree handle
+must give it (`ValueError`). `ConfigError` if the extension declares no
+`model_options`, the catalog has no such model, or the section does not fit.
 
 ### TreeHandle.counter
 

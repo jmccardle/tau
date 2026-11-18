@@ -116,8 +116,8 @@ class HookOrder:
             over = {} if setting is None else _spread(setting, hooks_of(extension))
             for hook in hooks_of(extension):
                 number = over.get(hook, own.get(hook, EDIT))
-                entry = Placed(extension, number, hook in over)
-                placed[hook].append((number, position, entry))
+                placed_hook = Placed(extension, number, hook in over)
+                placed[hook].append((number, position, placed_hook))
         return cls({p: tuple(e for _, _, e in sorted(placed[p], key=_key)) for p in POINTS})
 
     def at(self, point: str) -> tuple[Extension, ...]:

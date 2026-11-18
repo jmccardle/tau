@@ -27,7 +27,7 @@ async def test_the_status_bar_shows_the_replys_tokens_cost_and_context(tmp_path:
                 "a": {
                     "model": "a",
                     "provider": FAKE_PROVIDER,
-                    "price": PRICE,
+                    "usage": {"price": PRICE},
                     "context_window": 200_000,
                 }
             }
@@ -54,7 +54,7 @@ async def test_the_status_bar_shows_the_replys_tokens_cost_and_context(tmp_path:
 @scenario
 async def test_a_cache_miss_is_a_toast(tmp_path: Path) -> None:
     catalog = read_models(
-        cli={"models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "price": PRICE}}}
+        cli={"models": {"a": {"model": "a", "provider": FAKE_PROVIDER, "usage": {"price": PRICE}}}}
     )
     h = await Harness.create(
         tmp_path,

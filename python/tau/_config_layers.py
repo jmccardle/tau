@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from tau._config import ConfigError, ModelConfig, Price, key_problem, url_problem
+from tau._config import ConfigError, ModelConfig, key_problem, url_problem
 from tau._config_keys import context_files, extensions, load_switches, system_prompt, tui_settings
 from tau._config_tree import (
     ConfigProblem,
@@ -28,13 +28,14 @@ from tau._config_tree import (
     suggest,
 )
 from tau._hook_order import order_problem
+from tau._model_sections import section_problems
 from tau._options import make_layer_options, option_fields, unknown_options
 from tau._protocols import Provider
-from tau._tools import assemble_tools
+from tau._tools import tool_names
 from tau._values import Context, DefinitionError
 
 CLI = "session"
-_MODEL_KEYS = (
+MODEL_KEYS = (  # the keys of a model; any other object is a section (D28)
     "model",
     "base_url",
     "api_key_env",
@@ -42,11 +43,11 @@ _MODEL_KEYS = (
     "provider",
     "max_tokens",
     "context_window",
-    "price",
     "options",
 )
 _INT_KEYS = ("max_tokens", "context_window")
-_OBJECT_KEYS = ("options", "price")  # settings that are objects, merged by key
+_OBJECT_KEYS = ("options",)  # settings that are objects, merged by key; so is a section
+_MOVED = {"price": "usage.price"}  # a model key that became an extension's section (D28)
 _TOP_KEYS = (
     "models",
     "default_model",
@@ -333,7 +334,8 @@ class _LayerMerge:
 
 def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     """`own` over `inherited`: a null removes the key, and setting one of
-    `api_key`/`api_key_env` removes the other. `options` and `price` merge as objects."""
+    `api_key`/`api_key_env` removes the other. `options` and every extension's section (a key
+    that is not a model key, D28 section 7) merge as objects."""
     out = dict(inherited)
     for key, (leaf, group) in own.items():
         if leaf.value is None:
@@ -341,7 +343,8 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
             continue
         before: object = out[key][0].value if key in out else None
         mine: object = leaf.value
-        if key in _OBJECT_KEYS and isinstance(before, dict) and isinstance(mine, dict):
+        objects = key in _OBJECT_KEYS or key not in MODEL_KEYS
+        if objects and isinstance(before, dict) and isinstance(mine, dict):
             merged = _merge(cast("Tree", before), cast("Tree", mine))
             out[key] = (Leaf(merged, leaf.source), group)
         else:
@@ -367,6 +370,11 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         if k in merged
     }
     numbers = {k: cast("int", merged[k][0].value) for k in _INT_KEYS if k in merged}
+    sections = {
+        k: cast("dict[str, object]", plain(cast("Tree", leaf.value)))
+        for k, (leaf, _) in merged.items()
+        if k not in MODEL_KEYS
+    }
     return ModelConfig(
         texts["model"],
         texts.get("base_url"),
@@ -376,7 +384,7 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         numbers.get("max_tokens"),
         objects.get("options", {}),
         numbers.get("context_window"),
-        Price.of(objects["price"]) if "price" in objects else None,
+        sections,
     )
 
 
@@ -425,8 +433,8 @@ class _Resolver:
         return bad
 
     def object_setting(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
-        """`options` (the provider's own settings) or `price` as an object tree (the loader
-        never looks inside; a `null` inside stays until the layers are combined)."""
+        """`options` (the provider's own settings) or an extension's section as an object tree
+        (the loader never looks inside; a `null` inside stays until the layers are combined)."""
         source = source_of(value) or CLI
         if isinstance(value, Leaf):
             self.problems.add("error", f"{key!r} must be an object", source, here)
@@ -442,12 +450,18 @@ class _Resolver:
             here = f"{path}.{key}"
             if key == _RENAMED_KEY:
                 self.problems.add("error", _RENAMED_MESSAGE, source_of(value), here)
-            elif key not in _MODEL_KEYS:
-                msg = f"unknown key {key!r}{suggest(key, (*_MODEL_KEYS, 'models'))}"
+            elif key in _MOVED:
+                msg = f"{key!r} is not a model key: set it as {path}.{_MOVED[key]} (D28)"
                 self.problems.add("error", msg, source_of(value), here)
             elif isinstance(value, Leaf) and value.value is None:
                 out[key] = (value, group)
-            elif key in _OBJECT_KEYS:
+            elif key not in MODEL_KEYS and isinstance(value, Leaf):
+                msg = (
+                    f"unknown key {key!r}{suggest(key, (*MODEL_KEYS, 'models'))} (an "
+                    "extension's section is an object)"
+                )
+                self.problems.add("error", msg, source_of(value), here)
+            elif key in _OBJECT_KEYS or key not in MODEL_KEYS:
                 out[key] = (self.object_setting(key, value, here), group)
             else:
                 out[key] = (self.checked(key, value, label, here), group)
@@ -506,7 +520,7 @@ class _Resolver:
         texts = {
             k: cast("str", leaf.value)
             for k, (leaf, _) in merged.items()
-            if k not in (*_INT_KEYS, *_OBJECT_KEYS)
+            if k in MODEL_KEYS and k not in (*_INT_KEYS, *_OBJECT_KEYS)
         }
         self.warn(qualified, merged, texts, here)
         try:
@@ -698,7 +712,8 @@ def option_problems(
     a `warning`, and is ignored: an option that names a tool no loaded extension provides
     (`Options.tool_problems`), an option the extension does not have, options of an extension that
     has none (and of `retry`, D24 section 4: the provider wrapper, which `load` switches and
-    nothing tunes), and options of an extension nothing provides. An extension may be a file that
+    nothing tunes), and options of an extension nothing provides. Each model's sections are
+    held to the same rule (`section_problems`, D28 section 7). An extension may be a file that
     was deleted, so a config cannot rely on its cleaning up after itself. The `off` keys are
     sources that exist and are switched off: their options are kept quietly, for when they are on
     again. Each problem names the layer that set it."""
@@ -716,7 +731,8 @@ def option_problems(
         name = cast("str", getattr(ext, "name"))  # noqa: B009
         if name in catalog.orders and (bad := order_problem(ext, catalog.orders[name])):
             source = where.get(f"{name}.order") or where.get(name)
-            problems.append(ConfigProblem("error", bad, source, f"extensions.{name}.order"))
+            said = bad.removeprefix(f"extensions.{name}.order: ")  # the path says it
+            problems.append(ConfigProblem("error", said, source, f"extensions.{name}.order"))
         options = getattr(ext, "options", None)
         if options is None:
             continue
@@ -737,13 +753,7 @@ def option_problems(
         if check is not None:  # an option that names tools: each should be one a start offers
             for message in check(tools):
                 warn(message, f"extensions.{name}")
-    return tuple(problems)
-
-
-def tool_names(extensions: Sequence[object]) -> list[str]:
-    """The names of the tools the `extensions` provide."""
-    listed, _ = assemble_tools((), extensions)
-    return [cast("str", getattr(t, "name")) for t in listed]  # noqa: B009
+    return (*problems, *section_problems(catalog, extensions, off))
 
 
 def check_config(  # noqa: PLR0913 - the layers, the environment, and what is checked against

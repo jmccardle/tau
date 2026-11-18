@@ -44,9 +44,10 @@ Once the driver has failed or stopped they raise `ConnectionError` (the failure'
 ends at once. The extensions' commands (`/model` of the
 built-in extension `tau` first) run for clients; a command that takes a `Cursor` runs ahead
 of the `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels
-it. Extensions are listed in the constructor, in hook order, and checked there like tools
-(`DefinitionError`); `model.md` does not yet say how `config_at` names them. `reload` swaps
-them for others while nothing is in flight.
+it. Extensions are listed in the constructor in load order, and checked there like tools
+(`DefinitionError`); each hook point runs them by their hook order, then that order (D28:
+`ConfigError` for a bad `extensions.NAME.order` in `catalog`). `reload` swaps them for others
+while nothing is in flight.
 
 ### Driver.__init__
 
@@ -70,7 +71,8 @@ def __init__(
 def use_catalog(self, catalog: ModelCatalog) -> None
 ```
 
-Resolve model names in `catalog` from the next sample dispatched on.
+Resolve model names in `catalog`, and order hooks by it, from the next job
+dispatched on. `ConfigError` (nothing changes) for a bad `extensions.NAME.order`.
 
 ### Driver.reload
 
@@ -78,7 +80,7 @@ Resolve model names in `catalog` from the next sample dispatched on.
 def reload(self, extensions: Sequence[Extension]) -> None
 ```
 
-Run `extensions` (listed in hook order, as at construction) instead of the ones the
+Run `extensions` (listed in load order, as at construction) instead of the ones the
 driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
 and forget every folded `Config`. Only when nothing is in flight: no cursor busy (a
 command waiting for its step has none out yet, but its cursor is busy) and no effect

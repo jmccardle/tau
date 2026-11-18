@@ -17,7 +17,7 @@ from tau._client import Client, LocalClient
 from tau._clock import SystemClock
 from tau._commands import CommandFailed
 from tau._compaction import Compaction
-from tau._config import ConfigError, ModelConfig, Price, model_config
+from tau._config import ConfigError, ModelConfig, model_config
 from tau._config_layers import (
     Layer,
     LayerText,
@@ -296,7 +296,6 @@ __all__ = [
     "Pick",
     "PickSession",
     "Poisoned",
-    "Price",
     "Progress",
     "PromptSource",
     "Prompts",

@@ -75,7 +75,8 @@ would break a command line. A source's **key** obeys the same rule.
 | 4 | project drop-in: `<project>/.tau/extensions/NAME.py` or `NAME/` | `NAME` | the project is not trusted (§4); `load` says off; `--no-extensions` |
 | 5 | `-e PATH` or `-e KEY`, in argument order | the file's stem | never: naming it is the consent (§5) |
 
-- The order is hook order: the driver's `tau` first, then this table top to bottom. Within a
+- The order is the load order (*amended by D28: it was hook order; each hook point now sorts
+  by its hooks' `order`, then this order*): the driver's `tau` first, then this table top to bottom. Within a
   row, sources are sorted by key; extensions inside one source keep their list order. Nearer
   sources come later, as config layers do (D13). Drop-in names starting with `.` or `_` are
   ignored, as is anything that is neither a `.py` file nor a package directory.

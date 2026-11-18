@@ -37,6 +37,7 @@ from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._hook_order import declared_order
+from tau._model_sections import model_options_type
 from tau._options import option_fields
 from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
@@ -221,6 +222,7 @@ def _checked(provided: list[object]) -> _Provides:
     commands = assemble_commands(checked)
     for extension in checked:
         declared_order(extension)
+        model_options_type(extension)
         options = getattr(extension, "options", None)
         if options is not None:
             option_fields(extension.name, options)

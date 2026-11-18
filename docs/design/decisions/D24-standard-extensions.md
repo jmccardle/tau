@@ -44,7 +44,7 @@ those missing pieces in one table: that is the main result of this ADR.
 - **The prefix of a walk** is its root `Config` and the `System` nodes before the first other
   message. Compaction keeps it, and a sub-agent starts from it. It holds the system prompt, the
   context files and the skills list, so it is also the prompt-cache prefix every cursor shares.
-- Hook order is load order (sorted keys): `agents`, `attachments`, `base_tools`, `compaction`,
+- *Amended by D28: hook order is per hook, by number; D28 §4 gives each built-in's.* Hook order is load order (sorted keys): `agents`, `attachments`, `base_tools`, `compaction`,
   `permissions`, `prune`, `skills`, `step_limit`, `usage`. No extension here depends on running before
   another, except that `attachments` must expand an input before any user extension's `pre_input`
   reads it, which load order already gives.
@@ -164,7 +164,7 @@ reply is a copy.
 output`, with prices in USD per million tokens. A reply is priced by the model its branch was on
 at that node.
 
-**Needs:** (a) `price` on `ModelConfig`; (b) `usage.written`; (c) `cached` absent when the server
+**Needs:** (a) `price` on `ModelConfig` (*moved by D28 §7 to usage's model section, `models.X.usage.price`*); (b) `usage.written`; (c) `cached` absent when the server
 does not report it, made so only after checking what LiteLLM sends; (d) `resolved_model(name)`
 and `model(at=node)` on a handle; (e) `copied_from`,
 so copies are skipped.

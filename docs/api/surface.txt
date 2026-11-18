@@ -17,6 +17,7 @@ class Attachments
     def __init__(self, cwd: Path) -> None
     name = 'attachments'
     options = Options
+    order: ClassVar[Mapping[str, int]] = {'pre_input': BEFORE_EDITS}
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
 class Basis(StrEnum)
     CALIBRATED = 'calibrated'
@@ -63,6 +64,7 @@ class Compaction
     async def compact(self, cursor: Cursor, focus: str = '') -> str
     name = 'compaction'
     options = Options
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     async def post_reply(self, cursor: Cursor, subject: Subject) -> None
     async def post_step(self, cursor: Cursor, subject: Subject) -> None
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
@@ -158,6 +160,7 @@ class Permissions
     def __init__(self, cwd: Path) -> None
     name = 'permissions'
     options = Options
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
 class Prune
     def __init__(self) -> None
@@ -199,6 +202,7 @@ class StepLimit
     def __init__(self) -> None
     name = 'step_limit'
     options = Options
+    order = GUARD
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None
@@ -217,6 +221,7 @@ class Tokens
     def count(self, job: CountJob) -> CounterAnswer
     name = NAME
     def observe(self, observation: Observation) -> None
+    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE}
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
     def tokens(self, tree: TreeHandle) -> str
 class ToolHook(Protocol)
@@ -242,6 +247,7 @@ class TreeHandle
     def cursors(self) -> list[int]
     def label(self, label: str) -> int
     def model(self, at: int | None = None) -> str
+    def model_options(self, name: str | None = None) -> Any
     def open(self, at: int) -> int
     def remove_item(self, id: int) -> None
     def remove_label(self, label: str) -> None
@@ -1107,6 +1113,7 @@ class ModelCatalog
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     models: Mapping[str, ResolvedModel]
     def names(self) -> tuple[str, ...]
+    orders: Mapping[str, object] = field(default_factory=lambda: {})
     def resolve(self, qualified: str) -> ModelConfig
     system_prompt: str | None = None
     system_prompt_source: str | None = None
@@ -1122,23 +1129,14 @@ class ModelConfig
     max_tokens: int | None = None
     model: str
     options: Mapping[str, object] = field(default_factory=lambda: {})
-    price: Price | None = None
     provider: str = 'openai'
+    sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
 @dataclass(frozen=True)
 class Origin
     group: str | None
     key: str
     source: str
 Pick = Callable[[tuple[str, ...]], str]
-@dataclass(frozen=True)
-class Price
-    cache_read: Decimal
-    cache_write: Decimal
-    cache_write_1h: Decimal | None = None
-    input: Decimal
-    @classmethod
-    def of(cls, fields: object) -> 'Price'
-    output: Decimal
 @dataclass(frozen=True)
 class PromptSource
     origin: str

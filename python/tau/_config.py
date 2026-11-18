@@ -12,7 +12,6 @@ is the resolved model a provider is handed. `read_models` and `check_config` (in
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal
 from types import MappingProxyType
 from typing import cast
 from urllib.parse import urlparse
@@ -68,67 +67,9 @@ def key_problem(key: str) -> str | None:
     return None
 
 
-_PRICE_FIELDS = ("input", "output", "cache_read", "cache_write")
-
-
 def _positive(value: object, key: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ConfigError(f"config {key!r} must be a positive integer, not {value!r}")
-
-
-def _money(value: object, key: str) -> Decimal:
-    """`value` as an exact non-negative `Decimal`. A float is read as the shortest text that
-    gives it back (`0.3` is 0.3, not 0.299999...), so a price written in a file is the price."""
-    if isinstance(value, bool) or not isinstance(value, Decimal | int | float):
-        raise ConfigError(f"config price {key!r} must be a number, not {value!r}")
-    number = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
-    if not number.is_finite() or number < 0:
-        raise ConfigError(f"config price {key!r} must be a number of at least 0, not {value!r}")
-    return number
-
-
-@dataclass(frozen=True)
-class Price:
-    """What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
-    nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
-    a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
-    `cache_write_1h` is optional: the price of a cache write kept for an hour (a reply's
-    `written_1h`), which is `cache_write` when it is not given (D26 section 2).
-    Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
-    number below 0, or one that is not a number."""
-
-    input: Decimal
-    output: Decimal
-    cache_read: Decimal
-    cache_write: Decimal
-    cache_write_1h: Decimal | None = None
-
-    def __post_init__(self) -> None:
-        for key in _PRICE_FIELDS:
-            object.__setattr__(self, key, _money(getattr(self, key), key))
-        hour = self.cache_write if self.cache_write_1h is None else self.cache_write_1h
-        object.__setattr__(self, "cache_write_1h", _money(hour, "cache_write_1h"))
-
-    @classmethod
-    def of(cls, fields: object) -> "Price":
-        """The price a config's `price` object says. `ConfigError` unless it is an object with
-        the four fields, and `cache_write_1h` if it likes, each a number of at least 0."""
-        if not isinstance(fields, Mapping):
-            raise ConfigError(f"config 'price' must be an object, not {type(fields).__name__}")
-        given = cast("Mapping[str, object]", fields)
-        missing = [k for k in _PRICE_FIELDS if k not in given]
-        if missing:
-            raise ConfigError(
-                f"config 'price' is missing {missing}; all of {list(_PRICE_FIELDS)} are "
-                "required (USD per million tokens; a model that writes no cache repeats "
-                "its input price for cache_write)"
-            )
-        known = (*_PRICE_FIELDS, "cache_write_1h")
-        extra = sorted(str(k) for k in given if k not in known)
-        if extra:
-            raise ConfigError(f"config 'price' has unknown keys {extra}; it holds {known}")
-        four = (cast("Decimal", given[k]) for k in _PRICE_FIELDS)
-        return cls(*four, cache_write_1h=cast("Decimal | None", given.get("cache_write_1h")))
 
 
 @dataclass(frozen=True)
@@ -137,9 +78,12 @@ class ModelConfig:
     needs one says so in its `check`), the *name* of the variable holding its API key,
     `max_tokens` (optional, positive), and `options`: a JSON object only the named provider
     reads, which the config loader never looks inside (D15). `context_window` (optional,
-    positive) is the model's context size in tokens and `price` (optional) what it costs:
-    extensions read them (D24); no provider does. The driver builds it from the catalog at
-    each sample; no node holds it.
+    positive) is the model's context size in tokens: extensions read it (D24); no provider
+    does. `sections` holds, per extension name, the JSON object the model's config sets under
+    that name (`models.X.usage: {"price": ...}`, D28 section 7): core carries it unread, and
+    the extension reads it as its declared `model_options` (`TreeHandle.model_options`). Both
+    are deep read-only copies. The driver builds it from the catalog at each sample; no node
+    holds it.
 
     The key itself is never a field: it is read from the environment at sample
     time (`api_key`) and so never reaches a node or the log.
@@ -153,7 +97,7 @@ class ModelConfig:
     max_tokens: int | None = None
     options: Mapping[str, object] = field(default_factory=lambda: {})
     context_window: int | None = None
-    price: Price | None = None
+    sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
 
     def __post_init__(self) -> None:
         _text(self.model, "model")
@@ -165,8 +109,12 @@ class ModelConfig:
             _positive(self.max_tokens, "max_tokens")
         if self.context_window is not None:
             _positive(self.context_window, "context_window")
-        if self.price is not None and not isinstance(self.price, Price):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise ConfigError(f"config 'price' must be a Price, not {type(self.price).__name__}")
+        for name, section in self.sections.items():
+            if not isinstance(section, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise ConfigError(
+                    f"config '{name}' (a section) must be an object, not {type(section).__name__}"
+                )
+        object.__setattr__(self, "sections", _freeze(self.sections))
         if not isinstance(self.options, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ConfigError(
                 f"config 'options' must be an object, not {type(self.options).__name__}"
