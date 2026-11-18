@@ -100,6 +100,17 @@ class Tuner:
 
 extensions = [Tuner()]
 """
+SHOWY = """
+from tau import Cursor, Subject
+
+class Showy:
+    name = "showy"
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None:
+        cursor.show("plan mode on")
+
+extensions = [Showy()]
+"""
 FLOOD = '''
 from tau import Cursor
 
@@ -311,6 +322,20 @@ def test_esc_aborts_a_busy_cursor(home: World, binary: Path) -> None:
     assert "eight" not in screen.display(), "the reply was cut short"
     assert screen.quit() == 0
     assert any("Interrupted" in body for body in log_of(home))
+
+
+def test_what_an_extension_shows_on_the_cursor_is_under_the_status_line(
+    home: World, binary: Path
+) -> None:
+    serving(home, "-e", extension(home, "showy", SHOWY))
+    screen = client(home, binary)
+    idle(screen)
+    screen.type("go\r")
+    screen.wait_for("showy: plan mode on", on_screen=True)
+    lines = screen.display().splitlines()
+    status = next(i for i, line in enumerate(lines) if "idle | cursor 0" in line)
+    assert lines[status + 1].startswith("showy: plan mode on"), "one line under the status"
+    assert screen.quit() == 0
 
 
 # -- questions
