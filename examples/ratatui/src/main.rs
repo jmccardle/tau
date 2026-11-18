@@ -30,7 +30,7 @@ use run::Ended;
 /// neither, as the one `tau serve` whose session runs in this directory. Enter sends, Esc aborts
 /// a busy cursor, Ctrl+C or Ctrl+D quits.
 #[derive(Parser)]
-#[command(version)]
+#[command(name = "trusty", version)]
 struct Args {
     /// The server's Unix socket
     #[arg(long, value_name = "PATH", conflicts_with = "session")]
@@ -38,7 +38,7 @@ struct Args {
     /// The id of a served session
     #[arg(long, value_name = "ID")]
     session: Option<String>,
-    /// This client's id (default: user@host:ratatui)
+    /// This client's id (default: user@host:trusty)
     #[arg(long, value_name = "ID")]
     client: Option<String>,
 }
@@ -51,7 +51,7 @@ fn client_id(given: Option<String>) -> Result<String, String> {
         .or_else(|_| env::var("LOGNAME"))
         .map_err(|_| "neither USER nor LOGNAME is set; give a client id with --client")?;
     let host = gethostname::gethostname();
-    Ok(format!("{user}@{}:ratatui", host.to_string_lossy()))
+    Ok(format!("{user}@{}:trusty", host.to_string_lossy()))
 }
 
 /// The keyboard, read on a thread of its own: crossterm's reads block.
@@ -129,11 +129,11 @@ async fn main() -> ExitCode {
     match start().await {
         Ok(None) => ExitCode::SUCCESS,
         Ok(Some(why)) => {
-            eprintln!("tau-ratatui: {why}");
+            eprintln!("trusty: {why}");
             ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("tau-ratatui: {why}");
+            eprintln!("trusty: {why}");
             ExitCode::FAILURE
         }
     }

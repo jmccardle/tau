@@ -125,7 +125,7 @@ tree is followed (`/proc/PID/task/*/children`), and the tables break it down by 
 |---|---|
 | 0.15 TUI (`venv15`) | one Python process does everything: UI, driver, provider, tools |
 | 0.16 `tau` (Textual) | one Python process: `tau` runs the session in-process, and the Rust core is a library inside it |
-| 0.16 ratatui | two processes: `tau-ratatui` (Rust, the UI) and a Python `tau serve -d` daemon (session, model calls), joined by a Unix socket. Both count; the per-process table shows the split, so the server's cost is not hidden |
+| 0.16 ratatui | two processes: `trusty` (Rust, the UI) and a Python `tau serve -d` daemon (session, model calls), joined by a Unix socket. Both count; the per-process table shows the split, so the server's cost is not hidden |
 
 Outside the tree and never counted: the fake model server, tmux, this script. tmux's own CPU is
 reported beside each table, as a proxy for what a real terminal emulator would have to do.

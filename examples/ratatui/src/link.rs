@@ -183,7 +183,7 @@ pub async fn answers(socket: &Path) -> Result<bool, String> {
         }
         Err(e) => return Err(format!("cannot probe {}: {e}", socket.display())),
     }
-    match tokio::time::timeout(PROBE, connect(socket, "tau-ratatui:probe")).await {
+    match tokio::time::timeout(PROBE, connect(socket, "trusty:probe")).await {
         Ok(Ok(_)) => Ok(true),
         Ok(Err(e)) => Err(format!("{} did not answer hello: {e}", socket.display())),
         Err(_) => Err(format!(

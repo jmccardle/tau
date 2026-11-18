@@ -452,7 +452,7 @@ mod screen_tests {
 
     use super::*;
 
-    const ME: &str = "tester@host:ratatui";
+    const ME: &str = "tester@host:trusty";
 
     fn hear(model: &mut Model, event: serde_json::Value) {
         model.hear(serde_json::from_value(event).unwrap());
