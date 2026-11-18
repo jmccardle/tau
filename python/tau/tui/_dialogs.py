@@ -31,8 +31,12 @@ from typing import Any, ClassVar, Literal, TypeVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.geometry import Offset, Region
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Button, Input, Static
+
+from tau.tui._screens import attached_and_offset_at, attached_at
 
 _T = TypeVar("_T")
 
@@ -91,6 +95,14 @@ class TauDialog(ModalScreen[_T]):
     def __init__(self, title: str | None = None) -> None:
         super().__init__()
         self._title = self.TITLE_TEXT if title is None else title
+
+    def get_widget_at(self, x: int, y: int) -> tuple[Widget, Region]:
+        """The widget under (x, y), unless it has left the DOM since the last paint (`NoWidget`)."""
+        return attached_at(super().get_widget_at(x, y), x, y)
+
+    def get_widget_and_offset_at(self, x: int, y: int) -> tuple[Widget | None, Offset | None]:
+        """The widget and offset under (x, y), `(None, None)` if it has left the DOM."""
+        return attached_and_offset_at(super().get_widget_and_offset_at(x, y))
 
     def dialog_title(self) -> str:
         """The text of the title row."""

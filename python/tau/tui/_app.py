@@ -10,13 +10,14 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from time import monotonic
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.command import Provider
 from textual.css.query import NoMatches
 from textual.notifications import SeverityLevel
+from textual.screen import Screen
 
 from tau._client import Client
 from tau._core import Author, ItemData
@@ -41,6 +42,7 @@ from tau.tui._forms import QuestionBox, QuestionStack
 from tau.tui._line import CommandLine
 from tau.tui._moves import Moves
 from tau.tui._palette import TauCommands
+from tau.tui._screens import TauScreen
 from tau.tui._status import CursorBar, Header, StatusBar, bar_text, pending_line, status_lines
 from tau.tui._switch import Switch
 from tau.tui._themes import build_theme_registry, install_themes
@@ -87,6 +89,7 @@ class TauApp(App[None]):
     """
 
     CSS_PATH = "tau.tcss"
+    MODES: ClassVar[dict[str, str | Callable[[], Screen[Any]]]] = {"_default": TauScreen}
     COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {TauCommands}
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "abort", "Abort", show=False),

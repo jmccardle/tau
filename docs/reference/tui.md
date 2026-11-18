@@ -269,6 +269,7 @@ not carry (the server's are loaded already).
 ```python
 class TauApp(App[None])
     CSS_PATH = 'tau.tcss'
+    MODES: ClassVar[dict[str, str | Callable[[], Screen[Any]]]] = {'_default': TauScreen}
     COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {TauCommands}
     BINDINGS: ClassVar[list[BindingType]] = [Binding('escape', 'abort', 'Abort', show=False), Binding('ctrl+c', 'interrupt', 'Abort / quit', show=False, priority=True), Binding('ctrl+q', 'quit', 'Quit', show=False, priority=True), Binding('ctrl+r', "fold('thinking')", 'Fold thinking', show=False), Binding('ctrl+t', "fold('tools')", 'Fold tool boxes', show=False), Binding('alt+left', "move('previous')", 'Previous cursor', show=False), Binding('alt+right', "move('next')", 'Next cursor', show=False), Binding('ctrl+g', "move('tree')", 'The tree', show=False), Binding('ctrl+o', "move('sessions')", 'Sessions', show=False), Binding('ctrl+n', "move('new')", 'New session', show=False), Binding('ctrl+up', "scroll('up')", 'Scroll up', show=False), Binding('ctrl+down', "scroll('down')", 'Scroll down', show=False)]
 ```
@@ -469,6 +470,22 @@ Attributes:
 ```python
 def __init__(self, title: str | None = None) -> None
 ```
+
+### tau.tui.TauDialog.get_widget_at
+
+```python
+def get_widget_at(self, x: int, y: int) -> tuple[Widget, Region]
+```
+
+The widget under (x, y), unless it has left the DOM since the last paint (`NoWidget`).
+
+### tau.tui.TauDialog.get_widget_and_offset_at
+
+```python
+def get_widget_and_offset_at(self, x: int, y: int) -> tuple[Widget | None, Offset | None]
+```
+
+The widget and offset under (x, y), `(None, None)` if it has left the DOM.
 
 ### tau.tui.TauDialog.dialog_title
 
