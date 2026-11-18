@@ -6,8 +6,9 @@ from typing import Literal
 import pytest
 from fakes import FakeProvider
 from harness import Harness, say, scenario
+from shipped import shipped
 
-from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle, Usage
+from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
 from tau.commandline import UnknownCommand, completions, parse, value, values
 
 
@@ -164,7 +165,7 @@ async def test_a_str_or_none_parameter_takes_the_rest_too_and_may_be_left_out(
 
 @scenario
 async def test_a_command_with_no_parameters_says_it_takes_no_arguments(tmp_path: Path) -> None:
-    infos = await commands(await Harness.create(tmp_path, extensions=[Usage()]))
+    infos = await commands(await Harness.create(tmp_path, extensions=[shipped("usage")]))
     assert parse("/usage", infos).args == {}
     with pytest.raises(ValueError, match="/usage takes no arguments, but was given 'foo'"):
         parse("/usage foo", infos)

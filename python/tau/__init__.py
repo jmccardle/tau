@@ -87,9 +87,12 @@ from tau._counts import (
     CounterAnswer,
     CountJob,
     Observation,
+    Reading,
     RequestCount,
     Span,
     SpanProof,
+    counted,
+    reading,
 )
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
@@ -178,7 +181,6 @@ from tau._step_limit import StepLimit
 from tau._tokens import Tokenizers, Tokens
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
-from tau._usage import Usage
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
 from tau.commandline import Parsed, UnknownCommand
@@ -307,6 +309,7 @@ __all__ = [
     "RemoteClient",
     "Rendered",
     "Replay",
+    "Reading",
     "RequestCount",
     "ResolvedModel",
     "RetryProvider",
@@ -349,7 +352,6 @@ __all__ = [
     "UnknownCommand",
     "UnknownSession",
     "UntrustedProject",
-    "Usage",
     "UserConfig",
     "Version",
     "Welcome",
@@ -360,6 +362,7 @@ __all__ = [
     "builtin_providers",
     "calibration_features",
     "check_config",
+    "counted",
     "find_session",
     "first_cursor_node",
     "list_extensions",
@@ -370,6 +373,7 @@ __all__ = [
     "open_client",
     "prompts",
     "read_models",
+    "reading",
     "rename_session",
     "replay_for",
     "select_model",

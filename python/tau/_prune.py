@@ -23,10 +23,9 @@ from dataclasses import dataclass
 from typing import Annotated, cast
 
 from tau._core import Body, Node, Outcome, Part
-from tau._counts import NONE, Count, ceiling_of
+from tau._counts import NONE, Count, ceiling_of, show
 from tau._handles import Cursor
 from tau._lines import Planned, copy_of, prefix_length, write_line
-from tau._usage import show
 
 LONG = 200
 """A string argument longer than this many characters is pruned."""

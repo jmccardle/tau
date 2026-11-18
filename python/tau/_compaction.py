@@ -25,11 +25,21 @@ from typing import Annotated, Literal
 
 from tau._config import ConfigError, model_config
 from tau._core import Author, Body, CursorClosed, Ending, Node, NoSuchLabel, Part, Stop
-from tau._counts import NONE, Basis, Count, RequestCount, ceiling_of, sent, wrapped_count
+from tau._counts import (
+    NONE,
+    Basis,
+    Count,
+    RequestCount,
+    ceiling_of,
+    reading,
+    sent,
+    show,
+    tokens,
+    wrapped_count,
+)
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._lines import Planned, copy_of, prefix_length, write_line
 from tau._protocols import CallDraft
-from tau._usage import reading, show, tokens
 from tau._values import Model
 
 PROMPT = """\

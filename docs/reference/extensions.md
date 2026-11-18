@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `Usage`, `calibration_features`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `reading`
 
 ## Agents
 
@@ -932,6 +932,36 @@ async def prune(self, cursor: Cursor) -> str
 Shorten this conversation without a model: old turns become a transcript and old
 tool output goes, on a new line (the old one stays in the tree).
 
+## Reading
+
+```python
+@dataclass(frozen=True)
+class Reading
+    input: int
+    output: int
+    cached: int | None
+    written: int | None
+    reasoning: int | None = None
+    tool_prompt: int | None = None
+    written_1h: int | None = None
+```
+
+One reply's normalized `meta.usage` (D15, D26 section 2): `input` counts every prompt
+token, `cached` and `written` the part read from and written to the cache, `written_1h` the
+part of `written` kept for an hour, `tool_prompt` the part of `input` a built-in tool's use
+added, and `reasoning` the part of `output` that was thinking. Each but `input` and `output`
+is `None` when the server did not report it.
+
+### Reading.said
+
+```python
+property said: Count
+```
+
+What the reply's words cost without its thinking: `output` less `reasoning`, a
+`reported` count. Where thinking is taken out the bound is `REASONING_BOUND`, since a
+server's thinking count "may differ by a small number" (D26 section 3.2).
+
 ## RequestCount
 
 ```python
@@ -1470,56 +1500,6 @@ def remove_label(self, label: str) -> None
 
 Remove `label`; raises `NoSuchLabel`.
 
-## Usage
-
-```python
-class Usage
-    name = 'usage'
-    options = Options
-```
-
-The built-in extension `usage` (the module docstring).
-
-### Usage.__init__
-
-```python
-def __init__(self) -> None
-```
-
-### Usage.usage
-
-```python
-async def usage(self, tree: TreeHandle) -> str
-```
-
-What this session has spent: one row per model, and a total.
-
-### Usage.pre_input
-
-```python
-async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Refuse new input once the budget (`max_usd`) is spent.
-
-### Usage.pre_sample
-
-```python
-async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
-before user extensions, so a hook that would have answered the sample for free is halted
-too.
-
-### Usage.post_reply
-
-```python
-async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Show the reply's counts on the cursor, and tell the clients if it missed the cache.
-
 ## calibration_features
 
 ```python
@@ -1531,3 +1511,26 @@ calls, results, thinking) its text's lowercase letters, uppercase letters, digit
 ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
 (1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
 or `Custom` body, which is never sent, is all zeros.
+
+## counted
+
+```python
+def counted(node: Node) -> bool
+```
+
+Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
+`Author.Provider()`: an extension's answer to a sample reported no usage because it was never
+billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
+(`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
+place the rule lives.
+
+## reading
+
+```python
+def reading(node: Node) -> Reading | None
+```
+
+The `usage` a reply reports, or `None` if its provider reported none. `ValueError` for a
+`usage` that is not the normalized shape or has more cached and written than input, or for a
+reply whose provider kept the server's report (`usage_raw`) but could not normalize it; the
+callers (`_read`) turn that into "no usage, and why", so a past node never fails a step.

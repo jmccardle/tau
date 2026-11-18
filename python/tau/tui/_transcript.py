@@ -20,8 +20,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from textual.widgets import Collapsible, Static
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
+from tau._counts import tokens
 from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
-from tau._usage import tokens
 from tau.tui._chat import MessageBox, QuietCollapsible
 from tau.tui._view import LiveLayer
 from tau.tui._window import tail_start

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Basis,
@@ -22,7 +23,6 @@ from tau import (
     RequestCount,
     Span,
     Stop,
-    Usage,
     model_config,
     read_models,
 )
@@ -199,7 +199,7 @@ async def test_a_summary_costs_its_reply_without_the_thinking(tmp_path: Path) ->
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider(script),
-        extensions=[Compaction(), Usage()],
+        extensions=[Compaction(), shipped("usage")],
         catalog=read_models(cli={"models": {"a": model}, "extensions": {"compaction": options}}),
         config=model_config("a"),
     )

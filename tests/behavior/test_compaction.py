@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Author,
@@ -27,7 +28,6 @@ from tau import (
     Outcome,
     Part,
     Stop,
-    Usage,
     model_config,
     read_models,
 )
@@ -72,7 +72,7 @@ async def start(
     return await Harness.create(
         tmp_path,
         provider=FakeProvider(replies),
-        extensions=[Compaction(), Usage()],
+        extensions=[Compaction(), shipped("usage")],
         catalog=catalog(window, {**OPTIONS, **options}),
         config=model_config("a"),
     )

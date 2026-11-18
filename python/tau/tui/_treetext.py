@@ -7,9 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau._core import Body, Node, Outcome, Part
-from tau._counts import Count
+from tau._counts import Count, show
 from tau._events import CursorView
-from tau._usage import show
 from tau.tui._transcript import author_name, config_line
 from tau.tui._treeplan import TreeRow
 
@@ -106,7 +105,7 @@ def provenance_mark(node: Node) -> str:
 
 def provenance_text(node: Node, sizes: Callable[[int], tuple[int, Count]]) -> str:
     """The detail pane's lines on where `node` came from, with the walk to the source (before)
-    and the walk to `node` (after) in nodes and tokens (`tau._usage.show`); `""` for a node that
+    and the walk to `node` (after) in nodes and tokens (`tau._counts.show`); `""` for a node that
     came from none. `sizes(id)` is a walk's length and its count."""
     for what, source in (("derived from", node.derived_from), ("copied from", node.copied_from)):
         if source is not None:

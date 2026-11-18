@@ -48,17 +48,19 @@ from tau._counts import (
     Counter,
     CountJob,
     Observation,
+    Reading,
     RequestCount,
     Span,
     SpanProof,
     ceiling_of,
+    counted,
     lowest_tokens,
+    reading,
     reported,
     sent,
     wrapped_count,
 )
 from tau._lines import prefix_length
-from tau._usage import Reading, counted, reading
 from tau._values import DefinitionError
 
 KEPT = 16

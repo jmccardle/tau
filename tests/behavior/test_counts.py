@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Basis,
@@ -24,7 +25,6 @@ from tau import (
     Part,
     RequestCount,
     Stop,
-    Usage,
     model_config,
     read_models,
 )
@@ -181,7 +181,7 @@ async def test_a_copy_that_holds_a_whole_lump_takes_its_originals_count(tmp_path
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([*proved_turns(), bill(2000, 300, text="s" * 800)]),
-        extensions=[Compaction(), Usage(), probe],
+        extensions=[Compaction(), shipped("usage"), probe],
         catalog=read_models(
             cli={
                 "models": {
@@ -234,14 +234,14 @@ async def test_a_counter_that_counts_a_reported_node_fails_the_count(tmp_path: P
 
 @scenario
 async def test_usage_says_how_counts_are_made(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[Usage()])
+    h = await Harness.create(tmp_path, extensions=[shipped("usage")])
     out = await h.run("usage")
     assert out is not None
     assert (
         out.splitlines()[-1] == "counts: reported only, with byte ceilings for what is not sent yet"
     )
     await h.close()
-    h = await Harness.create(tmp_path / "b", extensions=[Usage(), Probe(Fills())])
+    h = await Harness.create(tmp_path / "b", extensions=[shipped("usage"), Probe(Fills())])
     out = await h.run("usage")
     assert out is not None
     assert out.splitlines()[-1] == (

@@ -6,9 +6,10 @@ from pathlib import Path
 
 from fakes import FAKE_PROVIDER, FakeProvider, Reply
 from harness import Harness, scenario
+from shipped import shipped
 from tuikit import running, shows, type_line, until
 
-from tau import Part, Stop, Usage, model_config, read_models
+from tau import Part, Stop, model_config, read_models
 
 PRICE = {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
 
@@ -35,7 +36,7 @@ async def test_the_status_bar_shows_the_replys_tokens_cost_and_context(tmp_path:
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(12_300, 812, 11_800)]),
-        extensions=[Usage()],
+        extensions=[shipped("usage")],
         catalog=catalog,
         config=model_config("a"),
     )
@@ -58,7 +59,7 @@ async def test_a_cache_miss_is_a_toast(tmp_path: Path) -> None:
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(5000, 1, 0), reply(5000, 1, 0)]),
-        extensions=[Usage()],
+        extensions=[shipped("usage")],
         catalog=catalog,
         config=model_config("a"),
     )
@@ -81,7 +82,7 @@ async def test_the_reply_badge_and_the_status_line_write_a_count_alike(tmp_path:
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(999_950, 3_400_000_000, 0)]),
-        extensions=[Usage()],
+        extensions=[shipped("usage")],
         catalog=catalog,
         config=model_config("a"),
     )

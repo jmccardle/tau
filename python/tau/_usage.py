@@ -43,8 +43,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, cast
 
 from tau._config import ConfigError, ModelConfig, Price
-from tau._core import Author, Body, Node, Stop
-from tau._counts import Basis, Count
+from tau._core import Body, Node, Stop
+from tau._counts import Reading, counted, reading, tokens
 from tau._handles import Cursor, Subject, TreeHandle
 
 NOTICE_MIN_INPUT = 4096
@@ -52,10 +52,7 @@ NOTICE_MIN_INPUT = 4096
 Gemini from about 4,000; below that a miss means nothing)."""
 NOTICE_WITHIN_MS = 300_000
 """How soon after the previous reply a cache is still warm, in milliseconds."""
-REASONING_BOUND = 8
-"""How far a reply's count may be off once its thinking is subtracted (D26 section 3.2)."""
 _MILLION = -6  # a price is per million tokens: `scaleb(-6)` is exact
-_KILO, _MEGA, _GIGA = 1000, 1_000_000, 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -76,99 +73,6 @@ class Options:
             raise ValueError(f"max_usd is an amount of dollars, at least 0, not {self.max_usd}")
 
 
-@dataclass(frozen=True)
-class Reading:
-    """One reply's normalized `meta.usage` (D15, D26 section 2): `input` counts every prompt
-    token, `cached` and `written` the part read from and written to the cache, `written_1h` the
-    part of `written` kept for an hour, `tool_prompt` the part of `input` a built-in tool's use
-    added, and `reasoning` the part of `output` that was thinking. Each but `input` and `output`
-    is `None` when the server did not report it."""
-
-    input: int
-    output: int
-    cached: int | None
-    written: int | None
-    reasoning: int | None = None
-    tool_prompt: int | None = None
-    written_1h: int | None = None
-
-    @property
-    def said(self) -> Count:
-        """What the reply's words cost without its thinking: `output` less `reasoning`, a
-        `reported` count. Where thinking is taken out the bound is `REASONING_BOUND`, since a
-        server's thinking count "may differ by a small number" (D26 section 3.2)."""
-        if not self.reasoning:
-            return Count(self.output, Basis.REPORTED)
-        return Count(max(self.output - self.reasoning, 0), Basis.REPORTED, REASONING_BOUND)
-
-
-def reading(node: Node) -> Reading | None:
-    """The `usage` a reply reports, or `None` if its provider reported none. `ValueError` for a
-    `usage` that is not the normalized shape or has more cached and written than input, or for a
-    reply whose provider kept the server's report (`usage_raw`) but could not normalize it; the
-    callers (`_read`) turn that into "no usage, and why", so a past node never fails a step."""
-    body = node.body
-    if not isinstance(body, Body.Assistant) or body.meta is None:
-        return None
-    meta: object = json.loads(body.meta)
-    found = meta.get("usage") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    if found is None:
-        sent = meta.get("usage_raw") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        if sent is not None:  # the provider kept what the server said but could not read it
-            raise ValueError(f"node {node.id}: the provider could not read the usage {sent!r}")
-        return None
-    if not isinstance(found, dict):
-        raise ValueError(f"node {node.id}: meta.usage is not an object: {found!r}")
-    return _read_fields(node.id, found)  # pyright: ignore[reportUnknownArgumentType]
-
-
-def _read_fields(node: int, fields: dict[str, object]) -> Reading:
-    """The `Reading` of a normalized `usage` object; `ValueError` naming `node` for a count that
-    is not one, or a part larger than its whole."""
-
-    def count(key: str) -> int:
-        value = fields.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"node {node}: meta.usage.{key} is not a count: {value!r}")
-        return value
-
-    def optional(key: str) -> int | None:
-        return count(key) if key in fields else None
-
-    got = Reading(
-        count("input"),
-        count("output"),
-        optional("cached"),
-        optional("written"),
-        optional("reasoning"),
-        optional("tool_prompt"),
-        optional("written_1h"),
-    )
-    if (got.cached or 0) + (got.written or 0) > got.input:
-        raise ValueError(
-            f"node {node}: meta.usage reports more cached and written tokens than input"
-        )
-    if (got.written_1h or 0) > (got.written or 0):
-        raise ValueError(
-            f"node {node}: meta.usage reports more tokens written for an hour than written"
-        )
-    return got
-
-
-def counted(node: Node) -> bool:
-    """Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
-    `Author.Provider()`: an extension's answer to a sample reported no usage because it was never
-    billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
-    (`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
-    place the rule lives."""
-    return (
-        isinstance(node.body, Body.Assistant)
-        and node.by == Author.Provider()
-        and node.copied_from is None
-        and node.derived_from is None
-    )
-
-
 def cost(usage: Reading, price: Price) -> Decimal:
     """USD for one reply: the prompt tokens neither read from nor written to the cache at the
     `input` price, reads at `cache_read`, writes at `cache_write` (those kept for an hour at
@@ -184,29 +88,6 @@ def cost(usage: Reading, price: Price) -> Decimal:
         + usage.output * price.output
     )
     return total.scaleb(_MILLION)
-
-
-def tokens(n: int) -> str:
-    """`n` tokens as people write them: `812`, `12.3k`, `1.2M`, `1.2G`. A count that rounds up
-    to the next unit is written in it: 999,950 is `1.0M`, not `1000.0k`."""
-    if n < _KILO:
-        return str(n)
-    for size, unit in ((_KILO, "k"), (_MEGA, "M"), (_GIGA, "G")):
-        if n < size * _KILO and f"{n / size:.1f}" != "1000.0":
-            return f"{n / size:.1f}{unit}"
-    return f"{n / _GIGA:.1f}G"
-
-
-def show(count: Count) -> str:
-    """A count as people write it (`tokens`), with its basis where it is not a report:
-    `~` for a heuristic, and `≤` and its `upper` for a ceiling (D26 section 1)."""
-    match count.basis:
-        case Basis.REPORTED | Basis.RENDERED | Basis.CALIBRATED:
-            return tokens(count.tokens)
-        case Basis.HEURISTIC:
-            return f"~{tokens(count.tokens)}"
-        case Basis.CEILING:
-            return f"≤{tokens(count.upper)}"
 
 
 def how_counted(counter: str | None) -> str:

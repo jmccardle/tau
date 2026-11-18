@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Body,
@@ -23,7 +24,6 @@ from tau import (
     Node,
     Part,
     Stop,
-    Usage,
     model_config,
     read_models,
 )
@@ -73,7 +73,7 @@ async def start(
         tmp_path,
         provider=FakeProvider(script),
         tools=tools or [],
-        extensions=[Compaction(), Usage()],
+        extensions=[Compaction(), shipped("usage")],
         catalog=catalog(window, **options),
         config=model_config("a"),
     )

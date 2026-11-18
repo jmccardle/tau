@@ -846,7 +846,7 @@ or the batch's, and a tree handle must give it. **`resolved_model(name=None)`** 
 was never built; `tau.model_config` is the `Config` node builder.
 
 ### Usage (extension), cache notice, budget
-`tau.Usage` (`_usage.py`), key `usage`, options `cache_notice` and `max_usd`, command `/usage` · D24 section 3 · new (8E-2)
+built-in `usage` (`_usage.py`; not exported: reached through `load_extensions` only, D28 section 6), options `cache_notice` and `max_usd`, command `/usage` · D24 section 3 · new (8E-2)
 
 The built-in extension that shows what the session used and spent. At `post_reply` it shows, on
 the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session`
@@ -879,15 +879,20 @@ window (`meta.server.n_ctx`, llama.cpp) other than the config's `context_window`
 the server reports a window of 32768 tokens; the config says 40960 (context_window)`. The config's
 is the one τ uses (D24 ruling 9); the difference is said, never applied.
 
-### Reading
-`tau._usage.Reading` (private) · D24 section 3 · new (8E-2)
+### Reading, reading, counted
+`tau.Reading`, `tau.reading(node)`, `tau.counted(node)` (module `tau._counts`) · D24 section 3 · new (8E-2); public (D28 section 6)
 
-One reply's normalized `meta.usage` as `usage` reads it: `input`, `output`, and `cached`,
-`written`, `reasoning`, `tool_prompt` and `written_1h` (D26 section 2, see *usage facts*), each
-`None` when the server did not report it. Not public; a reply whose usage cannot
-be read (not the normalized shape, more `cached` plus `written` than `input`, or more
-`written_1h` than `written`) has no `Reading`
-and is listed by `/usage` as reporting no usage, with the reason. **`said`** is what the reply's
+The **counting rules**, public so that a replacement for `usage` (or any extension that reads
+bills) need not copy them. **`Reading`** is one reply's normalized `meta.usage`: `input`,
+`output`, and `cached`, `written`, `reasoning`, `tool_prompt` and `written_1h` (D26 section 2, see
+*usage facts*), each `None` when the server did not report it. **`reading(node)`** is a reply's
+`Reading`, or `None` when its provider reported none; `ValueError` for a reply whose usage cannot
+be read (not the normalized shape, more `cached` plus `written` than `input`, more `written_1h`
+than `written`, or a `usage_raw` the provider could not normalize), which `/usage` lists as
+reporting no usage, with the reason. **`counted(node)`** is the one rule for "this reply counts":
+a reply sampled by a provider (`by` is `Provider`) that is neither a copy nor derived
+(`copied_from` and `derived_from` unset). The meter (D26), compaction, prune and the TUI use them
+from `tau._counts`; nothing but the table of built-ins imports `tau._usage` (D28 section 6). **`said`** is what the reply's
 words cost without its thinking: `output` less `reasoning`, a `reported` count whose bound is 8
 (`REASONING_BOUND`) where thinking was taken out. A summary's count is its reply's `said`.
 
@@ -1353,7 +1358,7 @@ count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning
 ids, names and arguments, outcomes) plus 16 tokens for the node (`CEILING_PER_NODE`). Counts add:
 tokens and bounds add, and the sum is as weak as its weakest part, so a reported bill plus the
 ceiling of a new message is a ceiling count with the bill as its `tokens`. A count is shown by
-`tau._usage.show`: the tokens for a reported one, `~` for a heuristic one, `≤` and the `upper` for
+`tau._counts.show`: the tokens for a reported one, `~` for a heuristic one, `≤` and the `upper` for
 a ceiling. Nothing in τ estimates tokens from characters.
 
 ### RequestCount, base, lump
