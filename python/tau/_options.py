@@ -55,6 +55,11 @@ def option_fields(extension: str, options: object) -> tuple[Field, ...]:
     hints = get_type_hints(options, include_extras=True)
     fields: list[Field] = []
     for f in dataclasses.fields(options):
+        if f.name == ORDER:
+            raise DefinitionError(
+                f"{where} field {f.name!r}: `order` is reserved under extensions.NAME for the "
+                "extension's hook order (D28); name the option for what it holds"
+            )
         if f.default_factory is not dataclasses.MISSING:
             raise DefinitionError(f"{where} field {f.name!r}: use a plain default")
         try:

@@ -286,9 +286,9 @@ class Usage:
         return await self._budget(cursor)
 
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
-        before user extensions, so a hook that would have answered the sample for free is halted
-        too."""
+        """Halt before any further sample once the budget (`max_usd`) is spent. A guard
+        (`order` -100, D28): it runs before compaction summarizes and before any hook at a
+        higher order that would answer the sample."""
         return await self._budget(cursor)
 
     async def _budget(self, cursor: Cursor) -> str | None:

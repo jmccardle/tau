@@ -67,7 +67,7 @@ from tau._extensions import (
     list_extensions,
     switch_source,
 )
-from tau._hook_listing import ext_hooks, hook_lines, hook_table
+from tau._hook_listing import ext_hooks
 from tau._launch import (
     UsageError,
     assignment,
@@ -358,7 +358,7 @@ def _print(run: _Run, lines: Sequence[str]) -> None:
 def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | None:
     """Load the extensions, as a start would: a failed source is an error with the message a
     start prints, a `load` key no source has is a warning, and the options the layers set for
-    the loaded extensions are checked against their types; then the hook order, if sound."""
+    the loaded extensions are checked against their types."""
     result = inspect_extensions(loaded)
     found.lines += [str(p) for p in load_key_warnings(loaded.catalog, result.sources)]
     if result.errors:
@@ -368,8 +368,6 @@ def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | 
     for problem in option_problems(loaded.catalog, result.extensions, off_keys(result.sources)):
         found.lines.append(str(problem))
         found.failed = found.failed or problem.severity == "error"
-    if not found.failed:  # the hook order the start would run (D28 section 5)
-        found.lines += hook_lines(hook_table(result.extensions, loaded.catalog.orders))
     return result
 
 

@@ -792,3 +792,27 @@ def test_a_provider_whose_check_raises_is_a_problem_line(tmp_path: Path) -> None
     assert "acme" in problem.message
     assert "RuntimeError: cannot look at m" in problem.message
     assert problem.path == "models.a"
+
+
+def test_a_section_that_misspells_a_model_key_is_an_error(tmp_path: Path) -> None:
+    """`optons` names no extension and is one letter from `options`: dropping it silently would
+    lose the provider's settings, so it is an error that suggests the key (D28 section 7)."""
+    config = {"models": {"a": {**MODEL, "optons": {"delay_ms": 0}}}}
+    found = check_config(
+        write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=[shipped("usage")]
+    )
+    (error,) = errors(found)
+    assert error.path == "models.a.optons"
+    assert "did you mean 'options'?" in error.message
+
+
+def test_an_order_by_hook_over_an_integer_keeps_the_integer_for_the_other_hooks(
+    tmp_path: Path,
+) -> None:
+    """`order: 50` in the file and `order.pre_sample = -100` for one run: pre_sample is -100,
+    every other hook stays at 50 (D28 section 3)."""
+    user = write(tmp_path / "c.json", {"extensions": {"usage": {"order": 50}}})
+    catalog = read_models(user, cli={"extensions": {"usage": {"order": {"pre_sample": -100}}}})
+    assert dict(catalog.orders["usage"]) == {"*": 50, "pre_sample": -100}  # type: ignore[call-overload]
+    nearer = read_models(user, cli={"extensions": {"usage": {"order": 7}}})
+    assert nearer.orders["usage"] == 7, "a nearer integer replaces the whole order"

@@ -106,8 +106,8 @@ def test_a_dropin_that_shadows_a_builtin_keeps_its_place_by_declaring_its_number
 @pytest.mark.parametrize(
     ("order", "message"),
     [
-        ("first", "extensions.guard.order must be an integer or an object"),
-        ({"pre_input": "x"}, "extensions.guard.order.pre_input must be an integer"),
+        ("first", "extensions.guard.order: must be an integer or an object"),
+        ({"pre_input": "x"}, "extensions.guard.order: the order of 'pre_input' must be an integer"),
         (
             {"pre_tool": 1},
             "extension 'guard' has no hook 'pre_tool' (a hook point); its hooks: pre_input",
@@ -140,13 +140,12 @@ def test_an_int_order_for_an_extension_with_no_hooks_fails_the_check(world: Worl
     assert "extension 'hookless' has no hooks to order" in check.out + check.err
 
 
-def test_check_prints_the_hook_table_when_nothing_is_wrong(world: World) -> None:
+def test_a_sound_check_is_silent(world: World) -> None:
+    """`tau config check` prints nothing when nothing is wrong; the table is `tau ext list
+    --hooks`'s."""
     drop_in(world, "guard", GUARD)
     check = tau(world, "config", "check")
-    assert (check.code, check.err) == (0, "")
-    assert any(
-        line.startswith("pre_input") and "guard -100" in line for line in check.out.splitlines()
-    )
+    assert (check.code, check.out, check.err) == (0, "", "")
 
 
 def test_an_order_for_an_extension_that_is_not_loaded_is_a_warning(world: World) -> None:
@@ -165,3 +164,17 @@ def test_set_refuses_an_order_that_is_not_an_integer(world: World) -> None:
     assert "mock: hello" not in result.out
     ok = tau(world, "-p", "--set", "guard.order.pre_input=3", "hello")
     assert (ok.code, ok.out) == (0, "mock: hello\n")
+
+
+@pytest.mark.parametrize("name", ["tau", "session_name"])
+def test_an_order_for_an_extension_every_start_has_is_an_error_in_check_and_start(
+    world: World, name: str
+) -> None:
+    """`tau` and `session_name` have no hooks: an order for them fails the check, as the start."""
+    world.user_config({**MOCK_CONFIG, "extensions": {name: {"order": 1}}})
+    check = tau(world, "config", "check")
+    assert check.code == 1
+    assert f"extension {name!r} has no hooks to order" in check.out + check.err
+    start = tau(world, "-p", "hi")
+    assert start.code != 0
+    assert "has no hooks to order" in start.out + start.err

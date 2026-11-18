@@ -54,6 +54,8 @@ class UserConfig:
             held = dict(cast("dict[str, object] | None", extensions.get(name)) or {})
             for key, value in fields.items():  # an object (an `order` by hook) merges by key
                 before = held.get(key)
+                if isinstance(value, dict) and isinstance(before, int) and key == "order":
+                    before = {"*": before}  # an order by hook over one for all (D28 section 3)
                 both = isinstance(before, dict) and isinstance(value, dict)
                 held[key] = (
                     {**cast("dict[str, object]", before), **cast("dict[str, object]", value)}

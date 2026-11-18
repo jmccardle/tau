@@ -202,7 +202,6 @@ class StepLimit
     def __init__(self) -> None
     name = 'step_limit'
     options = Options
-    order = GUARD
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None

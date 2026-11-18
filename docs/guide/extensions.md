@@ -231,8 +231,8 @@ class Budget:
     order = {"pre_input": -100, "pre_sample": -100, "post_reply": 100}
 ```
 
-The conventional values are -100 for a **guard** (a hook that halts: a budget, a permission, a
-limit), 0 for an edit of the draft, the call or the line, and +100 for an **observer** (a hook that
+The conventional values are -100 for a **guard** (a hook that halts: a budget, a
+permission), 0 for an edit of the draft, the call or the line, and +100 for an **observer** (a hook that
 only records or shows what happened). Any integer works.
 
 The config overrides the declaration: `extensions.NAME.order` is an integer (all the extension's
@@ -245,7 +245,7 @@ a hook the extension does not have, or an integer for an extension with no hooks
 
 `tau ext list --hooks` prints each hook point that has a hook, with its extensions in the order
 they run and each one's number; a number the config set says `(config)`. `--json` prints one
-object per point instead. `tau config check` prints the same table.
+object per point instead. (`tau config check` stays silent when the orders are sound.)
 
 ```bash
 tau ext list --hooks

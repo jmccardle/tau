@@ -5,10 +5,12 @@ unread (`ModelConfig.sections`); the extension declares `model_options`, a froze
 fields are the section's keys and whose `__post_init__` checks and converts the values, and reads
 it through a handle's `model_options`. A section its type refuses is an error at `tau config
 check` and at the start; one that names no loaded extension, or one without `model_options`, is a
-warning, and is ignored (an extension switched off by `load` keeps its sections quietly).
+warning, and is ignored, unless its name is a near-miss of a model key (`optons`), which is an
+error (an extension switched off by `load` keeps its sections quietly).
 """
 
 import dataclasses
+import difflib
 from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -73,7 +75,13 @@ def section_problems(
             here, source = f"{path}.{name}", sources.get(name)
             extension = by_name.get(name)
             if extension is None:
-                if name not in off:
+                if (key := _core_key(name)) is not None and name not in off:
+                    message = (
+                        f"unknown key {name!r}; did you mean {key!r}? (no loaded extension is "
+                        "named so, and a model key misspelt would be silently dropped)"
+                    )
+                    problems.append(ConfigProblem("error", message, source, here))
+                elif name not in off:
                     message = f"no loaded extension is named {name!r}; {here} is ignored"
                     problems.append(ConfigProblem("warning", message, source, here))
                 continue
@@ -87,3 +95,12 @@ def section_problems(
             except ConfigError as e:
                 problems.append(ConfigProblem("error", str(e), source, here))
     return problems
+
+
+def _core_key(name: str) -> str | None:
+    """The model key `name` is likely a misspelling of (`optons`: `options`), or `None`: a
+    section naming no loaded extension is then an error, not a warning."""
+    from tau._config_layers import MODEL_KEYS  # noqa: PLC0415 - it imports us
+
+    close = difflib.get_close_matches(name, MODEL_KEYS, n=1, cutoff=0.8)
+    return close[0] if close else None

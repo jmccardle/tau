@@ -60,7 +60,11 @@ hooks; the rest keep the declared value). It is laid over the declared value hoo
 - It is not an option: it lives beside the options under `extensions.NAME` and every extension
   has it, with options or without. `ModelCatalog.orders` holds it apart from `extensions`.
 - It merges across layers like any object (D13): an object over an object merges by hook, an
-  `int` replaces. `--set NAME.order=N` and `--set NAME.order.HOOK=N` set it for one run;
+  `int` replaces. An object over an `int` keeps the `int` for the hooks it does not name, held as
+  the key `"*"` (every hook the object does not name; a person may write it too), so `order: 50`
+  in the file with `--set NAME.order.pre_sample=-100` leaves the other hooks at 50.
+- `order` is reserved under `extensions.NAME`: an options field named `order` is a
+  `DefinitionError`. `--set NAME.order=N` and `--set NAME.order.HOOK=N` set it for one run;
   `tau config set` writes it (an object merges by hook into what the file holds).
 - *Chosen:* it is read from the config layers only (the files, `TAU_SETTINGS`, `--set`), never
   from a `Config` node: `/config NAME order=...` is refused. Load order is fixed at start, and an
@@ -72,15 +76,16 @@ hooks; the rest keep the declared value). It is laid over the declared value hoo
   extension with no hooks is an error, in `tau config check` and at every start (the start
   stops), naming the key and the extension's hooks. An order for an extension that is not loaded
   is a warning and ignored, as its options are (an extension may be a deleted file); for one
-  switched off by `load`, it is kept quietly.
+  switched off by `load`, it is kept quietly. `tau` and `session_name`, which every start has and
+  which have no hooks, are errors in both the check and the start.
 
 ### 4. Conventional values, and the built-ins' numbers
 
 | value | for | built-ins at it |
 |---|---|---|
-| −100 | **guards**: hooks that halt (a budget, a permission, a limit) | `usage` `pre_input`, `pre_sample`; `permissions` `pre_tool`; `compaction` `pre_tool` (a summarizer's calls); `step_limit`, every hook |
+| −100 | **guards**: hooks that halt (a budget, a permission) | `usage` `pre_input`, `pre_sample`; `permissions` `pre_tool`; `compaction` `pre_tool` (a summarizer's calls) |
 | −50 | an edit that the other edits must see | `attachments` `pre_input` |
-| 0 | **edits**: hooks that change the draft, the call or the line | `compaction` `pre_sample`, `pre_step`, `post_reply`, `post_step`; `agents` `pre_sample`; `skills` `pre_step` |
+| 0 | **edits**: hooks that change the draft, the call or the line (and the default) | `compaction` `pre_sample`, `pre_step`, `post_reply`, `post_step`; `agents` `pre_sample`; `skills` `pre_step`; `step_limit`, every hook |
 | +100 | **observers**: hooks that record or show what happened | `usage` `post_reply`; `tokens` `post_reply` |
 
 Built-ins have no place beyond their numbers: a drop-in or package at the same number runs after
@@ -91,11 +96,13 @@ them only because built-ins load first. The reasoning per built-in:
   Its status line is an observer.
 - **permissions**, **compaction**'s `pre_tool`: a refusal before any hook edits or answers the
   call; a later `pre_tool` can still change the outcome (model.md §7: not a sandbox).
-- **step_limit**: all hooks at −100. Its `post_step` turns auto-step off before the edits, so a
-  later `post_step` sees it off and stops cleanly (`examples/speculative/ralph.py` depends on
-  this); a hook that turns auto-step back on after it wins over the limit, as before, and one that
-  wants to stay bounded orders its `post_step` below −100. (Ordering it after the edits instead
-  was tried: ralph then wrote one more iteration after the limit.)
+- **step_limit**: all hooks at 0. They halt nothing (they count, and `post_step` turns
+  auto-step off), so they are not guards; at 0 load position keeps them exactly where they were
+  among the built-ins, and before every user extension at 0, so a user `post_step` sees auto-step
+  already off and stops cleanly (`examples/speculative/ralph.py` depends on this). A hook that
+  turns auto-step back on after it wins over the limit, as before; one that wants to stay bounded
+  orders its `post_step` below 0. (Ordering it after the edits was tried: ralph then wrote one
+  more iteration after the limit.)
 - **attachments** at −50: after the guards (a refused input is never read from disk), before the
   edits, which must see the files attached (D24 §1, now by number rather than by load order).
 - **compaction**: its triggers are edits (they move the cursor), after the guards so a budget
@@ -103,16 +110,23 @@ them only because built-ins load first. The reasoning per built-in:
   committed; they stay at 0 so a halting observer cannot hide a reply from the soft limit.
 - **agents**, **skills**: edits. **tokens**: an observer. `base_tools` and `prune` have no hooks.
 
-What changed against the old order: usage's budget hooks moved from last to first, and usage's
-and tokens' `post_reply` after every user extension's at 0. Nothing else among the built-ins
-moved relative to another.
+What changed against the old order (built-ins by key, then user extensions), point by point:
+
+- `pre_input`: usage moved from last (after attachments, step_limit) to first.
+- `pre_sample`: usage moved from last (after agents, compaction) to first.
+- `post_reply`: usage and tokens now run after every user extension at 0 (before, all built-ins
+  ran before any user extension); among the built-ins, compaction, tokens, usage is unchanged.
+- `pre_step`, `post_step`, `pre_tool`: unchanged, among the built-ins and against user
+  extensions at 0 (attachments' −50 and the guards' −100 keep them ahead of user hooks, where
+  load order had them).
 
 ### 5. Visibility
 
 - `tau ext list --hooks` prints each point that has a hook, then its extensions in run order with
   their numbers, a configured one marked: `pre_sample  usage -100, agents 0, compaction 0`.
   With `--json`, one object per point.
-- `tau config check` reports every bad order (§3) and prints the same table.
+- `tau config check` reports every bad order (§3), and stays silent when there is none: the
+  table is `tau ext list --hooks`'s.
 
 ### 6. usage is a leaf built-in
 
@@ -147,6 +161,9 @@ layer and inherit down groups like `options` (objects merge by key, `null` drops
   not have" (an extension may be a deleted file, or a project's config may name one a teammate
   has not installed), while a typo is still reported, with its path, at every start.
 - A key in a model that is not a model key and not an object is still an error (`unknown key`).
+  A section naming no loaded extension whose name is a near-miss of a model key (`optons`) is an
+  error suggesting the key, not a warning: a misspelt `options` would otherwise drop the
+  provider's settings with only a warning.
   An extension whose name is a model key (`model`, `options`, ...) cannot have a section.
 - **usage's price** is `models.X.usage.price`, the same four fields (and `cache_write_1h`), USD
   per million tokens (D24 ruling 6 stands). `Price` moves into usage and is no longer public.

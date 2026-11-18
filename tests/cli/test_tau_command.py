@@ -3,7 +3,6 @@
 import io
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -48,17 +47,10 @@ def test_a_usage_error_exits_2(world: World, argv: tuple[str, ...]) -> None:
 # -- tau config check
 
 
-def findings(world: World, cwd: Path | None = None) -> Result:
-    """`tau config check` without the hook table it prints after the findings (D28 section 5)."""
-    result = tau(world, "config", "check", cwd=cwd)
-    kept = [x for x in result.out.splitlines(keepends=True) if not re.match(r"(pre|post)_\w+  ", x)]
-    return Result(result.code, "".join(kept), result.err)
-
-
 def test_check_of_sound_config_or_none_at_all_is_silent_and_exits_0(world: World) -> None:
-    assert findings(world) == Result(0, "", "")
+    assert tau(world, "config", "check") == Result(0, "", "")
     world.user_config(models(a={}))
-    assert findings(world) == Result(0, "", "")
+    assert tau(world, "config", "check") == Result(0, "", "")
 
 
 def test_check_reports_line_and_column_and_exits_1(world: World) -> None:
@@ -78,7 +70,7 @@ def test_check_reports_the_options_of_the_extensions_it_knows(world: World) -> N
     world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": "ten"}}})
     assert "option 'limit' must be integer" in tau(world, "config", "check").out
     world.user_config({**models(a={}), "extensions": {"step_limit": {"limit": 10}, "mine": {}}})
-    assert findings(world) == Result(
+    assert tau(world, "config", "check") == Result(
         0,
         "config: warning: extensions.mine: no loaded extension is named 'mine'; "
         "its options are ignored\n",
@@ -148,7 +140,7 @@ def test_check_warns_about_an_unset_key_variable_unless_the_dotenv_sets_it(world
     assert "P_KEY" in tau(world, "config", "check", cwd=root).out
     (root / ".env").write_text("P_KEY=abc\n", encoding="utf-8")
     trust(world, root)  # approval pins the .env too
-    assert findings(world, cwd=root).out == ""
+    assert tau(world, "config", "check", cwd=root).out == ""
 
 
 def test_check_reports_a_symlinked_project_config(world: World) -> None:
@@ -431,7 +423,7 @@ def test_check_asks_the_mock_provider_about_its_settings(
     world: World, settings: dict[str, object], complaint: str | None
 ) -> None:
     world.user_config(mock_model(**settings))
-    result = findings(world)
+    result = tau(world, "config", "check")
     if complaint is None:
         assert result == Result(0, "", "")
     else:

@@ -1,5 +1,6 @@
 """Hook order (D28): which extension's hook runs first at a point, by `order` and by the config."""
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,8 +139,8 @@ async def test_a_tool_point_is_ordered_too(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("order", "message"),
     [
-        ("first", "extensions.a.order must be an integer or an object"),
-        ({"pre_input": "x"}, "extensions.a.order.pre_input must be an integer"),
+        ("first", "extensions.a.order: must be an integer or an object"),
+        ({"pre_input": "x"}, "extensions.a.order: the order of .pre_input. must be an integer"),
         ({"pre_tool": 1}, "has no hook 'pre_tool'"),
         ({"nope": 1}, "has no hook 'nope'"),
         (True, "must be an integer or an object"),
@@ -196,3 +197,69 @@ async def test_a_config_node_cannot_set_an_order(tmp_path: Path) -> None:
         await h.configure("tuned", {"order": 1})
     assert len(h.nodes()) == before
     await h.close()
+
+
+@scenario
+async def test_an_order_by_hook_over_an_integer_keeps_the_integer_for_the_rest(
+    tmp_path: Path,
+) -> None:
+    """`b`'s order is 50 for every hook but `pre_input`, which a nearer layer set to -100: `b`
+    halts the input before `a` (0)."""
+    user = tmp_path / "c.json"
+    user.write_text(json.dumps({"extensions": {"b": {"order": 50}}}))
+    models = {FAKE_MODEL: {"model": FAKE_MODEL, "provider": "fake"}}
+    cat = read_models(
+        user, cli={"models": models, "extensions": {"b": {"order": {"pre_input": -100}}}}
+    )
+    assert "halted by b" in await halted_by(tmp_path / "s", [halter("a"), halter("b")], cat)
+
+
+@pytest.mark.local_only("reload is the driver's own call")
+@scenario
+async def test_a_reload_whose_configured_order_does_not_fit_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The config orders `a`'s `pre_input`; an edited `a` without that hook (and with options)
+    is refused with `ConfigError`, and the driver keeps the old `a`: its hook still halts, and
+    it still has no options."""
+
+    @dataclass(frozen=True)
+    class Options:
+        size: int = 1
+
+    class Edited:
+        name = "a"
+        options = Options
+
+        async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
+            return None
+
+    h = await Harness.create(
+        tmp_path,
+        extensions=[halter("a")],  # pyright: ignore[reportArgumentType]
+        catalog=catalog(a={"pre_input": 5}),
+    )
+    with pytest.raises(ConfigError, match="no hook 'pre_input'"):
+        h.driver.reload([Edited()])  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ConfigError):
+        await h.client.options(h.cursor, "a")
+    await h.send("go")
+    await h.settle()
+    assert any("halted by a" in n for n in h.notices())
+    await h.close()
+
+
+@scenario
+async def test_an_option_named_order_is_refused(tmp_path: Path) -> None:
+    """`order` under `extensions.NAME` is the hook order, so no option may take the name."""
+
+    @dataclass(frozen=True)
+    class Options:
+        order: int = 0
+
+    class Ordered:
+        name = "ordered"
+        options = Options
+
+    with pytest.raises(DefinitionError, match="reserved"):
+        await Harness.create(tmp_path, extensions=[Ordered()])  # pyright: ignore[reportArgumentType]

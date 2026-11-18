@@ -8,7 +8,9 @@ a permission), `EDIT` (0: a hook that changes the draft or the line) and `OBSERV
 that records or shows what happened); an extension may use any integer.
 
 An order, declared or configured, is an `int` (every hook of the extension) or an object from
-hook point to `int` (those hooks; the others keep what they had). A declared mapping must name
+hook point to `int` (those hooks; the others keep what they had), where the key `"*"` is every
+hook the object does not name (an object laid over an integer in a nearer config layer keeps the
+integer there). A declared mapping must name
 hooks the extension has (`DefinitionError`); a configured one must too, and its values must be
 integers (`ConfigError`). The config's mapping is laid over the declared one, hook by hook.
 """
@@ -23,11 +25,13 @@ from tau._protocols import CURSOR_POINTS, TOOL_POINTS, Extension
 from tau._values import DefinitionError
 
 GUARD = -100
-"""The conventional order of a hook that halts: a budget, a permission, a limit."""
+"""The conventional order of a hook that halts: a budget, a permission."""
 EDIT = 0
 """The conventional order of a hook that changes the draft, the call or the line (the default)."""
 OBSERVE = 100
 """The conventional order of a hook that only records or shows what happened."""
+EVERY_HOOK = "*"
+"""The key of an order object for every hook it does not name."""
 POINTS = (*CURSOR_POINTS, *TOOL_POINTS)
 """Every hook point, cursor points in the order a step reaches them, then the tool points."""
 
@@ -47,13 +51,15 @@ def _problem(name: str, value: object, hooks: Sequence[str], what: str) -> str |
     if _is_int(value):
         return None if hooks else f"{what}: extension {name!r} has no hooks to order"
     if not isinstance(value, Mapping):
-        return f"{what} must be an integer or an object of hook point to integer, not {value!r}"
+        return f"{what}: must be an integer or an object of hook point to integer, not {value!r}"
     for hook, number in cast("Mapping[object, object]", value).items():
-        if hook not in hooks:
+        if hook == EVERY_HOOK and not hooks:
+            return f"{what}: extension {name!r} has no hooks to order"
+        if hook not in hooks and hook != EVERY_HOOK:
             known = "a hook point" if hook in POINTS else "not a hook point"
             return f"{what}: extension {name!r} has no hook {hook!r} ({known}); its hooks: {having}"
         if not _is_int(number):
-            return f"{what}.{hook} must be an integer, not {number!r}"
+            return f"{what}: the order of {hook!r} must be an integer, not {number!r}"
     return None
 
 
@@ -61,7 +67,9 @@ def _spread(value: object, hooks: Sequence[str]) -> dict[str, int]:
     """A checked order as one integer per hook it sets."""
     if _is_int(value):
         return dict.fromkeys(hooks, cast("int", value))
-    return {str(k): cast("int", v) for k, v in cast("Mapping[object, object]", value).items()}
+    given = {str(k): cast("int", v) for k, v in cast("Mapping[object, object]", value).items()}
+    every = given.pop(EVERY_HOOK, None)
+    return given if every is None else {**dict.fromkeys(hooks, every), **given}
 
 
 def declared_order(extension: object) -> dict[str, int]:

@@ -283,13 +283,26 @@ fn status(screen: &Screen) -> Line<'static> {
     Line::from(spans)
 }
 
-/// What each extension shows on the viewed cursor, one line each: `extension: text`.
+/// What each extension shows on the viewed cursor: `extension: text`, a text of several lines
+/// as several lines, the later ones indented under the first.
 fn shown_lines(model: &Model) -> Vec<Line<'static>> {
+    let style = Style::new().fg(Color::DarkGray);
     model.view().map_or_else(Vec::new, |v| {
         v.shown
             .iter()
-            .map(|(who, text)| {
-                Line::styled(format!("{who}: {text}"), Style::new().fg(Color::DarkGray))
+            .flat_map(|(who, text)| {
+                let indent = " ".repeat(who.chars().count() + 2);
+                text.split('\n')
+                    .enumerate()
+                    .map(|(i, line)| {
+                        let lead = if i == 0 {
+                            format!("{who}: ")
+                        } else {
+                            indent.clone()
+                        };
+                        Line::styled(format!("{lead}{line}"), style)
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     })
@@ -564,6 +577,21 @@ mod screen_tests {
         assert!(lines[5].starts_with("idle | cursor 0 | m"), "{lines:?}");
         assert!(lines[6].starts_with("plan: plan mode on"), "{lines:?}");
         assert!(lines[7].starts_with("usage: 12 tokens"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_shown_text_of_several_lines_is_several_lines_under_its_extension() {
+        let mut model = talked(1);
+        hear(
+            &mut model,
+            json!({"kind": "CursorView", "cursor": 0, "at": 2, "busy": false, "auto": false,
+                   "questions": [], "items": [], "ending": "Done", "hook_error": null,
+                   "model": "m", "shown": [["plan", "step 1\nstep 2"]]}),
+        );
+        let lines = drawn(&model, (50, 8), 0);
+        assert!(lines[5].starts_with("idle | cursor 0 | m"), "{lines:?}");
+        assert!(lines[6].starts_with("plan: step 1"), "{lines:?}");
+        assert!(lines[7].starts_with("      step 2"), "{lines:?}");
     }
 
     fn drawn(model: &Model, size: (u16, u16), scroll: usize) -> Vec<String> {

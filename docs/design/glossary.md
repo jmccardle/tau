@@ -2227,7 +2227,7 @@ shape, overrides it hook by hook; it is not an option (every extension has it, a
 `ModelCatalog.orders` holds it apart from `extensions`), it is read from the config layers only
 (`--set NAME.order[.HOOK]=N` for one run; a `Config` node cannot set it), and a bad value for a
 loaded extension stops the start and is an error in `tau config check`. Conventional values:
-**guard** −100 (a hook that halts: a budget, a permission, a limit), **edit** 0, **observer** +100
+**guard** −100 (a hook that halts: a budget, a permission), **edit** 0, **observer** +100
 (a hook that records or shows). `tau ext list --hooks` prints each point's run order.
 
 ### hook point

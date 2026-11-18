@@ -10,13 +10,22 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from tau._config import ConfigError, ModelConfig, key_problem, url_problem
-from tau._config_keys import context_files, extensions, load_switches, system_prompt, tui_settings
+from tau._config_keys import (
+    ORDER,
+    context_files,
+    default_model,
+    extensions,
+    load_switches,
+    match_names,
+    system_prompt,
+    tui_settings,
+)
 from tau._config_tree import (
     ConfigProblem,
     Leaf,
@@ -27,7 +36,7 @@ from tau._config_tree import (
     source_of,
     suggest,
 )
-from tau._hook_order import order_problem
+from tau._hook_order import EVERY_HOOK, order_problem
 from tau._model_sections import section_problems
 from tau._options import make_layer_options, option_fields, unknown_options
 from tau._protocols import Provider
@@ -35,6 +44,8 @@ from tau._tools import tool_names
 from tau._values import Context, DefinitionError
 
 CLI = "session"
+ALWAYS = ("tau", "session_name")
+"""The extensions every start has, outside the sources (D19): the driver's and the startup's."""
 MODEL_KEYS = (  # the keys of a model; any other object is a section (D28)
     "model",
     "base_url",
@@ -137,7 +148,7 @@ class ModelCatalog:
         """Qualified names matching `name`. A name with `:` is an exact qualified name;
         one without is a bare search over last segments (top-level `y` and `g:y`
         both match `y`). The caller decides on 0, 1, or many."""
-        return _match(self.models, name)
+        return match_names(self.models, name)
 
     def resolve(self, qualified: str) -> ModelConfig:
         """The model named exactly `qualified`; `ConfigError` if there is none."""
@@ -247,13 +258,16 @@ def _load_layer(source: str, text: str, problems: Problems) -> Tree | None:
 
 def _merge(base: Tree, over: Tree) -> Tree:
     """Objects by key; anything else replaces. A null stays as a tombstone: it also
-    drops what a group passes down."""
+    drops what a group passes down. A hook `order` object over an integer keeps the integer
+    for the hooks it does not name (`"*"`, D28 section 3)."""
     out = dict(base)
     for key, value in over.items():
         if isinstance(value, Leaf):
             out[key] = value
         else:
             inherited = out.get(key)
+            if key == ORDER and isinstance(inherited, Leaf) and inherited.value is not None:
+                inherited = cast("Tree", {EVERY_HOOK: inherited})
             out[key] = _merge(inherited if isinstance(inherited, dict) else {}, value)
     return out
 
@@ -353,13 +367,6 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
         if other is not None and other not in own:
             out.pop(other, None)
     return out
-
-
-def _match(names: Iterable[str], name: str) -> tuple[str, ...]:
-    """A name with ':' is an exact qualified name; one without is a bare search."""
-    if ":" in name:
-        return tuple(q for q in names if q == name)
-    return tuple(q for q in names if q.rsplit(":", 1)[-1] == name)
 
 
 def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
@@ -615,26 +622,6 @@ def _read_layers(
     return merged, kinds
 
 
-def _default_model(merged: Tree, declared: list[str], problems: Problems) -> str | None:
-    node = merged.get("default_model")
-    if node is None or (isinstance(node, Leaf) and node.value is None):
-        return None
-    source = source_of(node)
-    if not (isinstance(node, Leaf) and isinstance(node.value, str) and node.value):
-        problems.add("error", "'default_model' must be a string", source, "default_model")
-        return None
-    name = node.value
-    found = _match(declared, name)
-    if not found:
-        problems.add(
-            "error", f"default_model {name!r} is not in your config", source, "default_model"
-        )
-    elif len(found) > 1:
-        msg = f"default_model {name!r} is ambiguous; use one of {list(found)}"
-        problems.add("error", msg, source, "default_model")
-    return name
-
-
 def _build(
     user: Layer | None,
     project: Layer | None,
@@ -658,7 +645,7 @@ def _build(
         problems.add("error", "'models' must be an object", source_of(models), "models")
     resolver.provider_problems()
     resolver.key_problems()
-    default = _default_model(merged, resolver.declared, problems)
+    default = default_model(merged, resolver.declared, problems)
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
     context, context_source = context_files(merged, problems)
@@ -691,7 +678,7 @@ def _unprovided(
     warn: Callable[[str, str], None],
 ) -> None:
     """Warn of options set for an extension nothing provides, or that takes none."""
-    loaded = {str(getattr(e, "name")) for e in extensions}  # noqa: B009
+    loaded = {str(getattr(e, "name")) for e in extensions} | set(ALWAYS)  # noqa: B009
     for key in sorted(catalog.extensions):
         if key not in loaded and key not in off and key != "retry":
             warn(
@@ -725,6 +712,10 @@ def option_problems(
         source = where.get(f"{name}.{field}") if field else None
         problems.append(ConfigProblem("warning", message, source or where.get(name), path))
 
+    for name in ALWAYS:  # always loaded, and without hooks: an order for them is a mistake
+        if name in catalog.orders:
+            message = f"extension {name!r} has no hooks to order"
+            problems.append(ConfigProblem("error", message, where.get(name), f"extensions.{name}"))
     _unprovided(catalog, extensions, off, warn)
     tools = tool_names(extensions)
     for ext in extensions:

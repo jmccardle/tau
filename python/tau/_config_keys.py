@@ -3,6 +3,7 @@ read from the merged tree into a plain value, with its problems added to the lay
 `tui` is the terminal UI's own (D23): an object whose only key is `theme`, and the user's alone
 (a project that sets it is an error, found as the layers are read)."""
 
+from collections.abc import Iterable
 from typing import cast
 
 from tau._config_tree import Leaf, Problems, Tree, plain, source_of, suggest
@@ -114,3 +115,30 @@ def tui_settings(merged: Tree, problems: Problems) -> dict[str, str]:
         else:
             settings[key] = value
     return settings
+
+
+def match_names(names: Iterable[str], name: str) -> tuple[str, ...]:
+    """A name with ':' is an exact qualified name; one without is a bare search."""
+    if ":" in name:
+        return tuple(q for q in names if q == name)
+    return tuple(q for q in names if q.rsplit(":", 1)[-1] == name)
+
+
+def default_model(merged: Tree, declared: list[str], problems: Problems) -> str | None:
+    node = merged.get("default_model")
+    if node is None or (isinstance(node, Leaf) and node.value is None):
+        return None
+    source = source_of(node)
+    if not (isinstance(node, Leaf) and isinstance(node.value, str) and node.value):
+        problems.add("error", "'default_model' must be a string", source, "default_model")
+        return None
+    name = node.value
+    found = match_names(declared, name)
+    if not found:
+        problems.add(
+            "error", f"default_model {name!r} is not in your config", source, "default_model"
+        )
+    elif len(found) > 1:
+        msg = f"default_model {name!r} is ambiguous; use one of {list(found)}"
+        problems.add("error", msg, source, "default_model")
+    return name

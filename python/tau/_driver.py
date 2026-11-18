@@ -326,16 +326,18 @@ class Driver:
 
     def _adopt(self, extensions: Sequence[Extension]) -> None:
         """Make `extensions` (and the driver's own `tools`) what the driver runs from the next
-        job it dispatches. `DefinitionError`, with nothing changed, as at construction."""
+        job it dispatches. `DefinitionError` (or `ConfigError` for a configured hook order that
+        does not fit them), with nothing changed, as at construction."""
         checked = check_extensions(extensions)
         every = check_extensions([Tau(), *checked])
         listed, owners = assemble_tools(self._given, every)
         tools, keywords = check_tools(listed)
         commands = assemble_commands(every)
+        order = HookOrder.of(every, self._catalog.orders)  # before any change: it may raise
         self._options.reload(checked)
         self._hub.keep_shown([e.name for e in every])
         self._commands.use(commands)
-        self._order = HookOrder.of(every, self._catalog.orders)
+        self._order = order
         self._extensions, self._tools, self._owners = every, tools, owners
         self._tool_keywords = keywords
 

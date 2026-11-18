@@ -1,20 +1,13 @@
-"""What `tau ext list --hooks` and `tau config check` print about hook order (D28 section 5):
+"""What `tau ext list --hooks` prints about hook order (D28 section 5):
 one line per hook point that has a hook, its extensions in the order they run."""
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from tau._config_layers import option_problems
 from tau._extensions import inspect_extensions
 from tau._hook_order import HookOrder
-from tau._protocols import Extension
 from tau._startup import LoadedConfig, off_keys
-
-
-def hook_table(extensions: Sequence[Extension], orders: Mapping[str, object]) -> HookOrder:
-    """The hook order of `extensions` (in load order) under the config's `orders`.
-    `ConfigError` or `DefinitionError` for a bad order, as a start would raise."""
-    return HookOrder.of(extensions, orders)
 
 
 def hook_lines(table: HookOrder) -> list[str]:
@@ -64,5 +57,5 @@ def ext_hooks(
     ]
     if errors:
         return errors, 1
-    table = hook_table(result.extensions, loaded.catalog.orders)
+    table = HookOrder.of(result.extensions, loaded.catalog.orders)
     return (hook_json(table) if as_json else hook_lines(table)), 0

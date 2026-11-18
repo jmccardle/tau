@@ -1061,7 +1061,6 @@ provider found the first request to be a byte prefix of the second when it sent 
 ```python
 class StepLimit
     name = 'step_limit'
-    order = GUARD
     options = Options
 ```
 
@@ -1090,10 +1089,11 @@ happens after `post_step`: the count stays as it was until the next input.
 
 A hook that leaves an input pending offers it again every step, so
 `pre_input` restarts the count every time: this limit does not bound that.
-Its hooks are guards (`order` -100, D28): they run before the edits, so a later
-`post_step` sees auto-step already off and can stop cleanly. A hook that turns
-auto-step back on from `post_step` after it wins over the limit; one that wants to
-stay bounded by it orders its `post_step` below -100.
+Its hooks halt nothing, so they keep the default order 0 (D28): at a tie, load
+position puts it after the built-ins before it by key and before every user
+extension, so a user `post_step` at 0 sees auto-step already off and can stop
+cleanly. A hook that turns auto-step back on from `post_step` after it wins over
+the limit; one that wants to stay bounded by it orders its `post_step` below 0.
 
 ### StepLimit.__init__
 
