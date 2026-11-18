@@ -49,14 +49,15 @@ import json
 import os
 import re
 import sys
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, ClassVar, Literal, cast
 
 from tau._agents import Agents
 from tau._base_tools import BaseTools
 from tau._handles import NodeHandle
+from tau._hook_order import GUARD
 from tau._protocols import CallDraft
 from tau._tools import assemble_tools
 
@@ -526,6 +527,8 @@ class Permissions:
     session's working directory, which a relative path is resolved against."""
 
     name = "permissions"
+    order: ClassVar[Mapping[str, int]] = {"pre_tool": GUARD}
+    """A refusal comes before any hook that would edit or answer the call (D28)."""
     options = Options
 
     def __init__(self, cwd: Path) -> None:

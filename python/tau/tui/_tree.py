@@ -27,8 +27,8 @@ from textual.widgets import Static, Tree
 
 from tau._client import Client
 from tau._core import Node
+from tau._counts import show
 from tau._events import Appended, CursorGone, CursorView, Event, Labels
-from tau._usage import show
 from tau.tui._dialogs import TauDialog, TextDialog
 from tau.tui._treeplan import Key, TreeRow
 from tau.tui._treerows import TreeRows, ZoneTree

@@ -51,10 +51,18 @@ class UserConfig:
         data = self._read(path)
         extensions = dict(cast("dict[str, object] | None", data.get("extensions")) or {})
         for name, fields in changes.items():
-            extensions[name] = {
-                **(cast("dict[str, object] | None", extensions.get(name)) or {}),
-                **fields,
-            }
+            held = dict(cast("dict[str, object] | None", extensions.get(name)) or {})
+            for key, value in fields.items():  # an object (an `order` by hook) merges by key
+                before = held.get(key)
+                if isinstance(value, dict) and isinstance(before, int) and key == "order":
+                    before = {"*": before}  # an order by hook over one for all (D28 section 3)
+                both = isinstance(before, dict) and isinstance(value, dict)
+                held[key] = (
+                    {**cast("dict[str, object]", before), **cast("dict[str, object]", value)}
+                    if both
+                    else value
+                )
+            extensions[name] = held
         data["extensions"] = extensions
         try:
             body = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"

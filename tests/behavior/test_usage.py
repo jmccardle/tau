@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from fakes import FAKE_PROVIDER, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Author,
@@ -24,7 +25,7 @@ from tau import (
     Stop,
     Subject,
     TreeHandle,
-    Usage,
+    check_config,
     model_config,
     read_models,
 )
@@ -71,7 +72,7 @@ async def session(
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider(replies),
-        extensions=[Usage()],
+        extensions=[shipped("usage")],
         catalog=cat,
         config=model_config(model),
     )
@@ -92,7 +93,7 @@ async def line(h: Harness) -> str:
 
 @scenario
 async def test_the_status_line_after_a_reply(tmp_path: Path) -> None:
-    cat = catalog(a={"price": PRICE, "context_window": 200_000})
+    cat = catalog(a={"usage": {"price": PRICE}, "context_window": 200_000})
     h = await session(tmp_path, [reply(12_300, 812, cached=11_800)], cat)
     await say(h)
     assert await line(h) == "12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session"
@@ -122,7 +123,7 @@ async def test_a_server_that_reports_no_cache_has_no_cached_share(tmp_path: Path
 
 @scenario
 async def test_a_reply_with_no_usage_says_so_and_is_not_in_the_totals(tmp_path: Path) -> None:
-    h = await session(tmp_path, [reply()], catalog(a={"price": PRICE}))
+    h = await session(tmp_path, [reply()], catalog(a={"usage": {"price": PRICE}}))
     await say(h)
     assert await line(h) == "a reported no usage"
     assert await h.run("usage") == (
@@ -137,7 +138,9 @@ async def test_a_reply_with_no_usage_says_so_and_is_not_in_the_totals(tmp_path: 
 async def test_cache_writes_are_priced_at_the_write_price(tmp_path: Path) -> None:
     """1,000 input = 200 read + 300 written + 500 fresh: 500*3 + 200*0.3 + 300*3.75 + 100*15."""
     h = await session(
-        tmp_path, [reply(1000, 100, cached=200, written=300)], catalog(a={"price": PRICE})
+        tmp_path,
+        [reply(1000, 100, cached=200, written=300)],
+        catalog(a={"usage": {"price": PRICE}}),
     )
     await say(h)
     cents = Decimal(500 * 3) + Decimal("0.3") * 200 + Decimal("3.75") * 300 + 100 * 15
@@ -154,7 +157,9 @@ async def test_a_total_of_many_replies_is_exact(tmp_path: Path) -> None:
     """Twenty replies of 500 output tokens at 0.15 USD per million: exactly $0.0015, which
     rounds to $0.002. In binary floats 0.15 is a hair under, and the sum shows $0.001."""
     price = {"input": 0, "output": 0.15, "cache_read": 0, "cache_write": 0}
-    h = await session(tmp_path, [reply(1000, 500) for _ in range(20)], catalog(a={"price": price}))
+    h = await session(
+        tmp_path, [reply(1000, 500) for _ in range(20)], catalog(a={"usage": {"price": price}})
+    )
     await say(h, 20)
     table = await h.run("usage")
     assert table is not None
@@ -183,11 +188,11 @@ class Switch:
 async def test_a_model_change_mid_walk_prices_each_reply_by_its_own_model(tmp_path: Path) -> None:
     cheap = {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}
     dear = {"input": 10, "output": 10, "cache_read": 10, "cache_write": 10}
-    cat = catalog(a={"price": cheap}, b={"price": dear})
+    cat = catalog(a={"usage": {"price": cheap}}, b={"usage": {"price": dear}})
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(1_000_000, 0), reply(1_000_000, 0)]),
-        extensions=[Usage(), Switch("b")],
+        extensions=[shipped("usage"), Switch("b")],
         catalog=cat,
         config=model_config("a"),
     )
@@ -204,11 +209,11 @@ async def test_a_model_change_mid_walk_prices_each_reply_by_its_own_model(tmp_pa
 
 @scenario
 async def test_the_session_total_marks_a_model_it_could_not_price(tmp_path: Path) -> None:
-    cat = catalog(a={"price": PRICE}, b={})
+    cat = catalog(a={"usage": {"price": PRICE}}, b={})
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(1_000_000, 0), reply(1_000, 0)]),
-        extensions=[Usage(), Switch("b")],
+        extensions=[shipped("usage"), Switch("b")],
         catalog=cat,
         config=model_config("a"),
     )
@@ -223,7 +228,7 @@ async def test_the_session_total_marks_a_model_it_could_not_price(tmp_path: Path
 @scenario
 async def test_usage_counts_every_cursor_not_just_the_one_asking(tmp_path: Path) -> None:
     h = await session(
-        tmp_path, [reply(1_000_000, 0), reply(1_000_000, 0)], catalog(a={"price": PRICE})
+        tmp_path, [reply(1_000_000, 0), reply(1_000_000, 0)], catalog(a={"usage": {"price": PRICE}})
     )
     await say(h)
     other = await h.client.open(h.session.cursor(h.cursor).at)
@@ -238,11 +243,13 @@ async def test_usage_counts_every_cursor_not_just_the_one_asking(tmp_path: Path)
 @scenario
 async def test_the_price_in_the_config_now_prices_the_whole_session(tmp_path: Path) -> None:
     """Cost is not stored: a driver started on the same session with another price re-prices it."""
-    h = await session(tmp_path, [reply(1_000_000, 0)], catalog(a={"price": PRICE}))
+    h = await session(tmp_path, [reply(1_000_000, 0)], catalog(a={"usage": {"price": PRICE}}))
     await say(h)
     await h.close()
     dearer = dict(PRICE, input=30)
-    again = await Harness.load(tmp_path, extensions=[Usage()], catalog=catalog(a={"price": dearer}))
+    again = await Harness.load(
+        tmp_path, extensions=[shipped("usage")], catalog=catalog(a={"usage": {"price": dearer}})
+    )
     table = await again.run("usage")
     assert table is not None
     assert table.splitlines()[1].split()[-1] == "$30.00"
@@ -264,7 +271,7 @@ async def test_a_cache_miss_soon_after_a_reply_of_the_same_model_tells_the_clien
     h = await session(
         tmp_path,
         [reply(5000, 10, cached=0), reply(5000, 10, cached=0), reply(5000, 10, cached=0)],
-        catalog(a={"price": PRICE}),
+        catalog(a={"usage": {"price": PRICE}}),
     )
     await say(h)
     assert h.notices() == [], "the first reply has no earlier reply to have cached"
@@ -295,8 +302,8 @@ async def test_no_cache_notice_when_the_miss_is_not_a_miss(tmp_path: Path) -> No
         h = await Harness.create(
             tmp_path / name,
             provider=FakeProvider([first, second]),
-            extensions=[Usage()],
-            catalog=catalog(a={"price": PRICE}),
+            extensions=[shipped("usage")],
+            catalog=catalog(a={"usage": {"price": PRICE}}),
             config=config,
         )
         await say(h)
@@ -308,10 +315,10 @@ async def test_no_cache_notice_when_the_miss_is_not_a_miss(tmp_path: Path) -> No
 
 @scenario
 async def test_a_model_the_catalog_lost_is_marked_not_dropped(tmp_path: Path) -> None:
-    h = await session(tmp_path, [reply(1000, 10)], catalog(a={"price": PRICE}))
+    h = await session(tmp_path, [reply(1000, 10)], catalog(a={"usage": {"price": PRICE}}))
     await say(h)
     await h.close()
-    again = await Harness.load(tmp_path, extensions=[Usage()], catalog=catalog(z={}))
+    again = await Harness.load(tmp_path, extensions=[shipped("usage")], catalog=catalog(z={}))
     table = await again.run("usage")
     assert table is not None
     row = table.splitlines()[1]
@@ -357,12 +364,12 @@ async def test_a_tree_handle_reads_models_by_node_and_name(tmp_path: Path) -> No
 async def test_the_cache_notice_is_for_a_priced_model_and_never_suggests_another_provider(
     tmp_path: Path,
 ) -> None:
-    for name, settings in {"unpriced": {}, "priced": {"price": PRICE}}.items():
+    for name, settings in {"unpriced": {}, "priced": {"usage": {"price": PRICE}}}.items():
         cat = read_models(cli={"models": {"a": {"model": "a", "provider": "openai", **settings}}})
         h = await Harness.create(
             tmp_path / name,
             provider=OpenAICompatible([reply(5000, 1, cached=0), reply(5000, 1, cached=0)]),
-            extensions=[Usage()],
+            extensions=[shipped("usage")],
             catalog=cat,
             config=model_config("a"),
         )
@@ -382,7 +389,7 @@ async def test_an_aborted_reply_is_said_to_be_aborted_and_counted_apart(tmp_path
     h = await session(
         tmp_path,
         [Reply([Part.Text("par"), Part.Text("tial")], Stop.End, gate=gate, gate_after=1)],
-        catalog(a={"price": PRICE}),
+        catalog(a={"usage": {"price": PRICE}}),
     )
     await h.send("go")
     await h.until(lambda: gate.held == 1)
@@ -404,7 +411,9 @@ async def test_a_usage_the_provider_could_not_read_says_why_on_the_status_line(
     sent = {"prompt_tokens": "many", "completion_tokens": 1}
     meta = json.dumps({"usage_raw": sent})
     h = await session(
-        tmp_path, [Reply([Part.Text("ok")], Stop.End, meta=meta)], catalog(a={"price": PRICE})
+        tmp_path,
+        [Reply([Part.Text("ok")], Stop.End, meta=meta)],
+        catalog(a={"usage": {"price": PRICE}}),
     )
     await say(h)
     shown = await line(h)
@@ -420,7 +429,7 @@ async def test_a_bad_count_in_a_past_reply_never_fails_a_later_step(tmp_path: Pa
     h = await session(
         tmp_path,
         [reply(10, 1, cached=20), reply(10, 1), reply(10, 1)],
-        catalog(a={"price": PRICE}),
+        catalog(a={"usage": {"price": PRICE}}),
     )
     await say(h, 3)
     view = await h.view()
@@ -431,7 +440,9 @@ async def test_a_bad_count_in_a_past_reply_never_fails_a_later_step(tmp_path: Pa
     assert table.splitlines()[1].split()[:2] == ["a", "2"]
     assert "1 reply reported no usage and not counted (node 3: meta.usage reports more" in table
     await h.close()
-    again = await Harness.load(tmp_path, extensions=[Usage()], catalog=catalog(a={"price": PRICE}))
+    again = await Harness.load(
+        tmp_path, extensions=[shipped("usage")], catalog=catalog(a={"usage": {"price": PRICE}})
+    )
     reopened = await again.run("usage")
     assert reopened == table
     await again.close()
@@ -452,8 +463,8 @@ async def test_the_total_row_ends_in_a_plus_when_a_model_could_not_be_priced(
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(1_000_000, 0), reply(1_000, 0)]),
-        extensions=[Usage(), Switch("b")],
-        catalog=catalog(a={"price": PRICE}, b={}),
+        extensions=[shipped("usage"), Switch("b")],
+        catalog=catalog(a={"usage": {"price": PRICE}}, b={}),
         config=model_config("a"),
     )
     await say(h, 2)
@@ -470,12 +481,12 @@ async def test_money_and_token_edges_round_consistently(tmp_path: Path) -> None:
     h = await session(
         tmp_path,
         [reply(999_950, 999_600), reply(5, 0)],
-        catalog(a={"price": price}),
+        catalog(a={"usage": {"price": price}}),
     )
     await say(h)
     assert await line(h) == "1.0M in · 999.6k out · $1.00 · $1.00 session"
     await h.close()
-    z = await session(tmp_path / "z", [reply(5, 0)], catalog(a={"price": price}))
+    z = await session(tmp_path / "z", [reply(5, 0)], catalog(a={"usage": {"price": price}}))
     await say(z)
     assert await line(z) == "5 in · 0 out · $0 · $0 session"
     await z.close()
@@ -488,7 +499,7 @@ async def test_hour_long_cache_writes_are_priced_at_their_own_price(tmp_path: Pa
     usage = {"input": 1000, "output": 100, "cached": 200, "written": 300, "written_1h": 100}
     script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
     price = {**PRICE, "cache_write_1h": 6}
-    h = await session(tmp_path, script, catalog(a={"price": price}))
+    h = await session(tmp_path, script, catalog(a={"usage": {"price": price}}))
     await say(h)
     spent = Decimal(500 * 3) + Decimal("0.3") * 200 + Decimal("3.75") * 200 + 6 * 100 + 100 * 15
     assert spent.scaleb(-6) == Decimal("0.00441")
@@ -502,7 +513,7 @@ async def test_an_hour_long_write_costs_a_write_when_the_price_names_no_other(
 ) -> None:
     usage = {"input": 2_000_000, "output": 0, "written": 2_000_000, "written_1h": 2_000_000}
     script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
-    h = await session(tmp_path, script, catalog(a={"price": PRICE}))
+    h = await session(tmp_path, script, catalog(a={"usage": {"price": PRICE}}))
     await say(h)
     assert "$7.50" in await line(h), "two million at 3.75, the write price"
     await h.close()
@@ -512,18 +523,26 @@ async def test_an_hour_long_write_costs_a_write_when_the_price_names_no_other(
 async def test_an_hour_long_write_at_its_own_price_shows_in_the_total(tmp_path: Path) -> None:
     usage = {"input": 2_000_000, "output": 0, "written": 2_000_000, "written_1h": 2_000_000}
     script = [Reply([Part.Text("ok")], Stop.End, meta=json.dumps({"usage": usage}))]
-    h = await session(tmp_path, script, catalog(a={"price": {**PRICE, "cache_write_1h": 6}}))
+    h = await session(
+        tmp_path, script, catalog(a={"usage": {"price": {**PRICE, "cache_write_1h": 6}}})
+    )
     await say(h)
     assert "$12.00" in await line(h)
     await h.close()
 
 
 def test_a_price_may_name_the_hour_long_write_and_nothing_else_new() -> None:
-    assert catalog(a={"price": {**PRICE, "cache_write_1h": 6}}).resolve("a").price is not None
-    with pytest.raises(ConfigError, match="unknown keys"):
-        catalog(a={"price": {**PRICE, "cache_write_2h": 1}})
-    with pytest.raises(ConfigError, match="cache_write_1h"):
-        catalog(a={"price": {**PRICE, "cache_write_1h": -1}})
+    def problems(price: dict[str, object]) -> list[str]:
+        found = check_config(
+            cli={"models": {"a": {"model": "a", "provider": "fake", "usage": {"price": price}}}},
+            providers={"fake": FakeProvider([])},  # pyright: ignore[reportArgumentType]
+            extensions=[shipped("usage")],
+        )
+        return [p.message for p in found if p.severity == "error"]
+
+    assert problems({**PRICE, "cache_write_1h": 6}) == []
+    assert any("unknown keys" in m for m in problems({**PRICE, "cache_write_2h": 1}))
+    assert any("cache_write_1h" in m for m in problems({**PRICE, "cache_write_1h": -1}))
 
 
 @scenario
@@ -602,8 +621,8 @@ async def test_a_reply_an_extension_answered_is_not_a_sample_that_reported_no_us
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(1000, 100)]),
-        extensions=[Usage(), Answers()],
-        catalog=catalog(a={"price": PRICE}),
+        extensions=[shipped("usage"), Answers()],
+        catalog=catalog(a={"usage": {"price": PRICE}}),
         config=model_config("a"),
     )
     await say(h)
@@ -629,7 +648,9 @@ def dollar(text: str = "ok") -> Reply:
 
 @scenario
 async def test_with_no_max_usd_nothing_is_limited(tmp_path: Path) -> None:
-    h = await session(tmp_path, [dollar() for _ in range(3)], catalog(a={"price": DOLLAR}))
+    h = await session(
+        tmp_path, [dollar() for _ in range(3)], catalog(a={"usage": {"price": DOLLAR}})
+    )
     await say(h, 3)
     assert h.notices() == []
     assert (await h.view()).ending == Ending.Done()
@@ -642,8 +663,8 @@ async def test_new_input_is_refused_once_the_budget_is_spent(tmp_path: Path) -> 
     h = await Harness.create(
         tmp_path,
         provider=provider,
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await h.configure("usage", {"max_usd": 1.5})
@@ -667,8 +688,8 @@ async def test_a_tool_loop_halts_at_the_next_sample_once_spend_reached_the_limit
         tmp_path,
         provider=provider,
         tools=[tool],
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await h.configure("usage", {"max_usd": 0.5})
@@ -690,8 +711,8 @@ async def test_raising_max_usd_lets_the_user_go_on_and_resume_a_halted_loop(
         tmp_path,
         provider=provider,
         tools=[tool],
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await h.configure("usage", {"max_usd": 1})
@@ -722,11 +743,11 @@ async def test_a_model_with_no_price_cannot_be_held_to_a_budget_and_says_what_to
 
 @scenario
 async def test_a_reply_of_a_model_with_no_price_is_never_counted_as_free(tmp_path: Path) -> None:
-    cat = catalog(a={}, b={"price": DOLLAR})
+    cat = catalog(a={}, b={"usage": {"price": DOLLAR}})
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([reply(10, 10), dollar()]),
-        extensions=[Usage(), Switch("b")],
+        extensions=[shipped("usage"), Switch("b")],
         catalog=cat,
         config=model_config("a"),
     )
@@ -747,8 +768,8 @@ async def test_a_finished_reply_with_no_usage_is_estimated_for_the_budget(tmp_pa
     h = await Harness.create(
         tmp_path,
         provider=provider,
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await say(h)  # no budget yet: only /usage says it is estimated
@@ -777,8 +798,8 @@ async def test_an_aborted_reply_is_estimated_and_lets_work_continue_under_the_li
     h = await Harness.create(
         tmp_path,
         provider=provider,
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await h.configure("usage", {"max_usd": 1})
@@ -806,7 +827,7 @@ async def test_a_later_reply_that_reports_usage_corrects_the_estimate(tmp_path: 
     h = await session(
         tmp_path,
         [reply(100, 10), reply(text="t" * 24), reply(270, 20)],
-        catalog(a={"price": price}),
+        catalog(a={"usage": {"price": price}}),
     )
 
     async def estimated() -> str:
@@ -830,8 +851,8 @@ async def test_with_no_max_usd_a_reply_that_reported_no_usage_limits_nothing(
     h = await Harness.create(
         tmp_path,
         provider=provider,
-        extensions=[Usage()],
-        catalog=catalog(a={"price": DOLLAR}),
+        extensions=[shipped("usage")],
+        catalog=catalog(a={"usage": {"price": DOLLAR}}),
         config=model_config("a"),
     )
     await say(h, 2)
@@ -844,7 +865,7 @@ async def test_with_no_max_usd_a_reply_that_reported_no_usage_limits_nothing(
 async def test_the_budget_line_shows_two_decimals_and_more_only_to_be_nonzero(
     tmp_path: Path,
 ) -> None:
-    h = await session(tmp_path, [reply(1000, 0)], catalog(a={"price": DOLLAR}))
+    h = await session(tmp_path, [reply(1000, 0)], catalog(a={"usage": {"price": DOLLAR}}))
     await h.configure("usage", {"max_usd": 0.0004})
     await say(h, 2)
     assert h.notices() == ["budget: $0.001 of $0.0004"]
@@ -853,7 +874,7 @@ async def test_the_budget_line_shows_two_decimals_and_more_only_to_be_nonzero(
 
 @scenario
 async def test_max_usd_is_checked_when_set(tmp_path: Path) -> None:
-    h = await session(tmp_path, [], catalog(a={"price": DOLLAR}))
+    h = await session(tmp_path, [], catalog(a={"usage": {"price": DOLLAR}}))
     with pytest.raises(ConfigError):
         await h.configure("usage", {"max_usd": -1})
     with pytest.raises(ConfigError):

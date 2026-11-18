@@ -37,25 +37,93 @@ client once per model. It is about money, so only a model with a `price` gets it
 
 import json
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Annotated, cast
+from typing import Annotated, ClassVar, cast
 
-from tau._config import ConfigError, ModelConfig, Price
-from tau._core import Author, Body, Node, Stop
-from tau._counts import Basis, Count
+from tau._config import ConfigError, ModelConfig
+from tau._core import Body, Node, Stop
+from tau._counts import Reading, counted, reading, tokens
 from tau._handles import Cursor, Subject, TreeHandle
+from tau._hook_order import GUARD, OBSERVE
 
 NOTICE_MIN_INPUT = 4096
 """The smallest prompt a cache could be expected to serve (Anthropic caches from 1,024 and
 Gemini from about 4,000; below that a miss means nothing)."""
 NOTICE_WITHIN_MS = 300_000
 """How soon after the previous reply a cache is still warm, in milliseconds."""
-REASONING_BOUND = 8
-"""How far a reply's count may be off once its thinking is subtracted (D26 section 3.2)."""
 _MILLION = -6  # a price is per million tokens: `scaleb(-6)` is exact
-_KILO, _MEGA, _GIGA = 1000, 1_000_000, 1_000_000_000
+
+
+_PRICE_FIELDS = ("input", "output", "cache_read", "cache_write")
+
+
+def _money(value: object, key: str) -> Decimal:
+    """`value` as an exact non-negative `Decimal`. A float is read as the shortest text that
+    gives it back (`0.3` is 0.3, not 0.299999...), so a price written in a file is the price."""
+    if isinstance(value, bool) or not isinstance(value, Decimal | int | float):
+        raise ConfigError(f"usage.price {key!r} must be a number, not {value!r}")
+    number = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+    if not number.is_finite() or number < 0:
+        raise ConfigError(f"usage.price {key!r} must be a number of at least 0, not {value!r}")
+    return number
+
+
+@dataclass(frozen=True)
+class Price:
+    """What a model costs, in USD per million tokens: `input` (prompt tokens neither read from
+    nor written to the cache), `output`, `cache_read` and `cache_write`. All four are required:
+    a model that writes no cache repeats its `input` price for `cache_write` (D24 ruling 6).
+    `cache_write_1h` is optional: the price of a cache write kept for an hour (a reply's
+    `written_1h`), which is `cache_write` when it is not given (D26 section 2).
+    Amounts are `Decimal`, so a total of many replies has no float drift. `ConfigError` for a
+    number below 0, or one that is not a number."""
+
+    input: Decimal
+    output: Decimal
+    cache_read: Decimal
+    cache_write: Decimal
+    cache_write_1h: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        for key in _PRICE_FIELDS:
+            object.__setattr__(self, key, _money(getattr(self, key), key))
+        hour = self.cache_write if self.cache_write_1h is None else self.cache_write_1h
+        object.__setattr__(self, "cache_write_1h", _money(hour, "cache_write_1h"))
+
+    @classmethod
+    def of(cls, fields: object) -> "Price":
+        """The price a config's `price` object says. `ConfigError` unless it is an object with
+        the four fields, and `cache_write_1h` if it likes, each a number of at least 0."""
+        if not isinstance(fields, Mapping):
+            raise ConfigError(f"usage.price must be an object, not {type(fields).__name__}")
+        given = cast("Mapping[str, object]", fields)
+        missing = [k for k in _PRICE_FIELDS if k not in given]
+        if missing:
+            raise ConfigError(
+                f"usage.price is missing {missing}; all of {list(_PRICE_FIELDS)} are "
+                "required (USD per million tokens; a model that writes no cache repeats "
+                "its input price for cache_write)"
+            )
+        known = (*_PRICE_FIELDS, "cache_write_1h")
+        extra = sorted(str(k) for k in given if k not in known)
+        if extra:
+            raise ConfigError(f"usage.price has unknown keys {extra}; it holds {known}")
+        four = (cast("Decimal", given[k]) for k in _PRICE_FIELDS)
+        return cls(*four, cache_write_1h=cast("Decimal | None", given.get("cache_write_1h")))
+
+
+@dataclass(frozen=True)
+class ModelOptions:
+    """`Usage`'s section of a model's config (`models.X.usage`, D28 section 7): `price`, an
+    object of the four `Price` fields, or absent (the model is not priced)."""
+
+    price: Price | None = None
+
+    def __post_init__(self) -> None:
+        if self.price is not None and not isinstance(self.price, Price):  # pyright: ignore[reportUnnecessaryIsInstance]
+            object.__setattr__(self, "price", Price.of(self.price))
 
 
 @dataclass(frozen=True)
@@ -76,99 +144,6 @@ class Options:
             raise ValueError(f"max_usd is an amount of dollars, at least 0, not {self.max_usd}")
 
 
-@dataclass(frozen=True)
-class Reading:
-    """One reply's normalized `meta.usage` (D15, D26 section 2): `input` counts every prompt
-    token, `cached` and `written` the part read from and written to the cache, `written_1h` the
-    part of `written` kept for an hour, `tool_prompt` the part of `input` a built-in tool's use
-    added, and `reasoning` the part of `output` that was thinking. Each but `input` and `output`
-    is `None` when the server did not report it."""
-
-    input: int
-    output: int
-    cached: int | None
-    written: int | None
-    reasoning: int | None = None
-    tool_prompt: int | None = None
-    written_1h: int | None = None
-
-    @property
-    def said(self) -> Count:
-        """What the reply's words cost without its thinking: `output` less `reasoning`, a
-        `reported` count. Where thinking is taken out the bound is `REASONING_BOUND`, since a
-        server's thinking count "may differ by a small number" (D26 section 3.2)."""
-        if not self.reasoning:
-            return Count(self.output, Basis.REPORTED)
-        return Count(max(self.output - self.reasoning, 0), Basis.REPORTED, REASONING_BOUND)
-
-
-def reading(node: Node) -> Reading | None:
-    """The `usage` a reply reports, or `None` if its provider reported none. `ValueError` for a
-    `usage` that is not the normalized shape or has more cached and written than input, or for a
-    reply whose provider kept the server's report (`usage_raw`) but could not normalize it; the
-    callers (`_read`) turn that into "no usage, and why", so a past node never fails a step."""
-    body = node.body
-    if not isinstance(body, Body.Assistant) or body.meta is None:
-        return None
-    meta: object = json.loads(body.meta)
-    found = meta.get("usage") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-    if found is None:
-        sent = meta.get("usage_raw") if isinstance(meta, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        if sent is not None:  # the provider kept what the server said but could not read it
-            raise ValueError(f"node {node.id}: the provider could not read the usage {sent!r}")
-        return None
-    if not isinstance(found, dict):
-        raise ValueError(f"node {node.id}: meta.usage is not an object: {found!r}")
-    return _read_fields(node.id, found)  # pyright: ignore[reportUnknownArgumentType]
-
-
-def _read_fields(node: int, fields: dict[str, object]) -> Reading:
-    """The `Reading` of a normalized `usage` object; `ValueError` naming `node` for a count that
-    is not one, or a part larger than its whole."""
-
-    def count(key: str) -> int:
-        value = fields.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"node {node}: meta.usage.{key} is not a count: {value!r}")
-        return value
-
-    def optional(key: str) -> int | None:
-        return count(key) if key in fields else None
-
-    got = Reading(
-        count("input"),
-        count("output"),
-        optional("cached"),
-        optional("written"),
-        optional("reasoning"),
-        optional("tool_prompt"),
-        optional("written_1h"),
-    )
-    if (got.cached or 0) + (got.written or 0) > got.input:
-        raise ValueError(
-            f"node {node}: meta.usage reports more cached and written tokens than input"
-        )
-    if (got.written_1h or 0) > (got.written or 0):
-        raise ValueError(
-            f"node {node}: meta.usage reports more tokens written for an hour than written"
-        )
-    return got
-
-
-def counted(node: Node) -> bool:
-    """Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
-    `Author.Provider()`: an extension's answer to a sample reported no usage because it was never
-    billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
-    (`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
-    place the rule lives."""
-    return (
-        isinstance(node.body, Body.Assistant)
-        and node.by == Author.Provider()
-        and node.copied_from is None
-        and node.derived_from is None
-    )
-
-
 def cost(usage: Reading, price: Price) -> Decimal:
     """USD for one reply: the prompt tokens neither read from nor written to the cache at the
     `input` price, reads at `cache_read`, writes at `cache_write` (those kept for an hour at
@@ -184,29 +159,6 @@ def cost(usage: Reading, price: Price) -> Decimal:
         + usage.output * price.output
     )
     return total.scaleb(_MILLION)
-
-
-def tokens(n: int) -> str:
-    """`n` tokens as people write them: `812`, `12.3k`, `1.2M`, `1.2G`. A count that rounds up
-    to the next unit is written in it: 999,950 is `1.0M`, not `1000.0k`."""
-    if n < _KILO:
-        return str(n)
-    for size, unit in ((_KILO, "k"), (_MEGA, "M"), (_GIGA, "G")):
-        if n < size * _KILO and f"{n / size:.1f}" != "1000.0":
-            return f"{n / size:.1f}{unit}"
-    return f"{n / _GIGA:.1f}G"
-
-
-def show(count: Count) -> str:
-    """A count as people write it (`tokens`), with its basis where it is not a report:
-    `~` for a heuristic, and `≤` and its `upper` for a ceiling (D26 section 1)."""
-    match count.basis:
-        case Basis.REPORTED | Basis.RENDERED | Basis.CALIBRATED:
-            return tokens(count.tokens)
-        case Basis.HEURISTIC:
-            return f"~{tokens(count.tokens)}"
-        case Basis.CEILING:
-            return f"≤{tokens(count.upper)}"
 
 
 def how_counted(counter: str | None) -> str:
@@ -287,6 +239,13 @@ class Usage:
     """The built-in extension `usage` (the module docstring)."""
 
     name = "usage"
+    model_options = ModelOptions
+    order: ClassVar[Mapping[str, int]] = {
+        "pre_input": GUARD,
+        "pre_sample": GUARD,
+        "post_reply": OBSERVE,
+    }
+    """The budget halts before any edit (D28); the status line shows what happened."""
     options = Options
 
     def __init__(self) -> None:
@@ -327,9 +286,9 @@ class Usage:
         return await self._budget(cursor)
 
     async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
-        before user extensions, so a hook that would have answered the sample for free is halted
-        too."""
+        """Halt before any further sample once the budget (`max_usd`) is spent. A guard
+        (`order` -100, D28): it runs before compaction summarizes and before any hook at a
+        higher order that would answer the sample."""
         return await self._budget(cursor)
 
     async def _budget(self, cursor: Cursor) -> str | None:
@@ -364,17 +323,19 @@ class Usage:
         elif usage is None:
             cursor.show(f"{model} reported no usage" + (f" ({problem})" if problem else ""))
         else:
-            cursor.show(await self._line(cursor, usage, config))
+            cursor.show(await self._line(cursor, model, usage, config))
         if cursor.options().cache_notice and usage is not None:
             self._notice(cursor, node, model, usage)
         return None
 
-    async def _line(self, tree: TreeHandle, usage: Reading, config: ModelConfig | None) -> str:
+    async def _line(
+        self, tree: TreeHandle, model: str, usage: Reading, config: ModelConfig | None
+    ) -> str:
         parts = [f"{tokens(usage.input)} in"]
         if usage.cached is not None and usage.input:
             parts.append(f"{percent(usage.cached, usage.input)} cached")
         parts.append(f"{tokens(usage.output)} out")
-        price = None if config is None else config.price
+        price = _price(tree, model)
         if price is not None:
             parts.append(money(cost(usage, price)))
         if config is not None and config.context_window is not None:
@@ -389,8 +350,7 @@ class Usage:
         """The cache notice (the module docstring)."""
         if usage.cached != 0 or usage.input < NOTICE_MIN_INPUT or model in self._told:
             return
-        config = _configured(cursor, model)
-        if config is None or config.price is None:  # "full price" means nothing without a price
+        if _price(cursor, model) is None:  # "full price" means nothing without a price
             return
         tree = cursor.tree
         before = [n for n in tree.walk(node.id)[:-1] if isinstance(n.body, Body.Assistant)]
@@ -464,20 +424,19 @@ class Usage:
         """One row per model, in the order each first replied, priced by the config now."""
         await self._scan(tree)
         rows: dict[str, _Row] = {}
-        models: dict[str, ModelConfig | None] = {}
+        models: dict[str, tuple[ModelConfig | None, Price | None]] = {}
         for id, (model, usage, problem, aborted) in self._replies.items():
             if model not in models:
-                models[model] = _configured(tree, model)
-            config = models[model]
+                config = _configured(tree, model)
+                models[model] = (config, _price(tree, model))
+            config, price = models[model]
             row = rows.setdefault(model, _Row())
             row.configured = config is not None
-            row.priced = config is not None and config.price is not None
+            row.priced = price is not None
             guess = self._guess.get(id)
             if guess is not None and id in self._fixed:
                 guess = (guess[0], self._fixed[id])
-            row.add(
-                usage, None if config is None else config.price, problem, guess, aborted=aborted
-            )
+            row.add(usage, price, problem, guess, aborted=aborted)
         return rows
 
 
@@ -528,8 +487,16 @@ def _dollars(amount: Decimal) -> str:
 
 def _priced(tree: TreeHandle, model: str) -> bool:
     """Whether `model` has a price in the config now."""
-    config = _configured(tree, model)
-    return config is not None and config.price is not None
+    return _price(tree, model) is not None
+
+
+def _price(tree: TreeHandle, model: str) -> Price | None:
+    """The price of `model` now (`models.X.usage.price`), or `None`: it has none, or the catalog
+    no longer has the model. A section that does not fit raises `ConfigError`: the start refused
+    it, so only a catalog changed since can (D28 section 7)."""
+    if _configured(tree, model) is None:
+        return None
+    return cast("ModelOptions", tree.model_options(model)).price
 
 
 def _configured(tree: TreeHandle, model: str) -> ModelConfig | None:

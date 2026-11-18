@@ -36,6 +36,8 @@ from tau._commands import assemble_commands
 from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
+from tau._hook_order import declared_order
+from tau._model_sections import model_options_type
 from tau._options import option_fields
 from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
@@ -161,7 +163,7 @@ class _Candidate:
 @dataclass(frozen=True)
 class Inspection:
     """What `inspect_extensions` found: a row per source in load order (`tau` and `session_name`,
-    which the startup adds, first), the `extensions` of those that loaded in hook order (neither
+    which the startup adds, first), the `extensions` of those that loaded in load order (neither
     of those two), and each failure's message with the exceptions behind them."""
 
     sources: tuple[ExtensionSource, ...]
@@ -211,13 +213,16 @@ class _Provides:
 
 
 def _checked(provided: list[object]) -> _Provides:
-    """`check_extensions`, the tools, the commands and the options types of one source's
-    extensions: the checks the driver makes, here so a failure names its source."""
+    """`check_extensions`, the tools, the commands, the declared hook orders and the options
+    types of one source's extensions: the checks the driver makes, here so a failure names its
+    source."""
     checked = check_extensions(provided)
     listed, _ = assemble_tools((), checked)
     tools, _ = check_tools(listed)
     commands = assemble_commands(checked)
     for extension in checked:
+        declared_order(extension)
+        model_options_type(extension)
         options = getattr(extension, "options", None)
         if options is not None:
             option_fields(extension.name, options)
@@ -719,8 +724,8 @@ def inspect_extensions(
 def load_extensions(
     loaded: LoadedConfig, *, explicit: Sequence[str] = (), discover: bool = True
 ) -> list[Extension]:
-    """The extensions to run, in hook order (the driver puts `tau` first; a program adds
-    `session_name`, D18, after this returns).
+    """The extensions to run, in load order, which each hook point sorts by hook order (D28;
+    the driver puts `tau` first; a program adds `session_name`, D18, after this returns).
 
     The sources are the built-ins that `load` leaves on and, with `discover`, the installed
     packages and the user's and the trusted project's drop-ins that it leaves on; then

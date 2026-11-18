@@ -43,8 +43,11 @@ class StepLimit:
 
     A hook that leaves an input pending offers it again every step, so
     `pre_input` restarts the count every time: this limit does not bound that.
-    List it after any extension that turns auto-step back on from `post_step`,
-    or that hook's `set_auto(True)` wins.
+    Its hooks halt nothing, so they keep the default order 0 (D28): at a tie, load
+    position puts it after the built-ins before it by key and before every user
+    extension, so a user `post_step` at 0 sees auto-step already off and can stop
+    cleanly. A hook that turns auto-step back on from `post_step` after it wins over
+    the limit; one that wants to stay bounded by it orders its `post_step` below 0.
     """
 
     name = "step_limit"

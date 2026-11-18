@@ -54,6 +54,7 @@ from tau._counts import tools_ceiling, tools_hash
 from tau._effects import CallRun, SampleRun, run_hooks
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
+from tau._hook_order import HookOrder
 from tau._hub import Hub
 from tau._meter import Counts
 from tau._options import ExtensionOptions
@@ -210,9 +211,10 @@ class Driver:
     ends at once. The extensions' commands (`/model` of the
     built-in extension `tau` first) run for clients; a command that takes a `Cursor` runs ahead
     of the `pre_step` hooks of a step the driver asks for. Aborting or going elsewhere cancels
-    it. Extensions are listed in the constructor, in hook order, and checked there like tools
-    (`DefinitionError`); `model.md` does not yet say how `config_at` names them. `reload` swaps
-    them for others while nothing is in flight.
+    it. Extensions are listed in the constructor in load order, and checked there like tools
+    (`DefinitionError`); each hook point runs them by their hook order, then that order (D28:
+    `ConfigError` for a bad `extensions.NAME.order` in `catalog`). `reload` swaps them for others
+    while nothing is in flight.
     """
 
     def __init__(  # noqa: PLR0913 - the driver is given each thing it drives or asks
@@ -324,15 +326,18 @@ class Driver:
 
     def _adopt(self, extensions: Sequence[Extension]) -> None:
         """Make `extensions` (and the driver's own `tools`) what the driver runs from the next
-        job it dispatches. `DefinitionError`, with nothing changed, as at construction."""
+        job it dispatches. `DefinitionError` (or `ConfigError` for a configured hook order that
+        does not fit them), with nothing changed, as at construction."""
         checked = check_extensions(extensions)
         every = check_extensions([Tau(), *checked])
         listed, owners = assemble_tools(self._given, every)
         tools, keywords = check_tools(listed)
         commands = assemble_commands(every)
+        order = HookOrder.of(every, self._catalog.orders)  # before any change: it may raise
         self._options.reload(checked)
         self._hub.keep_shown([e.name for e in every])
         self._commands.use(commands)
+        self._order = order
         self._extensions, self._tools, self._owners = every, tools, owners
         self._tool_keywords = keywords
 
@@ -363,11 +368,13 @@ class Driver:
         self._hub.end(failure)
 
     def use_catalog(self, catalog: ModelCatalog) -> None:
-        """Resolve model names in `catalog` from the next sample dispatched on."""
+        """Resolve model names in `catalog`, and order hooks by it, from the next job
+        dispatched on. `ConfigError` (nothing changes) for a bad `extensions.NAME.order`."""
+        self._order = HookOrder.of(self._extensions, catalog.orders)
         self._catalog = catalog
 
     def reload(self, extensions: Sequence[Extension]) -> None:
-        """Run `extensions` (listed in hook order, as at construction) instead of the ones the
+        """Run `extensions` (listed in load order, as at construction) instead of the ones the
         driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
         and forget every folded `Config`. Only when nothing is in flight: no cursor busy (a
         command waiting for its step has none out yet, but its cursor is busy) and no effect
@@ -606,7 +613,7 @@ class Driver:
             run_hooks,
             job,
             subject,
-            self._extensions,
+            self._order.at(job.point.name),
             lambda ext: self._handles.cursor(cursor, ext.name),
             partial(_hook_failed, self._hub, cursor),
             self._tools,
@@ -662,7 +669,7 @@ class Driver:
                         c,
                         lambda owner: self._handles.node(cursor, node, owner),
                         self._tools,
-                        self._extensions,
+                        self._order,
                         context=context,
                         owners=self._owners,
                         batch=node,

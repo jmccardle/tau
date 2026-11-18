@@ -161,3 +161,9 @@ def _made(item: object, extension: str | None) -> object:
             "give; list it in that extension's `tools`"
         )
     return made
+
+
+def tool_names(extensions: Sequence[object]) -> list[str]:
+    """The names of the tools the `extensions` provide."""
+    listed, _ = assemble_tools((), extensions)
+    return [cast("str", getattr(t, "name")) for t in listed]  # noqa: B009

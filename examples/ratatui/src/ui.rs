@@ -283,6 +283,31 @@ fn status(screen: &Screen) -> Line<'static> {
     Line::from(spans)
 }
 
+/// What each extension shows on the viewed cursor: `extension: text`, a text of several lines
+/// as several lines, the later ones indented under the first.
+fn shown_lines(model: &Model) -> Vec<Line<'static>> {
+    let style = Style::new().fg(Color::DarkGray);
+    model.view().map_or_else(Vec::new, |v| {
+        v.shown
+            .iter()
+            .flat_map(|(who, text)| {
+                let indent = " ".repeat(who.chars().count() + 2);
+                text.split('\n')
+                    .enumerate()
+                    .map(|(i, line)| {
+                        let lead = if i == 0 {
+                            format!("{who}: ")
+                        } else {
+                            indent.clone()
+                        };
+                        Line::styled(format!("{lead}{line}"), style)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    })
+}
+
 /// The header line: the session, the directory, this client's id. The id is what names this
 /// client to the others, so when the line is too wide the directory gives way (its start is cut,
 /// as its end is the part that tells directories apart) rather than the id falling off the end.
@@ -324,13 +349,14 @@ pub fn draw(f: &mut Canvas, screen: &Screen) -> usize {
         width,
         usize::from(area.height / 4).max(1),
     );
+    let shown = shown_lines(screen.model);
     let [header, transcript, waiting, question, editor, bar] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(tall(pending.len())),
         Constraint::Length(tall(asked.as_ref().map_or(0, |a| a.lines.len()))),
         Constraint::Length(tall(typed_rows.len())),
-        Constraint::Length(1),
+        Constraint::Length(tall(1 + shown.len())),
     ])
     .areas(area);
 
@@ -357,7 +383,9 @@ pub fn draw(f: &mut Canvas, screen: &Screen) -> usize {
         })
         .collect();
     f.render_widget(Paragraph::new(rows), editor);
-    f.render_widget(status(screen), bar);
+    let mut status_area = vec![status(screen)];
+    status_area.extend(shown);
+    f.render_widget(Paragraph::new(status_area), bar);
 
     let (x, y) = match asked.as_ref().and_then(|a| a.cursor) {
         Some((row, col)) => (question.x + to_u16(col), question.y + to_u16(row)),
@@ -534,6 +562,36 @@ mod screen_tests {
             most,
             cursor: (cursor.x, cursor.y),
         }
+    }
+
+    #[test]
+    fn what_extensions_show_is_under_the_status_line_as_extension_colon_text() {
+        let mut model = talked(1);
+        hear(
+            &mut model,
+            json!({"kind": "CursorView", "cursor": 0, "at": 2, "busy": false, "auto": false,
+                   "questions": [], "items": [], "ending": "Done", "hook_error": null,
+                   "model": "m", "shown": [["plan", "plan mode on"], ["usage", "12 tokens"]]}),
+        );
+        let lines = drawn(&model, (50, 8), 0);
+        assert!(lines[5].starts_with("idle | cursor 0 | m"), "{lines:?}");
+        assert!(lines[6].starts_with("plan: plan mode on"), "{lines:?}");
+        assert!(lines[7].starts_with("usage: 12 tokens"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_shown_text_of_several_lines_is_several_lines_under_its_extension() {
+        let mut model = talked(1);
+        hear(
+            &mut model,
+            json!({"kind": "CursorView", "cursor": 0, "at": 2, "busy": false, "auto": false,
+                   "questions": [], "items": [], "ending": "Done", "hook_error": null,
+                   "model": "m", "shown": [["plan", "step 1\nstep 2"]]}),
+        );
+        let lines = drawn(&model, (50, 8), 0);
+        assert!(lines[5].starts_with("idle | cursor 0 | m"), "{lines:?}");
+        assert!(lines[6].starts_with("plan: step 1"), "{lines:?}");
+        assert!(lines[7].starts_with("      step 2"), "{lines:?}");
     }
 
     fn drawn(model: &Model, size: (u16, u16), scroll: usize) -> Vec<String> {

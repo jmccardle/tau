@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from tau._config import ConfigError, ModelConfig, config_fields
+from tau._config_keys import ORDER
 from tau._core import Body, Node, Session
+from tau._model_sections import build_section, model_options_type
 from tau._values import (
     Context,
     DefinitionError,
@@ -53,6 +55,11 @@ def option_fields(extension: str, options: object) -> tuple[Field, ...]:
     hints = get_type_hints(options, include_extras=True)
     fields: list[Field] = []
     for f in dataclasses.fields(options):
+        if f.name == ORDER:
+            raise DefinitionError(
+                f"{where} field {f.name!r}: `order` is reserved under extensions.NAME for the "
+                "extension's hook order (D28); name the option for what it holds"
+            )
         if f.default_factory is not dataclasses.MISSING:
             raise DefinitionError(f"{where} field {f.name!r}: use a plain default")
         try:
@@ -109,17 +116,20 @@ def make_layer_options(
 
 def save_options(
     user: "UserConfig",
-    saving: Mapping[str, tuple[type, tuple[Field, ...], Json]],
+    saving: Mapping[str, tuple[type | None, tuple[Field, ...], Json]],
     tools: Sequence[str],
 ) -> "ModelCatalog":
-    """Write `changes` into the user's file: `saving` maps each extension to its options type,
-    its `Field`s and the JSON values to set. Every extension's options, as the layers hold them
+    """Write `changes` into the user's file: `saving` maps each extension to its options type
+    (`None`: it has none, and only its hook `order` changes), its `Field`s and the JSON values to
+    set. Every extension's options, as the layers hold them
     with the change, are built before anything is written, and one that names a tool not in
     `tools` is refused (`ConfigError`): a file that τ writes never names what is missing. Returns
     the catalog the layers make now."""
 
     def fits(catalog: "ModelCatalog") -> None:
         for name, (options, fields, _) in saving.items():
+            if options is None:  # only its hook order changes (D28), checked when it was read
+                continue
             raw = dict(catalog.extensions.get(name, {}))
             made = make_layer_options(name, options, fields, raw, Context(catalog))
             check = getattr(made, "tool_problems", None)
@@ -170,13 +180,16 @@ class ExtensionOptions:
         longer here, or no longer fits its type: that fails when it is read, never here."""
         types: dict[str, type] = {}
         fields: dict[str, tuple[Field, ...]] = {}
+        sections: dict[str, type] = {}
         for ext in extensions:
+            if (kind := model_options_type(ext)) is not None:
+                sections[cast("str", getattr(ext, "name"))] = kind  # noqa: B009
             options = getattr(ext, "options", None)
             if options is not None:
                 name = cast("str", getattr(ext, "name"))  # noqa: B009
                 fields[name] = option_fields(name, options)
                 types[name] = cast("type", options)
-        self._types, self._fields = types, fields
+        self._types, self._fields, self._sections = types, fields, sections
         self._folds.clear()
 
     def names(self) -> tuple[str, ...]:
@@ -199,6 +212,16 @@ class ExtensionOptions:
     def resolved(self, name: str) -> ModelConfig:
         """The model `name`, as the catalog resolves it now; `ConfigError` if it has none."""
         return self._catalog().resolve(name)
+
+    def model_options(self, extension: str, model: str) -> Any:
+        """The `extension`'s section of the model `model` (D28 section 7), built as its
+        `model_options` type (an absent section: built with no arguments). `ConfigError` if it
+        declares none, the catalog has no such model, or the section does not fit."""
+        kind = self._sections.get(extension)
+        if kind is None:
+            raise ConfigError(f"extension {extension!r} declares no model_options")
+        section = self.resolved(model).sections.get(extension, {})
+        return build_section(kind, extension, model, section)
 
     def _raw(self, extension: str, node: int) -> Json:
         if extension not in self._types:
@@ -298,6 +321,11 @@ class ExtensionOptions:
         if model is not None:
             self._catalog().resolve(model)
         for name, new in extensions.items():
+            if ORDER in new:
+                raise ConfigError(
+                    f"{name}.{ORDER} is not set on a branch: hook order (D28) is read from the "
+                    f"config files, or `--set {name}.{ORDER}=N` for one run"
+                )
             if name in self._fields and (extra := unknown_options(self._fields[name], dict(new))):
                 raise ConfigError(f"extension {name!r}: unexpected options {extra}")
             made = self._make(name, {**self._raw(name, at), **new})

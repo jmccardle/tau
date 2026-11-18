@@ -188,7 +188,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
 | `~/.tau/config.json` models (`backend`, `model`, `base_url`, `api_key`) | `config.py`, `tau_default_config.json` | **built** (changed) | D13: `provider` replaces `backend`; groups, qualified names `group:name`, layered merge. 0.15 shipped a sample config with three models; 0.16 ships none and `examples/config.json` is a sample |
-| Model entry keys `context_window`, `cost` | `README.md` "Compaction", "Cost" | **built** (8E-2, changed) | `context_window`; `cost` is `price` `{input, output, cache_read, cache_write}`, USD per million, all four required (D13 amended, `guide/built-ins.md`) |
+| Model entry keys `context_window`, `cost` | `README.md` "Compaction", "Cost" | **built** (8E-2, changed) | `context_window`; `cost` is `usage.price` `{input, output, cache_read, cache_write}` (D28 §7), USD per million, all four required (D13 amended, `guide/built-ins.md`) |
 | Project `.tau/config.json` | `setting_sources.py` | **built** | gated by trust (D13) |
 | `TAU_HOME`, portable home | `tau_home.py`, `docs/PORTABLE-HOME.md` | **built** | `0.16: _trust.tau_home` |
 | Project trust gate (`TRUST-GATE.md`, research only in 0.15) | none shipped | **built** (new) | `tau trust`, `trusted.json` with content hashes, `.env` hashed, project extensions and (since 8E-1) prompt and skill files pinned, symlink/owner/700 checks |
@@ -296,7 +296,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
 | Usage / token accounting in events | `usage.py`, `docs/TOKEN-ACCOUNTING.md` | **built** (8E-2) | `meta.usage {input, output, cached?, written?}` on each reply; the `usage` extension shows the status line and `/usage` (D24 section 3); `cached` is absent when a server does not report it |
-| Cost / pricing (cache-write pricing, per-turn cost, TUI cost line, `test_cost.py`) | `docs/PRICING-AND-COMPACTION-CONFIG.md`, `app.py:_side_cost` | **built** (8E-2, changed) | `price` on a model; the status line shows the reply's cost and a session total; money is `Decimal`, worked out when you look; a model with no price shows no cost, never `$0` |
+| Cost / pricing (cache-write pricing, per-turn cost, TUI cost line, `test_cost.py`) | `docs/PRICING-AND-COMPACTION-CONFIG.md`, `app.py:_side_cost` | **built** (8E-2, changed) | `usage.price` on a model (D28 §7); the status line shows the reply's cost and a session total; money is `Decimal`, worked out when you look; a model with no price shows no cost, never `$0` |
 | Session stats (`get_session_stats`) | `capabilities.py` | **built** (changed) | `/usage`: a row per model (samples, input, cached share, cache writes, output, cost) and a total, summaries and sub-agents included. No message counts |
 | Latency collection / run manifests (SIM_SPEC measurement runs) | `latency.py`, `run_manifest.py` | **REGRESSION** (research tooling) | `tau.trace` + `docs/benchmarks.md` cover tracing, not these artifacts |
 | Telemetry strip (llama.cpp timings) | `examples/70_telemetry.py` | **post-0.16** (minor) | see 2.1 |

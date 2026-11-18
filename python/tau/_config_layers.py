@@ -10,13 +10,22 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from tau._config import ConfigError, ModelConfig, Price, key_problem, url_problem
-from tau._config_keys import context_files, extensions, load_switches, system_prompt, tui_settings
+from tau._config import ConfigError, ModelConfig, key_problem, url_problem
+from tau._config_keys import (
+    ORDER,
+    context_files,
+    default_model,
+    extensions,
+    load_switches,
+    match_names,
+    system_prompt,
+    tui_settings,
+)
 from tau._config_tree import (
     ConfigProblem,
     Leaf,
@@ -27,13 +36,17 @@ from tau._config_tree import (
     source_of,
     suggest,
 )
+from tau._hook_order import EVERY_HOOK, order_problem
+from tau._model_sections import section_problems
 from tau._options import make_layer_options, option_fields, unknown_options
 from tau._protocols import Provider
-from tau._tools import assemble_tools
+from tau._tools import tool_names
 from tau._values import Context, DefinitionError
 
 CLI = "session"
-_MODEL_KEYS = (
+ALWAYS = ("tau", "session_name")
+"""The extensions every start has, outside the sources (D19): the driver's and the startup's."""
+MODEL_KEYS = (  # the keys of a model; any other object is a section (D28)
     "model",
     "base_url",
     "api_key_env",
@@ -41,11 +54,11 @@ _MODEL_KEYS = (
     "provider",
     "max_tokens",
     "context_window",
-    "price",
     "options",
 )
 _INT_KEYS = ("max_tokens", "context_window")
-_OBJECT_KEYS = ("options", "price")  # settings that are objects, merged by key
+_OBJECT_KEYS = ("options",)  # settings that are objects, merged by key; so is a section
+_MOVED = {"price": "usage.price"}  # a model key that became an extension's section (D28)
 _TOP_KEYS = (
     "models",
     "default_model",
@@ -102,7 +115,9 @@ class ModelCatalog:
     `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
     `load_sources` the layer (file path) that set each key: what the extension loader reads.
     `extension_sources` the layer that set each extension's options (`NAME`) and each option
-    (`NAME.FIELD`), for the problems found in them.
+    (`NAME.FIELD`), for the problems found in them. `orders` is each extension's
+    `extensions.NAME.order` (D28: an int or an object of hook point to int, unchecked here: the
+    hooks are the extension's), which is not among its `extensions` options.
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
     that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
@@ -116,6 +131,7 @@ class ModelCatalog:
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
+    orders: Mapping[str, object] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -132,7 +148,7 @@ class ModelCatalog:
         """Qualified names matching `name`. A name with `:` is an exact qualified name;
         one without is a bare search over last segments (top-level `y` and `g:y`
         both match `y`). The caller decides on 0, 1, or many."""
-        return _match(self.models, name)
+        return match_names(self.models, name)
 
     def resolve(self, qualified: str) -> ModelConfig:
         """The model named exactly `qualified`; `ConfigError` if there is none."""
@@ -242,13 +258,16 @@ def _load_layer(source: str, text: str, problems: Problems) -> Tree | None:
 
 def _merge(base: Tree, over: Tree) -> Tree:
     """Objects by key; anything else replaces. A null stays as a tombstone: it also
-    drops what a group passes down."""
+    drops what a group passes down. A hook `order` object over an integer keeps the integer
+    for the hooks it does not name (`"*"`, D28 section 3)."""
     out = dict(base)
     for key, value in over.items():
         if isinstance(value, Leaf):
             out[key] = value
         else:
             inherited = out.get(key)
+            if key == ORDER and isinstance(inherited, Leaf) and inherited.value is not None:
+                inherited = cast("Tree", {EVERY_HOOK: inherited})
             out[key] = _merge(inherited if isinstance(inherited, dict) else {}, value)
     return out
 
@@ -329,7 +348,8 @@ class _LayerMerge:
 
 def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     """`own` over `inherited`: a null removes the key, and setting one of
-    `api_key`/`api_key_env` removes the other. `options` and `price` merge as objects."""
+    `api_key`/`api_key_env` removes the other. `options` and every extension's section (a key
+    that is not a model key, D28 section 7) merge as objects."""
     out = dict(inherited)
     for key, (leaf, group) in own.items():
         if leaf.value is None:
@@ -337,7 +357,8 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
             continue
         before: object = out[key][0].value if key in out else None
         mine: object = leaf.value
-        if key in _OBJECT_KEYS and isinstance(before, dict) and isinstance(mine, dict):
+        objects = key in _OBJECT_KEYS or key not in MODEL_KEYS
+        if objects and isinstance(before, dict) and isinstance(mine, dict):
             merged = _merge(cast("Tree", before), cast("Tree", mine))
             out[key] = (Leaf(merged, leaf.source), group)
         else:
@@ -348,13 +369,6 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     return out
 
 
-def _match(names: Iterable[str], name: str) -> tuple[str, ...]:
-    """A name with ':' is an exact qualified name; one without is a bare search."""
-    if ":" in name:
-        return tuple(q for q in names if q == name)
-    return tuple(q for q in names if q.rsplit(":", 1)[-1] == name)
-
-
 def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
     """The `ModelConfig` of a model's merged settings; `ConfigError` if it refuses them."""
     objects = {
@@ -363,6 +377,11 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         if k in merged
     }
     numbers = {k: cast("int", merged[k][0].value) for k in _INT_KEYS if k in merged}
+    sections = {
+        k: cast("dict[str, object]", plain(cast("Tree", leaf.value)))
+        for k, (leaf, _) in merged.items()
+        if k not in MODEL_KEYS
+    }
     return ModelConfig(
         texts["model"],
         texts.get("base_url"),
@@ -372,7 +391,7 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         numbers.get("max_tokens"),
         objects.get("options", {}),
         numbers.get("context_window"),
-        Price.of(objects["price"]) if "price" in objects else None,
+        sections,
     )
 
 
@@ -421,8 +440,8 @@ class _Resolver:
         return bad
 
     def object_setting(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
-        """`options` (the provider's own settings) or `price` as an object tree (the loader
-        never looks inside; a `null` inside stays until the layers are combined)."""
+        """`options` (the provider's own settings) or an extension's section as an object tree
+        (the loader never looks inside; a `null` inside stays until the layers are combined)."""
         source = source_of(value) or CLI
         if isinstance(value, Leaf):
             self.problems.add("error", f"{key!r} must be an object", source, here)
@@ -438,12 +457,18 @@ class _Resolver:
             here = f"{path}.{key}"
             if key == _RENAMED_KEY:
                 self.problems.add("error", _RENAMED_MESSAGE, source_of(value), here)
-            elif key not in _MODEL_KEYS:
-                msg = f"unknown key {key!r}{suggest(key, (*_MODEL_KEYS, 'models'))}"
+            elif key in _MOVED:
+                msg = f"{key!r} is not a model key: set it as {path}.{_MOVED[key]} (D28)"
                 self.problems.add("error", msg, source_of(value), here)
             elif isinstance(value, Leaf) and value.value is None:
                 out[key] = (value, group)
-            elif key in _OBJECT_KEYS:
+            elif key not in MODEL_KEYS and isinstance(value, Leaf):
+                msg = (
+                    f"unknown key {key!r}{suggest(key, (*MODEL_KEYS, 'models'))} (an "
+                    "extension's section is an object)"
+                )
+                self.problems.add("error", msg, source_of(value), here)
+            elif key in _OBJECT_KEYS or key not in MODEL_KEYS:
                 out[key] = (self.object_setting(key, value, here), group)
             else:
                 out[key] = (self.checked(key, value, label, here), group)
@@ -502,7 +527,7 @@ class _Resolver:
         texts = {
             k: cast("str", leaf.value)
             for k, (leaf, _) in merged.items()
-            if k not in (*_INT_KEYS, *_OBJECT_KEYS)
+            if k in MODEL_KEYS and k not in (*_INT_KEYS, *_OBJECT_KEYS)
         }
         self.warn(qualified, merged, texts, here)
         try:
@@ -597,26 +622,6 @@ def _read_layers(
     return merged, kinds
 
 
-def _default_model(merged: Tree, declared: list[str], problems: Problems) -> str | None:
-    node = merged.get("default_model")
-    if node is None or (isinstance(node, Leaf) and node.value is None):
-        return None
-    source = source_of(node)
-    if not (isinstance(node, Leaf) and isinstance(node.value, str) and node.value):
-        problems.add("error", "'default_model' must be a string", source, "default_model")
-        return None
-    name = node.value
-    found = _match(declared, name)
-    if not found:
-        problems.add(
-            "error", f"default_model {name!r} is not in your config", source, "default_model"
-        )
-    elif len(found) > 1:
-        msg = f"default_model {name!r} is ambiguous; use one of {list(found)}"
-        problems.add("error", msg, source, "default_model")
-    return name
-
-
 def _build(
     user: Layer | None,
     project: Layer | None,
@@ -640,11 +645,11 @@ def _build(
         problems.add("error", "'models' must be an object", source_of(models), "models")
     resolver.provider_problems()
     resolver.key_problems()
-    default = _default_model(merged, resolver.declared, problems)
+    default = default_model(merged, resolver.declared, problems)
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
     context, context_source = context_files(merged, problems)
-    options, option_sources = extensions(merged, problems)
+    options, option_sources, orders = extensions(merged, problems)
     tui = tui_settings(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
@@ -654,6 +659,7 @@ def _build(
         warnings=warnings,
         extensions=options,
         extension_sources=option_sources,
+        orders=orders,
         load=switches,
         load_sources=switched_by,
         system_prompt=prompt,
@@ -672,7 +678,7 @@ def _unprovided(
     warn: Callable[[str, str], None],
 ) -> None:
     """Warn of options set for an extension nothing provides, or that takes none."""
-    loaded = {str(getattr(e, "name")) for e in extensions}  # noqa: B009
+    loaded = {str(getattr(e, "name")) for e in extensions} | set(ALWAYS)  # noqa: B009
     for key in sorted(catalog.extensions):
         if key not in loaded and key not in off and key != "retry":
             warn(
@@ -693,7 +699,8 @@ def option_problems(
     a `warning`, and is ignored: an option that names a tool no loaded extension provides
     (`Options.tool_problems`), an option the extension does not have, options of an extension that
     has none (and of `retry`, D24 section 4: the provider wrapper, which `load` switches and
-    nothing tunes), and options of an extension nothing provides. An extension may be a file that
+    nothing tunes), and options of an extension nothing provides. Each model's sections are
+    held to the same rule (`section_problems`, D28 section 7). An extension may be a file that
     was deleted, so a config cannot rely on its cleaning up after itself. The `off` keys are
     sources that exist and are switched off: their options are kept quietly, for when they are on
     again. Each problem names the layer that set it."""
@@ -705,13 +712,21 @@ def option_problems(
         source = where.get(f"{name}.{field}") if field else None
         problems.append(ConfigProblem("warning", message, source or where.get(name), path))
 
+    for name in ALWAYS:  # always loaded, and without hooks: an order for them is a mistake
+        if name in catalog.orders:
+            message = f"extension {name!r} has no hooks to order"
+            problems.append(ConfigProblem("error", message, where.get(name), f"extensions.{name}"))
     _unprovided(catalog, extensions, off, warn)
     tools = tool_names(extensions)
     for ext in extensions:
+        name = cast("str", getattr(ext, "name"))  # noqa: B009
+        if name in catalog.orders and (bad := order_problem(ext, catalog.orders[name])):
+            source = where.get(f"{name}.order") or where.get(name)
+            said = bad.removeprefix(f"extensions.{name}.order: ")  # the path says it
+            problems.append(ConfigProblem("error", said, source, f"extensions.{name}.order"))
         options = getattr(ext, "options", None)
         if options is None:
             continue
-        name = cast("str", getattr(ext, "name"))  # noqa: B009
         raw = dict(catalog.extensions.get(name, {}))
         fields = option_fields(name, options)
         for key in unknown_options(fields, raw):
@@ -729,13 +744,7 @@ def option_problems(
         if check is not None:  # an option that names tools: each should be one a start offers
             for message in check(tools):
                 warn(message, f"extensions.{name}")
-    return tuple(problems)
-
-
-def tool_names(extensions: Sequence[object]) -> list[str]:
-    """The names of the tools the `extensions` provide."""
-    listed, _ = assemble_tools((), extensions)
-    return [cast("str", getattr(t, "name")) for t in listed]  # noqa: B009
+    return (*problems, *section_problems(catalog, extensions, off))
 
 
 def check_config(  # noqa: PLR0913 - the layers, the environment, and what is checked against

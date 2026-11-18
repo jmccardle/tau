@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `Usage`, `calibration_features`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `reading`
 
 ## Agents
 
@@ -49,6 +49,7 @@ reply. With `to`, send a follow-up to an agent you used before; it remembers its
 ```python
 class Attachments
     name = 'attachments'
+    order: ClassVar[Mapping[str, int]] = {'pre_input': BEFORE_EDITS}
     options = Options
 ```
 
@@ -332,6 +333,7 @@ The name of the tool being called. Read-only.
 ```python
 class Compaction
     name = 'compaction'
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     options = Options
 ```
 
@@ -887,6 +889,7 @@ set its request offered (`tools_hash`); `span` the proved span that ends at this
 ```python
 class Permissions
     name = 'permissions'
+    order: ClassVar[Mapping[str, int]] = {'pre_tool': GUARD}
     options = Options
 ```
 
@@ -931,6 +934,36 @@ async def prune(self, cursor: Cursor) -> str
 
 Shorten this conversation without a model: old turns become a transcript and old
 tool output goes, on a new line (the old one stays in the tree).
+
+## Reading
+
+```python
+@dataclass(frozen=True)
+class Reading
+    input: int
+    output: int
+    cached: int | None
+    written: int | None
+    reasoning: int | None = None
+    tool_prompt: int | None = None
+    written_1h: int | None = None
+```
+
+One reply's normalized `meta.usage` (D15, D26 section 2): `input` counts every prompt
+token, `cached` and `written` the part read from and written to the cache, `written_1h` the
+part of `written` kept for an hour, `tool_prompt` the part of `input` a built-in tool's use
+added, and `reasoning` the part of `output` that was thinking. Each but `input` and `output`
+is `None` when the server did not report it.
+
+### Reading.said
+
+```python
+property said: Count
+```
+
+What the reply's words cost without its thinking: `output` less `reasoning`, a
+`reported` count. Where thinking is taken out the bound is `REASONING_BOUND`, since a
+server's thinking count "may differ by a small number" (D26 section 3.2).
 
 ## RequestCount
 
@@ -1056,8 +1089,11 @@ happens after `post_step`: the count stays as it was until the next input.
 
 A hook that leaves an input pending offers it again every step, so
 `pre_input` restarts the count every time: this limit does not bound that.
-List it after any extension that turns auto-step back on from `post_step`,
-or that hook's `set_auto(True)` wins.
+Its hooks halt nothing, so they keep the default order 0 (D28): at a tie, load
+position puts it after the built-ins before it by key and before every user
+extension, so a user `post_step` at 0 sees auto-step already off and can stop
+cleanly. A hook that turns auto-step back on from `post_step` after it wins over
+the limit; one that wants to stay bounded by it orders its `post_step` below 0.
 
 ### StepLimit.__init__
 
@@ -1153,6 +1189,7 @@ The exact number of tokens of `text` by the tokenizer confirmed for `model`, or
 ```python
 class Tokens
     name = NAME
+    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE}
 ```
 
 The built-in extension `tokens` (the module docstring): the counter, and `/tokens`.
@@ -1305,9 +1342,21 @@ def resolved_model(self, name: str | None = None) -> ModelConfig
 ```
 
 The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is now,
-the one a sample resolves, with its `context_window` and `price`. `name` defaults to
+the one a sample resolves, with its `context_window` and `sections`. `name` defaults to
 `model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
 no such model.
+
+### TreeHandle.model_options
+
+```python
+def model_options(self, name: str | None = None) -> Any
+```
+
+This extension's section of the model `name`'s config (`models.X.<extension>`, D28
+section 7), built as the extension's `model_options` type; a model with no such section
+gives the type built with no arguments. `name` defaults to `model()`, so a tree handle
+must give it (`ValueError`). `ConfigError` if the extension declares no
+`model_options`, the catalog has no such model, or the section does not fit.
 
 ### TreeHandle.counter
 
@@ -1470,56 +1519,6 @@ def remove_label(self, label: str) -> None
 
 Remove `label`; raises `NoSuchLabel`.
 
-## Usage
-
-```python
-class Usage
-    name = 'usage'
-    options = Options
-```
-
-The built-in extension `usage` (the module docstring).
-
-### Usage.__init__
-
-```python
-def __init__(self) -> None
-```
-
-### Usage.usage
-
-```python
-async def usage(self, tree: TreeHandle) -> str
-```
-
-What this session has spent: one row per model, and a total.
-
-### Usage.pre_input
-
-```python
-async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Refuse new input once the budget (`max_usd`) is spent.
-
-### Usage.pre_sample
-
-```python
-async def pre_sample(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Halt before any further sample once the budget (`max_usd`) is spent. Built-ins run
-before user extensions, so a hook that would have answered the sample for free is halted
-too.
-
-### Usage.post_reply
-
-```python
-async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
-```
-
-Show the reply's counts on the cursor, and tell the clients if it missed the cache.
-
 ## calibration_features
 
 ```python
@@ -1531,3 +1530,26 @@ calls, results, thinking) its text's lowercase letters, uppercase letters, digit
 ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
 (1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
 or `Custom` body, which is never sent, is all zeros.
+
+## counted
+
+```python
+def counted(node: Node) -> bool
+```
+
+Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
+`Author.Provider()`: an extension's answer to a sample reported no usage because it was never
+billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
+(`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
+place the rule lives.
+
+## reading
+
+```python
+def reading(node: Node) -> Reading | None
+```
+
+The `usage` a reply reports, or `None` if its provider reported none. `ValueError` for a
+`usage` that is not the normalized shape or has more cached and written than input, or for a
+reply whose provider kept the server's report (`usage_raw`) but could not normalize it; the
+callers (`_read`) turn that into "no usage, and why", so a past node never fails a step.

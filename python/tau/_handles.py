@@ -85,6 +85,11 @@ class OptionsReader(Protocol):
         `ConfigError` if the catalog has none."""
         ...
 
+    def model_options(self, extension: str, model: str) -> Any:
+        """The extension's section of the model `model`, as its `model_options` type;
+        `ConfigError` if it declares none or the section does not fit."""
+        ...
+
     def save(self, extension: str, changes: Mapping[str, object]) -> None:
         """Set the extension's options in the user's config file; `ConfigError` if they do not
         fit, or there is no file to write."""
@@ -245,12 +250,22 @@ class TreeHandle:
 
     def resolved_model(self, name: str | None = None) -> ModelConfig:
         """The `ModelConfig` of the model `name` (a qualified name) in the catalog as it is now,
-        the one a sample resolves, with its `context_window` and `price`. `name` defaults to
+        the one a sample resolves, with its `context_window` and `sections`. `name` defaults to
         `model()`, so a tree handle must give it (`ValueError`). `ConfigError` if the catalog has
         no such model."""
         if name is None:
             name = self.model()
         return self._read.resolved(name)
+
+    def model_options(self, name: str | None = None) -> Any:
+        """This extension's section of the model `name`'s config (`models.X.<extension>`, D28
+        section 7), built as the extension's `model_options` type; a model with no such section
+        gives the type built with no arguments. `name` defaults to `model()`, so a tree handle
+        must give it (`ValueError`). `ConfigError` if the extension declares no
+        `model_options`, the catalog has no such model, or the section does not fit."""
+        if name is None:
+            name = self.model()
+        return self._read.model_options(self.extension, name)
 
     @property
     def counter(self) -> str | None:

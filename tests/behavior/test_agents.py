@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fakes import FAKE_MODEL, FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, say, scenario
+from shipped import shipped
 
 from tau import (
     Agents,
@@ -20,7 +21,6 @@ from tau import (
     Permissions,
     StepLimit,
     Stop,
-    Usage,
     model_config,
     read_models,
 )
@@ -365,7 +365,7 @@ async def test_usage_counts_the_agents_replies(tmp_path: Path) -> None:
     h = await start(
         tmp_path,
         [parent, counted("r", 1000), counted("done", 200)],
-        extensions=[Agents(), Usage()],
+        extensions=[Agents(), shipped("usage")],
     )
     report = await h.run("usage")
     assert report is not None

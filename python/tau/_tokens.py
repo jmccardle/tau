@@ -18,16 +18,18 @@ a session with `load: {tokens: false}` leaves no `calibration` directory.
 
 import hashlib
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import ClassVar, Protocol
 from urllib.parse import quote
 
 from tau._config import ModelConfig
 from tau._core import Body, Calibration, CalibrationError, CalibrationStore, calibration_features
 from tau._counts import Basis, Count, CounterAnswer, CountJob, Observation, ceiling_of
 from tau._handles import Cursor, Subject, TreeHandle
+from tau._hook_order import OBSERVE
 
 NAME = "tokens"
 INSTALL = "pip install 'ffwf-tau[tokens]'"
@@ -94,6 +96,8 @@ class Tokens:
     `home` is `TAU_HOME`; `tokenizers` is the tokenizer wheel when it is installed."""
 
     name = NAME
+    order: ClassVar[Mapping[str, int]] = {"post_reply": OBSERVE}
+    """Telling what the observations found is an observer (D28)."""
 
     def __init__(self, home: Path, tokenizers: Tokenizers | None = None) -> None:
         self._store = CalibrationStore(home / DIRECTORY)

@@ -198,6 +198,8 @@ change.
 
 ## Amended (D24 8E-2, 2026-11-03): `context_window` and `price`
 
+*`price` is amended by D28 §7: it is `models.X.usage.price`, a model section; `ModelConfig.price` is gone.*
+
 A model's settings gain two keys, read like `max_tokens` and `options`:
 
 - **`context_window`**: a positive integer, the model's context size in tokens. Optional; from the

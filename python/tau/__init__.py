@@ -17,7 +17,7 @@ from tau._client import Client, LocalClient
 from tau._clock import SystemClock
 from tau._commands import CommandFailed
 from tau._compaction import Compaction
-from tau._config import ConfigError, ModelConfig, Price, model_config
+from tau._config import ConfigError, ModelConfig, model_config
 from tau._config_layers import (
     Layer,
     LayerText,
@@ -87,9 +87,12 @@ from tau._counts import (
     CounterAnswer,
     CountJob,
     Observation,
+    Reading,
     RequestCount,
     Span,
     SpanProof,
+    counted,
+    reading,
 )
 from tau._dotenv import DotenvError
 from tau._driver import Driver, DriverState
@@ -178,7 +181,6 @@ from tau._step_limit import StepLimit
 from tau._tokens import Tokenizers, Tokens
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
-from tau._usage import Usage
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
 from tau.commandline import Parsed, UnknownCommand
@@ -294,7 +296,6 @@ __all__ = [
     "Pick",
     "PickSession",
     "Poisoned",
-    "Price",
     "Progress",
     "PromptSource",
     "Prompts",
@@ -304,6 +305,7 @@ __all__ = [
     "ProviderClosed",
     "Prune",
     "ReadTool",
+    "Reading",
     "RemoteClient",
     "Rendered",
     "Replay",
@@ -349,7 +351,6 @@ __all__ = [
     "UnknownCommand",
     "UnknownSession",
     "UntrustedProject",
-    "Usage",
     "UserConfig",
     "Version",
     "Welcome",
@@ -360,6 +361,7 @@ __all__ = [
     "builtin_providers",
     "calibration_features",
     "check_config",
+    "counted",
     "find_session",
     "first_cursor_node",
     "list_extensions",
@@ -370,6 +372,7 @@ __all__ = [
     "open_client",
     "prompts",
     "read_models",
+    "reading",
     "rename_session",
     "replay_for",
     "select_model",

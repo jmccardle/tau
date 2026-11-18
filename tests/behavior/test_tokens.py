@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Reply
 from harness import Harness, scenario
+from shipped import shipped
 
 from tau import (
     Author,
@@ -30,7 +31,6 @@ from tau import (
     Stop,
     Subject,
     Tokens,
-    Usage,
     calibration_features,
     model_config,
     read_models,
@@ -169,7 +169,7 @@ async def test_tokens_and_usage_say_how_each_model_is_counted(tmp_path: Path) ->
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider(conversation(13)),
-        extensions=[Tokens(home), Usage()],
+        extensions=[Tokens(home), shipped("usage")],
         catalog=catalog(),
         config=model_config("a"),
     )

@@ -1,4 +1,4 @@
-"""Mechanical enforcement of CLAUDE.md rules 3 and 4.
+"""Mechanical enforcement of CLAUDE.md rules 3 and 4, and of the built-ins that are leaves.
 
 Rule 3: banned 0.15 vocabulary in identifiers, comments, and docstrings.
 Rule 4: tests (tests/) reach code only through the public API. This script catches
@@ -10,6 +10,11 @@ Not mechanically checked, because the words have legitimate uses: `head`
 (banned only as a name for a frontend) and `fork` (banned only for
 in-session branching; cross-session fork is a glossary term). Review
 catches those.
+
+A **leaf** built-in (D28 section 6) is one tau could ship without: nothing in `python/tau`
+imports its module except the table of built-ins (`_extensions.py`'s `_BUILTINS`), so deleting
+the module and its one row there leaves a working tau. `usage` is one: a replacement takes its
+counting rules from the public `tau.Reading`, `reading` and `counted`, not from `tau._usage`.
 
 A line may use a banned word for an unrelated meaning by saying so on that
 line, naming the word and the reason:
@@ -52,6 +57,8 @@ BANNED_RE = re.compile(
 # and `isIncomplete` are checked as `Lane_Id`, `Side_Entry`, `is_Incomplete`.
 CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 ALLOW_RE = re.compile(r"rules: allow\((\w+)\): \S")
+LEAVES = {"tau._usage": Path("python/tau/_extensions.py")}
+"""Each leaf built-in's module, and the one file that may import it."""
 
 
 def is_build_output(path: Path) -> bool:
@@ -94,6 +101,34 @@ def private_imports(source: str) -> list[int]:
     return lines
 
 
+def imported(source: str) -> list[tuple[int, str]]:
+    """Each `tau` module a source imports, with its line: `from tau import _x` and
+    `from tau._x import y` both import `tau._x`."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        match node:
+            case ast.ImportFrom(module="tau", names=names):
+                found += [(node.lineno, f"tau.{a.name}") for a in names]
+            case ast.ImportFrom(module=str(mod)) if mod.split(".")[0] == "tau":
+                found.append((node.lineno, mod))
+            case ast.Import(names=names):
+                found += [(node.lineno, a.name) for a in names if a.name.split(".")[0] == "tau"]
+            case _:
+                pass
+    return found
+
+
+def leaf_imports(rel: Path, source: str) -> list[str]:
+    """Imports of a leaf built-in's module in `python/tau`, other than by its one importer."""
+    if rel.parts[:2] != ("python", "tau") or rel.suffix != ".py":
+        return []
+    return [
+        f"{rel}:{n}: imports the leaf built-in {mod}; only {LEAVES[mod]} may (D28 section 6)"
+        for n, mod in imported(source)
+        if mod in LEAVES and rel != LEAVES[mod]
+    ]
+
+
 def violations(path: Path) -> list[str]:
     rel = path.relative_to(ROOT)
     source = path.read_text()
@@ -102,6 +137,7 @@ def violations(path: Path) -> list[str]:
         for n, line in enumerate(source.splitlines(), 1)
         for term in banned_terms(line)
     ]
+    found += leaf_imports(rel, source)
     if rel.parts[0] == "tests" and path.suffix == ".py":
         found += [f"{rel}:{n}: test imports a private tau name" for n in private_imports(source)]
     return found

@@ -29,6 +29,7 @@ from tau._core import (
 )
 from tau._events import CallArgs, CallNamed, Delta, Retrying, TextDelta, ThinkingDelta, ToolProgress
 from tau._handles import Cursor, NodeHandle, Subject
+from tau._hook_order import HookOrder
 from tau._protocols import (
     CallDraft,
     CursorHook,
@@ -52,11 +53,12 @@ async def run_hooks(  # noqa: PLR0913, PLR0917 - a hook job and all it is run wi
     failed: Callable[[str, str, str], None],
     tools: Collection[str] = (),
 ) -> Answer:
-    """Every extension's hook for the point, in order. The first string halts; an exception, or
-    a hook that breaks its contract (returns what is not a `str` or `None`, leaves a `draft`
-    that is not a `Draft`, sets `subject.tools` anywhere but `pre_sample` or to what is not
-    names among `tools`), fails the step with `"Type: msg"` and its traceback on stderr;
-    otherwise the subject's draft comes back. A failure is also reported as
+    """Every extension's hook for the point, in the order of `extensions` (the point's hook
+    order, D28). The first string halts; an exception, or a hook that breaks its contract
+    (returns what is not a `str` or `None`, leaves a `draft` that is not a `Draft`, sets
+    `subject.tools` anywhere but `pre_sample` or to what is not names among `tools`), fails the
+    step with `"Type: msg"` and its traceback on stderr; otherwise the subject's draft comes
+    back. A failure is also reported as
     `failed(point, extension name, "Type: msg")`, once, before the answer."""
     name = job.point.name
     for ext in extensions:
@@ -417,7 +419,7 @@ class CallRun:
         call: RunCall,
         node: Callable[[str], NodeHandle],
         tools: Mapping[str, Tool],
-        extensions: Sequence[Extension],
+        order: HookOrder,
         *,
         context: Context,
         owners: Mapping[str, str],
@@ -432,7 +434,7 @@ class CallRun:
         self._args_raw = call.args_raw
         self._node = node
         self._tools = tools
-        self._extensions = extensions
+        self._order = order
         self._context = context
         self._owners = owners
         self._batch = batch
@@ -483,12 +485,13 @@ class CallRun:
         return draft.outcome, by
 
     async def _hooks(self, name: str, draft: CallDraft) -> Author | None:
-        """Run each extension's tool hook, every one even after the outcome is set (a later hook
-        sees it and may change it). Returns the last extension that changed the outcome. A string
-        makes the outcome `Err(string)` and ends the hooks. A hook that raises or breaks its
-        contract raises `_HookError`: `"Type: msg"`, its traceback on stderr."""
+        """Run each extension's tool hook in the point's hook order (D28), every one even after
+        the outcome is set (a later hook sees it and may change it). Returns the last extension
+        that changed the outcome. A string makes the outcome `Err(string)` and ends the hooks. A
+        hook that raises or breaks its contract raises `_HookError`: `"Type: msg"`, its
+        traceback on stderr."""
         changed: Author | None = None
-        for ext in self._extensions:
+        for ext in self._order.at(name):
             hook = cast("ToolHook | None", getattr(ext, name, None))
             if hook is None:
                 continue

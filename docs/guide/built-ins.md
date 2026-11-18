@@ -257,7 +257,7 @@ usage: 12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · $0.017 session
 
 `12.3k in` is the prompt, `96% cached` the part of it the server read from its prompt cache (left
 out when the server does not say), `812 out` the reply. `$0.017` and the session total appear for
-a model that has a `price`, and `ctx 7%` for one that has a `context_window`: the share of the
+a model that has a `usage.price`, and `ctx 7%` for one that has a `context_window`: the share of the
 window the prompt and the reply fill. τ cannot know either number, so you write them in the
 model's settings in your config. A model with no price shows no cost, never `$0`; a session total
 that had to leave out replies of such a model ends in `+`.
@@ -269,16 +269,24 @@ that had to leave out replies of such a model ends in `+`.
       "provider": "anthropic",
       "model": "claude-sonnet-4-5",
       "context_window": 200000,
-      "price": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+      "usage": {
+        "price": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
+      }
     }
   }
 }
 ```
 
+The price is in `usage`'s own section of the model, `models.<name>.usage`: a model's settings
+hold one section per extension that reads one, named for it. (The old `models.<name>.price` is a
+config error that says where it went.) A section that `usage` does not accept, such as a key it
+does not have, is an error in `tau config check` and stops a start; a section named for an
+extension that is not loaded is a warning and is ignored.
+
 A price is US dollars per million tokens, and all four fields are required: a model that does not
 charge for writing the cache repeats its `input` price as `cache_write`. A price with a field
 missing, below 0, or not a number is a config error naming the model. Groups hand a price down like
-any setting, and a project can change one field (`"price": {"output": 20}`). A fifth field,
+any setting, and a project can change one field (`"usage": {"price": {"output": 20}}`). A fifth field,
 `cache_write_1h`, is optional: what a cache write kept for an hour costs, when the server reports
 those apart (Anthropic does). Without it they are priced as `cache_write`.
 
@@ -311,7 +319,7 @@ starts with a copy of the source's walk, and its `/usage` counts the replies it 
 
 When a reply reads nothing from the prompt cache (the server said `cached: 0`) soon after a reply
 of the same model that should have written it, τ tells you once per model, with the size of the
-prompt that went at full price. It is about money, so only a model with a `price` gets it.
+prompt that went at full price. It is about money, so only a model with a `usage.price` gets it.
 `--set usage.cache_notice=false` silences it, and
 `tau ext disable usage` removes all of this.
 
@@ -349,7 +357,7 @@ cost, and it is split among them in proportion to their estimates. Nothing is re
 correction is worked out whenever the spend is read. `/usage` shows the estimate on its own line
 (`~$0.04 estimated for 2 replies that reported no usage (counted toward max_usd, not in the totals above)`) and keeps it out of its totals.
 
-A limit needs prices. If a model the session uses has no `price`, τ cannot estimate what it
+A limit needs prices. If a model the session uses has no `usage.price`, τ cannot estimate what it
 spent, and refuses rather than count it as free: `budget: no price for model local:qwen, set its
 price or unset usage.max_usd`.
 

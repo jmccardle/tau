@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import NamedTuple, TextIO
 
 from tau import _tokens_cli
-from tau._config import ConfigError, Price
+from tau._config import ConfigError
 from tau._config_clean import Cleaning, clean_config
 from tau._config_layers import (
     LayerText,
@@ -45,7 +45,6 @@ from tau._config_layers import (
     check_config,
     option_problems,
     read_models,
-    tool_names,
 )
 from tau._context import system_prompt
 from tau._core import (
@@ -59,15 +58,16 @@ from tau._core import (
     Version,
 )
 from tau._dotenv import DotenvError
+from tau._ext_rows import ext_rows
 from tau._extensions import (
     ExtensionLoadError,
-    ExtensionSource,
     Inspection,
     absolute_explicit,
     inspect_extensions,
     list_extensions,
     switch_source,
 )
+from tau._hook_listing import ext_hooks
 from tau._launch import (
     UsageError,
     assignment,
@@ -108,6 +108,7 @@ from tau._startup import (
     prompts,
     select_model,
 )
+from tau._tools import tool_names
 from tau._trust import (
     TAU_DIR,
     UntrustedProject,
@@ -189,7 +190,12 @@ def _parser() -> _Parsers:
     listing = ext_sub.add_parser(
         "list", parents=[extension_flags()], help="every source, and why it is on or off"
     )
-    listing.add_argument("--json", action="store_true", help="one JSON object per source, per line")
+    listing.add_argument(
+        "--json", action="store_true", help="one JSON object per source (or per point), per line"
+    )
+    listing.add_argument(
+        "--hooks", action="store_true", help="instead, each hook point's extensions in run order"
+    )
     for name, what in (("enable", "load"), ("disable", "not load")):
         switch = ext_sub.add_parser(name, help=f"{what} the source KEY at every start")
         switch.add_argument("key", metavar="KEY", help="the source's key (see `tau ext list`)")
@@ -394,35 +400,16 @@ def _set(run: _Run, assignments: Sequence[tuple[str, str, str]]) -> int:
     return 0
 
 
-def _commands_shown(source: ExtensionSource, sources: Sequence[ExtensionSource]) -> str:
-    """Its commands as typed: the bare name where only one source has it, else qualified."""
-    count: dict[str, int] = {}
-    for other in sources:
-        for command in other.commands:
-            count[command.partition(":")[2]] = count.get(command.partition(":")[2], 0) + 1
-    return ", ".join(
-        "/" + (c.partition(":")[2] if count[c.partition(":")[2]] == 1 else c)
-        for c in source.commands
-    )
-
-
-def _ext_rows(sources: Sequence[ExtensionSource]) -> list[str]:
-    """`tau ext list`'s lines: a row per source, then its reason or its contents."""
-    width = max(len(s.key) for s in sources)
-    lines: list[str] = []
-    for s in sources:
-        lines.append(f"{s.key:<{width}}  {s.state:<9}  {s.origin}")
-        pad = " " * (width + 2)
-        if s.detail is not None:
-            lines.append(f"{pad}{s.detail}")
-        if s.state in ("on", "always"):
-            commands = _commands_shown(s, sources) or "none"
-            tools = ", ".join(s.tools) or "none"
-            lines.append(f"{pad}commands: {commands}; tools: {tools}")
-    return lines
-
-
 def _ext_list(run: _Run, args: argparse.Namespace) -> int:
+    if args.hooks:
+        lines, status = ext_hooks(
+            _user_only(run),
+            absolute_explicit(args.extension, run.cwd),
+            not args.no_extensions,
+            as_json=args.json,
+        )
+        _print(run, lines)
+        return status
     sources = list_extensions(
         run.cwd,
         run.environ,
@@ -433,7 +420,7 @@ def _ext_list(run: _Run, args: argparse.Namespace) -> int:
         for source in sources:
             run.stdout.write(json.dumps(asdict(source)) + "\n")
     else:
-        _print(run, _ext_rows(sources))
+        _print(run, ext_rows(sources))
     return 1 if any(s.state == "failed" for s in sources) else 0
 
 
@@ -451,10 +438,6 @@ async def _close(providers: Mapping[str, Provider]) -> None:
         await provider.aclose()
 
 
-def _price_text(price: Price) -> dict[str, str]:
-    return {k: str(v) for k, v in vars(price).items()}
-
-
 def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
     config = catalog.resolve(name)
     values = {
@@ -462,7 +445,6 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         "base_url": config.base_url,
         "max_tokens": config.max_tokens,
         "context_window": config.context_window,
-        "price": None if config.price is None else json.dumps(_price_text(config.price)),
         "options": json.dumps(config.options, default=dict),
         "provider": config.provider,
         "api_key_env": config.api_key_env,
@@ -471,7 +453,8 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
     out.write(f"{safe_text(name)}\n")
     for origin in catalog.explain(name):
         group = f", group {origin.group}" if origin.group else ""
-        value = values.get(origin.key)
+        section = config.sections.get(origin.key)  # an extension's (D28 section 7)
+        value = values.get(origin.key, json.dumps(section, default=dict))
         out.write(safe_text(f"  {origin.key:<12} {value}  [{origin.source}{group}]") + "\n")
     prompt = catalog.system_prompt
     if prompt is None:

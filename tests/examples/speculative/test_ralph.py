@@ -3,9 +3,10 @@
 import asyncio
 import importlib.util
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
+from typing import ClassVar
 
 import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Gate, Reply
@@ -202,15 +203,20 @@ async def test_step_limit_counts_steps_not_iterations(tmp_path: Path) -> None:
 
 
 @scenario
-async def test_listed_before_step_limit_the_loop_leaves_a_prompt_nobody_sent(
+async def test_ordered_before_step_limit_the_loop_leaves_a_prompt_nobody_sent(
     tmp_path: Path,
 ) -> None:
-    """Hook order decides: ralph restarts first, then StepLimit turns auto-step off."""
+    """Hook order decides (D28): a ralph whose `post_step` is ordered below StepLimit's guard
+    (-100) restarts first, then StepLimit turns auto-step off."""
+
+    class Early(ralph.Ralph):
+        order: ClassVar[Mapping[str, int]] = {"post_step": -200}
+
     prompt = prompt_file(tmp_path)
     h = await Harness.create(
         tmp_path / "s",
         provider=FakeProvider([say(f"r{i}") for i in range(6)]),
-        extensions=[ralph.Ralph(), StepLimit()],
+        extensions=[StepLimit(), Early()],
         config=config(step_limit={"limit": 3}),
     )
     await h.run("ralph", {"prompt": str(prompt)})

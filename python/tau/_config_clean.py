@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import cast
 
 from tau._config import ConfigError
-from tau._config_layers import ModelCatalog, tool_names
+from tau._config_layers import ModelCatalog
 from tau._extensions import RETRY, Inspection
 from tau._options import make_options, option_fields
 from tau._startup import off_keys
+from tau._tools import tool_names
 from tau._trust import write_atomically
 from tau._values import Context
 
