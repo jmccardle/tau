@@ -7,23 +7,28 @@ from typing import cast
 
 from tau._config_tree import Leaf, Problems, Tree, plain, source_of, suggest
 
+ORDER = "order"
+"""The key of `extensions.NAME` that is the extension's hook order, not an option (D28)."""
 TUI_KEYS = ("theme",)
 """What `tui` may hold."""
 
 
 def extensions(
     merged: Tree, problems: Problems
-) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
-    """The merged `extensions` object: each extension's options, an object, and the layer that
-    set each (`NAME`, and `NAME.FIELD` for each field)."""
+) -> tuple[dict[str, dict[str, object]], dict[str, str], dict[str, object]]:
+    """The merged `extensions` object: each extension's options, an object, the layer that
+    set each (`NAME`, and `NAME.FIELD` for each field), and apart from the options each
+    extension's hook `order` (D28: not an option, so every extension has it; checked against the
+    extension where it is loaded)."""
     node = merged.get("extensions")
     if node is None or (isinstance(node, Leaf) and node.value is None):
-        return {}, {}
+        return {}, {}, {}
     if not isinstance(node, dict):
         problems.add("error", "'extensions' must be an object", source_of(node), "extensions")
-        return {}, {}
+        return {}, {}, {}
     out: dict[str, dict[str, object]] = {}
     sources: dict[str, str] = {}
+    orders: dict[str, object] = {}
     for name, options in node.items():
         if isinstance(options, Leaf):
             if options.value is not None:
@@ -31,12 +36,14 @@ def extensions(
                 problems.add("error", msg, options.source, f"extensions.{name}")
             continue
         out[name] = cast("dict[str, object]", plain(options))
+        if (order := out[name].pop(ORDER, None)) is not None:
+            orders[name] = order
         if (where := source_of(options)) is not None:
             sources[name] = where
         for field, setting in options.items():
             if (where := source_of(setting)) is not None:
                 sources[f"{name}.{field}"] = where
-    return out, sources
+    return out, sources, orders
 
 
 def load_switches(merged: Tree, problems: Problems) -> tuple[dict[str, bool], dict[str, str]]:

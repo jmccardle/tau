@@ -55,9 +55,10 @@ or `StepLimit` turning auto-step off). It says so with a `Notice` per iteration 
 3. **Hook order is an implicit contract with `StepLimit`.** Listed after `StepLimit`, ralph sees
    auto-step already off and stops on the finished reply; listed before it, ralph has already
    written the next prompt, `StepLimit` then switches auto-step off, and the cursor rests on an
-   unsent `User` node (tests `..._step_limit_counts_steps...` and `..._listed_before_step_limit...`).
-   Both are defensible; nothing in the API says which a user gets. **Awkward** (the `StepLimit`
-   docstring warns of the same thing for hooks that turn auto-step on).
+   unsent `User` node (tests `..._step_limit_counts_steps...` and `..._ordered_before_step_limit...`).
+   Both are defensible. *Resolved by D28:* order is a number per hook, not the list's order;
+   `StepLimit`'s hooks are guards (-100), so ralph at the default 0 runs after it, and a ralph that
+   wants the other behaviour declares `order = {"post_step": -200}`.
 4. **Where the loop's state lives.** Not in options: `NodeId` is refused in options (stored options
    are read without a session), and a `Config` node lives on one branch, which the loop leaves
    every iteration. So: extension memory (L49). Fine; that is "leave it to an extension".

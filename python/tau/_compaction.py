@@ -20,8 +20,9 @@ The trigger is proactive only: a provider's "prompt too long" is not caught. `/c
 step, recovers.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from tau._config import ConfigError, model_config
 from tau._core import Author, Body, CursorClosed, Ending, Node, NoSuchLabel, Part, Stop
@@ -38,6 +39,7 @@ from tau._counts import (
     wrapped_count,
 )
 from tau._handles import Cursor, NodeHandle, Subject
+from tau._hook_order import GUARD
 from tau._lines import Planned, copy_of, prefix_length, write_line
 from tau._protocols import CallDraft
 from tau._values import Model
@@ -362,6 +364,9 @@ class Compaction:
     """The built-in extension `compaction` (the module docstring)."""
 
     name = "compaction"
+    order: ClassVar[Mapping[str, int]] = {"pre_tool": GUARD}
+    """The refusal of a summarizer's calls is a guard; compacting is an edit, at 0 (D28),
+    after the guards, so a budget halts before a summary is paid for."""
     options = Options
 
     def __init__(self) -> None:

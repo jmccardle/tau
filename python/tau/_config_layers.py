@@ -27,6 +27,7 @@ from tau._config_tree import (
     source_of,
     suggest,
 )
+from tau._hook_order import order_problem
 from tau._options import make_layer_options, option_fields, unknown_options
 from tau._protocols import Provider
 from tau._tools import assemble_tools
@@ -102,7 +103,9 @@ class ModelCatalog:
     `load` is the merged top-level `load` (source key to on or off; D19 section 3) and
     `load_sources` the layer (file path) that set each key: what the extension loader reads.
     `extension_sources` the layer that set each extension's options (`NAME`) and each option
-    (`NAME.FIELD`), for the problems found in them.
+    (`NAME.FIELD`), for the problems found in them. `orders` is each extension's
+    `extensions.NAME.order` (D28: an int or an object of hook point to int, unchecked here: the
+    hooks are the extension's), which is not among its `extensions` options.
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
     that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
@@ -116,6 +119,7 @@ class ModelCatalog:
     warnings: tuple[ConfigProblem, ...]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
+    orders: Mapping[str, object] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -644,7 +648,7 @@ def _build(
     switches, switched_by = load_switches(merged, problems)
     prompt, prompt_source = system_prompt(merged, problems)
     context, context_source = context_files(merged, problems)
-    options, option_sources = extensions(merged, problems)
+    options, option_sources, orders = extensions(merged, problems)
     tui = tui_settings(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
@@ -654,6 +658,7 @@ def _build(
         warnings=warnings,
         extensions=options,
         extension_sources=option_sources,
+        orders=orders,
         load=switches,
         load_sources=switched_by,
         system_prompt=prompt,
@@ -708,10 +713,13 @@ def option_problems(
     _unprovided(catalog, extensions, off, warn)
     tools = tool_names(extensions)
     for ext in extensions:
+        name = cast("str", getattr(ext, "name"))  # noqa: B009
+        if name in catalog.orders and (bad := order_problem(ext, catalog.orders[name])):
+            source = where.get(f"{name}.order") or where.get(name)
+            problems.append(ConfigProblem("error", bad, source, f"extensions.{name}.order"))
         options = getattr(ext, "options", None)
         if options is None:
             continue
-        name = cast("str", getattr(ext, "name"))  # noqa: B009
         raw = dict(catalog.extensions.get(name, {}))
         fields = option_fields(name, options)
         for key in unknown_options(fields, raw):

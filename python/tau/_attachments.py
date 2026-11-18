@@ -38,13 +38,18 @@ import asyncio
 import os
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from tau._config import ConfigError
 from tau._core import Author, Body, Draft
 from tau._handles import Cursor, Subject
+from tau._hook_order import EDIT, GUARD
+
+BEFORE_EDITS = (GUARD + EDIT) // 2
+"""Between the guards and the edits: an edit every other edit must see (D28)."""
 
 _TOKEN = re.compile(r'(?<!\S)@(?:"([^"\n]+)"|((?:\\.|\S)+))')
 _ESCAPE = re.compile(r"\\( )" if sys.platform == "win32" else r"\\(.)")
@@ -188,6 +193,9 @@ class Attachments:
     docstring). `cwd` is the session's working directory, where relative paths start."""
 
     name = "attachments"
+    order: ClassVar[Mapping[str, int]] = {"pre_input": BEFORE_EDITS}
+    """After the guards (a refused input is never read from disk), before the edits, which
+    must see the files attached (D24 section 1, D28)."""
     options = Options
 
     def __init__(self, cwd: Path) -> None:

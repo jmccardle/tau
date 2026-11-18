@@ -360,8 +360,9 @@ def _overridden(  # noqa: PLR0913, PLR0917 - the start's inputs, passed on
     layer = settings.with_options(cli, {name: values for name, (_, _, values) in changes.items()})
     again = load_config(cwd, environ, ask=prompts.ask, cli=layer)
     for name, (options, fields, _) in changes.items():
-        raw: Json = dict(again.catalog.extensions.get(name, {}))
-        make_layer_options(name, options, fields, raw, Context(again.catalog))
+        if options is not None:  # an order alone (D28) is checked with every other order
+            raw: Json = dict(again.catalog.extensions.get(name, {}))
+            make_layer_options(name, options, fields, raw, Context(again.catalog))
     return again
 
 

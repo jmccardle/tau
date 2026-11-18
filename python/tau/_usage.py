@@ -37,15 +37,16 @@ client once per model. It is about money, so only a model with a `price` gets it
 
 import json
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Annotated, cast
+from typing import Annotated, ClassVar, cast
 
 from tau._config import ConfigError, ModelConfig, Price
 from tau._core import Body, Node, Stop
 from tau._counts import Reading, counted, reading, tokens
 from tau._handles import Cursor, Subject, TreeHandle
+from tau._hook_order import GUARD, OBSERVE
 
 NOTICE_MIN_INPUT = 4096
 """The smallest prompt a cache could be expected to serve (Anthropic caches from 1,024 and
@@ -168,6 +169,12 @@ class Usage:
     """The built-in extension `usage` (the module docstring)."""
 
     name = "usage"
+    order: ClassVar[Mapping[str, int]] = {
+        "pre_input": GUARD,
+        "pre_sample": GUARD,
+        "post_reply": OBSERVE,
+    }
+    """The budget halts before any edit (D28); the status line shows what happened."""
     options = Options
 
     def __init__(self) -> None:

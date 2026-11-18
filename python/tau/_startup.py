@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
 from tau._config import ConfigError
+from tau._config_keys import ORDER
 from tau._config_layers import ModelCatalog, read_models
 from tau._config_tree import ConfigProblem
+from tau._hook_order import order_problem
 from tau._options import option_fields
 from tau._project_read import safe_text
 from tau._trust import (
@@ -79,13 +81,16 @@ def load_config(
 
 def option_changes(
     extensions: Sequence[object], assignments: Sequence[tuple[str, str, str]]
-) -> dict[str, tuple[type, tuple[Field, ...], Json]]:
+) -> dict[str, tuple[type | None, tuple[Field, ...], Json]]:
     """`EXTENSION.FIELD=VALUE` assignments (as `(extension, field, text)`) read against the
-    `extensions`' options: per extension, its options type, its fields and the JSON values set,
-    each text read as `/config` reads it (`tau.commandline.value`). `ConfigError` for an
-    extension without options, a field it does not have, or a text its field refuses."""
+    `extensions`' options: per extension, its options type (`None` for one without options), its
+    fields and the JSON values set, each text read as `/config` reads it
+    (`tau.commandline.value`). The field `order` (an integer: every hook) and `order.HOOK` (one
+    hook) set the extension's hook order (D28), whatever options it has. `ConfigError` for an
+    extension without options, a field it does not have, a text its field refuses, or an order
+    that is not an integer or names a hook the extension does not have."""
     known = {cast("str", getattr(e, "name")): e for e in extensions}  # noqa: B009
-    changes: dict[str, tuple[type, tuple[Field, ...], Json]] = {}
+    changes: dict[str, tuple[type | None, tuple[Field, ...], Json]] = {}
     for extension, name, given in assignments:
         if extension == "load":
             raise ConfigError(
@@ -93,6 +98,9 @@ def option_changes(
                 f"load.{name} = false to your config file, and `tau ext enable {name}` undoes "
                 f"it (`--set load.{name}=false` does it for one run)"
             )
+        if name.partition(".")[0] == ORDER:
+            _order_change(known, extension, name, given, changes)
+            continue
         options = getattr(known.get(extension), "options", None)
         if options is None:
             having = [n for n, e in known.items() if getattr(e, "options", None) is not None]
@@ -109,6 +117,37 @@ def option_changes(
             raise ConfigError(f"{extension}.{name}: {e}") from None
         changes.setdefault(extension, (options, fields, {}))[2][name] = decoded
     return changes
+
+
+def _order_change(
+    known: Mapping[str, object],
+    extension: str,
+    name: str,
+    given: str,
+    changes: dict[str, tuple[type | None, tuple[Field, ...], Json]],
+) -> None:
+    """`EXTENSION.order=N` or `EXTENSION.order.HOOK=N` into `changes` (`option_changes`)."""
+    found = known.get(extension)
+    if found is None:
+        raise ConfigError(
+            f"no loaded extension is named {extension!r}; those that are: {list(known)}"
+        )
+    try:
+        number = int(given.strip())
+    except ValueError:
+        raise ConfigError(f"{extension}.{name} must be an integer, not {given!r}") from None
+    hook = name.partition(".")[2]
+    setting: object = {hook: number} if hook else number
+    if (problem := order_problem(found, setting)) is not None:
+        raise ConfigError(problem)
+    options = getattr(found, "options", None)
+    fields = () if options is None else option_fields(extension, options)
+    values = changes.setdefault(extension, (options, fields, {}))[2]
+    before = values.get(ORDER)
+    if hook and isinstance(before, dict):
+        values[ORDER] = {**cast("dict[str, object]", before), hook: number}
+    else:
+        values[ORDER] = setting
 
 
 def _close(catalog: ModelCatalog, name: str) -> list[str]:

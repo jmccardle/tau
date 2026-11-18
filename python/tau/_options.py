@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from tau._config import ConfigError, ModelConfig, config_fields
+from tau._config_keys import ORDER
 from tau._core import Body, Node, Session
 from tau._values import (
     Context,
@@ -109,17 +110,20 @@ def make_layer_options(
 
 def save_options(
     user: "UserConfig",
-    saving: Mapping[str, tuple[type, tuple[Field, ...], Json]],
+    saving: Mapping[str, tuple[type | None, tuple[Field, ...], Json]],
     tools: Sequence[str],
 ) -> "ModelCatalog":
-    """Write `changes` into the user's file: `saving` maps each extension to its options type,
-    its `Field`s and the JSON values to set. Every extension's options, as the layers hold them
+    """Write `changes` into the user's file: `saving` maps each extension to its options type
+    (`None`: it has none, and only its hook `order` changes), its `Field`s and the JSON values to
+    set. Every extension's options, as the layers hold them
     with the change, are built before anything is written, and one that names a tool not in
     `tools` is refused (`ConfigError`): a file that τ writes never names what is missing. Returns
     the catalog the layers make now."""
 
     def fits(catalog: "ModelCatalog") -> None:
         for name, (options, fields, _) in saving.items():
+            if options is None:  # only its hook order changes (D28), checked when it was read
+                continue
             raw = dict(catalog.extensions.get(name, {}))
             made = make_layer_options(name, options, fields, raw, Context(catalog))
             check = getattr(made, "tool_problems", None)
@@ -298,6 +302,11 @@ class ExtensionOptions:
         if model is not None:
             self._catalog().resolve(model)
         for name, new in extensions.items():
+            if ORDER in new:
+                raise ConfigError(
+                    f"{name}.{ORDER} is not set on a branch: hook order (D28) is read from the "
+                    f"config files, or `--set {name}.{ORDER}=N` for one run"
+                )
             if name in self._fields and (extra := unknown_options(self._fields[name], dict(new))):
                 raise ConfigError(f"extension {name!r}: unexpected options {extra}")
             made = self._make(name, {**self._raw(name, at), **new})
