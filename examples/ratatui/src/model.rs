@@ -39,12 +39,24 @@ pub enum Kind {
     Dim,
 }
 
-/// One logical line of the transcript: a `label`, then `body` (which may hold newlines).
+/// The rows that fold together: Ctrl+R folds every thinking row, Ctrl+T every tool box (a call
+/// row and its result row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Thinking,
+    Tools,
+}
+
+/// One logical line of the transcript: a `label`, then `body` (which may hold newlines). A
+/// `folded` row is one line: its `body` is the summary of what it hides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub label: String,
     pub body: String,
     pub kind: Kind,
+    /// The group this row folds with, if it folds.
+    pub group: Option<Group>,
+    pub folded: bool,
 }
 
 impl Row {
@@ -53,7 +65,31 @@ impl Row {
             label: label.into(),
             body: body.into(),
             kind,
+            group: None,
+            folded: false,
         }
+    }
+
+    fn in_group(mut self, group: Group) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    /// This row as its one-line summary: `thinking ▸ 3 lines`, `call ▸ bash`.
+    fn fold(&mut self) {
+        self.body = match self.kind {
+            Kind::Call => self.body.split(' ').next().unwrap_or_default().to_owned(),
+            Kind::Failure => format!("failed, {}", count_lines(&self.body)),
+            _ => count_lines(&self.body),
+        };
+        self.folded = true;
+    }
+}
+
+fn count_lines(text: &str) -> String {
+    match text.lines().count() {
+        1 => "1 line".to_owned(),
+        n => format!("{n} lines"),
     }
 }
 
@@ -102,6 +138,10 @@ pub struct Model {
     layer: Layer,
     notices: VecDeque<String>,
     lost: Option<String>,
+    /// Whether thinking rows are folded: every one, and every one yet to come.
+    thinking_folded: bool,
+    /// Likewise the tool boxes.
+    tools_folded: bool,
 }
 
 impl Model {
@@ -121,6 +161,28 @@ impl Model {
             layer: Layer::default(),
             notices: VecDeque::new(),
             lost: None,
+            thinking_folded: false,
+            tools_folded: false,
+        }
+    }
+
+    /// Ctrl+R or Ctrl+T: fold every row of `group`, or unfold them all if each is folded
+    /// already. The state is sticky, held here: rows that arrive later start in it. Every row
+    /// of a group is always in the group's state, so "any unfolded" is "the state is unfolded",
+    /// and with no rows yet this just flips it.
+    pub fn toggle_fold(&mut self, group: Group) {
+        let folded = match group {
+            Group::Thinking => &mut self.thinking_folded,
+            Group::Tools => &mut self.tools_folded,
+        };
+        *folded = !*folded;
+    }
+
+    /// Whether the rows of `group` are folded.
+    pub fn folded(&self, group: Group) -> bool {
+        match group {
+            Group::Thinking => self.thinking_folded,
+            Group::Tools => self.tools_folded,
         }
     }
 
@@ -410,6 +472,11 @@ impl Model {
             self.node_rows(&self.nodes[id], &mut rows);
         }
         self.layer_rows(&mut rows);
+        for row in &mut rows {
+            if row.group.is_some_and(|g| self.folded(g)) {
+                row.fold();
+            }
+        }
         rows
     }
 
@@ -436,9 +503,12 @@ impl Model {
                 for part in parts {
                     rows.push(match part {
                         Part::Text(p) => Row::new(Kind::Assistant, "assistant", prose(p)),
-                        Part::Thinking(p) => Row::new(Kind::Thinking, "thinking", prose(p)),
+                        Part::Thinking(p) => {
+                            Row::new(Kind::Thinking, "thinking", prose(p)).in_group(Group::Thinking)
+                        }
                         Part::Call { tool, args_raw, .. } => {
                             Row::new(Kind::Call, "call", format!("{tool} {args_raw}"))
+                                .in_group(Group::Tools)
                         }
                     });
                 }
@@ -476,7 +546,7 @@ impl Model {
             Author::Tools => tool,
             other => format!("{tool}, by {}", self.author(other).1),
         };
-        Row::new(kind, label, text)
+        Row::new(kind, label, text).in_group(Group::Tools)
     }
 
     fn layer_rows(&self, rows: &mut Vec<Row>) {
@@ -484,11 +554,10 @@ impl Model {
             return;
         }
         if !self.layer.thinking.is_empty() {
-            rows.push(Row::new(
-                Kind::Thinking,
-                "thinking",
-                self.layer.thinking.clone(),
-            ));
+            rows.push(
+                Row::new(Kind::Thinking, "thinking", self.layer.thinking.clone())
+                    .in_group(Group::Thinking),
+            );
         }
         if !self.layer.text.is_empty() {
             rows.push(Row::new(
@@ -498,10 +567,12 @@ impl Model {
             ));
         }
         for (tool, args) in self.layer.calls.values() {
-            rows.push(Row::new(Kind::Call, "call", format!("{tool} {args}")));
+            rows.push(
+                Row::new(Kind::Call, "call", format!("{tool} {args}")).in_group(Group::Tools),
+            );
         }
         for (_, text) in &self.layer.progress {
-            rows.push(Row::new(Kind::Result, "running", clip(text)));
+            rows.push(Row::new(Kind::Result, "running", clip(text)).in_group(Group::Tools));
         }
     }
 

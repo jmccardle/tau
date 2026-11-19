@@ -311,3 +311,58 @@ fn a_provider_waiting_to_retry_is_said_until_the_sample_goes_on() {
     ));
     assert_eq!(model.retrying(), None, "the next delta takes the line away");
 }
+
+#[test]
+fn folding_thinking_makes_every_thinking_row_one_line_and_back() {
+    let mut model = Model::new(ME);
+    replay_through(&mut model, 3);
+    model.toggle_fold(Group::Thinking);
+    let rows = shown(&model.rows());
+    assert_eq!(rows[1], "thinking: 1 line");
+    assert!(model.rows()[1].folded);
+    assert_eq!(
+        rows[3], "call: bash {\"cmd\":\"ls\"}",
+        "tools are another group"
+    );
+    model.toggle_fold(Group::Thinking);
+    assert_eq!(shown(&model.rows())[1], "thinking: I should look");
+}
+
+#[test]
+fn folding_tool_boxes_folds_the_call_and_its_result() {
+    let mut model = Model::new(ME);
+    replay_through(&mut model, 3);
+    model.toggle_fold(Group::Tools);
+    let rows = model.rows();
+    let (call, result) = (&rows[3], &rows[4]);
+    assert_eq!((call.folded, call.body.as_str()), (true, "bash"));
+    assert_eq!((result.folded, result.body.as_str()), (true, "2 lines"));
+    assert!(!rows[1].folded, "thinking is its own group");
+}
+
+#[test]
+fn a_thinking_row_arriving_while_folded_starts_folded_even_while_streaming() {
+    let mut model = Model::new(ME);
+    model.toggle_fold(Group::Thinking); // no rows yet: just the state
+    assert!(model.folded(Group::Thinking));
+    replay_through(&mut model, 3);
+    assert!(model.rows()[1].folded, "an arriving node starts folded");
+    model.hear(event(&serde_json::json!({
+        "kind": "Live", "cursor": 0,
+        "delta": {"kind": "ThinkingDelta", "text": "a\nb\nc"},
+    })));
+    let streaming = model.rows().pop().unwrap();
+    assert_eq!((streaming.kind, streaming.folded), (Kind::Thinking, true));
+    assert_eq!(streaming.body, "3 lines");
+}
+
+#[test]
+fn a_toggle_folds_when_any_row_is_unfolded_and_unfolds_when_all_are_folded() {
+    let mut model = Model::new(ME);
+    replay_through(&mut model, 3);
+    assert!(!model.folded(Group::Tools));
+    model.toggle_fold(Group::Tools);
+    assert!(model.folded(Group::Tools), "some unfolded: fold all");
+    model.toggle_fold(Group::Tools);
+    assert!(!model.folded(Group::Tools), "all folded: unfold all");
+}
