@@ -31,7 +31,7 @@ from ptykit import Screen
 from websockets.asyncio.server import ServerConnection, unix_serve
 from world import World, tau
 
-from tau import PROTOCOL, RemoteClient, Session
+from tau import PROTOCOL, Author, Body, Outcome, Part, RemoteClient, Session, Stop
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "examples" / "ratatui" / "Cargo.toml"
@@ -40,6 +40,8 @@ CTRL_C = "\x03"
 CTRL_D = "\x04"
 ESC = "\x1b"
 CTRL_G = "\x07"
+CTRL_R = "\x12"
+CTRL_T = "\x14"
 DOWN = "\x1b[B"
 TAB = "\t"
 OLD = "20261030-091502-1c2d3e"
@@ -303,6 +305,40 @@ def test_what_another_client_says_is_shown_under_its_name(home: World, binary: P
     asyncio.run(other_says())
     screen.wait_for("ann@elsewhere:web: hello from ann", on_screen=True)
     screen.wait_for("assistant: mock: hello from ann", on_screen=True)
+    assert screen.quit() == 0
+
+
+def test_ctrl_r_and_ctrl_t_fold_thinking_and_tool_boxes_and_the_fold_is_sticky(
+    home: World, binary: Path
+) -> None:
+    def tooled(session: Session, tip: int) -> int:
+        reply = Body.Assistant(
+            [Part.Thinking("first\nsecond\nthird"), Part.Call("c", "bash", '{"cmd":"ls"}')],
+            Stop.Tools,
+        )
+        batch = session.append(tip, reply, Author.Provider(), 0)
+        results = Body.Results([("c", Outcome.Ok("a.txt\nb.txt"), Author.Tools())])
+        return session.append(batch, results, Author.Tools(), 0)
+
+    home.session(OLD, cwd=work(home), says=["list"], build=tooled)
+    serving(home)
+    screen = client(home, binary)
+    idle(screen)
+    screen.wait_for("thinking: first", on_screen=True)
+    assert "call: bash" in screen.display()
+    screen.type(CTRL_R)
+    screen.wait_for("thinking ▸ 3 lines", on_screen=True)
+    assert "call: bash" in screen.display(), "Ctrl+R leaves tool boxes alone"
+    screen.type(CTRL_T)
+    screen.wait_for("call ▸ bash", on_screen=True)
+    assert "bash ▸ 2 lines" in screen.display()
+    # Still folded for a reply that arrives afterwards; a second Ctrl+R unfolds.
+    screen.type("more\r")
+    screen.wait_for("assistant: mock: more", on_screen=True)
+    assert "thinking ▸ 3 lines" in screen.display()
+    screen.type(CTRL_R)
+    screen.wait_for("thinking: first", on_screen=True)
+    assert "call ▸ bash" in screen.display()
     assert screen.quit() == 0
 
 

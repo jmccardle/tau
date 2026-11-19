@@ -14,7 +14,7 @@ use crate::{
     ask,
     editor::Editor,
     link::{Connected, Incoming, Link},
-    model::{Model, Need, PAGE as NODES},
+    model::{Group, Model, Need, PAGE as NODES},
     ui::{Asking, Screen},
     wire::{
         self, AnswerParams, ConfigureParams, Node, NodesParams, OptionsParams, ParseLineParams,
@@ -299,6 +299,8 @@ impl App<'_> {
             _ if self.prompt.is_some() => self.prompting(*key),
             _ if !matches!(self.mode, Mode::Chat) => self.in_mode(*key),
             KeyCode::Char('g') if ctrl => self.open_tree(),
+            KeyCode::Char('r') if ctrl => self.model.toggle_fold(Group::Thinking),
+            KeyCode::Char('t') if ctrl => self.model.toggle_fold(Group::Tools),
             _ if self.asking.id.is_some() => self.answering(*key),
             _ => self.typing(*key),
         }

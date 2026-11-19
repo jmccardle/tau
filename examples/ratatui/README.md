@@ -49,6 +49,12 @@ be made exits with status 1 and the server's own message.
 | Left, Right, Home, End, Backspace, Delete, Ctrl+A, Ctrl+E, Ctrl+W, Ctrl+U | edit the line |
 | PageUp, PageDown | scroll the conversation |
 | Ctrl+G | the tree (below) |
+| Ctrl+R | fold or unfold every thinking row (`thinking ▸ 3 lines`) |
+| Ctrl+T | fold or unfold every tool box, call and result (`call ▸ bash`) |
+
+Folding is sticky: it applies to the rows already there and to every row that arrives later, a
+reply still streaming included. Each key folds all when the rows are unfolded, and unfolds all
+otherwise.
 
 A **question** an extension asks you appears above the editor. If its answer is one of a few
 values (`yes`/`no`) pick with Up and Down and press Enter; otherwise type the answer (a number is

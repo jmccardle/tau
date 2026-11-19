@@ -91,6 +91,16 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 pub fn lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for row in rows {
+        if row.folded {
+            out.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ▸ ", row.label),
+                    style(row.kind).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(row.body.clone(), style(row.kind)),
+            ]));
+            continue;
+        }
         let label = format!("{}: ", row.label);
         let indent = " ".repeat(label.chars().count().min(width.saturating_sub(1)));
         let body_width = width.saturating_sub(indent.len()).max(1);
@@ -445,6 +455,8 @@ mod tests {
             label: "you".into(),
             body: "aaa bbb".into(),
             kind: Kind::Mine,
+            group: None,
+            folded: false,
         }];
         let got: Vec<String> = lines(&rows, 9)
             .iter()
@@ -477,6 +489,8 @@ mod tests {
 mod screen_tests {
     use ratatui::{Terminal, backend::TestBackend}; // rules: allow(backend): ratatui API
     use serde_json::json;
+
+    use crate::model::Group;
 
     use super::*;
 
@@ -716,6 +730,30 @@ mod screen_tests {
             .position(|l| l.starts_with("answer: "))
             .unwrap();
         assert_eq!(usize::from(shot.cursor.1), row);
+    }
+
+    #[test]
+    fn a_folded_thinking_row_is_one_line_and_the_scroll_range_shrinks_with_it() {
+        let mut model = talked(1);
+        let thought = (0..30)
+            .map(|i| format!("t{i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        hear(
+            &mut model,
+            json!({"kind": "Live", "cursor": 0,
+                   "delta": {"kind": "ThinkingDelta", "text": thought}}),
+        );
+        let open = drawn_with(&model, (40, 12), 0, "", None);
+        assert!(open.most >= 20, "{:#?}", open.lines);
+        model.toggle_fold(Group::Thinking);
+        // Scrolled to the top of the tall transcript, then folded: the scroll is clamped.
+        let shut = drawn_with(&model, (40, 12), open.most, "", None);
+        let screen = shut.lines.join("\n");
+        assert!(screen.contains("thinking \u{25b8} 30 lines"), "{screen}");
+        assert!(!screen.contains("t05"), "{screen}");
+        assert_eq!(shut.most, 0);
+        assert!(screen.contains("t: hi"), "{screen}");
     }
 
     #[test]
