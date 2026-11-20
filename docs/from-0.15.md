@@ -107,7 +107,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | capability | 0.15 where | 0.16 status | note |
 |---|---|---|---|
 | Durable session log (JSONL `SessionLog`) | `session_log.py`, `session_manager.py` | **built** (changed) | `0.16: crates/tau-store`: length-prefixed checksummed record log + scratchpad file (D12); torn tails cut; I7 proptest |
-| 0.15 session files readable | `~/.tau/sessions/*.jsonl` | **dropped** | D9 (superseded): no converter; 0.16 ignores 0.15 files; `~/.tau-0.15` archive. Release notes owed (plan.md Phase 9) |
+| 0.15 session files readable | `~/.tau/sessions/*.jsonl` | **dropped** | D9 (superseded): no converter; 0.16 ignores 0.15 files; `~/.tau-0.15` archive. Said in `docs/release-notes/0.16.0.md` |
 | Per-session write lock | `session_lock.py` (flock) | **built** | the lease (`Leased` error) |
 | Tree of entries, branches, leaf | `conversation_tree.py` | **built** (changed) | `0.16: crates/tau-core/src/tree`: nodes, `walk`, `children`, `lca`, labels, `config_at` |
 | Cursors / multi-writer (`Cursor`, sub-agent cursors) | `cursor.py`, `docs/CURSORS.md` | **built** (changed) | cursors `{id, at}`, `open`, `go_to`, scratchpad items wake cursors (D6, model.md) |

@@ -23,14 +23,15 @@ async def test_a_removed_widget_is_not_under_the_pointer(tmp_path: Path) -> None
         point = (region.x + 1, region.y)
         assert app.screen.get_widget_at(*point)[0] is paragraph
         await paragraph.remove()
-        # no repaint yet: the paint's map still holds the paragraph
-        assert app.screen.get_widget_and_offset_at(*point) == (None, None)
+        # Usually no repaint yet, and the last paint's map still holds the paragraph; a runner may
+        # repaint first (Windows did), and then another widget is there. Either way, not this one.
+        assert app.screen.get_widget_and_offset_at(*point)[0] is not paragraph
         try:
-            app.screen.get_widget_at(*point)
+            under = app.screen.get_widget_at(*point)[0]
         except NoWidget:
             pass
         else:
-            raise AssertionError("the removed widget is still under the pointer")
+            assert under is not paragraph, "the removed widget is still under the pointer"
         down = events.MouseDown(
             None, point[0], point[1], 0, 0, 1, False, False, False,
             screen_x=point[0], screen_y=point[1],
