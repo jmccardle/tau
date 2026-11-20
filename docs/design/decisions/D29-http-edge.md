@@ -38,7 +38,8 @@ edge's. `Started.serve(..., http=None)` adds an edge to an embedded server.
 | `GET /stream` | `200`, `text/event-stream`: the **stream**. First event `event: connection`, data the **connection id**; then each message the socket would send (responses, `event`, `end`) as one `data:` line, in the socket's order. Comments `: ping` are the heartbeat (§5). |
 | `POST /stream/<id>` | the body is one JSON-RPC request. `202` once it is queued on that stream (its response comes on the stream); `404` with a JSON-RPC error body (`InvalidRequest`, the request's `id` if readable) when no open stream has that id; `400` for a body that is not UTF-8; `413` past 64 MiB. |
 | `GET /stream/<id>` | `409`: there is no resume, so no second stream may claim an id. |
-| anything else | `404`, or `405` with `Allow`; `400` (or `431`) for what is not an HTTP/1.1 request. |
+| any other `GET` or `HEAD` | the **web client**'s files, or the **help page** at `/` (§9). No token. |
+| anything else | `405` with `Allow`; `400` (or `431`) for what is not an HTTP/1.1 request. |
 
 The origin and the token are checked on a request's head, before its body is read, so a refused
 request costs the server nothing; a head or a body that takes more than 30 seconds to arrive
@@ -53,14 +54,19 @@ browser's automatic `Last-Event-ID` reconnection is not offered (there is nothin
 
 ### 3. Access
 
-- **Bearer token.** Every request but a CORS preflight carries `Authorization: Bearer <token>`;
+- **Bearer token.** Every request to the wire (`/stream`, `/stream/<id>`) but a CORS preflight
+  carries `Authorization: Bearer <token>`;
   missing or wrong is `401` (`WWW-Authenticate: Bearer`), compared in constant time. The server
   makes a fresh token (`secrets.token_urlsafe(32)`) per start unless the library caller passes one.
-- **Origin.** A request with an `Origin` header is refused (`403`) unless `--allow-origin` lists it;
-  none is listed by default. So a web page the user merely visits cannot drive a session even if it
-  guesses the port, and the intended web client reaches τ through a same-origin proxy that adds the
-  token (tau-code's dev server), not from the page itself. An allowed origin gets
-  `Access-Control-Allow-Origin` and a preflight answer.
+- **Origin.** A request with an `Origin` header is refused (`403`) unless it is the edge's **own
+  origin** (`http://<host>:<port>`, and on loopback both `127.0.0.1` and `localhost`: the web client
+  the edge served, calling home; browsers send `Origin` on a same-origin POST) or `--allow-origin`
+  lists it; none is listed by default. So a web page the user merely visits cannot drive a session
+  even if it guesses the port. A client served from elsewhere (tau-code's dev server) is either
+  listed or reaches τ through a same-origin proxy. An allowed origin gets
+  `Access-Control-Allow-Origin` and a preflight answer. Behind `--allow-network` on `0.0.0.0` the
+  name a browser uses is not known to the edge: list it with `--allow-origin`.
+- **The web client's files** are not secret and carry no session data, so they need no token (§9).
 - **Bind.** Loopback (`127.0.0.1`) by default. `--host` that is not loopback needs
   `--allow-network`; then anyone who can reach the port and has the token is in. TLS is not
   offered: across machines, put the edge behind something that terminates it.
@@ -117,8 +123,10 @@ serving 20261120-174140-62d20e on /home/u/.tau/serve/20261120-174140-62d20e.sock
 ```
 
 and, only when stdout is a terminal and `--quiet` is not given, a second line with the **paste
-URL**, `paste URL: http://127.0.0.1:3393/#token=<token>`, for a web client to take the token from (a
-fragment is not sent to a server). `-d` prints the same lines with `started` or `already serving`.
+URL**, the edge's URL with `#token=<token>` (a fragment is not sent to a server): `open: URL#token=…`
+when the edge serves a web client (§9), which reads the token from its own address, and `for a
+web client: URL#token=…` when it serves only the help page. `-d` prints the same lines with
+`started` or `already serving`.
 
 ### 8. Built on
 
@@ -128,6 +136,31 @@ to the server as a line with a WebSocket's `recv`, `send` and `close`, so `tau._
 connection type. The client side is `RemoteClient.connect_http(url, token, client)` on httpx
 (`tau._remote_http`); it sends POSTs one at a time, each after the last was accepted, so calls
 arrive in the order they were made. The behavior suite runs a third wired mode, `http`.
+
+### 9. The web client and the help page
+
+τ serves a web client itself, so running one needs no Node: Node builds it (tau-code's CI), and a
+dev server with live reload stays a development convenience. The page and the wire share an
+origin, so the client reads `#token=` from its own address, keeps it in the tab
+(`sessionStorage`) and sends it as `Authorization`; no proxy has to inject it.
+
+- **Where the files come from**, first found: `tau serve --web-root DIR` (`HttpEdge.web_root`); else
+  the `dist/` of an installed package **`tau_web`** (tau-code publishes it; τ's wheel carries no
+  JavaScript); else none, and `/` is the **help page**: what the URL is, why its `#token=` never
+  reached the server, how to get a client. The help page says that no client is installed: it is
+  the gap, reported, not a stand-in. A web root (or a `tau_web`) without `index.html` fails at
+  start (`ConfigError` naming it).
+- **Routes.** `/stream` and `/stream/<id>` are the wire. Any other `GET` or `HEAD` is a file under
+  the root; a path that escapes it (`..`, encoded or not, a backslash, a link out) is `404`; a path
+  with no extension is the client's own route and gets `index.html`; a missing file is `404`.
+- **Headers.** `Content-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self'
+  data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-cache`.
+- **Not a 0.15 `--web-root` revival:** 0.15 served a client from the daemon over its WebSocket;
+  here the files are static, the session is reached only by the wire's token, and the client is
+  someone else's package.
+- An editor's webview loads the same bundle from the extension and calls the edge by its URL (an
+  `--allow-origin` for the webview's origin, or the extension host relaying).
 
 ## Alternatives
 
@@ -140,6 +173,9 @@ arrive in the order they were made. The behavior suite runs a third wired mode, 
 - **A separate `<id>.tcp` or `<id>.token` file**: a second file with the same lifecycle as the
   record. Rejected once the record was found to be private and atomic already.
 - **starlette + uvicorn**: more surface and dependencies than the six routes need.
+- **The web client hosted by Node alone** (a Vite server with a token-injecting proxy): what was
+  planned first. It needs Node at run time beside a harness that already serves HTTP, and a proxy
+  just to move the token. Kept for development only.
 
 ## Open
 
@@ -148,8 +184,11 @@ arrive in the order they were made. The behavior suite runs a third wired mode, 
    the serve tests on Windows. Port them and un-skip the tests in the release workflow.
 2. **`tau sessions --json`** could mark sessions with a live endpoint (nice to have).
 3. **`name` in the record** is the name at start; a rename while serving is not reflected.
+4. **The `ffwf-tau[web]` extra** is to name tau-code's package once it is published; until then a
+   client is installed by hand (or `--web-root`).
 
 ## Glossary additions
 
-HTTP edge, `HttpEdge`, stream and connection id, heartbeat, paste URL; the serve record's edge
-fields (what was planned as the `.tcp` file).
+HTTP edge, `HttpEdge`, stream and connection id, heartbeat, paste URL, web client and web root
+(`tau_web`), help page, own origin; the serve record's edge fields (what was planned as the `.tcp`
+file).

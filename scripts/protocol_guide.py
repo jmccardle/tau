@@ -50,8 +50,10 @@ serialized.
     /stream/<connection id>` with the message as its body, answered `202` (the response comes on
     the stream) or `404` with a JSON-RPC error if that stream is not open. Every request carries
     `Authorization: Bearer <token>` (`401` otherwise); one with an `Origin` header is refused
-    (`403`) unless `tau serve --allow-origin` names it. The stream writes `: ping` every 15
-    seconds. There is no resume: a new stream is a new `hello`.
+    (`403`) unless it is the edge's own origin or `tau serve --allow-origin` names it. The stream
+    writes `: ping` every 15 seconds. There is no resume: a new stream is a new `hello`. Every
+    other `GET` is a web client's static files (`--web-root`), or a help page at `/`, with no
+    token.
 
   `tau serve -d --json` prints the serve record, which names the socket, the URL and the token;
   see [the quickstart](quickstart.md).

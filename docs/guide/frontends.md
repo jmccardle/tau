@@ -429,9 +429,15 @@ The socket has no token: its file permissions are the whole security. The HTTP e
 in the record, which only you can read, and every request carries it; a web page from another
 origin is refused unless `--allow-origin` names it. The edge listens on loopback; `--host` with
 `--allow-network` opens it to the network (put TLS in front of it). `--port N` binds exactly N or
-fails. Run `tau serve` in a terminal and it prints a paste URL (`http://127.0.0.1:3393/#token=...`)
-for a web client; `--quiet` leaves it out. `--no-unix` and `--no-http` turn one transport off.
-D29 has the details.
+fails. Run `tau serve` in a terminal and it prints a URL with the token in its fragment
+(`http://127.0.0.1:3393/#token=...`); `--quiet` leaves it out. `--no-unix` and `--no-http` turn
+one transport off. D29 has the details.
+
+**A web client** is served by the edge itself: `tau serve --web-root DIR` serves a built client's
+files (or an installed `tau_web` package's), without a token, from the same origin as the wire.
+The client reads the token from the URL's `#token=` (a browser never sends the fragment to the
+server) and sends it as `Authorization: Bearer` on `/stream`. The banner then says `open:` before
+that URL. With no client installed, `/` is a help page saying so.
 
 ## The terminal UI
 

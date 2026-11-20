@@ -17,13 +17,15 @@ class HttpEdge
     origins: tuple[str, ...] = ()
     heartbeat: float = HEARTBEAT
     allow_network: bool = False
+    web_root: Path | None = None
 ```
 
 Where and how a `Server` listens over HTTP (D29). `port` `None` tries 3393 and then any free
 port; `0` takes any free port; any other port is bound or the start fails. `token` is the
 bearer token every request must carry (`None`: the server makes one). `origins` are the web
 origins allowed to call (none by default). `heartbeat` is the seconds between pings. A `host`
-that is not loopback needs `allow_network`: `ValueError` otherwise.
+that is not loopback needs `allow_network`: `ValueError` otherwise. `web_root` is a built web
+client's directory to serve (`None`: an installed `tau_web`'s, else the help page).
 
 ## Json
 

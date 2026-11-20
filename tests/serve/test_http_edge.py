@@ -494,3 +494,106 @@ async def test_a_client_that_stops_reading_does_not_hold_the_server_open(tmp_pat
         await server.close()
     await raw.close()
     await h.close()
+
+
+# The web client and the help page
+
+
+def edge_answer(answer: bytes) -> int:
+    """The status of a response head read by `exchange`."""
+    return int(answer.split(b" ", 2)[1])
+
+
+@scenario
+async def test_the_help_page_is_served_without_a_token_and_says_nothing_of_the_session(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path)
+    url, token = edge_of(h)
+    async with plain(url) as http:
+        for path in ("", "index.html"):
+            page = await http.get(path)
+            assert page.status_code == 200
+            assert page.headers["content-type"] == "text/html; charset=utf-8"
+            assert "connect-src 'self'" in page.headers["content-security-policy"]
+            assert page.headers["referrer-policy"] == "no-referrer"
+            assert "tau serve --web-root DIR" in page.text
+            assert str(h.directory) not in page.text
+            assert token not in page.text
+        head = await http.head("")
+        assert head.status_code == 200
+        assert head.content == b""
+        assert int(head.headers["content-length"]) == len(page.content)
+        assert (await http.get("app.js")).status_code == 404, "no client: nothing else"
+        assert (await http.post("")).status_code == 405
+        assert (await http.get("stream")).status_code == 401, "the wire still needs the token"
+    await h.close()
+
+
+@scenario
+async def test_the_edges_own_origin_may_call_the_wire_and_another_may_not(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    url, token = edge_of(h)
+    port = httpx.URL(url).port
+    for own in (url.rstrip("/"), f"http://localhost:{port}"):
+        raw = await Raw.open(url, token, Origin=own)
+        await raw.hello()  # its POST carries the Origin too
+        await raw.close()
+    async with plain(url) as http:
+        auth = {"Authorization": f"Bearer {token}"}
+        other_port = await http.get("stream", headers={**auth, "Origin": "http://127.0.0.1:1"})
+        assert other_port.status_code == 403
+    assert port != 1
+    await h.close()
+
+
+def client_dir(base: Path) -> Path:
+    """A built web client, and a secret beside it that must stay out of reach."""
+    root = base / "client"
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_text("<!doctype html><title>client</title>", encoding="utf-8")
+    (root / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    (base / "secret.txt").write_text("not yours", encoding="utf-8")
+    (root / "out").symlink_to(base / "secret.txt")
+    return root
+
+
+@scenario
+async def test_a_web_root_is_served_with_its_routes_and_nothing_outside_it(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    root = client_dir(tmp_path)
+    server = await Server.start(
+        h.driver, session="s", cwd=h.directory, http=HttpEdge(port=0, web_root=root)
+    )
+    assert server.url is not None
+    async with plain(server.url) as http:
+        index = await http.get("")
+        assert index.text.endswith("<title>client</title>")
+        script = await http.get("assets/app.js")
+        assert script.headers["content-type"].startswith("text/javascript") or script.headers[
+            "content-type"
+        ].startswith("application/javascript")
+        assert script.text == "console.log(1)"
+        route = await http.get("sessions/abc")  # the client's own routing
+        assert route.text == index.text
+        assert (await http.get("assets/missing.png")).status_code == 404
+    for target in (
+        b"/../secret.txt",
+        b"/%2e%2e/secret.txt",
+        b"/assets/..%2f..%2fsecret.txt",
+        b"/out",
+    ):
+        answer = await exchange(server.url, b"GET " + target + b" HTTP/1.1\r\nHost: h\r\n\r\n")
+        assert edge_answer(answer) == 404, target
+    await server.close()
+    await h.close()
+
+
+@scenario
+async def test_a_web_root_without_an_index_is_refused_at_start(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    with pytest.raises(ValueError, match=r"holds no index\.html"):
+        await Server.start(
+            h.driver, session="s", cwd=h.directory, http=HttpEdge(port=0, web_root=tmp_path)
+        )
+    await h.close()

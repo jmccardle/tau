@@ -61,6 +61,7 @@ from tau._session_start import Started, start_report, start_session
 from tau._sessions import SessionFlags, is_leased, read_name
 from tau._startup import load_config, prompts
 from tau._trust import tau_home
+from tau._web_client import web_client
 
 IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""
@@ -126,7 +127,7 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
         raise ConfigError(
             "a served session is kept: --no-session has no id to name its socket and record"
         )
-    unix, http = transports(args)
+    unix, http = transports(args, run.cwd)
     explicit = None if args.socket is None else Path(os.path.abspath(run.cwd / args.socket))
     if explicit is not None:
         checked_socket(explicit)
@@ -183,16 +184,23 @@ def transport_flags(parser: argparse.ArgumentParser) -> None:
         help="let web pages from ORIGIN call over HTTP (repeatable; default: none)",
     )
     parser.add_argument(
-        "--quiet", action="store_true", help="do not print the paste URL, which holds the token"
+        "--web-root",
+        metavar="DIR",
+        help="serve the built web client in DIR over HTTP (default: an installed tau_web's, "
+        "else a help page)",
+    )
+    parser.add_argument(
+        "--quiet", action="store_true", help="do not print the URL with the token in it"
     )
 
 
-def transports(args: argparse.Namespace) -> tuple[bool, HttpEdge | None]:
+def transports(args: argparse.Namespace, cwd: Path) -> tuple[bool, HttpEdge | None]:
     """Whether to listen on the Unix socket, and the HTTP edge to listen on (`None`: none), as
-    the flags say. `ConfigError` for flags that leave nowhere to listen or contradict each other:
-    both off, `--socket` without the socket, `--port`, `--host` or `--allow-origin` without HTTP,
-    `--unix` on Windows, a port out of range, a host that is not loopback without
-    `--allow-network`."""
+    the flags say (`--web-root` is read from `cwd`). `ConfigError` for flags that leave nowhere to
+    listen or contradict each other: both off, `--socket` without the socket, `--port`, `--host`,
+    `--allow-origin` or `--web-root` without HTTP, `--unix` on Windows, a port out of range, a
+    host that is not loopback without `--allow-network`, a web root (or an installed `tau_web`)
+    that holds no client."""
     if sys.platform == "win32" and args.unix:
         raise ConfigError("--unix is not available on Windows: tau serve listens over HTTP there")
     unix = sys.platform != "win32" and not args.no_unix
@@ -203,13 +211,16 @@ def transports(args: argparse.Namespace) -> tuple[bool, HttpEdge | None]:
         return unix, None
     if args.port is not None and args.port < 0:
         raise ConfigError(f"port {args.port} is not a TCP port (0 to 65535)")
+    web_root = None if args.web_root is None else Path(os.path.abspath(cwd / args.web_root))
     try:
         edge = HttpEdge(
             host=args.host or "127.0.0.1",
             port=args.port or None,  # 0 is "any": 3393 first, as no --port is
             origins=tuple(args.allow_origin),
             allow_network=args.allow_network,
+            web_root=web_root,
         )
+        web_client(web_root)  # a client that cannot load is said now, before the session starts
     except ValueError as e:
         raise ConfigError(str(e)) from None
     return unix, edge
@@ -219,7 +230,8 @@ def _without_http(args: argparse.Namespace, *, unix: bool) -> None:
     """`ConfigError` for `--no-http` with no socket either, or with flags that configure HTTP."""
     if not unix:
         raise ConfigError("--no-unix and --no-http leave the server nowhere to listen")
-    given = [f for f, v in (("--port", args.port), ("--host", args.host)) if v is not None]
+    named = (("--port", args.port), ("--host", args.host), ("--web-root", args.web_root))
+    given = [f for f, v in named if v is not None]
     given += ["--allow-origin"] if args.allow_origin else []
     if given:
         raise ConfigError(f"{' and '.join(given)} configure HTTP, which --no-http turns off")
@@ -436,6 +448,15 @@ def _announce(run: Process, args: argparse.Namespace, record: ServeRecord, *, st
     return 0
 
 
+def _serves_client(run: Process, args: argparse.Namespace) -> bool:
+    """Whether the edge serves a web client (else its `/` is the help page)."""
+    root = None if args.web_root is None else run.cwd / args.web_root
+    try:
+        return web_client(root).root is not None
+    except ValueError:
+        return False
+
+
 def paste_url(record: ServeRecord) -> str | None:
     """The URL a person pastes into a web client: the edge's, with the token in the fragment
     (which a browser does not send to the server). `None` for a server without an edge."""
@@ -452,7 +473,8 @@ def _banner(run: Process, args: argparse.Namespace, record: ServeRecord, verb: s
     )
     pasted = paste_url(record)
     if pasted is not None and not args.quiet and run.stdout.isatty():
-        run.stdout.write(safe_text(f"paste URL: {pasted}") + "\n")
+        label = "open" if _serves_client(run, args) else "for a web client"
+        run.stdout.write(safe_text(f"{label}: {pasted}") + "\n")
 
 
 # --stop

@@ -16,6 +16,7 @@ if sys.platform == "win32":
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import pty
@@ -26,6 +27,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 from world import Result, World, tau
 
 from tau import RemoteClient
@@ -73,12 +75,15 @@ async def welcome_over_http(record: dict[str, object]) -> object:
 
 
 def foreground(
-    world: World, *argv: str, stdout: int | None = subprocess.PIPE
+    world: World,
+    *argv: str,
+    stdout: int | None = subprocess.PIPE,
+    env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-m", "tau", "serve", "--session", OLD, *argv],
         cwd=work(world),
-        env={**world.environ, "PYTHONUNBUFFERED": "1"},
+        env={**world.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
         stdout=stdout,
         stderr=subprocess.PIPE,
         text=True,
@@ -151,6 +156,8 @@ def test_no_http_serves_on_the_socket_alone(home: World) -> None:
         (["--host", "0.0.0.0"], "--allow-network"),
         (["--port", "70000"], "not a TCP port"),
         (["--port", "-1"], "not a TCP port"),
+        (["--no-http", "--web-root", "."], "--web-root configure HTTP"),
+        (["--web-root", "."], "holds no index.html"),
     ],
 )
 def test_flags_that_leave_nowhere_to_listen_or_contradict_fail_before_starting(
@@ -317,10 +324,12 @@ def test_the_banner_names_every_endpoint_on_one_line_and_no_token_off_a_terminal
     assert record["token"] not in rest
 
 
-def on_a_terminal(world: World, *argv: str) -> tuple[list[str], dict[str, object]]:
+def on_a_terminal(
+    world: World, *argv: str, env: dict[str, str] | None = None
+) -> tuple[list[str], dict[str, object]]:
     """The first lines `tau serve` writes to a terminal, and its record."""
     leader, follower = pty.openpty()
-    server = foreground(world, *argv, stdout=follower)
+    server = foreground(world, *argv, stdout=follower, env=env)
     os.close(follower)
     try:
         text = b""
@@ -346,7 +355,7 @@ def on_a_terminal(world: World, *argv: str) -> tuple[list[str], dict[str, object
 def test_on_a_terminal_a_second_line_is_the_paste_url_with_the_token(home: World) -> None:
     lines, record = on_a_terminal(home, "--no-unix")
     assert lines[0] == f"serving {OLD} on {record['url']} (pid {record['pid']})"
-    assert lines[1] == f"paste URL: {record['url']}#token={record['token']}"
+    assert lines[1] == f"for a web client: {record['url']}#token={record['token']}"
 
 
 def test_quiet_keeps_the_token_off_the_terminal(home: World) -> None:
@@ -389,3 +398,34 @@ def test_a_crashed_servers_record_whose_port_another_server_took_is_stale(home: 
     assert attached == Result(0, "mock: hello\n", ""), "OLD ran here: its record was stale"
     assert serve(home, "--stop", "--session", other).code == 0
     assert not (serve_dir / f"{other}.json").exists()
+
+
+# The web client
+
+
+def built_client(world: World) -> Path:
+    root = world.home / "client"
+    root.mkdir()
+    (root / "index.html").write_text("<!doctype html><title>mine</title>", encoding="utf-8")
+    return root
+
+
+def test_with_a_web_root_the_banner_says_open(home: World) -> None:
+    built_client(home)
+    lines, record = on_a_terminal(home, "--no-unix", "--web-root", "../client")
+    assert lines[1] == f"open: {record['url']}#token={record['token']}"
+
+
+def test_an_installed_tau_web_is_served(home: World) -> None:
+    packages = home.home / "packages"
+    dist = packages / "tau_web" / "dist"
+    dist.mkdir(parents=True)
+    (packages / "tau_web" / "__init__.py").write_text("", encoding="utf-8")
+    (dist / "index.html").write_text("<!doctype html><title>installed</title>", encoding="utf-8")
+    lines, _ = on_a_terminal(home, "--no-unix", env={"PYTHONPATH": str(packages)})
+    assert lines[1].startswith("open: "), "the server found the client"
+    with_package = dataclasses.replace(home, environ={**home.environ, "PYTHONPATH": str(packages)})
+    record = detached(with_package, "--no-unix")
+    page = httpx.get(str(record["url"]), trust_env=False, timeout=5)
+    assert page.text.endswith("<title>installed</title>")
+    stop(home)

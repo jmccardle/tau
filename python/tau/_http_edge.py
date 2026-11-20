@@ -12,9 +12,14 @@ The messages are the socket's, one JSON-RPC message each; only the framing diffe
 - `GET /stream/<connection id>` is refused (409): there is no resume. A new stream is a new
   `hello` and a fresh snapshot.
 
-**Access.** Every request but a CORS preflight carries `Authorization: Bearer <token>` (401
-without it). A request that carries an `Origin` header is refused (403) unless the edge's
-`origins` lists it, so a web page the user merely visits cannot drive the session.
+- Every other `GET` (or `HEAD`) is the **web client**'s (`tau._web_client`): its static files,
+  or the help page at `/` when none is installed. No token: they are the same for anyone, and
+  hold nothing of the session.
+
+**Access.** Every request to the wire but a CORS preflight carries `Authorization: Bearer
+<token>` (401 without it). A request that carries an `Origin` header is refused (403) unless it
+is the edge's own origin (its served client, calling home) or the edge's `origins` lists it, so a
+web page the user merely visits cannot drive the session.
 
 **Liveness.** A stream says `: ping` every `heartbeat` seconds. A write that fails, or the client
 closing its end, is a disconnect: the stream's `LocalClient` closes, so its questions go to the
@@ -37,12 +42,14 @@ import secrets
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Final
 
 import h11
 from websockets.exceptions import ConnectionClosed
 
 from tau._protocol import CODES
+from tau._web_client import HEADERS, Page, web_client
 
 HEARTBEAT: Final = 15.0
 """Seconds between a stream's `: ping` comments."""
@@ -74,7 +81,8 @@ class HttpEdge:
     port; `0` takes any free port; any other port is bound or the start fails. `token` is the
     bearer token every request must carry (`None`: the server makes one). `origins` are the web
     origins allowed to call (none by default). `heartbeat` is the seconds between pings. A `host`
-    that is not loopback needs `allow_network`: `ValueError` otherwise."""
+    that is not loopback needs `allow_network`: `ValueError` otherwise. `web_root` is a built web
+    client's directory to serve (`None`: an installed `tau_web`'s, else the help page)."""
 
     host: str = "127.0.0.1"
     port: int | None = None
@@ -82,6 +90,7 @@ class HttpEdge:
     origins: tuple[str, ...] = ()
     heartbeat: float = HEARTBEAT
     allow_network: bool = False
+    web_root: Path | None = None
 
     def __post_init__(self) -> None:
         if self.port is not None and not 0 <= self.port <= 65535:  # noqa: PLR2004 - TCP's range
@@ -275,6 +284,8 @@ class Edge:
         self, edge: HttpEdge, token: str, handle: Callable[[Stream], Awaitable[None]]
     ) -> None:
         self._edge = edge
+        self._web = web_client(edge.web_root)
+        self._own: frozenset[str] = frozenset()
         self.token = token
         self._handle = handle
         self._streams: dict[str, Stream] = {}
@@ -302,6 +313,7 @@ class Edge:
         else:
             self._server = await self._bind(wanted)
         self.port = self._server.sockets[0].getsockname()[1]
+        self._own = _own_origins(self.host, self.port)
 
     async def _bind(self, port: int) -> asyncio.Server:
         try:
@@ -400,14 +412,18 @@ class Edge:
         """Answer `request`; the `Stream` it opened, if it opened one (its headers are sent). The
         origin and the token are checked on the head: a refused request's body is never read."""
         origin = request.headers.get("origin")
+        wire = _is_wire(request.target)
         try:
             self._allowed(origin)
-            if request.method != "OPTIONS":
+            if wire and request.method != "OPTIONS":
                 self._authorized(request)
             async with asyncio.timeout(READ_SECONDS):
                 request = replace(request, body=await self._body(conn, reader))
             if request.method == "OPTIONS":
                 await self._send(conn, writer, None, origin, preflight=True)
+                return None
+            if not wire:
+                await self._page(conn, writer, request, origin)
                 return None
             return await self._route(conn, writer, request, origin)
         except _Refusal as refusal:
@@ -415,7 +431,7 @@ class Edge:
             return None
 
     def _allowed(self, origin: str | None) -> None:
-        if origin is not None and origin not in self._edge.origins:
+        if origin is not None and origin not in self._own and origin not in self._edge.origins:
             raise _error(403, f"requests from origin {origin!r} are refused (--allow-origin)")
 
     def _authorized(self, request: _Request) -> None:
@@ -448,6 +464,21 @@ class Edge:
             await self._send(conn, writer, _Refusal(202, None), origin)
             return None
         raise _error(404, f"no such path; the wire is at {STREAM}")
+
+    async def _page(
+        self,
+        conn: h11.Connection,
+        writer: asyncio.StreamWriter,
+        request: _Request,
+        origin: str | None,
+    ) -> None:
+        """The web client's file (or the help page) for a GET; its headers alone for a HEAD."""
+        if request.method not in ("GET", "HEAD"):
+            raise _error(405, "the web client's files are read with GET", ("Allow", "GET, HEAD"))
+        page: Page = self._web.page(request.target)
+        headers = [("Content-Type", page.content_type), *HEADERS, *self._cors(origin)]
+        body = b"" if request.method == "HEAD" else page.body
+        await _respond(conn, writer, page.status, headers, body, len(page.body))
 
     def _post(self, id: str, body: bytes) -> None:
         stream = self._streams.get(id)
@@ -508,14 +539,41 @@ class Edge:
             ]
         if body:
             headers.append(("Content-Type", "application/json"))
-        headers.append(("Content-Length", str(len(body))))
-        if conn.our_state not in (h11.IDLE, h11.SEND_RESPONSE):  # IDLE: a request h11 refused
-            return
-        writer.write(conn.send(h11.Response(status_code=status, headers=headers)))
-        if body:
-            writer.write(conn.send(h11.Data(data=body)))
-        writer.write(conn.send(h11.EndOfMessage()))
-        await writer.drain()
+        await _respond(conn, writer, status, headers, body, len(body))
+
+
+async def _respond(  # noqa: PLR0913, PLR0917 - a response, whole
+    conn: h11.Connection,
+    writer: asyncio.StreamWriter,
+    status: int,
+    headers: list[tuple[str, str]],
+    body: bytes,
+    length: int,
+) -> None:
+    """Send one whole response (`length` is the body's, which a HEAD's empty `body` is not)."""
+    if conn.our_state not in (h11.IDLE, h11.SEND_RESPONSE):  # IDLE: a request h11 refused
+        return
+    headers = [*headers, ("Content-Length", str(length))]
+    writer.write(conn.send(h11.Response(status_code=status, headers=headers)))
+    if body:
+        writer.write(conn.send(h11.Data(data=body)))
+    writer.write(conn.send(h11.EndOfMessage()))
+    await writer.drain()
+
+
+def _is_wire(target: str) -> bool:
+    """Whether a request target is the wire's (`/stream`, `/stream/<id>`), which needs the token."""
+    path = target.split("?", 1)[0]
+    return path == STREAM or path.startswith(STREAM + "/")
+
+
+def _own_origins(host: str, port: int) -> frozenset[str]:
+    """The origins a page the edge itself served has: its URL's, and on loopback the other
+    loopback names a browser may have used for the same socket."""
+    names = {f"[{host}]" if ":" in host else host}
+    if is_loopback(host):
+        names |= {"127.0.0.1", "localhost"}
+    return frozenset(f"http://{name}:{port}" for name in names)
 
 
 async def listen(edge: HttpEdge, handle: Callable[[Stream], Awaitable[None]]) -> Edge:
