@@ -16,7 +16,7 @@ import os
 import socket
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 
@@ -27,7 +27,7 @@ from tau._events import CursorGone, CursorView, Event, Labels
 from tau._protocol import PROTOCOL, Welcome
 from tau._protocols import Clock, Extension
 from tau._remote import RemoteClient
-from tau._serve_record import SERVE, ServeRecord, live_server, serve_directory
+from tau._serve_record import SERVE, ServeRecord, dial, live_server, serve_directory
 from tau._session_start import Started, SystemText, refuse_model, start_session
 from tau._sessions import PickSession, SessionFlags, SessionInfo
 from tau._startup import Prompts
@@ -51,9 +51,10 @@ class Opened:
     event the client's stream held up to and including its first `Labels`, and for a reopened
     cursor the events up to its view), the `welcome` (the server's if attached; for a local start
     one built from it, `None` for a session kept in memory, which has no id) and the `started`
-    session (`None` when attached: the server owns it). Attached, `socket` is the address in the
-    server's record and `me` the client id, so `reconnect` can dial again; `client` is always the
-    client to use now."""
+    session (`None` when attached: the server owns it). Attached, `socket` is the socket in the
+    server's record (`None` for a server with an HTTP edge alone, D29, which is dialed there) and
+    `me` the client id, so `reconnect` can dial again; `client` is always the client to use
+    now."""
 
     client: Client
     cursor: int
@@ -62,6 +63,7 @@ class Opened:
     started: Started | None
     socket: Path | None
     me: str
+    _server: ServeRecord | None = field(default=None, repr=False)
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -74,9 +76,9 @@ class Opened:
         stream ended in `ConnectionError`. It replaces `client` (the old one is closed). `OSError`
         if nothing answers at the server's address; `ConnectionError` for a session this process
         runs, which has no server to dial."""
-        if self.socket is None:
+        if self._server is None:
             raise ConnectionError("this session runs in this process: there is no server to dial")
-        new = await RemoteClient.connect(self.socket, self.me)
+        new = await dial(self._server, self.me)
         old, self.client = self.client, new
         await old.close()
         return new
@@ -160,7 +162,7 @@ async def _attach(  # noqa: PLR0913, PLR0917 - what attaching needs of the open
     asked."""
     refuse_model(choice, model)
     _refuse_ignored(args, flags, own, record)
-    return await RemoteClient.connect(record.socket, client)
+    return await dial(record, client)
 
 
 async def open_client(  # noqa: PLR0913 - the start's inputs and the client's id
@@ -189,7 +191,7 @@ async def open_client(  # noqa: PLR0913 - the start's inputs and the client's id
     found = await _server_of(choice, home)
     if found is not None:
         remote = await _attach(args, flags, choice, found[0], client, model, own)
-        return await _opened(remote, found[1], None, Path(found[0].socket), client)
+        return await _opened(remote, found[1], None, found[0], client)
     chosen = pick_session if not flags.resume else _chosen(choice)
     started = await start_session(
         args,
@@ -231,11 +233,16 @@ def _local_welcome(started: Started) -> Welcome | None:
 
 
 async def _opened(
-    client: Client, welcome: Welcome | None, started: Started | None, socket: Path | None, me: str
+    client: Client,
+    welcome: Welcome | None,
+    started: Started | None,
+    server: ServeRecord | None,
+    me: str,
 ) -> Opened:
     try:
         events, cursor = await _snapshot(client)
     except BaseException:
         await client.close()
         raise
-    return Opened(client, cursor, tuple(events), welcome, started, socket, me)
+    socket = None if server is None or server.socket is None else Path(server.socket)
+    return Opened(client, cursor, tuple(events), welcome, started, socket, me, server)

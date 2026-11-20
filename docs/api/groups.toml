@@ -76,7 +76,7 @@ names = [
 id = "wire"
 title = "The wire"
 reader = "`tau serve` and the remote client."
-names = ["PROTOCOL", "ProtocolError", "ProtocolMismatch", "Welcome", "Server", "Json"]
+names = ["PROTOCOL", "ProtocolError", "ProtocolMismatch", "Welcome", "Server", "HttpEdge", "Json"]
 
 [[group]]
 id = "driver"

@@ -539,6 +539,8 @@ class RemoteClient(Client)
     async def call(self, method: str, **args: object) -> object
     @classmethod
     async def connect(cls, socket: str | PathLike[str], client: str, *, buffer: int = 256) -> Self
+    @classmethod
+    async def connect_http(cls, url: str, token: str, client: str, *, buffer: int = 256) -> Self
     async def request(self, method: str, params: Json) -> object
     welcome: Welcome
 class UnknownCommand(LookupError)
@@ -691,7 +693,13 @@ class Started
     property never_used: bool
     prompt: SystemPrompt | None
     providers: Mapping[str, Provider]
-    async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> 'Server'
+    async def serve(
+        self,
+        socket: Path | None = None,
+        *,
+        idle: float | None = None,
+        http: HttpEdge | None = None,
+    ) -> 'Server'
     session: Session
     sources: tuple[ExtensionSource, ...]
     async def stop(self) -> None
@@ -751,24 +759,42 @@ def to_markdown(
 ) -> str
 
 == wire: The wire
+@dataclass(frozen=True)
+class HttpEdge
+    allow_network: bool = False
+    heartbeat: float = HEARTBEAT
+    host: str = '127.0.0.1'
+    origins: tuple[str, ...] = ()
+    port: int | None = None
+    token: str | None = None
 Json = dict[str, object]
 PROTOCOL: Final = 1
 class ProtocolError(RuntimeError)
 class ProtocolMismatch(ProtocolError)
     def __init__(self, message: str, server: int) -> None
 class Server
-    def __init__(self, driver: Driver, path: Path, welcome: Welcome, idle: float | None = None) -> None
+    def __init__(
+        self,
+        driver: Driver,
+        path: Path | None,
+        welcome: Welcome,
+        idle: float | None = None,
+        http: HttpEdge | None = None,
+    ) -> None
     async def close(self) -> None
     @classmethod
     async def start(
         cls,
         driver: Driver,
-        path: Path,
+        path: Path | None = None,
         *,
         session: str,
         cwd: Path,
         idle: float | None = None,
+        http: HttpEdge | None = None,
     ) -> 'Server'
+    property token: str | None
+    property url: str | None
     async def wait(self) -> Exception | None
 @dataclass(frozen=True)
 class Welcome

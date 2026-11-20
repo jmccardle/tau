@@ -3,11 +3,13 @@
 No test sleeps. `settle()` yields to the loop until the driver has nothing to do
 and every effect in flight is parked at something a test controls.
 
-A Harness has two modes (D21 section 9), set for a whole test by `tests/behavior/conftest.py`:
-`local`, where `client`, `connect` and `view` are `LocalClient`s of the driver, and `remote`,
-where the Harness serves the driver (`tau.Server`) on a Unix socket in a short temporary
-directory and they are `RemoteClient`s of it. What reads the host (the session, `driver.state()`,
-snapshots, `add_item`, `crash`) stays the host's. The behavior suite passes in both.
+A Harness has three modes (D21 section 9, D29), set for a whole test by
+`tests/behavior/conftest.py`: `local`, where `client`, `connect` and `view` are `LocalClient`s of
+the driver; `remote`, where the Harness serves the driver (`tau.Server`) on a Unix socket in a
+short temporary directory and they are `RemoteClient`s of it; and `http`, where it serves the
+driver on an HTTP edge on a free loopback port and they are `RemoteClient`s of that. What reads
+the host (the session, `driver.state()`, snapshots, `add_item`, `crash`) stays the host's. The
+behavior suite passes in all three.
 """
 
 import asyncio
@@ -32,6 +34,7 @@ from tau import (
     Driver,
     Event,
     Extension,
+    HttpEdge,
     Item,
     ItemData,
     LocalClient,
@@ -83,7 +86,7 @@ class Harness:
     `heard` is every event it has been sent. Tests that need another client `connect` one.
     `Harness.mode` says whether the clients are local or remote (the module docstring)."""
 
-    mode: ClassVar[Literal["local", "remote"]] = "local"
+    mode: ClassVar[Literal["local", "remote", "http"]] = "local"
     eager: ClassVar[bool] = False
     """Run the scenario's loop with `asyncio.eager_task_factory`, as Textual's loop does."""
 
@@ -113,11 +116,15 @@ class Harness:
         self.cursor = session.cursors()[0]
         self.heard: list[Event] = []
         self.failure: Exception | None = None
-        self.remote = self.mode == "remote"
+        self.remote = self.mode != "local"
+        """Whether the clients are `RemoteClient`s (over the socket or the HTTP edge)."""
         self._remotes: list[RemoteClient] = []
         self._server: Server | None = None
         self._cleanup: Callable[[], object] = lambda: None
         self.socket: Path | None = None
+        self.url: str | None = None
+        """In `http` mode, the HTTP edge's URL; `token` is its bearer token."""
+        self.token: str | None = None
 
     async def start(self) -> None:
         """Start a driver on the session (`create` and `load` do), and in `remote` mode serve it
@@ -132,7 +139,12 @@ class Harness:
             user_config=self.user_config,
         )
         self.driver.start()
-        if self.remote:
+        if self.mode == "http":
+            self._server = await Server.start(
+                self.driver, session=self.directory.name, cwd=self.directory, http=HttpEdge(port=0)
+            )
+            self.url, self.token = self._server.url, self._server.token
+        elif self.remote:
             where = Path(tempfile.mkdtemp(prefix="tau"))  # short: a socket path has a limit
             # Removed when the test closes the Harness, and at exit for one that never does.
             self._cleanup = weakref.finalize(self, shutil.rmtree, where, True)
@@ -146,9 +158,14 @@ class Harness:
     async def _dial(self, client: str, buffer: int = 256, *, flushed: bool = True) -> Connected:
         """A client of the driver: local, or remote (`flushed`: `settle` makes a round trip on
         it)."""
-        if self.socket is None:
+        if self._server is None:
             return self.driver.client(client, buffer=buffer)
-        dialed = await RemoteClient.connect(self.socket, client, buffer=buffer)
+        if self.socket is None:
+            assert self.url is not None
+            assert self.token is not None
+            dialed = await RemoteClient.connect_http(self.url, self.token, client, buffer=buffer)
+        else:
+            dialed = await RemoteClient.connect(self.socket, client, buffer=buffer)
         if flushed:
             self._remotes.append(dialed)
         return dialed
@@ -157,10 +174,11 @@ class Harness:
         """Stop the driver (every stream ends, a remote one after what it holds), then the
         server and the socket's directory."""
         await self.driver.stop()
-        if self._server is not None and self.socket is not None:
+        if self._server is not None:
             await self._server.close()
             self._cleanup()
             self._server = self.socket = None
+            self.url = self.token = None
             self._remotes = []
 
     async def _listen(self, client: Connected) -> None:

@@ -1,6 +1,8 @@
 //! Finding the server: `--socket`, or `--session` through its serve record, or the one server
 //! that serves this directory. `$TAU_HOME/serve/<session id>.json` is the record `tau serve`
-//! writes (docs/guide/quickstart.md): `{socket, pid, session, cwd, ...}`.
+//! writes (docs/guide/quickstart.md): `{socket, pid, session, cwd, ...}`. A server with no socket
+//! (`tau serve --no-unix`, D29) has a record without `socket`: this client, which dials the
+//! socket, passes it by.
 
 use std::{
     env, fs,
@@ -12,7 +14,7 @@ use serde::Deserialize;
 /// What a serve record says that this client needs.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Record {
-    pub socket: PathBuf,
+    pub socket: Option<PathBuf>,
     pub session: String,
     pub cwd: PathBuf,
     pub pid: i64,
@@ -104,42 +106,53 @@ pub async fn choose(
                     home.join("serve").join(format!("{wanted}.json")).display()
                 )
             })?;
-        return if alive(&record.socket).await? {
-            Ok(record.socket)
+        let Some(socket) = record.socket else {
+            return Err(format!(
+                "session {wanted} is served over HTTP alone (`tau serve --no-unix`), and this \
+                 client dials the Unix socket; serve it without --no-unix"
+            ));
+        };
+        return if alive(&socket).await? {
+            Ok(socket)
         } else {
             Err(format!(
                 "the record of session {wanted} is stale: nothing answers at {}; {NONE_RUNNING}, \
                  with --session {wanted}",
-                record.socket.display()
+                socket.display()
             ))
         };
     }
     let elsewhere = all.iter().filter(|r| r.cwd != cwd).count();
     let mut here = Vec::new();
-    let mut stale = 0;
+    let (mut stale, mut http_only) = (0, 0);
     for record in all.into_iter().filter(|r| r.cwd == cwd) {
-        if alive(&record.socket).await? {
-            here.push(record);
+        let Some(socket) = record.socket.clone() else {
+            http_only += 1;
+            continue;
+        };
+        if alive(&socket).await? {
+            here.push((record, socket));
         } else {
             stale += 1;
         }
     }
     match here.as_slice() {
-        [one] => Ok(one.socket.clone()),
+        [(_, socket)] => Ok(socket.clone()),
         [] => Err(format!(
-            "no `tau serve` for {} ({elsewhere} for other directories, {stale} stale); \
-             {NONE_RUNNING}, or name one with --session ID or --socket PATH",
+            "no `tau serve` for {} ({elsewhere} for other directories, {stale} stale, \
+             {http_only} over HTTP alone); {NONE_RUNNING}, or name one with --session ID or \
+             --socket PATH",
             cwd.display(),
         )),
         many => {
             let named: Vec<String> = many
                 .iter()
-                .map(|r| {
+                .map(|(r, socket)| {
                     format!(
                         "  --session {}   (pid {}, {})",
                         r.session,
                         r.pid,
-                        r.socket.display()
+                        socket.display()
                     )
                 })
                 .collect();
@@ -272,6 +285,23 @@ mod tests {
         fs::write(home.path().join("serve/bad.json"), "{}").unwrap();
         let err = records(home.path()).unwrap_err();
         assert!(err.contains("bad.json"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_server_over_http_alone_is_passed_by_and_named_when_asked_for() {
+        let home = serve_dir(&[("b", "/w", "/b.sock")]);
+        fs::write(
+            home.path().join("serve/h.json"),
+            r#"{"pid": 8, "session": "h", "cwd": "/w", "protocol": 1, "version": "x",
+                "since": 0, "log": null, "url": "http://127.0.0.1:3393/", "token": "t"}"#,
+        )
+        .unwrap();
+        let got = choose(None, None, &at(&home), Path::new("/w"), all_alive).await;
+        assert_eq!(got.unwrap(), PathBuf::from("/b.sock"));
+        let err = choose(None, Some("h"), &at(&home), Path::new("/w"), all_alive)
+            .await
+            .unwrap_err();
+        assert!(err.contains("over HTTP alone"), "{err}");
     }
 
     async fn only_b(socket: &Path) -> Result<bool, String> {

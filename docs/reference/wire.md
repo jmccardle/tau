@@ -4,7 +4,26 @@
 
 `tau serve` and the remote client.
 
-Names: `Json`, `PROTOCOL`, `ProtocolError`, `ProtocolMismatch`, `Server`, `Welcome`
+Names: `HttpEdge`, `Json`, `PROTOCOL`, `ProtocolError`, `ProtocolMismatch`, `Server`, `Welcome`
+
+## HttpEdge
+
+```python
+@dataclass(frozen=True)
+class HttpEdge
+    host: str = '127.0.0.1'
+    port: int | None = None
+    token: str | None = None
+    origins: tuple[str, ...] = ()
+    heartbeat: float = HEARTBEAT
+    allow_network: bool = False
+```
+
+Where and how a `Server` listens over HTTP (D29). `port` `None` tries 3393 and then any free
+port; `0` takes any free port; any other port is bound or the start fails. `token` is the
+bearer token every request must carry (`None`: the server makes one). `origins` are the web
+origins allowed to call (none by default). `heartbeat` is the seconds between pings. A `host`
+that is not loopback needs `allow_network`: `ValueError` otherwise.
 
 ## Json
 
@@ -52,17 +71,41 @@ def __init__(self, message: str, server: int) -> None
 class Server
 ```
 
-A session's `Driver` served on a Unix socket (the module docstring). `start` binds
-`path`; `welcome` is what `hello` answers. `wait` returns when the driver has failed, or
-(with `idle`) when no client has been connected and every cursor at rest for that many
-seconds; `close` stops accepting and unlinks the socket, stops the driver (each stream says
-`end`) and unbinds, so it may be called once and the driver need not be stopped first.
+A session's `Driver` served on a Unix socket, an HTTP edge, or both (the module
+docstring). `start` binds; `welcome` is what `hello` answers. `url` and `token` are the
+edge's (`None` without one). `wait` returns when the driver has failed, or (with `idle`) when
+no client has been connected and every cursor at rest for that many seconds; `close` stops
+accepting and unlinks the socket, stops the driver (each stream says `end`) and unbinds, so
+it may be called once and the driver need not be stopped first.
 
 ### Server.__init__
 
 ```python
-def __init__(self, driver: Driver, path: Path, welcome: Welcome, idle: float | None = None) -> None
+def __init__(
+    self,
+    driver: Driver,
+    path: Path | None,
+    welcome: Welcome,
+    idle: float | None = None,
+    http: HttpEdge | None = None,
+) -> None
 ```
+
+### Server.url
+
+```python
+property url: str | None
+```
+
+The HTTP edge's URL, `http://HOST:PORT/` (`None`: no edge).
+
+### Server.token
+
+```python
+property token: str | None
+```
+
+The bearer token the HTTP edge lets in (`None`: no edge).
 
 ### Server.start
 
@@ -71,17 +114,19 @@ def __init__(self, driver: Driver, path: Path, welcome: Welcome, idle: float | N
 async def start(
     cls,
     driver: Driver,
-    path: Path,
+    path: Path | None = None,
     *,
     session: str,
     cwd: Path,
     idle: float | None = None,
+    http: HttpEdge | None = None,
 ) -> 'Server'
 ```
 
-Serve `driver` (running, in the loop) at `path`, as session `session` in `cwd`. `idle`
-seconds is how long `wait` lets the server rest before it returns (`None`: never).
-`OSError` if the socket cannot be bound (on Windows, always: see `require_unix_sockets`).
+Serve `driver` (running, in the loop) as session `session` in `cwd`: on the Unix
+socket `path`, on the HTTP edge `http`, or both (`ValueError` for neither). `idle` seconds
+is how long `wait` lets the server rest before it returns (`None`: never). `OSError` if
+either cannot be bound (a socket on Windows, always: see `require_unix_sockets`).
 
 ### Server.wait
 

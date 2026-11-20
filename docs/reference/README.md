@@ -10,7 +10,7 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [Writing a frontend](clients.md): 11 names
 - [Events](events.md): 18 names
 - [Starting and finding sessions](sessions.md): 19 names
-- [The wire](wire.md): 6 names
+- [The wire](wire.md): 7 names
 - [Embedding tau](driver.md): 5 names
 - [Providers](providers.md): 11 names
 - [The step machine](machine.md): 8 names

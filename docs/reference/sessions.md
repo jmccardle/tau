@@ -36,9 +36,10 @@ A session opened for a client: the `client`, the first `cursor`, the `snapshot` 
 event the client's stream held up to and including its first `Labels`, and for a reopened
 cursor the events up to its view), the `welcome` (the server's if attached; for a local start
 one built from it, `None` for a session kept in memory, which has no id) and the `started`
-session (`None` when attached: the server owns it). Attached, `socket` is the address in the
-server's record and `me` the client id, so `reconnect` can dial again; `client` is always the
-client to use now.
+session (`None` when attached: the server owns it). Attached, `socket` is the socket in the
+server's record (`None` for a server with an HTTP edge alone, D29, which is dialed there) and
+`me` the client id, so `reconnect` can dial again; `client` is always the client to use
+now.
 
 ### Opened.warnings
 
@@ -183,12 +184,19 @@ pending item and the name it was created with.
 ### Started.serve
 
 ```python
-async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> 'Server'
+async def serve(
+    self,
+    socket: Path | None = None,
+    *,
+    idle: float | None = None,
+    http: HttpEdge | None = None,
+) -> 'Server'
 ```
 
 Serve this session as `tau serve` does, so `tau -c` in its working directory attaches
 (D21 section 9): bind `socket` (default `<home>/serve/<id>.sock`, in the private serve
-directory), and write the serve record `<home>/serve/<id>.json`, naming this process.
+directory), and `http` too if given (D29), and write the serve record
+`<home>/serve/<id>.json`, naming this process (and the edge's URL and token).
 The home, id and working directory are this `Started`'s. `idle` is `Server.start`'s.
 `Server.close` is the whole teardown: it stops the driver, unbinds the socket, calls
 `stop` and removes the record; do not call `stop` as well. `ConfigError` for a session
