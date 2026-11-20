@@ -22,8 +22,11 @@ Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` to
 projects (`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare `read` works) are
 not available and say so when used. Its test suite runs there with the tests of those skipped, each naming why.
 
-Until 0.16.0 is on PyPI that finds nothing (plain `ffwf-tau` is 0.15 there); build from a
-checkout instead, which needs a Rust toolchain:
+`pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
+Coming from 0.15? Read the [0.16.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.16.0.md) first: 0.16 is a
+rewrite and does not read 0.15 sessions or load 0.15 extensions.
+
+To build from a checkout instead, which needs a Rust toolchain:
 
 ```bash
 git clone https://github.com/jmccardle/tau && cd tau
