@@ -31,7 +31,8 @@ WIRE_NAMES: dict[str, str] = {}  # a Python exception's name -> its error name, 
 PREAMBLE = """\
 # The wire protocol
 
-`tau serve` serves one session over a Unix socket, so a frontend in any language can drive it.
+`tau serve` serves one session over a Unix socket and over HTTP, so a frontend in any language
+can drive it.
 Python programs use [`RemoteClient`](frontends.md#over-the-wire) and need none of this page; it
 is for the author of a client in another language. For what the calls mean, read
 [the model](model.md) and [writing a frontend](frontends.md): the wire is the `Client` contract,
@@ -39,13 +40,25 @@ serialized.
 
 ## How it travels
 
-- **Transport.** A WebSocket over the Unix socket `$TAU_HOME/serve/<session id>.sock` (or the
-  `--socket` path). The socket's file permissions are the only authentication. `tau serve -d --json`
-  prints the socket's path; see [the quickstart](quickstart.md).
+- **Transports.** By default both (`--no-unix` and `--no-http` turn one off):
+  - **The socket.** A WebSocket over the Unix socket `$TAU_HOME/serve/<session id>.sock` (or the
+    `--socket` path), one message per WebSocket text message. The socket's file permissions are
+    the only authentication.
+  - **The HTTP edge** (`http://127.0.0.1:3393/` or another port). `GET /stream` opens a
+    server-sent-events stream: its first event is `event: connection` with the connection id as
+    its data, and then each message from the server is one `data:` line. Each request is a `POST
+    /stream/<connection id>` with the message as its body, answered `202` (the response comes on
+    the stream) or `404` with a JSON-RPC error if that stream is not open. Every request carries
+    `Authorization: Bearer <token>` (`401` otherwise); one with an `Origin` header is refused
+    (`403`) unless `tau serve --allow-origin` names it. The stream writes `: ping` every 15
+    seconds. There is no resume: a new stream is a new `hello`.
+
+  `tau serve -d --json` prints the serve record, which names the socket, the URL and the token;
+  see [the quickstart](quickstart.md).
 - **Messages.** [JSON-RPC 2.0](https://www.jsonrpc.org/specification), one message per WebSocket
-  text message. A client sends requests, with parameters by name only (`{"cursor": 0, "text":
-  "hi"}`). It sends no batches and no notifications. The server answers each request, and sends
-  the notifications `event` and `end`.
+  text message or SSE event. A client sends requests, with parameters by name only
+  (`{"cursor": 0, "text": "hi"}`). It sends no batches and no notifications. The server answers
+  each request, and sends the notifications `event` and `end`.
 - **`hello` comes first.** It names the protocol the client speaks, the client's stable id
   (`john@laptop:vscode`) and, if it wants one, the `buffer` of its event stream. The answer is a
   [Welcome](#welcome). A different protocol number is refused with `ProtocolMismatch` and the

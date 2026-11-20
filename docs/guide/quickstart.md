@@ -174,8 +174,8 @@ tau ext list
 
 ## Serve a session
 
-`tau serve` runs one session and lets other programs drive it over a Unix socket: an editor
-extension, a script, a second window. `-d` runs it in the background and `--json` prints where to
+`tau serve` runs one session and lets other programs drive it over a Unix socket and over HTTP
+on loopback: an editor extension, a web page, a script, a second window. `-d` runs it in the background and `--json` prints where to
 find it.
 
 ```bash
@@ -183,8 +183,8 @@ tau serve -d --json --session quickstart
 tau serve --stop --session quickstart
 ```
 
-The first command prints one JSON object: the `socket` to connect to, the server's `pid`, the
-`session` and its working directory `cwd`. `--stop` ends the server. Connect from Python with
+The first command prints one JSON object: the `socket` to connect to, the HTTP `url` and the
+`token` it wants, the server's `pid`, the `session` and its working directory `cwd`. `--stop` ends the server. Connect from Python with
 `RemoteClient` ([Writing a frontend](frontends.md#over-the-wire)), or from any language with
 [the wire protocol](protocol.md).
 

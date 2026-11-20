@@ -8,7 +8,8 @@ providers. There are two kinds of client, and the code that uses one is the same
 - **local**: your program starts the session itself, and `driver.client(id)` makes a
   `LocalClient`;
 - **remote**: another process runs `tau serve`, and `RemoteClient.connect(socket, id)` makes a
-  `RemoteClient` over its Unix socket. A client in another language speaks
+  `RemoteClient` over its Unix socket (`RemoteClient.connect_http(url, token, id)` over its HTTP
+  edge). A client in another language speaks
   [the wire protocol](protocol.md) instead.
 
 `open_client` picks for you: it opens the session the flags name, as a remote client of the
@@ -326,13 +327,15 @@ hello, Ada
 
 ## Over the wire
 
-`tau serve` runs one session and serves it on a Unix socket in `$TAU_HOME/serve/`. Any number of
-clients may connect, so a terminal UI, an editor and a script can share one session. The server is
-a normal start: it takes the same session, extension and prompt flags, and it changes into the
-session's working directory. `-d` runs it in the background, and `--json` prints a record of one
-object: the `socket`, the `pid`, the `session`, the `cwd`, the `protocol` number, the τ `version`,
-and `started` (false if it was already running). The record is also the file
-`$TAU_HOME/serve/<session id>.json`, so a second frontend finds it by listing that directory.
+`tau serve` runs one session and serves it on a Unix socket in `$TAU_HOME/serve/` and on an HTTP
+edge on loopback (port 3393 if it is free, else any free port). Any number of clients may connect,
+so a terminal UI, an editor and a script can share one session. The server is a normal start: it
+takes the same session, extension and prompt flags, and it changes into the session's working
+directory. `-d` runs it in the background, and `--json` prints a record of one object: the
+`socket`, the edge's `url`, `host`, `port` and `token`, the `pid`, the `session`, the `cwd`, the
+`protocol` number, the τ `version`, and `started` (false if it was already running). The record is
+also the file `$TAU_HOME/serve/<session id>.json` (readable by you alone), so a second frontend
+finds it by listing that directory.
 
 ```bash
 tau serve -d --json --name wire > record.json
@@ -378,6 +381,29 @@ Welcome(protocol=1, version='<*>', session='<*>', cwd='<*>', pid=<*>)
 mock: hello over the wire
 ```
 
+`RemoteClient.connect_http(url, token, id)` is the same client over the HTTP edge, for a program
+that cannot reach the socket (another container, Windows):
+
+```python
+import asyncio
+import json
+
+from tau import RemoteClient
+
+
+async def over_http() -> None:
+    record = json.load(open("record.json"))
+    async with await RemoteClient.connect_http(record["url"], record["token"], "me@here:http") as c:
+        print(c.welcome.session == record["session"])
+
+
+asyncio.run(over_http())
+```
+
+```text expect
+True
+```
+
 ```bash
 tau serve --stop --session wire
 tau sessions
@@ -399,8 +425,13 @@ Things that differ from a local client, and how they are the same:
 - **A server that stops** ends your stream (`end`), or raises `ConnectionError` if the driver
   failed.
 
-`tau serve` has no TCP and no token: the socket's file permissions are the whole security. To use
-a server on another machine, forward the Unix socket with OpenSSH.
+The socket has no token: its file permissions are the whole security. The HTTP edge's token is
+in the record, which only you can read, and every request carries it; a web page from another
+origin is refused unless `--allow-origin` names it. The edge listens on loopback; `--host` with
+`--allow-network` opens it to the network (put TLS in front of it). `--port N` binds exactly N or
+fails. Run `tau serve` in a terminal and it prints a paste URL (`http://127.0.0.1:3393/#token=...`)
+for a web client; `--quiet` leaves it out. `--no-unix` and `--no-http` turn one transport off.
+D29 has the details.
 
 ## The terminal UI
 
