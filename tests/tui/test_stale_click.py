@@ -2,13 +2,21 @@
 Textual finds the widget under the pointer from the last paint's map, and the transcript removes
 widgets between paints (a streaming reply, a committed reply, a sliding window)."""
 
+import sys
 from pathlib import Path
 
+import pytest
 from fakes import FakeProvider
 from harness import Harness, scenario
 from textual import events
 from textual.errors import NoWidget
 from tuikit import running, say, shows, type_line
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: the CI runner paints on another schedule, and this test reads the last "
+    "paint's map between paints (GitHub runs 44756741622, 44767727045); held on Linux and macOS",
+)
 
 
 @scenario

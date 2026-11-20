@@ -402,7 +402,9 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   cursor that lands after its step's input position, which the rest rule
   left pending with auto-step off (Windows 3.14t; model.md §6 now says news
   keeps auto-step). Skipped on Windows with the reason: `tests/tui/test_tree_long.py`
-  (it does not end within faulthandler's 120 s on the runner; why is not known).
+  (it does not end within faulthandler's 120 s on the runner; why is not known), and
+  `tests/tui/test_stale_click.py` (it reads the last paint's map between paints, and the
+  runner paints on another schedule; 2026-11-20).
 - Release notes written from `docs/from-0.15.md`: `docs/release-notes/0.16.0.md` (2026-11-20). The docs site
   is not built for 0.16.0; `docs/guide/` is the documentation. Earlier wording:
   the docs site, and release notes written from `docs/from-0.15.md`
