@@ -325,12 +325,7 @@ impl Store {
         let Some((end, pad)) = through else {
             return Ok(self);
         };
-        if self.version < VERSION {
-            // The first append by this build: from here the log may hold what an older one
-            // cannot decode, so it is marked first and that build refuses it by name.
-            upgrade_header(&self.log, &self.dir.join(LOG))?;
-            self.version = VERSION;
-        }
+        self.mark_version()?;
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
             // Windows: the log is open for writing, not appending (see `open_log`).
@@ -347,6 +342,16 @@ impl Store {
             self.write_pad(&pad)?;
         }
         Ok(self)
+    }
+
+    /// Before this build's first append: from there the log may hold what an older build cannot
+    /// decode, so its header says `VERSION` first and that build refuses it by name (D30).
+    fn mark_version(&mut self) -> Result<(), Error> {
+        if self.version < VERSION {
+            upgrade_header(&self.log, &self.dir.join(LOG))?;
+            self.version = VERSION;
+        }
+        Ok(())
     }
 
     /// The session's directory.
