@@ -18,7 +18,7 @@ pub struct Image {
     /// Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of
     /// `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name.
     #[serde(deserialize_with = "sha256_field")]
-    #[cfg_attr(feature = "schema", schemars(with = "Sha256Text"))]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
     pub sha256: String,
     /// Width in pixels.
     pub width: u32,
@@ -47,13 +47,6 @@ fn sha256_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Err
         )))
     }
 }
-
-/// The schema of `Image::sha256`: 64 lowercase hex digits.
-#[cfg(feature = "schema")]
-#[derive(schemars::JsonSchema)]
-#[schemars(transparent)]
-#[allow(dead_code, reason = "a schema only")]
-struct Sha256Text(#[schemars(regex(pattern = r"^[0-9a-f]{64}$"))] String);
 
 /// Bytes that are not a PNG, JPEG, GIF or WebP image whose size can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]

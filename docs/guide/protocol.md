@@ -709,7 +709,7 @@ this encoding: the session keeps them beside its log, named by `sha256`.
 |---|---|---|
 | `height` | `integer` | Height in pixels. |
 | `mime` | `string` | `image/png`, `image/jpeg`, `image/gif` or `image/webp`. |
-| `sha256` | [Sha256Text](#sha256text) | Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name. |
+| `sha256` | `string` | Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name. |
 | `width` | `integer` | Width in pixels. |
 
 ### Item
@@ -805,12 +805,6 @@ may send it back.
 |---|---|---|
 | `data` | `string` |  |
 | `provider` | `string` |  |
-
-### Sha256Text
-
-The schema of `Image::sha256`: 64 lowercase hex digits.
-
-`string`
 
 ### Stop
 
