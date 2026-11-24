@@ -377,7 +377,7 @@ asyncio.run(main())
 ```
 
 ```text expect
-Welcome(protocol=1, version='<*>', session='<*>', cwd='<*>', pid=<*>)
+Welcome(protocol=2, version='<*>', session='<*>', cwd='<*>', pid=<*>)
 mock: hello over the wire
 ```
 
