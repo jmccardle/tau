@@ -19,6 +19,7 @@ import re
 from collections.abc import Iterable
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
+from tau._images import shown
 from tau._sessions import SessionInfo
 
 _TICKS = re.compile(r"`+")
@@ -71,8 +72,8 @@ def _outcome(call: str, outcome: Outcome, author: Author, tools: dict[str, str])
     if call not in tools:
         raise LookupError(f"a result for call {call!r}, which no Assistant node here made")
     match outcome:
-        case Outcome.Ok(value=text):
-            status = "ok"
+        case Outcome.Ok():
+            status, text = "ok", shown(outcome)
         case Outcome.Err(error=text):
             status = "error"
         case _:
