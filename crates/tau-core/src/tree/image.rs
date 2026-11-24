@@ -9,16 +9,21 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// One image. Equal to another when `mime`, `sha256`, `width` and `height` are; `data` is the
-/// bytes this process holds, or `None` (a node loaded from a log).
+/// One image in a tool result (D30): its type, its identity and its size. The bytes are not in
+/// this encoding: the session keeps them beside its log, named by `sha256`.
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Image {
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
     pub mime: String,
     /// Lowercase hex of the SHA-256 of the bytes: the image's identity.
     pub sha256: String,
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
+    /// The bytes this process holds, or `None` (a node loaded from a log). Never encoded, and
+    /// not part of the value: two images are equal when the other four fields are.
     #[serde(skip)]
     #[cfg_attr(feature = "schema", schemars(skip))]
     pub data: Option<Arc<[u8]>>,
@@ -150,9 +155,9 @@ pub fn sniff(data: &[u8]) -> Result<(&'static str, u32, u32), BadImage> {
     };
     match size {
         Some((w, h)) if w > 0 && h > 0 => Ok((mime, w, h)),
-        Some((w, h)) => Err(BadImage(format!("a {mime} image of {w}x{h} pixels"))),
+        Some((w, h)) => Err(BadImage(format!("an {mime} image of {w}x{h} pixels"))),
         None => Err(BadImage(format!(
-            "a {mime} header that does not give the image's size (cut short or damaged)"
+            "an {mime} header that does not give the image's size (cut short or damaged)"
         ))),
     }
 }

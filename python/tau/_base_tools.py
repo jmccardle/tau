@@ -25,6 +25,13 @@ than a day are removed when it is opened.
 whole line that fits and says which `offset` continues. `write` answers one short line, so the
 limit does not apply to it.
 
+`read` is τ's reference example of a tool that gives the model an image (D30): a file whose first
+bytes are a PNG, JPEG, GIF or WebP header is read whole (up to `max_image_bytes`, default 20 MiB)
+and answered as `Outcome.Ok("[image <path>: <mime> <W>x<H>, <N> bytes]", [Image(bytes)])`. It
+does not resize, and it does not know the model: the driver holds every tool's images to the
+model of the batch (`images: true` in its config, within its provider's `image_limits`), and an
+image that does not fit makes the call an `Err` saying why.
+
 `edit` replaces exact text in one file, once (or everywhere with `replace_all`), and answers a
 unified diff; the file is written atomically, as `write` does, and keeps its line endings and a
 missing final newline. `find` lists the files under a directory whose name matches a glob,
@@ -68,6 +75,7 @@ from tau._protocols import Progress
 
 DEFAULT_MAX_OUTPUT = 10_000
 DEFAULT_MAX_OVERFLOW = 64 * 1024 * 1024
+DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024  # the most any built-in provider takes (D30)
 DEFAULT_BASH_TIMEOUT_MS = 30_000
 DEFAULT_BASH_MAX_TIMEOUT_MS = 600_000
 DEFAULT_KILL_GRACE_MS = 2_000
@@ -166,15 +174,17 @@ class _Cancellable(_Described):
 
 
 class ReadTool(_Cancellable):
-    """`read`: a text file, from line `offset` for `limit` lines. Keeps the head of long output."""
+    """`read`: a text file, from line `offset` for `limit` lines, keeping the head of long
+    output; or an image file, whole, as an `Image` (at most `max_image_bytes`)."""
 
     def __init__(
         self,
         cwd: str | os.PathLike[str] | None = None,
         *,
         max_output: int = DEFAULT_MAX_OUTPUT,
+        max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
     ) -> None:
-        engine = _core.Read(_working_directory(cwd), max_output)
+        engine = _core.Read(_working_directory(cwd), max_output, max_image_bytes)
         super().__init__(engine)
 
 

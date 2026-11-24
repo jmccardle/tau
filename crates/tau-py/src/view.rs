@@ -1,12 +1,14 @@
 //! The read views of a `Session`: `Tree` (the nodes) and `CursorState` (one
 //! cursor at one instant). Reads only; nothing here changes the session.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 use tau_core::machine::Machine;
 use tau_core::tree;
 
+use crate::error::Failure;
 use crate::session::Shared;
 use crate::values::{Config, Item, Move, Next, Node};
 
@@ -29,19 +31,25 @@ impl Tree {
             })
     }
 
-    /// The nodes root to `node`, inclusive.
-    fn walk(&self, py: Python<'_>, node: u64) -> PyResult<Vec<Node>> {
-        self.shared
+    /// The nodes root to `node`, inclusive. With `images`, every image in them carries its
+    /// bytes, read from the session's image directory where a node loaded from disk has none
+    /// (what a sample sends); `MissingImage` if one is gone.
+    #[pyo3(signature = (node, *, images = false))]
+    fn walk(&self, py: Python<'_>, node: u64, images: bool) -> PyResult<Vec<Node>> {
+        let (mut nodes, dir) = self
+            .shared
             .read(py, tracing::info_span!("py.tree.walk"), |i| {
                 let tree = &i.machine.session.tree;
                 tree.node(node)?;
-                Ok(tree
-                    .walk(node)
-                    .into_iter()
-                    .cloned()
-                    .map(Into::into)
-                    .collect())
-            })
+                let nodes: Vec<tree::Node> = tree.walk(node).into_iter().cloned().collect();
+                Ok((nodes, i.images.clone()))
+            })?;
+        if images {
+            // Read outside the session's lock.
+            py.detach(|| read_images(&mut nodes, dir.as_deref()))
+                .map_err(|e| PyErr::from(Failure::from(e)))?;
+        }
+        Ok(nodes.into_iter().map(Into::into).collect())
     }
 
     /// The children of `node`, in append order.
@@ -75,6 +83,17 @@ impl Tree {
                 Ok(i.machine.session.tree.lca(a, b)?)
             })
     }
+}
+
+/// Give every image of `nodes` its bytes from the session in `dir`, where it has none.
+fn read_images(nodes: &mut [tree::Node], dir: Option<&Path>) -> Result<(), tau_store::Error> {
+    for image in nodes.iter_mut().flat_map(|n| n.body.images_mut()) {
+        if image.data.is_none() {
+            let dir = dir.ok_or_else(|| tau_store::Error::MissingImage(image.sha256.clone()))?;
+            image.data = Some(tau_store::read_image(dir, image)?);
+        }
+    }
+    Ok(())
 }
 
 /// One cursor as `Session.cursor` read it: every field from the same instant,

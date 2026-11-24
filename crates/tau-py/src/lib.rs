@@ -27,7 +27,7 @@ mod _core {
     use super::trace::{stop_trace, trace_clock, trace_to};
     #[pymodule_export]
     use super::values::{
-        Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Replay, Stop,
+        Author, Body, Config, Image, Item, ItemData, Move, Next, Node, Outcome, Part, Replay, Stop,
     };
     #[pymodule_export]
     use super::view::{CursorState, Tree};

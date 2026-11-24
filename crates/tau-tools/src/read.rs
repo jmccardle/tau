@@ -1,12 +1,17 @@
-//! `read`: a text file, from a line, for a number of lines.
+//! `read`: a text file, from a line, for a number of lines; or an image file, whole (D30).
 //!
-//! The file is scanned in buffer-sized pieces; no line is ever held whole, so a
-//! file of one enormous line costs the output window, not the file.
+//! A text file is scanned in buffer-sized pieces; no line is ever held whole, so a
+//! file of one enormous line costs the output window, not the file. A file whose first bytes
+//! are a PNG, JPEG, GIF or WebP header is an image: read whole, up to `max_image_bytes`, and
+//! answered as an `Image` beside one line of text. Whether the model can take it is the
+//! driver's to check; `read` does not resize.
 
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read as _};
 use std::path::PathBuf;
+
+use tau_core::tree::{Image, is_image};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -26,16 +31,37 @@ struct Args {
 pub struct Read {
     cwd: PathBuf,
     max_bytes: usize,
+    max_image_bytes: u64,
+}
+
+/// What `read` answers: the text the model reads and, for an image file, the image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub text: String,
+    pub image: Option<Image>,
+}
+
+impl From<String> for Answer {
+    fn from(text: String) -> Self {
+        Self { text, image: None }
+    }
 }
 
 impl Read {
     /// # Errors
     /// A limit of zero keeps nothing and is refused.
-    pub fn new(cwd: PathBuf, max_bytes: usize) -> Result<Self> {
+    pub fn new(cwd: PathBuf, max_bytes: usize, max_image_bytes: u64) -> Result<Self> {
         if max_bytes == 0 {
             return Err("the output limit must be at least 1 byte".into());
         }
-        Ok(Self { cwd, max_bytes })
+        if max_image_bytes == 0 {
+            return Err("the image limit must be at least 1 byte".into());
+        }
+        Ok(Self {
+            cwd,
+            max_bytes,
+            max_image_bytes,
+        })
     }
 
     #[must_use]
@@ -44,8 +70,9 @@ impl Read {
             "Read a text file. `offset` is the 1-based line to start at and `limit` the number \
              of lines. Output stops after the last whole line that fits in {} bytes, and a last \
              line gives the offset that continues. Relative paths are relative to the working \
-             directory, which is a default, not a sandbox: absolute paths and `..` work. Images \
-             and other binary files cannot be read.",
+             directory, which is a default, not a sandbox: absolute paths and `..` work. A PNG, \
+             JPEG, GIF or WebP image is returned as an image, whole (leave out `offset` and \
+             `limit`), when the model takes images. Other binary files cannot be read.",
             self.max_bytes
         )
     }
@@ -75,13 +102,28 @@ impl Read {
 
     /// # Errors
     /// Bad arguments, a missing, unreadable, binary or irregular file, an
-    /// offset past the end, or a cancel.
-    pub fn run(&self, args_raw: &str, cancel: &Cancel) -> Result<String> {
+    /// offset past the end, an image with `offset` or `limit` or over `max_image_bytes`, or a
+    /// cancel.
+    pub fn run(&self, args_raw: &str, cancel: &Cancel) -> Result<Answer> {
         let args: Args = parse_args(args_raw)?;
         let offset = positive("offset", args.offset)?.unwrap_or(1);
         let limit = positive("limit", args.limit)?.unwrap_or(u64::MAX);
-        let mut reader = self.open(&args.path)?;
+        let (mut reader, size) = self.open(&args.path)?;
         let io = |e: std::io::Error| ToolError(format!("cannot read {}: {e}", args.path));
+        let head = reader.fill_buf().map_err(io)?;
+        if is_image(head) {
+            if args.offset.is_some() || args.limit.is_some() {
+                return Err(format!(
+                    "{} is an image, read whole: leave out `offset` and `limit` (they count lines)",
+                    args.path
+                )
+                .into());
+            }
+            return self.image(&args.path, reader, size, cancel);
+        }
+        if head.contains(&0) {
+            return Err(binary(&args.path));
+        }
         let past_end = || {
             ToolError(format!(
                 "offset {offset} is past the end of {}, which has fewer lines",
@@ -97,11 +139,58 @@ impl Read {
             return Err(past_end());
         }
         let more = !reader.fill_buf().map_err(io)?.is_empty();
-        Ok(answer(sink.finish(), offset, read, more))
+        Ok(answer(sink.finish(), offset, read, more).into())
     }
 
-    /// Open `shown` (relative to the working directory) as a regular text file.
-    fn open(&self, shown: &str) -> Result<BufReader<File>> {
+    /// The image file `shown`, whole, of `size` bytes.
+    fn image(
+        &self,
+        shown: &str,
+        mut reader: BufReader<File>,
+        size: u64,
+        cancel: &Cancel,
+    ) -> Result<Answer> {
+        if size > self.max_image_bytes {
+            return Err(format!(
+                "{shown} is an image of {size} bytes, more than the {} bytes read loads; τ does \
+                 not resize images: make a smaller copy (with an image tool, through bash) and \
+                 read that",
+                self.max_image_bytes
+            )
+            .into());
+        }
+        let io = |e: std::io::Error| ToolError(format!("cannot read {shown}: {e}"));
+        let mut data = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+        let mut chunk = vec![0; 64 * 1024];
+        loop {
+            cancel.check()?;
+            let n = reader.read(&mut chunk).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&chunk[..n]);
+            if data.len() as u64 > self.max_image_bytes {
+                return Err(format!(
+                    "{shown} grew past {} bytes while read read it",
+                    self.max_image_bytes
+                )
+                .into());
+            }
+        }
+        let len = data.len();
+        let image = Image::from_bytes(data)
+            .map_err(|e| ToolError(format!("{shown} starts as an image, but it is {e}")))?;
+        Ok(Answer {
+            text: format!(
+                "[image {shown}: {} {}x{}, {len} bytes]",
+                image.mime, image.width, image.height
+            ),
+            image: Some(image),
+        })
+    }
+
+    /// Open `shown` (relative to the working directory) as a regular file; its size.
+    fn open(&self, shown: &str) -> Result<(BufReader<File>, u64)> {
         let io = |e: std::io::Error| ToolError(format!("cannot read {shown}: {e}"));
         // Opened without blocking (a pipe with no writer would hang an open) and
         // judged by `fstat` of the open file, not by its path, which may change.
@@ -134,11 +223,7 @@ impl Read {
             )
             .into());
         }
-        let mut reader = BufReader::with_capacity(64 * 1024, file);
-        if reader.fill_buf().map_err(io)?.contains(&0) {
-            return Err(binary(shown));
-        }
-        Ok(reader)
+        Ok((BufReader::with_capacity(64 * 1024, file), meta.len()))
     }
 }
 
@@ -256,11 +341,52 @@ mod tests {
 
     fn tool(max: usize) -> (Read, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        (Read::new(dir.path().to_owned(), max).unwrap(), dir)
+        (Read::new(dir.path().to_owned(), max, 1000).unwrap(), dir)
     }
 
     fn call(tool: &Read, args: &Value) -> Result<String> {
-        tool.run(&args.to_string(), &Cancel::new())
+        let answer = tool.run(&args.to_string(), &Cancel::new())?;
+        assert!(answer.image.is_none(), "a text file");
+        Ok(answer.text)
+    }
+
+    fn png(w: u32, h: u32, pad: usize) -> Vec<u8> {
+        let mut d = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        d.extend_from_slice(&w.to_be_bytes());
+        d.extend_from_slice(&h.to_be_bytes());
+        d.extend_from_slice(&[8, 2, 0, 0, 0]);
+        d.extend(std::iter::repeat_n(0u8, pad)); // NUL bytes: an image is not judged binary
+        d
+    }
+
+    #[test]
+    fn an_image_file_is_answered_as_an_image_with_one_line_of_text() {
+        let (tool, dir) = tool(1000);
+        fs::write(dir.path().join("shot.dat"), png(64, 32, 10)).unwrap();
+        let answer = tool
+            .run(&json!({"path": "shot.dat"}).to_string(), &Cancel::new())
+            .unwrap();
+        assert_eq!(answer.text, "[image shot.dat: image/png 64x32, 39 bytes]");
+        let image = answer.image.unwrap();
+        assert_eq!((image.width, image.height), (64, 32));
+        assert_eq!(&*image.data.unwrap(), &png(64, 32, 10)[..]);
+    }
+
+    #[test]
+    fn an_image_refuses_lines_and_what_read_will_not_load() {
+        let (tool, dir) = tool(1000);
+        fs::write(dir.path().join("a.png"), png(1, 1, 0)).unwrap();
+        fs::write(dir.path().join("big.png"), png(1, 1, 2000)).unwrap();
+        fs::write(dir.path().join("cut.png"), &png(1, 1, 0)[..12]).unwrap();
+        let err = |args: Value| tool.run(&args.to_string(), &Cancel::new()).unwrap_err().0;
+        assert!(err(json!({"path": "a.png", "offset": 1})).contains("leave out `offset`"));
+        let big = err(json!({"path": "big.png"}));
+        assert!(
+            big.contains("image of 2029 bytes, more than the 1000 bytes"),
+            "{big}"
+        );
+        assert!(big.contains("does not resize"), "{big}");
+        assert!(err(json!({"path": "cut.png"})).contains("starts as an image, but"));
     }
 
     #[test]

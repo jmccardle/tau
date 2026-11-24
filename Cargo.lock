@@ -1322,6 +1322,7 @@ dependencies = [
  "regex-automata",
  "serde",
  "serde_json",
+ "tau-core",
  "tempfile",
  "windows-sys",
 ]
