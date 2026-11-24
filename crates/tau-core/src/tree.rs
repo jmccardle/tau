@@ -3,10 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod image;
 mod part;
 mod replay;
 mod values;
 
+pub use image::{BadImage, Image, is_image, sha256_hex, sniff};
 pub use part::{Part, Replay, ReplayError};
 pub use replay::{load, reconcile};
 pub use values::{

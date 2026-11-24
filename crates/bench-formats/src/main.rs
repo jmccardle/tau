@@ -94,7 +94,7 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
             stop: Stop::Tools, finish_reason: None,
  meta: None, };
         s.write(c, reply, vec![], Author::Provider, 0).unwrap();
-        let results = Body::Results(vec![(id, Outcome::Ok(text.take(RESULT)), Author::Tools)]);
+        let results = Body::Results(vec![(id, Outcome::ok(text.take(RESULT)), Author::Tools)]);
         s.write(c, results, vec![], Author::Tools, 0).unwrap();
     }
     let done = Body::Assistant {
@@ -204,7 +204,7 @@ fn strings(body: &Body) -> Vec<&str> {
         Body::Results(r) => r
             .iter()
             .map(|(_, o, _)| match o {
-                Outcome::Ok(t) | Outcome::Err(t) => t.as_str(),
+                Outcome::Ok { value: t, .. } | Outcome::Err(t) => t.as_str(),
                 Outcome::Interrupted => "",
             })
             .collect(),

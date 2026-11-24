@@ -134,7 +134,7 @@ fn each_outcome_records_who_produced_it() {
         Job::RunCalls { .. } => vec![
             Answer::CallDone {
                 call: "a".into(),
-                outcome: Outcome::Ok("listing".into()),
+                outcome: Outcome::ok("listing"),
                 by: Author::Tools,
             },
             Answer::CallDone {
@@ -148,7 +148,7 @@ fn each_outcome_records_who_produced_it() {
     assert_eq!(
         bodies(&s, c)[4],
         Body::Results(vec![
-            ("a".into(), Outcome::Ok("listing".into()), Author::Tools),
+            ("a".into(), Outcome::ok("listing"), Author::Tools),
             (
                 "b".into(),
                 Outcome::Err("denied".into()),
@@ -183,7 +183,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
             }
             Job::RunCalls { .. } => vec![Answer::CallDone {
                 call: "a".into(),
-                outcome: Outcome::Ok("x".into()),
+                outcome: Outcome::ok("x"),
                 by: Author::Tools,
             }],
             _ => vec![echo(job)],
@@ -302,7 +302,7 @@ fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<An
             .iter()
             .map(|r| Answer::CallDone {
                 call: r.id.clone(),
-                outcome: Outcome::Ok(r.id.clone()),
+                outcome: Outcome::ok(r.id.clone()),
                 by: Author::Tools,
             })
             .collect(),
@@ -636,7 +636,7 @@ fn answered_batch() -> (Session, u64, u64) {
             }
             Job::RunCalls { .. } => vec![Answer::CallDone {
                 call: "a".into(),
-                outcome: Outcome::Ok("first".into()),
+                outcome: Outcome::ok("first"),
                 by: Author::Tools,
             }],
             _ => vec![echo(job)],
@@ -672,11 +672,7 @@ fn going_to_a_batch_and_stepping_writes_a_sibling_results() {
     assert_eq!(s.tree.node(second).unwrap().parent, Some(batch));
     assert_eq!(
         s.tree.node(first).unwrap().body,
-        Body::Results(vec![(
-            "a".into(),
-            Outcome::Ok("first".into()),
-            Author::Tools
-        )]),
+        Body::Results(vec![("a".into(), Outcome::ok("first"), Author::Tools)]),
         "the first answer is final"
     );
 }
@@ -801,13 +797,13 @@ fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
     refused(&mut s, &mut step, c, Answer::HookFailed("x".into()));
     let unknown = Answer::CallDone {
         call: "zzz".into(),
-        outcome: Outcome::Ok("x".into()),
+        outcome: Outcome::ok("x"),
         by: Author::Tools,
     };
     refused(&mut s, &mut step, c, unknown);
     let done = Answer::CallDone {
         call: "a".into(),
-        outcome: Outcome::Ok("x".into()),
+        outcome: Outcome::ok("x"),
         by: Author::Tools,
     };
     step.answer(&mut s, done.clone(), 0).unwrap();
@@ -820,7 +816,7 @@ fn a_call_done_with_no_batch_out_is_refused() {
     let mut step = Step::wake(&s, c, false);
     let done = Answer::CallDone {
         call: "a".into(),
-        outcome: Outcome::Ok("x".into()),
+        outcome: Outcome::ok("x"),
         by: Author::Tools,
     };
     refused(&mut s, &mut step, c, done.clone());

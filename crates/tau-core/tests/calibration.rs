@@ -424,7 +424,7 @@ fn the_features_of_a_body_are_its_text_by_role_and_class() {
     assert_eq!(x.0[3 * CLASSES], 7.0, "ok, c, read");
 
     let results = Body::Results(vec![
-        ("c1".into(), Outcome::Ok("fine".into()), Author::Tools),
+        ("c1".into(), Outcome::ok("fine"), Author::Tools),
         ("c2".into(), Outcome::Interrupted, Author::Tools),
     ]);
     let x = features(&results);

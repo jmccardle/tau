@@ -2,6 +2,9 @@
 //! log (`log`) and the scratchpad file (`scratchpad`). The only crate that
 //! touches the filesystem.
 //!
+//! Images (D30) are kept once each in `images/<sha256>`, written before the
+//! first record that names them; the log holds only their reference.
+//!
 //! Both files start with an 8-byte magic and a little-endian `u32` version.
 //! A record on disk is its payload's length (`u32` LE), a CRC-32 of the
 //! length and the payload (`u32` LE), then the payload: the `Record` (or, in
@@ -13,19 +16,23 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tau_core::tree::{Body, Record, Scratchpad, Session};
+use tau_core::tree::{Body, Image, Record, Scratchpad, Session, sha256_hex};
 
 mod lease;
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
+const IMAGES: &str = "images";
 const LOG_MAGIC: [u8; 8] = *b"tau-log\0";
 const PAD_MAGIC: [u8; 8] = *b"tau-pad\0";
-/// The file version this build writes and reads.
-pub const VERSION: u32 = 1;
+/// The file version this build writes. 2 (D30): a `Results` outcome may carry images.
+pub const VERSION: u32 = 2;
+/// The oldest version this build reads. A v1 file is a v2 file without images.
+pub const OLDEST: u32 = 1;
 /// Magic plus version.
 pub const HEADER: usize = 12;
 
@@ -58,6 +65,10 @@ pub enum Error {
     /// A record whose encoding is 4 GiB or more, which the format's `u32`
     /// length cannot hold. Nothing of the failing `save` reached the log.
     TooLarge(usize),
+    /// An image a record names without its bytes, or that a read asks for,
+    /// that the session's image directory does not hold (or holds damaged:
+    /// its hash is not its name). The `sha256`.
+    MissingImage(String),
 }
 
 impl From<io::Error> for Error {
@@ -73,7 +84,10 @@ impl fmt::Display for Error {
             Self::Leased => f.write_str("another store holds this session's lease"),
             Self::Exists => f.write_str("a session already exists here"),
             Self::NotASession(p) => write!(f, "not a τ session file: {}", p.display()),
-            Self::Version(v) => write!(f, "session file version {v}; this build reads {VERSION}"),
+            Self::Version(v) => write!(
+                f,
+                "session file version {v}; this build reads {OLDEST} to {VERSION}"
+            ),
             Self::Corrupt(p) => write!(f, "damaged scratchpad file: {}", p.display()),
             Self::Undecodable {
                 path,
@@ -88,6 +102,12 @@ impl fmt::Display for Error {
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
             Self::TooLarge(n) => {
                 write!(f, "a record of {n} bytes does not fit the log's u32 length")
+            }
+            Self::MissingImage(sha) => {
+                write!(
+                    f,
+                    "the session has no image {sha} (in its images directory)"
+                )
             }
         }
     }
@@ -170,13 +190,16 @@ impl Store {
         lease(&log)?;
         let mut bytes = vec![];
         log.read_to_end(&mut bytes)?;
-        check_header(&bytes, LOG_MAGIC, &path)?;
+        let version = check_header(&bytes, LOG_MAGIC, &path)?;
         let (records, kept) = scan(&bytes[HEADER..], &path)?;
         if records.is_empty() {
             return Err(Error::NotASession(path));
         }
         let end = HEADER + kept;
         cut_tail(dir, &log, &bytes, end)?;
+        if version < VERSION {
+            upgrade_header(&log, &path)?;
+        }
         let pad = read_pad(&dir.join(PAD))?;
         let session = tau_core::tree::load(records, pad).map_err(Error::Core)?;
         let store = Self {
@@ -280,14 +303,22 @@ impl Store {
         let _span = tracing::info_span!("store.save").entered();
         // Through the last `Sync`: its end in `pending`, and the newest pad.
         let mut through = None;
+        let mut wrote_images = false;
         for r in session.outbox.drain(..) {
             let Record::Sync { pad } = r else {
+                if let Record::Write { node, .. } = &r {
+                    wrote_images |= self.keep_images(&node.body)?;
+                }
                 encode(&r, &mut self.pending)?;
                 continue;
             };
             encode(&Record::Sync { pad: None }, &mut self.pending)?;
             let newest = pad.or(through.and_then(|(_, p)| p));
             through = Some((self.pending.len(), newest));
+        }
+        if wrote_images {
+            sync_dir(&self.dir.join(IMAGES))?;
+            sync_dir(&self.dir)?;
         }
         let Some((end, pad)) = through else {
             return Ok(self);
@@ -308,6 +339,37 @@ impl Store {
             self.write_pad(&pad)?;
         }
         Ok(self)
+    }
+
+    /// The session's directory.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Write each image of `body` that carries bytes and is not yet kept; refuse one that carries
+    /// none and is not kept. Whether a file was written (its directory then needs a sync).
+    fn keep_images(&self, body: &Body) -> Result<bool, Error> {
+        let mut wrote = false;
+        for image in body.images() {
+            let path = image_path(&self.dir, &image.sha256);
+            if path.exists() {
+                continue;
+            }
+            let Some(data) = &image.data else {
+                return Err(Error::MissingImage(image.sha256.clone()));
+            };
+            let _span = tracing::info_span!("store.write_image", bytes = data.len()).entered();
+            let dir = self.dir.join(IMAGES);
+            fs::create_dir_all(&dir)?;
+            let tmp = dir.join(format!("{}.new", image.sha256));
+            let mut f = File::create(&tmp)?;
+            f.write_all(data)?;
+            f.sync_data()?;
+            fs::rename(&tmp, &path)?;
+            wrote = true;
+        }
+        Ok(wrote)
     }
 
     fn write_pad(&self, pad: &Scratchpad) -> Result<(), Error> {
@@ -338,6 +400,80 @@ fn cut_tail(dir: &Path, log: &File, bytes: &[u8], end: usize) -> Result<(), Erro
         log.set_len(end as u64)?;
         log.sync_all()?;
     }
+    Ok(())
+}
+
+/// Where the session in `dir` keeps the image named `sha256`.
+fn image_path(dir: &Path, sha256: &str) -> PathBuf {
+    dir.join(IMAGES).join(sha256)
+}
+
+/// Whether the session in `dir` keeps the image named `sha256`.
+#[must_use]
+pub fn has_image(dir: &Path, sha256: &str) -> bool {
+    image_path(dir, sha256).is_file()
+}
+
+/// The bytes of `image` from the session in `dir`, checked against its hash.
+///
+/// # Errors
+///
+/// `MissingImage` when the file is absent or its bytes do not hash to its name; `Io`.
+pub fn read_image(dir: &Path, image: &Image) -> Result<Arc<[u8]>, Error> {
+    let data = match fs::read(image_path(dir, &image.sha256)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Error::MissingImage(image.sha256.clone()));
+        }
+        r => r?,
+    };
+    if sha256_hex(&data) != image.sha256 {
+        return Err(Error::MissingImage(image.sha256.clone()));
+    }
+    Ok(data.into())
+}
+
+/// Give every image of the `Write` records in `records` that carries no bytes the bytes the
+/// session in `from` keeps for it (a fork's copy of a walk, before it is stored elsewhere).
+///
+/// # Errors
+///
+/// As `read_image`.
+pub fn fill_images(records: &mut [Record], from: &Path) -> Result<(), Error> {
+    for r in records {
+        if let Record::Write { node, .. } = r {
+            for image in node.body.images_mut() {
+                if image.data.is_none() {
+                    image.data = Some(read_image(from, image)?);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite a log's header to `VERSION`, before its first append by this build, so an older
+/// build refuses it by name instead of failing on a record it cannot decode.
+/// Unix: through a handle of its own, since the log's is open for appending and a positioned
+/// write to it would append.
+#[cfg(unix)]
+fn upgrade_header(_log: &File, path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::FileExt;
+    let f = OpenOptions::new().write(true).open(path)?;
+    f.write_all_at(&VERSION.to_le_bytes(), 8)?;
+    f.sync_all()?;
+    Ok(())
+}
+
+/// Windows: through the log's own handle, which holds the lease and is open for writing.
+#[cfg(windows)]
+fn upgrade_header(log: &File, _path: &Path) -> Result<(), Error> {
+    use std::os::windows::fs::FileExt;
+    let mut at = 0;
+    let bytes = VERSION.to_le_bytes();
+    while at < bytes.len() {
+        at += log.seek_write(&bytes[at..], 8 + at as u64)?;
+    }
+    log.sync_all()?;
     Ok(())
 }
 
@@ -403,15 +539,16 @@ fn header(magic: [u8; 8]) -> Vec<u8> {
     h
 }
 
-fn check_header(bytes: &[u8], magic: [u8; 8], path: &Path) -> Result<(), Error> {
+/// The file's version, if it is one this build reads.
+fn check_header(bytes: &[u8], magic: [u8; 8], path: &Path) -> Result<u32, Error> {
     if bytes.len() < HEADER || bytes[..8] != magic {
         return Err(Error::NotASession(path.into()));
     }
     let version = u32::from_le_bytes(bytes[8..HEADER].try_into().unwrap());
-    if version != VERSION {
+    if !(OLDEST..=VERSION).contains(&version) {
         return Err(Error::Version(version));
     }
-    Ok(())
+    Ok(version)
 }
 
 fn checksum(len: &[u8], payload: &[u8]) -> u32 {

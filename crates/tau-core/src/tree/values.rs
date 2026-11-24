@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CursorId, ItemId, NodeId, Part};
+use super::{CursorId, Image, ItemId, NodeId, Part};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -15,12 +15,104 @@ pub enum Stop {
     Refused,
 }
 
+/// How a call ended. `Ok` carries the tool's text and its images (D30), which only `Ok` has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(from = "OutcomeRepr", into = "OutcomeRepr")]
 pub enum Outcome {
-    Ok(String),
+    Ok { value: String, images: Vec<Image> },
     Err(String),
     Interrupted,
+}
+
+impl Outcome {
+    /// `Ok` with text and no images.
+    #[must_use]
+    pub fn ok(value: impl Into<String>) -> Self {
+        Self::Ok {
+            value: value.into(),
+            images: vec![],
+        }
+    }
+}
+
+/// `Outcome` as the log and the wire encode it: `Ok` without images is a string, as before D30,
+/// so a log written before images loads unchanged.
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "Outcome"))]
+enum OutcomeRepr {
+    Ok(OkRepr),
+    Err(String),
+    Interrupted,
+}
+
+/// `Outcome::Ok`'s two encodings: the text alone, or the text with its images.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(inline))]
+enum OkRepr {
+    Text(String),
+    WithImages { value: String, images: Vec<Image> },
+}
+
+impl From<OutcomeRepr> for Outcome {
+    fn from(r: OutcomeRepr) -> Self {
+        match r {
+            OutcomeRepr::Ok(OkRepr::Text(value)) => Self::ok(value),
+            OutcomeRepr::Ok(OkRepr::WithImages { value, images }) => Self::Ok { value, images },
+            OutcomeRepr::Err(e) => Self::Err(e),
+            OutcomeRepr::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
+impl From<Outcome> for OutcomeRepr {
+    fn from(o: Outcome) -> Self {
+        match o {
+            Outcome::Ok { value, images } if images.is_empty() => Self::Ok(OkRepr::Text(value)),
+            Outcome::Ok { value, images } => Self::Ok(OkRepr::WithImages { value, images }),
+            Outcome::Err(e) => Self::Err(e),
+            Outcome::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Outcome {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Outcome".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        OutcomeRepr::json_schema(generator)
+    }
+}
+
+impl Body {
+    /// The images this body holds: those of a `Results` node's `Ok` outcomes, in call order.
+    pub fn images(&self) -> impl Iterator<Item = &Image> {
+        let outcomes = match self {
+            Self::Results(outcomes) => outcomes.as_slice(),
+            _ => &[],
+        };
+        outcomes.iter().flat_map(|(_, o, _)| match o {
+            Outcome::Ok { images, .. } => images.as_slice(),
+            _ => &[],
+        })
+    }
+
+    /// `images`, to change: what a store does to give a copy its bytes.
+    pub fn images_mut(&mut self) -> impl Iterator<Item = &mut Image> {
+        let outcomes = match self {
+            Self::Results(outcomes) => outcomes.as_mut_slice(),
+            _ => &mut [],
+        };
+        outcomes.iter_mut().flat_map(|(_, o, _)| match o {
+            Outcome::Ok { images, .. } => images.as_mut_slice(),
+            _ => &mut [],
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

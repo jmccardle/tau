@@ -85,7 +85,7 @@ fn body_bytes(b: &Body) -> usize {
         Body::Results(r) => r
             .iter()
             .map(|(_, o, _)| match o {
-                Outcome::Ok(t) | Outcome::Err(t) => t.len(),
+                Outcome::Ok { value: t, .. } | Outcome::Err(t) => t.len(),
                 Outcome::Interrupted => 0,
             })
             .sum(),
@@ -195,7 +195,7 @@ impl Agent {
                 .into_iter()
                 .map(|call| Answer::CallDone {
                     call: call.id,
-                    outcome: Outcome::Ok(rig.payloads.results.clone()),
+                    outcome: Outcome::ok(rig.payloads.results.clone()),
                     by: Author::Tools,
                 })
                 .collect(),
