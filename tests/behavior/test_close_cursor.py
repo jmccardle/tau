@@ -265,6 +265,10 @@ async def test_a_client_connecting_after_a_close_is_told_the_cursor_is_gone_befo
     await h.close()
 
 
+@pytest.mark.local_only(
+    "over a wire the server drains the buffer into the transport, so whether it is still unread "
+    "when the close lands is timing (it was already read on macOS over HTTP)"
+)
 @scenario
 async def test_a_gone_event_replaces_the_cursors_view_in_a_buffer_nobody_reads(
     tmp_path: Path,

@@ -315,6 +315,10 @@ async def test_an_outcome_set_by_an_early_pre_tool_hook_is_seen_by_a_later_one(
 # A sample that finished before the abort reached it stays a complete reply
 
 
+@pytest.mark.local_only(
+    "the abort must land between the provider's last part and the driver taking its answer; "
+    "over a wire its arrival cannot be placed there (it lost the race on macOS over HTTP)"
+)
 @scenario
 async def test_a_complete_sample_answered_after_an_abort_stays_a_complete_reply(
     tmp_path: Path,

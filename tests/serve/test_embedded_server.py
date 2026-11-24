@@ -16,6 +16,7 @@ if sys.platform == "win32":
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import time
 from collections.abc import Iterator
@@ -282,9 +283,11 @@ def test_a_failed_record_write_unbinds(home: World) -> None:
         started = await started_in(home, "work")
         assert started.directory is not None
         (home.tau / "serve").mkdir(mode=0o700, exist_ok=True)
-        (home.tau / "serve" / f"{started.directory.name}.json").mkdir()  # cannot be written
+        record = home.tau / "serve" / f"{started.directory.name}.json"
+        record.mkdir()  # cannot be written
         try:
-            with pytest.raises(OSError, match="Is a directory"):
+            # the errno is the platform's: EISDIR on Linux, EPERM on macOS; the path is ours
+            with pytest.raises(OSError, match=re.escape(record.name)):
                 await started.serve()
             assert not (home.tau / "serve" / f"{started.directory.name}.sock").exists()
         finally:
