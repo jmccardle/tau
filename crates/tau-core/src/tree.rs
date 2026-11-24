@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod image;
 mod part;
 mod replay;
+mod sha256;
 mod values;
 
 pub use image::{BadImage, Image, is_image, sha256_hex, sniff};

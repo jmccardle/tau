@@ -157,7 +157,7 @@ else `{"Ok": {"value", "images"}}`.
 `LookupError`) · D30 · new
 
 One image in a tool result: `mime` (`image/png`, `image/jpeg`, `image/gif`, `image/webp`), `sha256`
-(lowercase hex of the bytes, its identity), `width` and `height` in pixels, and `data`, the bytes
+(lowercase hex of the bytes, its identity; core hashes with its own `tree::sha256`, as `sha2` would bring `libc` into core), `width` and `height` in pixels, and `data`, the bytes
 when this process has them, else `None`. `Image(data)` sniffs the format and size from the header
 and hashes the bytes; bytes that are none of the four formats raise **BadImage**. Equality and hash
 leave `data` out; `Image.from_path(path)` reads a file at once. Core carries the bytes with the

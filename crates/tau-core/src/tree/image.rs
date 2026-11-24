@@ -7,7 +7,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// One image in a tool result (D30): its type, its identity and its size. The bytes are not in
 /// this encoding: the session keeps them beside its log, named by `sha256`.
@@ -111,7 +110,7 @@ impl fmt::Debug for Image {
 #[must_use]
 pub fn sha256_hex(data: &[u8]) -> String {
     use std::fmt::Write as _;
-    let digest = Sha256::digest(data);
+    let digest = super::sha256::digest(data);
     let mut out = String::with_capacity(64);
     for b in digest {
         let _ = write!(out, "{b:02x}");
