@@ -218,7 +218,8 @@ fn assistant(x: &mut Features, parts: &[Part]) {
 
 fn outcome_text(outcome: &Outcome) -> &str {
     match outcome {
-        Outcome::Ok(text) | Outcome::Err(text) => text,
+        // An image is not text: its tokens are no feature of the fit (D30 §9).
+        Outcome::Ok { value: text, .. } | Outcome::Err(text) => text,
         Outcome::Interrupted => "Interrupted",
     }
 }

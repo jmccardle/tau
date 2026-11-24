@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use tau_core::machine::Machine;
+use tau_core::step;
 use tau_core::tree::{self, Provenance};
 use tau_store::Store;
 
@@ -17,9 +18,57 @@ use crate::view::{CursorState, Tree};
 pub(crate) struct Inner {
     pub(crate) machine: Machine,
     store: Option<Store>,
+    /// The session directory whose `images/` holds this session's image bytes (D30): the
+    /// store's, or the one a read copy was read from; `None` in memory, where the nodes hold them.
+    pub(crate) images: Option<PathBuf>,
 }
 
 impl Inner {
+    /// Make sure the session can send `image`: it carries its bytes, or the session keeps them
+    /// (in its image directory, or, in memory, in a node that has them, whose bytes it then
+    /// takes). `MissingImage` otherwise, before anything is written.
+    pub(crate) fn know(&self, image: &mut tree::Image) -> Result<(), Failure> {
+        if image.data.is_some() {
+            return Ok(());
+        }
+        if let Some(dir) = &self.images
+            && tau_store::has_image(dir, &image.sha256)
+        {
+            return Ok(());
+        }
+        let tree = &self.machine.session.tree;
+        let held = (0..tree.node_count() as u64)
+            .filter_map(|id| tree.node(id).ok())
+            .flat_map(|n| n.body.images())
+            .find(|i| i.sha256 == image.sha256 && i.data.is_some());
+        match held {
+            Some(i) => {
+                image.data.clone_from(&i.data);
+                Ok(())
+            }
+            None => Err(tau_store::Error::MissingImage(image.sha256.clone()).into()),
+        }
+    }
+
+    /// `know` every image of `body`.
+    pub(crate) fn know_body(&self, body: &mut tree::Body) -> Result<(), Failure> {
+        body.images_mut().try_for_each(|i| self.know(i))
+    }
+
+    /// `know` every image of an answer: a call's outcome, or a hook's draft.
+    fn know_answer(&self, answer: &mut step::Answer) -> Result<(), Failure> {
+        match answer {
+            step::Answer::CallDone {
+                outcome: tree::Outcome::Ok { images, .. },
+                ..
+            } => images.iter_mut().try_for_each(|i| self.know(i)),
+            step::Answer::Hooks {
+                draft: Some(draft), ..
+            } => self.know_body(&mut draft.body),
+            _ => Ok(()),
+        }
+    }
+
     /// Hand the queued records to the store, or drop them when there is none:
     /// an in-memory session has nowhere to make them durable. A failed save
     /// consumes the session (`Store::save`): the caller is left with none.
@@ -71,11 +120,21 @@ impl Shared {
         span: tracing::Span,
         f: impl FnOnce(&mut Machine) -> Result<R, Failure> + Send,
     ) -> PyResult<R> {
+        self.write_inner(py, span, |inner| f(&mut inner.machine))
+    }
+
+    /// `write`, with the whole of the session (its image directory as well as its machine).
+    fn write_inner<R: Send>(
+        &self,
+        py: Python<'_>,
+        span: tracing::Span,
+        f: impl FnOnce(&mut Inner) -> Result<R, Failure> + Send,
+    ) -> PyResult<R> {
         let _span = span.entered();
         Ok(py.detach(|| {
             let mut guard = tracing::info_span!("py.lock").in_scope(|| self.lock())?;
             let mut inner = guard.take().ok_or(Failure::Closed)?;
-            let result = tracing::info_span!("py.machine").in_scope(|| f(&mut inner.machine));
+            let result = tracing::info_span!("py.machine").in_scope(|| f(&mut inner));
             *guard = Some(tracing::info_span!("py.save").in_scope(|| inner.save())?);
             result
         })?)
@@ -127,8 +186,10 @@ impl Shared {
         from: Provenance,
         hook: Option<u64>,
     ) -> PyResult<u64> {
-        self.write(py, tracing::info_span!("py.append"), |m| {
-            Ok(m.append(parent, body.into(), by.into(), now, from, hook)?)
+        self.write_inner(py, tracing::info_span!("py.append"), |i| {
+            let mut body = body.into();
+            i.know_body(&mut body)?;
+            Ok(i.machine.append(parent, body, by.into(), now, from, hook)?)
         })
     }
 
@@ -215,6 +276,7 @@ fn stored(
             Inner {
                 machine: Machine::new(session),
                 store,
+                images: directory.clone(),
             }
             .save()
         })
@@ -271,7 +333,12 @@ impl Session {
         directory: Option<PathBuf>,
     ) -> PyResult<Self> {
         let (copy, _) = self.shared.read(py, tracing::info_span!("py.fork"), |i| {
-            Ok(i.machine.session.fork(node, now)?)
+            let (mut copy, cursor) = i.machine.session.fork(node, now)?;
+            // The copy's images go with it: those loaded from disk carry no bytes yet.
+            if let Some(dir) = &i.images {
+                tau_store::fill_images(&mut copy.outbox, dir)?;
+            }
+            Ok((copy, cursor))
         })?;
         stored(py, copy, directory)
     }
@@ -289,6 +356,7 @@ impl Session {
             Inner {
                 machine: Machine::loaded(session),
                 store: None,
+                images: Some(directory),
             },
         )
     }
@@ -306,6 +374,7 @@ impl Session {
             Inner {
                 machine: Machine::loaded(session),
                 store: Some(store),
+                images: Some(directory),
             },
         )
     }
@@ -489,8 +558,11 @@ impl Session {
             derived_from,
         };
         self.shared
-            .write(py, tracing::info_span!("py.hook_write"), |m| {
-                Ok(m.hook_write(cursor, body.into(), delivers, by.into(), now, from)?)
+            .write_inner(py, tracing::info_span!("py.hook_write"), |i| {
+                let mut body = body.into();
+                i.know_body(&mut body)?;
+                Ok(i.machine
+                    .hook_write(cursor, body, delivers, by.into(), now, from)?)
             })
     }
 
@@ -516,8 +588,10 @@ impl Session {
     /// Answer the job last handed out for `cursor`.
     fn answer(&self, py: Python<'_>, cursor: u64, answer: Answer, now: u64) -> PyResult<()> {
         self.shared
-            .write(py, tracing::info_span!("py.answer"), |m| {
-                Ok(m.answer(cursor, answer.into(), now)?)
+            .write_inner(py, tracing::info_span!("py.answer"), |i| {
+                let mut answer = answer.into();
+                i.know_answer(&mut answer)?;
+                Ok(i.machine.answer(cursor, answer, now)?)
             })
     }
 

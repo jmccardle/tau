@@ -175,7 +175,12 @@ class Provider(Protocol):
     A provider **may** also have `render(walk, model, tools) -> Rendered`: the request `sample`
     would send for the same arguments, without sending it or reading a key (D26 section 3.1).
     One that has it stamps each reply's `meta.sent` with what it sent, which is what proves a
-    span on a server whose cache report cannot. `OpenAIProvider` and `GeminiProvider` have it."""
+    span on a server whose cache report cannot. `OpenAIProvider` and `GeminiProvider` have it.
+
+    A provider that sends images (D30) has `image_limits`, an `ImageLimits`: what one image may be
+    for its API. A model that takes images (`ModelConfig.images`) is held to them; a provider
+    without the attribute sends none, and a walk holding an image fails its sample before
+    `sample` is called. `sample` is handed every image with its bytes (`Image.data`)."""
 
     @property
     def name(self) -> str:

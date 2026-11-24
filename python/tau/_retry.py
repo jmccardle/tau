@@ -33,6 +33,7 @@ import httpx
 from tau._config import ModelConfig
 from tau._core import Node, Part
 from tau._events import Delta, Retrying
+from tau._images import ImageLimits
 from tau._protocols import Finish, Provider, ProviderClosed, SampleError, Tool
 
 RETRIES = 3
@@ -105,6 +106,13 @@ class RetryProvider:
     def name(self) -> str:
         """The inner provider's name."""
         return self._inner.name
+
+    @property
+    def image_limits(self) -> ImageLimits | None:
+        """The inner provider's `image_limits` (D30), or `None` when it has none: a wrapper
+        sends what the provider it wraps sends."""
+        limits: object = getattr(self._inner, "image_limits", None)
+        return limits if isinstance(limits, ImageLimits) else None
 
     def check(self, model: ModelConfig) -> list[str]:
         """The inner provider's check."""

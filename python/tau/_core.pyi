@@ -16,6 +16,7 @@ from typing_extensions import disjoint_base
 __all__ = [
     "Answer",
     "Author",
+    "BadImage",
     "BadRecord",
     "BadReplay",
     "Bash",
@@ -41,10 +42,12 @@ __all__ = [
     "Grep",
     "HandleWrites",
     "Hook",
+    "Image",
     "Item",
     "ItemData",
     "Job",
     "Leased",
+    "MissingImage",
     "Move",
     "Next",
     "NoSuchCursor",
@@ -117,6 +120,12 @@ class BadReplay(ValueError):
 
 class WrongAnswer(ValueError):
     """An answer to no job; nothing changed."""
+
+class BadImage(ValueError):
+    """Bytes that are not a PNG, JPEG, GIF or WebP image whose size can be read."""
+
+class MissingImage(LookupError):
+    """An image without its bytes that the session does not keep (a reference copied from another session, or a file gone from its images directory)."""
 
 class Closed(RuntimeError):
     """The session was closed."""
@@ -534,6 +543,41 @@ class Part:
         def replay(self) -> Replay | None:
             """Data only the writing provider can send back, or `None`."""
 
+@final
+class Image:
+    """One image in a tool result (D30): a PNG, JPEG, GIF or WebP file's bytes. `Image(data)` reads
+    the format and size from the header and hashes the bytes; bytes that are none of the four
+    formats raise `BadImage`. Two images are equal when `mime`, `sha256`, `width` and `height` are.
+    """
+
+    def __new__(cls, data: bytes) -> Image: ...
+    @staticmethod
+    def from_path(path: str | PathLike[str]) -> Image:
+        """The image in the file at `path`, read now: the image holds the bytes, so it does not
+        depend on the file staying. `BadImage` if the file is not an image; `OSError` if it
+        cannot be read.
+        """
+    @property
+    def mime(self) -> str:
+        """`image/png`, `image/jpeg`, `image/gif` or `image/webp`."""
+    @property
+    def sha256(self) -> str:
+        """Lowercase hex of the SHA-256 of the bytes: the image's identity."""
+    @property
+    def width(self) -> int:
+        """Width in pixels."""
+    @property
+    def height(self) -> int:
+        """Height in pixels."""
+    @property
+    def data(self) -> bytes | None:
+        """The bytes, when this process holds them; `None` in a node loaded from disk (the session
+        keeps them: `Tree.walk(node, images=True)` reads them).
+        """
+    def __eq__(self, other: object, /) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+
 @disjoint_base
 class Outcome:
     """How one tool call ended: `Ok`, `Err` or `Interrupted`."""
@@ -547,10 +591,13 @@ class Outcome:
         """The call succeeded."""
 
         __match_args__: ClassVar[tuple[str, ...]]
-        def __new__(cls, value: str) -> Outcome.Ok: ...
+        def __new__(cls, value: str, images: Sequence[Image] = ...) -> Outcome.Ok: ...
         @property
         def value(self) -> str:
             """What the tool returned."""
+        @property
+        def images(self) -> list[Image]:
+            """The images it returned, after the text (D30); empty for most tools."""
 
     @final
     class Err(Outcome):
@@ -966,8 +1013,16 @@ class Tree:
 
     def node(self, id: int) -> Node:
         """The node with this id. `NoSuchNode` if there is none."""
-    def walk(self, node: int) -> list[Node]:
-        """The nodes root to `node`, inclusive."""
+    def walk(self, node: int, *, images: bool = False) -> list[Node]:
+        """The nodes root to `node`, inclusive. With `images`, every image in them carries its
+        bytes, read from the session's image directory where a node loaded from disk has none
+        (what a sample sends); `MissingImage` if one is gone.
+        """
+    def image(self, image: Image) -> Image:
+        """`image` with its bytes: as it is when it has them, else read from the session (its image
+        directory, or, in memory, a node that holds them). `MissingImage` if the session has no
+        such image. What a tool's image taken from a node loaded from disk is checked with.
+        """
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
     def __len__(self) -> int: ...
@@ -1193,7 +1248,7 @@ class Cancel:
 class Read:
     """The `read` tool."""
 
-    def __new__(cls, cwd: str | PathLike[str], max_output: int) -> Read: ...
+    def __new__(cls, cwd: str | PathLike[str], max_output: int, max_image_bytes: int) -> Read: ...
     @property
     def name(self) -> str: ...
     @property
@@ -1201,7 +1256,7 @@ class Read:
     @property
     def parameters_json(self) -> str: ...
     def run(self, args_raw: str, cancel: Cancel) -> Outcome:
-        """Run the call; releases the GIL."""
+        """Run the call; releases the GIL. An image file answers `Ok` with the image (D30)."""
 
 @final
 class Write:

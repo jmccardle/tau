@@ -38,11 +38,12 @@ A JSON object as Python holds it: what a schema or a decoded JSON object is type
 ## PROTOCOL
 
 ```python
-PROTOCOL: Final = 1
+PROTOCOL: Final = 2
 ```
 
 The wire protocol's version. D12: a version marks a released protocol. It goes up by one at a
-release whose `docs/protocol.schema.json` differs from the last tag's, never per commit.
+release whose `docs/protocol.schema.json` differs from the last tag's, never per commit. 2 is
+0.17's (D30): `Outcome.Ok` may carry images.
 
 ## ProtocolError
 

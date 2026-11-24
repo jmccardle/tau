@@ -18,7 +18,7 @@ import json
 from collections.abc import Callable, Sequence
 from typing import cast
 
-from tau._core import Outcome
+from tau._core import Image, Outcome
 from tau._functions import (
     INJECT_CURSOR,
     INJECT_NODE,
@@ -103,14 +103,15 @@ class FunctionTool:
         context: Context,
         handle: NodeHandle | None,
     ) -> Outcome:
-        """Parse and check `args_raw`, run the function, and answer `Ok(its str)`.
+        """Parse and check `args_raw`, run the function, and answer `Ok` with what it returned
+        (see `returned`).
 
         `Err(message)` for malformed JSON, arguments that do not fit the signature, any
         exception the function raised (named by type), and a return value that is not a
-        `str`. A sync function runs in a worker thread, so it never blocks the loop;
-        aborting a call stops waiting for it, not the thread. A function wrapped (with
-        `functools.wraps`) around an async one counts as async. `handle` is the batch's, for a
-        function that takes one.
+        `str`, an `Image` or a list of them. A sync function runs in a worker thread, so it
+        never blocks the loop; aborting a call stops waiting for it, not the thread. A function
+        wrapped (with `functools.wraps`) around an async one counts as async. `handle` is the
+        batch's, for a function that takes one.
         """
         try:
             arguments = self._arguments(args_raw, context)
@@ -121,9 +122,30 @@ class FunctionTool:
             return Outcome.Err(str(e))  # the function talking to the model: its message, exactly
         except Exception as e:
             return Outcome.Err(f"{type(e).__name__}: {e}")
-        if not isinstance(result, str):
-            return Outcome.Err(f"{self.name} returned {type(result).__name__}, not str")
+        return returned(self.name, result)
+
+
+def returned(tool: str, result: object) -> Outcome:
+    """A function tool's return value as its outcome (D30): a `str` is `Ok(text)`; an `Image`
+    is `Ok("", [image])`; a list of `str` and `Image` is `Ok` with the strings joined by
+    newlines and the images in order (the model reads the text, then the images). Whether the
+    images reach the model is the driver's rule, the same as for `read`'s. Anything else is an
+    `Err` naming what came back."""
+    if isinstance(result, str):
         return Outcome.Ok(result)
+    if isinstance(result, Image):
+        return Outcome.Ok("", [result])
+    if isinstance(result, list):
+        items = cast("list[object]", result)
+        bad = next((x for x in items if not isinstance(x, str | Image)), None)
+        if bad is None:
+            texts = [x for x in items if isinstance(x, str)]
+            images = [x for x in items if isinstance(x, Image)]
+            return Outcome.Ok("\n".join(texts), images)
+        return Outcome.Err(
+            f"{tool} returned a list holding {type(bad).__name__}; a list holds str and Image"
+        )
+    return Outcome.Err(f"{tool} returned {type(result).__name__}, not str, Image or a list of them")
 
 
 def assemble_tools(

@@ -538,7 +538,7 @@ impl Model {
             })
             .unwrap_or_else(|| call_id.to_owned());
         let (kind, text) = match outcome {
-            Outcome::Ok(text) => (Kind::Result, clip(text)),
+            Outcome::Ok(ok) => (Kind::Result, clip(&ok.shown())),
             Outcome::Err(text) => (Kind::Failure, clip(text)),
             Outcome::Interrupted => (Kind::Failure, "interrupted".to_owned()),
         };

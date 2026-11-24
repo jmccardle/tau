@@ -4,9 +4,10 @@ through `tau.cli.main` on session directories laid out as the catalog writes the
 import json
 from pathlib import Path, PurePosixPath
 
+from pngs import png
 from world import World, tau
 
-from tau import Author, Body, Outcome, Part, Session, Stop, model_config, to_markdown
+from tau import Author, Body, Image, Outcome, Part, Session, Stop, model_config, to_markdown
 
 OLD = "20261030-091502-1c2d3e"
 NEW = "20261031-142233-7f3a9c"
@@ -384,3 +385,20 @@ def test_to_markdown_is_pure_over_nodes_and_sizes_each_fence_to_its_content() ->
     last = session.append(reply, results, Author.Tools(), 0)
     text = to_markdown(session.tree.walk(last))
     assert f"``````\n{output}\n``````\n" in text, "one longer than the longest run (five)"
+
+
+def test_an_export_shows_an_image_as_one_line_never_its_bytes(world: World) -> None:
+    """D30 section 9: `[image WxH mime]` under the result's text."""
+
+    def looked(session: Session, tip: int) -> int:
+        tools = Author.Tools()
+        reply = session.append(
+            tip, Body.Assistant([Part.Call("c1", "read", "{}")], Stop.Tools), Author.Provider(), 1
+        )
+        outcome = Outcome.Ok("[image shot.png]", [Image(png(7, 3))])
+        return session.append(reply, Body.Results([("c1", outcome, tools)]), tools, 2)
+
+    world.session(NEW, says=["look"], build=looked)
+    out = exported(world, NEW)
+    assert "**read** ok\n\n```\n[image shot.png]\n[image 7x3 image/png]\n```" in out, out
+    assert "IHDR" not in out

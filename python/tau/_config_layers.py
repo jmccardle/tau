@@ -54,9 +54,11 @@ MODEL_KEYS = (  # the keys of a model; any other object is a section (D28)
     "provider",
     "max_tokens",
     "context_window",
+    "images",
     "options",
 )
 _INT_KEYS = ("max_tokens", "context_window")
+_BOOL_KEYS = ("images",)  # D30: whether the model takes images
 _OBJECT_KEYS = ("options",)  # settings that are objects, merged by key; so is a section
 _MOVED = {"price": "usage.price"}  # a model key that became an extension's section (D28)
 _TOP_KEYS = (
@@ -392,6 +394,7 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         objects.get("options", {}),
         numbers.get("context_window"),
         sections,
+        images=bool(merged["images"][0].value) if "images" in merged else False,
     )
 
 
@@ -417,6 +420,8 @@ class _Resolver:
         source = source_of(value) or CLI
         bad = Leaf(_INVALID, source)
         text = value.value if isinstance(value, Leaf) else None
+        if key in _BOOL_KEYS:
+            return self._boolean(key, value, here)
         if key in _INT_KEYS:
             if not isinstance(text, int):
                 self.problems.add("error", f"{key!r} must be a positive integer", source, here)
@@ -438,6 +443,13 @@ class _Resolver:
         else:
             return value if isinstance(value, Leaf) else bad
         return bad
+
+    def _boolean(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
+        """A setting that is `true` or `false` (`images`, D30)."""
+        if isinstance(value, Leaf) and isinstance(value.value, bool):
+            return value
+        self.problems.add("error", f"{key!r} must be true or false", source_of(value) or CLI, here)
+        return Leaf(_INVALID, source_of(value) or CLI)
 
     def object_setting(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
         """`options` (the provider's own settings) or an extension's section as an object tree
@@ -527,7 +539,7 @@ class _Resolver:
         texts = {
             k: cast("str", leaf.value)
             for k, (leaf, _) in merged.items()
-            if k in MODEL_KEYS and k not in (*_INT_KEYS, *_OBJECT_KEYS)
+            if k in MODEL_KEYS and k not in (*_INT_KEYS, *_BOOL_KEYS, *_OBJECT_KEYS)
         }
         self.warn(qualified, merged, texts, here)
         try:

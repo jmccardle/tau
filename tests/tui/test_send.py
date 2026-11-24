@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fakes import FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, scenario
+from pngs import png
 from textual.widgets import Collapsible
 from tuikit import running, say, shows, type_line, until
 
@@ -12,6 +13,8 @@ from tau import (
     Author,
     Body,
     Compaction,
+    Image,
+    ImageLimits,
     Part,
     Stop,
     TextDelta,
@@ -221,4 +224,28 @@ async def test_the_title_after_a_compaction_is_not_the_summary(tmp_path: Path) -
         title = app.screen_text().splitlines()[0]
         assert "summary of everything" not in title
         assert "question" in title
+    await h.close()
+
+
+def _shot() -> list[str | Image]:
+    """Takes a screenshot."""
+    return ["the screen", Image(png(12, 8))]
+
+
+@scenario
+async def test_an_image_in_a_result_shows_as_one_line(tmp_path: Path) -> None:
+    """D30 section 9: the TUI draws `[image WxH mime]` under the result's text, no pixels."""
+    script = [Reply([Part.Call("c1", "_shot", "{}")], Stop.Tools), say("seen")]
+    models = {"fake": {"model": "fake", "provider": FAKE_PROVIDER, "images": True}}
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(script, image_limits=ImageLimits(100_000)),
+        catalog=read_models(cli={"models": models}),
+        tools=[_shot],
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "shoot")
+        await pilot.press("enter")
+        await shows(pilot, app, "seen")
+        assert "✓ _shot(): the screen\n[image 12x8 image/png]" in app.screen_text()
     await h.close()

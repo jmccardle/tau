@@ -32,6 +32,7 @@ from tau._context import ContextFileError, PromptSource, SystemPrompt, system_pr
 from tau._core import (
     Answer,
     Author,
+    BadImage,
     BadRecord,
     BadReplay,
     Body,
@@ -50,10 +51,12 @@ from tau._core import (
     Ending,
     Exists,
     Hook,
+    Image,
     Item,
     ItemData,
     Job,
     Leased,
+    MissingImage,
     Move,
     Next,
     Node,
@@ -126,6 +129,7 @@ from tau._extensions import (
 )
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._http_edge import HttpEdge
+from tau._images import ImageLimits
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
@@ -199,6 +203,7 @@ __all__ = [
     "Ask",
     "Attachments",
     "Author",
+    "BadImage",
     "BadRecord",
     "BadReplay",
     "BashTool",
@@ -257,6 +262,8 @@ __all__ = [
     "Hook",
     "HookFailure",
     "HttpEdge",
+    "Image",
+    "ImageLimits",
     "Item",
     "ItemData",
     "Job",
@@ -270,6 +277,7 @@ __all__ = [
     "LiveDelta",
     "LoadedConfig",
     "LocalClient",
+    "MissingImage",
     "Model",
     "ModelCatalog",
     "ModelConfig",

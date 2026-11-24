@@ -198,14 +198,102 @@ impl From<Stop> for tree::Stop {
     }
 }
 
+/// One image in a tool result (D30): a PNG, JPEG, GIF or WebP file's bytes. `Image(data)` reads
+/// the format and size from the header and hashes the bytes; bytes that are none of the four
+/// formats raise `BadImage`. Two images are equal when `mime`, `sha256`, `width` and `height` are.
+#[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Image {
+    pub(crate) inner: tree::Image,
+}
+
+fn bad_image(e: &tree::BadImage) -> PyErr {
+    crate::error::BadImage::new_err(e.to_string())
+}
+
+#[pymethods]
+impl Image {
+    #[new]
+    fn new(py: Python<'_>, data: &[u8]) -> PyResult<Self> {
+        let data: std::sync::Arc<[u8]> = data.into();
+        let inner = py
+            .detach(|| tree::Image::from_bytes(data))
+            .map_err(|e| bad_image(&e))?;
+        Ok(Self { inner })
+    }
+
+    /// The image in the file at `path`, read now: the image holds the bytes, so it does not
+    /// depend on the file staying. `BadImage` if the file is not an image; `OSError` if it
+    /// cannot be read.
+    #[staticmethod]
+    #[allow(clippy::needless_pass_by_value)] // pyo3 extracts `PathBuf`; only `&Path` is used
+    fn from_path(py: Python<'_>, path: std::path::PathBuf) -> PyResult<Self> {
+        let data = py
+            .detach(|| std::fs::read(&path))
+            .map_err(|e| crate::error::os_err(&e, Some(&path)))?;
+        let inner = py
+            .detach(|| tree::Image::from_bytes(data))
+            .map_err(|e| bad_image(&tree::BadImage(format!("{}: {}", path.display(), e.0))))?;
+        Ok(Self { inner })
+    }
+
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    #[getter]
+    fn mime(&self) -> &str {
+        &self.inner.mime
+    }
+
+    /// Lowercase hex of the SHA-256 of the bytes: the image's identity.
+    #[getter]
+    fn sha256(&self) -> &str {
+        &self.inner.sha256
+    }
+
+    /// Width in pixels.
+    #[getter]
+    fn width(&self) -> u32 {
+        self.inner.width
+    }
+
+    /// Height in pixels.
+    #[getter]
+    fn height(&self) -> u32 {
+        self.inner.height
+    }
+
+    /// The bytes, when this process holds them; `None` in a node loaded from disk (the session
+    /// keeps them: `Tree.walk(node, images=True)` reads them).
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Option<Bound<'py, pyo3::types::PyBytes>> {
+        self.inner
+            .data
+            .as_ref()
+            .map(|d| pyo3::types::PyBytes::new(py, d))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Image(mime={:?}, width={}, height={}, sha256={:?})",
+            self.inner.mime, self.inner.width, self.inner.height, self.inner.sha256
+        )
+    }
+}
+
+fn own_images(images: Vec<tree::Image>) -> Vec<Image> {
+    images.into_iter().map(|inner| Image { inner }).collect()
+}
+
 /// How one tool call ended: `Ok`, `Err` or `Interrupted`.
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Outcome {
     /// The call succeeded.
+    #[pyo3(constructor = (value, images = Vec::new()))]
     Ok {
         /// What the tool returned.
         value: String,
+        /// The images it returned, after the text (D30); empty for most tools.
+        images: Vec<Image>,
     },
     /// The call failed.
     Err {
@@ -219,7 +307,10 @@ pub enum Outcome {
 impl From<tree::Outcome> for Outcome {
     fn from(o: tree::Outcome) -> Self {
         match o {
-            tree::Outcome::Ok(value) => Self::Ok { value },
+            tree::Outcome::Ok { value, images } => Self::Ok {
+                value,
+                images: own_images(images),
+            },
             tree::Outcome::Err(error) => Self::Err { error },
             tree::Outcome::Interrupted => Self::Interrupted {},
         }
@@ -229,7 +320,10 @@ impl From<tree::Outcome> for Outcome {
 impl From<Outcome> for tree::Outcome {
     fn from(o: Outcome) -> Self {
         match o {
-            Outcome::Ok { value } => Self::Ok(value),
+            Outcome::Ok { value, images } => Self::Ok {
+                value,
+                images: images.into_iter().map(|i| i.inner).collect(),
+            },
             Outcome::Err { error } => Self::Err(error),
             Outcome::Interrupted {} => Self::Interrupted,
         }

@@ -78,7 +78,7 @@ which gives its code. Where a value is absent they say `null`.
 
 ## The version
 
-`protocol` in `hello` is an integer, now **1**. It changes only between tagged releases,
+`protocol` in `hello` is an integer, now **2**. It changes only between tagged releases,
 when the schema below changed since the last tag. Between releases the wire changes freely: build
 a client against the schema of the tau you run, and check `tau serve --schema`.
 
@@ -700,6 +700,18 @@ sees in `Ending.Failed`.
 | `point` | `string` |  |
 | `error` | `string` |  |
 
+### Image
+
+One image in a tool result (D30): its type, its identity and its size. The bytes are not in
+this encoding: the session keeps them beside its log, named by `sha256`.
+
+| field | type | notes |
+|---|---|---|
+| `height` | `integer` | Height in pixels. |
+| `mime` | `string` | `image/png`, `image/jpeg`, `image/gif` or `image/webp`. |
+| `sha256` | `string` | Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name. |
+| `width` | `integer` | Width in pixels. |
+
 ### Item
 
 | field | type | notes |
@@ -743,8 +755,11 @@ and the JSON Schema of the answer.
 
 ### Outcome
 
+`Outcome` as the log and the wire encode it: `Ok` without images is a string, as before D30,
+so a log written before images loads unchanged.
+
 - `"Interrupted"`
-- {`"Ok"`: `string`}
+- {`"Ok"`: `string` or {`"images"`: array of [Image](#image), `"value"`: `string`}}
 - {`"Err"`: `string`}
 
 ### Parsed

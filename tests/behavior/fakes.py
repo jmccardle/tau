@@ -6,11 +6,14 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau import (
+    Body,
     CallDraft,
     Cursor,
     Delta,
     Ending,
     Finish,
+    Image,
+    ImageLimits,
     ModelCatalog,
     ModelConfig,
     Node,
@@ -31,9 +34,11 @@ FAKE_PROVIDER = "fake"
 FAKE_CONFIG = model_config(FAKE_MODEL)
 
 
-def fake_catalog() -> ModelCatalog:
-    """A catalog of one model, `fake`, on the provider `fake`."""
-    model = {"model": FAKE_MODEL, "provider": FAKE_PROVIDER}
+def fake_catalog(*, images: bool = False) -> ModelCatalog:
+    """A catalog of one model, `fake`, on the provider `fake`; `images`: whether it takes them."""
+    model: dict[str, object] = {"model": FAKE_MODEL, "provider": FAKE_PROVIDER}
+    if images:
+        model["images"] = True
     return read_models(cli={"models": {FAKE_MODEL: model}})
 
 
@@ -106,11 +111,13 @@ class Fail:
 
 @dataclass(frozen=True)
 class Request:
-    """What a sample was asked: the walk's node ids, the resolved model (I1), the tools."""
+    """What a sample was asked: the walk's node ids, the resolved model (I1), the tools, and the
+    images in the walk's results as the provider was handed them (with their bytes, D30)."""
 
     walk: tuple[int, ...]
     model: ModelConfig
     tools: tuple[Tool, ...] = ()
+    images: tuple[Image, ...] = ()
 
     @property
     def tool_names(self) -> list[str]:
@@ -119,13 +126,20 @@ class Request:
 
 class FakeProvider:
     """Answers each sample with the next scripted reply and records the request. `check`
-    reports `problems` for every model."""
+    reports `problems` for every model. `image_limits` is what it says one image may be (D30);
+    `None` sends no images."""
 
-    def __init__(self, script: Sequence[Reply | Fail], problems: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        script: Sequence[Reply | Fail],
+        problems: Sequence[str] = (),
+        image_limits: ImageLimits | None = None,
+    ) -> None:
         self._script = list(script)
         self._problems = list(problems)
         self._next = 0
         self.requests: list[Request] = []
+        self.image_limits = image_limits
 
     @property
     def name(self) -> str:
@@ -144,7 +158,15 @@ class FakeProvider:
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncGenerator[Part | Finish | Delta, None]:
-        self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools)))
+        images = tuple(
+            i
+            for n in walk
+            if isinstance(n.body, Body.Results)
+            for _, o, _ in n.body.outcomes
+            if isinstance(o, Outcome.Ok)
+            for i in o.images
+        )
+        self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools), images))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")
         scripted = self._script[self._next]

@@ -51,7 +51,7 @@ from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
 from tau._counts import tools_ceiling, tools_hash
-from tau._effects import CallRun, SampleRun, run_hooks
+from tau._effects import CallRun, SampleRun, call_gate, run_hooks
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
 from tau._hook_order import HookOrder
@@ -664,6 +664,7 @@ class Driver:
                     session,
                     partial(_open_for_tool, session, self.clock, self._hub, self._poke, node),
                 )
+                gate = call_gate(self._providers, context, self._options.model, node)
                 runs = [
                     CallRun(
                         c,
@@ -678,6 +679,7 @@ class Driver:
                         offered=_offer_of(
                             self._made_with.get(cursor), session.tree.node(node).parent
                         ),
+                        image_problem=gate,
                     )
                     for c in calls
                 ]

@@ -155,7 +155,7 @@ impl Driver {
             .collect();
         let call = open[k % open.len()].clone();
         let outcome = match k / 8 % 3 {
-            0 => Outcome::Ok(format!("{call} ok")),
+            0 => Outcome::ok(format!("{call} ok")),
             1 => Outcome::Err(format!("{call} failed")),
             _ => Outcome::Interrupted,
         };
@@ -369,7 +369,7 @@ fn body() -> impl Strategy<Value = Body> {
     let ids = prop::collection::vec(0..3u8, 0..4).prop_map(|ids| {
         Body::Results(
             ids.into_iter()
-                .map(|i| (format!("c{i}"), Outcome::Ok("x".into()), Author::Tools))
+                .map(|i| (format!("c{i}"), Outcome::ok("x"), Author::Tools))
                 .collect(),
         )
     });

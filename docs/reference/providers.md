@@ -4,7 +4,7 @@
 
 The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()["mock"]`).
 
-Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `Rendered`, `RetryProvider`, `SampleError`, `builtin_providers`, `replay_for`
+Names: `AnthropicProvider`, `Finish`, `GeminiProvider`, `ImageLimits`, `OpenAIProvider`, `Provider`, `ProviderClosed`, `Rendered`, `RetryProvider`, `SampleError`, `builtin_providers`, `replay_for`
 
 ## AnthropicProvider
 
@@ -40,6 +40,15 @@ def __init__(
     timeout: httpx.Timeout | None = None,
 ) -> None
 ```
+
+### AnthropicProvider.image_limits
+
+```python
+property image_limits: ImageLimits
+```
+
+What one image may be for this API (D30): the API's 5 MB per image, read as the
+size of the base64, and 8000 px a side.
 
 ### AnthropicProvider.name
 
@@ -133,6 +142,15 @@ def __init__(
 ) -> None
 ```
 
+### GeminiProvider.image_limits
+
+```python
+property image_limits: ImageLimits
+```
+
+What one image may be for this API (D30): the 20 MB an inline request may be, as
+base64.
+
 ### GeminiProvider.name
 
 ```python
@@ -190,6 +208,28 @@ after it costs only the meta not yet received. A prompt the API blocked (`prompt
 with a `blockReason`) ends as `End`, the reason in `finish_reason` and the block in
 `meta`.
 
+## ImageLimits
+
+```python
+@dataclass(frozen=True)
+class ImageLimits
+    max_bytes: int
+    max_side: int | None = None
+```
+
+What one image may be for a provider's API: at most `max_bytes` bytes (the file, not its
+base64) and `max_side` pixels on its longer side (`None`: no limit on the side). A provider
+declares its own as the optional attribute `image_limits`; a provider without one sends no
+images. `ValueError` for a limit that is not a positive integer.
+
+### ImageLimits.describe
+
+```python
+def describe(self) -> str
+```
+
+The limits as a phrase: `at most N bytes and S px a side`.
+
 ## OpenAIProvider
 
 ```python
@@ -228,6 +268,15 @@ def chat_template(self, base_url: str) -> str | None
 
 The chat template the llama.cpp server at `base_url` reported in `/props`, or `None`
 if no sample has asked it yet or it reported none.
+
+### OpenAIProvider.image_limits
+
+```python
+property image_limits: ImageLimits
+```
+
+What one image may be for this API (D30): OpenAI's per-image limit; llama.cpp has
+none of its own.
 
 ### OpenAIProvider.name
 
@@ -298,6 +347,11 @@ A provider **may** also have `render(walk, model, tools) -> Rendered`: the reque
 would send for the same arguments, without sending it or reading a key (D26 section 3.1).
 One that has it stamps each reply's `meta.sent` with what it sent, which is what proves a
 span on a server whose cache report cannot. `OpenAIProvider` and `GeminiProvider` have it.
+
+A provider that sends images (D30) has `image_limits`, an `ImageLimits`: what one image may be
+for its API. A model that takes images (`ModelConfig.images`) is held to them; a provider
+without the attribute sends none, and a walk holding an image fails its sample before
+`sample` is called. `sample` is handed every image with its bytes (`Image.data`).
 
 ### Provider.name
 
@@ -421,6 +475,15 @@ property name: str
 ```
 
 The inner provider's name.
+
+### RetryProvider.image_limits
+
+```python
+property image_limits: ImageLimits | None
+```
+
+The inner provider's `image_limits` (D30), or `None` when it has none: a wrapper
+sends what the provider it wraps sends.
 
 ### RetryProvider.check
 

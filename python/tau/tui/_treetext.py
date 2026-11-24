@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from tau._core import Body, Node, Outcome, Part
 from tau._counts import Count, show
 from tau._events import CursorView
+from tau._images import shown
 from tau.tui._transcript import author_name, config_line
 from tau.tui._treeplan import TreeRow
 
@@ -85,8 +86,8 @@ def full_text(node: Node) -> str:
 
 def _outcome(outcome: Outcome) -> str:
     match outcome:
-        case Outcome.Ok(value=value):
-            return value
+        case Outcome.Ok():
+            return shown(outcome)
         case Outcome.Err(error=error):
             return f"error: {error}"
         case _:

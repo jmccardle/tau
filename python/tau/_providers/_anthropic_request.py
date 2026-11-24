@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import cast
 
-from tau._core import Node, Part
+from tau._core import Image, Node, Part
 from tau._protocols import SampleError, Tool, replay_for
 from tau._providers._walk import (
     AssistantTurn,
@@ -22,6 +22,7 @@ from tau._providers._walk import (
     UserTurn,
     call_markup,
     call_object,
+    image_base64,
     stop_note,
     turns,
 )
@@ -151,8 +152,9 @@ def conversation(
         match turn:
             case SystemTurn(text=text):
                 messages.system(text, _text)
-            case UserTurn(text=text):
-                messages.add("user", [_text(text)] if text.strip() else [])
+            case UserTurn(text=text, images=images):
+                said = [_text(text)] if text.strip() else []
+                messages.add("user", said + [_image(i) for i in images])
             case AssistantTurn():
                 messages.add("assistant", _assistant(turn))
             case ToolResults(results=results):
@@ -162,11 +164,24 @@ def conversation(
 
 
 def _tool_result(result: CallResult) -> Json:
+    """A call's result. With images (only an `Ok` has them: the API refuses an image in an
+    `is_error` result) its content is a list: the text, then an `image` block per image."""
+    content: object = result.text
+    if result.images:
+        said = [_text(result.text)] if result.text.strip() else []
+        content = said + [_image(i) for i in result.images]
     return {
         "type": "tool_result",
         "tool_use_id": _wire_id(result.id),
-        "content": result.text,
+        "content": content,
         "is_error": result.error,
+    }
+
+
+def _image(image: Image) -> Json:
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": image.mime, "data": image_base64(image)},
     }
 
 

@@ -222,6 +222,7 @@ class ModelConfig
     options: Mapping[str, object] = field(default_factory=lambda: {})
     context_window: int | None = None
     sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
+    images: bool = False
 ```
 
 A resolved model: which model to ask, where (`base_url`, optional: a provider that
@@ -232,7 +233,9 @@ positive) is the model's context size in tokens: extensions read it (D24); no pr
 does. `sections` holds, per extension name, the JSON object the model's config sets under
 that name (`models.X.usage: {"price": ...}`, D28 section 7): core carries it unread, and
 the extension reads it as its declared `model_options` (`TreeHandle.model_options`). Both
-are deep read-only copies. The driver builds it from the catalog at each sample; no node
+are deep read-only copies. `images` is whether the model takes images (D30; the model key
+`images`, default false): a tool's images and a walk holding them are refused for a model
+without it. The driver builds it from the catalog at each sample; no node
 holds it.
 
 The key itself is never a field: it is read from the environment at sample

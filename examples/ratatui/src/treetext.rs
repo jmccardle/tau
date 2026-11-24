@@ -79,7 +79,8 @@ pub fn facts(node: &Node) -> Facts {
         Body::Results(results) => results
             .iter()
             .map(|(_, outcome, _)| match outcome {
-                Outcome::Ok(text) | Outcome::Err(text) => text.chars().count(),
+                Outcome::Ok(ok) => ok.value().chars().count(),
+                Outcome::Err(text) => text.chars().count(),
                 Outcome::Interrupted => 0,
             })
             .sum(),
@@ -189,7 +190,7 @@ pub fn full_text(node: &Node) -> String {
             .iter()
             .map(|(call, outcome, _)| {
                 let shown = match outcome {
-                    Outcome::Ok(value) => value.clone(),
+                    Outcome::Ok(ok) => ok.shown(),
                     Outcome::Err(error) => format!("error: {error}"),
                     Outcome::Interrupted => "interrupted before it finished".to_owned(),
                 };

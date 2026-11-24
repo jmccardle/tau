@@ -82,7 +82,9 @@ class ModelConfig:
     does. `sections` holds, per extension name, the JSON object the model's config sets under
     that name (`models.X.usage: {"price": ...}`, D28 section 7): core carries it unread, and
     the extension reads it as its declared `model_options` (`TreeHandle.model_options`). Both
-    are deep read-only copies. The driver builds it from the catalog at each sample; no node
+    are deep read-only copies. `images` is whether the model takes images (D30; the model key
+    `images`, default false): a tool's images and a walk holding them are refused for a model
+    without it. The driver builds it from the catalog at each sample; no node
     holds it.
 
     The key itself is never a field: it is read from the environment at sample
@@ -98,6 +100,7 @@ class ModelConfig:
     options: Mapping[str, object] = field(default_factory=lambda: {})
     context_window: int | None = None
     sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
+    images: bool = False
 
     def __post_init__(self) -> None:
         _text(self.model, "model")
@@ -109,6 +112,8 @@ class ModelConfig:
             _positive(self.max_tokens, "max_tokens")
         if self.context_window is not None:
             _positive(self.context_window, "context_window")
+        if not isinstance(self.images, bool):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise ConfigError(f"config 'images' must be true or false, not {self.images!r}")
         for name, section in self.sections.items():
             if not isinstance(section, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
                 raise ConfigError(

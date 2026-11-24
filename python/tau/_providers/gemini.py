@@ -18,8 +18,9 @@ from urllib.parse import quote
 import httpx
 
 from tau._config import ConfigError, ModelConfig
-from tau._core import BadReplay, Node, Part, Replay, Stop
+from tau._core import BadReplay, Image, Node, Part, Replay, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau._images import MIB, ImageLimits
 from tau._protocols import Finish, Rendered, SampleError, Tool, replay_for
 from tau._providers._walk import (
     AssistantTurn,
@@ -30,6 +31,7 @@ from tau._providers._walk import (
     bearing,
     call_markup,
     call_object,
+    image_base64,
     stop_note,
     turns,
 )
@@ -153,7 +155,13 @@ def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> list[Json]:
         if wire_id is not None:
             function["id"] = wire_id
         parts.append({"functionResponse": function})
+    # The results' images follow the responses in the same content (D30 section 7).
+    parts += [_inline(i) for result in results.results for i in result.images]
     return parts
+
+
+def _inline(image: Image) -> Json:
+    return {"inlineData": {"mimeType": image.mime, "data": image_base64(image)}}
 
 
 def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, Messages]:
@@ -175,8 +183,9 @@ def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, Mes
             case SystemTurn(text=text):
                 if text.strip():
                     messages.system(text, lambda note: {"text": note}, node)
-            case UserTurn(text=text):
-                messages.add("user", [{"text": text}] if text.strip() else [], node)
+            case UserTurn(text=text, images=images):
+                said: list[Json] = [{"text": text}] if text.strip() else []
+                messages.add("user", said + [_inline(i) for i in images], node)
             case AssistantTurn():
                 messages.add("model", _model_parts(turn), node)
                 calls = [p for p in turn.parts if isinstance(p, Part.Call)]
@@ -553,6 +562,12 @@ class GeminiProvider:
     ) -> None:
         self._environ = os.environ if environ is None else environ
         self._connection = Connection(transport, timeout)
+
+    @property
+    def image_limits(self) -> ImageLimits:
+        """What one image may be for this API (D30): the 20 MB an inline request may be, as
+        base64."""
+        return ImageLimits(15 * MIB)
 
     @property
     def name(self) -> str:

@@ -32,12 +32,14 @@ def test_offset_and_limit_select_lines_and_say_how_to_continue(tmp_path: Path) -
 
 def test_errors_are_outcomes_the_model_can_read(tmp_path: Path) -> None:
     (tmp_path / "dir").mkdir()
-    (tmp_path / "bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+    (tmp_path / "bin").write_bytes(b"\x7fELF\x00\x00")
+    (tmp_path / "cut.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
     put((tmp_path / "one.txt"), "x\n")
     tool = ReadTool(tmp_path)
     assert "file not found: missing.txt" in err(call(tool, path="missing.txt"))
     assert "is a directory" in err(call(tool, path="dir"))
     assert "binary file" in err(call(tool, path="bin"))
+    assert "starts as an image, but it is an image/png header" in err(call(tool, path="cut.png"))
     cases: list[tuple[dict[str, object], str]] = [
         ({"path": "one.txt", "offset": 0}, "`offset` must be at least 1"),
         ({"path": "one.txt", "limit": -3}, "`limit` must be at least 1"),

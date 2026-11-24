@@ -150,7 +150,7 @@ fn apply(s: &mut Session, op: &Op) {
             let at = s.at(cur).unwrap();
             let out: Vec<_> = tau_core::tree::calls(&s.tree.node(at).unwrap().body)
                 .into_iter()
-                .map(|(id, ..)| (id.to_string(), Outcome::Ok("x".into()), Author::Tools))
+                .map(|(id, ..)| (id.to_string(), Outcome::ok("x"), Author::Tools))
                 .collect();
             if !out.is_empty() {
                 s.write(cur, Body::Results(out), vec![], Author::Tools, 0)
@@ -385,7 +385,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
                 fed_a.set(true);
                 vec![Answer::CallDone {
                     call: "a".into(),
-                    outcome: Outcome::Ok("done".into()),
+                    outcome: Outcome::ok("done"),
                     by: Author::Tools,
                 }]
             }

@@ -7,11 +7,12 @@ provider. The text markup (`call_markup`, `outcome_markup`, `stop_note`) is shar
 shows the model the same thing.
 """
 
+import base64
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from tau._core import Body, Node, Outcome, Part, Stop
+from tau._core import Body, Image, Node, Outcome, Part, Stop
 from tau._protocols import SampleError
 from tau._providers._wire import Json, has_lone_surrogate, strict_loads
 
@@ -34,9 +35,11 @@ class SystemTurn:
 @dataclass(frozen=True)
 class UserTurn:
     """A `User` node, or a `Results` node that answers no batch (the conversion that keeps the
-    walk legal, 10.5): its outcomes are in `text` as `outcome_markup` lines."""
+    walk legal, 10.5): its outcomes are in `text` as `outcome_markup` lines, and their images in
+    `images`, after the text (D30)."""
 
     text: str
+    images: tuple[Image, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,12 +58,13 @@ class AssistantTurn:
 @dataclass(frozen=True)
 class CallResult:
     """One call's outcome. `text` is what the model reads; `error` is true unless the call
-    returned a value."""
+    returned a value; `images` are those an `Ok` returned, after the text (D30)."""
 
     id: str
     tool: str
     text: str
     error: bool
+    images: tuple[Image, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,29 @@ def outcome_text(outcome: Outcome) -> str:
             return "Interrupted"
         case _:
             raise SampleError(f"an outcome this provider cannot send: {outcome}")
+
+
+def outcome_images(outcome: Outcome) -> tuple[Image, ...]:
+    """The images an `Ok` carries; none for anything else."""
+    return tuple(outcome.images) if isinstance(outcome, Outcome.Ok) else ()
+
+
+def image_base64(image: Image) -> str:
+    """An image's bytes as base64, the way every API takes them in JSON. `SampleError` for an
+    image without its bytes: the driver hands a provider a walk read with `images=True`."""
+    if image.data is None:
+        raise SampleError(
+            f"an image ({image.mime} {image.width}x{image.height}, {image.sha256}) has no bytes: "
+            "the walk was read without its images (Tree.walk(node, images=True))"
+        )
+    return base64.b64encode(image.data).decode("ascii")
+
+
+def images_caption(results: Sequence["CallResult"]) -> str:
+    """The text before images moved out of their results (a provider whose tool messages hold
+    only text): which calls they came from."""
+    ids = ", ".join(r.id for r in results if r.images)
+    return f"[images from tool results: {ids}]"
 
 
 def result_line(call_id: str, text: str) -> str:
@@ -152,11 +179,20 @@ def _results(body: Body.Results, batch: Body | None) -> Turn:
             )
         return ToolResults(
             tuple(
-                CallResult(c.id, c.tool, outcome_text(o), not isinstance(o, Outcome.Ok))
+                CallResult(
+                    c.id,
+                    c.tool,
+                    outcome_text(o),
+                    not isinstance(o, Outcome.Ok),
+                    outcome_images(o),
+                )
                 for c, (_, o, _) in zip(calls, body.outcomes, strict=True)
             )
         )
-    return UserTurn("\n".join(outcome_markup(call, o) for call, o, _ in body.outcomes))
+    return UserTurn(
+        "\n".join(outcome_markup(call, o) for call, o, _ in body.outcomes),
+        tuple(i for _, o, _ in body.outcomes for i in outcome_images(o)),
+    )
 
 
 def _base_turns(walk: Sequence[Node]) -> list[Turn]:
@@ -216,7 +252,8 @@ def turns(
             )
             out.append(replace(turn, runnable=False) if as_text else turn)
         elif isinstance(turn, ToolResults) and as_text:
-            out.append(UserTurn(_results_text(turn)))
+            images = tuple(i for r in turn.results for i in r.images)
+            out.append(UserTurn(_results_text(turn), images))
             as_text = False
         else:
             out.append(turn)

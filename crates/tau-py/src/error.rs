@@ -46,6 +46,8 @@ exceptions! {
     TooLarge: PyValueError = "A record of 4 GiB or more, which the log cannot hold; the session is closed, as after a failed save.";
     Poisoned: PyRuntimeError = "A call panicked while it held the session (that call raised PanicException); load the session again.";
     WrongAnswer: PyValueError = "An answer to no job; nothing changed.";
+    BadImage: PyValueError = "Bytes that are not a PNG, JPEG, GIF or WebP image whose size can be read.";
+    MissingImage: PyLookupError = "An image without its bytes that the session does not keep (a reference copied from another session, or a file gone from its images directory).";
     Closed: PyRuntimeError = "The session was closed.";
     TraceError: PyRuntimeError = "A trace started while one runs, stopped while none runs, or that cannot be installed.";
     CalibrationError: PyValueError = "A calibration file that is not a record this build reads, or a name that is not a record's. The file is left as it is: `tau tokens reset` removes it.";
@@ -152,6 +154,7 @@ fn store_err(e: store::Error) -> PyErr {
         store::Error::Corrupt(_) => Corrupt::new_err(e.to_string()),
         store::Error::Undecodable { .. } => Undecodable::new_err(e.to_string()),
         store::Error::Core(e) => tree_err(&e),
+        store::Error::MissingImage(_) => MissingImage::new_err(e.to_string()),
     }
 }
 

@@ -19,7 +19,7 @@ use tau_tools::read::Read as ReadTool;
 use tau_tools::write::Write as WriteTool;
 use tau_tools::{Cancel as Flag, Limits, ToolError};
 
-use crate::values::Outcome;
+use crate::values::{Image, Outcome};
 
 /// Whether a progress emitter may still attach to the interpreter. Under the stable ABI
 /// (`abi3-py312`) `PyO3` cannot ask Python whether it is finalizing, and attaching then is
@@ -36,7 +36,10 @@ pub fn stop_progress(py: Python<'_>) {
 
 fn outcome(result: Result<String, ToolError>) -> Outcome {
     match result {
-        Ok(value) => Outcome::Ok { value },
+        Ok(value) => Outcome::Ok {
+            value,
+            images: vec![],
+        },
         Err(ToolError(error)) => Outcome::Err { error },
     }
 }
@@ -88,9 +91,9 @@ pub struct Read {
 #[pymethods]
 impl Read {
     #[new]
-    fn new(cwd: PathBuf, max_output: usize) -> PyResult<Self> {
+    fn new(cwd: PathBuf, max_output: usize, max_image_bytes: u64) -> PyResult<Self> {
         Ok(Self {
-            inner: ReadTool::new(cwd, max_output).map_err(value_error)?,
+            inner: ReadTool::new(cwd, max_output, max_image_bytes).map_err(value_error)?,
         })
     }
 
@@ -109,9 +112,19 @@ impl Read {
         parameters_json(&ReadTool::parameters())
     }
 
-    /// Run the call; releases the GIL.
+    /// Run the call; releases the GIL. An image file answers `Ok` with the image (D30).
     fn run(&self, py: Python<'_>, args_raw: &str, cancel: &Cancel) -> Outcome {
-        outcome(py.detach(|| self.inner.run(args_raw, &cancel.flag)))
+        match py.detach(|| self.inner.run(args_raw, &cancel.flag)) {
+            Ok(answer) => Outcome::Ok {
+                value: answer.text,
+                images: answer
+                    .image
+                    .into_iter()
+                    .map(|inner| Image { inner })
+                    .collect(),
+            },
+            Err(ToolError(error)) => Outcome::Err { error },
+        }
     }
 }
 

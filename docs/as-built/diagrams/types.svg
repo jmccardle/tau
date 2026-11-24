@@ -36,47 +36,50 @@
 <!-- Outcome -->
 <g id="node8" class="node">
 <title>Outcome</title>
-<polygon fill="lightgray" stroke="transparent" points="678.5,-612 678.5,-628 839.5,-628 839.5,-612 678.5,-612"/>
-<text text-anchor="start" x="680.5" y="-618.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Outcome</text>
-<text text-anchor="start" x="735.5" y="-618.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, values.rs)</text>
-<text text-anchor="start" x="680.5" y="-602" font-family="Courier,monospace" font-size="10.00">Ok(String)</text>
-<text text-anchor="start" x="680.5" y="-587" font-family="Courier,monospace" font-size="10.00">Err(String)</text>
-<text text-anchor="start" x="680.5" y="-572" font-family="Courier,monospace" font-size="10.00">Interrupted</text>
-<polygon fill="none" stroke="black" points="677,-566.5 677,-629.5 840,-629.5 840,-566.5 677,-566.5"/>
+<polygon fill="lightgray" stroke="transparent" points="678.5,-635 678.5,-651 839.5,-651 839.5,-635 678.5,-635"/>
+<text text-anchor="start" x="680.5" y="-641.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Outcome</text>
+<text text-anchor="start" x="735.5" y="-641.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, values.rs)</text>
+<text text-anchor="start" x="680.5" y="-625" font-family="Courier,monospace" font-size="10.00">Ok {</text>
+<text text-anchor="start" x="680.5" y="-610" font-family="Courier,monospace" font-size="10.00">    value: String</text>
+<text text-anchor="start" x="680.5" y="-595" font-family="Courier,monospace" font-size="10.00">    images: Vec&lt;Image&gt;</text>
+<text text-anchor="start" x="680.5" y="-580" font-family="Courier,monospace" font-size="10.00">}</text>
+<text text-anchor="start" x="680.5" y="-565" font-family="Courier,monospace" font-size="10.00">Err(String)</text>
+<text text-anchor="start" x="680.5" y="-550" font-family="Courier,monospace" font-size="10.00">Interrupted</text>
+<polygon fill="none" stroke="black" points="677,-544 677,-652 840,-652 840,-544 677,-544"/>
 </g>
 <!-- Body&#45;&gt;Outcome -->
 <g id="edge2" class="edge">
 <title>Body&#45;&gt;Outcome</title>
-<path fill="none" stroke="#666666" d="M578.77,-208.58C588.24,-219.36 597.18,-230.59 605,-242 624.11,-269.88 707.26,-473.55 742.08,-559.69"/>
-<polygon fill="#666666" stroke="#666666" points="739.91,-560.86 744.8,-566.43 744.45,-559.02 739.91,-560.86"/>
+<path fill="none" stroke="#666666" d="M578.77,-208.58C588.24,-219.36 597.18,-230.59 605,-242 639.41,-292.2 701.41,-449.43 734.78,-537.21"/>
+<polygon fill="#666666" stroke="#666666" points="732.55,-538.25 737.33,-543.93 737.13,-536.51 732.55,-538.25"/>
 </g>
 <!-- Part -->
 <g id="node9" class="node">
 <title>Part</title>
-<polygon fill="lightgray" stroke="transparent" points="688.5,-366 688.5,-382 829.5,-382 829.5,-366 688.5,-366"/>
-<text text-anchor="start" x="702" y="-372.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Part</text>
-<text text-anchor="start" x="728" y="-372.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, part.rs)</text>
-<text text-anchor="start" x="690.5" y="-356" font-family="Courier,monospace" font-size="10.00">Text {</text>
-<text text-anchor="start" x="690.5" y="-341" font-family="Courier,monospace" font-size="10.00">    text: String</text>
-<text text-anchor="start" x="690.5" y="-326" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
-<text text-anchor="start" x="690.5" y="-311" font-family="Courier,monospace" font-size="10.00">}</text>
-<text text-anchor="start" x="690.5" y="-296" font-family="Courier,monospace" font-size="10.00">Thinking {</text>
-<text text-anchor="start" x="690.5" y="-281" font-family="Courier,monospace" font-size="10.00">    text: String</text>
-<text text-anchor="start" x="690.5" y="-266" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
-<text text-anchor="start" x="690.5" y="-251" font-family="Courier,monospace" font-size="10.00">}</text>
-<text text-anchor="start" x="690.5" y="-236" font-family="Courier,monospace" font-size="10.00">Call {</text>
-<text text-anchor="start" x="690.5" y="-221" font-family="Courier,monospace" font-size="10.00">    id: String</text>
-<text text-anchor="start" x="690.5" y="-206" font-family="Courier,monospace" font-size="10.00">    tool: String</text>
-<text text-anchor="start" x="690.5" y="-191" font-family="Courier,monospace" font-size="10.00">    args_raw: String</text>
-<text text-anchor="start" x="690.5" y="-176" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
-<text text-anchor="start" x="690.5" y="-161" font-family="Courier,monospace" font-size="10.00">}</text>
-<polygon fill="none" stroke="black" points="687,-155 687,-383 830,-383 830,-155 687,-155"/>
+<polygon fill="lightgray" stroke="transparent" points="688.5,-355 688.5,-371 829.5,-371 829.5,-355 688.5,-355"/>
+<text text-anchor="start" x="702" y="-361.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Part</text>
+<text text-anchor="start" x="728" y="-361.2" font-family="Helvetica,sans-Serif" font-size="11.00"> (enum, part.rs)</text>
+<text text-anchor="start" x="690.5" y="-345" font-family="Courier,monospace" font-size="10.00">Text {</text>
+<text text-anchor="start" x="690.5" y="-330" font-family="Courier,monospace" font-size="10.00">    text: String</text>
+<text text-anchor="start" x="690.5" y="-315" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="690.5" y="-300" font-family="Courier,monospace" font-size="10.00">}</text>
+<text text-anchor="start" x="690.5" y="-285" font-family="Courier,monospace" font-size="10.00">Thinking {</text>
+<text text-anchor="start" x="690.5" y="-270" font-family="Courier,monospace" font-size="10.00">    text: String</text>
+<text text-anchor="start" x="690.5" y="-255" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="690.5" y="-240" font-family="Courier,monospace" font-size="10.00">}</text>
+<text text-anchor="start" x="690.5" y="-225" font-family="Courier,monospace" font-size="10.00">Call {</text>
+<text text-anchor="start" x="690.5" y="-210" font-family="Courier,monospace" font-size="10.00">    id: String</text>
+<text text-anchor="start" x="690.5" y="-195" font-family="Courier,monospace" font-size="10.00">    tool: String</text>
+<text text-anchor="start" x="690.5" y="-180" font-family="Courier,monospace" font-size="10.00">    args_raw: String</text>
+<text text-anchor="start" x="690.5" y="-165" font-family="Courier,monospace" font-size="10.00">    replay: Option&lt;Replay&gt;</text>
+<text text-anchor="start" x="690.5" y="-150" font-family="Courier,monospace" font-size="10.00">}</text>
+<polygon fill="none" stroke="black" points="687,-144 687,-372 830,-372 830,-144 687,-144"/>
 </g>
 <!-- Body&#45;&gt;Part -->
 <g id="edge1" class="edge">
 <title>Body&#45;&gt;Part</title>
-<path fill="none" stroke="#666666" d="M578.76,-171.28C612.47,-189.71 649.19,-209.78 680.53,-226.92"/>
-<polygon fill="#666666" stroke="#666666" points="679.4,-229.09 686.72,-230.3 681.75,-224.79 679.4,-229.09"/>
+<path fill="none" stroke="#666666" d="M578.76,-167.21C612.33,-184.26 648.89,-202.83 680.14,-218.7"/>
+<polygon fill="#666666" stroke="#666666" points="679.37,-221.06 686.72,-222.05 681.59,-216.69 679.37,-221.06"/>
 </g>
 <!-- Node -->
 <g id="node2" class="node">
@@ -166,8 +169,8 @@
 <!-- Step&#45;&gt;Outcome -->
 <g id="edge6" class="edge">
 <title>Step&#45;&gt;Outcome</title>
-<path fill="none" stroke="#666666" d="M587.73,-741.22C593.58,-736.43 599.36,-731.66 605,-727 642.48,-695.99 684.67,-660.24 715.16,-634.24"/>
-<polygon fill="#666666" stroke="#666666" points="716.97,-635.91 720.71,-629.51 713.79,-632.19 716.97,-635.91"/>
+<path fill="none" stroke="#666666" d="M587.73,-741.22C593.58,-736.43 599.36,-731.66 605,-727 632.44,-704.3 662.4,-679.05 688.45,-656.95"/>
+<polygon fill="#666666" stroke="#666666" points="690.2,-658.69 693.95,-652.29 687.03,-654.95 690.2,-658.69"/>
 </g>
 <!-- Job -->
 <g id="node6" class="node">
@@ -221,8 +224,8 @@
 <!-- Answer&#45;&gt;Part -->
 <g id="edge7" class="edge">
 <title>Answer&#45;&gt;Part</title>
-<path fill="none" stroke="#666666" d="M544.27,-533.08C564.5,-513.4 586.17,-491.34 605,-470 631.53,-439.93 658.59,-405.66 682.41,-374.04"/>
-<polygon fill="#666666" stroke="#666666" points="684.57,-375.24 686.82,-368.17 680.65,-372.3 684.57,-375.24"/>
+<path fill="none" stroke="#666666" d="M544.27,-533.71C564.61,-513.96 586.34,-491.7 605,-470 631.97,-438.64 659.08,-402.71 682.81,-369.45"/>
+<polygon fill="#666666" stroke="#666666" points="684.84,-370.83 686.89,-363.71 680.84,-367.99 684.84,-370.83"/>
 </g>
 </g>
 </svg>

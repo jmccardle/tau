@@ -20,6 +20,7 @@ import httpx
 from tau._config import ConfigError, ModelConfig
 from tau._core import BadReplay, Node, Part, Replay, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau._images import MIB, ImageLimits
 from tau._protocols import Finish, SampleError, Tool
 from tau._providers._anthropic_request import breakpoints, conversation, tools_array
 from tau._providers._wire import (
@@ -459,6 +460,12 @@ class AnthropicProvider:
             timeout,
             meta_headers={"request-id": "request_id"},  # what support asks for
         )
+
+    @property
+    def image_limits(self) -> ImageLimits:
+        """What one image may be for this API (D30): the API's 5 MB per image, read as the
+        size of the base64, and 8000 px a side."""
+        return ImageLimits(5 * MIB * 3 // 4, 8000)
 
     @property
     def name(self) -> str:

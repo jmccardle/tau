@@ -224,7 +224,9 @@ async def test_an_exception_and_a_non_str_return_are_errors(tmp_path: Path) -> N
     assert await called(tmp_path, explode, '{"why": "gone"}') == Outcome.Err(
         "FileNotFoundError: gone"
     )
-    assert await called(tmp_path, count, '{"n": 3}') == Outcome.Err("count returned int, not str")
+    assert await called(tmp_path, count, '{"n": 3}') == Outcome.Err(
+        "count returned int, not str, Image or a list of them"
+    )
 
 
 # Through the Harness
