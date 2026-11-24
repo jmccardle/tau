@@ -632,21 +632,33 @@ class CallRun:
 
 def call_gate(
     providers: Mapping[str, Provider],
-    catalog: ModelCatalog,
+    context: Context,
     model_at: Callable[[int], str],
     node: int,
 ) -> Callable[[Sequence[Image]], str | None]:
-    """The image rule for the calls of the batch at `node`: the model in force there. Resolved
-    when a call first answers with images, so a batch without any reads no config."""
+    """The image rule for the calls of the batch at `node`: the model in force there, from
+    `context`'s catalog. Resolved when a call first answers with images, so a batch without any
+    reads no config. An image without its bytes (taken from a node loaded from disk) is checked
+    with the bytes the session keeps for it."""
 
     def problem(images: Sequence[Image]) -> str | None:
         if not images:
             return None
         name = model_at(node)
         try:
-            model = catalog.resolve(name)
+            model = context.catalog.resolve(name)
         except ConfigError as e:
             return f"the model at this batch cannot be read: {e}"
-        return images_problem(images, name, model, providers.get(model.provider))
+        try:
+            whole = [_with_bytes(context.session, i) for i in images]
+        except MissingImage as e:
+            return f"an image is not one this session holds: {e}"
+        return images_problem(whole, name, model, providers.get(model.provider))
 
     return problem
+
+
+def _with_bytes(session: Session | None, image: Image) -> Image:
+    if image.data is not None or session is None:
+        return image
+    return session.tree.image(image)

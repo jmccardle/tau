@@ -148,7 +148,7 @@ fn fill_images_gives_a_copy_the_bytes_its_source_keeps() {
 }
 
 #[test]
-fn a_v1_log_written_by_the_v1_store_opens_and_is_marked_v2_by_its_lease_holder() {
+fn a_v1_log_written_by_the_v1_store_opens_and_is_marked_v2_at_its_first_write() {
     let d = tempfile::tempdir().unwrap();
     copy_dir(&fixture(), d.path());
     assert_eq!(header_version(d.path()), 1);
@@ -156,8 +156,15 @@ fn a_v1_log_written_by_the_v1_store_opens_and_is_marked_v2_by_its_lease_holder()
     let read = Store::read(d.path()).unwrap();
     assert_eq!(header_version(d.path()), 1, "a read copy writes nothing");
 
+    drop(Store::open(d.path()).unwrap());
+    assert_eq!(
+        header_version(d.path()),
+        1,
+        "opened and closed, nothing written"
+    );
+
     let (mut store, mut s) = Store::open(d.path()).unwrap();
-    assert_eq!(header_version(d.path()), VERSION);
+    assert_eq!(header_version(d.path()), 1);
     assert_eq!(s.tree.node_count(), read.tree.node_count());
     let c = s.label("main").unwrap();
     let results = s
@@ -187,9 +194,97 @@ fn a_v1_log_written_by_the_v1_store_opens_and_is_marked_v2_by_its_lease_holder()
     .unwrap();
     s.sync();
     store = store.save(&mut s).unwrap();
+    assert_eq!(
+        header_version(d.path()),
+        VERSION,
+        "marked before its first append"
+    );
     drop(store);
     let (_store, again) = Store::open(d.path()).unwrap();
     assert_eq!(again.tree.node_count(), read.tree.node_count() + 1);
+}
+
+/// `payload` as one record on disk: its length, the CRC-32 of length and payload, the payload.
+fn record(payload: &str) -> Vec<u8> {
+    let len = u32::try_from(payload.len()).unwrap().to_le_bytes();
+    let mut h = crc32fast::Hasher::new();
+    h.update(&len);
+    h.update(payload.as_bytes());
+    [&len[..], &h.finalize().to_le_bytes(), payload.as_bytes()].concat()
+}
+
+fn append_records(dir: &Path, payloads: &[&str]) {
+    let mut log = fs::read(dir.join("log")).unwrap();
+    for p in payloads {
+        log.extend(record(p));
+    }
+    fs::write(dir.join("log"), log).unwrap();
+}
+
+#[test]
+fn a_v1_log_that_does_not_load_stays_v1() {
+    let d = tempfile::tempdir().unwrap();
+    copy_dir(&fixture(), d.path());
+    // A node out of sequence: the bytes decode, the replay refuses them.
+    let node = r#"{"Write":{"node":{"id":99,"parent":0,"time":1,"by":"Core","body":{"User":"x"},"delivers":[]},"mv":null}}"#;
+    append_records(d.path(), &[node, r#"{"Sync":{"pad":null}}"#]);
+    assert!(matches!(Store::open(d.path()), Err(Error::Core(_))));
+    assert_eq!(
+        header_version(d.path()),
+        1,
+        "0.16 can still open what it wrote"
+    );
+}
+
+fn results_naming(sha256: &str) -> String {
+    format!(
+        r#"{{"Write":{{"node":{{"id":6,"parent":5,"time":1,"by":"Core","body":{{"Results":[["call_1",{{"Ok":{{"value":"x","images":[{{"mime":"image/png","sha256":"{sha256}","width":1,"height":1}}]}}}},"Tools"]]}},"delivers":[]}},"mv":null}}}}"#
+    )
+}
+
+#[test]
+fn a_log_naming_an_image_by_anything_but_64_lowercase_hex_does_not_decode() {
+    for bad in [
+        "../../../etc/passwd".to_owned(),
+        "A".repeat(64),
+        "a".repeat(63),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        copy_dir(&fixture(), d.path());
+        append_records(
+            d.path(),
+            &[&results_naming(&bad), r#"{"Sync":{"pad":null}}"#],
+        );
+        let err = Store::open(d.path()).unwrap_err();
+        assert!(matches!(err, Error::Undecodable { .. }), "{bad}: {err}");
+        assert!(err.to_string().contains("64 lowercase hex digits"), "{err}");
+        assert!(!has_image(d.path(), &bad), "never a path outside images/");
+    }
+    assert!(!has_image(Path::new("/"), "../etc/passwd"));
+}
+
+#[test]
+fn a_damaged_image_file_is_replaced_when_its_bytes_come_again() {
+    let d = tempfile::tempdir().unwrap();
+    let (mut s, store, c) = at_a_batch(d.path());
+    let img = Image::from_bytes(png(6, 6, 7)).unwrap();
+    s.write(c, results(vec![img.clone()]), vec![], Author::Core, 2)
+        .unwrap();
+    s.sync();
+    let store = store.save(&mut s).unwrap();
+    let kept = d.path().join("images").join(&img.sha256);
+    fs::write(&kept, b"damaged").unwrap();
+    assert!(read_image(d.path(), &img.reference()).is_err());
+
+    // The same image again, from a tool: its bytes repair the file.
+    s.write(c, results(vec![img.clone()]), vec![], Author::Core, 3)
+        .unwrap();
+    s.sync();
+    drop(store.save(&mut s).unwrap());
+    assert_eq!(
+        &*read_image(d.path(), &img.reference()).unwrap(),
+        &png(6, 6, 7)[..]
+    );
 }
 
 #[test]

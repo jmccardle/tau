@@ -664,7 +664,7 @@ class Driver:
                     session,
                     partial(_open_for_tool, session, self.clock, self._hub, self._poke, node),
                 )
-                gate = call_gate(self._providers, self._catalog, self._options.model, node)
+                gate = call_gate(self._providers, context, self._options.model, node)
                 runs = [
                     CallRun(
                         c,

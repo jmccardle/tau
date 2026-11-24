@@ -9,7 +9,7 @@ mod replay;
 mod sha256;
 mod values;
 
-pub use image::{BadImage, Image, is_image, sha256_hex, sniff};
+pub use image::{BadImage, Image, is_image, is_sha256_hex, sha256_hex, sniff};
 pub use part::{Part, Replay, ReplayError};
 pub use replay::{load, reconcile};
 pub use values::{

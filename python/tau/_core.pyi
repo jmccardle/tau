@@ -1018,6 +1018,11 @@ class Tree:
         bytes, read from the session's image directory where a node loaded from disk has none
         (what a sample sends); `MissingImage` if one is gone.
         """
+    def image(self, image: Image) -> Image:
+        """`image` with its bytes: as it is when it has them, else read from the session (its image
+        directory, or, in memory, a node that holds them). `MissingImage` if the session has no
+        such image. What a tool's image taken from a node loaded from disk is checked with.
+        """
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
     def __len__(self) -> int: ...

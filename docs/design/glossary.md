@@ -163,7 +163,9 @@ and hashes the bytes; bytes that are none of the four formats raise **BadImage**
 leave `data` out; `Image.from_path(path)` reads a file at once. Core carries the bytes with the
 value but never serializes them. The **image
 directory** is `images/` in a session's directory: one file per image, named by its `sha256`,
-written by `Store::save` before the record that first names it. A node read back from disk has
+written by `Store::save` before the record that first names it, and replaced when a write carries the bytes of a
+file that no longer hashes to its name. A decode refuses a `sha256` that is not 64 lowercase hex
+digits. `Tree.image(image)` gives one image its bytes from the session. A node read back from disk has
 images without `data`; `Tree.walk(node, images=True)` reads them (the driver samples with it).
 **MissingImage** is an image without bytes that the session does not have: refused at the write
 that names it, or raised by `walk(images=True)` when the file is gone.
@@ -3689,7 +3691,8 @@ links it into place; `Store::open(dir)` takes the lease and loads;
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
 `Leased`, `Exists`, `NotASession`, `Version` (a file outside the versions this build reads:
 `VERSION` is 2 since D30, and 1 is read too; the lease holder rewrites a v1 log's header to 2
-before it writes), `MissingImage` (an image a record names that is neither carried nor in the
+just before its first append, so a v1 session opened without a write, or one that fails to load,
+stays v1), `MissingImage` (an image a record names that is neither carried nor in the
 image directory), `Corrupt` (a damaged
 scratchpad file), `Undecodable` (an intact log record that does not decode),
 `Core` (the log does not replay), `TooLarge` (a record of 4 GiB or more, refused

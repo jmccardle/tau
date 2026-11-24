@@ -599,8 +599,8 @@
           "type": "string"
         },
         "sha256": {
-          "description": "Lowercase hex of the SHA-256 of the bytes: the image's identity.",
-          "type": "string"
+          "$ref": "#/$defs/Sha256Text",
+          "description": "Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of\n`0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name."
         },
         "width": {
           "description": "Width in pixels.",
@@ -1103,6 +1103,11 @@
         "seconds",
         "reason"
       ]
+    },
+    "Sha256Text": {
+      "description": "The schema of `Image::sha256`: 64 lowercase hex digits.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
     },
     "Stop": {
       "enum": [

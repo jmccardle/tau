@@ -30,7 +30,9 @@ edge's input), an MCP client and resizing are later slices.
 
 `tau.Image` (core `tree::Image`) is one image: `mime` (`image/png`, `image/jpeg`, `image/gif`,
 `image/webp`), `sha256` (lowercase hex of the bytes: its identity), `width` and `height` in pixels,
-and `data`, the bytes, when this process has them (below). `Image(data)` sniffs the format and size
+and `data`, the bytes, when this process has them (below). A decode (the log, the wire) refuses a
+`sha256` that is not exactly 64 lowercase hex digits, so the name is safe as a file name; the
+store refuses such a name too. `Image(data)` sniffs the format and size
 from the bytes' header and hashes them; bytes that are not one of the four formats raise
 `BadImage` (a `ValueError`). Two images are equal when their `mime`, `sha256`, `width` and `height`
 are: `data` is not part of the value.
@@ -54,7 +56,10 @@ rewrites nothing.
   lacks. A node may also carry an image without its bytes (a compaction or prune copy of a node read
   back from disk); the write is refused with `MissingImage` when the session has no such image, so a
   bad reference never reaches the log.
-- **Reading.** A loaded node's images carry no bytes. `Tree.walk(node, images=True)` reads them
+- **Repair.** A kept file whose bytes no longer hash to its name is replaced the next time a
+  write carries those bytes; a read of it is `MissingImage` meanwhile.
+- **Reading.** A loaded node's images carry no bytes. `Tree.image(image)` gives one image its
+  bytes (a tool may return an image taken from such a node). `Tree.walk(node, images=True)` reads them
   from the session's directory (`MissingImage` if a file is gone); the driver samples with it, so a
   provider is always handed images with `data`. A session in memory keeps the bytes in its nodes;
   a read copy (`Session.read`) reads them from the directory it was read from; a fork copies the
@@ -66,9 +71,11 @@ rewrites nothing.
 
 `VERSION` goes to 2, and the reader takes 1 and 2 (**provisional**, #563 D-F). A v1 log opens and
 replays unchanged (its records are a subset of v2's: `Ok` is still a string when it has no
-images). The store that takes a v1 log's lease rewrites its header to 2 before it writes, so a 0.16
-build then refuses the session by name (`session file version 2; this build reads 1`) rather than
-failing on the first image record. A read copy writes nothing and leaves the header as it is.
+images). The store holding a v1 log's lease rewrites its header to 2 just before its first append
+to the log, so a 0.16 build then refuses the session by name (`session file version 2; this build
+reads 1`) rather than failing on the first image record. A v1 session that is opened and closed
+without a write, or that fails to load, stays v1, so 0.16 still opens it. A read copy writes
+nothing.
 
 ### 5. `read`, the reference example (fixed)
 
@@ -111,6 +118,11 @@ A model takes images only if its config says `images: true` (`ModelConfig.images
 | Anthropic | 3.75 MiB | 8000 px | 5 MB per image, read as the base64 size (conservative) |
 | Gemini | 15 MiB | none | 20 MB inline request, as base64 |
 
+The limits are per image. Two per-request limits are not checked here and fail visibly at the API
+(its refusal fails the sample): Gemini's 20 MB is the whole inline request, so several images
+under 15 MiB each can exceed it; Anthropic takes at most 2000 px a side when a request holds more
+than 20 images. A per-request check is a later change.
+
 Two checks, one rule (`tau._images`), and neither is silent:
 
 - **(a) At the call.** When a tool answers `Ok` with images (after `pre_result`, so a hook's
@@ -140,7 +152,9 @@ Two checks, one rule (`tau._images`), and neither is silent:
   per image (`source: {type: base64, media_type, data}`). Images come only from `Ok`, so never in an
   `is_error` result.
 - **Gemini:** the batch's `functionResponse` parts, then one `inlineData {mimeType, data}` part per
-  image, in the same `user` content.
+  image, in the same `user` content. **Unverified live** (no key was used): Gemini 3 documents
+  images inside `functionResponse.parts` for multimodal function responses; whether this placement
+  is taken, or that one is better, is to be checked against the API before relying on it.
 
 Wherever bytes travel as text they are base64 (fixed); binary transfer is not offered.
 

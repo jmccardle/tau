@@ -47,13 +47,48 @@ enum OutcomeRepr {
 }
 
 /// `Outcome::Ok`'s two encodings: the text alone, or the text with its images.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(untagged)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(inline))]
 enum OkRepr {
     Text(String),
     WithImages { value: String, images: Vec<Image> },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithImages {
+    value: String,
+    images: Vec<Image>,
+}
+
+/// By the JSON's shape, so a bad image says why (an untagged enum would only say no variant
+/// matched).
+impl<'de> Deserialize<'de> for OkRepr {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Shape;
+        impl<'de> serde::de::Visitor<'de> for Shape {
+            type Value = OkRepr;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string, or an object with `value` and `images`")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<OkRepr, E> {
+                Ok(OkRepr::Text(v.to_owned()))
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<OkRepr, E> {
+                Ok(OkRepr::Text(v))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<OkRepr, A::Error> {
+                let w = WithImages::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(OkRepr::WithImages {
+                    value: w.value,
+                    images: w.images,
+                })
+            }
+        }
+        d.deserialize_any(Shape)
+    }
 }
 
 impl From<OutcomeRepr> for Outcome {

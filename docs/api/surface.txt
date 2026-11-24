@@ -493,6 +493,7 @@ class Tree
     def __len__(self) -> int
     def children(self, node: int) -> list[int]
     def config_at(self, node: int) -> Config
+    def image(self, image: Image) -> Image
     def lca(self, a: int, b: int) -> int | None
     def node(self, id: int) -> Node
     def walk(self, node: int, *, images: bool = False) -> list[Node]

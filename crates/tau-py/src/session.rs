@@ -27,7 +27,7 @@ impl Inner {
     /// Make sure the session can send `image`: it carries its bytes, or the session keeps them
     /// (in its image directory, or, in memory, in a node that has them, whose bytes it then
     /// takes). `MissingImage` otherwise, before anything is written.
-    fn know(&self, image: &mut tree::Image) -> Result<(), Failure> {
+    pub(crate) fn know(&self, image: &mut tree::Image) -> Result<(), Failure> {
         if image.data.is_some() {
             return Ok(());
         }

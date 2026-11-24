@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct Image {
     /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
     pub mime: String,
-    /// Lowercase hex of the SHA-256 of the bytes: the image's identity.
+    /// Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of
+    /// `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name.
+    #[serde(deserialize_with = "sha256_field")]
+    #[cfg_attr(feature = "schema", schemars(with = "Sha256Text"))]
     pub sha256: String,
     /// Width in pixels.
     pub width: u32,
@@ -27,6 +30,30 @@ pub struct Image {
     #[cfg_attr(feature = "schema", schemars(skip))]
     pub data: Option<Arc<[u8]>>,
 }
+
+/// Whether `text` is a SHA-256 as an image names it: exactly 64 lowercase hex digits.
+#[must_use]
+pub fn is_sha256_hex(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn sha256_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let text = String::deserialize(d)?;
+    if is_sha256_hex(&text) {
+        Ok(text)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "an image's sha256 is 64 lowercase hex digits, not {text:?}"
+        )))
+    }
+}
+
+/// The schema of `Image::sha256`: 64 lowercase hex digits.
+#[cfg(feature = "schema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(dead_code, reason = "a schema only")]
+struct Sha256Text(#[schemars(regex(pattern = r"^[0-9a-f]{64}$"))] String);
 
 /// Bytes that are not a PNG, JPEG, GIF or WebP image whose size can be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,5 +363,27 @@ mod tests {
             panic!()
         };
         assert!(images[0].data.is_none());
+    }
+
+    #[test]
+    fn a_decoded_sha256_is_64_lowercase_hex_or_refused() {
+        let good = format!(
+            r#"{{"mime":"image/png","sha256":"{}","width":1,"height":1}}"#,
+            "a".repeat(64)
+        );
+        assert!(serde_json::from_str::<Image>(&good).is_ok());
+        for bad in [
+            "../../../etc/passwd",
+            &"A".repeat(64),
+            &"a".repeat(63),
+            &"a".repeat(65),
+            &"g".repeat(64),
+        ] {
+            let text = format!(r#"{{"mime":"image/png","sha256":"{bad}","width":1,"height":1}}"#);
+            let err = serde_json::from_str::<Image>(&text)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("64 lowercase hex digits"), "{bad}: {err}");
+        }
     }
 }

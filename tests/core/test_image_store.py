@@ -141,14 +141,17 @@ def _version(directory: Path) -> int:
     return int.from_bytes((directory / "log").read_bytes()[8:12], "little")
 
 
-def test_a_v1_session_opens_on_this_build_and_its_holder_marks_it_v2(tmp_path: Path) -> None:
+def test_a_v1_session_opens_on_this_build_and_is_marked_v2_at_its_first_write(
+    tmp_path: Path,
+) -> None:
     """`tests/fixtures/sessions/v1` was written by the v1 store (tau 0.16, ea0a3dcd)."""
     directory = tmp_path / "v1"
     shutil.copytree(V1, directory)
     copy = Session.read(directory)
     assert _version(directory) == 1, "a read copy writes nothing"
+    Session.load(directory).close()
+    assert _version(directory) == 1, "opened and closed: nothing written, still 0.16's"
     session = Session.load(directory)
-    assert _version(directory) == 2
     walk = session.tree.walk(session.cursor(session.label("main")).at)
     assert [type(n.body).__name__ for n in walk] == [
         "Config",
@@ -161,6 +164,7 @@ def test_a_v1_session_opens_on_this_build_and_its_holder_marks_it_v2(tmp_path: P
     assert walk == copy.tree.walk(copy.cursor(0).at)
     assert walk[4].body == Body.Results([("call_1", Outcome.Ok("hello\n"), Author.Tools())])
     batch(session, [Image(PICTURE)])  # and it goes on, now with an image
+    assert _version(directory) == 2
     session.close()
 
 
@@ -172,3 +176,17 @@ def test_a_newer_version_is_refused_by_name(tmp_path: Path) -> None:
     (directory / "log").write_bytes(bytes(log))
     with pytest.raises(Version, match="version 9; this build reads 1 to 2"):
         Session.load(directory)
+
+
+def test_tree_image_gives_a_loaded_image_its_bytes(tmp_path: Path) -> None:
+    session = Session.create(Config("{}"), "sys", 0, tmp_path / "s")
+    node = batch(session, [Image(PICTURE)])
+    session.close()
+    loaded = Session.load(tmp_path / "s")
+    reference = images_of(loaded.tree.node(node))[0]
+    assert reference.data is None
+    assert loaded.tree.image(reference).data == PICTURE
+    other = Session.create(Config("{}"), "sys", 0)
+    with pytest.raises(MissingImage):
+        other.tree.image(reference)
+    loaded.close()

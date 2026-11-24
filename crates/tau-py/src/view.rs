@@ -10,7 +10,7 @@ use tau_core::tree;
 
 use crate::error::Failure;
 use crate::session::Shared;
-use crate::values::{Config, Item, Move, Next, Node};
+use crate::values::{Config, Image, Item, Move, Next, Node};
 
 /// The session's nodes: `Session.tree`. It shares the session's lock, so a
 /// read is as current as the call that made it, and a closed session raises
@@ -50,6 +50,33 @@ impl Tree {
                 .map_err(|e| PyErr::from(Failure::from(e)))?;
         }
         Ok(nodes.into_iter().map(Into::into).collect())
+    }
+
+    /// `image` with its bytes: as it is when it has them, else read from the session (its image
+    /// directory, or, in memory, a node that holds them). `MissingImage` if the session has no
+    /// such image. What a tool's image taken from a node loaded from disk is checked with.
+    fn image(&self, py: Python<'_>, image: Image) -> PyResult<Image> {
+        if image.inner.data.is_some() {
+            return Ok(image);
+        }
+        let mut inner = image.inner;
+        let dir = self
+            .shared
+            .read(py, tracing::info_span!("py.tree.image"), |i| {
+                i.know(&mut inner)?;
+                Ok(i.images.clone())
+            })?;
+        if inner.data.is_none() {
+            // `know` found the file in the image directory: read it outside the lock.
+            let dir = dir.ok_or_else(|| {
+                Failure::from(tau_store::Error::MissingImage(inner.sha256.clone()))
+            })?;
+            inner.data = Some(
+                py.detach(|| tau_store::read_image(&dir, &inner))
+                    .map_err(|e| PyErr::from(Failure::from(e)))?,
+            );
+        }
+        Ok(Image { inner })
     }
 
     /// The children of `node`, in append order.

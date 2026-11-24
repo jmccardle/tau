@@ -4,6 +4,7 @@ told so (at the call) or fails early (at the send). Never a silent drop."""
 
 import json
 from pathlib import Path
+from typing import ClassVar
 
 from fakes import FAKE_MODEL, FAKE_PROVIDER, FakeProvider, Reply, fake_catalog
 from harness import Harness, scenario
@@ -386,4 +387,56 @@ async def test_compaction_shows_the_summarizer_the_images_and_copies_the_tails(
     await h.send("and now")
     await h.settle()
     assert [i.width for i in provider.requests[-1].images] == [20]
+    await h.close()
+
+
+class _Again:
+    """A tool object that answers with an image it was handed: one taken from a node loaded from
+    disk, so it carries no bytes."""
+
+    name = "again"
+    description = "Show the earlier picture again."
+    parameters: ClassVar[dict[str, object]] = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.image: Image | None = None
+
+    async def call(self, args_raw: str) -> Outcome:
+        assert self.image is not None
+        return Outcome.Ok("the earlier picture", [self.image])
+
+
+@scenario
+async def test_a_tool_may_return_an_image_from_an_earlier_node_without_its_bytes(
+    tmp_path: Path,
+) -> None:
+    """The session holds the bytes, so the image is checked and sent with them: no false
+    "has no bytes" refusal."""
+    (tmp_path / "shot.png").write_bytes(PICTURE)
+    first = FakeProvider([_read("shot.png"), Reply([Part.Text("seen")])], image_limits=LIMITS)
+    again = _Again()
+    h = await Harness.create(
+        tmp_path,
+        provider=first,
+        catalog=fake_catalog(images=True),
+        tools=[ReadTool(tmp_path), again],
+    )
+    await h.send("look")
+    await h.settle()
+    await h.close()
+
+    second = FakeProvider(
+        [Reply([Part.Call("c2", "again", "{}")], Stop.Tools), Reply([Part.Text("again")])],
+        image_limits=LIMITS,
+    )
+    h = await Harness.load(
+        tmp_path, provider=second, catalog=fake_catalog(images=True), tools=[again]
+    )
+    loaded = _first(next(n for n in h.nodes() if isinstance(n.body, Body.Results)))
+    assert loaded.images[0].data is None
+    again.image = loaded.images[0]
+    await h.send("show it again")
+    await h.settle()
+    assert _outcome(h) == Outcome.Ok("the earlier picture", [Image(PICTURE)])
+    assert [i.data for i in second.requests[-1].images] == [PICTURE, PICTURE]
     await h.close()

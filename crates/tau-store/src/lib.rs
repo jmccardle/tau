@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tau_core::tree::{Body, Image, Record, Scratchpad, Session, sha256_hex};
+use tau_core::tree::{Body, Image, Record, Scratchpad, Session, is_sha256_hex, sha256_hex};
 
 mod lease;
 
@@ -128,6 +128,9 @@ pub struct Store {
     /// Bytes cut from the log's tail by `open`: a torn or unsynced tail. Kept
     /// in the session directory as `dropped-<offset>`.
     pub dropped: u64,
+    /// The log header's version. An older one (1) is rewritten to `VERSION` just before this
+    /// store first appends to the log (D30), never on open alone.
+    version: u32,
 }
 
 #[cfg(windows)]
@@ -162,6 +165,7 @@ impl Store {
             log,
             pending: header(LOG_MAGIC),
             dropped: 0,
+            version: VERSION,
         };
         session.sync();
         let store = store.save(session)?;
@@ -197,9 +201,6 @@ impl Store {
         }
         let end = HEADER + kept;
         cut_tail(dir, &log, &bytes, end)?;
-        if version < VERSION {
-            upgrade_header(&log, &path)?;
-        }
         let pad = read_pad(&dir.join(PAD))?;
         let session = tau_core::tree::load(records, pad).map_err(Error::Core)?;
         let store = Self {
@@ -207,6 +208,7 @@ impl Store {
             log,
             pending: vec![],
             dropped: (bytes.len() - end) as u64,
+            version,
         };
         Ok((store, session))
     }
@@ -323,6 +325,12 @@ impl Store {
         let Some((end, pad)) = through else {
             return Ok(self);
         };
+        if self.version < VERSION {
+            // The first append by this build: from here the log may hold what an older one
+            // cannot decode, so it is marked first and that build refuses it by name.
+            upgrade_header(&self.log, &self.dir.join(LOG))?;
+            self.version = VERSION;
+        }
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
             // Windows: the log is open for writing, not appending (see `open_log`).
@@ -347,18 +355,27 @@ impl Store {
         &self.dir
     }
 
-    /// Write each image of `body` that carries bytes and is not yet kept; refuse one that carries
-    /// none and is not kept. Whether a file was written (its directory then needs a sync).
+    /// Write each image of `body` that carries bytes and is not yet kept, or is kept damaged (a
+    /// file whose bytes do not hash to its name is replaced); refuse one that carries none and
+    /// is not kept, and bytes that do not hash to their name. Whether a file was written (its
+    /// directory then needs a sync).
     fn keep_images(&self, body: &Body) -> Result<bool, Error> {
         let mut wrote = false;
         for image in body.images() {
-            let path = image_path(&self.dir, &image.sha256);
-            if path.exists() {
+            let missing = || Error::MissingImage(image.sha256.clone());
+            let path = image_path(&self.dir, &image.sha256).ok_or_else(missing)?;
+            let Some(data) = &image.data else {
+                if path.is_file() {
+                    continue;
+                }
+                return Err(missing());
+            };
+            if sha256_hex(data) != image.sha256 {
+                return Err(missing());
+            }
+            if fs::read(&path).is_ok_and(|kept| sha256_hex(&kept) == image.sha256) {
                 continue;
             }
-            let Some(data) = &image.data else {
-                return Err(Error::MissingImage(image.sha256.clone()));
-            };
             let _span = tracing::info_span!("store.write_image", bytes = data.len()).entered();
             let dir = self.dir.join(IMAGES);
             fs::create_dir_all(&dir)?;
@@ -403,15 +420,16 @@ fn cut_tail(dir: &Path, log: &File, bytes: &[u8], end: usize) -> Result<(), Erro
     Ok(())
 }
 
-/// Where the session in `dir` keeps the image named `sha256`.
-fn image_path(dir: &Path, sha256: &str) -> PathBuf {
-    dir.join(IMAGES).join(sha256)
+/// Where the session in `dir` keeps the image named `sha256`; `None` for a name that is not 64
+/// lowercase hex digits, which names no file (a decode refuses one already; this holds anyway).
+fn image_path(dir: &Path, sha256: &str) -> Option<PathBuf> {
+    is_sha256_hex(sha256).then(|| dir.join(IMAGES).join(sha256))
 }
 
 /// Whether the session in `dir` keeps the image named `sha256`.
 #[must_use]
 pub fn has_image(dir: &Path, sha256: &str) -> bool {
-    image_path(dir, sha256).is_file()
+    image_path(dir, sha256).is_some_and(|p| p.is_file())
 }
 
 /// The bytes of `image` from the session in `dir`, checked against its hash.
@@ -420,7 +438,8 @@ pub fn has_image(dir: &Path, sha256: &str) -> bool {
 ///
 /// `MissingImage` when the file is absent or its bytes do not hash to its name; `Io`.
 pub fn read_image(dir: &Path, image: &Image) -> Result<Arc<[u8]>, Error> {
-    let data = match fs::read(image_path(dir, &image.sha256)) {
+    let missing = || Error::MissingImage(image.sha256.clone());
+    let data = match fs::read(image_path(dir, &image.sha256).ok_or_else(missing)?) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             return Err(Error::MissingImage(image.sha256.clone()));
         }
