@@ -8,7 +8,7 @@ Right column: what it does against D21.
    `PROTOCOL_VERSION = "0.11"` in its generated protocol. Protocol "0.12" exists only on its
    step-debugger branch. The left column describes that branch's shapes; the right column holds.
 2. The serve record has no `started` time: its time field is `since` (milliseconds), and
-   `started` is the boolean `-d` adds ("was it started by this call"). Since 0.16.1 (D29) the
+   `started` is the boolean `-d` adds ("was it started by this call"). Since 0.17.0 (D29) the
    record also carries `url`, `host`, `port` and `token` for the HTTP edge, and `socket` only
    when the socket is on.
 3. `Live`'s deltas also include `Retrying` (a provider retry, with its delay), beside

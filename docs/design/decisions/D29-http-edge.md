@@ -1,6 +1,6 @@
 # D29: The HTTP edge (a second transport for `tau serve`)
 
-**Status:** accepted, built (0.16.1). **Amends** D21 §2 ("No TCP in 0.16") and **closes** D21
+**Status:** accepted, built, released in 0.17.0 (planned as 0.16.1, which was not released). **Amends** D21 §2 ("No TCP in 0.16") and **closes** D21
 Open 4 (TCP for browsers). D21's messages, `PROTOCOL = 1` and `docs/protocol.schema.json` do not
 change: this is framing and access only.
 

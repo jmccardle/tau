@@ -414,10 +414,11 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   is an accepted regression.
 
 ### After 0.16.0
-- **0.16.1: the HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
+- **0.17.0 (released 2026-11-24): the HTTP edge (D29) and images in tool results (D30).** The edge was
+  planned as 0.16.1, which was not released.
+- **The HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
   and POST, a bearer token in the serve record), both transports by default; `RemoteClient`
-  dials it; the behavior suite runs a third wired mode, `http`. Built on branch
-  `feat/serve-http-edge`, awaiting review. Windows' HTTP-only serve is T2 (D29 Open 1).
+  dials it; the behavior suite runs a third wired mode, `http`. Merged as `ea0a3dcd`. Windows' HTTP-only serve is T2 (D29 Open 1).
 - **tau-code:** its protocol package is regenerated from `--schema`, and its
   React components carry over. 0.15 commands with no counterpart here
   (elide, commit-branch, paste-subtree, compare, steer and enqueue) become

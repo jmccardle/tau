@@ -31,7 +31,7 @@ classifiers = [
 [project.optional-dependencies]
 # Local tokenizers for the `tokens` extension (D26 §7): a second wheel built from this repository,
 # always at this wheel's version (scripts/check_tokens_wheel.py holds the pin to it).
-tokens = ["ffwf-tau-tokens==0.16.0"]
+tokens = ["ffwf-tau-tokens==0.17.0"]
 
 # The public repository only: pyproject.toml and README.md ship in the sdist and on PyPI.
 [project.urls]

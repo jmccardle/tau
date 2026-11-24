@@ -104,7 +104,7 @@ Listing, creating and forking sessions are D18's CLI, not wire calls.
   codes (§3, `end`), so a later transport (Tectum's stdio) carries the same messages. The
   `websockets` keepalive closes a dead connection.
 - **No TCP in 0.16.0.** Another machine uses OpenSSH's Unix socket forwarding; a browser needs
-  TCP and a token (Open 4). *Amended by [D29](D29-http-edge.md) (0.16.1):* `tau serve` also
+  TCP and a token (Open 4). *Amended by [D29](D29-http-edge.md) (0.17.0):* `tau serve` also
   listens on an HTTP edge (SSE and POST, a bearer token in the serve record), both by default.
 
 ### 3. Messages

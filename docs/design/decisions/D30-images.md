@@ -1,10 +1,11 @@
 # D30: Images in tool results (first slice)
 
-**Status:** accepted, built on `feat/image-input` (0.17), for review. **Amends** D12 (the store's `VERSION` and an image directory),
+**Status:** accepted, built, released in 0.17.0. **Amends** D12 (the store's `VERSION` and an image directory),
 D15 (the walk's turns carry images; a provider declares `image_limits`), D21 (`PROTOCOL` 2, a new
 wire shape of `Outcome.Ok`), D24 (`base_tools`' `read` returns images), D26 §7.3 (the image ceiling).
-Investigation: akb #563. John's decisions (2026-11-24) are marked **fixed**; the rest are #563's
-recommendations, marked **provisional** until he rules on them.
+Investigation: akb #563. John's decisions (2026-11-24) are marked **fixed**; the rest were #563's
+recommendations, marked **provisional**, and became final when John released them as 0.17.0
+(2026-11-24).
 
 ## Context
 

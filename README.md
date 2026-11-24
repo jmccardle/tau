@@ -6,7 +6,7 @@ share. A sans-IO Rust core holds the tree and the step algorithm; Python drives 
 providers (any OpenAI-compatible server, Anthropic, Gemini), tools, hooks, extensions and the
 terminal UI live.
 
-**Status: 0.16 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
+**Status: 0.17 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
 1.0, interfaces may change between minor versions.
 
 ## Install
@@ -15,7 +15,7 @@ terminal UI live.
 is `ffwf-tau` and installs the `tau` command:
 
 ```bash
-pip install 'ffwf-tau>=0.16'
+pip install 'ffwf-tau>=0.17'
 ```
 
 Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, `tau serve`,
@@ -23,6 +23,7 @@ projects (`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare 
 not available and say so when used. Its test suite runs there with the tests of those skipped, each naming why.
 
 `pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
+New in 0.17: the HTTP edge of `tau serve`, and images in tool results ([0.17.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.0.md)).
 Coming from 0.15? Read the [0.16.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.16.0.md) first: 0.16 is a
 rewrite and does not read 0.15 sessions or load 0.15 extensions.
 
