@@ -15,6 +15,7 @@ attribute; it counts only what no report covers.
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -81,11 +82,38 @@ def sent(body: Body) -> bool:
 
 def ceiling_of(body: Body) -> Count:
     """The ceiling of a node: its UTF-8 bytes (text, reasoning, replay data, call ids, names and
-    arguments, outcomes) plus `CEILING_PER_NODE`, as the bound of a count of 0 tokens. A node that
-    is not sent is `NONE`."""
+    arguments, outcomes) plus `CEILING_PER_NODE`, plus the `image_ceiling` of each image it holds
+    (never the image's bytes or base64), as the bound of a count of 0 tokens. A node that is not
+    sent is `NONE`."""
     if not sent(body):
         return NONE
-    return Count(0, Basis.CEILING, _bytes(body) + CEILING_PER_NODE)
+    return Count(0, Basis.CEILING, _bytes(body) + _image_tokens(body) + CEILING_PER_NODE)
+
+
+def image_ceiling(width: int, height: int) -> int:
+    """The most an image of `width` by `height` pixels costs by the published formulas, before
+    any server's resize (D26 section 7.3, D30 section 9): the larger of 28-pixel patches,
+    `ceil(w/28) * ceil(h/28)` (Anthropic; Qwen-VL on llama.cpp), and OpenAI's high-detail tiles,
+    `85 + 170 * tiles` of 512 pixels after its fit within 2048 and its shorter side to 768."""
+    patches = math.ceil(width / 28) * math.ceil(height / 28)
+    w, h = float(width), float(height)
+    fit = min(1.0, 2048 / max(w, h))
+    w, h = w * fit, h * fit
+    short = min(1.0, 768 / min(w, h))
+    w, h = w * short, h * short
+    tiles = math.ceil(w / 512) * math.ceil(h / 512)
+    return max(patches, 85 + 170 * tiles)
+
+
+def _image_tokens(body: Body) -> int:
+    if not isinstance(body, Body.Results):
+        return 0
+    return sum(
+        image_ceiling(i.width, i.height)
+        for _, o, _ in body.outcomes
+        if isinstance(o, Outcome.Ok)
+        for i in o.images
+    )
 
 
 LOWEST_BYTES_PER_TOKEN = 8

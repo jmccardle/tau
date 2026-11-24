@@ -446,6 +446,7 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         "base_url": config.base_url,
         "max_tokens": config.max_tokens,
         "context_window": config.context_window,
+        "images": json.dumps(config.images),
         "options": json.dumps(config.options, default=dict),
         "provider": config.provider,
         "api_key_env": config.api_key_env,

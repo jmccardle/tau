@@ -14,13 +14,15 @@ from dataclasses import replace
 from typing import cast
 
 from tau import trace
-from tau._config import ConfigError
+from tau._config import ConfigError, ModelConfig
 from tau._config_layers import ModelCatalog
 from tau._core import (
     Answer,
     Author,
     Draft,
+    Image,
     Job,
+    MissingImage,
     Outcome,
     Part,
     RunCall,
@@ -30,6 +32,7 @@ from tau._core import (
 from tau._events import CallArgs, CallNamed, Delta, Retrying, TextDelta, ThinkingDelta, ToolProgress
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._hook_order import HookOrder
+from tau._images import outcome_images, refused, walk_problem
 from tau._protocols import (
     CallDraft,
     CursorHook,
@@ -241,7 +244,13 @@ class SampleRun:
         # Read at dispatch: I1, the request is `walk(at)` as `at` stands (the config is in it).
         with trace.span("driver", "request"):
             self._at = session.cursor(cursor).at
-            self._walk = session.tree.walk(self._at)
+            # The images go with the walk, read from the session where a node has none (D30).
+            self._missing: str | None = None
+            try:
+                self._walk = session.tree.walk(self._at, images=True)
+            except MissingImage as e:
+                self._walk = session.tree.walk(self._at)
+                self._missing = str(e)
         self._model_at = model_at
         self._providers = providers
         self._catalog = catalog
@@ -259,10 +268,13 @@ class SampleRun:
         if self._task is not None:
             self._task.cancel()
 
-    async def _stream(self) -> Finish:
-        finish: Finish | None = None
+    def _ready(self) -> tuple[ModelConfig, Provider]:
+        """The model and provider of this sample, checked: the model resolves, its provider is
+        here and finds no problem with it, and the walk's images can go to it (D30 section 6:
+        failing early, before any request). `SampleError` otherwise."""
+        name = self._model_at(self._at)
         try:
-            model = self._catalog.resolve(self._model_at(self._at))
+            model = self._catalog.resolve(name)
         except ConfigError as e:
             raise SampleError(str(e)) from e
         provider = self._providers.get(model.provider)
@@ -273,6 +285,15 @@ class SampleRun:
             )
         if problems := provider.check(model):  # any Exception: an internal failure
             raise SampleError(f"model {model.model!r} ({provider.name}): " + "; ".join(problems))
+        if self._missing is not None:
+            raise SampleError(f"the walk names an image the session does not have: {self._missing}")
+        if (problem := walk_problem(self._walk, name, model, provider)) is not None:
+            raise SampleError(problem)
+        return model, provider
+
+    async def _stream(self) -> Finish:
+        finish: Finish | None = None
+        model, provider = self._ready()
         async with aclosing(provider.sample(self._walk, model, self._tools)) as stream:
             async for item in stream:
                 if finish is not None:
@@ -427,8 +448,10 @@ class CallRun:
         tool_keywords: Mapping[str, frozenset[str]],
         on_progress: Callable[[ToolProgress], None],
         offered: Collection[str] | None = None,
+        image_problem: Callable[[Sequence[Image]], str | None] = lambda _: None,
     ) -> None:
         self.id = call.id
+        self._image_problem = image_problem
         self._offered = offered
         self._tool = call.tool
         self._args_raw = call.args_raw
@@ -482,7 +505,15 @@ class CallRun:
         except _HookError as e:
             return Outcome.Err(str(e)), e.author
         assert draft.outcome is not None
-        return draft.outcome, by
+        return self._checked(draft.outcome), by
+
+    def _checked(self, outcome: Outcome) -> Outcome:
+        """`outcome`, or the `Err` it becomes when it holds images the batch's model cannot take
+        (D30 section 6): nothing is dropped without the model being told."""
+        problem = self._image_problem(outcome_images(outcome))
+        if problem is None or not isinstance(outcome, Outcome.Ok):
+            return outcome
+        return refused(outcome, self._tool, problem)
 
     async def _hooks(self, name: str, draft: CallDraft) -> Author | None:
         """Run each extension's tool hook in the point's hook order (D28), every one even after

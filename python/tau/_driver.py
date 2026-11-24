@@ -56,6 +56,7 @@ from tau._events import LiveDelta
 from tau._handles import Handles, Subject
 from tau._hook_order import HookOrder
 from tau._hub import Hub
+from tau._images import call_gate
 from tau._meter import Counts
 from tau._options import ExtensionOptions
 from tau._protocols import (
@@ -664,6 +665,7 @@ class Driver:
                     session,
                     partial(_open_for_tool, session, self.clock, self._hub, self._poke, node),
                 )
+                images = call_gate(self._providers, self._catalog, self._options.model, node)
                 runs = [
                     CallRun(
                         c,
@@ -678,6 +680,7 @@ class Driver:
                         offered=_offer_of(
                             self._made_with.get(cursor), session.tree.node(node).parent
                         ),
+                        image_problem=images,
                     )
                     for c in calls
                 ]

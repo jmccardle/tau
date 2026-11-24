@@ -14,8 +14,9 @@ from typing import cast
 import httpx
 
 from tau._config import ConfigError, ModelConfig
-from tau._core import Node, Part, Stop
+from tau._core import Image, Node, Part, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau._images import MIB, ImageLimits
 from tau._protocols import Finish, Rendered, SampleError, Tool
 from tau._providers._walk import (
     AssistantTurn,
@@ -24,6 +25,8 @@ from tau._providers._walk import (
     UserTurn,
     bearing,
     call_markup,
+    image_base64,
+    images_caption,
     stop_note,
     system_note,
     turns,
@@ -86,9 +89,23 @@ def _assistant(turn: AssistantTurn) -> Json:
     return message
 
 
+def _text_item(text: str) -> Json:
+    return {"type": "text", "text": text}
+
+
+def _image_items(images: Sequence[Image]) -> list[Json]:
+    """Each image as a content item: a `data:` URL holding its base64 (OpenAI, llama.cpp's mtmd
+    and vLLM take it)."""
+    return [
+        {"type": "image_url", "image_url": {"url": f"data:{i.mime};base64,{image_base64(i)}"}}
+        for i in images
+    ]
+
+
 def messages(walk: Sequence[Node], *, structured: bool) -> tuple[list[Json], list[list[int]]]:
     """The wire messages for a walk, and for each the node it came from. `Config` and `Custom`
-    nodes never reach the model. The
+    nodes never reach the model. A tool message holds only text, so a batch's images follow its
+    tool messages in one `user` message: a caption naming the calls, then the images. The
     `System` nodes that open the walk are `system` messages (an empty one sends none); one later
     is a user message `[system note: ...]` (llama.cpp with the Qwen template answers HTTP 500 to a
     `system` message after the first turn). A batch whose call arguments are not a JSON object, or
@@ -106,13 +123,19 @@ def messages(walk: Sequence[Node], *, structured: bool) -> tuple[list[Json], lis
                 pass
             case SystemTurn(text=text):
                 made.append({"role": "system", "content": text})
-            case UserTurn(text=text):
+            case UserTurn(text=text, images=()):
                 made.append({"role": "user", "content": text})
+            case UserTurn(text=text, images=images):
+                made.append({"role": "user", "content": [_text_item(text), *_image_items(images)]})
             case AssistantTurn():
                 made.append(_assistant(turn))
             case ToolResults(results=results):
                 for r in results:
                     made.append({"role": "tool", "tool_call_id": r.id, "content": r.text})
+                images = [i for r in results for i in r.images]
+                if images:  # a tool message holds only text (D30 section 7)
+                    caption = _text_item(images_caption(results))
+                    made.append({"role": "user", "content": [caption, *_image_items(images)]})
         out += made
         nodes += [[node] for _ in made]
         spoken = spoken or not isinstance(turn, SystemTurn)
@@ -479,6 +502,12 @@ class OpenAIProvider:
             facts.update(_model_facts(listed, model))
         self._servers[base] = facts
         return facts
+
+    @property
+    def image_limits(self) -> ImageLimits:
+        """What one image may be for this API (D30): OpenAI's per-image limit; llama.cpp has
+        none of its own."""
+        return ImageLimits(20 * MIB)
 
     @property
     def name(self) -> str:
