@@ -3198,10 +3198,11 @@ in and compared by `scripts/schema.py --check`, so any wire change is a readable
 `tau serve` (`cli.py`, `_serve_cli.py`), `$TAU_HOME/serve/` (`_serve_record.py`) · D21 §1-3, §9 · new
 
 **tau serve** serves exactly one session (the one the shared start opens, in its working
-directory) on a Unix socket; **the wire** is the `Client` contract as JSON-RPC 2.0 over WebSocket
-on that socket, one message per text message (not `providers._wire`). The server is the private
-`tau._serve`; `tau.Server` (`Server.start(driver, path, *, session, cwd, idle=None)`, `wait`,
-`close`; nothing else is public) is what serves a running `Driver`, for `tau serve` (through the private `serve_session`, the one writer of the serve record), `Started.serve` and the Harness's remote mode.
+directory) on a Unix socket and on an HTTP edge (D29; both by default, `--no-unix` and `--no-http`
+turn one off); **the wire** is the `Client` contract as JSON-RPC 2.0 over WebSocket on that
+socket, one message per text message (not `providers._wire`), and the same messages on the edge.
+The server is the private `tau._serve`; `tau.Server` (`Server.start(driver, path=None, *, session,
+cwd, idle=None, http=None)`, `url`, `token`, `wait`, `close`; nothing else is public) is what serves a running `Driver`, for `tau serve` (through the private `serve_session`, the one writer of the serve record), `Started.serve` and the Harness's remote mode.
 `tau serve [session flags] [-e ...] [--socket PATH]` runs in the foreground until SIGTERM or
 SIGINT (the socket goes first, then the driver stops and each stream gets `end`, then the lease is released and last the record goes, exit 0) or the driver
 fails (exit 1). `-d [--json]` starts it detached (its output in `<id>.log`) and prints the record
@@ -3216,16 +3217,20 @@ rest, so an agent's tool is cancelled and closes the agent's cursor, as an inter
 then the server closes as above;
 `--schema` prints `schema_text()`. `--json` prints one JSON object per line: the record, an error
 `{"error": {"type", "message"}}`, `--stop`'s `{session, pid, stopped}`. The **serve record**
-`<session id>.json` is `{socket, pid, session, cwd, protocol, version, since, log}` (`since` in
-milliseconds; the `-d` output adds `started`); a detached server's log is removed when it exits
-cleanly and kept when its driver failed; the serve directory is mode 700, refused if
-another user owns it or can write it, and there is no token. A served session must be kept
+`<session id>.json` (mode 600, written atomically) is `{pid, session, cwd, protocol, version, since,
+log}`, plus `socket` when the socket is on and the HTTP edge's `url`, `host`, `port` and `token`
+when the edge is, and the session's `name` if it had one at start (`since` in milliseconds; the
+`-d` output adds `started`); a record found at start is stale and removed. A detached server's log
+is removed when it exits cleanly and kept when its driver failed; the serve directory is mode 700,
+refused if another user owns it or can write it. The socket has no token; the edge's token is in
+the record. A served session must be kept
 (`--no-session` has no id to name its files). `python -m tau` is the `tau` command.
 
 ### RemoteClient, hello, Welcome, end
 `tau.RemoteClient`, `tau.Welcome` (`_remote.py`, `_protocol.py`) · D21 §3, §9 · new
 
-`await RemoteClient.connect(socket, client, *, buffer=256)` dials the Unix socket, says **hello**
+`await RemoteClient.connect(socket, client, *, buffer=256)` dials the Unix socket
+(`RemoteClient.connect_http(url, token, client, *, buffer=256)` the HTTP edge, D29), says **hello**
 (`{protocol, client, buffer?}`; a different protocol is `ProtocolMismatch`, a `RuntimeError`, and
 the connection closes) and returns a `Client` held to the protocol by the type checker; its
 `welcome` is the **Welcome** the server answered: `{protocol, version, session, cwd, pid}`. Calls
@@ -3235,6 +3240,61 @@ error object (`CutOff`; `Stopped` with the failure's `"Type: msg"`); the stream 
 `CutOff`, or raises `ConnectionError`, as a local stream does, and so does a connection that
 drops without an `end`. Every call on an ended client raises `ConnectionError`. `close()`
 disconnects; there is no `close` message.
+
+### HTTP edge, HttpEdge
+`tau.HttpEdge` (`_http_edge.py`), `tau._remote_http` · D29 · new
+
+The **HTTP edge** is `tau serve`'s second transport: the wire's messages over HTTP/1.1, one
+**stream** per connection (`GET /stream`, an SSE response carrying every response, `event` and
+`end`) and one POST per request (`POST /stream/<connection id>`, answered `202`, or `404` with a
+JSON-RPC error for a stream that is not open). Every request carries `Authorization: Bearer
+<token>` (`401` otherwise); one with an `Origin` header is refused (`403`) unless allowed. Built on
+asyncio streams and `h11`. **HttpEdge** is where and how a `Server` listens on it: `host`
+(loopback unless `allow_network`), `port` (`None`: 3393, else any free one; `0`: any; N: N or
+fail), `token` (`None`: a fresh one), `origins`, `heartbeat`, `web_root`. Not a frontend and not a provider:
+the server's side of a transport.
+
+### stream, connection id
+`tau._http_edge.Stream` (private) · D29 · new
+
+A **stream** is one SSE response of the HTTP edge and the client behind it: what a WebSocket is on
+the socket, one `LocalClient` from its `hello` to its end. Its first event (`event: connection`)
+carries its **connection id**, a random string the client's POSTs name. An id is never reused, and
+a second stream may not claim one (`409`): there is no resume, a reconnect is a new stream and a
+new `hello`.
+
+### heartbeat
+`HttpEdge.heartbeat` · D29 · new
+
+The comment `: ping` a stream writes every 15 seconds, so proxies keep it open and a client that
+vanished is found by a write that fails (on Linux within two heartbeats, by `TCP_USER_TIMEOUT`).
+A failed write is a disconnect: the stream's client closes and its questions go to the pool.
+
+### paste URL
+`tau serve`'s banner (`_serve_cli.py`) · D29 · new
+
+`<url>#token=<token>`: the edge's URL with its token in the fragment (which a browser does not send
+to a server), printed as a second banner line only to a terminal and only without `--quiet`:
+`open: …` when the edge serves a web client, which reads the token from its own address, and
+`for a web client: …` when it serves only the help page.
+
+### web client, web root, tau_web, help page, own origin
+`tau._web_client` (private), `HttpEdge.web_root`, `tau serve --web-root` · D29 §9 · new
+
+The **web client** is a browser frontend's built files, which the HTTP edge serves without a
+token on every `GET` that is not the wire (a path with no extension gets `index.html`; nothing
+outside the root). Its **web root** is `--web-root DIR`, else the `dist/` of an installed package
+**`tau_web`**, else there is none and `/` is the **help page**: a static page saying what the URL
+is and how to get a client, with nothing of the session in it. The edge's **own origin**
+(`http://<host>:<port>`; on loopback both `127.0.0.1` and `localhost`) may call the wire, so the
+client it served can; any other origin needs `--allow-origin`.
+
+### `.tcp` file (not built)
+the serve record · D29 · not built
+
+The per-session `$TAU_HOME/serve/<session id>.tcp` that was planned to hold the edge's URL and
+token. The serve record already sat beside the socket, private and written atomically, so its
+fields went there instead (see tau serve, serve record). There is no `.tcp` file.
 
 ### Calls
 `tau._calls.Calls`, `frontend` (private) · D16 · new

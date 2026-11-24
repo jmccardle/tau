@@ -49,6 +49,7 @@ from tau._extensions import (
     absolute_explicit,
     inspect_extensions,
 )
+from tau._http_edge import HttpEdge
 from tau._options import make_layer_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
@@ -137,10 +138,13 @@ class Started:
             return False
         return not any(self.session.cursor(c).items for c in self.session.cursors())
 
-    async def serve(self, socket: Path | None = None, *, idle: float | None = None) -> "Server":
+    async def serve(
+        self, socket: Path | None = None, *, idle: float | None = None, http: HttpEdge | None = None
+    ) -> "Server":
         """Serve this session as `tau serve` does, so `tau -c` in its working directory attaches
         (D21 section 9): bind `socket` (default `<home>/serve/<id>.sock`, in the private serve
-        directory), and write the serve record `<home>/serve/<id>.json`, naming this process.
+        directory), and `http` too if given (D29), and write the serve record
+        `<home>/serve/<id>.json`, naming this process (and the edge's URL and token).
         The home, id and working directory are this `Started`'s. `idle` is `Server.start`'s.
         `Server.close` is the whole teardown: it stops the driver, unbinds the socket, calls
         `stop` and removes the record; do not call `stop` as well. `ConfigError` for a session
@@ -164,6 +168,8 @@ class Started:
             home=self.loaded.home,
             release=self.stop,
             idle=idle,
+            http=http,
+            name=read_name(self.directory),
         )
 
     async def stop(self) -> None:

@@ -103,8 +103,9 @@ Listing, creating and forking sessions are D18's CLI, not wire calls.
 - **Messages.** One JSON-RPC 2.0 message per WebSocket text message, with no reliance on close
   codes (§3, `end`), so a later transport (Tectum's stdio) carries the same messages. The
   `websockets` keepalive closes a dead connection.
-- **No TCP in 0.16.** Another machine uses OpenSSH's Unix socket forwarding; a browser needs
-  TCP and a token (Open 4).
+- **No TCP in 0.16.0.** Another machine uses OpenSSH's Unix socket forwarding; a browser needs
+  TCP and a token (Open 4). *Amended by [D29](D29-http-edge.md) (0.16.1):* `tau serve` also
+  listens on an HTTP edge (SSE and POST, a bearer token in the serve record), both by default.
 
 ### 3. Messages
 
@@ -325,6 +326,8 @@ wire counterpart (the plan sends them to commands or extensions, or drops them).
    server never exits on its own.
 4. **TCP for browsers.** *Recommend:* decide it with tau-code's web client, after 0.16.0:
    loopback only, with a token file `$TAU_HOME/serve/<id>.token` (0600) sent in `hello`.
+   *Closed by [D29](D29-http-edge.md):* loopback by default, the token in the serve record and sent
+   as a bearer header on every request, not in `hello`.
 5. **Reload over the wire.** *Recommend:* nothing in 0.16 (D19 §9).
 6. **`schemars` and tau-core's dependencies** (review, 2026-10-31). §8 derives the core values'
    schemas with `schemars` beside their serde derives, which adds a dependency to tau-core,

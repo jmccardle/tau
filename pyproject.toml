@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 keywords = ["agent", "llm", "harness", "coding-agent", "tui", "openai", "anthropic", "gemini", "llama.cpp"]
 dynamic = ["version"]
-dependencies = ["httpx>=0.28", "websockets>=15", "textual>=8.2"]
+dependencies = ["h11>=0.16", "httpx>=0.28", "websockets>=15", "textual>=8.2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

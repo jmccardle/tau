@@ -87,7 +87,7 @@ from tau._protocol import PROTOCOL, ProtocolError
 from tau._protocols import Provider
 from tau._providers import builtin_providers
 from tau._refs import absolute_ref, parse_ref
-from tau._serve_cli import error_line, serve
+from tau._serve_cli import error_line, serve, transport_flags
 from tau._serve_record import ServeFailed
 from tau._sessions import (
     UnknownSession,
@@ -227,13 +227,14 @@ def _parser() -> _Parsers:
     served = sub.add_parser(
         "serve",
         parents=[session_flags(), extension_flags(), option_flags(), verbose_flag()],
-        help="serve a session on a Unix socket (D21)",
+        help="serve a session on a Unix socket and over HTTP (D21, D29)",
     )
     served.add_argument(
         "--socket",
         metavar="PATH",
         help="listen here (default: $TAU_HOME/serve/<session id>.sock)",
     )
+    transport_flags(served)
     mode = served.add_mutually_exclusive_group()
     mode.add_argument(
         "-d", "--detach", action="store_true", help="run in the background; print the server"

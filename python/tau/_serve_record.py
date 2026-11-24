@@ -1,17 +1,20 @@
-"""The serve directory and the serve record (D21 sections 2 and 9): how a program finds the
+"""The serve directory and the serve record (D21 sections 2 and 9, D29): how a program finds the
 server of a session.
 
 `$TAU_HOME/serve/` (mode 700, and refused if another user owns it or can write it) holds, for a
-served session, `<session id>.sock` (the socket), `<session id>.json` (the **serve record**,
-removed when the server exits) and `<session id>.log` (a detached server's output). The file
-permissions are the access control: there is no token.
+served session, `<session id>.sock` (the socket), `<session id>.json` (the **serve record**, mode
+600, removed when the server exits) and `<session id>.log` (a detached server's output). The
+socket's access control is the file permissions; the HTTP edge's is the bearer token, which only
+the record (and the user's terminal) carries.
 
-The record is the discovery: `{socket, pid, session, cwd, protocol, version, since, log}`. A record
-whose socket answers `hello` is a live server; one whose socket does not is stale (a crash left
-it) and `live_record` removes it.
+The record is the discovery: `{pid, session, cwd, protocol, version, since, log}`, plus `socket`
+when the server listens on one and `url`, `host`, `port` and `token` when it has an HTTP edge, and
+the session's `name` if it has one. A record whose server answers `hello` is a live server; one
+whose server does not is stale (a crash left it) and `live_record` removes it.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import stat
@@ -38,14 +41,18 @@ PROBE_SECONDS: Final = 2.0
 _PRIVATE: Final = 0o700
 
 
+_OPTIONAL: Final = ("socket", "url", "host", "port", "token", "name")
+"""The record's fields that are written only when they have a value."""
+
+
 @dataclass(frozen=True)
 class ServeRecord:
-    """What `<session id>.json` holds: the `socket` a server listens on, its `pid`, the `session`
-    id it serves, that session's `cwd`, the `protocol` and τ `version` it speaks, when it started
-    (`since`, milliseconds since the epoch) and its `log` (`None`: a foreground server has
-    none)."""
+    """What `<session id>.json` holds: the server's `pid`, the `session` id it serves, that
+    session's `cwd`, the `protocol` and τ `version` it speaks, when it started (`since`,
+    milliseconds since the epoch) and its `log` (`None`: a foreground server has none); the
+    `socket` it listens on, if it does; its HTTP edge's `url`, `host`, `port` and bearer `token`,
+    if it has one; and the session's `name`, if it had one when the server started."""
 
-    socket: str
     pid: int
     session: str
     cwd: str
@@ -53,10 +60,22 @@ class ServeRecord:
     version: str
     since: int
     log: str | None
+    socket: str | None = None
+    url: str | None = None
+    host: str | None = None
+    port: int | None = None
+    token: str | None = None
+    name: str | None = None
 
     def text(self) -> str:
-        """The record as the one line of JSON it is written as."""
-        return json.dumps(asdict(self))
+        """The record as the one line of JSON it is written as (a field in `_OPTIONAL` only if it
+        has a value)."""
+        data = asdict(self)
+        return json.dumps({k: v for k, v in data.items() if v is not None or k not in _OPTIONAL})
+
+    def endpoints(self) -> str:
+        """Where the server listens, for a person: `PATH`, `URL`, or `PATH and URL`."""
+        return " and ".join(e for e in (self.socket, self.url) if e is not None)
 
 
 def serve_directory(home: Path) -> Path:
@@ -128,6 +147,45 @@ class ServeFailed(Exception):
         self.kind = kind
 
 
+async def dial(record: ServeRecord, client: str) -> RemoteClient:
+    """A `RemoteClient` named `client` of the server `record` names: over its socket if it has
+    one, else over its HTTP edge."""
+    if record.socket is not None:
+        return await RemoteClient.connect(record.socket, client)
+    if record.url is None or record.token is None:
+        raise ConfigError(f"the serve record of {record.session} names no socket and no URL")
+    return await RemoteClient.connect_http(record.url, record.token, client)
+
+
+async def probe_record(record: ServeRecord) -> Welcome | None:
+    """`probe` for the server `record` names, by the way `dial` reaches it. A record whose pid is
+    gone is stale without asking (its port may be another server's now), and so is one whose
+    endpoint is answered by another session or process."""
+    if not _alive(record.pid):
+        return None
+    if record.socket is not None:
+        welcome = await probe(record.socket)
+    else:
+        welcome = await _probe_http(record)
+    if welcome is None or (welcome.session, welcome.pid) != (record.session, record.pid):
+        return None
+    return welcome
+
+
+async def _probe_http(record: ServeRecord) -> Welcome | None:
+    try:
+        async with asyncio.timeout(PROBE_SECONDS):
+            async with await dial(record, "tau:probe") as client:
+                return client.welcome
+    except ConnectionRefusedError:
+        return None
+    except (OSError, TimeoutError) as e:
+        raise ServeFailed(
+            f"the server at {record.url} did not answer hello ({type(e).__name__}: {e}); "
+            "it may be busy, so its record is kept"
+        ) from e
+
+
 async def probe(socket: str) -> Welcome | None:
     """What a server at `socket` answers `hello` with, or `None` if there is none: the socket
     file is missing or nobody is listening on it (a crash left it). Anything else is not proof of
@@ -170,13 +228,15 @@ async def live_server(
     record = read_record(path)
     if record is None:
         return None
-    welcome = await probe(record.socket)
+    welcome = await probe_record(record)
     if welcome is None:
         if lease is not None and _alive(record.pid) and is_leased(lease):
             raise ServeFailed(
                 f"session {session} (pid {record.pid}) is stopping; try again", "Stopping"
             )
-        path.unlink(missing_ok=True)
+        with contextlib.suppress(ConfigError):  # not a record now: not ours to judge
+            if read_record(path) == record:  # a new server may have written its own meanwhile
+                path.unlink(missing_ok=True)
         return None
     return record, welcome
 

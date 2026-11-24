@@ -1,8 +1,10 @@
 """`tau serve` (D21 section 9): the server in the foreground, detached with `-d`, stopped with
 `--stop`, and its schema with `--schema`.
 
-- `tau serve [session flags] [-e ...] [--socket PATH]` starts the session the shared start
-  (`tau.start_session`) opens, binds a Unix socket, writes the serve record and serves until
+- `tau serve [session flags] [-e ...] [--socket PATH] [transport flags]` starts the session the
+  shared start (`tau.start_session`) opens, binds a Unix socket and an HTTP edge (D29; `--no-unix`
+  and `--no-http` turn one off; on Windows only the edge), writes the serve record, prints where
+  it listens (and, to a terminal, the paste URL with the token), and serves until
   SIGTERM or SIGINT (what is running is aborted and the agents it started are closed, as an
   interrupted `-p` does; then the driver stops, each stream gets `end`, the socket and record
   are removed, exit 0) or until the driver fails (exit 1). With `--json` it prints the record as
@@ -38,6 +40,7 @@ from tau._choice import choose_session
 from tau._config import ConfigError
 from tau._core import CursorClosed
 from tau._driver import Driver
+from tau._http_edge import HttpEdge
 from tau._project_read import safe_block, safe_text
 from tau._protocol import schema_text
 from tau._serve import Server, serve_session
@@ -48,16 +51,17 @@ from tau._serve_record import (
     live_record,
     live_server,
     log_path,
-    probe,
+    probe_record,
     read_record,
     record_path,
     serve_directory,
     socket_path,
 )
 from tau._session_start import Started, start_report, start_session
-from tau._sessions import SessionFlags, is_leased
+from tau._sessions import SessionFlags, is_leased, read_name
 from tau._startup import load_config, prompts
 from tau._trust import tau_home
+from tau._web_client import web_client
 
 IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""
@@ -123,6 +127,7 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
         raise ConfigError(
             "a served session is kept: --no-session has no id to name its socket and record"
         )
+    unix, http = transports(args, run.cwd)
     explicit = None if args.socket is None else Path(os.path.abspath(run.cwd / args.socket))
     if explicit is not None:
         checked_socket(explicit)
@@ -137,22 +142,111 @@ async def _foreground(run: Process, args: argparse.Namespace) -> int:
     session = None if started.directory is None else started.directory.name
     assert session is not None  # `--no-session` was refused above
     try:
-        socket = explicit or socket_path(directory, session)
+        socket = (explicit or socket_path(directory, session)) if unix else None
     except BaseException:
         await started.stop()
         raise
-    return await _serving(run, args, started, _Place(home, directory, session, socket))
+    return await _serving(run, args, started, _Place(home, directory, session, socket, http))
+
+
+def transport_flags(parser: argparse.ArgumentParser) -> None:
+    """`tau serve`'s flags for where it listens (D29)."""
+    unix = parser.add_mutually_exclusive_group()
+    unix.add_argument(
+        "--unix",
+        action="store_true",
+        help="listen on the Unix socket (the default; not on Windows)",
+    )
+    unix.add_argument("--no-unix", action="store_true", help="do not listen on the Unix socket")
+    parser.add_argument("--no-http", action="store_true", help="do not listen over HTTP")
+    parser.add_argument(
+        "--port",
+        type=int,
+        metavar="N",
+        help="listen over HTTP on port N, or fail if it is taken (default, or 0: 3393 if it is "
+        "free, else any free port)",
+    )
+    parser.add_argument(
+        "--host",
+        metavar="ADDR",
+        help="the address to listen on over HTTP (default 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="allow a --host that is not loopback: anyone who can reach it and has the token",
+    )
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help="let web pages from ORIGIN call over HTTP (repeatable; default: none)",
+    )
+    parser.add_argument(
+        "--web-root",
+        metavar="DIR",
+        help="serve the built web client in DIR over HTTP (default: an installed tau_web's, "
+        "else a help page)",
+    )
+    parser.add_argument(
+        "--quiet", action="store_true", help="do not print the URL with the token in it"
+    )
+
+
+def transports(args: argparse.Namespace, cwd: Path) -> tuple[bool, HttpEdge | None]:
+    """Whether to listen on the Unix socket, and the HTTP edge to listen on (`None`: none), as
+    the flags say (`--web-root` is read from `cwd`). `ConfigError` for flags that leave nowhere to
+    listen or contradict each other: both off, `--socket` without the socket, `--port`, `--host`,
+    `--allow-origin` or `--web-root` without HTTP, `--unix` on Windows, a port out of range, a
+    host that is not loopback without `--allow-network`, a web root (or an installed `tau_web`)
+    that holds no client."""
+    if sys.platform == "win32" and args.unix:
+        raise ConfigError("--unix is not available on Windows: tau serve listens over HTTP there")
+    unix = sys.platform != "win32" and not args.no_unix
+    if not unix and args.socket is not None:
+        raise ConfigError("--socket names the Unix socket, which --no-unix turns off")
+    if args.no_http:
+        _without_http(args, unix=unix)
+        return unix, None
+    if args.port is not None and args.port < 0:
+        raise ConfigError(f"port {args.port} is not a TCP port (0 to 65535)")
+    web_root = None if args.web_root is None else Path(os.path.abspath(cwd / args.web_root))
+    try:
+        edge = HttpEdge(
+            host=args.host or "127.0.0.1",
+            port=args.port or None,  # 0 is "any": 3393 first, as no --port is
+            origins=tuple(args.allow_origin),
+            allow_network=args.allow_network,
+            web_root=web_root,
+        )
+        web_client(web_root)  # a client that cannot load is said now, before the session starts
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
+    return unix, edge
+
+
+def _without_http(args: argparse.Namespace, *, unix: bool) -> None:
+    """`ConfigError` for `--no-http` with no socket either, or with flags that configure HTTP."""
+    if not unix:
+        raise ConfigError("--no-unix and --no-http leave the server nowhere to listen")
+    named = (("--port", args.port), ("--host", args.host), ("--web-root", args.web_root))
+    given = [f for f, v in named if v is not None]
+    given += ["--allow-origin"] if args.allow_origin else []
+    if given:
+        raise ConfigError(f"{' and '.join(given)} configure HTTP, which --no-http turns off")
 
 
 @dataclass(frozen=True)
 class _Place:
     """Where a served session's files are: the τ `home`, its serve `directory`, the `session`
-    id, the `socket`."""
+    id, the `socket` (`None`: no socket) and the HTTP `edge` (`None`: none)."""
 
     home: Path
     directory: Path
     session: str
-    socket: Path
+    socket: Path | None
+    edge: HttpEdge | None
 
 
 async def _serving(run: Process, args: argparse.Namespace, started: Started, place: _Place) -> int:
@@ -173,18 +267,20 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
             release=started.stop,
             idle=IDLE_SECONDS if detached else None,
             log=None if log is None else (Path(args.detached_log), log),
+            http=place.edge,
+            name=None if started.directory is None else read_name(started.directory),
         )
     except BaseException:
         await started.stop()  # once: from here the server's `close` releases the session
         raise
     failure: Exception | None = None
     try:
-        record = read_record(record_path(place.directory, session))
+        record = server.record
         assert record is not None  # `serve_session` wrote it
         if args.json:
             _emit(run, json.loads(record.text()))
         else:
-            run.stdout.write(safe_text(f"serving {session} on {socket} (pid {record.pid})") + "\n")
+            _banner(run, args, record, "serving")
         run.stdout.flush()
         failure = await _until_done(server, signalled)
         server.stop_accepting()
@@ -290,7 +386,7 @@ async def _record_of(
     deadline = loop.time() + BOUND_SECONDS
     while loop.time() < deadline:
         record = await _candidate(directory, session, child.pid)
-        if record is not None and await probe(record.socket) is not None:
+        if record is not None and await probe_record(record) is not None:
             return record
         if child.poll() is not None and not _leased(child, pending):
             return None  # nobody else's record can cure what went wrong
@@ -348,11 +444,37 @@ def _announce(run: Process, args: argparse.Namespace, record: ServeRecord, *, st
     if args.json:
         _emit(run, {**json.loads(record.text()), "started": started})
     else:
-        verb = "started" if started else "already serving"
-        run.stdout.write(
-            safe_text(f"{verb} {record.session} on {record.socket} (pid {record.pid})") + "\n"
-        )
+        _banner(run, args, record, "started" if started else "already serving")
     return 0
+
+
+def _serves_client(run: Process, args: argparse.Namespace) -> bool:
+    """Whether the edge serves a web client (else its `/` is the help page)."""
+    root = None if args.web_root is None else run.cwd / args.web_root
+    try:
+        return web_client(root).root is not None
+    except ValueError:
+        return False
+
+
+def paste_url(record: ServeRecord) -> str | None:
+    """The URL a person pastes into a web client: the edge's, with the token in the fragment
+    (which a browser does not send to the server). `None` for a server without an edge."""
+    if record.url is None or record.token is None:
+        return None
+    return f"{record.url}#token={record.token}"
+
+
+def _banner(run: Process, args: argparse.Namespace, record: ServeRecord, verb: str) -> None:
+    """`VERB SESSION on ENDPOINTS (pid N)`, then the paste URL, unless `--quiet` or stdout is no
+    terminal (a log, a pipe): it holds the token."""
+    run.stdout.write(
+        safe_text(f"{verb} {record.session} on {record.endpoints()} (pid {record.pid})") + "\n"
+    )
+    pasted = paste_url(record)
+    if pasted is not None and not args.quiet and run.stdout.isatty():
+        label = "open" if _serves_client(run, args) else "for a web client"
+        run.stdout.write(safe_text(f"{label}: {pasted}") + "\n")
 
 
 # --stop
@@ -374,7 +496,7 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
         if welcome.pid != record.pid:
             raise ServeFailed(
                 f"{record_path(directory, session)} names pid {record.pid}, "
-                f"but the server at {record.socket} is pid {welcome.pid}"
+                f"but the server at {record.endpoints()} is pid {welcome.pid}"
             )
         os.kill(record.pid, signal.SIGTERM)
         await _gone(record_path(directory, session), record, choice.source.path)
@@ -396,7 +518,7 @@ async def _gone(path: Path, record: ServeRecord, session: Path) -> None:
     deadline = loop.time() + BOUND_SECONDS
     while path.exists():
         try:
-            answered = await probe(record.socket)
+            answered = await probe_record(record)
         except ServeFailed:
             answered = record  # a server mid-exit is no proof it is gone: ask again
         if answered is None and not is_leased(session):

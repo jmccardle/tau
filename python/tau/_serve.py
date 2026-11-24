@@ -1,7 +1,9 @@
-"""The server (D21 sections 1-3, 6): one session's `Driver` on a Unix socket, one `LocalClient`
-per connection, JSON-RPC 2.0 over WebSocket.
+"""The server (D21 sections 1-3, 6; D29): one session's `Driver` on a Unix socket, an HTTP edge,
+or both, one `LocalClient` per connection, JSON-RPC 2.0 over WebSocket on the socket and over SSE
+and POST on the edge (`tau._http_edge`, which hands this module each stream as a line that
+behaves as a WebSocket does).
 
-`Server.start` binds the socket and serves until `close`. A connection says `hello` (the protocol
+`Server.start` binds and serves until `close`. A connection says `hello` (the protocol
 it speaks, its client id and the bound of its event stream), and is then a `LocalClient` of the
 driver: each request is the client call of the same name, run on the loop; each event the
 client is sent is a notification `event`; the stream's end is the notification `end`, after
@@ -40,6 +42,7 @@ from tau._clock import SystemClock
 from tau._config import ConfigError
 from tau._driver import Driver
 from tau._events import Event
+from tau._http_edge import Edge, HttpEdge, Stream, listen
 from tau._protocol import (
     CODES,
     METHODS,
@@ -73,6 +76,9 @@ POLL: Final = 0.25
 """How often the server looks at the driver, to see that it has failed or gone idle."""
 
 Id = int | str
+
+_Line = ServerConnection | Stream
+"""One connection's transport: a WebSocket on the socket, or a stream of the HTTP edge."""
 
 
 class _Refused(Exception):
@@ -142,14 +148,14 @@ _CLOSE: Final = object()
 
 
 class _Connection:
-    """One WebSocket: the `hello`, then a reader that begins each call and a writer that sends."""
+    """One connection: the `hello`, then a reader that begins each call and a writer that sends."""
 
     def __init__(
         self,
         driver: Driver,
         welcome: object,
         calls: set[asyncio.Task[None]],
-        socket: ServerConnection,
+        socket: _Line,
     ) -> None:
         self._driver = driver
         self._welcome = welcome
@@ -336,39 +342,92 @@ def _outcome(future: "asyncio.Future[object]") -> tuple[bool, BaseException | No
 
 
 class Server:
-    """A session's `Driver` served on a Unix socket (the module docstring). `start` binds
-    `path`; `welcome` is what `hello` answers. `wait` returns when the driver has failed, or
-    (with `idle`) when no client has been connected and every cursor at rest for that many
-    seconds; `close` stops accepting and unlinks the socket, stops the driver (each stream says
-    `end`) and unbinds, so it may be called once and the driver need not be stopped first."""
+    """A session's `Driver` served on a Unix socket, an HTTP edge, or both (the module
+    docstring). `start` binds; `welcome` is what `hello` answers. `url` and `token` are the
+    edge's (`None` without one). `wait` returns when the driver has failed, or (with `idle`) when
+    no client has been connected and every cursor at rest for that many seconds; `close` stops
+    accepting and unlinks the socket, stops the driver (each stream says `end`) and unbinds, so
+    it may be called once and the driver need not be stopped first."""
 
     def __init__(
-        self, driver: Driver, path: Path, welcome: Welcome, idle: float | None = None
+        self,
+        driver: Driver,
+        path: Path | None,
+        welcome: Welcome,
+        idle: float | None = None,
+        http: HttpEdge | None = None,
     ) -> None:
+        if path is None and http is None:
+            raise ValueError("a server listens somewhere: a socket path, an HTTP edge, or both")
         self.driver = driver
         self.path = path
+        self._http = http
         self._welcome = encode_result("hello", welcome)
         self._idle = idle
         self._poll = POLL if idle is None else min(POLL, idle / 4)
         self._sockets: _Sockets | None = None
+        self._edge: Edge | None = None
         self._connections: set[_Connection] = set()
         self._finished: set[asyncio.Future[None]] = set()
         self._calls: set[asyncio.Task[None]] = set()
 
+    @property
+    def url(self) -> str | None:
+        """The HTTP edge's URL, `http://HOST:PORT/` (`None`: no edge)."""
+        return None if self._edge is None else self._edge.url
+
+    @property
+    def token(self) -> str | None:
+        """The bearer token the HTTP edge lets in (`None`: no edge)."""
+        return None if self._edge is None else self._edge.token
+
     @classmethod
-    async def start(
-        cls, driver: Driver, path: Path, *, session: str, cwd: Path, idle: float | None = None
+    async def start(  # noqa: PLR0913 - where it listens, and as what
+        cls,
+        driver: Driver,
+        path: Path | None = None,
+        *,
+        session: str,
+        cwd: Path,
+        idle: float | None = None,
+        http: HttpEdge | None = None,
     ) -> "Server":
-        """Serve `driver` (running, in the loop) at `path`, as session `session` in `cwd`. `idle`
-        seconds is how long `wait` lets the server rest before it returns (`None`: never).
-        `OSError` if the socket cannot be bound (on Windows, always: see `require_unix_sockets`)."""
-        require_unix_sockets("tau serve")
+        """Serve `driver` (running, in the loop) as session `session` in `cwd`: on the Unix
+        socket `path`, on the HTTP edge `http`, or both (`ValueError` for neither). `idle` seconds
+        is how long `wait` lets the server rest before it returns (`None`: never). `OSError` if
+        either cannot be bound (a socket on Windows, always: see `require_unix_sockets`)."""
+        if path is not None:
+            require_unix_sockets("tau serve")
         welcome = Welcome(PROTOCOL, version("ffwf-tau"), session, str(cwd), os.getpid())
-        server = cls(driver, path, welcome, idle)
-        server._sockets = await unix_serve(server._handle, path, max_size=None)
+        server = cls(driver, path, welcome, idle, http)
+        await server._listen()
         return server
 
-    async def _handle(self, socket: ServerConnection) -> None:
+    async def _listen(self) -> None:
+        """Bind the socket, then the edge. If the edge cannot be bound the socket is unbound and
+        unlinked."""
+        if self.path is not None:
+            self._sockets = await unix_serve(self._handle, self.path, max_size=None)
+        if self._http is None:
+            return
+        try:
+            self._edge = await listen(self._http, self._handle)
+        except BaseException:
+            await self._unbind()
+            raise
+
+    async def _unbind(self) -> None:
+        if self._sockets is not None:
+            self._sockets.close()
+            await self._sockets.wait_closed()
+            self._sockets = None
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+        if self._edge is not None:
+            await self._edge.close()
+            self._edge = None
+
+    async def _handle(self, socket: _Line) -> None:
         """Handle one connection to its end."""
         connection = _Connection(self.driver, self._welcome, self._calls, socket)
         done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -406,11 +465,13 @@ class Server:
             await asyncio.sleep(self._poll)
 
     def _stop_accepting(self) -> None:
-        """Close the listener only (no new connection; the ones open say `end` at `close`) and
+        """Close the listeners only (no new connection; the ones open say `end` at `close`) and
         unlink the socket. Idempotent."""
-        if self._sockets is not None:
+        if self._sockets is not None and self.path is not None:
             self._sockets.server.close()
             self.path.unlink(missing_ok=True)
+        if self._edge is not None:
+            self._edge.stop_accepting()
 
     async def close(self) -> None:
         """Close the server, in the order that keeps a client from finding a half-closed one:
@@ -426,6 +487,8 @@ class Server:
         if self._sockets is not None:
             self._sockets.close()
             await self._sockets.wait_closed()
+        if self._edge is not None:
+            await self._edge.close()
         for call in self._calls:
             call.cancel()
         await asyncio.gather(*self._calls, return_exceptions=True)
@@ -435,18 +498,26 @@ class HostedServer(Server):
     """A `Server` of a session kept in a τ home: it writes the serve record and on `close` also
     releases the session and removes the record."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - `Server`'s, and the session's name
         self,
         driver: Driver,
-        path: Path,
+        path: Path | None,
         welcome: Welcome,
         idle: float | None,
+        http: HttpEdge | None = None,
+        name: str | None = None,
     ) -> None:
-        super().__init__(driver, path, welcome, idle)
+        super().__init__(driver, path, welcome, idle, http)
         self._about = welcome
+        self._name = name
         self._release: Callable[[], Awaitable[None]] | None = None
         self._record_file: Path | None = None
         self._record: ServeRecord | None = None
+
+    @property
+    def record(self) -> ServeRecord | None:
+        """The serve record this server wrote (`None` before `host`)."""
+        return self._record
 
     async def close(self) -> None:
         """`Server.close`, then `release` (once: a second `close` finds it done), then the record
@@ -477,39 +548,47 @@ class HostedServer(Server):
         self, release: Callable[[], Awaitable[None]], record: Path, log: tuple[Path, Path] | None
     ) -> None:
         """Bind, then move `log` (a detached server's pending file and the `<id>.log` it becomes)
-        and write the record. If either fails the socket is unbound and unlinked, and the log is
-        moved back, so the error a parent prints points to a real file."""
-        self._sockets = await unix_serve(self._handle, self.path, max_size=None)
+        and write the record. If either fails the socket and edge are unbound (the socket
+        unlinked), and the log is moved back, so the error a parent prints points to a real
+        file."""
+        await self._listen()
         moved = False
         try:
             if log is not None:
                 os.replace(*log)
                 moved = True
-            self._record = ServeRecord(
-                str(self.path),
-                os.getpid(),
-                self._about.session,
-                self._about.cwd,
-                PROTOCOL,
-                version("ffwf-tau"),
-                SystemClock().now(),
-                None if log is None else str(log[1]),
-            )
+            self._record = self._recorded(None if log is None else str(log[1]))
             write_record(record, self._record)
         except BaseException:
-            self._sockets.close()
-            await self._sockets.wait_closed()
-            self.path.unlink(missing_ok=True)
+            await self._unbind()
             if moved and log is not None:
                 with contextlib.suppress(OSError):
                     os.replace(log[1], log[0])
             raise
         self._release, self._record_file = release, record
 
+    def _recorded(self, log: str | None) -> ServeRecord:
+        edge = self._edge
+        return ServeRecord(
+            pid=os.getpid(),
+            session=self._about.session,
+            cwd=self._about.cwd,
+            protocol=PROTOCOL,
+            version=version("ffwf-tau"),
+            since=SystemClock().now(),
+            log=log,
+            socket=None if self.path is None else str(self.path),
+            url=None if edge is None else edge.url,
+            host=None if edge is None else edge.host,
+            port=None if edge is None else edge.port,
+            token=None if edge is None else edge.token,
+            name=self._name,
+        )
 
-async def serve_session(  # noqa: PLR0913 - the session's files and what releases it
+
+async def serve_session(  # noqa: PLR0913 - the session's files, what releases it, its edge
     driver: Driver,
-    path: Path,
+    path: Path | None,
     *,
     session: str,
     cwd: Path,
@@ -517,18 +596,24 @@ async def serve_session(  # noqa: PLR0913 - the session's files and what release
     release: Callable[[], Awaitable[None]],
     idle: float | None = None,
     log: tuple[Path, Path] | None = None,
+    http: HttpEdge | None = None,
+    name: str | None = None,
 ) -> HostedServer:
-    """`Server.start` for a session kept in `home`: once the socket is bound, `log` is moved and
-    the serve record `<home>/serve/<session>.json` is written, so `tau -c` attaches (D21 section
-    9). `Server.close` then also awaits `release` (`Started.stop`) and removes the record. The one
-    writer of the record: `Started.serve` and `tau serve` both come here. If the move or the
-    write fails the socket is unbound and unlinked and nothing is released. `ConfigError` if a
-    server already answers at `path`."""
-    require_unix_sockets("tau serve")
-    if await probe(str(path)) is not None:
-        raise ConfigError(f"another server already answers at {path}")
+    """`Server.start` for a session kept in `home`: once the socket (`path`) and the HTTP edge
+    (`http`) are bound, `log` is moved and the serve record `<home>/serve/<session>.json` is
+    written, so `tau -c` attaches (D21 section 9, D29). A record already there is stale (this
+    process holds the session's lease) and is removed first. `Server.close` then also awaits
+    `release` (`Started.stop`) and removes the record. The one writer of the record:
+    `Started.serve` and `tau serve` both come here. If the move or the write fails the socket and
+    edge are unbound and nothing is released. `ConfigError` if a server already answers at
+    `path`."""
+    if path is not None:
+        require_unix_sockets("tau serve")
+        if await probe(str(path)) is not None:
+            raise ConfigError(f"another server already answers at {path}")
     record = record_path(serve_directory(home), session)
+    record.unlink(missing_ok=True)
     welcome = Welcome(PROTOCOL, version("ffwf-tau"), session, str(cwd), os.getpid())
-    server = HostedServer(driver, path, welcome, idle)
+    server = HostedServer(driver, path, welcome, idle, http, name)
     await server.host(release, record, log)
     return server

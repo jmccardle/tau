@@ -1,7 +1,8 @@
 """`RemoteClient`: a `Client` of a session served by `tau serve` (D21 sections 3, 6, 9).
 
-`await RemoteClient.connect(socket, client)` dials the server's Unix socket, says `hello` and
-returns a client that is held to the `Client` protocol: every call is a JSON-RPC request of the
+`await RemoteClient.connect(socket, client)` dials the server's Unix socket (or
+`RemoteClient.connect_http(url, token, client)` its HTTP edge, D29), says `hello` and returns a
+client that is held to the `Client` protocol: every call is a JSON-RPC request of the
 same name, answered in its own time (calls are concurrent, matched by id), and the events
 arrive as notifications, queued for `async for`. One reader task does all the receiving; sending
 is the caller's.
@@ -14,6 +15,7 @@ one: it is a `RuntimeError`, so that rule does not loop on it.
 """
 
 import asyncio
+import contextlib
 import json
 import sys
 from collections.abc import Collection, Mapping
@@ -37,21 +39,29 @@ from tau._protocol import (
     end_error,
     exception_for,
 )
+from tau._remote_http import HttpLine
 from tau._values import Form, Json
 from tau.commandline import Parsed
+
+LOST_SECONDS: Final = 5.0
+"""How long a call that found the connection closed waits for the stream to say why."""
 
 _END: Final = object()
 """Queued after the last event: the stream has ended."""
 
 
 def require_unix_sockets(what: str) -> None:
-    """`OSError` on Windows, naming `what`: the wire (D21) is a Unix domain socket, and Python's
-    asyncio serves and dials none there. Which transport τ uses on Windows is not decided."""
+    """`OSError` on Windows, naming `what`: Python's asyncio serves and dials no Unix domain
+    socket there. The HTTP edge (D29) needs none."""
     if sys.platform == "win32":
         raise OSError(
-            f"{what} is not available on Windows: tau serve speaks over a Unix domain socket "
-            "(D21), which Python's asyncio does not offer there"
+            f"{what} is not available on Windows: a Unix domain socket, which Python's asyncio "
+            "does not offer there; use the HTTP edge (D29)"
         )
+
+
+_Line = ClientConnection | HttpLine
+"""The connection under a client: a WebSocket on the socket, or a stream of the HTTP edge."""
 
 
 class _Channel:
@@ -63,7 +73,7 @@ class _Channel:
     """What the server answered `hello`: its protocol and version, the session, its `cwd`, its
     `pid`."""
 
-    def __init__(self, socket: ClientConnection, client: str, buffer: int) -> None:
+    def __init__(self, socket: _Line, client: str, buffer: int) -> None:
         self.id = client
         self._socket = socket
         self._ids = 0
@@ -84,7 +94,19 @@ class _Channel:
         speaks another protocol, `OSError` if nothing answers at `socket` (or, on Windows,
         always: see `require_unix_sockets`)."""
         require_unix_sockets("connecting to `tau serve`")
-        channel = cls(await unix_connect(socket, max_size=None), client, buffer)
+        return await cls._greet(await unix_connect(socket, max_size=None), client, buffer)
+
+    @classmethod
+    async def connect_http(cls, url: str, token: str, client: str, *, buffer: int = 256) -> Self:
+        """`connect`, to the HTTP edge at `url` (`http://HOST:PORT/`) with its bearer `token`.
+        `ConnectionRefusedError` if nothing listens there, `PermissionError` if the edge refuses
+        the token or this client's origin."""
+        return await cls._greet(await HttpLine.open(url, token), client, buffer)
+
+    @classmethod
+    async def _greet(cls, line: _Line, client: str, buffer: int) -> Self:
+        """Say `hello` on `line`; the client, or `line` closed and the error."""
+        channel = cls(line, client, buffer)
         try:
             welcome = await channel.request(
                 "hello", {"protocol": PROTOCOL, "client": client, "buffer": buffer}
@@ -195,6 +217,14 @@ class _Channel:
                 future.set_exception(self._ended)
         self._waiting.clear()
 
+    async def _gone(self) -> ConnectionError:
+        """Why the connection is over, once a send found it closed: the stream may still be
+        delivering its `end` (over HTTP a POST can be refused before the stream's last event is
+        read), so the reader is given `LOST_SECONDS` to read to the end first."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(self._reader), LOST_SECONDS)
+        return self._ended or ConnectionError("the connection to the server was lost")
+
     # Sending
 
     async def request(self, method: str, params: Json) -> object:
@@ -212,7 +242,7 @@ class _Channel:
             await self._socket.send(json.dumps(message))
             result = await future
         except ConnectionClosed:
-            raise ConnectionError("the connection to the server was lost") from None
+            raise await self._gone() from None
         finally:
             self._waiting.pop(request_id, None)
         try:

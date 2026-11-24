@@ -381,6 +381,17 @@ Dial the server at `socket` as `client` with an event stream of `buffer`, and sa
 speaks another protocol, `OSError` if nothing answers at `socket` (or, on Windows,
 always: see `require_unix_sockets`).
 
+### RemoteClient.connect_http
+
+```python
+@classmethod
+async def connect_http(cls, url: str, token: str, client: str, *, buffer: int = 256) -> Self
+```
+
+`connect`, to the HTTP edge at `url` (`http://HOST:PORT/`) with its bearer `token`.
+`ConnectionRefusedError` if nothing listens there, `PermissionError` if the edge refuses
+the token or this client's origin.
+
 ### RemoteClient.__aiter__
 
 ```python

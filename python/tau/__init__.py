@@ -125,6 +125,7 @@ from tau._extensions import (
     load_extensions,
 )
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
+from tau._http_edge import HttpEdge
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
@@ -255,6 +256,7 @@ __all__ = [
     "GrepTool",
     "Hook",
     "HookFailure",
+    "HttpEdge",
     "Item",
     "ItemData",
     "Job",
