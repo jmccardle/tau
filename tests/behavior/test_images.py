@@ -4,7 +4,6 @@ told so (at the call) or fails early (at the send). Never a silent drop."""
 
 import json
 from pathlib import Path
-from typing import ClassVar
 
 from fakes import FAKE_MODEL, FAKE_PROVIDER, FakeProvider, Reply, fake_catalog
 from harness import Harness, scenario
@@ -394,11 +393,10 @@ class _Again:
     """A tool object that answers with an image it was handed: one taken from a node loaded from
     disk, so it carries no bytes."""
 
-    name = "again"
-    description = "Show the earlier picture again."
-    parameters: ClassVar[dict[str, object]] = {"type": "object", "properties": {}}
-
     def __init__(self) -> None:
+        self.name = "again"
+        self.description = "Show the earlier picture again."
+        self.parameters: dict[str, object] = {"type": "object", "properties": {}}
         self.image: Image | None = None
 
     async def call(self, args_raw: str) -> Outcome:
