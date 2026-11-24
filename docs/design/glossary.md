@@ -147,8 +147,25 @@ sibling (Q10).
 ### outcome
 *spike* `Outcome` · retires `is_error`, `Skipped`
 
-`Ok(value)`, `Err(error)`, or `Interrupted` (an abort stopped the call or
-kept it from starting; the tool may or may not have run).
+`Ok(value, images)`, `Err(error)`, or `Interrupted` (an abort stopped the call or
+kept it from starting; the tool may or may not have run). `images` (D30) is a list of **Image**,
+empty by default; only `Ok` carries images. Encoded as before (`{"Ok": "text"}`) when it has none,
+else `{"Ok": {"value", "images"}}`.
+
+### Image, BadImage, MissingImage, image directory
+`tau.Image` (core `tree::Image`), `tau.BadImage` (a `ValueError`), `tau.MissingImage` (a
+`LookupError`) · D30 · new
+
+One image in a tool result: `mime` (`image/png`, `image/jpeg`, `image/gif`, `image/webp`), `sha256`
+(lowercase hex of the bytes, its identity), `width` and `height` in pixels, and `data`, the bytes
+when this process has them, else `None`. `Image(data)` sniffs the format and size from the header
+and hashes the bytes; bytes that are none of the four formats raise **BadImage**. Equality and hash
+leave `data` out. Core carries the bytes with the value but never serializes them. The **image
+directory** is `images/` in a session's directory: one file per image, named by its `sha256`,
+written by `Store::save` before the record that first names it. A node read back from disk has
+images without `data`; `Tree.walk(node, images=True)` reads them (the driver samples with it).
+**MissingImage** is an image without bytes that the session does not have: refused at the write
+that names it, or raised by `walk(images=True)` when the file is gone.
 
 ### author
 *spike* `Author` · retires `source`, `SubmissionSource`
@@ -809,7 +826,8 @@ URL; a provider that needs one says so in its `check`), optional `api_key_env`,
 the *name* of the environment variable holding the API
 key, `provider` (default `"openai"`; a name in the driver's provider map), for a
 literal `api_key` in a file `literal_api_key` (hidden from `repr`), `max_tokens`
-(optional positive integer), `context_window` (see *context_window*), `sections` (see *model
+(optional positive integer), `context_window` (see *context_window*), `images` (D30: whether the
+model takes images; the model key `images`, a boolean, default `false`), `sections` (see *model
 section*) and `options` (see *options*; stored as a deep read-only copy: objects become read-only mappings, lists
 tuples). Invalid values raise
 `ConfigError` (a `ValueError`), which also reports a `Config` that is not a
@@ -1243,7 +1261,9 @@ tools above), built when the extensions are loaded, in the process's working dir
 shared start (`start_session`) has already changed to the session's. It is on like `step_limit`:
 off with `load: {base_tools: false}` in the config (`tau ext disable base_tools`), not with
 `--no-extensions` (which skips only the discovered sources), and `tau ext list` shows it. It has no options and no
-commands and loads before `step_limit`. A user who wants fewer tools turns it off and loads their own
+commands and loads before `step_limit`. Its `read` is τ's reference example of a tool that gives a
+model an image (D30 §5): a PNG, JPEG, GIF or WebP file comes back as `Outcome.Ok(text, [Image])`,
+read whole, up to `max_image_bytes` (`ReadTool(max_image_bytes=)`, default 20 MiB). A user who wants fewer tools turns it off and loads their own
 extension (or a drop-in named `base_tools`, which shadows it). A program that builds a `Driver`
 itself has no base tools unless it passes `tools=base_tools(cwd)`.
 
@@ -1380,7 +1400,10 @@ tokenizer wheel (T4 and later). A **ceiling** is no estimate: the
 count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning, replay data, call
 ids, names and arguments, outcomes) plus 16 tokens for the node (`CEILING_PER_NODE`). Counts add:
 tokens and bounds add, and the sum is as weak as its weakest part, so a reported bill plus the
-ceiling of a new message is a ceiling count with the bill as its `tokens`. A count is shown by
+ceiling of a new message is a ceiling count with the bill as its `tokens`. An image adds its
+**image ceiling** (`tau._counts.image_ceiling(width, height)`, D30 §9) to the bound, never its
+base64 bytes: the most the published formulas give for its pixels without a resize,
+`max(⌈w/28⌉·⌈h/28⌉, 85 + 170·tiles)`. A count is shown by
 `tau._counts.show`: the tokens for a reported one, `~` for a heuristic one, `≤` and the `upper` for
 a ceiling. Nothing in τ estimates tokens from characters.
 
@@ -2418,6 +2441,18 @@ is the supported path.
 provider that does is `examples/retry.py` (`RetryProvider`); it reads `SampleError.status`,
 `retry_after` and the `httpx` error in `__cause__`.
 
+### ImageLimits, image_limits, the image check
+`tau.ImageLimits(max_bytes, max_side)`, `Provider.image_limits` (optional), `tau._images` · D30 §6 · new
+
+What one image may be for a provider's API: at most `max_bytes` bytes (the raw file; positive) and
+`max_side` pixels on its longer side (`None`: no limit). A provider declares it as the optional
+attribute `image_limits`, as it may offer `render`: OpenAI-compatible 20 MiB, Anthropic 3.75 MiB
+and 8000 px, Gemini 15 MiB; the mock provider has none. **The image check** (`tau._images`) holds
+images to a model: none if its `ModelConfig.images` is false, none if its provider has no
+`image_limits`, and each within them. The driver runs it on a tool's `Ok` with images (a misfit
+becomes that call's `Err(why)`) and on the walk before a sample (a misfit fails the sample with a
+`SampleError` naming the node and the model).
+
 ### builtin_providers
 `tau.builtin_providers(environ)` (module `tau._providers`) · D15 · new
 
@@ -2945,7 +2980,7 @@ are strict: an unknown or missing field is an `Err`.
 
 | tool | parameters | does |
 |---|---|---|
-| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, its start is shown and the last line says `[line N is cut at byte B; read cannot show the rest (use bash: cut -c or tail -c); offset=N+1 continues after it]`: `read` has no way to reach past the first `B` bytes of one line. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default: as many as fit) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes) that is not an image. A PNG, JPEG, GIF or WebP file (by its first bytes, not its name) is read whole and answered as `Ok("[image <path>: <mime> <W>x<H>, <N> bytes]", [Image])` (D30 §5); `offset` or `limit` with an image, or an image over `max_image_bytes`, is an `Err`. When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. It stops reading as soon as the limit is passed and writes no overflow file: the file it reads is already on disk. If not even the first line fits, its start is shown and the last line says `[line N is cut at byte B; read cannot show the rest (use bash: cut -c or tail -c); offset=N+1 continues after it]`: `read` has no way to reach past the first `B` bytes of one line. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
 | `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
 | `edit` | `path`, `old_string`, `new_string`, `replace_all` (default false) | One exact search and replace in one existing file. `old_string` (not empty, not equal to `new_string`) must occur exactly once, or `replace_all` changes every occurrence (non-overlapping, left to right). No occurrence: `Err` `old_string not found in <path>: it must match the file exactly ...`; several without `replace_all`: `Err` `old_string occurs N times in <path> (lines 1, 4, 9; the first five, then "and N more"): add the lines around the one to change to make it unique, or set replace_all ...`; the file is not touched in either case. Line endings: in a file whose every line break is CRLF, the `\n` in `old_string` and `new_string` stand for CRLF (the model cannot see the `\r`); any other file, mixed endings included, is matched byte for byte. The rest of the file, a missing final newline included, is kept byte for byte. `Err` for a missing file (`file not found: <path> (edit changes an existing file; write creates one)`), a directory, a file that is not a regular file, and a file that is not UTF-8 (`<path> is not valid UTF-8 (the first bad byte is at offset N)`). Written as `write` writes (a new file beside it, renamed over it, symlink followed, permission bits kept); edits of one file wait for each other (a process-wide lock on its canonical path, from read to rename), so two in one step both land; paths are a default, not a sandbox. Answers `Replaced N occurrence(s) in <path>` then a unified diff (`--- <path>`, `+++ <path>`, hunks of 3 lines of context, git's `\ No newline at end of file`), built from the replaced spans, not by a diff search. The diff is limited like `grep`'s (head kept, the whole saved). Its `Err`s are the model's to fix, never a guess. |
 | `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `exclude` (not in the schema: regular expressions over absolute paths, made from the rule's glob; the walk leaves out a file whose path, or whose real path, matches, and does not enter a directory that matches, and the answer ends `[N path(s) left out of this search: ...]`; set by the permissions hook), `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes (before decoding) with ` [+N bytes]`; a file with a line over 16 MiB (the searcher's heap limit) is not searched and is named in the could-not-search note. The search stops once the matches held reach the overflow cap, and a note says that some files were not searched. No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
@@ -3167,7 +3202,8 @@ per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays t
 ### PROTOCOL, ProtocolError, ProtocolMismatch
 `tau.PROTOCOL`, `tau.ProtocolError`, `tau.ProtocolMismatch` (`_protocol.py`) · D21 §3, §8 · new
 
-`PROTOCOL` is the wire's version, an integer (1 in 0.16.0). By D12 a version marks a *released*
+`PROTOCOL` is the wire's version, an integer (1 in 0.16; 2 from 0.17, for `Outcome.Ok`'s images,
+D30 §8). By D12 a version marks a *released*
 protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
 tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
 again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
@@ -3645,7 +3681,10 @@ record as JSON. `Store::create(dir, session)` writes a new session whole and
 links it into place; `Store::open(dir)` takes the lease and loads;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
-`Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
+`Leased`, `Exists`, `NotASession`, `Version` (a file outside the versions this build reads:
+`VERSION` is 2 since D30, and 1 is read too; the lease holder rewrites a v1 log's header to 2
+before it writes), `MissingImage` (an image a record names that is neither carried nor in the
+image directory), `Corrupt` (a damaged
 scratchpad file), `Undecodable` (an intact log record that does not decode),
 `Core` (the log does not replay), `TooLarge` (a record of 4 GiB or more, refused
 while encoding: nothing of that `save` is written, and the session closes as

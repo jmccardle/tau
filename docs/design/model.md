@@ -73,7 +73,7 @@ body   = System(text)
        | Custom { kind, data }
 
 part    = Text(text) | Thinking(text, signature*) | Call { id, tool, args_raw }
-outcome = Ok(value) | Err(error) | Interrupted
+outcome = Ok(value, images) | Err(error) | Interrupted    images: [Image{mime, sha256, width, height}] (D30)
 stop    = End | Tools | Length | Interrupted | Error | Refused
 by      = Frontend(client) | Provider | Tools | Core | Extension(name)
 
