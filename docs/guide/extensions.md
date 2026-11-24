@@ -75,7 +75,8 @@ the function:
 - the **parameters** are a JSON Schema built from the type hints. Every parameter needs one.
   `Annotated[T, "text"]` adds a description the model reads. A parameter with a default is
   optional.
-- the function **returns a `str`**, which becomes the call's result.
+- the function **returns a `str`**, which becomes the call's result, or text and images (see
+  [Returning an image](#returning-an-image)).
 
 The hints may be `str`, `int`, `float`, `bool`, `Literal` of strings or integers, `list[T]`,
 `T | None`, `pathlib.Path`, and the named types `Model`, `CursorId`, `LabelName` and `NodeId`
@@ -127,6 +128,118 @@ is built. A tool made from a function has no `call_id` to take.
 
 Tool names are not namespaced, since the model and the log use them as they are. Two tools
 with one name are an error.
+
+### Returning an image
+
+A tool may give the model an image beside its text, in the same result: return an `Image`, or a
+list of `str` and `Image` (the strings are joined by newlines; the model reads the text, then the
+images in order). `Image(data)` takes a PNG, JPEG, GIF or WebP file's bytes and reads its type and
+size from them (`BadImage` for anything else); `Image.from_path(path)` reads the file at once, so
+the image does not depend on the file staying. The session keeps the bytes beside its log, once
+each, and sends them with every request that holds the result.
+
+```python
+import asyncio
+import datetime
+from pathlib import Path
+
+from tau import (
+    Body,
+    Driver,
+    Finish,
+    Image,
+    ImageLimits,
+    Part,
+    Session,
+    Stop,
+    SystemClock,
+    model_config,
+    read_models,
+)
+
+# A 1x1 PNG, as a game engine's screenshot call would write a bigger one.
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
+    "53de0000000c4944415408d763f8cfc000000301010018dd8db00000000049454e44ae426082"
+)
+
+
+async def screenshot() -> list[str | Image]:
+    """Take a screenshot of the game and show it."""
+    path = Path(f"shot-{datetime.datetime.now():%H%M%S%f}.png")
+    path.write_bytes(PNG)  # the engine saves it
+    return [f"screenshot saved to {path}", Image.from_path(path)]
+
+
+class Screens:
+    name = "screens"
+    tools = (screenshot,)
+
+
+class Scripted:
+    """A provider that asks for one screenshot, then answers; it says what images it takes."""
+
+    name = "scripted"
+    image_limits = ImageLimits(5_000_000, 8000)
+
+    def __init__(self):
+        self.seen = []
+
+    def check(self, model):
+        return []
+
+    async def aclose(self):
+        """Nothing is held open."""
+
+    async def sample(self, walk, model, tools):
+        if not isinstance(walk[-1].body, Body.Results):
+            yield Part.Call("c1", "screenshot", "{}")
+            yield Finish(Stop.Tools)
+            return
+        self.seen = [image for _, ok, _ in walk[-1].body.outcomes for image in ok.images]
+        yield Part.Text("a one-pixel screen")
+        yield Finish(Stop.End)
+
+
+async def main():
+    provider = Scripted()
+    models = {"m": {"model": "m", "provider": "scripted", "images": True}}
+    session = Session.create(model_config("m"), "Be brief.", SystemClock().now())
+    driver = Driver(
+        session, {"scripted": provider}, read_models(cli={"models": models}), extensions=[Screens()]
+    )
+    driver.start()
+    cursor = session.cursors()[0]
+    await driver.client("test").send(cursor, "show me the game")
+    await driver.rest(cursor)
+    (image,) = provider.seen
+    print(image.mime, image.width, image.height, image.data == PNG)
+    await driver.stop()
+    session.close()
+
+
+asyncio.run(main())
+```
+
+```text expect
+image/png 1 1 True
+```
+
+The model must take images: its config says `images: true` (see the configuration guide), and its
+provider says what one image may be (`image_limits`; the built-in providers have theirs). Nothing
+is resized and nothing is dropped. If the model does not take images, or an image is over its
+provider's limits, the call's result is an error the model reads, naming what was refused and
+why and keeping the tool's text:
+
+```text
+screenshot returned 1 image, not sent: the model local:qwen does not take images (its config has
+no `images: true`; set it if the model can see). The tool's text: screenshot saved to shot-1.png
+```
+
+A branch that already holds an image and is moved to a model without images fails its next
+sample before any request, naming the node: go back before it, or switch back. The base tool
+`read` is the reference example: it answers an image file the same way, `Ok` with one line and
+the `Image`. An `Outcome.Ok(text, [Image(...)])` from a tool object's `call` works the same.
 
 ## Commands
 

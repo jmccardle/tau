@@ -1,6 +1,6 @@
 # D30: Images in tool results (first slice)
 
-**Status:** accepted, building (0.17). **Amends** D12 (the store's `VERSION` and an image directory),
+**Status:** accepted, built on `feat/image-input` (0.17), for review. **Amends** D12 (the store's `VERSION` and an image directory),
 D15 (the walk's turns carry images; a provider declares `image_limits`), D21 (`PROTOCOL` 2, a new
 wire shape of `Outcome.Ok`), D24 (`base_tools`' `read` returns images), D26 §7.3 (the image ceiling).
 Investigation: akb #563. John's decisions (2026-11-24) are marked **fixed**; the rest are #563's
@@ -20,10 +20,11 @@ end, and the shapes the later slices extend.
 
 τ 0.17, with `PROTOCOL` going from 1 to 2. The first slice is **`read` returns image content**: a
 file whose bytes are a PNG, JPEG, GIF or WebP image comes back as an image, through the core value,
-the store, the walk, the providers and John's local vision model. Images live **only in tool
+the store, the walk, the providers and John's local vision model. **Extension tools return images
+directly** (fixed, John 2026-11-24, akb #569): a function tool returns text and images in one
+result (§5b), so an agent need not `read` a file a tool just wrote. Images live **only in tool
 results** (`Outcome.Ok`) for now (**provisional**): user images (`@file`, `send(images=)`, the
-edge's input), extension function tools returning images, an MCP client and resizing are later
-slices (§10).
+edge's input), an MCP client and resizing are later slices.
 
 ### 2. The value: `Image`, and `Outcome.Ok(value, images)`
 
@@ -84,6 +85,19 @@ model an image: sniff, check, return `Outcome.Ok(text, [Image(bytes)])`, nothing
   `read` itself refuses only a file over `max_image_bytes` (default 20 MiB, the most any built-in
   provider takes), so it never loads a file no provider takes.
 
+### 5b. Extension tools (fixed)
+
+A function tool (`docs/guide/extensions.md`, "Tools") returns `str`, an `Image`, or a `list` of
+`str` and `Image`: the strings are joined by newlines into `Ok.value` and the images follow in
+order (`Ok("", [image])` for an image alone; anything else is an `Err` naming what came back). A
+tool object's `call` answers `Outcome.Ok(text, [Image(...)])` itself. Bytes are canonical:
+`Image(data)`; `Image.from_path(path)` reads the file when the tool returns, so the stored image
+does not depend on the file staying. Sync and async functions alike. The rule that holds a tool's
+images to its model (§6) is the same one for `read` and for every other tool: one ingest point.
+mcrf-term's path (`start_session(own=[extension])`, then `Started.serve()`, an OpenAI-compatible
+llama.cpp server) is tested as such (`tests/serve/test_image_start.py`): the provider, not the
+tool's author, moves the image into the `user` message after the tool message.
+
 ### 6. Which models take images (provisional)
 
 A model takes images only if its config says `images: true` (`ModelConfig.images`, default
@@ -99,12 +113,21 @@ A model takes images only if its config says `images: true` (`ModelConfig.images
 
 Two checks, one rule (`tau._images`), and neither is silent:
 
-- **At the call.** When a tool answers `Ok` with images, the driver checks them against the batch's
-  model: a model without `images`, a provider without `image_limits`, or an image over the limits
-  makes the call's outcome `Err(why)`. The model reads why and goes on; the branch stays sendable.
-- **At send (fail early).** A walk holding an image is refused before any request when the model
-  does not take images or an image is over its provider's limits (a branch moved to another model,
-  a node copied in): the sample fails with `SampleError` naming the node and the model.
+- **(a) At the call.** When a tool answers `Ok` with images (after `pre_result`, so a hook's
+  images too), the driver checks them against the batch's model: a model without `images`, a
+  provider without `image_limits`, or an image over the limits makes the call's outcome one
+  `Err` that says what was refused and why and keeps the tool's text, e.g.
+  `screenshot returned 1 image, not sent: the model local:qwen does not take images (its config
+  has no `images: true`; set it if the model can see). The tool's text: screenshot saved to
+  shot-0.png`, or `... image 1 (image/png 9000x100, 123 bytes) is over what the model x takes (at
+  most 3932160 bytes and 8000 px a side); τ does not resize images: make a smaller copy and send
+  that.` The model reads it and the step goes on; the branch stays sendable.
+- **(b) At send (fail early, a backstop).** A walk holding an image is refused before any request
+  when the model does not take images or an image is over its provider's limits (a branch moved to
+  another model, a node copied in): the sample fails with `SampleError`, e.g. `node 7 holds 1
+  image the request cannot carry: the model blind does not take images (...). Go back before it,
+  or switch to a model that takes them`; the step ends `Failed`.
+- A wrapper provider (`RetryProvider`) forwards its inner provider's `image_limits`.
 
 ### 7. Providers
 
@@ -158,12 +181,12 @@ generated from the 0.16 schema meets an unknown shape, so `PROTOCOL` is 2 and a 
 
 ## Later slices (#563 S2)
 
-User images (`@file`, `send(images=)`, the edge's input); extension function tools returning
-`Image`; a `Client` call that returns an image's bytes (base64) and tau-code drawing them; history
+User images (`@file`, `send(images=)`, the edge's input); a `Client` call that returns an image's bytes (base64) and tau-code drawing them; history
 elision of old images; harness-side resizing; the OpenAI Responses adapter; an MCP client.
 
 ## Glossary additions
 
-`Image`, `BadImage`, `MissingImage`, `Outcome.Ok.images`, image directory, `ImageLimits`,
-`Provider.image_limits`, `ModelConfig.images`, `max_image_bytes`, image ceiling; `VERSION` 2 and
-`PROTOCOL` 2 in their entries.
+`Image` (with `Image.from_path`), `BadImage`, `MissingImage`, `Outcome.Ok.images`, image
+directory, `ImageLimits`, `Provider.image_limits`, the image check, `ModelConfig.images`,
+`max_image_bytes`, image ceiling, a function tool's image return; `VERSION` 2 and `PROTOCOL` 2 in
+their entries.

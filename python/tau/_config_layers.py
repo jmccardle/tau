@@ -421,10 +421,7 @@ class _Resolver:
         bad = Leaf(_INVALID, source)
         text = value.value if isinstance(value, Leaf) else None
         if key in _BOOL_KEYS:
-            if not isinstance(text, bool):
-                self.problems.add("error", f"{key!r} must be true or false", source, here)
-                return bad
-            return value if isinstance(value, Leaf) else bad
+            return self._boolean(key, value, here)
         if key in _INT_KEYS:
             if not isinstance(text, int):
                 self.problems.add("error", f"{key!r} must be a positive integer", source, here)
@@ -446,6 +443,13 @@ class _Resolver:
         else:
             return value if isinstance(value, Leaf) else bad
         return bad
+
+    def _boolean(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
+        """A setting that is `true` or `false` (`images`, D30)."""
+        if isinstance(value, Leaf) and isinstance(value.value, bool):
+            return value
+        self.problems.add("error", f"{key!r} must be true or false", source_of(value) or CLI, here)
+        return Leaf(_INVALID, source_of(value) or CLI)
 
     def object_setting(self, key: str, value: Tree | Leaf, here: str) -> Leaf:
         """`options` (the provider's own settings) or an extension's section as an object tree

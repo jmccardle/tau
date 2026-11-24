@@ -112,14 +112,7 @@ impl Read {
         let io = |e: std::io::Error| ToolError(format!("cannot read {}: {e}", args.path));
         let head = reader.fill_buf().map_err(io)?;
         if is_image(head) {
-            if args.offset.is_some() || args.limit.is_some() {
-                return Err(format!(
-                    "{} is an image, read whole: leave out `offset` and `limit` (they count lines)",
-                    args.path
-                )
-                .into());
-            }
-            return self.image(&args.path, reader, size, cancel);
+            return self.image(&args, reader, size, cancel);
         }
         if head.contains(&0) {
             return Err(binary(&args.path));
@@ -142,14 +135,21 @@ impl Read {
         Ok(answer(sink.finish(), offset, read, more).into())
     }
 
-    /// The image file `shown`, whole, of `size` bytes.
+    /// The image file `args.path`, whole, of `size` bytes.
     fn image(
         &self,
-        shown: &str,
+        args: &Args,
         mut reader: BufReader<File>,
         size: u64,
         cancel: &Cancel,
     ) -> Result<Answer> {
+        let shown = args.path.as_str();
+        if args.offset.is_some() || args.limit.is_some() {
+            return Err(format!(
+                "{shown} is an image, read whole: leave out `offset` and `limit` (they count lines)"
+            )
+            .into());
+        }
         if size > self.max_image_bytes {
             return Err(format!(
                 "{shown} is an image of {size} bytes, more than the {} bytes read loads; τ does \

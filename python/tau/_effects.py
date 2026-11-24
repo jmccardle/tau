@@ -32,7 +32,7 @@ from tau._core import (
 from tau._events import CallArgs, CallNamed, Delta, Retrying, TextDelta, ThinkingDelta, ToolProgress
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._hook_order import HookOrder
-from tau._images import outcome_images, refused, walk_problem
+from tau._images import images_problem, outcome_images, refused, walk_problem
 from tau._protocols import (
     CallDraft,
     CursorHook,
@@ -628,3 +628,25 @@ class CallRun:
             print(message, file=sys.stderr)
             return Outcome.Err(message)
         return outcome
+
+
+def call_gate(
+    providers: Mapping[str, Provider],
+    catalog: ModelCatalog,
+    model_at: Callable[[int], str],
+    node: int,
+) -> Callable[[Sequence[Image]], str | None]:
+    """The image rule for the calls of the batch at `node`: the model in force there. Resolved
+    when a call first answers with images, so a batch without any reads no config."""
+
+    def problem(images: Sequence[Image]) -> str | None:
+        if not images:
+            return None
+        name = model_at(node)
+        try:
+            model = catalog.resolve(name)
+        except ConfigError as e:
+            return f"the model at this batch cannot be read: {e}"
+        return images_problem(images, name, model, providers.get(model.provider))
+
+    return problem

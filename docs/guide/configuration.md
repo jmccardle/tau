@@ -52,7 +52,7 @@ An unknown key is an error that names the closest key you might have meant.
 ## Models and groups
 
 A model has these keys: `model` (the name the API knows), `provider`, `base_url`, `api_key_env`,
-`max_tokens` and `options`. An object with a `models` object inside it is a **group**: its other
+`max_tokens`, `context_window`, `images` and `options`. An object with a `models` object inside it is a **group**: its other
 keys apply to every model in it, and groups nest. A model's **qualified name** is the path of
 group names and its own name joined by colons, such as `work:fast`; names may not hold a colon.
 
@@ -87,6 +87,31 @@ group names and its own name joined by colons, such as `work:fast`; names may no
 `work:fast` and `personal:fast` are the same model under two accounts, which is what groups are
 for. A program that is asked for `fast` has two matches: a terminal asks which; a script fails
 with the list.
+
+### A model that sees images
+
+`images: true` says a model takes images (default `false`). Then a tool's images reach it: `read`
+on a PNG, JPEG, GIF or WebP file, or an extension's tool that returns an `Image`. Without it, a
+tool that returns an image answers an error the model reads instead, and a conversation that
+already holds an image fails its next request at once, naming the model, rather than sending
+something the model cannot see. Each provider also has a limit on one image (OpenAI-compatible
+20 MiB; Anthropic 3.75 MiB and 8000 pixels a side; Gemini 15 MiB). τ does not resize: a larger
+image is an error that says so, and the model can make a smaller copy and read that.
+
+```json
+{
+  "models": {
+    "local": {
+      "base_url": "http://localhost:8080/v1",
+      "models": { "qwen": { "model": "qwen3.8-27b", "images": true } }
+    }
+  }
+}
+```
+
+A llama.cpp server takes images when it runs with the model's projector (`--mmproj`; its `/props`
+says `"vision": true`). τ sends a tool's images in a `user` message after the tool's text, which
+is the form llama.cpp, vLLM and OpenAI accept.
 
 - **`provider`** is `openai` (the default: any OpenAI-compatible chat API, such as llama.cpp,
   vLLM or OpenAI), `anthropic`, `gemini`, or `mock` (echoes, for trying things). `base_url` is

@@ -194,25 +194,29 @@ fn gif(d: &[u8]) -> Option<(u32, u32)> {
 
 fn webp(d: &[u8]) -> Option<(u32, u32)> {
     match d.get(12..16)? {
-        b"VP8 " => {
-            if d.get(23..26)? != [0x9d, 0x01, 0x2a] {
-                return None;
-            }
-            Some((le16(d, 26)? & 0x3FFF, le16(d, 28)? & 0x3FFF))
-        }
-        b"VP8L" => {
-            if *d.get(20)? != 0x2f {
-                return None;
-            }
-            let bits = u32::from_le_bytes(d.get(21..25)?.try_into().ok()?);
-            Some((1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)))
-        }
+        b"VP8 " => webp_lossy(d),
+        b"VP8L" => webp_lossless(d),
         b"VP8X" => Some((1 + le24(d, 24)?, 1 + le24(d, 27)?)),
         _ => None,
     }
 }
 
-/// The size from a JPEG's first start-of-frame marker.
+fn webp_lossy(d: &[u8]) -> Option<(u32, u32)> {
+    if d.get(23..26)? != [0x9d, 0x01, 0x2a] {
+        return None;
+    }
+    Some((le16(d, 26)? & 0x3FFF, le16(d, 28)? & 0x3FFF))
+}
+
+fn webp_lossless(d: &[u8]) -> Option<(u32, u32)> {
+    if *d.get(20)? != 0x2f {
+        return None;
+    }
+    let bits = u32::from_le_bytes(d.get(21..25)?.try_into().ok()?);
+    Some((1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)))
+}
+
+/// The size from a JPEG's first SOF marker (`0xC0` to `0xCF`, but not `C4`, `C8` or `CC`).
 fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
     let mut i = 2;
     loop {
@@ -228,8 +232,8 @@ fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
             continue;
         }
         let len = usize::try_from(be16(d, i + 2)?).ok()?;
-        let frame = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
-        if frame {
+        let size_marker = matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if size_marker {
             return Some((be16(d, i + 7)?, be16(d, i + 5)?));
         }
         i += 2 + len;
@@ -281,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn jpeg_size_from_the_frame_after_other_segments() {
+    fn jpeg_size_from_its_sof_marker_after_other_segments() {
         let mut d = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
         d.extend_from_slice(&[0xFF, 0xC2, 0x00, 0x11, 8, 0x01, 0x2C, 0x02, 0x58, 3]);
         assert_eq!(sniff(&d).unwrap(), ("image/jpeg", 600, 300));

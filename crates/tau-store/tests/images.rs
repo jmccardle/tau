@@ -58,9 +58,9 @@ fn fixture() -> PathBuf {
 
 fn copy_dir(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    for found in fs::read_dir(from).unwrap() {
+        let found = found.unwrap();
+        fs::copy(found.path(), to.join(found.file_name())).unwrap();
     }
 }
 

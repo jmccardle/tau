@@ -160,7 +160,8 @@ One image in a tool result: `mime` (`image/png`, `image/jpeg`, `image/gif`, `ima
 (lowercase hex of the bytes, its identity), `width` and `height` in pixels, and `data`, the bytes
 when this process has them, else `None`. `Image(data)` sniffs the format and size from the header
 and hashes the bytes; bytes that are none of the four formats raise **BadImage**. Equality and hash
-leave `data` out. Core carries the bytes with the value but never serializes them. The **image
+leave `data` out; `Image.from_path(path)` reads a file at once. Core carries the bytes with the
+value but never serializes them. The **image
 directory** is `images/` in a session's directory: one file per image, named by its `sha256`,
 written by `Store::save` before the record that first names it. A node read back from disk has
 images without `data`; `Tree.walk(node, images=True)` reads them (the driver samples with it).
@@ -2723,6 +2724,11 @@ that is not a sequence, an options type that is not a frozen dataclass of the la
 `ask(expect=...)` of a type outside the language. `check_tools` and `check_extensions`
 (`_protocols.py`) make the contract checks and return the tools by name (with the names of those
 that take progress) and the extensions.
+
+A function tool may return an `Image` or a `list` of `str` and `Image` as well as a `str` (D30
+§5b, `tau._tools.returned`): the strings joined by newlines are `Ok.value`, the images follow in
+order; anything else is an `Err` naming the type. Its images meet the same image check as
+`read`'s.
 
 ### values, Kind, Context, Field, Form
 `tau._values` (private), `Kind`, `Context`, `Field`, `kind_of`, `field_of`; `tau.Form`, `tau.Json` (`dict[str, object]`, what a schema or decoded JSON object is typed as) · D16 · new

@@ -632,6 +632,19 @@ def test_a_bad_context_window_is_a_problem(tmp_path: Path) -> None:
         assert message in only_error(check(tmp_path, config)).message, value
 
 
+def test_images_is_true_or_false_and_off_by_default(tmp_path: Path) -> None:
+    """D30: whether a model takes images; a group may set it for its models."""
+    for value in ("yes", 1, {"max_bytes": 5}):
+        config = {"models": {"a": {"model": "a", "provider": "mock", "images": value}}}
+        message = "'images' must be true or false"
+        assert message in only_error(check(tmp_path, config)).message, value
+    group = {"g": {"provider": "mock", "images": True, "models": {"a": {"model": "a"}}}}
+    plain = {"b": {"model": "b", "provider": "mock"}}
+    catalog = read_models(cli={"models": {**group, **plain}})
+    assert catalog.resolve("g:a").images is True
+    assert catalog.resolve("b").images is False
+
+
 def test_an_invalid_group_value_is_not_repeated_as_missing_on_each_model(tmp_path: Path) -> None:
     config = {
         "models": {"g": {"base_url": 5, "models": {"a": {"model": "x"}, "b": {"model": "y"}}}}

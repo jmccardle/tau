@@ -198,7 +198,9 @@ branch: [0, 1, 2, 3]
 An **extension** is an object with a `name` and any of: hooks; `tools` the model can call;
 `commands` a person types as `/name`; and `options`, settings kept in the config. A **tool**
 is a function the model calls (`read`, `write`, `edit`, `grep`, `find` and `bash` are the base tools, which a session has unless the `base_tools` extension is off); the
-model is given its name, its docstring and a schema built from its type hints. An extension
+model is given its name, its docstring and a schema built from its type hints. A tool's result
+is text, and may hold images too (`read` answers an image file with one; a model sees them when
+its config says `images: true`). An extension
 can also **ask a question** of whoever is watching (a permission, a choice) and wait for the
 answer.
 

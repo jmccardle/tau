@@ -6,15 +6,14 @@ API takes (`Provider.image_limits`). Nothing is resized and nothing is dropped: 
 not fit is an error that says why.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tau._config import ConfigError, ModelConfig
+from tau._config import ModelConfig
 from tau._core import Body, Image, Node, Outcome
 
 if TYPE_CHECKING:
-    from tau._config_layers import ModelCatalog
     from tau._protocols import Provider
 
 MIB = 1024 * 1024
@@ -124,25 +123,3 @@ def walk_problem(
                 f"carry: {problem}. Go back before it, or switch to a model that takes them"
             )
     return None
-
-
-def call_gate(
-    providers: Mapping[str, "Provider"],
-    catalog: "ModelCatalog",
-    model_at: Callable[[int], str],
-    node: int,
-) -> Callable[[Sequence[Image]], str | None]:
-    """The image rule for the calls of the batch at `node`: the model in force there. Resolved
-    when a call first answers with images, so a batch without any reads no config."""
-
-    def problem(images: Sequence[Image]) -> str | None:
-        if not images:
-            return None
-        name = model_at(node)
-        try:
-            model = catalog.resolve(name)
-        except ConfigError as e:
-            return f"the model at this batch cannot be read: {e}"
-        return images_problem(images, name, model, providers.get(model.provider))
-
-    return problem
