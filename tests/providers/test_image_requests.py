@@ -3,6 +3,7 @@ posts to a local server: no paid call. The result is mixed, text then an image, 
 function tool return it."""
 
 import base64
+from typing import Any
 
 from fakes import FakeTool
 from harness import scenario
@@ -24,6 +25,11 @@ def _walk(*outcomes: Outcome) -> list:
         Body.Assistant(calls, Stop.Tools, None),
         Body.Results(results),
     )
+
+
+def _body(server: object) -> Any:
+    """The JSON body of the one request `server` was sent."""
+    return getattr(server, "bodies")[0]  # noqa: B009
 
 
 MIXED = Outcome.Ok("the screen at noon", [Image(PICTURE)])
@@ -72,7 +78,7 @@ async def test_openai_a_result_with_no_batch_carries_its_image_in_the_user_messa
 @scenario
 async def test_anthropic_puts_the_text_and_the_image_inside_the_tool_result() -> None:
     server = await posted(ANTHROPIC, _walk(MIXED, Outcome.Err("broken")), tools=TOOLS)
-    user = server.bodies[0]["messages"][-1]
+    user = _body(server)["messages"][-1]
     assert user["role"] == "user"
     blocks = [{k: v for k, v in b.items() if k != "cache_control"} for b in user["content"]]
     assert blocks == [
@@ -96,14 +102,14 @@ async def test_anthropic_puts_the_text_and_the_image_inside_the_tool_result() ->
 @scenario
 async def test_anthropic_an_image_alone_sends_no_empty_text_block() -> None:
     server = await posted(ANTHROPIC, _walk(Outcome.Ok("", [Image(PICTURE)])), tools=TOOLS)
-    result = server.bodies[0]["messages"][-1]["content"][0]
+    result = _body(server)["messages"][-1]["content"][0]
     assert [b["type"] for b in result["content"]] == ["image"]
 
 
 @scenario
 async def test_gemini_follows_the_function_responses_with_inline_data() -> None:
     server = await posted(GEMINI, _walk(MIXED), tools=TOOLS)
-    last = server.bodies[0]["contents"][-1]
+    last = _body(server)["contents"][-1]
     assert last == {
         "role": "user",
         "parts": [

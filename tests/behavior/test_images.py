@@ -18,6 +18,7 @@ from tau import (
     Image,
     ImageLimits,
     ModelCatalog,
+    Node,
     Outcome,
     Part,
     Prune,
@@ -43,6 +44,14 @@ def _results(h: Harness) -> Body.Results:
 
 def _outcome(h: Harness) -> Outcome:
     return _results(h).outcomes[0][1]
+
+
+def _first(node: Node) -> Outcome.Ok:
+    """The first outcome of a `Results` node, an `Ok`."""
+    assert isinstance(node.body, Body.Results)
+    outcome = node.body.outcomes[0][1]
+    assert isinstance(outcome, Outcome.Ok)
+    return outcome
 
 
 def sighted_and_blind() -> ModelCatalog:
@@ -317,7 +326,7 @@ async def test_prune_keeps_only_the_newest_turns_images(tmp_path: Path) -> None:
     await h.settle()
     new = h.session.tree.walk(h.session.cursor(h.cursor).at)
     results = [n for n in new if isinstance(n.body, Body.Results)]
-    assert [r.body.outcomes[0][1] for r in results] == [
+    assert [_first(r) for r in results] == [
         Outcome.Ok("ok"),
         Outcome.Ok("[image two.png: image/png 20x20, 81 bytes]", [Image(png(20, 20))]),
     ]
@@ -371,9 +380,9 @@ async def test_compaction_shows_the_summarizer_the_images_and_copies_the_tails(
     assert all(i.data is not None for i in summarizer.images)
     new = h.session.tree.walk(h.session.cursor(h.cursor).at)
     kept = [n for n in new if isinstance(n.body, Body.Results)]
-    assert [
-        (n.copied_from is not None, [i.width for i in n.body.outcomes[0][1].images]) for n in kept
-    ] == [(True, [20])], "the head's image went with the head; the tail's is copied"
+    assert [(n.copied_from is not None, [i.width for i in _first(n).images]) for n in kept] == [
+        (True, [20])
+    ], "the head's image went with the head; the tail's is copied"
     await h.send("and now")
     await h.settle()
     assert [i.width for i in provider.requests[-1].images] == [20]
