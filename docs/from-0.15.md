@@ -172,7 +172,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | Context files (AGENTS.md, CLAUDE.md, `.tau/SYSTEM.md`) into the system prompt | `backends.py`, `cli.py:--no-context-files` | **built** | D20: `tau.system_prompt`, once at creation, recorded as the `System` node; names are `AGENTS.md`, `CLAUDE.md` only; `tau context` shows the parts |
 | `ext:` bus / request-reply between extensions (`api.request`) | `docs/EXT-REQUEST.md` | **dropped** | Not in glossary; handles are the cross-extension surface (`TreeHandle`) |
 | NATS bus extension, `--bus` | `extensions_builtin/nats_bus.py` | **post-0.16** | plan.md "After 0.16.0 ... Later": the NATS bus; extension-shaped |
-| Budget / cost ledger examples (`24_budget.py`, `43_budget_ledger.py`) | `examples/` | **REGRESSION** | Cost is shown by `usage` (2.10), but no example or extension stops a run at a spend. 0.15 had 40 numbered examples; 0.16 ships 10 Python programs, a sample config, `examples/ratatui/` and 7 speculative prototypes |
+| Budget / cost ledger examples (`24_budget.py`, `43_budget_ledger.py`) | `examples/` | **built** (changed) | The `usage` built-in's `max_usd` option (`dc32a6c6`): once the session's spend reaches it, `pre_input` refuses new input and `pre_sample` halts a tool loop, both with `budget: $X of $Y` (guide/built-ins.md). An extension option, not an example; no per-run ledger file |
 | SDK entry `create_agent_session()` | `sdk.py` | **built** (changed) | `Driver`, `LocalClient`, `tau.start_session`, `tau.open_client`; the public surface is `docs/api/surface.txt` and `docs/reference/` (Phase 7C) |
 
 ### 2.6 Permissions
@@ -319,10 +319,10 @@ counted once under its first).
 
 | status | rows | of which |
 |---|---|---|
-| built | 133 | includes "built (changed)" and "built (new)" rows (0.16-only: trust, `config check`, `config set`, `.env`, tracing, permissions, prune, the ratatui client) |
+| built | 134 | includes "built (changed)" and "built (new)" rows (0.16-only: trust, `config check`, `config set`, `.env`, tracing, permissions, prune, the ratatui client) |
 | planned | 5 | 2 are "planned (unspecified)": `summarize_and_navigate`, and the extension and tool lists in the TUI |
 | dropped by design | 33 | |
-| REGRESSION | 4 | all four listed in section 4 |
+| REGRESSION | 3 | all three listed in section 4 |
 | post-0.16 | 33 | JMFTS (5 rows), the tool-list flags, Tectum and stdio RPC, tau-code and the web client, and the extension-shaped "Later" list (plan.md "After 0.16.0") |
 | **total** | **208** | |
 
@@ -332,8 +332,7 @@ Rows marked **REGRESSION** in section 2, by impact on a coding agent session:
 
 1. **Prompt cache dialect** for an Anthropic model behind an OpenAI-compatible gateway (2.1): that route is billed without caching unless the request body is built by hand in `extra_body`.
 2. **A model's own compaction settings** (2.4): one setting set for the session, a branch, or your config, not per model.
-3. **Budget caps** (2.5): cost is shown (2.10) but nothing stops a run at a spend.
-4. **Latency collection and run manifests** (2.10): research tooling.
+3. **Latency collection and run manifests** (2.10): research tooling.
 
 Marked **planned** with no release placed: `summarize_and_navigate` (2.3), the extension and tool lists in the TUI (2.9), the tokenizer and calibrated counter stages of D26 (2.1), a sequential tool mode (2.2), `cache_state` and automatic pruning (2.1, 2.4).
 
