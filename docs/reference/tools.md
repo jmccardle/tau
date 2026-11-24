@@ -4,7 +4,15 @@
 
 What the model can call. Write a `Tool`, or use the six base tools.
 
-Names: `BashTool`, `EditTool`, `FindTool`, `GrepTool`, `Progress`, `ReadTool`, `Tool`, `ToolError`, `WriteTool`, `base_tools`
+Names: `BadImage`, `BashTool`, `EditTool`, `FindTool`, `GrepTool`, `Image`, `Progress`, `ReadTool`, `Tool`, `ToolError`, `WriteTool`, `base_tools`
+
+## BadImage
+
+```python
+class BadImage(ValueError)
+```
+
+Bytes that are not a PNG, JPEG, GIF or WebP image whose size can be read.
 
 ## BashTool
 
@@ -238,6 +246,74 @@ property parameters: Mapping[str, object]
 
 A JSON Schema object describing the tool's arguments.
 
+## Image
+
+```python
+class Image
+```
+
+One image in a tool result (D30): a PNG, JPEG, GIF or WebP file's bytes. `Image(data)` reads
+the format and size from the header and hashes the bytes; bytes that are none of the four
+formats raise `BadImage`. Two images are equal when `mime`, `sha256`, `width` and `height` are.
+
+### Image.__new__
+
+```python
+def __new__(cls, data: bytes) -> Image
+```
+
+### Image.from_path
+
+```python
+@staticmethod
+def from_path(path: str | PathLike[str]) -> Image
+```
+
+The image in the file at `path`, read now: the image holds the bytes, so it does not
+depend on the file staying. `BadImage` if the file is not an image; `OSError` if it
+cannot be read.
+
+### Image.mime
+
+```python
+property mime: str
+```
+
+`image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+
+### Image.sha256
+
+```python
+property sha256: str
+```
+
+Lowercase hex of the SHA-256 of the bytes: the image's identity.
+
+### Image.width
+
+```python
+property width: int
+```
+
+Width in pixels.
+
+### Image.height
+
+```python
+property height: int
+```
+
+Height in pixels.
+
+### Image.data
+
+```python
+property data: bytes | None
+```
+
+The bytes, when this process holds them; `None` in a node loaded from disk (the session
+keeps them: `Tree.walk(node, images=True)` reads them).
+
 ## Progress
 
 ```python
@@ -254,12 +330,19 @@ aborted, or was cancelled) calling it does nothing.
 class ReadTool
 ```
 
-`read`: a text file, from line `offset` for `limit` lines. Keeps the head of long output.
+`read`: a text file, from line `offset` for `limit` lines, keeping the head of long
+output; or an image file, whole, as an `Image` (at most `max_image_bytes`).
 
 ### ReadTool.__init__
 
 ```python
-def __init__(self, cwd: str | os.PathLike[str] | None = None, *, max_output: int = 10000) -> None
+def __init__(
+    self,
+    cwd: str | os.PathLike[str] | None = None,
+    *,
+    max_output: int = 10000,
+    max_image_bytes: int = 20 * 1024 * 1024,
+) -> None
 ```
 
 ### ReadTool.call

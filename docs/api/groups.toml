@@ -29,7 +29,7 @@ title = "Tools"
 reader = "What the model can call. Write a `Tool`, or use the six base tools."
 names = [
     "Tool", "Progress", "ToolError", "ReadTool", "WriteTool", "EditTool", "GrepTool", "FindTool",
-    "BashTool", "base_tools",
+    "BashTool", "base_tools", "Image", "BadImage",
 ]
 
 [[group]]
@@ -90,7 +90,7 @@ title = "Providers"
 reader = "The model APIs: the contract a provider keeps, and the three hosted providers (the mock one is `builtin_providers()[\"mock\"]`)."
 names = [
     "Provider", "Finish", "SampleError", "ProviderClosed", "RetryProvider", "replay_for", "builtin_providers",
-    "OpenAIProvider", "AnthropicProvider", "GeminiProvider", "Rendered",
+    "OpenAIProvider", "AnthropicProvider", "GeminiProvider", "Rendered", "ImageLimits",
 ]
 
 [[group]]
@@ -119,6 +119,7 @@ names = [
     "NoSuchNode", "NoSuchCursor", "CursorClosed", "NoSuchLabel", "Busy", "NotInHook",
     "NoSuchItem", "NotPending", "DuplicateCall", "BadRecord", "BadReplay", "WrongAnswer",
     "Closed", "Leased", "Exists", "NotASession", "Version", "Corrupt", "Undecodable", "TooLarge",
+    "MissingImage",
     "Poisoned", "TraceError",
 ]
 

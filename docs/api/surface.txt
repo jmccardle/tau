@@ -263,6 +263,7 @@ def counted(node: Node) -> bool
 def reading(node: Node) -> Reading | None
 
 == tools: Tools
+class BadImage(ValueError)
 class BashTool
     def __init__(
         self,
@@ -318,9 +319,24 @@ class GrepTool
     property description: str
     property name: str
     property parameters: Mapping[str, object]
+class Image
+    def __new__(cls, data: bytes) -> Image
+    property data: bytes | None
+    @staticmethod
+    def from_path(path: str | PathLike[str]) -> Image
+    property height: int
+    property mime: str
+    property sha256: str
+    property width: int
 Progress = Callable[[str], None]
 class ReadTool
-    def __init__(self, cwd: str | os.PathLike[str] | None = None, *, max_output: int = 10000) -> None
+    def __init__(
+        self,
+        cwd: str | os.PathLike[str] | None = None,
+        *,
+        max_output: int = 10000,
+        max_image_bytes: int = 20 * 1024 * 1024,
+    ) -> None
     async def call(self, args_raw: str) -> Outcome
     property description: str
     property name: str
@@ -444,7 +460,8 @@ class Outcome
     class Interrupted(Outcome)
         def __new__(cls) -> Outcome.Interrupted
     class Ok(Outcome)
-        def __new__(cls, value: str) -> Outcome.Ok
+        def __new__(cls, value: str, images: Sequence[Image] = ...) -> Outcome.Ok
+        property images: list[Image]
         property value: str
 class Part
     class Call(Part)
@@ -478,7 +495,7 @@ class Tree
     def config_at(self, node: int) -> Config
     def lca(self, a: int, b: int) -> int | None
     def node(self, id: int) -> Node
-    def walk(self, node: int) -> list[Node]
+    def walk(self, node: int, *, images: bool = False) -> list[Node]
 
 == clients: Writing a frontend
 class Client(AsyncIterator[Event], Protocol)
@@ -769,7 +786,7 @@ class HttpEdge
     token: str | None = None
     web_root: Path | None = None
 Json = dict[str, object]
-PROTOCOL: Final = 1
+PROTOCOL: Final = 2
 class ProtocolError(RuntimeError)
 class ProtocolMismatch(ProtocolError)
     def __init__(self, message: str, server: int) -> None
@@ -851,6 +868,7 @@ class AnthropicProvider
     ) -> None
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
+    property image_limits: ImageLimits
     property name: str
     async def sample(
         self,
@@ -872,6 +890,7 @@ class GeminiProvider
     ) -> None
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
+    property image_limits: ImageLimits
     property name: str
     def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
@@ -880,6 +899,11 @@ class GeminiProvider
         model: ModelConfig,
         tools: Sequence[Tool],
     ) -> AsyncGenerator[Part | Finish | Delta, None]
+@dataclass(frozen=True)
+class ImageLimits
+    def describe(self) -> str
+    max_bytes: int
+    max_side: int | None = None
 class OpenAIProvider
     def __init__(
         self,
@@ -890,6 +914,7 @@ class OpenAIProvider
     async def aclose(self) -> None
     def chat_template(self, base_url: str) -> str | None
     def check(self, model: ModelConfig) -> list[str]
+    property image_limits: ImageLimits
     property name: str
     def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered
     async def sample(
@@ -926,6 +951,7 @@ class RetryProvider
     ) -> None
     async def aclose(self) -> None
     def check(self, model: ModelConfig) -> list[str]
+    property image_limits: ImageLimits | None
     property name: str
     async def sample(
         self,
@@ -1151,6 +1177,7 @@ class ModelConfig
     api_key_env: str | None = None
     base_url: str | None = None
     context_window: int | None = None
+    images: bool = False
     literal_api_key: str | None = field(default=None, repr=False)
     max_tokens: int | None = None
     model: str
@@ -1272,6 +1299,7 @@ class CursorClosed(NoSuchCursor)
 class DuplicateCall(ValueError)
 class Exists(FileExistsError)
 class Leased(OSError)
+class MissingImage(LookupError)
 class NoSuchCursor(LookupError)
 class NoSuchItem(LookupError)
 class NoSuchLabel(LookupError)

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "τ wire protocol",
   "description": "JSON-RPC 2.0, one message per WebSocket text message (D21).",
-  "x-protocol": 1,
+  "x-protocol": 2,
   "$defs": {
     "Appended": {
       "description": "Nodes added to the tree, in id order, bodies included.",
@@ -585,6 +585,38 @@
         "error"
       ]
     },
+    "Image": {
+      "description": "One image in a tool result (D30): its type, its identity and its size. The bytes are not in\nthis encoding: the session keeps them beside its log, named by `sha256`.",
+      "properties": {
+        "height": {
+          "description": "Height in pixels.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mime": {
+          "description": "`image/png`, `image/jpeg`, `image/gif` or `image/webp`.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex of the SHA-256 of the bytes: the image's identity.",
+          "type": "string"
+        },
+        "width": {
+          "description": "Width in pixels.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mime",
+        "sha256",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
     "Item": {
       "properties": {
         "data": {
@@ -852,6 +884,7 @@
       ]
     },
     "Outcome": {
+      "description": "`Outcome` as the log and the wire encode it: `Ok` without images is a string, as before D30,\nso a log written before images loads unchanged.",
       "oneOf": [
         {
           "enum": [
@@ -863,7 +896,30 @@
           "additionalProperties": false,
           "properties": {
             "Ok": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "properties": {
+                    "images": {
+                      "items": {
+                        "$ref": "#/$defs/Image"
+                      },
+                      "type": "array"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "images"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "description": "`Outcome::Ok`'s two encodings: the text alone, or the text with its images."
             }
           },
           "required": [

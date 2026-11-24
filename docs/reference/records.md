@@ -672,7 +672,7 @@ The call succeeded.
 #### Outcome.Ok.__new__
 
 ```python
-def __new__(cls, value: str) -> Outcome.Ok
+def __new__(cls, value: str, images: Sequence[Image] = ...) -> Outcome.Ok
 ```
 
 #### Outcome.Ok.value
@@ -682,6 +682,14 @@ property value: str
 ```
 
 What the tool returned.
+
+#### Outcome.Ok.images
+
+```python
+property images: list[Image]
+```
+
+The images it returned, after the text (D30); empty for most tools.
 
 ### Outcome.Err
 
@@ -903,10 +911,12 @@ The node with this id. `NoSuchNode` if there is none.
 ### Tree.walk
 
 ```python
-def walk(self, node: int) -> list[Node]
+def walk(self, node: int, *, images: bool = False) -> list[Node]
 ```
 
-The nodes root to `node`, inclusive.
+The nodes root to `node`, inclusive. With `images`, every image in them carries its
+bytes, read from the session's image directory where a node loaded from disk has none
+(what a sample sends); `MissingImage` if one is gone.
 
 ### Tree.children
 

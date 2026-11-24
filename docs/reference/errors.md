@@ -4,7 +4,7 @@
 
 What the session and its store raise.
 
-Names: `BadRecord`, `BadReplay`, `Busy`, `Closed`, `Corrupt`, `CursorClosed`, `DuplicateCall`, `Exists`, `Leased`, `NoSuchCursor`, `NoSuchItem`, `NoSuchLabel`, `NoSuchNode`, `NotASession`, `NotInHook`, `NotPending`, `Poisoned`, `TooLarge`, `TraceError`, `Undecodable`, `Version`, `WrongAnswer`
+Names: `BadRecord`, `BadReplay`, `Busy`, `Closed`, `Corrupt`, `CursorClosed`, `DuplicateCall`, `Exists`, `Leased`, `MissingImage`, `NoSuchCursor`, `NoSuchItem`, `NoSuchLabel`, `NoSuchNode`, `NotASession`, `NotInHook`, `NotPending`, `Poisoned`, `TooLarge`, `TraceError`, `Undecodable`, `Version`, `WrongAnswer`
 
 ## BadRecord
 
@@ -77,6 +77,14 @@ class Leased(OSError)
 ```
 
 Another store holds the session's lease.
+
+## MissingImage
+
+```python
+class MissingImage(LookupError)
+```
+
+An image without its bytes that the session does not keep (a reference copied from another session, or a file gone from its images directory).
 
 ## NoSuchCursor
 
