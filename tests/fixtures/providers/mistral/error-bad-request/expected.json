@@ -1,0 +1,7 @@
+{
+  "replies": [],
+  "error": {
+    "status": 422,
+    "message": "HTTP 422: {\"detail\":[{\"type\":\"list_type\",\"loc\":[\"body\",\"messages\"],\"msg\":\"Input should be a valid list\",\"input\":\"not a list of messages\"}]}"
+  }
+}

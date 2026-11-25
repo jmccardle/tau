@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "family": "gemini",
+  "provider": "gemini",
+  "kind": "raw",
+  "scenario": "user-image",
+  "model": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "GEMINI_API_KEY",
+    "max_tokens": 2048,
+    "options": {
+      "thinking": {
+        "include_thoughts": true
+      }
+    }
+  },
+  "system": "Answer in one word.",
+  "turns": [
+    "What colour is this image?"
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "raw": {
+    "stream": true,
+    "adapter": true,
+    "error": false
+  },
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

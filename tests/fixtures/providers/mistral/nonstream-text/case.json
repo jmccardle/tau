@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "family": "mistral",
+  "provider": "openai",
+  "kind": "raw",
+  "scenario": "nonstream-text",
+  "model": {
+    "provider": "openai",
+    "model": "mistral-small-2603",
+    "base_url": "https://api.mistral.ai/v1",
+    "api_key_env": "MISTRAL_API_KEY",
+    "max_tokens": 2048
+  },
+  "system": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+  "turns": [
+    "Look up part A-113 and tell me which bin it is in.",
+    "Now look up B-207 and C-042 and tell me which of the two has more in stock.",
+    "Look up part Z-999. If there is no such part, say so in one sentence."
+  ],
+  "gaps": [
+    0,
+    0,
+    0
+  ],
+  "tools": [],
+  "raw": {
+    "stream": false,
+    "adapter": false,
+    "error": false
+  },
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

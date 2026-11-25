@@ -1,0 +1,84 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011ChNxgfjnRo9SnZzyL6RrN","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":663,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"not_available","speed":"standard"},"diagnostics":null}           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me to look up"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" part A-113"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" and find"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" out"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" which bin it's"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" in. I have"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" lookup_part function"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" available,"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" so"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I'll"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" call it with the"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" part number \""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"A-113\"."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EsADCrgBCBQYAipAHiwCuPLNRq6eTd5+WDA7rDOUFdXQ+aWkeBNbRSAC9ydn2MwxPV/7kGaGfbm+GrywNIvUv9NYZwOd7izLOqHVKzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAG3tJnYBhIM/MIbaW341jb+M6HsGgypKWcf/PFULfiqVp8iMPl9878ni6HUCC8qYNRujHN9ZxDQgP2qqNgYSa+9aOF6jXRO/8JlPd+jK2O+McfTXCq0AWcCACvnSkmiwECYC5GTJ97XYVza9uhNmVMeH3i6UIPAv9n0TsKLsbi9xqz9EGVBwFy3rJOQCFOXsxbBqkR20PORqYittel31mrw4b2vGRHIUnLCAs7eLoc4BJfhzVAZfa0RHhs2L6jmiRiCca2gGhv/aB0l0ZK0e2RfUbTR/3Knj3bKsyZObG+hvG7r14HEPDvm3iKCtcV8tSPtt4hLTRYRYGQG4Ou4K2awTnfJ859Etnq+3xgB"}    }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_017uuY9kNHwhD1mEaDnE6etu","name":"lookup_part","input":{},"caller":{"type":"direct"}}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"part\""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"A-11"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"3\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1  }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":663,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":108,"output_tokens_details":{"thinking_tokens":51}}             }
+
+event: message_stop
+data: {"type":"message_stop"   }
+

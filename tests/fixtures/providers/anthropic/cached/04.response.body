@@ -1,0 +1,72 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011ChNz6VMF8e9qkjcX1TSGi","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":319,"cache_read_input_tokens":8582,"cache_creation":{"ephemeral_5m_input_tokens":319,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"not_available","speed":"standard"},"diagnostics":null}    }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}         }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is asking"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me to look up"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" part Z-999"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":". If"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" it doesn't exist"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":", I should say"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" so in one sentence"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Let"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me make"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the lookup call."}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EpsDCrgBCBQYAipAHsww4W0G0Lk2ZU7G4OSAxNo2PCyWfw9HqXPayC4qdADK3ne0ruS6xrIfs1VMDYzWa+o67rHzpwi5sltQyb0SAzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGNvZnYBhIMoYjejDrD/w696RFIGgwEwbay5XTGc0vOxXMiMOaNoHGW/RlQ1bI0UQ6GcNflKZmfVYJM1BYN1xZIedNn+L2QM8VPGQFkdDZgUZmy+yqPATgRCEbNEDVCtYudi97nWSB5VHdmf+qn5cDDr4JoPvWWOPGXx93kY7UL0eZC8roSRB5HvYw//Ha9fBer6e2+Bsg11cLfxqXkoZgoVG+bExsROaMQ8VTRA5T2myYEaT7cCAtvOsptOyNUVCqvQahKh0eydIZ1Xi6N8dtVoN4LyP4VTUPy294IV2KlXnwGlU2HGAE="}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01QSXHaiZxykYehSidSicJ61","name":"lookup_part","input":{},"caller":{"type":"direct"}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"part\""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"Z-99"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"9\"}"}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1      }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":10,"cache_creation_input_tokens":319,"cache_read_input_tokens":8582,"output_tokens":97,"output_tokens_details":{"thinking_tokens":39}}    }
+
+event: message_stop
+data: {"type":"message_stop"             }
+

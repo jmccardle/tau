@@ -1,0 +1,28 @@
+{
+  "method": "POST",
+  "url": "https://api.mistral.ai/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "mistral-small-2603",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Be terse."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Name the three primary colours of light."
+          }
+        ]
+      }
+    ],
+    "stream": false,
+    "max_tokens": 512
+  }
+}

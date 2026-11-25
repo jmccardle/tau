@@ -1,0 +1,53 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up part A-113."
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 1024
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup_part",
+            "description": "Look up one part by its part number: what it is, its bin and its stock.",
+            "parametersJsonSchema": {
+              "type": "object",
+              "properties": {
+                "part": {
+                  "type": "string",
+                  "description": "a part number, like A-113"
+                }
+              },
+              "required": [
+                "part"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

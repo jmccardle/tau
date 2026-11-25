@@ -1,0 +1,14 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 18,
+        "output": 20,
+        "cached": 0
+      },
+      "stop": "Length",
+      "finish_reason": "MAX_TOKENS"
+    }
+  ],
+  "error": null
+}

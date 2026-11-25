@@ -1,0 +1,44 @@
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"**"},"finish_reason":null}],"p":"abcde"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"B"},"finish_reason":null}],"p":"abcdefghijklmnop"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"-207"},"finish_reason":null}],"p":"abcd"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"** ("},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"flat washer M"},"finish_reason":null}],"p":"abcdefghijklm"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"8, stainless"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxy"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":") has **1"},"finish_reason":null}],"p":"abcdefghijkl"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"4"},"finish_reason":null}],"p":"abcdefghijklmnop"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"50 in stock"},"finish_reason":null}],"p":"abcdefghijklm"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"**, while **C"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz012"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"-042"},"finish_reason":null}],"p":"abcdefgh"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"** (lock nut"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz0123"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":" M8, nylon"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz0123456789"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":" insert) has **"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz0"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"85 in stock"},"finish_reason":null}],"p":"a"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"**.\n"},"finish_reason":null}],"p":"abcdefg"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"**"},"finish_reason":null}],"p":"abcdefghijkl"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"B-20"},"finish_reason":null}],"p":"abc"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"7** has more"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz01234567"}
+
+data: {"id":"416c8c4e0b9e4df49e266f9bc66a7496","object":"chat.completion.chunk","created":1795579173,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":" in stock."},"finish_reason":"stop"}],"usage":{"prompt_tokens":340,"total_tokens":402,"completion_tokens":62,"prompt_tokens_details":{"cached_tokens":240},"completion_tokens_details":{"reasoning_tokens":0},"service_tier":"standard"},"p":"abcdefghijklmnopqrstuvwxyz0123456"}
+
+data: [DONE]
+

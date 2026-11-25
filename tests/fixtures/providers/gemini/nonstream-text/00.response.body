@@ -1,0 +1,31 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Red, green, and blue.",
+            "thoughtSignature": "EpYBCpMBAWkUfRMfaUQbDcCmlZFpDp7/Pz0rUsFbeS2BdHe7y7d0csV/FkdRl7WLK4tCn/2GwFxMii9+djFQjCM72/hN2GdGZNROqQHoDh2cv3mdOOJdihUh9/dwU9RL/W8XfPojVa4WRxdKqrhVdijG6xkdKwiMetRu7Y6vzUEA3YBYEa7rq6FXHDizuhOmD+RX2w3Urf5l"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 12,
+    "candidatesTokenCount": 7,
+    "totalTokenCount": 19,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 12
+      }
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.5-flash-lite",
+  "responseId": "d10Ga5vbOIK4wbUPzaTG2AY"
+}

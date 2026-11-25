@@ -1,0 +1,36 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Answer in one word."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What colour is this image?"
+          },
+          {
+            "inline_data": {
+              "mime_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 512
+    }
+  }
+}

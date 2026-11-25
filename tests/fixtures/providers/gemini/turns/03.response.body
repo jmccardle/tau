@@ -1,0 +1,8 @@
+data: {"candidates": [{"content": {"parts": [{"text": "B-"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 2,"totalTokenCount": 336,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bl0Ga5T-C-nhytMPs8fB0Q0"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "207 has more in stock, with 1450 units (compared to"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 20,"totalTokenCount": 354,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bl0Ga5T-C-nhytMPs8fB0Q0"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " 85 units of C-042)."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 31,"totalTokenCount": 365,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bl0Ga5T-C-nhytMPs8fB0Q0"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpYBCpMBAWkUfRPHNwxj+e1CLGkxzIn3RisxcP6NVlEmL7f5dhVlsdWWN0EoleDKRXRFQgD9FA4nJEulaZ8Kl3xp/4A2TycLa2HFVd6fBbf2ompwJ5tAXTaBnliBTlmcE6Mb03saiKYm9UAxD7wbf9jI79feFf/RnqxeWHhIEToRpF8wH4yp7iElBIwrEz2BNc4oVOfEppJr"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 31,"totalTokenCount": 365,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bl0Ga5T-C-nhytMPs8fB0Q0"}
+

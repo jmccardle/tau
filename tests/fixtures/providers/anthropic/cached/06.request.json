@@ -1,0 +1,215 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up part A-113 and tell me which bin it is in."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user is asking me to look up part A-113 and find which bin it's in. I need to use the lookup_part function with the part number \"A-113\".",
+            "signature": "EqgDCrgBCBQYAipAoKOkN5FctzrzpIVYMLCpLx8wtItLEUoNHSzMdezHoc/KHnr8NxMRZoz4UNBmniP9cG3D8IfqQi8QwMZJqfSEtTIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGJvZnYBhIMznbVsaaGi1TeXN4mGgxBHAyI6FHBliQ2dvAiMBgqVn3yXT7n8oK9zxQl6q2R2qJ0zG4fhcI57gGeb2MUqp3DrO3Jk9Z7o2bnnQnTJCqcAXLU0ciSom82ayE83cTyggSV2PeSElZNZAOMtwmY5ll353EFxFaQTSle5kCobx6Nbvq/8P+1RD0t7pOzQ3jZODG9OY72UEQhq5fJG6XuIskFRd6A54mXFpWRz5OasWoP6JAAO1WN6TTsQRTeOc2olg0iO7l07OwJXzo1ib4LQ+Yldi8B+juGq5lE99PuReP5N7tvzBQSiFQtGG1k8BgB"
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01LJBjKSZLNLg2BjxJgX8VGp",
+            "name": "lookup_part",
+            "input": {
+              "part": "A-113"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01LJBjKSZLNLg2BjxJgX8VGp",
+            "content": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock.",
+            "is_error": false
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Part A-113 is in **Bin 14**. It's a hex bolt M8 x 40, zinc plated, with 220 units currently in stock."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Now look up B-207 and C-042 and tell me which of the two has more in stock."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user wants me to look up two parts: B-207 and C-042, and compare their stock levels. These are independent calls, so I can make them both in the same function_calls block.",
+            "signature": "EssDCrgBCBQYAipAS4kq2tB31lGYmclR/pDV0fdTihLYDj6hiPchbBJ0kibYnQ0wltSPhe4DKSmBpu6VAUHx4KVId0BEWtkECiqxejIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGKvZnYBhIMG/x9azU471l4OAg8Ggz0QI0zTtpcrhD5cFIiMBIV64yH1675AXoJGcaptmMsMW4/nRY8eC+rhPNyzcQkLGBSYxogY4ju1Qm2AZ1CZSq/AY1vsaR34UVGK3Oj5YyPwfoR2GHwAutRkp6c4ekYCEw52bHKKl48t5ouKcBe4nhR7QxiZKrDJWBk7ovGg3rIVVaC4WDnXctqInHa0CHt9liLaMsm3GSThNDoTyjiwL4X/FhibJ7WbQDI+PU50sUpqO7vib89O5lyVwCD2iUUYy+X50DaNbMzNfq+PuIEW6IMv3Pjoq2hlZlF7axR9QbGEIQKlg5Rn/sdFt8uVGnqNCRnMD3WKv+DLBivbtwcEYf6GAE="
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01R8T3iZ8GveFdvq2hEffhoC",
+            "name": "lookup_part",
+            "input": {
+              "part": "B-207"
+            }
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01HAMTfJ2Pdm19KENPJxbjta",
+            "name": "lookup_part",
+            "input": {
+              "part": "C-042"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01R8T3iZ8GveFdvq2hEffhoC",
+            "content": "B-207: flat washer M8, stainless. Bin 3. 1450 in stock.",
+            "is_error": false
+          },
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01HAMTfJ2Pdm19KENPJxbjta",
+            "content": "C-042: lock nut M8, nylon insert. Bin 9. 85 in stock.",
+            "is_error": false
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "**B-207** has more in stock. Here's the comparison:\n\n- **B-207** (flat washer M8, stainless) - Bin 3: **1,450 in stock**\n- **C-042** (lock nut M8, nylon insert) - Bin 9: **85 in stock**\n\nB-207 has significantly more inventory."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up part Z-999. If there is no such part, say so in one sentence."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user is asking me to look up part Z-999. If it doesn't exist, I should say so in one sentence. Let me make the lookup call.",
+            "signature": "EpsDCrgBCBQYAipAHsww4W0G0Lk2ZU7G4OSAxNo2PCyWfw9HqXPayC4qdADK3ne0ruS6xrIfs1VMDYzWa+o67rHzpwi5sltQyb0SAzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGNvZnYBhIMoYjejDrD/w696RFIGgwEwbay5XTGc0vOxXMiMOaNoHGW/RlQ1bI0UQ6GcNflKZmfVYJM1BYN1xZIedNn+L2QM8VPGQFkdDZgUZmy+yqPATgRCEbNEDVCtYudi97nWSB5VHdmf+qn5cDDr4JoPvWWOPGXx93kY7UL0eZC8roSRB5HvYw//Ha9fBer6e2+Bsg11cLfxqXkoZgoVG+bExsROaMQ8VTRA5T2myYEaT7cCAtvOsptOyNUVCqvQahKh0eydIZ1Xi6N8dtVoN4LyP4VTUPy294IV2KlXnwGlU2HGAE="
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01QSXHaiZxykYehSidSicJ61",
+            "name": "lookup_part",
+            "input": {
+              "part": "Z-999"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01QSXHaiZxykYehSidSicJ61",
+            "content": "Error: no such part: Z-999",
+            "is_error": true
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Part Z-999 does not exist in the system."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Which of the parts we looked up is in bin 14? Answer from what you already know.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.\n\nThe K-series catalogue below is for reference only; the parts asked about are never in it.\n\nPart K-001: washer, grade 3. Bin 2. 47 in stock.\nPart K-002: lock nut, grade 4. Bin 3. 84 in stock.\nPart K-003: spring pin, grade 5. Bin 4. 121 in stock.\nPart K-004: rivet, grade 6. Bin 5. 158 in stock.\nPart K-005: hex bolt, grade 7. Bin 6. 195 in stock.\nPart K-006: washer, grade 8. Bin 7. 232 in stock.\nPart K-007: lock nut, grade 2. Bin 8. 269 in stock.\nPart K-008: spring pin, grade 3. Bin 9. 306 in stock.\nPart K-009: rivet, grade 4. Bin 10. 343 in stock.\nPart K-010: hex bolt, grade 5. Bin 11. 380 in stock.\nPart K-011: washer, grade 6. Bin 12. 417 in stock.\nPart K-012: lock nut, grade 7. Bin 13. 454 in stock.\nPart K-013: spring pin, grade 8. Bin 14. 491 in stock.\nPart K-014: rivet, grade 2. Bin 15. 528 in stock.\nPart K-015: hex bolt, grade 3. Bin 16. 565 in stock.\nPart K-016: washer, grade 4. Bin 17. 602 in stock.\nPart K-017: lock nut, grade 5. Bin 18. 639 in stock.\nPart K-018: spring pin, grade 6. Bin 19. 676 in stock.\nPart K-019: rivet, grade 7. Bin 20. 713 in stock.\nPart K-020: hex bolt, grade 8. Bin 21. 750 in stock.\nPart K-021: washer, grade 2. Bin 22. 787 in stock.\nPart K-022: lock nut, grade 3. Bin 23. 824 in stock.\nPart K-023: spring pin, grade 4. Bin 24. 861 in stock.\nPart K-024: rivet, grade 5. Bin 25. 898 in stock.\nPart K-025: hex bolt, grade 6. Bin 26. 35 in stock.\nPart K-026: washer, grade 7. Bin 27. 72 in stock.\nPart K-027: lock nut, grade 8. Bin 28. 109 in stock.\nPart K-028: spring pin, grade 2. Bin 29. 146 in stock.\nPart K-029: rivet, grade 3. Bin 30. 183 in stock.\nPart K-030: hex bolt, grade 4. Bin 31. 220 in stock.\nPart K-031: washer, grade 5. Bin 32. 257 in stock.\nPart K-032: lock nut, grade 6. Bin 33. 294 in stock.\nPart K-033: spring pin, grade 7. Bin 34. 331 in stock.\nPart K-034: rivet, grade 8. Bin 35. 368 in stock.\nPart K-035: hex bolt, grade 2. Bin 36. 405 in stock.\nPart K-036: washer, grade 3. Bin 37. 442 in stock.\nPart K-037: lock nut, grade 4. Bin 38. 479 in stock.\nPart K-038: spring pin, grade 5. Bin 39. 516 in stock.\nPart K-039: rivet, grade 6. Bin 40. 553 in stock.\nPart K-040: hex bolt, grade 7. Bin 1. 590 in stock.\nPart K-041: washer, grade 8. Bin 2. 627 in stock.\nPart K-042: lock nut, grade 2. Bin 3. 664 in stock.\nPart K-043: spring pin, grade 3. Bin 4. 701 in stock.\nPart K-044: rivet, grade 4. Bin 5. 738 in stock.\nPart K-045: hex bolt, grade 5. Bin 6. 775 in stock.\nPart K-046: washer, grade 6. Bin 7. 812 in stock.\nPart K-047: lock nut, grade 7. Bin 8. 849 in stock.\nPart K-048: spring pin, grade 8. Bin 9. 886 in stock.\nPart K-049: rivet, grade 2. Bin 10. 23 in stock.\nPart K-050: hex bolt, grade 3. Bin 11. 60 in stock.\nPart K-051: washer, grade 4. Bin 12. 97 in stock.\nPart K-052: lock nut, grade 5. Bin 13. 134 in stock.\nPart K-053: spring pin, grade 6. Bin 14. 171 in stock.\nPart K-054: rivet, grade 7. Bin 15. 208 in stock.\nPart K-055: hex bolt, grade 8. Bin 16. 245 in stock.\nPart K-056: washer, grade 2. Bin 17. 282 in stock.\nPart K-057: lock nut, grade 3. Bin 18. 319 in stock.\nPart K-058: spring pin, grade 4. Bin 19. 356 in stock.\nPart K-059: rivet, grade 5. Bin 20. 393 in stock.\nPart K-060: hex bolt, grade 6. Bin 21. 430 in stock.\nPart K-061: washer, grade 7. Bin 22. 467 in stock.\nPart K-062: lock nut, grade 8. Bin 23. 504 in stock.\nPart K-063: spring pin, grade 2. Bin 24. 541 in stock.\nPart K-064: rivet, grade 3. Bin 25. 578 in stock.\nPart K-065: hex bolt, grade 4. Bin 26. 615 in stock.\nPart K-066: washer, grade 5. Bin 27. 652 in stock.\nPart K-067: lock nut, grade 6. Bin 28. 689 in stock.\nPart K-068: spring pin, grade 7. Bin 29. 726 in stock.\nPart K-069: rivet, grade 8. Bin 30. 763 in stock.\nPart K-070: hex bolt, grade 2. Bin 31. 800 in stock.\nPart K-071: washer, grade 3. Bin 32. 837 in stock.\nPart K-072: lock nut, grade 4. Bin 33. 874 in stock.\nPart K-073: spring pin, grade 5. Bin 34. 11 in stock.\nPart K-074: rivet, grade 6. Bin 35. 48 in stock.\nPart K-075: hex bolt, grade 7. Bin 36. 85 in stock.\nPart K-076: washer, grade 8. Bin 37. 122 in stock.\nPart K-077: lock nut, grade 2. Bin 38. 159 in stock.\nPart K-078: spring pin, grade 3. Bin 39. 196 in stock.\nPart K-079: rivet, grade 4. Bin 40. 233 in stock.\nPart K-080: hex bolt, grade 5. Bin 1. 270 in stock.\nPart K-081: washer, grade 6. Bin 2. 307 in stock.\nPart K-082: lock nut, grade 7. Bin 3. 344 in stock.\nPart K-083: spring pin, grade 8. Bin 4. 381 in stock.\nPart K-084: rivet, grade 2. Bin 5. 418 in stock.\nPart K-085: hex bolt, grade 3. Bin 6. 455 in stock.\nPart K-086: washer, grade 4. Bin 7. 492 in stock.\nPart K-087: lock nut, grade 5. Bin 8. 529 in stock.\nPart K-088: spring pin, grade 6. Bin 9. 566 in stock.\nPart K-089: rivet, grade 7. Bin 10. 603 in stock.\nPart K-090: hex bolt, grade 8. Bin 11. 640 in stock.\nPart K-091: washer, grade 2. Bin 12. 677 in stock.\nPart K-092: lock nut, grade 3. Bin 13. 714 in stock.\nPart K-093: spring pin, grade 4. Bin 14. 751 in stock.\nPart K-094: rivet, grade 5. Bin 15. 788 in stock.\nPart K-095: hex bolt, grade 6. Bin 16. 825 in stock.\nPart K-096: washer, grade 7. Bin 17. 862 in stock.\nPart K-097: lock nut, grade 8. Bin 18. 899 in stock.\nPart K-098: spring pin, grade 2. Bin 19. 36 in stock.\nPart K-099: rivet, grade 3. Bin 20. 73 in stock.\nPart K-100: hex bolt, grade 4. Bin 21. 110 in stock.\nPart K-101: washer, grade 5. Bin 22. 147 in stock.\nPart K-102: lock nut, grade 6. Bin 23. 184 in stock.\nPart K-103: spring pin, grade 7. Bin 24. 221 in stock.\nPart K-104: rivet, grade 8. Bin 25. 258 in stock.\nPart K-105: hex bolt, grade 2. Bin 26. 295 in stock.\nPart K-106: washer, grade 3. Bin 27. 332 in stock.\nPart K-107: lock nut, grade 4. Bin 28. 369 in stock.\nPart K-108: spring pin, grade 5. Bin 29. 406 in stock.\nPart K-109: rivet, grade 6. Bin 30. 443 in stock.\nPart K-110: hex bolt, grade 7. Bin 31. 480 in stock.\nPart K-111: washer, grade 8. Bin 32. 517 in stock.\nPart K-112: lock nut, grade 2. Bin 33. 554 in stock.\nPart K-113: spring pin, grade 3. Bin 34. 591 in stock.\nPart K-114: rivet, grade 4. Bin 35. 628 in stock.\nPart K-115: hex bolt, grade 5. Bin 36. 665 in stock.\nPart K-116: washer, grade 6. Bin 37. 702 in stock.\nPart K-117: lock nut, grade 7. Bin 38. 739 in stock.\nPart K-118: spring pin, grade 8. Bin 39. 776 in stock.\nPart K-119: rivet, grade 2. Bin 40. 813 in stock.\nPart K-120: hex bolt, grade 3. Bin 1. 850 in stock.\nPart K-121: washer, grade 4. Bin 2. 887 in stock.\nPart K-122: lock nut, grade 5. Bin 3. 24 in stock.\nPart K-123: spring pin, grade 6. Bin 4. 61 in stock.\nPart K-124: rivet, grade 7. Bin 5. 98 in stock.\nPart K-125: hex bolt, grade 8. Bin 6. 135 in stock.\nPart K-126: washer, grade 2. Bin 7. 172 in stock.\nPart K-127: lock nut, grade 3. Bin 8. 209 in stock.\nPart K-128: spring pin, grade 4. Bin 9. 246 in stock.\nPart K-129: rivet, grade 5. Bin 10. 283 in stock.\nPart K-130: hex bolt, grade 6. Bin 11. 320 in stock.\nPart K-131: washer, grade 7. Bin 12. 357 in stock.\nPart K-132: lock nut, grade 8. Bin 13. 394 in stock.\nPart K-133: spring pin, grade 2. Bin 14. 431 in stock.\nPart K-134: rivet, grade 3. Bin 15. 468 in stock.\nPart K-135: hex bolt, grade 4. Bin 16. 505 in stock.\nPart K-136: washer, grade 5. Bin 17. 542 in stock.\nPart K-137: lock nut, grade 6. Bin 18. 579 in stock.\nPart K-138: spring pin, grade 7. Bin 19. 616 in stock.\nPart K-139: rivet, grade 8. Bin 20. 653 in stock.\nPart K-140: hex bolt, grade 2. Bin 21. 690 in stock.\nPart K-141: washer, grade 3. Bin 22. 727 in stock.\nPart K-142: lock nut, grade 4. Bin 23. 764 in stock.\nPart K-143: spring pin, grade 5. Bin 24. 801 in stock.\nPart K-144: rivet, grade 6. Bin 25. 838 in stock.\nPart K-145: hex bolt, grade 7. Bin 26. 875 in stock.\nPart K-146: washer, grade 8. Bin 27. 12 in stock.\nPart K-147: lock nut, grade 2. Bin 28. 49 in stock.\nPart K-148: spring pin, grade 3. Bin 29. 86 in stock.\nPart K-149: rivet, grade 4. Bin 30. 123 in stock.\nPart K-150: hex bolt, grade 5. Bin 31. 160 in stock.\nPart K-151: washer, grade 6. Bin 32. 197 in stock.\nPart K-152: lock nut, grade 7. Bin 33. 234 in stock.\nPart K-153: spring pin, grade 8. Bin 34. 271 in stock.\nPart K-154: rivet, grade 2. Bin 35. 308 in stock.\nPart K-155: hex bolt, grade 3. Bin 36. 345 in stock.\nPart K-156: washer, grade 4. Bin 37. 382 in stock.\nPart K-157: lock nut, grade 5. Bin 38. 419 in stock.\nPart K-158: spring pin, grade 6. Bin 39. 456 in stock.\nPart K-159: rivet, grade 7. Bin 40. 493 in stock.\nPart K-160: hex bolt, grade 8. Bin 1. 530 in stock.\nPart K-161: washer, grade 2. Bin 2. 567 in stock.\nPart K-162: lock nut, grade 3. Bin 3. 604 in stock.\nPart K-163: spring pin, grade 4. Bin 4. 641 in stock.\nPart K-164: rivet, grade 5. Bin 5. 678 in stock.\nPart K-165: hex bolt, grade 6. Bin 6. 715 in stock.\nPart K-166: washer, grade 7. Bin 7. 752 in stock.\nPart K-167: lock nut, grade 8. Bin 8. 789 in stock.\nPart K-168: spring pin, grade 2. Bin 9. 826 in stock.\nPart K-169: rivet, grade 3. Bin 10. 863 in stock.\nPart K-170: hex bolt, grade 4. Bin 11. 900 in stock.\nPart K-171: washer, grade 5. Bin 12. 37 in stock.\nPart K-172: lock nut, grade 6. Bin 13. 74 in stock.\nPart K-173: spring pin, grade 7. Bin 14. 111 in stock.\nPart K-174: rivet, grade 8. Bin 15. 148 in stock.\nPart K-175: hex bolt, grade 2. Bin 16. 185 in stock.\nPart K-176: washer, grade 3. Bin 17. 222 in stock.\nPart K-177: lock nut, grade 4. Bin 18. 259 in stock.\nPart K-178: spring pin, grade 5. Bin 19. 296 in stock.\nPart K-179: rivet, grade 6. Bin 20. 333 in stock.\nPart K-180: hex bolt, grade 7. Bin 21. 370 in stock.\nPart K-181: washer, grade 8. Bin 22. 407 in stock.\nPart K-182: lock nut, grade 2. Bin 23. 444 in stock.\nPart K-183: spring pin, grade 3. Bin 24. 481 in stock.\nPart K-184: rivet, grade 4. Bin 25. 518 in stock.\nPart K-185: hex bolt, grade 5. Bin 26. 555 in stock.\nPart K-186: washer, grade 6. Bin 27. 592 in stock.\nPart K-187: lock nut, grade 7. Bin 28. 629 in stock.\nPart K-188: spring pin, grade 8. Bin 29. 666 in stock.\nPart K-189: rivet, grade 2. Bin 30. 703 in stock.\nPart K-190: hex bolt, grade 3. Bin 31. 740 in stock.\nPart K-191: washer, grade 4. Bin 32. 777 in stock.\nPart K-192: lock nut, grade 5. Bin 33. 814 in stock.\nPart K-193: spring pin, grade 6. Bin 34. 851 in stock.\nPart K-194: rivet, grade 7. Bin 35. 888 in stock.\nPart K-195: hex bolt, grade 8. Bin 36. 25 in stock.\nPart K-196: washer, grade 2. Bin 37. 62 in stock.\nPart K-197: lock nut, grade 3. Bin 38. 99 in stock.\nPart K-198: spring pin, grade 4. Bin 39. 136 in stock.\nPart K-199: rivet, grade 5. Bin 40. 173 in stock.\nPart K-200: hex bolt, grade 6. Bin 1. 210 in stock.\nPart K-201: washer, grade 7. Bin 2. 247 in stock.\nPart K-202: lock nut, grade 8. Bin 3. 284 in stock.\nPart K-203: spring pin, grade 2. Bin 4. 321 in stock.\nPart K-204: rivet, grade 3. Bin 5. 358 in stock.\nPart K-205: hex bolt, grade 4. Bin 6. 395 in stock.\nPart K-206: washer, grade 5. Bin 7. 432 in stock.\nPart K-207: lock nut, grade 6. Bin 8. 469 in stock.\nPart K-208: spring pin, grade 7. Bin 9. 506 in stock.\nPart K-209: rivet, grade 8. Bin 10. 543 in stock.\nPart K-210: hex bolt, grade 2. Bin 11. 580 in stock.\nPart K-211: washer, grade 3. Bin 12. 617 in stock.\nPart K-212: lock nut, grade 4. Bin 13. 654 in stock.\nPart K-213: spring pin, grade 5. Bin 14. 691 in stock.\nPart K-214: rivet, grade 6. Bin 15. 728 in stock.\nPart K-215: hex bolt, grade 7. Bin 16. 765 in stock.\nPart K-216: washer, grade 8. Bin 17. 802 in stock.\nPart K-217: lock nut, grade 2. Bin 18. 839 in stock.\nPart K-218: spring pin, grade 3. Bin 19. 876 in stock.\nPart K-219: rivet, grade 4. Bin 20. 13 in stock.\nPart K-220: hex bolt, grade 5. Bin 21. 50 in stock.\nPart K-221: washer, grade 6. Bin 22. 87 in stock.\nPart K-222: lock nut, grade 7. Bin 23. 124 in stock.\nPart K-223: spring pin, grade 8. Bin 24. 161 in stock.\nPart K-224: rivet, grade 2. Bin 25. 198 in stock.\nPart K-225: hex bolt, grade 3. Bin 26. 235 in stock.\nPart K-226: washer, grade 4. Bin 27. 272 in stock.\nPart K-227: lock nut, grade 5. Bin 28. 309 in stock.\nPart K-228: spring pin, grade 6. Bin 29. 346 in stock.\nPart K-229: rivet, grade 7. Bin 30. 383 in stock.\nPart K-230: hex bolt, grade 8. Bin 31. 420 in stock.\nPart K-231: washer, grade 2. Bin 32. 457 in stock.\nPart K-232: lock nut, grade 3. Bin 33. 494 in stock.\nPart K-233: spring pin, grade 4. Bin 34. 531 in stock.\nPart K-234: rivet, grade 5. Bin 35. 568 in stock.\nPart K-235: hex bolt, grade 6. Bin 36. 605 in stock.\nPart K-236: washer, grade 7. Bin 37. 642 in stock.\nPart K-237: lock nut, grade 8. Bin 38. 679 in stock.\nPart K-238: spring pin, grade 2. Bin 39. 716 in stock.\nPart K-239: rivet, grade 3. Bin 40. 753 in stock.\nPart K-240: hex bolt, grade 4. Bin 1. 790 in stock.\nPart K-241: washer, grade 5. Bin 2. 827 in stock.\nPart K-242: lock nut, grade 6. Bin 3. 864 in stock.\nPart K-243: spring pin, grade 7. Bin 4. 901 in stock.\nPart K-244: rivet, grade 8. Bin 5. 38 in stock.\nPart K-245: hex bolt, grade 2. Bin 6. 75 in stock.\nPart K-246: washer, grade 3. Bin 7. 112 in stock.\nPart K-247: lock nut, grade 4. Bin 8. 149 in stock.\nPart K-248: spring pin, grade 5. Bin 9. 186 in stock.\nPart K-249: rivet, grade 6. Bin 10. 223 in stock.\nPart K-250: hex bolt, grade 7. Bin 11. 260 in stock.\nPart K-251: washer, grade 8. Bin 12. 297 in stock.\nPart K-252: lock nut, grade 2. Bin 13. 334 in stock.\nPart K-253: spring pin, grade 3. Bin 14. 371 in stock.\nPart K-254: rivet, grade 4. Bin 15. 408 in stock.\nPart K-255: hex bolt, grade 5. Bin 16. 445 in stock.\nPart K-256: washer, grade 6. Bin 17. 482 in stock.\nPart K-257: lock nut, grade 7. Bin 18. 519 in stock.\nPart K-258: spring pin, grade 8. Bin 19. 556 in stock.\nPart K-259: rivet, grade 2. Bin 20. 593 in stock.\nPart K-260: hex bolt, grade 3. Bin 21. 630 in stock.\nPart K-261: washer, grade 4. Bin 22. 667 in stock.\nPart K-262: lock nut, grade 5. Bin 23. 704 in stock.\nPart K-263: spring pin, grade 6. Bin 24. 741 in stock.\nPart K-264: rivet, grade 7. Bin 25. 778 in stock.\nPart K-265: hex bolt, grade 8. Bin 26. 815 in stock.\nPart K-266: washer, grade 2. Bin 27. 852 in stock.\nPart K-267: lock nut, grade 3. Bin 28. 889 in stock.\nPart K-268: spring pin, grade 4. Bin 29. 26 in stock.\nPart K-269: rivet, grade 5. Bin 30. 63 in stock.\nPart K-270: hex bolt, grade 6. Bin 31. 100 in stock.\nPart K-271: washer, grade 7. Bin 32. 137 in stock.\nPart K-272: lock nut, grade 8. Bin 33. 174 in stock.\nPart K-273: spring pin, grade 2. Bin 34. 211 in stock.\nPart K-274: rivet, grade 3. Bin 35. 248 in stock.\nPart K-275: hex bolt, grade 4. Bin 36. 285 in stock.\nPart K-276: washer, grade 5. Bin 37. 322 in stock.\nPart K-277: lock nut, grade 6. Bin 38. 359 in stock.\nPart K-278: spring pin, grade 7. Bin 39. 396 in stock.\nPart K-279: rivet, grade 8. Bin 40. 433 in stock.\nPart K-280: hex bolt, grade 2. Bin 1. 470 in stock.\nPart K-281: washer, grade 3. Bin 2. 507 in stock.\nPart K-282: lock nut, grade 4. Bin 3. 544 in stock.\nPart K-283: spring pin, grade 5. Bin 4. 581 in stock.\nPart K-284: rivet, grade 6. Bin 5. 618 in stock.\nPart K-285: hex bolt, grade 7. Bin 6. 655 in stock.\nPart K-286: washer, grade 8. Bin 7. 692 in stock.\nPart K-287: lock nut, grade 2. Bin 8. 729 in stock.\nPart K-288: spring pin, grade 3. Bin 9. 766 in stock.\nPart K-289: rivet, grade 4. Bin 10. 803 in stock.\nPart K-290: hex bolt, grade 5. Bin 11. 840 in stock.\nPart K-291: washer, grade 6. Bin 12. 877 in stock.\nPart K-292: lock nut, grade 7. Bin 13. 14 in stock.\nPart K-293: spring pin, grade 8. Bin 14. 51 in stock.\nPart K-294: rivet, grade 2. Bin 15. 88 in stock.\nPart K-295: hex bolt, grade 3. Bin 16. 125 in stock.\nPart K-296: washer, grade 4. Bin 17. 162 in stock.\nPart K-297: lock nut, grade 5. Bin 18. 199 in stock.\nPart K-298: spring pin, grade 6. Bin 19. 236 in stock.\nPart K-299: rivet, grade 7. Bin 20. 273 in stock.\nPart K-300: hex bolt, grade 8. Bin 21. 310 in stock.\nPart K-301: washer, grade 2. Bin 22. 347 in stock.\nPart K-302: lock nut, grade 3. Bin 23. 384 in stock.\nPart K-303: spring pin, grade 4. Bin 24. 421 in stock.\nPart K-304: rivet, grade 5. Bin 25. 458 in stock.\nPart K-305: hex bolt, grade 6. Bin 26. 495 in stock.\nPart K-306: washer, grade 7. Bin 27. 532 in stock.\nPart K-307: lock nut, grade 8. Bin 28. 569 in stock.\nPart K-308: spring pin, grade 2. Bin 29. 606 in stock.\nPart K-309: rivet, grade 3. Bin 30. 643 in stock.\nPart K-310: hex bolt, grade 4. Bin 31. 680 in stock.\nPart K-311: washer, grade 5. Bin 32. 717 in stock.\nPart K-312: lock nut, grade 6. Bin 33. 754 in stock.\nPart K-313: spring pin, grade 7. Bin 34. 791 in stock.\nPart K-314: rivet, grade 8. Bin 35. 828 in stock.\nPart K-315: hex bolt, grade 2. Bin 36. 865 in stock.\nPart K-316: washer, grade 3. Bin 37. 902 in stock.\nPart K-317: lock nut, grade 4. Bin 38. 39 in stock.\nPart K-318: spring pin, grade 5. Bin 39. 76 in stock.\nPart K-319: rivet, grade 6. Bin 40. 113 in stock.\nPart K-320: hex bolt, grade 7. Bin 1. 150 in stock.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "lookup_part",
+        "description": "Look up one part by its part number: what it is, its bin and its stock.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "part": {
+              "type": "string",
+              "description": "a part number, like A-113"
+            }
+          },
+          "required": [
+            "part"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up part A-113 and tell me which bin it is in."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user is asking me to look up part A-113 and find out which bin it's in. I have the lookup_part function available, so I'll call it with the part number \"A-113\".",
+            "signature": "EsADCrgBCBQYAipAHiwCuPLNRq6eTd5+WDA7rDOUFdXQ+aWkeBNbRSAC9ydn2MwxPV/7kGaGfbm+GrywNIvUv9NYZwOd7izLOqHVKzIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAG3tJnYBhIM/MIbaW341jb+M6HsGgypKWcf/PFULfiqVp8iMPl9878ni6HUCC8qYNRujHN9ZxDQgP2qqNgYSa+9aOF6jXRO/8JlPd+jK2O+McfTXCq0AWcCACvnSkmiwECYC5GTJ97XYVza9uhNmVMeH3i6UIPAv9n0TsKLsbi9xqz9EGVBwFy3rJOQCFOXsxbBqkR20PORqYittel31mrw4b2vGRHIUnLCAs7eLoc4BJfhzVAZfa0RHhs2L6jmiRiCca2gGhv/aB0l0ZK0e2RfUbTR/3Knj3bKsyZObG+hvG7r14HEPDvm3iKCtcV8tSPtt4hLTRYRYGQG4Ou4K2awTnfJ859Etnq+3xgB"
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_017uuY9kNHwhD1mEaDnE6etu",
+            "name": "lookup_part",
+            "input": {
+              "part": "A-113"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_017uuY9kNHwhD1mEaDnE6etu",
+            "content": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock.",
+            "is_error": false
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Part A-113 is in **Bin 14**. It's a hex bolt M8 x 40, zinc plated, and there are currently 220 in stock."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Now look up B-207 and C-042 and tell me which of the two has more in stock.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "lookup_part",
+        "description": "Look up one part by its part number: what it is, its bin and its stock.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "part": {
+              "type": "string",
+              "description": "a part number, like A-113"
+            }
+          },
+          "required": [
+            "part"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
+  }
+}
