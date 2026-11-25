@@ -8,13 +8,17 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use std::cell::RefCell;
+
 use unicode_width::UnicodeWidthChar;
 
 use crate::{
     ask,
     editor::Editor,
+    images::Images,
     model::{Kind, Model, Row},
-    wire::OpenQuestion,
+    transcript,
+    wire::{self, OpenQuestion},
 };
 
 /// The question the keyboard is in, and how it is being answered.
@@ -33,12 +37,17 @@ pub struct Screen<'a> {
     pub asking: &'a Asking,
     pub question: Option<&'a OpenQuestion>,
     pub scroll: usize,
+    /// The pictures of images, and what drawing them learns.
+    pub images: &'a RefCell<Images>,
+    /// Whether pictures are drawn: not under a form, whose box a picture of pixels (sixel, iTerm2)
+    /// drawn from a cell outside it would cover. Their lines and rows stay.
+    pub pictures: bool,
     pub session: &'a str,
     pub cwd: &'a str,
     pub client: &'a str,
 }
 
-fn style(kind: Kind) -> Style {
+pub fn style(kind: Kind) -> Style {
     match kind {
         Kind::Mine => Style::new().fg(Color::Green),
         Kind::Other => Style::new().fg(Color::Magenta),
@@ -87,33 +96,51 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// The rows as screen lines `width` wide: the label in bold on a row's first line, the rest
-/// indented under the body.
+/// indented under the body, then one `[image WxH mime]` line per image.
 pub fn lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for row in rows {
-        if row.folded {
+        let (lines, indent) = row_lines(row, width);
+        out.extend(lines);
+        for image in &row.images {
             out.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ▸ ", row.label),
-                    style(row.kind).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(row.body.clone(), style(row.kind)),
+                Span::raw(indent.clone()),
+                Span::styled(wire::caption(image), style(row.kind)),
             ]));
-            continue;
         }
-        let label = format!("{}: ", row.label);
-        let indent = " ".repeat(label.chars().count().min(width.saturating_sub(1)));
-        let body_width = width.saturating_sub(indent.len()).max(1);
-        for (i, text) in wrap(&row.body, body_width).into_iter().enumerate() {
+    }
+    out
+}
+
+/// One row's label and body as lines `width` wide (not its images), and the indent under its
+/// label.
+pub fn row_lines(row: &Row, width: usize) -> (Vec<Line<'static>>, String) {
+    if row.folded {
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{} \u{25b8} ", row.label),
+                style(row.kind).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(row.body.clone(), style(row.kind)),
+        ]);
+        return (vec![line], String::new());
+    }
+    let label = format!("{}: ", row.label);
+    let indent = " ".repeat(label.chars().count().min(width.saturating_sub(1)));
+    let body_width = width.saturating_sub(indent.len()).max(1);
+    let lines = wrap(&row.body, body_width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
             let head = if i == 0 {
                 Span::styled(label.clone(), style(row.kind).add_modifier(Modifier::BOLD))
             } else {
                 Span::raw(indent.clone())
             };
-            out.push(Line::from(vec![head, Span::styled(text, style(row.kind))]));
-        }
-    }
-    out
+            Line::from(vec![head, Span::styled(text, style(row.kind))])
+        })
+        .collect();
+    (lines, indent)
 }
 
 /// What the open question draws: its lines, and where the answer field's cursor is in them
@@ -412,16 +439,13 @@ fn to_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
 
-/// Draw the transcript scrolled up by `screen.scroll` lines, never past its top. Returns the
-/// most it can be scrolled at this size.
+/// Draw the transcript scrolled up by `screen.scroll` lines, never past its top, with the
+/// pictures of its images. Returns the most it can be scrolled at this size.
 fn render_transcript(f: &mut Canvas, area: Rect, screen: &Screen) -> usize {
-    let all = lines(&screen.model.rows(), usize::from(area.width));
-    let height = usize::from(area.height);
-    let most = all.len().saturating_sub(height);
-    let end = all.len() - screen.scroll.min(most);
-    let start = end.saturating_sub(height);
-    f.render_widget(Paragraph::new(all[start..end].to_vec()), area);
-    most
+    let mut images = screen.images.borrow_mut();
+    let laid = transcript::lay_out(&screen.model.rows(), usize::from(area.width), &images);
+    let pictures = screen.pictures.then_some(&mut *images);
+    transcript::render(f, area, &laid, screen.scroll, pictures)
 }
 
 #[cfg(test)]
@@ -454,6 +478,7 @@ mod tests {
         let rows = [Row {
             label: "you".into(),
             body: "aaa bbb".into(),
+            images: Vec::new(),
             kind: Kind::Mine,
             group: None,
             folded: false,
@@ -559,6 +584,8 @@ mod screen_tests {
                         asking: &asking,
                         question,
                         scroll,
+                        images: &RefCell::new(Images::new(None)),
+                        pictures: true,
                         session: "s",
                         cwd: "/",
                         client: ME,
@@ -783,6 +810,8 @@ mod screen_tests {
                         asking: &asking,
                         question: Some(&q),
                         scroll: 0,
+                        images: &RefCell::new(Images::new(None)),
+                        pictures: true,
                         session: "s",
                         cwd: "/",
                         client: ME,

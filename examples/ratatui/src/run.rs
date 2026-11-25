@@ -1,6 +1,8 @@
 //! One connection's worth of the screen: keys and the server's messages in, the model and the
 //! screen out, calls made in tasks so that nothing waits on the network.
 
+use std::cell::RefCell;
+
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -13,12 +15,13 @@ use tokio::{
 use crate::{
     ask,
     editor::Editor,
+    images::{self, Images, Redraw},
     link::{Connected, Incoming, Link},
     model::{Group, Model, Need, PAGE as NODES},
     ui::{Asking, Screen},
     wire::{
-        self, AnswerParams, ConfigureParams, Node, NodesParams, OptionsParams, ParseLineParams,
-        ReopenParams, RunParams, SendParams, WalkParams, WatchParams, code,
+        self, AnswerParams, ConfigureParams, ImageParams, Node, NodesParams, OptionsParams,
+        ParseLineParams, ReopenParams, RunParams, SendParams, WalkParams, WatchParams, code,
     },
 };
 
@@ -65,6 +68,8 @@ enum Msg {
     Restore(String),
     /// An answer the server refused.
     NotAnswered(String),
+    /// An image's bytes, decoded, or why they could not be had.
+    Pictured(String, Result<image::DynamicImage, String>),
     Fatal(String),
 }
 
@@ -75,6 +80,7 @@ struct App<'a> {
     tell: UnboundedSender<Msg>,
     model: Model,
     editor: &'a mut Editor,
+    images: &'a RefCell<Images>,
     asking: Asking,
     scroll: usize,
     done: Option<Ended>,
@@ -90,13 +96,19 @@ struct App<'a> {
     restore: Option<Restore>,
 }
 
-/// Show the session `connected` until it ends. `keys` is the person's keyboard; `draft` is the
-/// line being typed, which a reconnect keeps.
+/// What a connection's screen is drawn with and keeps across a reconnect: the line being typed
+/// and the images fetched.
+pub struct Kept<'a> {
+    pub draft: &'a mut Editor,
+    pub images: &'a RefCell<Images>,
+}
+
+/// Show the session `connected` until it ends. `keys` is the person's keyboard.
 pub async fn session(
     term: &mut DefaultTerminal,
     connected: Connected,
     me: &str,
-    draft: &mut Editor,
+    kept: Kept<'_>,
     keys: &mut UnboundedReceiver<Input>,
     restore: Restore,
 ) -> Result<Ended, String> {
@@ -110,11 +122,13 @@ pub async fn session(
     if let Some(note) = &restore.note {
         model.notify(note.clone());
     }
+    kept.images.borrow_mut().reconnected();
     let mut app = App {
         link,
         tell,
         model,
-        editor: draft,
+        editor: kept.draft,
+        images: kept.images,
         asking: Asking::default(),
         scroll: 0,
         done: None,
@@ -127,22 +141,38 @@ pub async fn session(
     };
     loop {
         let mut most = None;
-        term.draw(|f| {
-            most = app.draw(
-                f,
-                &Screen {
-                    model: &app.model,
-                    editor: app.editor,
-                    asking: &app.asking,
-                    question: app.model.questions().first().copied(),
-                    scroll: app.scroll,
-                    session: &welcome.session,
-                    cwd: &welcome.cwd,
-                    client: me,
-                },
-            );
-        })
-        .map_err(|e| format!("cannot draw the screen: {e}"))?;
+        let mut redraw = Redraw::Again;
+        // At most three: a picture that fails is shown failing, then a terminal of pixels is
+        // repainted for the picture that went.
+        for _ in 0..3 {
+            if redraw == Redraw::No {
+                break;
+            }
+            if redraw == Redraw::Whole {
+                term.clear()
+                    .map_err(|e| format!("cannot clear the screen: {e}"))?;
+            }
+            term.draw(|f| {
+                most = app.draw(
+                    f,
+                    &Screen {
+                        model: &app.model,
+                        editor: app.editor,
+                        asking: &app.asking,
+                        question: app.model.questions().first().copied(),
+                        scroll: app.scroll,
+                        images: app.images,
+                        pictures: matches!(app.mode, Mode::Chat),
+                        session: &welcome.session,
+                        cwd: &welcome.cwd,
+                        client: me,
+                    },
+                );
+            })
+            .map_err(|e| format!("cannot draw the screen: {e}"))?;
+            redraw = app.images.borrow_mut().drawn();
+        }
+        app.fetch();
         // Whatever the size now, the scroll stays within the transcript: a terminal that grew
         // does not leave it scrolled past the top.
         if let Some(most) = most {
@@ -244,6 +274,7 @@ impl App<'_> {
                 }
             }
             Msg::NotAnswered(why) => self.asking.error = Some(why),
+            Msg::Pictured(sha256, got) => self.images.borrow_mut().arrived(sha256, got),
             Msg::Fatal(why) => self.done = Some(Ended::Stopped(why)),
         }
     }
@@ -282,6 +313,34 @@ impl App<'_> {
                     Ok(None) => {}
                     Err(e) => drop(tell.send(Msg::Fatal(format!("{need:?} failed: {e}")))),
                 }
+            });
+        }
+    }
+
+    /// Fetch the images the last draw wanted, each with the call `image`, and decode them off the
+    /// loop. A failure is the image's, shown on its line; the session goes on.
+    fn fetch(&self) {
+        let (wanted, most) = {
+            let mut images = self.images.borrow_mut();
+            (images.take_wanted(), images.most_pixels())
+        };
+        for sha256 in wanted {
+            let (link, tell) = (self.link.clone(), self.tell.clone());
+            tokio::spawn(async move {
+                let got = match link
+                    .call(&ImageParams {
+                        sha256: sha256.clone(),
+                    })
+                    .await
+                {
+                    Ok(bytes) => {
+                        tokio::task::spawn_blocking(move || images::decode(&bytes.0, most))
+                            .await
+                            .unwrap_or_else(|e| Err(format!("decoding stopped: {e}")))
+                    }
+                    Err(e) => Err(format!("cannot fetch it: {e}")),
+                };
+                let _ = tell.send(Msg::Pictured(sha256, got));
             });
         }
     }

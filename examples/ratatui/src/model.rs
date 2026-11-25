@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::wire::{
-    Author, Body, CursorView, Ending, Event, ItemData, Live, LiveDelta, Node, OpenQuestion,
+    Author, Body, CursorView, Ending, Event, Image, ItemData, Live, LiveDelta, Node, OpenQuestion,
     Outcome, Part, Prose, Stop,
 };
 
@@ -47,12 +47,14 @@ pub enum Group {
     Tools,
 }
 
-/// One logical line of the transcript: a `label`, then `body` (which may hold newlines). A
-/// `folded` row is one line: its `body` is the summary of what it hides.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One logical line of the transcript: a `label`, then `body` (which may hold newlines), then
+/// its `images` (D30, D31). A `folded` row is one line: its `body` is the summary of what it
+/// hides, and its images are hidden with the rest.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub label: String,
     pub body: String,
+    pub images: Vec<Image>,
     pub kind: Kind,
     /// The group this row folds with, if it folds.
     pub group: Option<Group>,
@@ -64,10 +66,16 @@ impl Row {
         Self {
             label: label.into(),
             body: body.into(),
+            images: Vec::new(),
             kind,
             group: None,
             folded: false,
         }
+    }
+
+    fn with_images(mut self, images: &[Image]) -> Self {
+        self.images = images.to_vec();
+        self
     }
 
     fn in_group(mut self, group: Group) -> Self {
@@ -82,6 +90,7 @@ impl Row {
             Kind::Failure => format!("failed, {}", count_lines(&self.body)),
             _ => count_lines(&self.body),
         };
+        self.images.clear();
         self.folded = true;
     }
 }
@@ -497,7 +506,7 @@ impl Model {
             Body::System(_) | Body::Config(_) | Body::Custom { .. } => {}
             Body::User(user) => {
                 let (kind, who) = self.author(&node.by);
-                rows.push(Row::new(kind, who, user.shown()));
+                rows.push(Row::new(kind, who, user.text()).with_images(user.images()));
             }
             Body::Assistant { parts, stop, .. } => {
                 for part in parts {
@@ -537,16 +546,18 @@ impl Model {
                 _ => None,
             })
             .unwrap_or_else(|| call_id.to_owned());
-        let (kind, text) = match outcome {
-            Outcome::Ok(ok) => (Kind::Result, clip(&ok.shown())),
-            Outcome::Err(text) => (Kind::Failure, clip(text)),
-            Outcome::Interrupted => (Kind::Failure, "interrupted".to_owned()),
+        let (kind, text, images) = match outcome {
+            Outcome::Ok(ok) => (Kind::Result, clip(ok.value()), ok.images()),
+            Outcome::Err(text) => (Kind::Failure, clip(text), &[][..]),
+            Outcome::Interrupted => (Kind::Failure, "interrupted".to_owned(), &[][..]),
         };
         let label = match by {
             Author::Tools => tool,
             other => format!("{tool}, by {}", self.author(other).1),
         };
-        Row::new(kind, label, text).in_group(Group::Tools)
+        Row::new(kind, label, text)
+            .with_images(images)
+            .in_group(Group::Tools)
     }
 
     fn layer_rows(&self, rows: &mut Vec<Row>) {
@@ -584,13 +595,12 @@ impl Model {
         view.items
             .iter()
             .filter_map(|item| match &item.data {
-                ItemData::Input { by, text, .. } => {
+                ItemData::Input { by, text, images } => {
                     let who = self.author(by).1;
-                    Some(Row::new(
-                        Kind::Dim,
-                        format!("{who} (waiting)"),
-                        text.clone(),
-                    ))
+                    Some(
+                        Row::new(Kind::Dim, format!("{who} (waiting)"), text.clone())
+                            .with_images(images),
+                    )
                 }
                 ItemData::Extension { .. } => None,
             })

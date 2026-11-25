@@ -5,24 +5,27 @@ mod editor;
 mod find;
 mod form;
 mod formui;
+mod images;
 mod link;
 mod model;
 mod plan;
 mod run;
+mod transcript;
 mod tree;
 mod treetext;
 mod treeui;
 mod ui;
 mod wire;
 
-use std::{env, path::PathBuf, process::ExitCode, thread};
+use std::{cell::RefCell, env, path::PathBuf, process::ExitCode, thread};
 
 use clap::Parser;
 use ratatui::{DefaultTerminal, crossterm::event};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use editor::Editor;
-use run::Ended;
+use images::{Choice, Images};
+use run::{Ended, Kept};
 
 /// A terminal chat client of `tau serve`.
 ///
@@ -41,6 +44,10 @@ struct Args {
     /// This client's id (default: user@host:trusty)
     #[arg(long, value_name = "ID")]
     client: Option<String>,
+    /// How images are drawn: auto asks the terminal (kitty, sixel, iTerm2, else halfblocks);
+    /// halfblocks and off do not ask
+    #[arg(long, value_enum, default_value_t = Choice::Auto)]
+    images: Choice,
 }
 
 fn client_id(given: Option<String>) -> Result<String, String> {
@@ -72,12 +79,17 @@ async fn show(
     socket: &std::path::Path,
     me: &str,
     mut connected: link::Connected,
+    images: &RefCell<Images>,
 ) -> Result<Option<String>, String> {
     let mut keys = keyboard();
     let mut draft = Editor::default();
     let mut restore = run::Restore::default();
     loop {
-        match run::session(term, connected, me, &mut draft, &mut keys, restore).await? {
+        let kept = Kept {
+            draft: &mut draft,
+            images,
+        };
+        match run::session(term, connected, me, kept, &mut keys, restore).await? {
             Ended::Quit => return Ok(None),
             Ended::Finished(why) => return Ok(Some(why)),
             Ended::Stopped(why) => return Err(why),
@@ -119,7 +131,20 @@ async fn start() -> Result<Option<String>, String> {
         restoring(info);
         std::process::exit(101);
     }));
-    let shown = show(&mut term, &socket, &me, connected).await;
+    // The terminal is asked which graphics it draws before anything reads the keyboard, and
+    // what it answered is cleared away.
+    let picked = Images::pick(args.images).and_then(|picker| {
+        term.clear()
+            .map_err(|e| format!("cannot clear the screen: {e}"))?;
+        Ok(picker)
+    });
+    let shown = match picked {
+        Ok(picker) => {
+            let images = RefCell::new(Images::new(picker));
+            show(&mut term, &socket, &me, connected, &images).await
+        }
+        Err(why) => Err(why),
+    };
     ratatui::restore();
     shown
 }
