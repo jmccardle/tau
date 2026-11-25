@@ -239,7 +239,7 @@ are deep read-only copies. `images` is whether the model takes images (D30; the 
 without it. `image_tokens` (optional, positive; the model key `image_tokens`) is the most one
 image costs on this model, as its server caps it (llama.cpp's `--image-max-tokens`, say): the
 image ceiling then uses it instead of its provider's rule (D26 section 7.3; on `anthropic` it
-caps the visual tokens, and Claude's image frame is added). The driver builds
+caps the visual tokens, and Claude's image overhead is added). The driver builds
 it from the catalog at each sample; no node holds it.
 
 The key itself is never a field: it is read from the environment at sample

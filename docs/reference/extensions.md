@@ -780,7 +780,7 @@ for any model with a `cap`. Anything else (`openai`, which speaks to OpenAI and 
 OpenAI-compatible server, and a provider tau does not know) gets an estimate from the published
 formulas, which a server that tiles or caps differently can exceed. On `anthropic` the `cap`
 caps the visual tokens (the tier's published limit, 1,568 on the standard tier), and the
-image's `ANTHROPIC_IMAGE_FRAME` is added after it.
+image's `ANTHROPIC_IMAGE_OVERHEAD` is added after it.
 
 ### ImageRule.bound
 

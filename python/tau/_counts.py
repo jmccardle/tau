@@ -93,7 +93,7 @@ def ceiling_of(body: Body, images: "ImageRule") -> Count:
 ANTHROPIC_IMAGE_TOKENS = 4784
 """The most visual tokens one image costs on any Claude model: the high-resolution tier's limit
 (Claude 4.7 and later; 1,568 on the standard tier). Claude resizes a larger image to fit it."""
-ANTHROPIC_IMAGE_FRAME = 21
+ANTHROPIC_IMAGE_OVERHEAD = 21
 """What Claude bills for an image in a tool result beyond its visual tokens, which the published
 rule leaves out. `count_tokens` (2026-11-25; Haiku 4.5, Sonnet 4.6, Opus 4.7 and 5.5 alike, 1x1 to
 3840x2160) bills every image its resized patches plus 3 in a user message, plus 13 in a
@@ -120,7 +120,7 @@ class ImageRule:
     OpenAI-compatible server, and a provider tau does not know) gets an estimate from the published
     formulas, which a server that tiles or caps differently can exceed. On `anthropic` the `cap`
     caps the visual tokens (the tier's published limit, 1,568 on the standard tier), and the
-    image's `ANTHROPIC_IMAGE_FRAME` is added after it."""
+    image's `ANTHROPIC_IMAGE_OVERHEAD` is added after it."""
 
     provider: str
     cap: int | None = None
@@ -157,9 +157,9 @@ def anthropic_image_tokens(width: int, height: int, cap: int | None = None) -> i
     """The most an image costs on Claude: its visual tokens, one for each 28-pixel patch,
     `ceil(w/28) * ceil(h/28)`, at most `ANTHROPIC_IMAGE_TOKENS` or the model's `cap` (its tier's
     visual-token limit; a larger image is scaled down to fit the tier's edge and token limits,
-    which only lowers its patches), plus `ANTHROPIC_IMAGE_FRAME`."""
+    which only lowers its patches), plus `ANTHROPIC_IMAGE_OVERHEAD`."""
     most = ANTHROPIC_IMAGE_TOKENS if cap is None else min(cap, ANTHROPIC_IMAGE_TOKENS)
-    return min(_patches(width, height, 28), most) + ANTHROPIC_IMAGE_FRAME
+    return min(_patches(width, height, 28), most) + ANTHROPIC_IMAGE_OVERHEAD
 
 
 def gemini_image_tokens(width: int, height: int) -> int:

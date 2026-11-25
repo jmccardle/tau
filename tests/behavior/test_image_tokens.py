@@ -6,7 +6,7 @@ The figures are the providers' published rules, read 2026-11-24:
   28-pixel patch; a larger image is scaled down to the tier's long edge and visual-token limit
   (1,568 px and 1,568 tokens; 2,576 px and 4,784 tokens on Claude 4.7 and later). Not published,
   measured with `count_tokens` on 2026-11-25 (`MEASURED`): an image in a tool result bills 21
-  tokens more than its patches (`ANTHROPIC_IMAGE_FRAME`), the first of a result with text.
+  tokens more than its patches (`ANTHROPIC_IMAGE_OVERHEAD`), the first of a result with text.
 - Gemini (aistudio.google.com, "Media resolution" and "Tokens"): Gemini 4 and 3 at most 1,120 per
   image at the default and `high` resolution; earlier models 258 per 768-pixel tile, and 258 for
   an image at most 384 pixels a side.

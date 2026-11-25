@@ -134,8 +134,9 @@ extensions = [Flood()]
 
 @pytest.fixture(scope="session")
 def binary() -> Path:
-    """The example, built once, in the target directory cargo reports. Without cargo the test is skipped locally and fails in CI, where
-    a skipped test would hide that the example does not build."""
+    """The example, built once, in the target directory cargo reports. Without cargo the test is
+    skipped locally and fails in CI, where a skipped test would hide that the example does not
+    build."""
     cargo = shutil.which("cargo", path=f"{os.path.expanduser('~/.cargo/bin')}:{os.environ['PATH']}")
     if cargo is None:
         if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
