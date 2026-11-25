@@ -34,7 +34,7 @@ definitions.
 import asyncio
 import json
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import cast
@@ -52,12 +52,14 @@ from tau._counts import (
     RequestCount,
     Span,
     SpanProof,
+    _Described,  # pyright: ignore[reportPrivateUsage]
     ceiling_of,
     counted,
     lowest_tokens,
     reading,
     reported,
     sent,
+    tools_hash,
     wrapped_count,
 )
 from tau._lines import prefix_length
@@ -354,7 +356,8 @@ class Counts:
     `node` reads a node, `model` the model of the branch at a node, `tools` the base offer, and
     `counter` the extension offering the counter, as `(key, counter)`, and `overhead` the ceiling
     of what a request carries besides its nodes (the tool definitions), which a line with no
-    report yet has to add itself."""
+    report yet has to add itself. `calls` gives the providers by name and the tools of the base
+    offer, for a count call (D26 section 8)."""
 
     def __init__(  # noqa: PLR0913, PLR0917 - one reader for each thing a count needs
         self,
@@ -364,7 +367,9 @@ class Counts:
         tools: Callable[[], tuple[str, ...]],
         counter: Callable[[], tuple[str, Counter] | None],
         overhead: Callable[[], Count],
+        calls: Callable[[], tuple[Mapping[str, object], Sequence[_Described]]] = lambda: ({}, ()),
     ) -> None:
+        self._calls = calls
         self._meter = Meter(node)
         self._node = node
         self._overhead = overhead
@@ -467,6 +472,7 @@ class Counts:
             request.base_nodes,
             {i: c for i, c in request.nodes.items() if c.basis is Basis.REPORTED},
             unreported,
+            tools_hash(self._calls()[1]),
         )
         answer = await asyncio.to_thread(counter.count, job)
         stray = [i for i in answer.nodes if i not in unreported]
@@ -477,4 +483,43 @@ class Counts:
             )
         merged = {**request.nodes, **answer.nodes}
         total = measured.anchor + _sum(merged[i] for i in measured.after)
+        if answer.total is not None:
+            if answer.total.basis not in {Basis.RENDERED, Basis.CALIBRATED}:
+                raise DefinitionError(
+                    f"extension {key!r} counted the whole request as {answer.total.basis}: a "
+                    "whole-request count must be rendered or calibrated"
+                )
+            total = answer.total
         return replace(request, total=total, nodes=merged, why=answer.why or request.why)
+
+    async def count_call(self, at: int) -> int | None:
+        """The server's own count of the request the walk to `at` makes with the base offer's
+        tools, from the model's provider's `count_call` (D26 section 8), shown to the counter as
+        a `count_call` observation; `None` when the provider has no count endpoint for that
+        model. What the provider raises (`SampleError`) propagates; so does what the counter's
+        `observe` raises."""
+        model = self._model(at)
+        resolved = self._resolved(model)
+        providers, tools = self._calls()
+        call = getattr(providers.get(resolved.provider), "count_call", None)
+        if call is None:
+            return None
+        walk = self._meter.walk(at)
+        counted: int | None = await call(walk, resolved, tools)
+        if counted is None:
+            return None
+        found = self._counter()
+        if found is not None:
+            observation = Observation(
+                "count_call",
+                model,
+                resolved,
+                tuple(n.id for n in walk),
+                {"input": counted},
+                {},
+                tools_hash(tools),
+                None,
+                walk[-1].time,
+            )
+            await asyncio.to_thread(found[1].observe, observation)
+        return counted

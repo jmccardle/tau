@@ -387,6 +387,18 @@ records, `tau tokens show MODEL` prints one in words, and `tau tokens reset MODE
 `tau ext disable tokens` turns the whole thing off: nothing is read or written, and counts are
 bills and bytes.
 
+On a llama.cpp server you can have the exact number instead: `tau ext enable token_calls` asks the
+server to count the request before it is sent (its own chat template, then its own tokenizer), and
+that count is what the hard limit reads. It needs no extra package. By default it asks only when
+the estimate cannot say whether the request fits; `tau config set token_calls.when=always` asks
+before every request. Servers without a count endpoint are not asked, and a request with an image
+is left to the estimate (the server counts images its own way).
+
+The optional tokenizer package (`pip install 'ffwf-tau[tokens]'`) is looked for when τ starts, as
+`extensions.tokens.tokenizers` says: `auto` (the default) uses it if it is installed and warns you
+once if it is broken or from another τ version; `require` refuses to start without a working one of
+the right version, naming the command that installs it; `off` never looks.
+
 ## A long conversation can be shortened
 
 Two commands rewrite what the model reads, and both keep the old conversation: they write a new

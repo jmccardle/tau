@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `reading`
 
 ## Agents
 
@@ -431,12 +431,14 @@ class CountJob
     base_nodes: int
     known: Mapping[int, Count]
     unreported: tuple[int, ...]
+    digest: str = ''
 ```
 
 What a counter is asked: the walk to count, the model (its qualified name, and
 `resolved`, its settings in the catalog now) and tools of the request, and what core already
 knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The counter answers
-for the rest, `unreported`.
+for the rest, `unreported`. `digest` is the tool set's `tools_hash`, as a count call's
+observation carries it (D26 section 8), or empty.
 
 ## Counter
 
@@ -474,10 +476,13 @@ step nothing.
 class CounterAnswer
     nodes: Mapping[int, Count]
     why: str | None = None
+    total: Count | None = None
 ```
 
 A counter's answer: a count for some of the job's `unreported` nodes, and `why` the rest
-stay as weak as they are (or `None`).
+stay as weak as they are (or `None`). `total`, when given, is the whole request counted at
+once, as a server's count endpoint counts it (D26 section 8): it replaces the sum of the
+parts as `RequestCount.total`, and must be `rendered` or `calibrated`.
 
 ## Cursor
 
@@ -875,14 +880,17 @@ class Observation
 ```
 
 One reply that reported its usage, as the driver shows it to the counter once the reply
-is in the tree (D26 section 4). `kind` is `reply` (`count_call` is D26 section 8's, not
-built). `model` is the qualified name of the model that replied and `resolved` its settings
-in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage` the
-reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
+is in the tree (D26 section 4), or one count call (D26 section 8). `kind` is `reply`, or
+`count_call`. `model` is the qualified name of the model that replied and `resolved` its
+settings in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage`
+the reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
 `system_fingerprint`, and llama.cpp's `build_info`, `template_sha256`, `model_size`,
 `n_params` and `n_vocab`, each as text, those the reply has); `tools` the digest of the tool
 set its request offered (`tools_hash`); `span` the proved span that ends at this reply, or
-`None` if the reply proved none; `time` the reply's time in milliseconds.
+`None` if the reply proved none; `time` the reply's time in milliseconds. For a
+`count_call`, `walk` is the walk counted, `usage` is `{"input": N}` (the server's count of
+the request it makes with the tools `tools`, before it is sent), `markers` is empty, `span`
+`None` and `time` the newest node's.
 
 ## Permissions
 
@@ -1156,6 +1164,40 @@ TOOL_POINTS = ('pre_tool', 'pre_result')
 
 The names of the tool hook points.
 
+## TokenCalls
+
+```python
+class TokenCalls
+    name = TOKEN_CALLS
+    needs_counter = True
+    order: ClassVar[Mapping[str, int]] = {'pre_sample': CALL_ORDER}
+    options = CallOptions
+```
+
+The built-in extension `token_calls` (D26 section 8), off by default (`tau ext enable
+token_calls`).
+
+Before a sample (`pre_sample`, ahead of compaction's hard limit) it asks the model's
+provider for a count call (`Cursor.count_call`): the server's own count of the request the
+walk makes. The driver shows the answer to the counter (`Tokens`), which gives it as the
+`rendered` total of the walk's request count, so the hard limit reads the server's number
+instead of an estimate. Only some providers count (`OpenAIProvider` on llama.cpp:
+`/apply-template` and `/tokenize`); elsewhere a call answers nothing. A failed call is told
+to the clients and the sample goes on with the counter's own count. It needs a counter: the
+driver refuses it without one.
+
+Option `when`: `straddle` (the default) calls only when the count's interval straddles the
+hard limit (`tokens <= hard < upper`), an estimate that cannot say whether the request fits;
+`always` calls before every sample.
+
+### TokenCalls.pre_sample
+
+```python
+async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
+```
+
+Ask the server to count the request about to be sent, when `when` says to.
+
 ## Tokenizers
 
 ```python
@@ -1189,16 +1231,38 @@ The exact number of tokens of `text` by the tokenizer confirmed for `model`, or
 ```python
 class Tokens
     name = NAME
-    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE}
+    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE, 'pre_step': OBSERVE}
+    options = Options
 ```
 
 The built-in extension `tokens` (the module docstring): the counter, and `/tokens`.
-`home` is `TAU_HOME`; `tokenizers` is the tokenizer wheel when it is installed.
+`home` is `TAU_HOME`; `tokenizers` is the tokenizer wheel's adapter when there is one.
+`mode` is the option `tokenizers` (a start reads it from the config): under `auto` and
+`require` the wheel is found when this is built,
+through `importer` (`importlib.import_module`; a test gives its own). `require` with no
+usable wheel raises an `ImportError` naming the command that installs it; `auto` with a
+broken or stale one warns the clients once and does not use it.
+
+### Tokens.configured
+
+```python
+@classmethod
+def configured(cls, home: Path, extensions: Mapping[str, Mapping[str, object]]) -> 'Tokens'
+```
+
+`Tokens` as a start builds it: with the `tokenizers` option the config layers set in
+`extensions` (`ConfigError` for a value that is no mode).
 
 ### Tokens.__init__
 
 ```python
-def __init__(self, home: Path, tokenizers: Tokenizers | None = None) -> None
+def __init__(
+    self,
+    home: Path,
+    tokenizers: Tokenizers | None = None,
+    mode: Literal['auto', 'off', 'require'] = 'auto',
+    importer: Callable[[str], ModuleType] = importlib.import_module,
+) -> None
 ```
 
 ### Tokens.count
@@ -1221,6 +1285,15 @@ Fold one reply into its model's record on disk (under the file's lock, so anothe
 process observing the same model loses nothing) and keep the record that results. A
 changed drift marker or a jump in what the model's tokens cost resets the record; the
 clients are told at the next `post_reply`.
+
+### Tokens.pre_step
+
+```python
+async def pre_step(self, cursor: Cursor, subject: Subject) -> None
+```
+
+Tell the clients what is waiting to be told (a tokenizer wheel not used) before the
+first step goes on.
 
 ### Tokens.post_reply
 
@@ -1378,6 +1451,19 @@ count for each node. Every count is a report, or a ceiling (the node's bytes) fo
 report covers, unless the `counter` extension counts it better. `at` defaults to the
 cursor's node (a `Cursor`) or the batch's (a `NodeHandle`); a tree handle must give it
 (`ValueError`). `DefinitionError` if the counter counts what a report covers.
+
+### TreeHandle.count_call
+
+```python
+async def count_call(self, at: int | None = None) -> int | None
+```
+
+The server's own count of the request the walk to node `at` makes, with every tool
+offered (D26 section 8): the model's provider asks its count endpoint (llama.cpp's
+`/apply-template` and `/tokenize`), and the counter is shown the answer, which it may
+give as the `rendered` total of the next `count` of the same walk. `None` when the
+provider has no count endpoint for the model (a hosted API, or a request with an
+image). `at` defaults as `count`'s does. `SampleError` if the server fails the call.
 
 ### TreeHandle.spans
 

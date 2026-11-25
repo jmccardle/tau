@@ -14,7 +14,7 @@ from typing import cast
 import httpx
 
 from tau._config import ConfigError, ModelConfig
-from tau._core import Image, Node, Part, Stop
+from tau._core import Body, Image, Node, Outcome, Part, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
 from tau._images import MIB, ImageLimits
 from tau._protocols import Finish, Rendered, SampleError, Tool
@@ -435,6 +435,14 @@ def _model_facts(listed: object, model: str) -> Json:
     return {key: fields[name] for key, name in wanted if count(fields.get(name)) is not None}
 
 
+def _has_image(node: Node) -> bool:
+    """Whether `node` is a tool result that holds an image (D30)."""
+    body = node.body
+    return isinstance(body, Body.Results) and any(
+        isinstance(o, Outcome.Ok) and o.images for _, o, _ in body.outcomes
+    )
+
+
 def _typed_body(model: ModelConfig) -> Json:
     """The request keys the model's own settings set, with their values."""
     options = model.options
@@ -554,6 +562,38 @@ class OpenAIProvider:
             body.update(cast("Json", plain(model.options["extra_body"])))
         url = model.base_url.rstrip("/") + "/chat/completions"
         return rendered(url, body, "messages", nodes)
+
+    async def count_call(
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
+    ) -> int | None:
+        """The server's own count of the request `sample` would send for the same arguments
+        (D26 section 8), before it is sent: on llama.cpp, the request rendered by the server's
+        chat template (`POST /apply-template`, the same body) and that text tokenized as a
+        sample's prompt is (`POST /tokenize`, special tokens added and parsed). It is the
+        `prompt_tokens` the sample will report. `None` on a server that is not llama.cpp (it has
+        no count endpoint here yet; vLLM's `/tokenize` takes the messages themselves and slots in
+        beside it), and for a walk with an image, which llama.cpp counts by its own media
+        encoder, not by the template's text. `SampleError` if the server fails either call."""
+        assert model.base_url is not None  # `check` required one
+        base = model.base_url.rstrip("/")
+        headers = self._headers(model)
+        server = await self._server(base, model.model, headers)
+        if "build_info" not in server or any(_has_image(n) for n in walk):
+            return None
+        body = dict(self.render(walk, model, tools).body)
+        for key in ("stream", "stream_options"):
+            body.pop(key, None)
+        root = base.removesuffix("/v1")
+        templated = await self._connection.post_json(root + "/apply-template", headers, body)
+        prompt = cast("Json", templated).get("prompt") if isinstance(templated, dict) else None
+        if not isinstance(prompt, str):
+            raise SampleError(f"{root}/apply-template answered no 'prompt' text")
+        asked: Json = {"content": prompt, "add_special": True, "parse_special": True}
+        tokenized = await self._connection.post_json(root + "/tokenize", headers, asked)
+        ids = cast("Json", tokenized).get("tokens") if isinstance(tokenized, dict) else None
+        if not isinstance(ids, list):
+            raise SampleError(f"{root}/tokenize answered no 'tokens' list")
+        return len(cast("list[object]", ids))
 
     def _headers(self, model: ModelConfig) -> dict[str, str]:
         """The request's headers. Raises `SampleError` if the model's key cannot be read."""

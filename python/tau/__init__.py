@@ -183,7 +183,7 @@ from tau._startup import (
     select_model,
 )
 from tau._step_limit import StepLimit
-from tau._tokens import Tokenizers, Tokens
+from tau._tokens import TokenCalls, Tokenizers, Tokens
 from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
 from tau._user_config import UserConfig
@@ -345,6 +345,7 @@ __all__ = [
     "SystemText",
     "TextDelta",
     "ThinkingDelta",
+    "TokenCalls",
     "Tokenizers",
     "Tokens",
     "TooLarge",

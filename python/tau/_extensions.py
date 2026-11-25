@@ -41,12 +41,12 @@ from tau._model_sections import model_options_type
 from tau._options import option_fields
 from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
-from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools
+from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
 from tau._prune import Prune
 from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
-from tau._tokens import Tokens
+from tau._tokens import TokenCalls, Tokens
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -95,10 +95,11 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Prune.name: lambda loaded: Prune(),
     Skills.name: _skills,
     StepLimit.name: lambda loaded: StepLimit(),
-    Tokens.name: lambda loaded: Tokens(loaded.home),
+    Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
+    TokenCalls.name: lambda loaded: TokenCalls(),
     Usage.name: lambda loaded: Usage(),
 }
-OFF_BY_DEFAULT = frozenset({Agents.name})
+OFF_BY_DEFAULT = frozenset({Agents.name, TokenCalls.name})
 """The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
@@ -216,7 +217,7 @@ def _checked(provided: list[object]) -> _Provides:
     """`check_extensions`, the tools, the commands, the declared hook orders and the options
     types of one source's extensions: the checks the driver makes, here so a failure names its
     source."""
-    checked = check_extensions(provided)
+    checked = check_extensions(provided, whole=False)  # a counter may come from another source
     listed, _ = assemble_tools((), checked)
     tools, _ = check_tools(listed)
     commands = assemble_commands(checked)
@@ -691,6 +692,7 @@ def _inspect(inputs: _Inputs, explicit: Sequence[str], discover: bool) -> Inspec
     run.names[SESSION_NAME] = f"built-in {SESSION_NAME}"
     _settle(candidates, inputs, discover, run, named)
     _load_keys(candidates, inputs, run)
+    run.errors += counter_needed(run.extensions, run.counter)
     first = ExtensionSource(
         tau.name, "always", "built-in", "built-in", None, (tau.name,), ("tau:model",)
     )

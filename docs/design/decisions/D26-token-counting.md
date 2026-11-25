@@ -1,8 +1,9 @@
 # D26: Token counting
 
 Status: accepted 2026-11-07; T1 built in stage 8E-6; T2, T3 and the standalone half of T4 (the
-tokenizer wheel's crates and `tau_tokens`) built after it, not yet joined (*As built*, in §10); the
-rest of T4 and T5 to T7 not built. Drafted
+tokenizer wheel's crates and `tau_tokens`) built after it, not yet joined (*As built*, in §10); T7
+for llama.cpp and the `tokenizers` option built with the first recorded fixtures (llama.cpp); the
+rest of T4, T5, T6 and T7 not built. Drafted
 2026-11-05 from the owner's ruling of that day and revised the same day after two more rulings: (a)
 the seven open questions of the first draft are accepted as recommended, and tokenizers,
 calibration history and heuristics become optional, in layers (§0); (b) compaction must work
@@ -976,6 +977,60 @@ templates`) are compared whole, 120 renderings, byte for byte.
 - **Builds:** the five count calls, the `count + offset` fit, `TreeHandle.observe`.
 - **Tests:** recorded count-call fixtures (the owner records them), the straddle rule through the
   Harness, and the load error without a counter.
+
+**T7 as built, in part (llama.cpp; akb #599 TC-07).** The count call is built for llama.cpp,
+with the option of D26's decision on the tokenizer wheel beside it. What a user sees: with
+`tau ext enable token_calls`, a request to a llama.cpp server is counted by the server before it
+is sent, and the hard limit reads that number, labelled `rendered`. Differences from section 8:
+
+- **The count is a total, not node counts.** A count call counts a whole rendered request; it is
+  not split over nodes. `CounterAnswer` gains `total` (`rendered` or `calibrated` only), which
+  replaces the sum of the parts as `RequestCount.total`; the node counts, and so compaction's cut
+  and tail, are what the counter makes them without it. `CountJob` gains `digest`, the base
+  offer's `tools_hash`, so `Tokens` answers the total only for the same walk and tool set as the
+  call: a walk one node longer, or another offer, is counted as before.
+- **How a call reaches the counter.** `TreeHandle.count_call(at=None)` asks the model's provider
+  (its optional `count_call(walk, model, tools) -> int | None`) and shows the answer to the
+  counter as an `Observation` of kind `count_call` (`usage` `{"input": N}`); `TreeHandle.observe`
+  is not added. `Tokens` keeps the newest call per model in memory, never in the record. The
+  `count + offset` fit for the estimating endpoints (Anthropic, OpenAI, Gemini) is not built.
+- **llama.cpp.** `/apply-template` with the request body itself (so `tools`, `reasoning_effort`
+  and the server's own template defaults apply), then `/tokenize` with `add_special` and
+  `parse_special`, as the server tokenizes a prompt. Against the recorded fixtures it equals
+  `prompt_tokens` on **28 of 28** text requests (six `counted` requests in the fixture, the rest
+  checked live: three `turns` rounds, `tool-image`'s first request, `length`, both non-streamed
+  cases). A request with an image is **not** counted (`None`): the template's text holds a media
+  marker, which tokenizes to 92 where the server billed 75 for a 64×64 PNG (and 491 for 474 in
+  `tool-image`). vLLM's `/tokenize` takes the messages and tools themselves, and slots in as a
+  second branch of `OpenAIProvider.count_call`, once the provider tells vLLM apart.
+- **`token_calls`** is a second built-in in `_tokens.py` (`TokenCalls`), off by default, ordered
+  at `GUARD // 2` at `pre_sample` so compaction's hard limit (0) reads its count. `when:
+  straddle` uses compaction's hard limit, or the window when compaction is off. It declares
+  `needs_counter`; loaded without a counter it is an `ExtensionLoadError` (`tau ext enable
+  tokens`).
+- **The tokenizer wheel's option** (`extensions.tokens.tokenizers`, `auto | off | require`, akb
+  #599) is built here, ahead of the rest of T4, with John's ruling of 2026-11-24: under `require`
+  an absent, broken (does not import, or miscounts a fixed text) or stale (another version) wheel
+  stops the start; under `auto` an absent one says nothing and a broken or stale one is told once
+  and not used. A usable wheel is found and checked, but nothing counts with it until T4's join.
+
+**Fixtures as recorded (akb #599 TC-01).** The recorder gained a scenario list, a keys file and
+`all` (its docstring); llama.cpp b489 serving Qwen3.8-27B (Q4_0, with its vision projector) is
+recorded, eleven cases. What they settle or show:
+
+- **The ceiling holds** (decision 3): on 21 proved spans the reported cost is at most 0.36 of the
+  ceiling (bytes plus 16 per node); 16 per node needs no raising for this server.
+- **The `slot` proof never fires on Qwen3.8.** `cache_n(n+1)` is `input(n) − 4` on every pair:
+  the template renders the previous turn differently from the generation prompt it was sampled
+  after (the reasoning block), so the slot keeps less than the whole previous request and T2's
+  `>=` rule is never met. Every llama.cpp span is proved by `prefix`.
+- **Images.** A tool result's image follows its tool message in a user message (D30) and the
+  model reads it; it needs the model's `images: true`, and without it τ sends the text and says
+  why (as built). A 64×64 image costs a handful of tokens here.
+- **The refusals** come back as `SampleError` with status 400 and the server's words
+  (`Expected 'messages' to be an array`; `request (140053 tokens) exceeds the available context
+  size (131072 tokens)`). τ does not mark the second as a context overflow (D24 ruling 8 makes no
+  use of it).
 
 Image formulas land with image parts, which is not part of this ADR's stages.
 

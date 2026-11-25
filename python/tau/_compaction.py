@@ -144,6 +144,13 @@ class Limits:
         return self.soft if mode == "soft" else self.hard
 
 
+def hard_limit(cursor: Cursor) -> int | None:
+    """Compaction's hard limit for the cursor's model (`None`: the model has no window), as its
+    `pre_sample` reads it. `ConfigError` when `compaction` is not loaded, or its limits do not
+    fit the model."""
+    return _limits(cursor, cursor.options_of("compaction")).hard
+
+
 def _limits(cursor: Cursor, options: Options) -> Limits:
     """The limits of the cursor's model. Hard is `hard`, else the window less `reserve`; soft is
     `soft`, else 80% of hard; `keep` is the one set, else `DEFAULT_KEEP` or half the soft limit

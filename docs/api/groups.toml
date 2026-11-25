@@ -19,7 +19,7 @@ names = [
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
     "StepLimit", "Attachments", "Skills", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
     "Count", "Basis", "RequestCount", "Reading", "reading", "counted", "Counter", "CountJob", "CounterAnswer", "Span", "SpanProof",
-    "Observation", "Tokens", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
+    "Observation", "Tokens", "TokenCalls", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
     "CalibrationNewer", "calibration_features",
 ]
 

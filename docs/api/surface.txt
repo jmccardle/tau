@@ -80,6 +80,7 @@ class Count
 class CountJob
     base: Count
     base_nodes: int
+    digest: str = ''
     known: Mapping[int, Count]
     model: str
     resolved: ModelConfig
@@ -92,6 +93,7 @@ class Counter(Protocol)
 @dataclass(frozen=True)
 class CounterAnswer
     nodes: Mapping[int, Count]
+    total: Count | None = None
     why: str | None = None
 class Cursor(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
@@ -212,16 +214,32 @@ class Subject
     node: Node | None = None
     tools: Sequence[str] | None = None
 TOOL_POINTS = ('pre_tool', 'pre_result')
+class TokenCalls
+    name = TOKEN_CALLS
+    needs_counter = True
+    options = CallOptions
+    order: ClassVar[Mapping[str, int]] = {'pre_sample': CALL_ORDER}
+    async def pre_sample(self, cursor: Cursor, subject: Subject) -> None
 class Tokenizers(Protocol)
     def count(self, model: ModelConfig, text: str) -> int | None
     property version: str
 class Tokens
-    def __init__(self, home: Path, tokenizers: Tokenizers | None = None) -> None
+    def __init__(
+        self,
+        home: Path,
+        tokenizers: Tokenizers | None = None,
+        mode: Literal['auto', 'off', 'require'] = 'auto',
+        importer: Callable[[str], ModuleType] = importlib.import_module,
+    ) -> None
+    @classmethod
+    def configured(cls, home: Path, extensions: Mapping[str, Mapping[str, object]]) -> 'Tokens'
     def count(self, job: CountJob) -> CounterAnswer
     name = NAME
     def observe(self, observation: Observation) -> None
-    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE}
+    options = Options
+    order: ClassVar[Mapping[str, int]] = {'post_reply': OBSERVE, 'pre_step': OBSERVE}
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> None
     def tokens(self, tree: TreeHandle) -> str
 class ToolHook(Protocol)
     async def __call__(self, node: NodeHandle, call: 'CallDraft', /) -> str | None
@@ -241,6 +259,7 @@ class TreeHandle
     async def close_cursor(self, cursor: int) -> None
     def closed(self) -> list[tuple[int, int]]
     async def count(self, at: int | None = None) -> RequestCount
+    async def count_call(self, at: int | None = None) -> int | None
     property counter: str | None
     def cursor(self, cursor: int) -> CursorState
     def cursors(self) -> list[int]
@@ -916,6 +935,12 @@ class OpenAIProvider
     async def aclose(self) -> None
     def chat_template(self, base_url: str) -> str | None
     def check(self, model: ModelConfig) -> list[str]
+    async def count_call(
+        self,
+        walk: Sequence[Node],
+        model: ModelConfig,
+        tools: Sequence[Tool],
+    ) -> int | None
     property image_limits: ImageLimits
     property name: str
     def render(self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]) -> Rendered

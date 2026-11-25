@@ -272,6 +272,7 @@ class Driver:
             lambda: tuple(self._tools),
             lambda: counter_of(self._extensions),
             lambda: tools_ceiling(self._tools.values()),
+            lambda: (self._providers, tuple(self._tools.values())),
         )
         self._handles = Handles(
             session,
@@ -319,9 +320,8 @@ class Driver:
             rest=self.rest,
             left=self._leavers.left,
         )
-        self._waits: Counter[asyncio.Task[None]] = (
-            Counter()
-        )  # effect -> waits on cursors it has out
+        # effect -> waits on cursors it has out
+        self._waits: Counter[asyncio.Task[None]] = Counter()
         self._adopt(extensions)
 
     def _adopt(self, extensions: Sequence[Extension]) -> None:
