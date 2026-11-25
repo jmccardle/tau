@@ -1379,6 +1379,7 @@ class Holder
 @dataclass
 class LiveLayer
     at: int | None = None
+    broken: str | None = None
     calls: dict[int, FormingCall] = field(default_factory=lambda: {})
     def drop_reply(self) -> None
     property empty: bool
@@ -1386,6 +1387,8 @@ class LiveLayer
     retrying: Retrying | None = None
     text: str = ''
     thinking: str = ''
+# tau.tui
+class LiveOutOfOrder(ValueError)
 # tau.tui
 class SessionPicker(TauDialog[SessionInfo | None])
     AGE_WIDTH = 5

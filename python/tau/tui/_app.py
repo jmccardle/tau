@@ -48,7 +48,7 @@ from tau.tui._switch import Switch
 from tau.tui._themes import build_theme_registry, install_themes
 from tau.tui._transcript import ChatDisplay
 from tau.tui._tree import tell_trees
-from tau.tui._view import SessionView
+from tau.tui._view import LiveOutOfOrder, SessionView
 
 _QUIT_WINDOW = 3.0  # seconds a first Ctrl+C waits for the second
 
@@ -67,7 +67,17 @@ async def _draw(
     if was_waiting or isinstance(delta, Retrying):
         _show_status(app, app.session.views[cursor])
     if not isinstance(delta, Retrying):
-        await transcript.live(delta, app.session.live[cursor])
+        try:
+            await transcript.live(delta, app.session.live[cursor])
+        except LiveOutOfOrder as e:
+            await _broken(app, transcript, e)
+
+
+async def _broken(app: "TauApp", transcript: ChatDisplay, error: LiveOutOfOrder) -> None:
+    """The stream said a live delta it could not have (a bug): say so, stop drawing the reply,
+    and let its node draw it when it lands."""
+    await transcript.end_live()
+    app.toast(f"{error}; the reply is shown when it is saved", title="live reply", severity="error")
 
 
 class TauApp(App[None]):
@@ -267,7 +277,11 @@ class TauApp(App[None]):
         async with self._drawing:
             layer = self.session.live.get(self.cursor)
             was_waiting = layer is not None and layer.retrying is not None
-            self.session.hear(event)
+            try:
+                self.session.hear(event)
+            except LiveOutOfOrder as e:
+                await _broken(self, self._transcript, e)
+                return
             match event:
                 case CursorView(cursor=c) if c == self.cursor:
                     await self._follow(event)
@@ -277,7 +291,9 @@ class TauApp(App[None]):
                     self._transcript.progress(
                         node, call, self.session.live[c].progress[(node, call)]
                     )
-                case Live(cursor=c, delta=delta) if c == self.cursor:
+                case Live(cursor=c, delta=delta) if (
+                    c == self.cursor and self.session.live[c].broken is None
+                ):
                     await _draw(self, self._transcript, c, delta, was_waiting)
                 case CursorGone(cursor=c) if c == self.cursor and self.session.views:
                     self.toast(f"cursor {c} was closed", severity="warning")
@@ -311,8 +327,9 @@ class TauApp(App[None]):
         if cursor not in self.session.views:
             raise LookupError(f"cursor {cursor} is not open")
         await self.client.watch([cursor])
-        self.session.forget_live(self.cursor)  # its deltas are not heard now; a later watch
-        self.session.forget_live(cursor)  # replays what the sample in flight has said
+        if cursor != self.cursor:  # watching the same cursor again replays nothing: keep its layer
+            self.session.forget_live(self.cursor)  # its deltas are not heard now; a later watch
+            self.session.forget_live(cursor)  # replays what the sample in flight has said
         self.cursor = cursor
         view = self.session.views[cursor]
         await self._transcript.rebuild(await self.client.walk(view.at), self.client.walk)

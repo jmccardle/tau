@@ -212,7 +212,9 @@ it watches cursor 1, and switching the viewed cursor is a local lookup.
   catch-up taken in the same act: the parts of the sample in flight that are not in the
   tree yet, and the text of the open part. Tool progress has no catch-up; the result
   arrives as `Appended`.
-- **Bounds.** `Live` is dropped when the client's buffer is full. `CursorState` and
+- **Bounds.** `Live` is dropped when the client's buffer is full, and then the rest of that
+  cursor's reply in flight too (amended in 0.17.2: a dropped `CallNamed` followed by its
+  `CallArgs` crashed the TUI; a client hears a prefix of each reply). `CursorState` and
   `Labels` replace their own earlier copy, so between two other events they cost one slot per
   cursor. A client whose
   `Appended` and `Notice` backlog passes the buffer is cut off (`CutOff`, a `ConnectionError`) and
