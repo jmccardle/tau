@@ -9,8 +9,8 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
-from harness import Harness, scenario
+from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply, edits
+from harness import Harness, say, scenario
 
 from tau import (
     Appended,
@@ -159,6 +159,64 @@ async def test_a_slow_client_loses_live_events_and_never_slows_the_pump(tmp_path
     slow_seen, fast_seen = await drain(h, slow, fast)
     assert len(lives(fast_seen)) == len(DELTAS) + len(calls)
     assert len(lives(slow_seen)) == 2, "the buffer held its capacity and no more"
+
+
+@scenario
+async def test_a_slow_client_hears_a_prefix_of_the_reply_and_all_of_the_next(
+    tmp_path: Path,
+) -> None:
+    """The mcrf-term crash: a client that fell behind lost a `CallNamed` to its full buffer, read
+    some, and was then sent that call's `CallArgs`. A client hears the reply in flight up to its
+    first lost delta and nothing after it (each `CallArgs` after its `CallNamed`, text without a
+    hole); the next reply is heard whole."""
+    gate = Gate()
+    deltas, items = edits(4)
+    batch = Reply(items, Stop.Tools, gate=gate, gate_after=6)  # call 1 named, its args to come
+    after = [TextDelta("do"), TextDelta("ne")]
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([batch, Reply([*after, Part.Text("done")])]),
+        tools=[FakeTool("edit", "ok")],
+    )
+    slow = await h.connect("slow", buffer=3, watching=[h.cursor])
+    await h.send("hi")
+    await h.settle()  # parked at the gate: slow's buffer held 3 and lost the rest
+    heard: list[Event] = []
+    while len(lives(heard)) < 3:
+        heard.append(await asyncio.wait_for(anext(slow), 1))
+    gate.release()  # slow has room again: the reply's next deltas would fit
+    await h.settle()
+    (rest,) = await drain(h, slow)
+    said = [e.delta for e in lives(heard + rest)]
+    first, second = said[: -len(after)], said[-len(after) :]
+    assert first == deltas[: len(first)], "a prefix of the reply in flight, with no hole"
+    assert len(first) == 3, "what the buffer held when the reply outran the client"
+    assert second == after, "the next reply is heard whole"
+
+
+@scenario
+async def test_watching_again_after_a_gap_starts_the_reply_over_from_its_catch_up(
+    tmp_path: Path,
+) -> None:
+    gate = Gate()
+    deltas, items = edits(2)
+    batch = Reply(items, Stop.Tools, gate=gate, gate_after=4)  # call 0's arguments streamed
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([batch, say("done")]), tools=[FakeTool("edit", "ok")]
+    )
+    slow = await h.connect("slow", buffer=3, watching=[h.cursor])
+    await h.send("hi")
+    await h.settle()  # slow held 3 of call 0's 4 deltas and lost the last
+    heard: list[Event] = []
+    while len(lives(heard)) < 3:
+        heard.append(await asyncio.wait_for(anext(slow), 1))
+    await slow.watch([])
+    await slow.watch([h.cursor])  # watched afresh: the catch-up says the reply so far
+    gate.release()
+    await h.settle()
+    (rest,) = await drain(h, slow)
+    whole = [CallNamed(0, "e0", "edit"), CallArgs(0, '{"a":1}'), *deltas[4:]]
+    assert [e.delta for e in lives(rest)] == whole[:3], "the catch-up, then what fit"
 
 
 @scenario

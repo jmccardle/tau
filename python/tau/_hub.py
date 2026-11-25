@@ -39,8 +39,12 @@ class Feed:
     `Appended` nodes it points at and before the `Live` deltas of its step.
 
     `Live` is heard only for the cursors being `watching`, and dropped when `capacity` are
-    waiting. `Appended` and `Notice` are never dropped: a backlog of `capacity` of them cuts the
-    client off (the stream ends with `CutOff`, nothing more is delivered). The bound
+    waiting. A cursor whose `Live` was dropped hears none until its reply in flight is over (a
+    `CursorView` with another `at`, or not busy), or until it is watched afresh (its catch-up
+    starts the reply again): what a client hears of a reply is a prefix of what was said, so a
+    `CallArgs` never comes without its `CallNamed` and text never has a hole in it. The reply
+    is whole in its node. `Appended` and `Notice` are never dropped: a backlog of `capacity` of
+    them cuts the client off (the stream ends with `CutOff`, nothing more is delivered). The bound
     is `capacity` of each of the first two classes, plus, in each run of state events between
     them, one per cursor and one `Labels`.
 
@@ -60,7 +64,9 @@ class Feed:
             raise ValueError(f"an event buffer holds at least one event, not {capacity}")
         self.client = client
         self.capacity = capacity
-        self.watching: frozenset[int] = frozenset()
+        self._watching: frozenset[int] = frozenset()
+        self._at: dict[int, int] = {}  # each cursor's `at` as last offered
+        self._gaps: dict[int, int | None] = {}  # cursor -> its `at` when its `Live` was dropped
         self._release = release
         self._buffer: list[Event] = []
         self._lives = 0
@@ -69,13 +75,24 @@ class Feed:
         self._failure: Exception | None = None
         self._waiter: asyncio.Future[None] | None = None
 
+    @property
+    def watching(self) -> frozenset[int]:
+        """The cursors whose `Live` this stream hears."""
+        return self._watching
+
+    @watching.setter
+    def watching(self, cursors: frozenset[int]) -> None:
+        """Watch `cursors`. One newly watched starts again with a catch-up, so its gap is over."""
+        self._gaps = {c: at for c, at in self._gaps.items() if c in cursors and c in self._watching}
+        self._watching = cursors
+
     def offer(self, event: Event) -> None:
         """Called by the hub. Never waits, never raises."""
         if self._ended:
             return
         match event:
             case Live(cursor=cursor):
-                if cursor not in self.watching or self._lives >= self.capacity:
+                if not self._admits(cursor):
                     return
                 self._lives += 1
             case Appended() | Notice():
@@ -84,10 +101,34 @@ class Feed:
                     return
                 self._backlog += 1
             case _:
+                self._note(event)
                 self._replace(event)
                 return
         self._buffer.append(event)
         self._wake()
+
+    def _admits(self, cursor: int) -> bool:
+        """Whether a `Live` of `cursor` is held. One that finds no room opens a gap: the rest of
+        its reply is dropped too."""
+        if cursor not in self._watching or cursor in self._gaps:
+            return False
+        if self._lives >= self.capacity:
+            self._gaps[cursor] = self._at.get(cursor)
+            return False
+        return True
+
+    def _note(self, event: Event) -> None:
+        """Follow each cursor's `at`; a gap is over when the reply that opened it is."""
+        match event:
+            case CursorView(cursor=cursor, at=at, busy=busy):
+                self._at[cursor] = at
+                if cursor in self._gaps and (not busy or self._gaps[cursor] != at):
+                    del self._gaps[cursor]
+            case CursorGone(cursor=cursor):
+                self._at.pop(cursor, None)
+                self._gaps.pop(cursor, None)
+            case _:
+                pass
 
     def _replace(self, event: Event) -> None:
         """Queue the state event `event` in place of its last held copy if only state events

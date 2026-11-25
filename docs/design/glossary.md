@@ -2036,14 +2036,15 @@ Up on an empty editor takes back a pending line, and (8C-3) Ctrl+P the command p
 every toast shown, notices included.
 
 ### SessionView
-`tau.tui.SessionView` (with `LiveLayer`, `FormingCall`; `tau.tui._view`) · D23 §2 · new
+`tau.tui.SessionView` (with `LiveLayer`, `FormingCall`, `LiveOutOfOrder`; `tau.tui._view`) · D23 §2 · new
 
 A frontend's picture of the session, built from its stream with `hear(event)`: each open cursor's
 `CursorView`, the closed cursors (`CursorGone`), the `Labels`, the nodes by id (from `Appended`),
 the notices, and the **live layer** of each cursor whose `Live` the client hears. The layer follows
 model.md §9's client rules: a reply's text, thinking and forming calls are drawn over the cursor and
 dropped when its view has another `at` or is not busy; a `CallArgs` whose `CallNamed` was never
-heard is ignored; a call's tool progress, keyed by `(node, call_id)`, is dropped when the `Results`
+heard is a broken stream: `hear` raises `LiveOutOfOrder` (the TUI says so in an error toast) and
+the layer holds none of that reply until it is over; a call's tool progress, keyed by `(node, call_id)`, is dropped when the `Results`
 node answering it arrives. `path(tip, at)` is the nodes after the tip down to `at` when `at`
 descends from it through nodes the view holds, else `None`. No Textual and no calls: tested with
 events alone.
@@ -3576,7 +3577,9 @@ driver calls it after each client call, each pump pass, each handle write, and e
 opened or closed. `Hub.connect` publishes what is pending, then builds the snapshot from what
 was published, so subscribing and the snapshot are one act. A **Feed** is one client's stream:
 its buffer holds at most `buffer` `Live` and `buffer` of `Appended` and `Notice`, plus one state
-event per cursor (its `CursorView`, or the `CursorGone` that replaces it) and one `Labels`; a `Live` that finds its share full is dropped,
+event per cursor (its `CursorView`, or the `CursorGone` that replaces it) and one `Labels`; a `Live` that finds its share full is dropped, and with it the rest of its
+cursor's reply in flight (until a `CursorView` of the cursor has another `at` or is not busy, or
+the cursor is watched afresh): a client hears a prefix of each reply, never one with a hole,
 and an `Appended` or `Notice` that finds its share full cuts the client off. One consumer: a
 second concurrent `anext` raises `RuntimeError`. `take()` removes and returns what it holds. A
 `RemoteClient` keeps its events in a Feed too, so a remote client that falls behind is cut off as a
@@ -3643,8 +3646,9 @@ answer waits for a call already running and the final flush.
 
 A `LiveDelta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it. Never
 in the tree. Heard only by clients watching the cursor (**watch**); a client whose share of the
-buffer is full loses it with no mark: live events are advisory. Client rules: ignore a
-`CallArgs` whose `CallNamed` you never saw; draw the stream as a layer over the cursor and drop it
+buffer is full loses it, and the rest of that reply, with no mark: live events are advisory, and
+what is heard of a reply is a prefix of it. Client rules: a `CallArgs` whose `CallNamed` you never
+saw is a broken stream, to be said and not drawn; draw the stream as a layer over the cursor and drop it
 when the cursor's `CursorView` has another `at` or is not busy; drop a call's `ToolProgress`
 layer, keyed by `(node, call_id)`, when a `Results` node of that batch answering the call arrives
 in an `Appended`.

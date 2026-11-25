@@ -4,7 +4,7 @@
 
 `tau.tui`: the Textual app `tau` opens, which a program can embed or drive, and the picture of the session it draws from.
 
-Names: `tui.FormingCall`, `tui.Holder`, `tui.LiveLayer`, `tui.SessionPicker`, `tui.SessionView`, `tui.Switch`, `tui.TauApp`, `tui.TauDialog`
+Names: `tui.FormingCall`, `tui.Holder`, `tui.LiveLayer`, `tui.LiveOutOfOrder`, `tui.SessionPicker`, `tui.SessionView`, `tui.Switch`, `tui.TauApp`, `tui.TauDialog`
 
 ## tau.tui.FormingCall
 
@@ -52,13 +52,15 @@ class LiveLayer
     calls: dict[int, FormingCall] = field(default_factory=lambda: {})
     progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
     retrying: Retrying | None = None
+    broken: str | None = None
 ```
 
 What a watched cursor's sample has said and the tree does not hold yet: the reply's `text`
 and `thinking` so far, the `calls` forming (by their index in the reply), and each running
 call's `progress` output keyed by `(node, call_id)`. `retrying` is the `Retrying` the provider
 last said, until the sample says anything else or ends. `at` is the cursor's node when the
-first delta arrived: the layer is drawn over it.
+first delta arrived: the layer is drawn over it. `broken` is why the reply in flight cannot be
+drawn (`LiveOutOfOrder`); its deltas are ignored until it is over.
 
 ### tau.tui.LiveLayer.empty
 
@@ -75,6 +77,15 @@ def drop_reply(self) -> None
 ```
 
 Forget the reply's text, thinking and calls (the node arrived, or the step ended).
+
+## tau.tui.LiveOutOfOrder
+
+```python
+class LiveOutOfOrder(ValueError)
+```
+
+A live delta that does not follow from what the stream said before it: the arguments of a
+call that was never named. The stream is broken (a bug), and the reply is not drawn live.
 
 ## tau.tui.SessionPicker
 
@@ -222,7 +233,8 @@ def __init__(self) -> None
 def hear(self, event: Event) -> None
 ```
 
-Take one event into the picture.
+Take one event into the picture. `LiveOutOfOrder` for a `Live` the stream could not
+have said; the picture holds no reply for its cursor until that reply is over.
 
 ### tau.tui.SessionView.forget_live
 

@@ -6,7 +6,9 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau import (
+    CallArgs,
     CallDraft,
+    CallNamed,
     Cursor,
     Delta,
     Ending,
@@ -31,6 +33,18 @@ from tau import (
 FAKE_MODEL = "fake"
 FAKE_PROVIDER = "fake"
 FAKE_CONFIG = model_config(FAKE_MODEL)
+
+
+def edits(count: int) -> tuple[list[Delta], list[Delta | Part]]:
+    """`count` parallel `edit` calls as Anthropic streams them: each named, then its arguments
+    in three pieces, the part after its last piece."""
+    deltas: list[Delta] = []
+    items: list[Delta | Part] = []
+    for i in range(count):
+        streamed = [CallNamed(i, f"e{i}", "edit"), *(CallArgs(i, s) for s in ('{"a', '":', "1}"))]
+        deltas += streamed
+        items += [*streamed, Part.Call(f"e{i}", "edit", '{"a":1}')]
+    return deltas, items
 
 
 def fake_catalog(*, images: bool = False) -> ModelCatalog:

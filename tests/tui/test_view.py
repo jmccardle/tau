@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fakes import FAKE_CONFIG
 
 from tau import (
@@ -23,7 +24,7 @@ from tau import (
     ThinkingDelta,
     ToolProgress,
 )
-from tau.tui import SessionView
+from tau.tui import LiveOutOfOrder, SessionView
 
 
 def view(cursor: int = 0, at: int = 0, *, busy: bool = False) -> CursorView:
@@ -96,16 +97,35 @@ def test_a_reply_is_a_layer_over_the_cursor_until_the_cursor_moves_or_rests(
     assert seen.live[0].empty, "a cursor at rest has no reply in flight"
 
 
-def test_a_call_forms_from_its_name_and_a_stray_argument_is_ignored() -> None:
+def test_a_call_forms_from_its_name() -> None:
     seen = SessionView()
     seen.hear(view(0, 1, busy=True))
-    seen.hear(Live(0, CallArgs(0, '{"stray"')))
-    assert seen.live[0].calls == {}
     seen.hear(Live(0, CallNamed(0, "c", "read")))
     seen.hear(Live(0, CallArgs(0, '{"path"')))
     seen.hear(Live(0, CallArgs(0, ': "x"}')))
     (call,) = seen.live[0].calls.values()
     assert (call.id, call.tool, call.args) == ("c", "read", '{"path": "x"}')
+
+
+def test_arguments_of_a_call_never_named_break_the_reply_until_it_is_over() -> None:
+    """A stream that loses a delta loses the rest of its reply (`Feed`), so `CallArgs` without
+    its `CallNamed` is a broken stream: said once, and the reply is not drawn live."""
+    seen = SessionView()
+    seen.hear(view(0, 1, busy=True))
+    seen.hear(Live(0, TextDelta("editing")))
+    seen.hear(Live(0, CallNamed(0, "a", "edit")))
+    with pytest.raises(LiveOutOfOrder, match="call 3 came before the call was named"):
+        seen.hear(Live(0, CallArgs(3, '{"stray"')))
+    layer = seen.live[0]
+    assert layer.empty, "nothing of the broken reply is drawn"
+    assert layer.broken is not None
+    seen.hear(Live(0, CallNamed(3, "d", "edit")))  # the rest of it is ignored, and not said again
+    seen.hear(Live(0, CallArgs(3, "{}")))
+    seen.hear(Live(0, TextDelta("more")))
+    assert layer.empty
+    seen.hear(view(0, 2, busy=True))  # the reply landed: the next one is drawn
+    seen.hear(Live(0, TextDelta("next")))
+    assert (layer.broken, layer.text) == (None, "next")
 
 
 def test_tool_progress_is_kept_by_node_and_call_until_the_results_arrive(tmp_path: Path) -> None:

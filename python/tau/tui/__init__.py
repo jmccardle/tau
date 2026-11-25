@@ -12,12 +12,13 @@ from tau.tui._app import TauApp
 from tau.tui._dialogs import TauDialog
 from tau.tui._picker import Holder, SessionPicker
 from tau.tui._switch import Switch
-from tau.tui._view import FormingCall, LiveLayer, SessionView
+from tau.tui._view import FormingCall, LiveLayer, LiveOutOfOrder, SessionView
 
 __all__ = [
     "FormingCall",
     "Holder",
     "LiveLayer",
+    "LiveOutOfOrder",
     "SessionPicker",
     "SessionView",
     "Switch",
