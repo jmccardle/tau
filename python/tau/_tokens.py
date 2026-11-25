@@ -27,7 +27,15 @@ from urllib.parse import quote
 
 from tau._config import ModelConfig
 from tau._core import Body, Calibration, CalibrationError, CalibrationStore, calibration_features
-from tau._counts import Basis, Count, CounterAnswer, CountJob, Observation, ceiling_of
+from tau._counts import (
+    Basis,
+    Count,
+    CounterAnswer,
+    CountJob,
+    Observation,
+    ceiling_of,
+    image_rule,
+)
 from tau._handles import Cursor, Subject, TreeHandle
 from tau._hook_order import OBSERVE
 
@@ -127,6 +135,7 @@ class Tokens:
             return CounterAnswer({}, describe(job.model, record, self._tokenizers))
         nodes: dict[int, Count] = {}
         wanted = set(job.unreported)
+        images = image_rule(job.resolved)
         for node in job.walk:
             if node.id not in wanted:
                 continue
@@ -135,7 +144,7 @@ class Tokens:
             estimate = record.predict(calibration_features(node.body))
             if estimate is None:
                 continue
-            most = ceiling_of(node.body).upper
+            most = ceiling_of(node.body, images).upper
             tokens = min(estimate[0], most)
             nodes[node.id] = Count(tokens, Basis.HEURISTIC, min(estimate[1], most - tokens))
         return CounterAnswer(nodes, self._why(job.model))

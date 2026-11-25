@@ -132,6 +132,12 @@ class Form
     property qualified: str
     schema: Json
     yields: bool = False
+@dataclass(frozen=True)
+class ImageRule
+    property bound: bool
+    cap: int | None = None
+    provider: str
+    def tokens(self, width: int, height: int) -> int
 LabelName = NewType('LabelName', str)
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
@@ -260,6 +266,7 @@ class TreeHandle
     property tree: Tree
 def calibration_features(body: Body) -> list[float]
 def counted(node: Node) -> bool
+def image_rule(model: ModelConfig) -> ImageRule
 def reading(node: Node) -> Reading | None
 
 == tools: Tools
@@ -1179,6 +1186,7 @@ class ModelConfig
     api_key_env: str | None = None
     base_url: str | None = None
     context_window: int | None = None
+    image_tokens: int | None = None
     images: bool = False
     literal_api_key: str | None = field(default=None, repr=False)
     max_tokens: int | None = None

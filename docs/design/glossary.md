@@ -830,7 +830,9 @@ the *name* of the environment variable holding the API
 key, `provider` (default `"openai"`; a name in the driver's provider map), for a
 literal `api_key` in a file `literal_api_key` (hidden from `repr`), `max_tokens`
 (optional positive integer), `context_window` (see *context_window*), `images` (D30: whether the
-model takes images; the model key `images`, a boolean, default `false`), `sections` (see *model
+model takes images; the model key `images`, a boolean, default `false`), `image_tokens` (optional
+positive integer: the most one image costs on the model, as its server caps it; see *ImageRule*),
+`sections` (see *model
 section*) and `options` (see *options*; stored as a deep read-only copy: objects become read-only mappings, lists
 tuples). Invalid values raise
 `ConfigError` (a `ValueError`), which also reports a `Config` that is not a
@@ -1404,9 +1406,8 @@ count's `tokens` is 0 and its `bound` is the node's UTF-8 bytes (text, reasoning
 ids, names and arguments, outcomes) plus 16 tokens for the node (`CEILING_PER_NODE`). Counts add:
 tokens and bounds add, and the sum is as weak as its weakest part, so a reported bill plus the
 ceiling of a new message is a ceiling count with the bill as its `tokens`. An image adds its
-**image ceiling** (`tau._counts.image_ceiling(width, height)`, D30 §9) to the bound, never its
-base64 bytes: the most the published formulas give for its pixels without a resize,
-`max(⌈w/28⌉·⌈h/28⌉, 85 + 170·tiles)`. A count is shown by
+**image ceiling** (`ImageRule.tokens(width, height)`, see *ImageRule*) to the bound, never its
+base64 bytes. A count is shown by
 `tau._counts.show`: the tokens for a reported one, `~` for a heuristic one, `≤` and the `upper` for
 a ceiling. Nothing in τ estimates tokens from characters.
 
@@ -1425,6 +1426,24 @@ is the ceiling of the tool definitions.
 second request proves that the first is its prefix, the nodes between the two replies cost the
 difference of the two `input`s, held by the first of them, and the others have no count of their
 own, so a cut never lands inside one. The newest reply's count is its `output`.
+
+### ImageRule, image_rule, image_tokens
+`tau.ImageRule` (`provider`, `cap`; `tokens(width, height)`, `bound`), `tau.image_rule(model)`
+(`_counts.py`); the model key `image_tokens` · D26 section 7.3, D30 section 9 · new (TC-05)
+
+How a model's images are counted until a server bills them. The rule is the model's `provider`
+setting (the adapter that sends the request; never a guess from the model's name) and its
+`image_tokens` (`cap`). `anthropic`: one token per 28-pixel patch, at most 4,784 (Claude's
+high-resolution tier; the standard tier's 1,568 is lower, so the higher holds for both). `gemini`:
+the larger of 1,120 (Gemini 4 and 3 at the default and `high` media resolution) and 258 per
+768-pixel tile (earlier models; 258 for an image at most 384 pixels a side). Those two are **bound**
+(an upper bound for every model they serve). Any other provider, `openai` included (one adapter for
+OpenAI and every OpenAI-compatible server), gets an **estimate**: the larger of uncapped 28-pixel
+patches and OpenAI's `85 + 170·tiles` after its fit to 2048 and 768, which GPT-4o mini and the
+patch-billed models with a multiplier exceed; the meter's `why` then says the images are estimated
+and names `image_tokens`. A `cap` makes any rule a bound: the image costs at most the cap, and on
+`anthropic` and `gemini` the smaller of the cap and the provider's figure. The TUI's tree, which
+knows no branch's model, counts by the estimate.
 
 ### Cursor.count, meter
 `TreeHandle.count(at=None)`, `tau._meter.Meter`, `Counts` · D26 section 4 · new (8E-6)

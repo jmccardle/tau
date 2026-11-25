@@ -30,8 +30,10 @@ from tau._counts import (
     NONE,
     Basis,
     Count,
+    ImageRule,
     RequestCount,
     ceiling_of,
+    image_rule,
     reading,
     sent,
     show,
@@ -258,7 +260,7 @@ def _base(request: RequestCount, prefix: list[Node]) -> Count:
     return total
 
 
-def _summary_count(reply: Node, body: Body) -> Count:
+def _summary_count(reply: Node, body: Body, images: ImageRule) -> Count:
     """What the line pays for the summary: the summarizer reply's reported `output` less its
     thinking (`Reading.said`: the summary holds the reply's words only) and the ceiling of the
     words around it, or the ceiling of the whole node if the reply reported nothing."""
@@ -267,7 +269,7 @@ def _summary_count(reply: Node, body: Body) -> Count:
     except ValueError:
         usage = None
     if usage is None:
-        return ceiling_of(body)
+        return ceiling_of(body, images)
     return wrapped_count(usage.said, reply.body, body)
 
 
@@ -288,12 +290,14 @@ def _hint(request: RequestCount) -> str:
     )
 
 
-def _held(request: RequestCount, nodes: list[Node], asked: Node | None) -> Count:
+def _held(request: RequestCount, nodes: list[Node], asked: Node | None, images: ImageRule) -> Count:
     """What `nodes` cost together: each one's count, and for the user message `asked` (a node
     that a lump may hold, so it has no count of its own) its ceiling."""
     total = NONE
     for node in nodes:
-        total += ceiling_of(node.body) if node is asked else request.nodes.get(node.id, NONE)
+        total += (
+            ceiling_of(node.body, images) if node is asked else request.nodes.get(node.id, NONE)
+        )
     return total
 
 
@@ -315,7 +319,7 @@ def _crowded(
             f"the newest node alone takes {tokens(newest)} tokens at most, over the "
             f"{tokens(room)} the model has room for"
         )
-    held = _held(request, wanted, plan.asked)
+    held = _held(request, wanted, plan.asked, plan.images)
     if base.upper + held.upper + allowance >= room:
         # a tail longer than the newest turn is `keep`'s doing; the newest turn is not
         keeps = f"keep = {plan.keep}, " if plan.keeps else ""
@@ -357,6 +361,7 @@ class _Plan:
     keep: int
     limits: Limits
     keeps: bool  # whether `keep` made the tail longer than the newest turn
+    images: ImageRule  # how the branch's model counts images
     at: int | None = None
 
 
@@ -462,6 +467,7 @@ class Compaction:
             keep,
             limits,
             start < minimal,
+            image_rule(cursor.resolved_model()),
         )
 
     async def _compact(self, cursor: Cursor, focus: str, mode: Mode) -> str:
@@ -510,11 +516,13 @@ class Compaction:
         user messages between the last reply of the head and the tail, is kept whole. If the head
         does not fit either, nothing is summarized."""
         name = options.model or cursor.model()
-        window = cursor.resolved_model(name).context_window
+        resolved = cursor.resolved_model(name)
+        window = resolved.context_window
         if window is None:
             return plan
+        images = image_rule(resolved)
         room = window - limits.allowance
-        prompt = ceiling_of(Body.User(PROMPT))
+        prompt = ceiling_of(Body.User(PROMPT), images)
         tip = (await cursor.count(at=self._summarizer_input(cursor, "")[0])).total + prompt
         if tip.upper <= room:
             return plan
@@ -526,7 +534,7 @@ class Compaction:
             head = (await cursor.count(at=body[end].id)).total + prompt
             if head.upper <= room:
                 loose = {
-                    n.id: ceiling_of(n.body)
+                    n.id: ceiling_of(n.body, images)
                     for n in body[end + 1 : plan.start]
                     if sent(n.body) and n.id not in plan.request.nodes
                 }
@@ -551,10 +559,10 @@ class Compaction:
         """Choose the tail now the summary is known, check the line, and write it."""
         request, body = plan.request, plan.walk[plan.prefix :]
         wrapped = Body.User(SUMMARY.format(text=made[0]))
-        paid = _summary_count(made[1], wrapped)
+        paid = _summary_count(made[1], wrapped, plan.images)
         asked = [] if plan.asked is None else [plan.asked]
         tail = body[plan.start :]
-        asked_up = _held(request, asked, plan.asked).upper
+        asked_up = _held(request, asked, plan.asked, plan.images).upper
         floor = len(tail) - 1 if isinstance(body[-1].body, Body.User) else len(tail)
         if plan.at is not None:
             floor = 0  # the summary covers only the head: the tail stays whole

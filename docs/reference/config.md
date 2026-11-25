@@ -223,6 +223,7 @@ class ModelConfig
     context_window: int | None = None
     sections: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     images: bool = False
+    image_tokens: int | None = None
 ```
 
 A resolved model: which model to ask, where (`base_url`, optional: a provider that
@@ -235,8 +236,10 @@ that name (`models.X.usage: {"price": ...}`, D28 section 7): core carries it unr
 the extension reads it as its declared `model_options` (`TreeHandle.model_options`). Both
 are deep read-only copies. `images` is whether the model takes images (D30; the model key
 `images`, default false): a tool's images and a walk holding them are refused for a model
-without it. The driver builds it from the catalog at each sample; no node
-holds it.
+without it. `image_tokens` (optional, positive; the model key `image_tokens`) is the most one
+image costs on this model, as its server caps it (llama.cpp's `--image-max-tokens`, say): the
+image ceiling then uses it instead of its provider's rule (D26 section 7.3). The driver builds
+it from the catalog at each sample; no node holds it.
 
 The key itself is never a field: it is read from the environment at sample
 time (`api_key`) and so never reaches a node or the log.

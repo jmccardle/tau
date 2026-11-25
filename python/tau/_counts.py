@@ -23,7 +23,7 @@ from enum import StrEnum
 from typing import Literal, Protocol
 
 from tau._config import ModelConfig
-from tau._core import Author, Body, Node, Outcome, Part
+from tau._core import Author, Body, Image, Node, Outcome, Part
 
 
 class Basis(StrEnum):
@@ -80,22 +80,94 @@ def sent(body: Body) -> bool:
     return isinstance(body, (Body.System, Body.User, Body.Assistant, Body.Results))
 
 
-def ceiling_of(body: Body) -> Count:
+def ceiling_of(body: Body, images: "ImageRule") -> Count:
     """The ceiling of a node: its UTF-8 bytes (text, reasoning, replay data, call ids, names and
-    arguments, outcomes) plus `CEILING_PER_NODE`, plus the `image_ceiling` of each image it holds
+    arguments, outcomes) plus `CEILING_PER_NODE`, plus `images.tokens` of each image it holds
     (never the image's bytes or base64), as the bound of a count of 0 tokens. A node that is not
     sent is `NONE`."""
     if not sent(body):
         return NONE
-    return Count(0, Basis.CEILING, _bytes(body) + _image_tokens(body) + CEILING_PER_NODE)
+    return Count(0, Basis.CEILING, _bytes(body) + _image_tokens(body, images) + CEILING_PER_NODE)
 
 
-def image_ceiling(width: int, height: int) -> int:
-    """The most an image of `width` by `height` pixels costs by the published formulas, before
-    any server's resize (D26 section 7.3, D30 section 9): the larger of 28-pixel patches,
-    `ceil(w/28) * ceil(h/28)` (Anthropic; Qwen-VL on llama.cpp), and OpenAI's high-detail tiles,
-    `85 + 170 * tiles` of 512 pixels after its fit within 2048 and its shorter side to 768."""
-    patches = math.ceil(width / 28) * math.ceil(height / 28)
+ANTHROPIC_IMAGE_TOKENS = 4784
+"""The most one image costs on any Claude model: the high-resolution tier's visual-token limit
+(Claude 4.7 and later; 1,568 on the standard tier). Claude resizes a larger image to fit it."""
+GEMINI_IMAGE_TOKENS = 1120
+"""The most one image costs on Gemini 4 and 3 at any `mediaResolution` a request can set for all
+its parts (`high`, and the default); `ultra_high` (2,240) is set per part, which τ never does."""
+GEMINI_TILE, GEMINI_TILE_TOKENS, GEMINI_SMALL = 768, 258, 384
+"""Gemini's tiles before Gemini 3 (Gemini 2.5 is still served): an image at most `GEMINI_SMALL`
+pixels on both sides costs `GEMINI_TILE_TOKENS`; a larger one that much for each
+`GEMINI_TILE`-pixel tile."""
+_BOUNDED = frozenset({"anthropic", "gemini"})
+
+
+@dataclass(frozen=True)
+class ImageRule:
+    """How a model's images are counted (D26 section 7.3): by the rule of its `provider` (the
+    model's `provider` setting, the adapter that sends the request, never a guess from the model's
+    name) and its `image_tokens` setting, `cap`. `bound` says whether `tokens` is an upper bound:
+    it is for `anthropic` and `gemini`, whose published resizes cap every model they serve, and
+    for any model with a `cap`. Anything else (`openai`, which speaks to OpenAI and to every
+    OpenAI-compatible server, and a provider tau does not know) gets an estimate from the published
+    formulas, which a server that tiles or caps differently can exceed."""
+
+    provider: str
+    cap: int | None = None
+
+    @property
+    def bound(self) -> bool:
+        """Whether `tokens` is the most an image can cost."""
+        return self.cap is not None or self.provider in _BOUNDED
+
+    def tokens(self, width: int, height: int) -> int:
+        """What one image of `width` by `height` pixels costs at most (or, where not `bound`, is
+        estimated to cost)."""
+        if self.provider == "anthropic":
+            most = anthropic_image_tokens(width, height)
+        elif self.provider == "gemini":
+            most = gemini_image_tokens(width, height)
+        elif self.cap is not None:
+            return self.cap
+        else:
+            return image_estimate(width, height)
+        return most if self.cap is None else min(most, self.cap)
+
+
+def image_rule(model: ModelConfig) -> ImageRule:
+    """The `ImageRule` of a model: its provider's, with its `image_tokens`."""
+    return ImageRule(model.provider, model.image_tokens)
+
+
+def _patches(width: int, height: int, side: int) -> int:
+    return math.ceil(width / side) * math.ceil(height / side)
+
+
+def anthropic_image_tokens(width: int, height: int) -> int:
+    """The most an image costs on Claude: one token for each 28-pixel patch,
+    `ceil(w/28) * ceil(h/28)`, at most `ANTHROPIC_IMAGE_TOKENS` (a larger image is scaled down to
+    fit the tier's edge and token limits, which only lowers its patches)."""
+    return min(_patches(width, height, 28), ANTHROPIC_IMAGE_TOKENS)
+
+
+def gemini_image_tokens(width: int, height: int) -> int:
+    """The most an image costs on Gemini: the larger of Gemini 4 and 3's `GEMINI_IMAGE_TOKENS` and
+    the earlier models' 258 tokens for each 768-pixel tile (one tile for an image at most 384 pixels
+    on both sides)."""
+    small = width <= GEMINI_SMALL and height <= GEMINI_SMALL
+    tiles = 1 if small else _patches(width, height, GEMINI_TILE)
+    return max(GEMINI_IMAGE_TOKENS, GEMINI_TILE_TOKENS * tiles)
+
+
+def image_estimate(width: int, height: int) -> int:
+    """What an image costs on an OpenAI-compatible server, estimated: the larger of 28-pixel
+    patches with no cap, `ceil(w/28) * ceil(h/28)` (Qwen-VL on llama.cpp), and OpenAI's
+    high-detail tiles, `85 + 170 * tiles` of 512 pixels after its fit within 2048 and its shorter
+    side to 768 (GPT-4o and GPT-4.1). Not a bound: models with other tiles or patch multipliers
+    (GPT-4o mini, the patch-billed GPT-5 and GPT-4.1 mini and nano) cost more, which a model's
+    `image_tokens` setting covers."""
+    patches = _patches(width, height, 28)
     w, h = float(width), float(height)
     fit = min(1.0, 2048 / max(w, h))
     w, h = w * fit, h * fit
@@ -105,15 +177,32 @@ def image_ceiling(width: int, height: int) -> int:
     return max(patches, 85 + 170 * tiles)
 
 
-def _image_tokens(body: Body) -> int:
+def _image_tokens(body: Body, rule: ImageRule) -> int:
+    return sum(rule.tokens(i.width, i.height) for i in _images(body))
+
+
+def _images(body: Body) -> list[Image]:
     if not isinstance(body, Body.Results):
-        return 0
-    return sum(
-        image_ceiling(i.width, i.height)
-        for _, o, _ in body.outcomes
-        if isinstance(o, Outcome.Ok)
-        for i in o.images
-    )
+        return []
+    return [i for _, o, _ in body.outcomes if isinstance(o, Outcome.Ok) for i in o.images]
+
+
+def image_why(
+    walk: Iterable[Node], counts: Mapping[int, Count], rule: ImageRule, model: str
+) -> str | None:
+    """Why a request's count is no bound for its images: some node of `walk` that `counts` does
+    not have reported holds an image, and `rule` is not `bound`. `None` otherwise."""
+    if rule.bound:
+        return None
+    for node in walk:
+        count = counts.get(node.id)
+        if count is not None and count.basis is not Basis.REPORTED and _images(node.body):
+            who = f"provider {rule.provider!r}" if rule.provider else "a model not in the catalog"
+            return (
+                f"images on {model} are estimated ({who} has no published cap for every "
+                "server): set the model's `image_tokens` to its server's cap"
+            )
+    return None
 
 
 LOWEST_BYTES_PER_TOKEN = 8

@@ -47,6 +47,7 @@ from tau._counts import (
     Count,
     Counter,
     CountJob,
+    ImageRule,
     Observation,
     Reading,
     RequestCount,
@@ -54,6 +55,8 @@ from tau._counts import (
     SpanProof,
     ceiling_of,
     counted,
+    image_rule,
+    image_why,
     lowest_tokens,
     reading,
     reported,
@@ -193,13 +196,14 @@ def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | Non
 
 
 class Meter:
-    """Measures the walk to a node, from `node` (a node by id). The last `KEPT` measures are kept
-    (nodes never change, so a kept one is always right); a long-lived server asks about a new
-    tip every turn, and an older one is measured again if it is asked for."""
+    """Measures the walk to a node, from `node` (a node by id), counting its images by an
+    `ImageRule`. The last `KEPT` measures are kept, by node and rule (nodes never change, so a
+    kept one is always right); a long-lived server asks about a new tip every turn, and an older
+    one is measured again if it is asked for."""
 
     def __init__(self, node: Callable[[int], Node]) -> None:
         self._node = node
-        self._kept: OrderedDict[int, Measured] = OrderedDict()
+        self._kept: OrderedDict[tuple[int, ImageRule], Measured] = OrderedDict()
 
     def walk(self, at: int) -> list[Node]:
         """The nodes from the root to `at`."""
@@ -211,30 +215,31 @@ class Meter:
         found.reverse()
         return found
 
-    def measure(self, at: int) -> Measured:
-        """The walk to `at` measured."""
-        if at in self._kept:
-            self._kept.move_to_end(at)
-            return self._kept[at]
-        measured = self._measure(self.walk(at))
-        self._kept[at] = measured
+    def measure(self, at: int, images: ImageRule) -> Measured:
+        """The walk to `at` measured, its images counted by `images`."""
+        key = (at, images)
+        if key in self._kept:
+            self._kept.move_to_end(key)
+            return self._kept[key]
+        measured = self._measure(self.walk(at), images)
+        self._kept[key] = measured
         while len(self._kept) > KEPT:
             self._kept.popitem(last=False)
         return measured
 
-    def _measure(self, walk: list[Node]) -> Measured:
+    def _measure(self, walk: list[Node], images: ImageRule) -> Measured:
         nodes: dict[int, Count] = {}
         lumps: dict[int, tuple[int, ...]] = {}
         marks = _reports(walk)
         if not marks:
-            self._fill(walk, 0, len(walk), nodes, lumps)
-            base, covered = self._carried(walk)
+            self._fill(walk, (0, len(walk)), images, nodes, lumps)
+            base, covered = self._carried(walk, images)
             after = tuple(n.id for n in walk[covered:] if n.id in nodes)
             total = base + _sum(nodes[i] for i in after)
             return Measured(RequestCount(total, base, covered, nodes), base, after, lumps)
         first, last = marks[0].at, marks[-1].at
         spans: list[Span] = []
-        self._fill(walk, 0, first, nodes, lumps)
+        self._fill(walk, (0, first), images, nodes, lumps)
         for earlier, later in pairwise(marks):
             i, j = earlier.at, later.at
             proof = _proof(walk, earlier, later)
@@ -247,10 +252,10 @@ class Meter:
                     lumps[ids[0]] = ids
             else:
                 nodes[walk[i].id] = reported(earlier.usage.output)
-                self._fill(walk, i + 1, j, nodes, lumps)
+                self._fill(walk, (i + 1, j), images, nodes, lumps)
         newest = marks[-1].usage
         nodes[walk[last].id] = reported(newest.output)
-        self._fill(walk, last + 1, len(walk), nodes, lumps)
+        self._fill(walk, (last + 1, len(walk)), images, nodes, lumps)
         anchor = reported(newest.input) + reported(newest.output)
         after = tuple(n.id for n in walk[last + 1 :] if n.id in nodes)
         total = anchor + _sum(nodes[i] for i in after)
@@ -261,28 +266,28 @@ class Meter:
     def _fill(
         self,
         walk: list[Node],
-        lo: int,
-        hi: int,
+        between: tuple[int, int],
+        images: ImageRule,
         nodes: dict[int, Count],
         lumps: dict[int, tuple[int, ...]],
     ) -> None:
-        """Count `walk[lo:hi]` with no report: a ceiling for each sent node, or for a copy its
-        original's count."""
-        j = lo
+        """Count the nodes of `walk` `between` two indexes (the first in, the second out) with
+        no report: a ceiling for each sent node, or for a copy its original's count."""
+        j, hi = between
         while j < hi:
             node = walk[j]
             if node.copied_from is None:
                 if sent(node.body):
-                    nodes[node.id] = self._derived(node)
+                    nodes[node.id] = self._derived(node, images)
                 j += 1
                 continue
             end = j
             while end + 1 < hi and walk[end + 1].copied_from is not None:
                 end += 1
-            self._inherit(walk[j : end + 1], nodes, lumps)
+            self._inherit(walk[j : end + 1], images, nodes, lumps)
             j = end + 1
 
-    def _carried(self, walk: list[Node]) -> tuple[Count, int]:
+    def _carried(self, walk: list[Node], images: ImageRule) -> tuple[Count, int]:
         """The base of a line no reply has reported on yet, and how many nodes it covers: the base
         of the line it was written from (the prefix and the overhead are the same), found through
         the first node derived from another, or `NONE` and 0 if there is none or that line had
@@ -290,11 +295,11 @@ class Meter:
         prefix = prefix_length(walk)
         for node in walk[prefix:]:
             if node.derived_from is not None:
-                old = self.measure(node.derived_from).request
+                old = self.measure(node.derived_from, images).request
                 return (old.base, prefix) if old.base_nodes else (NONE, 0)
         return NONE, 0
 
-    def _derived(self, node: Node) -> Count:
+    def _derived(self, node: Node, images: ImageRule) -> Count:
         """The count of a node nothing reports: a ceiling, except a `User` node derived from a
         reply that reported (a summary, derived from the summarizer's reply), which is what
         that reply's words cost without its thinking (`Reading.said`) and the ceiling of its
@@ -304,17 +309,21 @@ class Meter:
             usage = _usage_of(source)
             if usage is not None:
                 return wrapped_count(usage.said, source.body, node.body)
-        return ceiling_of(node.body)
+        return ceiling_of(node.body, images)
 
     def _inherit(
-        self, run: list[Node], nodes: dict[int, Count], lumps: dict[int, tuple[int, ...]]
+        self,
+        run: list[Node],
+        images: ImageRule,
+        nodes: dict[int, Count],
+        lumps: dict[int, tuple[int, ...]],
     ) -> None:
         """Count a run of copies from the walk of the original of its last: a copy holding a
         whole lump takes the lump's count, any other a ceiling."""
         origins = [n.copied_from for n in run]
         last = origins[-1]
         assert last is not None
-        original = self.measure(last)
+        original = self.measure(last, images)
         k = 0
         while k < len(run):
             node, origin = run[k], origins[k]
@@ -328,7 +337,7 @@ class Meter:
             if ids is None and origin in original.request.nodes:
                 nodes[node.id] = original.request.nodes[origin]
             elif sent(node.body):
-                nodes[node.id] = ceiling_of(node.body)
+                nodes[node.id] = ceiling_of(node.body, images)
             k += 1
 
 
@@ -387,9 +396,17 @@ class Counts:
         request = replace(measured.request, base=overhead, total=measured.request.total + overhead)
         return replace(measured, request=request, anchor=overhead)
 
+    def images(self, at: int) -> ImageRule:
+        """How the model of the branch at `at` counts images (`image_rule`); a model the catalog
+        no longer has gets the estimate of a provider tau does not know, which `why` says."""
+        try:
+            return image_rule(self._resolved(self._model(at)))
+        except ConfigError:
+            return ImageRule("")
+
     def spans(self, at: int) -> list[Span]:
         """The proved spans of the walk to `at`, oldest first."""
-        return list(self._meter.measure(at).spans)
+        return list(self._meter.measure(at, self.images(at)).spans)
 
     def observation(self, reply: int, tools: str) -> Observation | None:
         """What a counter is shown of the reply at node `reply`, whose request offered the tool
@@ -407,7 +424,7 @@ class Counts:
             resolved = self._resolved(model)
         except ConfigError:
             return None
-        spans = self._meter.measure(reply).spans
+        spans = self._meter.measure(reply, image_rule(resolved)).spans
         newest = spans[-1] if spans and spans[-1].nodes[-1].id == node.parent else None
         return Observation(
             "reply",
@@ -450,16 +467,19 @@ class Counts:
         """The request count of the walk to `at`: the meter's, with a counter's answer for the
         nodes no report covers. `DefinitionError` naming the extension if the counter counts a
         node a report covers or one it was not asked about."""
-        measured = self._with_overhead(self._meter.measure(at))
+        images = self.images(at)
+        measured = self._with_overhead(self._meter.measure(at, images))
+        model = self._model(at)
+        request = measured.request
+        walk = tuple(self._meter.walk(at))
+        why = image_why(walk, request.nodes, images, model)
         found = self._counter()
         if found is None:
-            return measured.request
+            return replace(request, why=why)
         key, counter = found
-        request = measured.request
         unreported = tuple(i for i, c in request.nodes.items() if c.basis is not Basis.REPORTED)
-        model = self._model(at)
         job = CountJob(
-            tuple(self._meter.walk(at)),
+            walk,
             model,
             self._resolved(model),
             self._tools(),
@@ -477,4 +497,5 @@ class Counts:
             )
         merged = {**request.nodes, **answer.nodes}
         total = measured.anchor + _sum(merged[i] for i in measured.after)
-        return replace(request, total=total, nodes=merged, why=answer.why or request.why)
+        said = "; ".join(w for w in (answer.why, why) if w) or None
+        return replace(request, total=total, nodes=merged, why=said)
