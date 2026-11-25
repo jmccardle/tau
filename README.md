@@ -18,9 +18,9 @@ is `ffwf-tau` and installs the `tau` command:
 pip install 'ffwf-tau>=0.17'
 ```
 
-Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, `tau serve`,
-projects (`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare `read` works) are
-not available and say so when used. Its test suite runs there with the tests of those skipped, each naming why.
+Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, projects
+(`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare `read` works) are not
+available and say so when used. `tau serve` runs there on its HTTP edge alone (no Unix socket). Its test suite runs there with the tests of those skipped, each naming why.
 
 `pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
 `pip install 'ffwf-tau'` also installs the web client that `tau serve` serves at its URL (`--no-web` turns it off).

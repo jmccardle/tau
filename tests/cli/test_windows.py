@@ -1,5 +1,6 @@
 """What is not ported to Windows says so where it is used, naming the platform (docs/plan.md,
-Phase 9): the bash tool, `tau serve` and its clients, and projects (D13)."""
+Phase 9): the bash tool, a Unix socket, and projects (D13). `tau serve` runs there on its HTTP
+edge alone (tests/serve)."""
 
 import asyncio
 import sys
@@ -19,13 +20,7 @@ def test_the_bash_tool_is_an_error_and_the_base_tools_are_the_other_five(tmp_pat
     assert [tool.name for tool in base_tools(tmp_path)] == ["read", "write", "edit", "grep", "find"]
 
 
-def test_tau_serve_is_an_error(world: World) -> None:
-    result = tau(world, "serve")
-    assert result.code != 0
-    assert "not available on Windows" in result.err, result.err
-
-
-def test_connecting_to_a_server_is_an_error(tmp_path: Path) -> None:
+def test_connecting_to_a_unix_socket_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(OSError, match="not available on Windows"):
         asyncio.run(RemoteClient.connect(tmp_path / "socket", "test"))
 

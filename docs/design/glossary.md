@@ -3255,7 +3255,8 @@ a record whose socket does not answer is stale and replaced, and two `-d` at onc
 (the loser prints the winner's record). A session held by a process that is not a server fails
 with the `Leased` error after 5 seconds. A detached server exits after 10 minutes with no client
 connected and every cursor at rest (a cursor with an open question is not at rest). `--stop`
-sends SIGTERM to the recorded pid once it answers `hello` and waits for the record to go. The
+asks the recorded pid to stop once it answers `hello` (`POST /shutdown` on its edge, D29 §10;
+SIGTERM to a server with no edge) and waits for the record to go. The
 server, on SIGTERM or SIGINT, first aborts every cursor and waits (3 seconds at most) for each to
 rest, so an agent's tool is cancelled and closes the agent's cursor, as an interrupted `-p` does;
 then the server closes as above;
@@ -3264,9 +3265,10 @@ then the server closes as above;
 `<session id>.json` (mode 600, written atomically) is `{pid, session, cwd, protocol, version, since,
 log}`, plus `socket` when the socket is on and the HTTP edge's `url`, `host`, `port` and `token`
 when the edge is, and the session's `name` if it had one at start (`since` in milliseconds; the
-`-d` output adds `started`); a record found at start is stale and removed. A detached server's log
+`-d` output adds `started`, and `"breakaway": false` on Windows when the starter's job kept the server in it, D29 §10); a record found at start is stale and removed. A detached server's log
 is removed when it exits cleanly and kept when its driver failed; the serve directory is mode 700,
-refused if another user owns it or can write it. The socket has no token; the edge's token is in
+refused if another user owns it or can write it (on Windows, checked by its access list with
+`_core.private_dir`). The socket has no token; the edge's token is in
 the record. A served session must be kept
 (`--no-session` has no id to name its files). `python -m tau` is the `tau` command.
 
@@ -3296,7 +3298,8 @@ JSON-RPC error for a stream that is not open). Every request carries `Authorizat
 asyncio streams and `h11`. **HttpEdge** is where and how a `Server` listens on it: `host`
 (loopback unless `allow_network`), `port` (`None`: 3393, else any free one; `0`: any; N: N or
 fail), `token` (`None`: a fresh one), `origins`, `heartbeat`, `web_root`, `web` (`False`: serve no web client). Not a frontend and not a provider:
-the server's side of a transport.
+the server's side of a transport. **`POST /shutdown`** (with the token) asks the server to stop as
+SIGTERM does: `202`, or `404` from a server that its program stops (D29 §10).
 
 ### stream, connection id
 `tau._http_edge.Stream` (private) · D29 · new

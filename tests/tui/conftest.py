@@ -1,5 +1,6 @@
 """The TUI suite runs in both Harness modes (D23 section 9): the app's client is local, then
-remote over a real Unix socket. Passing in both holds the app to the contract over the wire."""
+remote over a real Unix socket (on Windows, which has none: over the HTTP edge). Passing in both
+holds the app to the contract over the wire."""
 
 import sys
 from collections.abc import Iterator
@@ -10,8 +11,7 @@ from harness import Harness
 
 @pytest.fixture(autouse=True, params=["local", "remote"])
 def harness_mode(request: pytest.FixtureRequest) -> Iterator[None]:
-    if request.param == "remote" and sys.platform == "win32":
-        pytest.skip("Windows: no wire to run remote over (tau serve is not ported, D21)")
-    Harness.mode = request.param
+    wired = "http" if sys.platform == "win32" else "remote"
+    Harness.mode = wired if request.param == "remote" else "local"
     yield
     Harness.mode = "local"

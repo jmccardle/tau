@@ -637,8 +637,9 @@ def pipe_gone(error: OSError) -> bool:
 
 
 def utf8(stream: TextIO | None) -> TextIO | None:
-    """A process stream that writes UTF-8: on Windows a pipe or a file is the ANSI code page's
-    (cp1252 has no `τ`), which `tau --help > help.txt` or a model's reply cannot be written in.
+    """A process stream that reads or writes UTF-8: on Windows a pipe or a file is the ANSI code
+    page's (cp1252 has no `τ`), which `tau --help > help.txt` or a model's reply cannot be written
+    in, and which would read a UTF-8 `tau -p < notes.md` as something else.
     A terminal's stream is left as it is (Windows writes the console in UTF-16), as is one that
     cannot be reconfigured; Python 3.15 makes UTF-8 the default (PEP 686)."""
     if stream is None or not issubclass(type(stream), io.TextIOWrapper):

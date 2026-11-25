@@ -15,8 +15,13 @@
   its message intact, exit 1. The parent asks what needs a person (trust) first; the child has no
   terminal. A session another process holds without serving it never yields a record: the parent
   waits `BOUND_SECONDS` for one and then fails with the `Leased` error.
-- `tau serve --stop [session flags]` checks that the recorded pid answers `hello` and sends it
-  SIGTERM, and waits for the record to go.
+- `tau serve --stop [session flags]` checks that the recorded pid answers `hello`, asks it to
+  stop (`POST /shutdown` on its HTTP edge, with the token; SIGTERM to a server with no edge, or one
+  whose edge does not take it), and waits for the record to go.
+
+On Windows the server listens on the edge alone, so `--no-http` is refused; `-d`'s child is
+started as `tau._detach_windows` says, and the console's Ctrl+C and Ctrl+Break stop a foreground
+server as SIGINT does.
 
 `--json` output is one JSON object per line: the record (with `started` for `-d`), an error
 `{"error": {"type", "message"}}`, and `--stop`'s `{session, pid, stopped}`.
@@ -31,16 +36,19 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, TextIO
 
+import httpx
+
 from tau._choice import choose_session
 from tau._config import ConfigError
 from tau._core import CursorClosed
+from tau._detach_windows import spawn as spawn_windows
 from tau._driver import Driver
-from tau._http_edge import HttpEdge
+from tau._http_edge import SHUTDOWN, HttpEdge
 from tau._project_read import safe_block, safe_text
 from tau._protocol import schema_text
 from tau._serve import Server, serve_session
@@ -219,10 +227,14 @@ def transports(args: argparse.Namespace, cwd: Path) -> tuple[bool, HttpEdge | No
     the flags say (`--web-root` is read from `cwd`). `ConfigError` for flags that leave nowhere to
     listen or contradict each other: both off, `--socket` without the socket, `--port`, `--host`,
     `--allow-origin`, `--web-root` or `--no-web` without HTTP, `--web-root` with `--no-web`,
-    `--unix` on Windows, a port out of range, a host that is not loopback without
+    `--unix` or `--no-http` on Windows, a port out of range, a host that is not loopback without
     `--allow-network`, a web root (or an installed `tau_web`) that holds no client."""
     if sys.platform == "win32" and args.unix:
         raise ConfigError("--unix is not available on Windows: tau serve listens over HTTP there")
+    if sys.platform == "win32" and args.no_http:
+        raise ConfigError(
+            "--no-http is not available on Windows: tau serve listens over HTTP alone there"
+        )
     unix = sys.platform != "win32" and not args.no_unix
     if not unix and args.socket is not None:
         raise ConfigError("--socket names the Unix socket, which --no-unix turns off")
@@ -276,8 +288,7 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
     session, socket = place.session, place.socket
     loop = asyncio.get_running_loop()
     signalled = asyncio.Event()  # before the record says we are up: SIGTERM then means a clean stop
-    for number in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(number, signalled.set)
+    _on_signals(loop, signalled.set)
     log = log_path(place.directory, session) if detached else None
     try:
         server = await serve_session(
@@ -291,6 +302,7 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
             log=None if log is None else (Path(args.detached_log), log),
             http=place.edge,
             name=None if started.directory is None else read_name(started.directory),
+            stop=signalled.set,
         )
     except BaseException:
         await started.stop()  # once: from here the server's `close` releases the session
@@ -310,8 +322,7 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
             await _wind_down(started.driver)
     finally:
         try:
-            for number in (signal.SIGTERM, signal.SIGINT):
-                loop.remove_signal_handler(number)
+            _off_signals(loop)
         finally:
             await server.close()  # the driver, the socket, the lease, then the record
     if failure is None and log is not None:
@@ -319,6 +330,36 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
     if failure is not None:
         raise ServeFailed(f"the driver failed: {type(failure).__name__}: {failure}")
     return 0
+
+
+_STOPPING: Final = (
+    (signal.SIGINT, signal.SIGBREAK) if sys.platform == "win32" else (signal.SIGTERM, signal.SIGINT)
+)
+"""The signals that stop a server cleanly. Windows has no SIGTERM to catch: there they are the
+console's Ctrl+C and Ctrl+Break, and `--stop` goes over HTTP."""
+
+
+def _on_signals(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> None:
+    """Run `then` in `loop` on any of `_STOPPING`. Windows' event loop has no
+    `add_signal_handler`: there the handler is the interpreter's, which runs in the main thread
+    and hands `then` to the loop."""
+
+    def handler(_number: int, _frame: object) -> None:
+        loop.call_soon_threadsafe(then)
+
+    for number in _STOPPING:
+        if sys.platform == "win32":
+            signal.signal(number, handler)
+        else:
+            loop.add_signal_handler(number, then)
+
+
+def _off_signals(loop: asyncio.AbstractEventLoop) -> None:
+    for number in _STOPPING:
+        if sys.platform == "win32":
+            signal.signal(number, signal.default_int_handler)
+        else:
+            loop.remove_signal_handler(number)
 
 
 async def _wind_down(driver: Driver) -> None:
@@ -373,27 +414,40 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
     handle, name = tempfile.mkstemp(prefix=".starting-", suffix=".log", dir=directory)
     os.close(handle)
     pending = Path(name)
-    child = _spawn(run, pending)
+    child, broke_away = _spawn(run, pending)
     found = await _record_of(directory, existing, child, pending)
     if found is not None:
         pending.unlink(missing_ok=True)
-        return _announce(run, args, found, started=found.pid == child.pid)
+        started = found.pid == child.pid
+        if started and not broke_away:
+            run.stderr.write(_IN_JOB + "\n")
+        return _announce(run, args, found, started=started, broke_away=broke_away or not started)
     raise _why_not(child, pending, existing)
 
 
-def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
+_IN_JOB: Final = (
+    "tau: the server could not leave this process's job (the job forbids breakaway), so it "
+    "stops when the program that started this one closes the job"
+)
+
+
+def _spawn(run: Process, pending: Path) -> tuple[subprocess.Popen[bytes], bool]:
     """The detached server: this command line without `-d` and `--json`, with the log it writes
     until it knows its session's id, run by this interpreter with this interpreter's flags (`-I`
     among them: a runtime started isolated keeps the user's site-packages out of its server too).
-    No terminal, its own session."""
+    No terminal, its own session (on Windows: `tau._detach_windows`). With it, whether it left
+    this process's job (always, but on Windows)."""
     kept = [a for a in run.argv if a not in ("-d", "--detach", "--json")]
     command = [
         sys.executable,
         *interpreter_flags(),
         *("-m", "tau", "serve", *kept, "--detached-log", str(pending)),
     ]
+    if sys.platform == "win32":
+        spawned = spawn_windows(command, pending, run.cwd, run.environ)
+        return spawned.process, spawned.broke_away
     with os.fdopen(os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as log:
-        return subprocess.Popen(
+        child = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=log,
@@ -402,6 +456,7 @@ def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
             env=dict(run.environ),
             start_new_session=True,
         )
+    return child, True
 
 
 def interpreter_flags() -> list[str]:
@@ -491,9 +546,19 @@ def _last_error(log: Path) -> tuple[str, str] | None:
     return None
 
 
-def _announce(run: Process, args: argparse.Namespace, record: ServeRecord, *, started: bool) -> int:
+def _announce(
+    run: Process,
+    args: argparse.Namespace,
+    record: ServeRecord,
+    *,
+    started: bool,
+    broke_away: bool = True,
+) -> int:
+    """Print `record` (`-d`): `started` says whether this call started it, and `breakaway`
+    false (Windows only) that the server it started is still in this process's job."""
     if args.json:
-        _emit(run, {**json.loads(record.text()), "started": started})
+        extra = {} if broke_away else {"breakaway": False}
+        _emit(run, {**json.loads(record.text()), "started": started, **extra})
     else:
         _banner(run, args, record, "started" if started else "already serving")
     return 0
@@ -532,7 +597,8 @@ def _banner(run: Process, args: argparse.Namespace, record: ServeRecord, verb: s
 
 
 async def _stop(run: Process, args: argparse.Namespace) -> int:
-    """SIGTERM the server of the session if it answers, and wait for its record to go."""
+    """Ask the server of the session to stop if it answers (`_ask_to_stop`), and wait for its
+    record to go."""
     home = tau_home(run.environ)
     directory = serve_directory(home)
     choice = choose_session(SessionFlags.of(args, run.cwd), home=home, cwd=run.cwd)
@@ -549,7 +615,7 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
                 f"{record_path(directory, session)} names pid {record.pid}, "
                 f"but the server at {record.endpoints()} is pid {welcome.pid}"
             )
-        os.kill(record.pid, signal.SIGTERM)
+        await _ask_to_stop(record)
         await _gone(record_path(directory, session), record, choice.source.path)
         result = {"session": session, "pid": record.pid, "stopped": True}
     if args.json:
@@ -559,6 +625,37 @@ async def _stop(run: Process, args: argparse.Namespace) -> int:
     else:
         run.stdout.write(safe_text(f"no server is serving {session}") + "\n")
     return 0
+
+
+STOP_SECONDS: Final = 5.0
+"""How long `--stop` waits for the edge to answer `POST /shutdown`."""
+
+
+async def _ask_to_stop(record: ServeRecord) -> None:
+    """`POST /shutdown` to the server's edge, with its token; SIGTERM to a server with no edge
+    (Unix only), or to one whose edge answers 404 (a program that embeds τ, or a τ before
+    `/shutdown`), as `--stop` always did. `ServeFailed` if the edge refuses or does not answer,
+    and on Windows for a 404: there is no signal to fall back on."""
+    if record.url is None or record.token is None:
+        os.kill(record.pid, signal.SIGTERM)  # a socket-only server: never on Windows
+        return
+    url = record.url.rstrip("/") + SHUTDOWN
+    try:
+        async with httpx.AsyncClient(timeout=STOP_SECONDS, trust_env=False) as http:
+            response = await http.post(url, headers={"Authorization": f"Bearer {record.token}"})
+    except httpx.HTTPError as e:
+        raise ServeFailed(
+            f"the server (pid {record.pid}) did not take the stop at {url}: {e}"
+        ) from e
+    if response.status_code == 202:  # noqa: PLR2004 - Accepted
+        return
+    if response.status_code == 404 and sys.platform != "win32":  # noqa: PLR2004 - Not Found
+        os.kill(record.pid, signal.SIGTERM)
+        return
+    raise ServeFailed(
+        f"the server (pid {record.pid}) refused the stop at {url}: "
+        f"{response.status_code} {response.text.strip()}"
+    )
 
 
 async def _gone(path: Path, record: ServeRecord, session: Path) -> None:

@@ -20,34 +20,10 @@ use super::{KEEP_FILES, is_overflow_name};
 pub(super) struct PrivateDir(OwnedFd);
 
 impl PrivateDir {
-    /// Open `dir` (created `0700` if absent) as a directory fd, refusing a symlink,
-    /// and check with `fstat` on that fd that it is ours and private. Then drop what
-    /// is old in it. The error is the reason, for the note.
+    /// Open `dir` (created `0700` if absent) as [`checked`] does, then drop what is old in
+    /// it. The error is the reason, for the note.
     pub(super) fn open(dir: &Path) -> Result<Self, String> {
-        let shown = dir.display();
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| format!("the overflow directory {shown} could not be created: {e}"))?;
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let fd = open(dir, flags, Mode::empty()).map_err(|e| match e {
-            // O_NOFOLLOW with O_DIRECTORY reports a symlink as ENOTDIR or ELOOP.
-            Errno::ELOOP | Errno::ENOTDIR => match std::fs::symlink_metadata(dir) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    format!("the overflow directory {shown} is a symlink")
-                }
-                _ => format!("the overflow directory {shown} is not a directory"),
-            },
-            e => format!("the overflow directory {shown} cannot be opened: {e}"),
-        })?;
-        let stat = fstat(&fd)
-            .map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?;
-        #[allow(clippy::useless_conversion)] // `st_mode` is a u16 on macOS
-        let mode = u32::from(stat.st_mode);
-        if let Some(problem) = dir_problem(stat.st_uid, mode) {
-            return Err(format!("the overflow directory {shown} {problem}"));
-        }
+        let fd = checked(dir, "the overflow directory")?;
         remove_old_files(&fd);
         Ok(Self(fd))
     }
@@ -63,6 +39,34 @@ impl PrivateDir {
             Err(e) => Err(e.to_string()),
         }
     }
+}
+
+/// Open `dir` (created `0700` if absent) as a directory fd, refusing a symlink, and check
+/// with `fstat` on that fd that it is ours and private; the fd is returned. The error is the
+/// reason, naming the directory as `what` (`"the overflow directory"`).
+pub(super) fn checked(dir: &Path, what: &str) -> Result<OwnedFd, String> {
+    let shown = dir.display();
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("{what} {shown} could not be created: {e}"))?;
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let fd = open(dir, flags, Mode::empty()).map_err(|e| match e {
+        // O_NOFOLLOW with O_DIRECTORY reports a symlink as ENOTDIR or ELOOP.
+        Errno::ELOOP | Errno::ENOTDIR => match std::fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() => format!("{what} {shown} is a symlink"),
+            _ => format!("{what} {shown} is not a directory"),
+        },
+        e => format!("{what} {shown} cannot be opened: {e}"),
+    })?;
+    let stat = fstat(&fd).map_err(|e| format!("cannot inspect {what} {shown}: {e}"))?;
+    #[allow(clippy::useless_conversion)] // `st_mode` is a u16 on macOS
+    let mode = u32::from(stat.st_mode);
+    if let Some(problem) = dir_problem(stat.st_uid, mode) {
+        return Err(format!("{what} {shown} {problem}"));
+    }
+    Ok(fd)
 }
 
 /// Remove the overflow files (see [`is_overflow_name`]) in the directory `fd` that are older than [`KEEP_FILES`].

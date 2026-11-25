@@ -4,7 +4,6 @@ processes that are always killed when the test is over."""
 import contextlib
 import os
 import shutil
-import signal
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -12,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from harness import Harness
-from proctable import with_argument
+from proctable import kill, with_argument
 from world import World
 
 
@@ -58,5 +57,5 @@ def served() -> Iterator[World]:
     finally:
         for pid in _processes_for(base):
             with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+                kill(pid)
         shutil.rmtree(base, ignore_errors=True)

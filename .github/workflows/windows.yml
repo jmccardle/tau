@@ -1,0 +1,93 @@
+# The Windows loop: build τ's wheel on Windows and run the suite and `cargo test` there, for the
+# work on Windows support (branches `win/**`). It never publishes: no PyPI environment, no OIDC
+# token, nothing uploaded but the wheel and the test log. publish.yml stays the release workflow;
+# this one exists so a Windows change is tested without a tag or `publish-draft`.
+#
+# One target (windows-2025, x86_64) and one interpreter (3.12: the cp312-abi3 wheel). The shapes of
+# the build and test steps are publish.yml's, so a pass here is a pass there.
+#
+# Fail early: no `continue-on-error`, no `|| true`; shell steps run under `set -euo pipefail`.
+
+name: Windows
+
+on:
+  push:
+    branches: ["win/**"]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wheel-and-tests:
+    name: wheel and pytest (windows-2025, py3.12)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: build the wheel
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv venv --python 3.12 "$RUNNER_TEMP/build"
+          uv pip install --python "$RUNNER_TEMP/build" "maturin>=1.15,<2"
+          bin="$RUNNER_TEMP/build/Scripts"
+          PATH="$bin:$PATH" "$bin/maturin" build --release --locked --out "$GITHUB_WORKSPACE/dist" \
+            --interpreter "$bin/python.exe"
+          ls -l "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: wheel-windows-x86_64-py3.12
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+      # A fresh venv, the wheel and the dev group; the tests run from outside the checkout so the
+      # installed wheel is what gets imported (as publish.yml's test job does).
+      - name: tests against the installed wheel
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/clean"
+          uv venv --seed --python 3.12 "$venv"
+          py="$venv/Scripts/python.exe"
+          "$py" -m pip install --upgrade pip
+          "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$py" -c "import tau._core as m, sys; print(m.__file__, sys.version)"
+          "$py" -m pytest -v -p no:cacheprovider -rfEs -m "not tokenizers" \
+            "$GITHUB_WORKSPACE/tests" 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+      - uses: actions/upload-artifact@v5
+        if: ${{ !cancelled() }}
+        with:
+          name: pytest-log-windows-x86_64-py3.12
+          path: ${{ runner.temp }}/pytest.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  cargo-test:
+    name: cargo test (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: cargo test
+        run: |
+          set -euo pipefail
+          export PYO3_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          cargo test --workspace --locked

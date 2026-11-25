@@ -11,6 +11,9 @@ The messages are the socket's, one JSON-RPC message each; only the framing diffe
   JSON-RPC error body if no open stream has that id. `hello` is the first request, as on the socket.
 - `GET /stream/<connection id>` is refused (409): there is no resume. A new stream is a new
   `hello` and a fresh snapshot.
+- `POST /shutdown` asks the server to stop as SIGTERM stops it (`tau serve --stop`; D29 section
+  10). It is answered `202 Accepted` once the stop is asked for, and `404` by a server that is not
+  stopped this way (one a program embeds). It is not a wire message: the wire is the session's.
 
 - Every other `GET` (or `HEAD`) is the **web client**'s (`tau._web_client`): its static files,
   or the help page at `/` when none is installed. No token: they are the same for anyone, and
@@ -58,6 +61,7 @@ SOFT_PORT: Final = 3393
 MAX_BODY: Final = 64 * 1024 * 1024
 """The largest request body a POST may carry (413 past it)."""
 STREAM: Final = "/stream"
+SHUTDOWN: Final = "/shutdown"
 READ_SECONDS: Final = 30.0
 """How long a request's head, or its body, may take to arrive (and how long a closing edge waits
 for its connections)."""
@@ -286,9 +290,14 @@ class Edge:
     listening and closes every connection; the streams' clients close with them."""
 
     def __init__(
-        self, edge: HttpEdge, token: str, handle: Callable[[Stream], Awaitable[None]]
+        self,
+        edge: HttpEdge,
+        token: str,
+        handle: Callable[[Stream], Awaitable[None]],
+        stop: Callable[[], None] | None = None,
     ) -> None:
         self._edge = edge
+        self._stop = stop
         self._web = web_client(edge.web_root, web=edge.web)
         self._own: frozenset[str] = frozenset()
         self.token = token
@@ -468,7 +477,19 @@ class Edge:
             self._post(id, request.body)
             await self._send(conn, writer, _Refusal(202, None), origin)
             return None
+        if path == SHUTDOWN:
+            self._shutdown(request)
+            await self._send(conn, writer, _Refusal(202, None), origin)
+            return None
         raise _error(404, f"no such path; the wire is at {STREAM}")
+
+    def _shutdown(self, request: _Request) -> None:
+        """Ask the server to stop (`POST /shutdown`), or refuse."""
+        if request.method != "POST":
+            raise _error(405, f"stop the server with POST {SHUTDOWN}", ("Allow", "POST"))
+        if self._stop is None:
+            raise _error(404, "this server is not stopped over HTTP: its program stops it")
+        self._stop()
 
     async def _page(
         self,
@@ -567,9 +588,10 @@ async def _respond(  # noqa: PLR0913, PLR0917 - a response, whole
 
 
 def _is_wire(target: str) -> bool:
-    """Whether a request target is the wire's (`/stream`, `/stream/<id>`), which needs the token."""
+    """Whether a request target is the wire's (`/stream`, `/stream/<id>`) or `/shutdown`, which
+    need the token."""
     path = target.split("?", 1)[0]
-    return path == STREAM or path.startswith(STREAM + "/")
+    return path in {STREAM, SHUTDOWN} or path.startswith(STREAM + "/")
 
 
 def _own_origins(host: str, port: int) -> frozenset[str]:
@@ -581,9 +603,13 @@ def _own_origins(host: str, port: int) -> frozenset[str]:
     return frozenset(f"http://{name}:{port}" for name in names)
 
 
-async def listen(edge: HttpEdge, handle: Callable[[Stream], Awaitable[None]]) -> Edge:
-    """An `Edge` for `edge`, listening, whose streams `handle` serves. Its token is `edge.token`
-    or a new random one."""
-    listening = Edge(edge, edge.token or secrets.token_urlsafe(32), handle)
+async def listen(
+    edge: HttpEdge,
+    handle: Callable[[Stream], Awaitable[None]],
+    stop: Callable[[], None] | None = None,
+) -> Edge:
+    """An `Edge` for `edge`, listening, whose streams `handle` serves, and whose `POST /shutdown`
+    calls `stop` (`None`: refused, 404). Its token is `edge.token` or a new random one."""
+    listening = Edge(edge, edge.token or secrets.token_urlsafe(32), handle, stop)
     await listening.listen()
     return listening

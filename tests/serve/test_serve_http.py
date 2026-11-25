@@ -2,36 +2,33 @@
 the flags that turn one off, the port rule (strict `--port N`, else 3393 then any), the serve
 record's HTTP fields and its file, the banner and its paste URL, and `tau -p` attaching over HTTP.
 The servers are real processes with a mock model, started in a throwaway TAU_HOME under a short
-directory and killed when the test is over."""
-
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: tau serve's HTTP-only default there is T2, not tested yet (D29)",
-        allow_module_level=True,
-    )
+directory and killed when the test is over. On Windows the edge is the only transport: what needs
+the socket or a pseudo-terminal is skipped there, and a server is stopped cleanly with Ctrl+Break
+(its own process group) where Unix sends SIGTERM."""
 
 import asyncio
 import contextlib
 import dataclasses
 import json
 import os
-import pty
 import signal
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
+import pytest
+from proctable import interpreter
 from world import Result, World, tau
 
 from tau import RemoteClient
 
+WINDOWS = sys.platform == "win32"
+posix_only = pytest.mark.skipif(WINDOWS, reason="Windows: no Unix socket (D29: the edge alone)")
+needs_pty = pytest.mark.skipif(WINDOWS, reason="Windows: no pseudo-terminals")
 MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}}}
 OLD = "20261030-091502-1c2d3e"
 SOFT = 3393
@@ -80,14 +77,28 @@ def foreground(
     stdout: int | None = subprocess.PIPE,
     env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
+    program, environ = interpreter({**world.environ, "PYTHONUNBUFFERED": "1", **(env or {})})
     return subprocess.Popen(
-        [sys.executable, "-m", "tau", "serve", "--session", OLD, *argv],
+        [program, "-m", "tau", "serve", "--session", OLD, *argv],
         cwd=work(world),
-        env={**world.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
+        env=environ,
         stdout=stdout,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
     )
+
+
+CLEAN_STOPS = (
+    [signal.CTRL_BREAK_EVENT] if sys.platform == "win32" else [signal.SIGTERM, signal.SIGINT]
+)
+"""What stops a foreground server cleanly: SIGTERM or SIGINT; on Windows, Ctrl+Break sent to its
+process group (Ctrl+C is not delivered to a group of its own)."""
+
+
+def end(server: subprocess.Popen[str]) -> None:
+    """Stop a `foreground` server as a person or a service manager does: cleanly."""
+    server.send_signal(CLEAN_STOPS[0])
 
 
 @contextlib.contextmanager
@@ -116,6 +127,7 @@ def free_port() -> int:
 # Transports
 
 
+@posix_only
 def test_by_default_both_transports_are_on_and_the_record_names_both(home: World) -> None:
     record = detached(home)
     assert record["socket"] == str(home.tau / "serve" / f"{OLD}.sock")
@@ -139,6 +151,7 @@ def test_no_unix_serves_over_http_alone_and_stop_finds_it_there(home: World) -> 
     stop(home)
 
 
+@posix_only
 def test_no_http_serves_on_the_socket_alone(home: World) -> None:
     record = detached(home, "--no-http")
     assert record["socket"]
@@ -163,9 +176,20 @@ def test_no_http_serves_on_the_socket_alone(home: World) -> None:
 def test_flags_that_leave_nowhere_to_listen_or_contradict_fail_before_starting(
     home: World, argv: list[str], says: str
 ) -> None:
+    if WINDOWS and "--no-http" in argv:
+        says = "--no-http is not available on Windows"
     result = serve(home, "--session", OLD, *argv)
     assert result.code == 1
     assert says in result.err
+    assert not record_file(home).exists()
+
+
+def test_no_http_is_refused_on_windows_where_the_edge_is_all_there_is(home: World) -> None:
+    if not WINDOWS:
+        pytest.skip("the socket serves alone off Windows (test_no_http_serves_on_the_socket_alone)")
+    result = serve(home, "--session", OLD, "--no-http")
+    assert result.code == 1
+    assert "--no-http is not available on Windows" in result.err
     assert not record_file(home).exists()
 
 
@@ -221,11 +245,13 @@ def test_without_a_port_a_free_3393_is_taken(home: World) -> None:
 def test_the_record_is_private_and_holds_the_edge(home: World) -> None:
     record = detached(home)
     path = record_file(home)
-    assert path.stat().st_mode & 0o777 == 0o600
+    if not WINDOWS:  # Windows: the serve directory's access list (test_serve_command)
+        assert path.stat().st_mode & 0o777 == 0o600
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk == {k: v for k, v in record.items() if k != "started"}
     assert set(on_disk) >= {"session", "pid", "url", "host", "port", "token", "cwd", "version"}
-    assert set(on_disk) >= {"protocol", "since", "log", "socket"}
+    assert set(on_disk) >= {"protocol", "since", "log"}
+    assert ("socket" in on_disk) is not WINDOWS
     assert [p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")] == []
     stop(home)
 
@@ -244,7 +270,8 @@ def test_the_record_is_only_ever_read_whole(home: World) -> None:
     try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            with contextlib.suppress(FileNotFoundError):
+            # Windows: a file being renamed over cannot be opened without sharing delete
+            with contextlib.suppress(FileNotFoundError, PermissionError):
                 text = record_file(home).read_text(encoding="utf-8")
                 json.loads(text)  # a part would not parse
                 reads += 1
@@ -252,13 +279,13 @@ def test_the_record_is_only_ever_read_whole(home: World) -> None:
                     break
         assert reads > 20
     finally:
-        server.terminate()
+        end(server)
         server.communicate(timeout=10)
     assert not record_file(home).exists(), "removed on a clean exit (SIGTERM)"
 
 
-@pytest.mark.parametrize("stopped", [signal.SIGTERM, signal.SIGINT])
-def test_a_signalled_server_removes_its_record(home: World, stopped: signal.Signals) -> None:
+@pytest.mark.parametrize("stopped", CLEAN_STOPS)
+def test_a_signalled_server_removes_its_record(home: World, stopped: int) -> None:
     server = foreground(home, "--json", "--no-unix")
     try:
         assert server.stdout is not None
@@ -300,7 +327,7 @@ def test_a_stale_record_of_the_session_is_replaced_at_startup(home: World) -> No
         assert on_disk["pid"] == server.pid
         assert on_disk["token"] != "stale"
     finally:
-        server.terminate()
+        end(server)
         server.communicate(timeout=10)
 
 
@@ -316,8 +343,9 @@ def test_the_banner_names_every_endpoint_on_one_line_and_no_token_off_a_terminal
         line = server.stdout.readline().rstrip("\n")
         record = json.loads(record_file(home).read_text(encoding="utf-8"))
         socket_file = home.tau / "serve" / f"{OLD}.sock"
-        assert line == f"serving {OLD} on {socket_file} and {record['url']} (pid {server.pid})"
-        server.terminate()
+        where = record["url"] if WINDOWS else f"{socket_file} and {record['url']}"
+        assert line == f"serving {OLD} on {where} (pid {server.pid})"
+        end(server)
         rest, _ = server.communicate(timeout=10)
     finally:
         server.kill()
@@ -328,6 +356,10 @@ def on_a_terminal(
     world: World, *argv: str, env: dict[str, str] | None = None
 ) -> tuple[list[str], dict[str, object]]:
     """The first lines `tau serve` writes to a terminal, and its record."""
+    if sys.platform == "win32":
+        pytest.skip("Windows: no pseudo-terminals")
+    import pty  # noqa: PLC0415 - Unix only
+
     leader, follower = pty.openpty()
     server = foreground(world, *argv, stdout=follower, env=env)
     os.close(follower)
@@ -352,17 +384,20 @@ def on_a_terminal(
     return text.decode().replace("\r\n", "\n").splitlines(), record
 
 
+@needs_pty
 def test_on_a_terminal_a_second_line_opens_the_installed_client_with_the_token(home: World) -> None:
     lines, record = on_a_terminal(home, "--no-unix")
     assert lines[0] == f"serving {OLD} on {record['url']} (pid {record['pid']})"
     assert lines[1] == f"open: {record['url']}#token={record['token']}"
 
 
+@needs_pty
 def test_with_no_web_the_paste_url_is_for_a_web_client_served_elsewhere(home: World) -> None:
     lines, record = on_a_terminal(home, "--no-unix", "--no-web")
     assert lines[1] == f"for a web client: {record['url']}#token={record['token']}"
 
 
+@needs_pty
 def test_quiet_keeps_the_token_off_the_terminal(home: World) -> None:
     lines, record = on_a_terminal(home, "--quiet")
     assert len(lines) == 1
@@ -415,12 +450,14 @@ def built_client(world: World) -> Path:
     return root
 
 
+@needs_pty
 def test_with_a_web_root_the_banner_says_open(home: World) -> None:
     built_client(home)
     lines, record = on_a_terminal(home, "--no-unix", "--web-root", "../client")
     assert lines[1] == f"open: {record['url']}#token={record['token']}"
 
 
+@needs_pty
 def test_an_installed_tau_web_is_served(home: World) -> None:
     packages = home.home / "packages"
     dist = packages / "tau_web" / "dist"
@@ -507,4 +544,50 @@ def test_no_web_with_a_web_root_is_refused(home: World) -> None:
 def test_no_web_without_http_is_refused(home: World) -> None:
     result = serve(home, "--no-http", "--no-web", "--session", OLD)
     assert result.code != 0
-    assert "--no-web configure HTTP, which --no-http turns off" in result.err
+    if WINDOWS:
+        assert "--no-http is not available on Windows" in result.err
+    else:
+        assert "--no-web configure HTTP, which --no-http turns off" in result.err
+
+
+# Stopping over HTTP (D29 section 10)
+
+
+def shutdown(record: dict[str, object], token: str | None) -> httpx.Response:
+    headers = {} if token is None else {"Authorization": f"Bearer {token}"}
+    url = str(record["url"]) + "shutdown"
+    return httpx.post(url, headers=headers, trust_env=False, timeout=5)
+
+
+def test_shutdown_needs_the_token_and_post(home: World) -> None:
+    record = detached(home, "--no-unix")
+    assert shutdown(record, None).status_code == 401
+    assert shutdown(record, "not-the-token").status_code == 401
+    url = str(record["url"]) + "shutdown"
+    bearer = {"Authorization": f"Bearer {record['token']}"}
+    assert httpx.get(url, headers=bearer, trust_env=False, timeout=5).status_code == 405
+    assert record_file(home).exists(), "a refused stop stops nothing"
+    stop(home)
+
+
+def test_shutdown_with_the_token_stops_the_server_as_a_signal_does(home: World) -> None:
+    server = foreground(home, "--json", "--no-unix")
+    try:
+        assert server.stdout is not None
+        record = json.loads(server.stdout.readline())
+        assert shutdown(record, str(record["token"])).status_code == 202
+        assert server.wait(timeout=15) == 0
+    finally:
+        server.kill()
+        server.communicate()
+    assert not record_file(home).exists()
+
+
+def test_stop_goes_over_http_when_the_server_has_an_edge(home: World) -> None:
+    """`--stop` asks the edge, so it reaches a server that no signal can (Windows) or that this
+    user may not signal; the record goes once the server has wound down."""
+    record = detached(home, "--no-unix")
+    result = serve(home, "--stop", "--json", "--session", OLD)
+    assert result.code == 0, result.err
+    assert json.loads(result.out) == {"session": OLD, "pid": record["pid"], "stopped": True}
+    assert not record_file(home).exists()

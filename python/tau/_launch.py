@@ -14,7 +14,9 @@ words and standard input into the message `-p` sends.
 import argparse
 import fnmatch
 import select
+import sys
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TextIO
@@ -285,6 +287,25 @@ STDIN_WORD = "-"
 """The word that means "read standard input, however long it takes" (as `cat -` does)."""
 
 
+def _is_terminal(stdin: TextIO) -> bool:
+    """Whether `stdin` is a terminal a person types at. On Windows `isatty` is true of every
+    character device, `NUL` among them (`< NUL` is `</dev/null`), so there the console must
+    also say it is one."""
+    if not stdin.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    import ctypes  # noqa: PLC0415 - Windows only
+    import msvcrt  # noqa: PLC0415 - Windows only
+
+    try:
+        handle = msvcrt.get_osfhandle(stdin.fileno())
+    except (OSError, ValueError):
+        return True  # `isatty` said so, and there is no handle to ask further
+    mode = ctypes.c_ulong()
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
 def _stdin_speaks(stdin: TextIO) -> bool:
     """Whether a read of `stdin` would not block at first: a byte or the end is there, within
     `STDIN_WAIT` seconds. A stream with no descriptor (in memory) always speaks."""
@@ -292,8 +313,39 @@ def _stdin_speaks(stdin: TextIO) -> bool:
         descriptor = stdin.fileno()
     except (OSError, ValueError):  # io.UnsupportedOperation is both
         return True
+    if sys.platform == "win32":
+        return _handle_speaks(descriptor)
     ready, _, _ = select.select([descriptor], [], [], STDIN_WAIT)
     return bool(ready)
+
+
+STDIN_POLL = 0.02
+"""Seconds between two looks at a silent pipe on Windows, where `select` takes sockets only."""
+
+
+def _handle_speaks(descriptor: int) -> bool:
+    """`_stdin_speaks` on Windows. A file or a character device (`NUL`) speaks at once; a pipe
+    speaks when it holds a byte or has been closed, looked at every `STDIN_POLL` seconds until
+    `STDIN_WAIT` has passed."""
+    if sys.platform != "win32":
+        raise AssertionError("Windows only")
+    import _winapi  # noqa: PLC0415 - Windows only
+    import msvcrt  # noqa: PLC0415 - Windows only
+
+    handle = msvcrt.get_osfhandle(descriptor)
+    if _winapi.GetFileType(handle) != _winapi.FILE_TYPE_PIPE:
+        return True
+    deadline = time.monotonic() + STDIN_WAIT
+    while True:
+        try:
+            peeked = _winapi.PeekNamedPipe(handle, 0)  # size 0: (bytes available, left)
+        except BrokenPipeError:  # the writer closed it: the end is there
+            return True
+        if peeked[0]:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(STDIN_POLL)
 
 
 def _read_stdin(stdin: TextIO, stderr: TextIO) -> str:
@@ -332,7 +384,7 @@ def message_of(words: Sequence[str], stdin: TextIO, stderr: TextIO) -> tuple[str
     sent its data, `/dev/null` and a closed descriptor are read at once; one that stays silent
     (cron, ssh or a CI step that left it open) is said so on `stderr` and `-p` goes on without it.
     `UsageError` if there is no message."""
-    piped_in = not stdin.isatty()
+    piped_in = not _is_terminal(stdin)
     marked = piped_in and bool(words) and words[0] == STDIN_WORD
     text = " ".join(words[1:] if marked else words)
     text = text if text.strip() else ""

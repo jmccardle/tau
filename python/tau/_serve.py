@@ -370,6 +370,8 @@ class Server:
         self._connections: set[_Connection] = set()
         self._finished: set[asyncio.Future[None]] = set()
         self._calls: set[asyncio.Task[None]] = set()
+        self._stop: Callable[[], None] | None = None
+        """What the edge's `POST /shutdown` calls (`None`: it is refused)."""
 
     @property
     def url(self) -> str | None:
@@ -411,7 +413,7 @@ class Server:
         if self._http is None:
             return
         try:
-            self._edge = await listen(self._http, self._handle)
+            self._edge = await listen(self._http, self._handle, self._stop)
         except BaseException:
             await self._unbind()
             raise
@@ -506,8 +508,10 @@ class HostedServer(Server):
         idle: float | None,
         http: HttpEdge | None = None,
         name: str | None = None,
+        stop: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(driver, path, welcome, idle, http)
+        self._stop = stop
         self._about = welcome
         self._name = name
         self._release: Callable[[], Awaitable[None]] | None = None
@@ -598,6 +602,7 @@ async def serve_session(  # noqa: PLR0913 - the session's files, what releases i
     log: tuple[Path, Path] | None = None,
     http: HttpEdge | None = None,
     name: str | None = None,
+    stop: Callable[[], None] | None = None,
 ) -> HostedServer:
     """`Server.start` for a session kept in `home`: once the socket (`path`) and the HTTP edge
     (`http`) are bound, `log` is moved and the serve record `<home>/serve/<session>.json` is
@@ -605,8 +610,8 @@ async def serve_session(  # noqa: PLR0913 - the session's files, what releases i
     process holds the session's lease) and is removed first. `Server.close` then also awaits
     `release` (`Started.stop`) and removes the record. The one writer of the record:
     `Started.serve` and `tau serve` both come here. If the move or the write fails the socket and
-    edge are unbound and nothing is released. `ConfigError` if a server already answers at
-    `path`."""
+    edge are unbound and nothing is released. `stop` is what the edge's `POST /shutdown` calls
+    (`None`: it is refused). `ConfigError` if a server already answers at `path`."""
     if path is not None:
         require_unix_sockets("tau serve")
         if await probe(str(path)) is not None:
@@ -614,6 +619,6 @@ async def serve_session(  # noqa: PLR0913 - the session's files, what releases i
     record = record_path(serve_directory(home), session)
     record.unlink(missing_ok=True)
     welcome = Welcome(PROTOCOL, version("ffwf-tau"), session, str(cwd), os.getpid())
-    server = HostedServer(driver, path, welcome, idle, http, name)
+    server = HostedServer(driver, path, welcome, idle, http, name, stop)
     await server.host(release, record, log)
     return server

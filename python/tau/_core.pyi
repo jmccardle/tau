@@ -275,6 +275,14 @@ def is_leased(directory: str | PathLike[str]) -> bool:
     directory with no log.
     """
 
+def private_dir(path: str | PathLike[str], what: str) -> None:
+    """Make the directory `path` if it is absent and check that it is private to this process's
+    user: a real directory (not a symlink or junction), owned by the user, that no one else may
+    use (Unix: mode 700; Windows: its access list grants only the user, SYSTEM and
+    Administrators). The base tools' overflow directory is checked so. `PermissionError` naming
+    `what` and the reason if it cannot be made or is not private.
+    """
+
 def trace_to(path: str | PathLike[str]) -> None:
     """Start recording spans to a Chrome trace file at `path`."""
 

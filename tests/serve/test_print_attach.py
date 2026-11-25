@@ -3,21 +3,10 @@ failing, refuses what a running server would ignore, and answers or declines onl
 its own cursor. The servers are real processes with a mock model, started in a throwaway TAU_HOME
 and killed when the test is over."""
 
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
-        allow_module_level=True,
-    )
-
 import argparse
 import asyncio
 import json
-import os
-import signal
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -26,7 +15,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from proctable import alive
+from proctable import alive, kill
 from world import Result, World, tau
 
 from tau import (
@@ -96,6 +85,13 @@ def serving(world: World, *argv: str) -> dict[str, object]:
     result = tau(world, "serve", "-d", "--json", "--session", OLD, *argv, cwd=work(world))
     assert result.code == 0, result.err
     return json.loads(result.out)
+
+
+async def dial(record: dict[str, object], client: str) -> RemoteClient:
+    """A client of the server `record` names: over its socket if it has one, else its edge."""
+    if "socket" in record:
+        return await RemoteClient.connect(str(record["socket"]), client)
+    return await RemoteClient.connect_http(str(record["url"]), str(record["token"]), client)
 
 
 def p(world: World, *argv: str) -> Result:
@@ -196,7 +192,7 @@ def test_a_fork_never_attaches(home: World) -> None:
 def test_a_record_whose_server_is_dead_is_stale_and_the_session_opens_here(home: World) -> None:
     pid = serving(home)["pid"]
     assert isinstance(pid, int)
-    os.kill(pid, signal.SIGKILL)
+    kill(pid)
     deadline = time.monotonic() + 10
     while alive(pid) and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -238,7 +234,7 @@ def test_a_question_on_another_cursor_is_left_to_the_servers_other_clients(home:
     record = serving(home, "-e", extension(home, "asker", ASKER))
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as person:
+        async with await dial(record, "test:person") as person:
             snapshot = [await anext(person) for _ in range(2)]
             assert isinstance(snapshot[0], CursorView)
             other = await person.open(snapshot[0].at)
@@ -275,7 +271,7 @@ def test_a_cursor_another_client_opens_after_p_attached_is_still_left_to_it(home
     record = serving(home, "-e", extension(home, "asker", ASKER))
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as person:
+        async with await dial(record, "test:person") as person:
             snapshot = [await anext(person) for _ in range(2)]
             assert isinstance(snapshot[0], CursorView)
             running = asyncio.create_task(
@@ -307,7 +303,7 @@ def test_p_prints_the_reply_to_its_own_message_not_another_clients(home: World) 
     record = serving(home)
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as person:
+        async with await dial(record, "test:person") as person:
             snapshot = [await anext(person) for _ in range(2)]
             assert isinstance(snapshot[0], CursorView)
             running = asyncio.create_task(asyncio.to_thread(p, home, "--session", OLD, "mine"))
@@ -379,7 +375,7 @@ def test_a_refused_value_aborts_only_the_cursor_p_sent_to(home: World) -> None:
     record = serving(home, "-e", extension(home, "gate", GATE))
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as client:
+        async with await dial(record, "test:person") as client:
             person = Person(client)
             await person.ask(shared=False)
             result = await asyncio.to_thread(
@@ -398,7 +394,7 @@ def test_p_answers_by_its_rules_a_question_already_open_on_its_cursor(home: Worl
     record = serving(home, "-e", extension(home, "gate", GATE))
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as client:
+        async with await dial(record, "test:person") as client:
             person = Person(client)
             await person.ask(shared=True)  # the first cursor, which -p attaches to as well
             result = await asyncio.to_thread(
@@ -415,7 +411,7 @@ def test_a_question_open_on_its_cursor_with_no_rule_stops_p_before_it_sends(home
     record = serving(home, "-e", extension(home, "gate", GATE))
 
     async def scenario() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:person") as client:
+        async with await dial(record, "test:person") as client:
             person = Person(client)
             await person.ask(shared=True)
             result = await asyncio.to_thread(p, home, "--session", OLD, "go")
@@ -534,6 +530,7 @@ def resuming(home: World) -> Iterator[World]:
     yield from _serving_model(home, _Resuming)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
 def test_a_sub_agents_question_is_answered_by_the_attached_run_not_left_hanging(
     delegating: World,
 ) -> None:
@@ -563,6 +560,7 @@ def test_a_decline_rule_declines_a_sub_agents_question(delegating: World) -> Non
     assert not (work(delegating) / "ran").exists(), "the call was refused"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
 def test_an_agent_the_session_already_had_open_is_the_attached_runs_when_it_is_sent_a_task(
     resuming: World,
 ) -> None:

@@ -27,8 +27,8 @@ single-user, so the token file's mode (0600) is the whole local secret.
 
 `tau serve` listens on its Unix socket (unchanged) **and** an HTTP edge. `--no-unix` and `--no-http`
 turn one off; both off is an error, as are flags that configure what is off (`--socket` with
-`--no-unix`; `--port`, `--host`, `--allow-origin` with `--no-http`). On Windows the default is the
-edge alone and `--unix` is an error (see Open 1: that path is not yet built or tested). No
+`--no-unix`; `--port`, `--host`, `--allow-origin` with `--no-http`). On Windows the edge is the only
+transport: `--unix` and `--no-http` are errors (§10). No
 in-tree caller changes transport: the TUI, `-p`, `--stop`, ratatui and the relay keep the socket
 whenever it is on, and a client attaches over HTTP only to a server whose record has no socket.
 
@@ -186,6 +186,33 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
 - An editor's webview loads the same bundle from the extension and calls the edge by its URL (an
   `--allow-origin` for the webview's origin, or the extension host relaying).
 
+### 10. Stopping over HTTP, and Windows (amendment, 2026-11-24)
+
+`POST /shutdown`, with the bearer token, asks the server to stop as SIGTERM does (the cursors are
+aborted and wound down, the edge stops accepting, the record goes last); it is answered `202`, and
+`404` by a server that is not stopped this way (one a program embeds with `Started.serve`, which
+stops it itself). It is an edge route, not a wire message: `PROTOCOL` does not change.
+`tau serve --stop` uses it whenever the record has a `url`, on every platform, so one path is
+tested everywhere; it falls back to SIGTERM for a socket-only server, or on a `404` (a τ before
+this, or an embedding program), and on Windows, where there is no signal to send, a `404` is an
+error. There is no `--stop --force` yet.
+
+Windows (Python's asyncio has no Unix sockets there) runs the edge alone:
+
+- **The serve directory** is checked by its access list instead of its mode (`_core.private_dir`,
+  the base tools' overflow-directory check): not a reparse point, owned by the user, and granting
+  only the user, the token's default owner, OWNER RIGHTS, SYSTEM and Administrators. The records
+  (and their tokens) in it inherit that list. A `TAU_HOME` in a place others may read fails early.
+- **Liveness** opens the process and reads its exit code: `os.kill(pid, 0)` terminates it there.
+- **Records** are read sharing delete, so a reader never makes the server's rename over its
+  record, or its removal, fail.
+- **`-d`** starts the child with no console, in its own process group, and out of the starter's job
+  (`CREATE_BREAKAWAY_FROM_JOB`). A job that forbids breakaway gets the child in the job, said on
+  stderr and as `"breakaway": false` in `-d`'s JSON. The log is opened sharing delete, so its rename
+  to `<id>.log` works as on POSIX. A venv's `python.exe` is a launcher, so the child is the base
+  interpreter with `__PYVENV_LAUNCHER__`, as `multiprocessing` does, and its pid is the record's.
+- **A foreground server** stops cleanly on Ctrl+C or Ctrl+Break (Windows has no SIGTERM to catch).
+
 ## Alternatives
 
 - **WebSocket over TCP** (one more `ws://` listener): the same messages, fewer moving parts in τ,
@@ -203,9 +230,9 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
 
 ## Open
 
-1. **Windows (T2).** The flag rule is in (`--unix` refused, the edge alone), but the serve directory's
-   owner check, the signal handlers and `tau -c`'s attach are POSIX-only today, and nothing runs
-   the serve tests on Windows. Port them and un-skip the tests in the release workflow.
+1. ~~**Windows (T2).**~~ Closed by §10: the serve directory's access list, liveness, `-d`, `--stop`
+   over HTTP, the console's stop keys and `tau -c`'s attach; the serve tests run on Windows in
+   HTTP mode.
 2. **`tau sessions --json`** could mark sessions with a live endpoint (nice to have).
 3. **`name` in the record** is the name at start; a rename while serving is not reflected.
 4. ~~**The `ffwf-tau[web]` extra**~~ Closed in 0.17.1: no extra; the client is a plain dependency

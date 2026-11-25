@@ -30,11 +30,24 @@ use crate::Limits;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-use unix::PrivateDir;
+use unix::{PrivateDir, checked};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-use windows::PrivateDir;
+use windows::{PrivateDir, checked};
+
+/// Make `dir` if it is absent (`0700` on Unix) and check that it is private to this
+/// process's user, as the overflow directory is checked: a real directory (not a symlink or
+/// junction), owned by the user, that no one else may use (Unix: mode `0700`; Windows: an
+/// access list granting only the user, the token's default owner, OWNER RIGHTS, SYSTEM and
+/// Administrators). The error is the reason, naming the directory as `what`.
+///
+/// # Errors
+///
+/// The directory cannot be made or opened, or is not private.
+pub fn private_dir(dir: &Path, what: &str) -> Result<(), String> {
+    checked(dir, what).map(drop)
+}
 
 /// Which end of the output the model keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
