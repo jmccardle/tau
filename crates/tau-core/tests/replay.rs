@@ -11,7 +11,7 @@ use tau_core::tree::{
 
 /// What a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
-    m.send(cursor, by, text).unwrap()
+    m.send(cursor, by, text, vec![]).unwrap()
 }
 
 /// What the store holds after a crash: the records up to the last `Sync` and
@@ -122,10 +122,7 @@ fn apply(s: &mut Session, op: &Op) {
     let cursor = move |i: usize| open[i % open.len()];
     match *op {
         Op::Open(t) => drop(s.open(node(t), by, 0).unwrap()),
-        Op::User(i) => drop(
-            s.write(cursor(i), Body::User("u".into()), vec![], by, 0)
-                .unwrap(),
-        ),
+        Op::User(i) => drop(s.write(cursor(i), Body::user("u"), vec![], by, 0).unwrap()),
         Op::Batch(i, k) => {
             let parts = (0..k)
                 .map(|j| Part::Call {
@@ -169,6 +166,7 @@ fn apply(s: &mut Session, op: &Op) {
         Op::Unlabel(l) => drop(s.remove_label(&format!("l{l}"))),
         Op::Input(i, a) => {
             let data = ItemData::Input {
+                images: vec![],
                 by: author(a),
                 text: "in".into(),
             };
@@ -178,8 +176,7 @@ fn apply(s: &mut Session, op: &Op) {
             let cur = cursor(i);
             let first = s.items(cur).next().map(|it| it.id);
             if let Some(item) = first {
-                s.write(cur, Body::User("in".into()), vec![item], by, 0)
-                    .unwrap();
+                s.write(cur, Body::user("in"), vec![item], by, 0).unwrap();
             }
         }
         Op::Drop(k) => {
@@ -244,7 +241,7 @@ proptest! {
 #[test]
 fn a_record_out_of_sequence_is_refused_with_its_position() {
     let (mut s, c) = Session::create("{}", "sys", 0);
-    s.write(c, Body::User("a".into()), vec![], Author::Core, 0)
+    s.write(c, Body::user("a"), vec![], Author::Core, 0)
         .unwrap();
     let mut log = s.outbox.clone();
     log.swap(0, 1); // the System node before its Config root
@@ -358,7 +355,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
         .tree
         .walk(m.session.at(c).unwrap())
         .iter()
-        .filter(|n| matches!(&n.body, Body::User(t) if t == "hi"))
+        .filter(|n| matches!(&n.body, Body::User { text: t, .. } if t == "hi"))
         .count();
     assert_eq!(users, 1, "delivered once");
 }
@@ -497,6 +494,7 @@ fn a_crash_after_the_close_but_before_the_scratchpad_never_brings_back_its_items
     let (mut s, c) = Session::create("{}", "sys", 0);
     let d = s.open(s.at(c).unwrap(), Author::Core, 0).unwrap();
     let item = ItemData::Input {
+        images: vec![],
         by: Author::Core,
         text: "late".into(),
     };

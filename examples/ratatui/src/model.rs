@@ -495,9 +495,9 @@ impl Model {
         match &node.body {
             // The system prompt, config snapshots and extensions' own nodes are not conversation.
             Body::System(_) | Body::Config(_) | Body::Custom { .. } => {}
-            Body::User(text) => {
+            Body::User(user) => {
                 let (kind, who) = self.author(&node.by);
-                rows.push(Row::new(kind, who, text.clone()));
+                rows.push(Row::new(kind, who, user.shown()));
             }
             Body::Assistant { parts, stop, .. } => {
                 for part in parts {
@@ -584,7 +584,7 @@ impl Model {
         view.items
             .iter()
             .filter_map(|item| match &item.data {
-                ItemData::Input { by, text } => {
+                ItemData::Input { by, text, .. } => {
                     let who = self.author(by).1;
                     Some(Row::new(
                         Kind::Dim,

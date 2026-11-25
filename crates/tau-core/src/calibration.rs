@@ -158,7 +158,7 @@ pub fn features(body: &Body) -> Features {
             x.text(SYSTEM, text);
             x.node(SYSTEM);
         }
-        Body::User(text) => {
+        Body::User { text, .. } => {
             x.text(USER, text);
             x.node(USER);
         }

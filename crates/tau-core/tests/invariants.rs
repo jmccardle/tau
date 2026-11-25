@@ -277,8 +277,8 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     let node = |i: usize| i as NodeId % (nn + 2);
     let term = || "term".to_string();
     match *op {
-        Op::Send(i, a) => drop(m.send(cursor(i), author(a), "hello").unwrap()),
-        Op::Input(i, a) => drop(m.input(cursor(i), author(a), "more").unwrap()),
+        Op::Send(i, a) => drop(m.send(cursor(i), author(a), "hello", vec![]).unwrap()),
+        Op::Input(i, a) => drop(m.input(cursor(i), author(a), "more", vec![]).unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));
             let stepped = m.step(cursor(i));
@@ -390,7 +390,7 @@ fn body() -> impl Strategy<Value = Body> {
     prop_oneof![
         Just(Body::Config(Config::from("{}"))),
         Just(Body::System("s".into())),
-        Just(Body::User("u".into())),
+        Just(Body::user("u")),
         Just(Body::Assistant {
             parts: vec![Part::text("a")],
             stop: Stop::End,

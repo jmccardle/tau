@@ -341,7 +341,7 @@ impl Session {
     /// What a person typed, if `node` is the `User` node an input became and a hook changed
     /// its text: the delivered `Input` item's text.
     fn typed(&self, node: &Node) -> Option<String> {
-        let Body::User(text) = &node.body else {
+        let Body::User { text, .. } = &node.body else {
             return None;
         };
         self.pad
@@ -737,7 +737,7 @@ pub fn next(walk: &[&Node]) -> Next {
 
 fn decide(last: Option<&Node>) -> Next {
     match last.map(|n| &n.body) {
-        Some(Body::User(_) | Body::Results(_)) => Next::Sample,
+        Some(Body::User { .. } | Body::Results(_)) => Next::Sample,
         Some(b) if !calls(b).is_empty() => Next::RunTools,
         _ => Next::Wait,
     }

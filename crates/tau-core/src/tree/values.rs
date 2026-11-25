@@ -125,28 +125,113 @@ impl schemars::JsonSchema for Outcome {
 }
 
 impl Body {
-    /// The images this body holds: those of a `Results` node's `Ok` outcomes, in call order.
+    /// A `User` body of text alone.
+    #[must_use]
+    pub fn user(text: impl Into<String>) -> Self {
+        Self::User {
+            text: text.into(),
+            images: vec![],
+        }
+    }
+
+    /// The images this body holds: a `User` node's (after its text), or those of a `Results`
+    /// node's `Ok` outcomes, in call order.
     pub fn images(&self) -> impl Iterator<Item = &Image> {
-        let outcomes = match self {
-            Self::Results(outcomes) => outcomes.as_slice(),
-            _ => &[],
+        let (own, outcomes): (&[Image], &[(String, Outcome, Author)]) = match self {
+            Self::User { images, .. } => (images.as_slice(), &[]),
+            Self::Results(outcomes) => (&[], outcomes.as_slice()),
+            _ => (&[], &[]),
         };
-        outcomes.iter().flat_map(|(_, o, _)| match o {
-            Outcome::Ok { images, .. } => images.as_slice(),
-            _ => &[],
-        })
+        own.iter()
+            .chain(outcomes.iter().flat_map(|(_, o, _)| match o {
+                Outcome::Ok { images, .. } => images.as_slice(),
+                _ => &[],
+            }))
     }
 
     /// `images`, to change: what a store does to give a copy its bytes.
     pub fn images_mut(&mut self) -> impl Iterator<Item = &mut Image> {
-        let outcomes = match self {
-            Self::Results(outcomes) => outcomes.as_mut_slice(),
-            _ => &mut [],
+        let (own, outcomes): (&mut [Image], &mut [(String, Outcome, Author)]) = match self {
+            Self::User { images, .. } => (images.as_mut_slice(), &mut []),
+            Self::Results(outcomes) => (&mut [], outcomes.as_mut_slice()),
+            _ => (&mut [], &mut []),
         };
-        outcomes.iter_mut().flat_map(|(_, o, _)| match o {
-            Outcome::Ok { images, .. } => images.as_mut_slice(),
-            _ => &mut [],
-        })
+        own.iter_mut()
+            .chain(outcomes.iter_mut().flat_map(|(_, o, _)| match o {
+                Outcome::Ok { images, .. } => images.as_mut_slice(),
+                _ => &mut [],
+            }))
+    }
+}
+
+/// `Body::User` as the log and the wire encode it: the text alone when there are no images, so
+/// a log written before user images (D31) loads unchanged; else the text and its images.
+mod user_repr {
+    use serde::{Deserialize, Serialize};
+
+    use super::Image;
+
+    /// `Body::User`'s two encodings: the text alone, or the text with its images.
+    #[cfg(feature = "schema")]
+    #[derive(schemars::JsonSchema)]
+    #[schemars(untagged, inline)]
+    #[allow(dead_code, reason = "only its schema is used")]
+    pub(super) enum UserRepr {
+        Text(String),
+        WithImages { text: String, images: Vec<Image> },
+    }
+
+    #[derive(Serialize)]
+    struct WithImagesRef<'a> {
+        text: &'a str,
+        images: &'a [Image],
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct WithImages {
+        text: String,
+        images: Vec<Image>,
+    }
+
+    #[allow(clippy::ptr_arg, reason = "serde hands a variant's fields as they are")]
+    pub(super) fn ser<S: serde::Serializer>(
+        text: &String,
+        images: &Vec<Image>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        if images.is_empty() {
+            s.serialize_str(text)
+        } else {
+            WithImagesRef { text, images }.serialize(s)
+        }
+    }
+
+    /// By the JSON's shape, so a bad image says why.
+    pub(super) fn de<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<(String, Vec<Image>), D::Error> {
+        struct Shape;
+        impl<'de> serde::de::Visitor<'de> for Shape {
+            type Value = (String, Vec<Image>);
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string, or an object with `text` and `images`")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok((v.to_owned(), vec![]))
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok((v, vec![]))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let w = WithImages::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok((w.text, w.images))
+            }
+        }
+        d.deserialize_any(Shape)
     }
 }
 
@@ -154,7 +239,13 @@ impl Body {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Body {
     System(String),
-    User(String),
+    /// What a person (or a frontend for them) said: text, then images (D31).
+    #[serde(serialize_with = "user_repr::ser", deserialize_with = "user_repr::de")]
+    #[cfg_attr(feature = "schema", schemars(with = "user_repr::UserRepr"))]
+    User {
+        text: String,
+        images: Vec<Image>,
+    },
     Assistant {
         parts: Vec<Part>,
         stop: Stop,
@@ -243,8 +334,36 @@ pub struct Move {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ItemData {
-    Input { by: Author, text: String },
-    Extension { name: String, data: String },
+    /// A client's input: its text, then its images (D31; none in a pad written before them).
+    Input {
+        by: Author,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
+    },
+    Extension {
+        name: String,
+        data: String,
+    },
+}
+
+impl ItemData {
+    /// The images this item holds: an `Input`'s.
+    #[must_use]
+    pub fn images(&self) -> &[Image] {
+        match self {
+            Self::Input { images, .. } => images,
+            Self::Extension { .. } => &[],
+        }
+    }
+
+    /// `images`, to change.
+    pub fn images_mut(&mut self) -> &mut [Image] {
+        match self {
+            Self::Input { images, .. } => images,
+            Self::Extension { .. } => &mut [],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

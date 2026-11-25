@@ -68,7 +68,8 @@ fn author_name(by: &Author) -> String {
 /// `Config` and `Custom` nodes never reach the model).
 pub fn facts(node: &Node) -> Facts {
     let chars = match &node.body {
-        Body::System(text) | Body::User(text) => text.chars().count(),
+        Body::System(text) => text.chars().count(),
+        Body::User(user) => user.text().chars().count(),
         Body::Assistant { parts, .. } => parts
             .iter()
             .map(|p| match p {
@@ -136,7 +137,7 @@ fn config_line(data: &str) -> String {
 /// A node's tag word and its one-line text.
 pub fn describe(node: &Node) -> (Tag, &'static str, String) {
     match &node.body {
-        Body::User(text) => (Tag::User, "user", squash(text)),
+        Body::User(user) => (Tag::User, "user", squash(user.text())),
         Body::Assistant { parts, .. } => {
             let said: String = parts
                 .iter()
@@ -176,7 +177,8 @@ pub fn full_text(node: &Node) -> String {
         author_name(&node.by)
     );
     let body = match &node.body {
-        Body::User(text) | Body::System(text) => text.clone(),
+        Body::User(user) => user.shown(),
+        Body::System(text) => text.clone(),
         Body::Assistant { parts, .. } => parts
             .iter()
             .filter_map(|p| match p {

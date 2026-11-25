@@ -384,7 +384,7 @@ fn the_bound_narrows_as_residuals_gather() {
     reason = "a feature is a count or a 0/1 flag, exact in f64; equality is the claim"
 )]
 fn the_features_of_a_body_are_its_text_by_role_and_class() {
-    let user = features(&Body::User("Héllo wörld 42!".into()));
+    let user = features(&Body::user("Héllo wörld 42!"));
     let at = CLASSES; // the user role
     assert_eq!(
         &user.0[at..at + CLASSES],
@@ -438,7 +438,7 @@ fn the_features_of_a_body_are_its_text_by_role_and_class() {
         })
         .is_empty()
     );
-    let mut sum = features(&Body::User("a".into()));
+    let mut sum = features(&Body::user("a"));
     sum.add(&features(&Body::System("b".into())));
     assert_eq!((sum.0[WEIGHTS], sum.0[WEIGHTS + 1]), (1.0, 1.0));
 }

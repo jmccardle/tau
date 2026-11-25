@@ -7,7 +7,7 @@ use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Provenance, Se
 
 /// What a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
-    m.send(cursor, by, text).unwrap()
+    m.send(cursor, by, text, vec![]).unwrap()
 }
 
 /// The hooks' answer that changes nothing: a job's draft comes back as it was.
@@ -194,7 +194,7 @@ fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
 #[test]
 fn a_frontend_step_is_refused_on_a_busy_cursor_and_runs_once_at_rest() {
     let (mut m, c) = machine();
-    m.input(c, Author::Frontend(term()), "hi").unwrap(); // input, auto-step off
+    m.input(c, Author::Frontend(term()), "hi", vec![]).unwrap(); // input, auto-step off
     assert_eq!(m.step(c), Err(Error::Busy(c)));
     let jobs = run(&mut m, c, plain);
     assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
@@ -297,7 +297,7 @@ fn opening_a_cursor_wakes_it_and_an_item_for_it_wakes_it_again() {
 fn frontend_calls_sync_on_return() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.input(c, Author::Frontend(term()), "hi").unwrap();
+    m.input(c, Author::Frontend(term()), "hi", vec![]).unwrap();
     assert!(m.session.synced());
     run(&mut m, c, plain);
     m.session.set_label("main", c).unwrap();
@@ -321,7 +321,7 @@ fn moves_from_the_step_start_are_the_running_steps() {
     let by = Author::Extension("nav".into());
     let note = m
         .session
-        .append(sys, by.clone(), Body::User("n".into()), vec![], 0)
+        .append(sys, by.clone(), Body::user("n"), vec![], 0)
         .unwrap();
     m.session.move_to(c, note, by, 0).unwrap();
     assert_eq!(m.session.moves_of(c, m.step_start(c)).count(), 1);
@@ -380,7 +380,7 @@ fn undelivering(job: &Job, m: &mut Machine) -> Vec<Answer> {
         } => vec![Answer::Hooks {
             stop: None,
             draft: Some(Draft {
-                body: Body::User("edited".into()),
+                body: Body::user("edited"),
                 delivers: vec![],
                 by: d.by.clone(),
             }),
@@ -394,7 +394,7 @@ fn users(m: &Machine, c: u64) -> usize {
     s.tree
         .walk(s.at(c).unwrap())
         .iter()
-        .filter(|n| matches!(n.body, Body::User(_)))
+        .filter(|n| matches!(n.body, Body::User { .. }))
         .count()
 }
 
@@ -468,7 +468,7 @@ fn a_cursor_that_is_not_open_is_refused_by_every_call_and_nothing_is_recorded() 
 fn add_item_and_open_inside_a_pre_hook_ride_the_phases_sync() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.input(c, Author::Frontend(term()), "hi").unwrap();
+    m.input(c, Author::Frontend(term()), "hi", vec![]).unwrap();
     assert!(m.session.synced());
     let Job::Hooks {
         point: Hook::PreStep,
@@ -835,10 +835,7 @@ fn a_reply_naming_a_call_id_twice_is_refused_with_nothing_changed() {
     );
     assert!(!jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })));
     let at = m.session.at(c).unwrap();
-    assert_eq!(
-        m.session.tree.node(at).unwrap().body,
-        Body::User("hi".into())
-    );
+    assert_eq!(m.session.tree.node(at).unwrap().body, Body::user("hi"));
 }
 
 fn call(id: &str) -> Part {
@@ -864,7 +861,7 @@ fn two_cursors() -> (Machine, u64, u64) {
 fn closing_a_cursor_at_rest_drops_its_items_and_keeps_its_id_node_and_labels() {
     let (mut m, c, d) = two_cursors();
     m.set_label("scout", d, None).unwrap();
-    m.input(d, Author::Frontend(term()), "hi").unwrap();
+    m.input(d, Author::Frontend(term()), "hi", vec![]).unwrap();
     run(&mut m, d, |j, _| match j {
         Job::Sample => vec![said("ok")],
         _ => vec![echo(j)],
@@ -915,7 +912,7 @@ fn every_call_on_a_closed_cursor_is_refused_as_closed() {
     assert_eq!(m.step(d).unwrap_err(), closed);
     assert_eq!(m.set_auto(d, true).unwrap_err(), closed);
     assert_eq!(m.abort(d).unwrap_err(), closed);
-    assert_eq!(m.input(d, Author::Core, "x").unwrap_err(), closed);
+    assert_eq!(m.input(d, Author::Core, "x", vec![]).unwrap_err(), closed);
     assert_eq!(m.add_item(d, item, None).unwrap_err(), closed);
     assert_eq!(m.go_to(d, 0, term(), 0).unwrap_err(), closed);
     assert_eq!(m.next_job(d).unwrap_err(), closed);
@@ -954,7 +951,7 @@ fn a_hook_call_on_a_closed_cursor_is_refused_as_closed() {
     assert_eq!(
         m.hook_write(
             d,
-            Body::User("x".into()),
+            Body::user("x"),
             vec![],
             Author::Core,
             0,

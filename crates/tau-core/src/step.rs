@@ -321,19 +321,19 @@ impl Step {
             }
             let id = queue.remove(0);
             if let Some(Item {
-                data: ItemData::Input { by, text },
+                data: ItemData::Input { by, text, images },
                 ..
             }) = s.items(cursor).find(|i| i.id == id)
             {
-                break Some((id, by.clone(), text.clone()));
+                break Some((id, by.clone(), text.clone(), images.clone()));
             }
         };
-        let Some((id, by, text)) = next else {
+        let Some((id, by, text, images)) = next else {
             self.hop("no input to offer", Pos::PreSample);
             return None;
         };
         self.draft = Some(Draft {
-            body: Body::User(text),
+            body: Body::User { text, images },
             delivers: vec![id],
             by,
         });

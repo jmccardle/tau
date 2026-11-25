@@ -3,7 +3,7 @@
 //! touches the filesystem.
 //!
 //! Images (D30) are kept once each in `images/<sha256>`, written before the
-//! first record that names them; the log holds only their reference.
+//! first record (or scratchpad, D31) that names them; the log holds only their reference.
 //!
 //! Both files start with an 8-byte magic and a little-endian `u32` version.
 //! A record on disk is its payload's length (`u32` LE), a CRC-32 of the
@@ -29,12 +29,21 @@ const PAD: &str = "scratchpad";
 const IMAGES: &str = "images";
 const LOG_MAGIC: [u8; 8] = *b"tau-log\0";
 const PAD_MAGIC: [u8; 8] = *b"tau-pad\0";
-/// The file version this build writes. 2 (D30): a `Results` outcome may carry images.
-pub const VERSION: u32 = 2;
+/// The newest file version this build writes. 3 (D31): a `User` node, or a scratchpad's input,
+/// may carry images. A file is written as 3 only once it holds such a record; until then it is
+/// `BASE`, so an older build still opens a session that never held a user image.
+pub const VERSION: u32 = 3;
+/// The version of a file that holds no record newer: 2 (D30), where a `Results` outcome may
+/// carry images.
+pub const BASE: u32 = 2;
 /// The oldest version this build reads. A v1 file is a v2 file without images.
 pub const OLDEST: u32 = 1;
 /// Magic plus version.
 pub const HEADER: usize = 12;
+
+/// What `Store::take` found through the last `Sync`: its end in `pending`, the newest pad, and
+/// the file version the records need.
+type Taken = (usize, Option<Scratchpad>, u32);
 
 #[derive(Debug)]
 pub enum Error {
@@ -128,8 +137,9 @@ pub struct Store {
     /// Bytes cut from the log's tail by `open`: a torn or unsynced tail. Kept
     /// in the session directory as `dropped-<offset>`.
     pub dropped: u64,
-    /// The log header's version. An older one (1) is rewritten to `VERSION` just before this
-    /// store first appends to the log (D30), never on open alone.
+    /// The log header's version. An older one is rewritten just before this store first appends
+    /// to the log (to `BASE`, D30), or first appends a record only a newer version holds (to
+    /// `VERSION`, D31); never on open alone.
     version: u32,
 }
 
@@ -160,12 +170,13 @@ impl Store {
             .truncate(true)
             .open(&tmp)?;
         lease(&log)?;
+        let version = session.outbox.iter().map(needs).max().unwrap_or(BASE);
         let store = Self {
             dir: dir.into(),
             log,
-            pending: header(LOG_MAGIC),
+            pending: header(LOG_MAGIC, version),
             dropped: 0,
-            version: VERSION,
+            version,
         };
         session.sync();
         let store = store.save(session)?;
@@ -271,7 +282,7 @@ impl Store {
             }
             match decode::<Record>(&whole, 0) {
                 Decoded::Record(Record::Write { node, .. }, _) => {
-                    if let Body::User(text) = node.body {
+                    if let Body::User { text, .. } = node.body {
                         return Ok(Some(node.typed.unwrap_or(text)));
                     }
                 }
@@ -303,29 +314,10 @@ impl Store {
     /// which cuts anything after the log's last good `Sync`.
     pub fn save(mut self, session: &mut Session) -> Result<Self, Error> {
         let _span = tracing::info_span!("store.save").entered();
-        // Through the last `Sync`: its end in `pending`, and the newest pad.
-        let mut through = None;
-        let mut wrote_images = false;
-        for r in session.outbox.drain(..) {
-            let Record::Sync { pad } = r else {
-                if let Record::Write { node, .. } = &r {
-                    wrote_images |= self.keep_images(&node.body)?;
-                }
-                encode(&r, &mut self.pending)?;
-                continue;
-            };
-            encode(&Record::Sync { pad: None }, &mut self.pending)?;
-            let newest = pad.or(through.and_then(|(_, p)| p));
-            through = Some((self.pending.len(), newest));
-        }
-        if wrote_images {
-            sync_dir(&self.dir.join(IMAGES))?;
-            sync_dir(&self.dir)?;
-        }
-        let Some((end, pad)) = through else {
+        let Some((end, pad, version)) = self.take(session)? else {
             return Ok(self);
         };
-        self.mark_version()?;
+        self.mark_version(version)?;
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
             // Windows: the log is open for writing, not appending (see `open_log`).
@@ -344,12 +336,44 @@ impl Store {
         Ok(self)
     }
 
-    /// Before this build's first append: from there the log may hold what an older build cannot
-    /// decode, so its header says `VERSION` first and that build refuses it by name (D30).
-    fn mark_version(&mut self) -> Result<(), Error> {
-        if self.version < VERSION {
-            upgrade_header(&self.log, &self.dir.join(LOG))?;
-            self.version = VERSION;
+    /// Encode `session`'s queued records into `pending`, writing the images they name (and the
+    /// images of the newest pad, D31) first. Through the last `Sync`: its end in `pending`, the
+    /// newest pad, and the file version the records up to it need; `None` with no `Sync`.
+    fn take(&mut self, session: &mut Session) -> Result<Option<Taken>, Error> {
+        let mut through: Option<Taken> = None;
+        let mut wrote_images = false;
+        let mut version = BASE;
+        for r in session.outbox.drain(..) {
+            let Record::Sync { pad } = r else {
+                if let Record::Write { node, .. } = &r {
+                    wrote_images |= self.keep_images(node.body.images())?;
+                }
+                version = version.max(needs(&r));
+                encode(&r, &mut self.pending)?;
+                continue;
+            };
+            encode(&Record::Sync { pad: None }, &mut self.pending)?;
+            let newest = pad.or(through.and_then(|(_, p, _)| p));
+            through = Some((self.pending.len(), newest, version));
+        }
+        // A pad's images are on disk before the pad that names them (D31).
+        if let Some((_, Some(pad), _)) = &through {
+            wrote_images |= self.keep_images(pad.items.iter().flat_map(|i| i.data.images()))?;
+        }
+        if wrote_images {
+            sync_dir(&self.dir.join(IMAGES))?;
+            sync_dir(&self.dir)?;
+        }
+        Ok(through)
+    }
+
+    /// Before an append that needs `version` (at least `BASE`): from there the log may hold what
+    /// an older build cannot decode, so its header says so first and that build refuses it by
+    /// name (D30, D31).
+    fn mark_version(&mut self, version: u32) -> Result<(), Error> {
+        if self.version < version {
+            upgrade_header(&self.log, &self.dir.join(LOG), version)?;
+            self.version = version;
         }
         Ok(())
     }
@@ -360,13 +384,13 @@ impl Store {
         &self.dir
     }
 
-    /// Write each image of `body` that carries bytes and is not yet kept, or is kept damaged (a
+    /// Write each of `images` that carries bytes and is not yet kept, or is kept damaged (a
     /// file whose bytes do not hash to its name is replaced); refuse one that carries none and
     /// is not kept, and bytes that do not hash to their name. Whether a file was written (its
     /// directory then needs a sync).
-    fn keep_images(&self, body: &Body) -> Result<bool, Error> {
+    fn keep_images<'a>(&self, images: impl Iterator<Item = &'a Image>) -> Result<bool, Error> {
         let mut wrote = false;
-        for image in body.images() {
+        for image in images {
             let missing = || Error::MissingImage(image.sha256.clone());
             let path = image_path(&self.dir, &image.sha256).ok_or_else(missing)?;
             let Some(data) = &image.data else {
@@ -397,7 +421,8 @@ impl Store {
     fn write_pad(&self, pad: &Scratchpad) -> Result<(), Error> {
         let _span = tracing::info_span!("store.write_pad").entered();
         let tmp = self.dir.join(format!("{PAD}.new"));
-        let mut bytes = header(PAD_MAGIC);
+        let newer = pad.items.iter().any(|i| !i.data.images().is_empty());
+        let mut bytes = header(PAD_MAGIC, if newer { VERSION } else { BASE });
         encode(pad, &mut bytes)?;
         let mut f = File::create(&tmp)?;
         f.write_all(&bytes)?;
@@ -475,25 +500,25 @@ pub fn fill_images(records: &mut [Record], from: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Rewrite a log's header to `VERSION`, before its first append by this build, so an older
+/// Rewrite a log's header to `version`, before the first append that needs it, so an older
 /// build refuses it by name instead of failing on a record it cannot decode.
 /// Unix: through a handle of its own, since the log's is open for appending and a positioned
 /// write to it would append.
 #[cfg(unix)]
-fn upgrade_header(_log: &File, path: &Path) -> Result<(), Error> {
+fn upgrade_header(_log: &File, path: &Path, version: u32) -> Result<(), Error> {
     use std::os::unix::fs::FileExt;
     let f = OpenOptions::new().write(true).open(path)?;
-    f.write_all_at(&VERSION.to_le_bytes(), 8)?;
+    f.write_all_at(&version.to_le_bytes(), 8)?;
     f.sync_all()?;
     Ok(())
 }
 
 /// Windows: through the log's own handle, which holds the lease and is open for writing.
 #[cfg(windows)]
-fn upgrade_header(log: &File, _path: &Path) -> Result<(), Error> {
+fn upgrade_header(log: &File, _path: &Path, version: u32) -> Result<(), Error> {
     use std::os::windows::fs::FileExt;
     let mut at = 0;
-    let bytes = VERSION.to_le_bytes();
+    let bytes = version.to_le_bytes();
     while at < bytes.len() {
         at += log.seek_write(&bytes[at..], 8 + at as u64)?;
     }
@@ -557,10 +582,20 @@ fn sync_dir(_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn header(magic: [u8; 8]) -> Vec<u8> {
+fn header(magic: [u8; 8], version: u32) -> Vec<u8> {
     let mut h = magic.to_vec();
-    h.extend_from_slice(&VERSION.to_le_bytes());
+    h.extend_from_slice(&version.to_le_bytes());
     h
+}
+
+/// The file version a record needs: `VERSION` for a `User` node with images (D31), else `BASE`.
+fn needs(record: &Record) -> u32 {
+    match record {
+        Record::Write { node, .. } if matches!(&node.body, Body::User { images, .. } if !images.is_empty()) => {
+            VERSION
+        }
+        _ => BASE,
+    }
 }
 
 /// The file's version, if it is one this build reads.

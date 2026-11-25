@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use crate::step::{self, Answer, Job, Step};
 use crate::transitions;
 use crate::tree::{
-    Author, Body, Config, CursorId, Error, ItemData, ItemId, NodeId, Provenance, Session,
+    Author, Body, Config, CursorId, Error, Image, ItemData, ItemId, NodeId, Provenance, Session,
 };
 
 #[derive(Debug)]
@@ -49,16 +49,24 @@ impl Machine {
 
     // Frontend calls. Each syncs on return.
 
-    /// Add an input item; wakes the cursor. Waits for the next input phase if busy.
+    /// Add an input item (its text, then its `images`, D31); wakes the cursor. Waits for the
+    /// next input phase if busy.
     ///
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn input(&mut self, cursor: CursorId, by: Author, text: &str) -> Result<ItemId, Error> {
+    pub fn input(
+        &mut self,
+        cursor: CursorId,
+        by: Author,
+        text: &str,
+        images: Vec<Image>,
+    ) -> Result<ItemId, Error> {
         self.session.at(cursor)?;
         let data = ItemData::Input {
             by,
             text: text.into(),
+            images,
         };
         let id = self.add_item(cursor, data, None)?;
         self.session.sync();
@@ -77,11 +85,18 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn send(&mut self, cursor: CursorId, by: Author, text: &str) -> Result<ItemId, Error> {
+    pub fn send(
+        &mut self,
+        cursor: CursorId,
+        by: Author,
+        text: &str,
+        images: Vec<Image>,
+    ) -> Result<ItemId, Error> {
         self.session.at(cursor)?;
         let data = ItemData::Input {
             by,
             text: text.into(),
+            images,
         };
         let id = self.session.add_item(cursor, data);
         self.session.auto.insert(cursor, true);

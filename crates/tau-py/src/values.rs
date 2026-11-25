@@ -420,10 +420,14 @@ pub enum Body {
         /// The system text.
         text: String,
     },
-    /// A message from the person (or an extension) using the session.
+    /// A message from the person (or an extension) using the session: its text, then its
+    /// images (D31).
+    #[pyo3(constructor = (text, images = Vec::new()))]
     User {
         /// The message.
         text: String,
+        /// The images sent with it, after the text; empty for most messages.
+        images: Vec<Image>,
     },
     /// The model's reply.
     #[pyo3(constructor = (parts, stop, finish_reason = None, meta = None))]
@@ -457,11 +461,38 @@ pub enum Body {
     },
 }
 
+#[pymethods]
+impl Body {
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    /// The images this body holds, in order: a `User` message's (after its text), or those of a
+    /// `Results` node's `Ok` outcomes, in call order; none for any other body.
+    #[getter]
+    fn images(&self) -> Vec<Image> {
+        match self {
+            Self::User { images, .. } => images.clone(),
+            Self::Results { outcomes } => outcomes
+                .iter()
+                .flat_map(|(_, o, _)| match o {
+                    Outcome::Ok { images, .. } => images.clone(),
+                    _ => vec![],
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+}
+
 impl From<tree::Body> for Body {
     fn from(b: tree::Body) -> Self {
         match b {
             tree::Body::System(text) => Self::System { text },
-            tree::Body::User(text) => Self::User { text },
+            tree::Body::User { text, images } => Self::User {
+                text,
+                images: own_images(images),
+            },
             tree::Body::Assistant {
                 parts,
                 stop,
@@ -491,7 +522,10 @@ impl From<Body> for tree::Body {
     fn from(b: Body) -> Self {
         match b {
             Body::System { text } => Self::System(text),
-            Body::User { text } => Self::User(text),
+            Body::User { text, images } => Self::User {
+                text,
+                images: images.into_iter().map(|i| i.inner).collect(),
+            },
             Body::Assistant {
                 parts,
                 stop,
@@ -613,12 +647,15 @@ impl From<tree::Move> for Move {
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemData {
-    /// A line for the cursor to take as a `User` message.
+    /// A line for the cursor to take as a `User` message, with its images (D31).
+    #[pyo3(constructor = (by, text, images = Vec::new()))]
     Input {
         /// Who wrote it.
         by: Author,
         /// The line.
         text: String,
+        /// The images sent with it, after the text; empty for most inputs.
+        images: Vec<Image>,
     },
     /// Data an extension keeps in the scratchpad; core does not read it.
     Extension {
@@ -632,9 +669,10 @@ pub enum ItemData {
 impl From<tree::ItemData> for ItemData {
     fn from(d: tree::ItemData) -> Self {
         match d {
-            tree::ItemData::Input { by, text } => Self::Input {
+            tree::ItemData::Input { by, text, images } => Self::Input {
                 by: by.into(),
                 text,
+                images: own_images(images),
             },
             tree::ItemData::Extension { name, data } => Self::Extension { name, data },
         }
@@ -644,9 +682,10 @@ impl From<tree::ItemData> for ItemData {
 impl From<ItemData> for tree::ItemData {
     fn from(d: ItemData) -> Self {
         match d {
-            ItemData::Input { by, text } => Self::Input {
+            ItemData::Input { by, text, images } => Self::Input {
                 by: by.into(),
                 text,
+                images: images.into_iter().map(|i| i.inner).collect(),
             },
             ItemData::Extension { name, data } => Self::Extension { name, data },
         }
@@ -707,4 +746,4 @@ impl From<tree::Next> for Next {
     }
 }
 
-debug_repr!(Part, Outcome, Author, Body, Node, Move, ItemData, Item);
+debug_repr!(Part, Outcome, Author, Node, Move, ItemData, Item);

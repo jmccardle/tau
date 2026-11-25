@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tau_core::tree::{Author, Body, Image, Outcome, Record, Session, Stop};
-use tau_store::{Error, HEADER, Store, VERSION, fill_images, has_image, read_image};
+use tau_store::{BASE, Error, HEADER, Store, VERSION, fill_images, has_image, read_image};
 
 fn png(w: u32, h: u32, salt: u8) -> Vec<u8> {
     let mut d = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
@@ -184,19 +184,13 @@ fn a_v1_log_written_by_the_v1_store_opens_and_is_marked_v2_at_its_first_write() 
     );
 
     // It goes on as a v2 session: an image result lands and reloads.
-    s.write(
-        c,
-        Body::User("and the picture".into()),
-        vec![],
-        Author::Core,
-        9,
-    )
-    .unwrap();
+    s.write(c, Body::user("and the picture"), vec![], Author::Core, 9)
+        .unwrap();
     s.sync();
     store = store.save(&mut s).unwrap();
     assert_eq!(
         header_version(d.path()),
-        VERSION,
+        BASE,
         "marked before its first append"
     );
     drop(store);
