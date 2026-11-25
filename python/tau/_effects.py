@@ -32,9 +32,11 @@ from tau._core import (
 from tau._events import CallArgs, CallNamed, Delta, Retrying, TextDelta, ThinkingDelta, ToolProgress
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._hook_order import HookOrder
-from tau._images import images_problem, outcome_images, refused, walk_problem
+from tau._hub import Hub
+from tau._images import count, images_problem, outcome_images, refused, walk_problem
 from tau._protocols import (
     CallDraft,
+    Clock,
     CursorHook,
     Extension,
     Finish,
@@ -630,32 +632,75 @@ class CallRun:
         return outcome
 
 
+def image_gate(
+    providers: Mapping[str, Provider],
+    catalog: Callable[[], ModelCatalog],
+    session: Session | None,
+    model_at: Callable[[int], str],
+) -> Callable[[int, Sequence[Image]], str | None]:
+    """The image rule at a node (D30 section 6): the problem with sending `images` to the model
+    in force there, from `catalog`'s models, or `None`. A call's images (`call_gate`) and a
+    user's (D31, at `input`/`send` and after the `pre_input` hooks) are held to it. Nothing is
+    resolved for no images. An image without its bytes (taken from a node loaded from disk) is
+    checked with the bytes the session keeps for it."""
+
+    def problem(node: int, images: Sequence[Image]) -> str | None:
+        if not images:
+            return None
+        name = model_at(node)
+        try:
+            model = catalog().resolve(name)
+        except ConfigError as e:
+            return f"the model at node {node} cannot be read: {e}"
+        try:
+            whole = [_with_bytes(session, i) for i in images]
+        except MissingImage as e:
+            return f"an image is not one this session holds: {e}"
+        return images_problem(whole, name, model, providers.get(model.provider))
+
+    return problem
+
+
 def call_gate(
     providers: Mapping[str, Provider],
     context: Context,
     model_at: Callable[[int], str],
     node: int,
 ) -> Callable[[Sequence[Image]], str | None]:
-    """The image rule for the calls of the batch at `node`: the model in force there, from
-    `context`'s catalog. Resolved when a call first answers with images, so a batch without any
-    reads no config. An image without its bytes (taken from a node loaded from disk) is checked
-    with the bytes the session keeps for it."""
+    """The image rule for the calls of the batch at `node`: `image_gate` there, with `context`'s
+    catalog. Resolved when a call first answers with images, so a batch without any reads no
+    config."""
+    gate = image_gate(providers, lambda: context.catalog, context.session, model_at)
+    return lambda images: gate(node, images)
 
-    def problem(images: Sequence[Image]) -> str | None:
-        if not images:
-            return None
-        name = model_at(node)
-        try:
-            model = context.catalog.resolve(name)
-        except ConfigError as e:
-            return f"the model at this batch cannot be read: {e}"
-        try:
-            whole = [_with_bytes(context.session, i) for i in images]
-        except MissingImage as e:
-            return f"an image is not one this session holds: {e}"
-        return images_problem(whole, name, model, providers.get(model.provider))
 
-    return problem
+def input_checked(
+    hooks: Callable[[], Awaitable[Answer]],
+    gate: Callable[[Sequence[Image]], str | None],
+) -> Callable[[], Awaitable[Answer]]:
+    """The effect of a `pre_input` job: `hooks`, then the image rule over the draft they leave
+    (D31: a hook may add images, as `@path` does). A draft whose images cannot go halts the step
+    with why, as a hook's halt does: the input is removed and its client told."""
+
+    async def effect() -> Answer:
+        answer = await hooks()
+        if isinstance(answer, Answer.Hooks) and answer.stop is None and answer.draft is not None:
+            images = answer.draft.body.images
+            if (problem := gate(images)) is not None:
+                return Answer.Hooks(f"{count(len(images))} not sent: {problem}", None)
+        return answer
+
+    return effect
+
+
+def open_for_tool(
+    session: Session, clock: Clock, hub: Hub, poke: Callable[[], None], node: int
+) -> int:
+    """Open a cursor at `node` for a tool argument of `"new"`."""
+    cursor = session.open(node, Author.Tools(), clock.now())
+    hub.sync()
+    poke()
+    return cursor
 
 
 def _with_bytes(session: Session | None, image: Image) -> Image:

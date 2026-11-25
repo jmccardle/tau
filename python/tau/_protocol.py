@@ -18,6 +18,7 @@ so neither describes a value or an error on its own.
 import dataclasses
 import inspect
 import json
+import reprlib
 import types
 import typing
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -42,13 +43,15 @@ from tau._core import (
     NoSuchNode,
 )
 from tau._events import CutOff, Event, LiveDelta
+from tau._images import MAX_INPUT_IMAGES
 from tau._values import Json
 from tau.commandline import UnknownCommand
 
-PROTOCOL: Final = 2
+PROTOCOL: Final = 3
 """The wire protocol's version. D12: a version marks a released protocol. It goes up by one at a
 release whose `docs/protocol.schema.json` differs from the last tag's, never per commit. 2 is
-0.17's (D30): `Outcome.Ok` may carry images."""
+0.17's (D30): `Outcome.Ok` may carry images. 3 is 0.18's (D31): a `User` body and an `Input` item
+may carry images, `input` and `send` take them, and `image` reads one's bytes."""
 
 # Errors
 
@@ -305,9 +308,13 @@ def _fields(value: object) -> Json:
     return out
 
 
+_SHOWN: Final = reprlib.Repr(maxstring=60, maxother=60, maxlist=4, maxdict=4)
+"""How much of a value that does not fit an error repeats: never a whole image's base64 (D31)."""
+
+
 def _need(ok: object, wanted: str, data: object) -> None:
     if not ok:
-        raise TypeError(f"expected {wanted}, not {data!r}")
+        raise TypeError(f"expected {wanted}, not {_SHOWN.repr(data)}")
 
 
 def _object(data: object) -> Json:
@@ -479,9 +486,16 @@ METHODS: Final = _methods()
 """Every message a client may send, by name: `hello`, then one per `Client` call."""
 
 
+MAX_ITEMS: Final = {"images": MAX_INPUT_IMAGES}
+"""A list param of this name holds at most this many items: refused before any is decoded (an
+input's images, D31: each is up to 20 MiB, and a socket message has no size cap)."""
+
+
 def decode_params(name: str, params: Mapping[str, object]) -> dict[str, object]:
     """The keyword arguments for call `name` from its JSON params. `TypeError` for a name the
-    call lacks, a missing required one, or a value that does not fit its hint."""
+    call lacks, a missing required one, a list longer than `MAX_ITEMS` allows, or a value that
+    does not fit its hint, or that its type refuses as it is made (a `ValueError`: an
+    `ImageInput` that is not an image)."""
     method = METHODS[name]
     known = {p.name: p for p in method.params}
     unknown = sorted(set(params) - set(known))
@@ -490,9 +504,13 @@ def decode_params(name: str, params: Mapping[str, object]) -> dict[str, object]:
     missing = [p.name for p in method.params if p.required and p.name not in params]
     if missing:
         raise TypeError(f"{name} needs {missing}")
+    for key, most in MAX_ITEMS.items():
+        found = params.get(key)
+        if isinstance(found, list) and (n := len(cast("list[object]", found))) > most:
+            raise TypeError(f"{name}: {key} holds at most {most} items, not {n}")
     try:
         return {k: decode(known[k].hint, v) for k, v in params.items()}
-    except TypeError as e:
+    except (TypeError, ValueError) as e:
         raise TypeError(f"{name}: {e}") from None
 
 
@@ -638,6 +656,14 @@ class _Defs:
             )
         return _ref(cls.__name__)
 
+    def _param(self, param: Param) -> Json:
+        """A param's schema: an id is never negative; a list in `MAX_ITEMS` has `maxItems`."""
+        found = self.hint(param.hint)
+        if param.name in ID_FIELDS:
+            return non_negative(found)
+        most = MAX_ITEMS.get(param.name)
+        return found | {"maxItems": most} if most is not None else found
+
     def method(self, method: Method) -> None:
         """Define call `method`: its params object (closed), its `x-result` (open)."""
         required = [p.name for p in method.params if p.required]
@@ -646,12 +672,7 @@ class _Defs:
             {
                 "description": method.doc,
                 "type": "object",
-                "properties": {
-                    p.name: non_negative(self.hint(p.hint))
-                    if p.name in ID_FIELDS
-                    else self.hint(p.hint)
-                    for p in method.params
-                },
+                "properties": {p.name: self._param(p) for p in method.params},
             }
             | ({"required": required} if required else {})
             | {

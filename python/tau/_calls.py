@@ -9,14 +9,16 @@ once the driver has failed or stopped.
 
 from collections.abc import Awaitable, Callable, Collection, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager
+from typing import cast
 
 from tau import trace
 from tau._commands import Commands
 from tau._config_layers import ModelCatalog
-from tau._core import Author, Busy, CursorClosed, ItemData, Node, NoSuchItem, Session
+from tau._core import Author, Busy, CursorClosed, Image, ItemData, Node, NoSuchItem, Session
 from tau._events import LiveDelta
 from tau._handles import reopened
 from tau._hub import Feed, Hub
+from tau._images import MAX_INPUT_IMAGES, ImageInput, count
 from tau._protocols import Clock
 from tau._questions import Questions
 from tau._values import Context
@@ -57,6 +59,7 @@ class Calls:
         catch_up: Callable[[int], Sequence[LiveDelta]],
         rest: Callable[[int], Awaitable[None]],
         left: Callable[[int], None],
+        image_gate: Callable[[int, Sequence[Image]], str | None],
     ) -> None:
         self.session = session
         self._clock = clock
@@ -69,6 +72,7 @@ class Calls:
         self._cancel = cancel  # core said a step's effect is to be cancelled: stop it
         self._catch_up = catch_up
         self._rest = rest
+        self._image_gate = image_gate  # the image rule at a node (D30 section 6)
         self._leave = left  # a cursor's step was aborted or left: end the waits it has out
 
     def connect(self, client: str, buffer: int) -> Feed:
@@ -77,13 +81,31 @@ class Calls:
     def watch(self, feed: Feed, cursors: Collection[int]) -> None:
         self._hub.watch(feed, cursors, self._catch_up)
 
-    def input(self, cursor: int, client: str, text: str) -> int:
+    def input(self, cursor: int, client: str, text: str, images: Sequence[ImageInput] = ()) -> int:
         with trace.span("driver", "input"), self._changing():
-            return self.session.input(cursor, Author.Frontend(client), text)
+            found = self._images(cursor, images)
+            return self.session.input(cursor, Author.Frontend(client), text, found)
 
-    def send(self, cursor: int, client: str, text: str) -> int:
+    def send(self, cursor: int, client: str, text: str, images: Sequence[ImageInput] = ()) -> int:
         with trace.span("driver", "send"), self._changing():
-            return self.session.send(cursor, Author.Frontend(client), text)
+            found = self._images(cursor, images)
+            return self.session.send(cursor, Author.Frontend(client), text, found)
+
+    def _images(self, cursor: int, inputs: Sequence[ImageInput]) -> list[Image]:
+        """An input's images, with their bytes, held to the model of the cursor's branch by the
+        image rule (D31): `ValueError` saying why they cannot go, `MissingImage` for a `sha256`
+        the session does not hold. Nothing is added then."""
+        if not inputs:
+            return []
+        if len(inputs) > MAX_INPUT_IMAGES:
+            raise ValueError(
+                f"an input carries at most {MAX_INPUT_IMAGES} images, not {len(inputs)}"
+            )
+        images = [i.image() or self.session.tree.image_named(cast("str", i.sha256)) for i in inputs]
+        problem = self._image_gate(self.session.cursor(cursor).at, images)
+        if problem is not None:
+            raise ValueError(f"{count(len(images))} not sent: {problem}")
+        return images
 
     def step(self, cursor: int) -> None:
         with self._changing():

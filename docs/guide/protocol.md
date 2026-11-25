@@ -78,7 +78,7 @@ which gives its code. Where a value is absent they say `null`.
 
 ## The version
 
-`protocol` in `hello` is an integer, now **2**. It changes only between tagged releases,
+`protocol` in `hello` is an integer, now **3**. It changes only between tagged releases,
 when the schema below changed since the last tag. Between releases the wire changes freely: build
 a client against the schema of the tau you run, and check `tau serve --schema`.
 
@@ -236,9 +236,28 @@ Parameters:
 
 Result: `null`
 
+### `image` method
+
+The bytes of the image named `sha256` that this session holds (a node's, or an input's
+on a scratchpad), as base64: what a client draws a node's `Image` with (D31).
+`MissingImage` (a `NotFound`) if the session holds none by that name.
+
+Parameters:
+
+| field | type | notes |
+|---|---|---|
+| `sha256` | `string` |  |
+
+Result: `string`
+
 ### `input` method
 
-Add `text` to the cursor's scratchpad as this client's input; returns the item.
+Add `text` to the cursor's scratchpad as this client's input, with `images` after it
+(D31); returns the item. At most `MAX_INPUT_IMAGES` images, each an `ImageInput` (its
+bytes are checked as it is made: `BadImage`). The images are held to the model of the
+cursor's branch as a tool's are (D30 section 6): `Refused` saying why if it does not
+take images or one is over its provider's limits, `MissingImage` for a `sha256` the
+session does not hold, `Refused` for too many; nothing is added then.
 
 Parameters:
 
@@ -246,6 +265,7 @@ Parameters:
 |---|---|---|
 | `cursor` | `integer` |  |
 | `text` | `string` |  |
+| `images` | array of [ImageInput](#imageinput) | optional |
 
 Result: `integer`
 
@@ -394,6 +414,7 @@ Parameters:
 |---|---|---|
 | `cursor` | `integer` |  |
 | `text` | `string` |  |
+| `images` | array of [ImageInput](#imageinput) | optional |
 
 Result: `integer`
 
@@ -634,7 +655,7 @@ The params of the last message: the notification `end`. `error` is null when the
 ### Body
 
 - {`"System"`: `string`}
-- {`"User"`: `string`}
+- {`"User"`: `string` or {`"images"`: array of [Image](#image), `"text"`: `string`}}: What a person (or a frontend for them) said: text, then images (D31).
 - {`"Assistant"`: {`"finish_reason"`?: `string` or `null`, `"meta"`?: `string` or `null`, `"parts"`: array of [Part](#part), `"stop"`: [Stop](#stop)}}
   - `finish_reason`: The provider's own finish string, verbatim; `null` when it sent none (an interrupted reply, a failed sample).
   - `meta`: What the response carried besides its parts (model, id, usage...), as JSON object text. Opaque to core; `null` when the provider sent none.
@@ -712,6 +733,21 @@ this encoding: the session keeps them beside its log, named by `sha256`.
 | `sha256` | `string` | Lowercase hex of the SHA-256 of the bytes: the image's identity. Exactly 64 of `0-9a-f`: a decode refuses anything else, so the name is safe to use as a file name. |
 | `width` | `integer` | Width in pixels. |
 
+### ImageInput
+
+One image a client sends with an input (D31): exactly one of `data`, the image file's bytes
+in standard base64 (with padding, nothing else), or `sha256`, the name of an image this
+session already keeps (a node's or an input's; nothing is read from a path). The format and
+size are read from the bytes, never taken from the client. Built from the wire or by hand,
+it is checked at once: `BadImage` (a `Refused`) for bytes that are not strict base64 of
+a PNG, JPEG, GIF or WebP image of at most `MAX_INPUT_BYTES`, or a `sha256` that is not 64
+lowercase hex digits. Its `repr` never shows the bytes.
+
+| field | type | notes |
+|---|---|---|
+| `data` | `string` or `null` | optional |
+| `sha256` | `string` or `null` | optional |
+
 ### Item
 
 | field | type | notes |
@@ -722,7 +758,7 @@ this encoding: the session keeps them beside its log, named by `sha256`.
 
 ### ItemData
 
-- {`"Input"`: {`"by"`: [Author](#author), `"text"`: `string`}}
+- {`"Input"`: {`"by"`: [Author](#author), `"images"`?: array of [Image](#image), `"text"`: `string`}}: A client's input: its text, then its images (D31; none in a pad written before them).
 - {`"Extension"`: {`"data"`: `string`, `"name"`: `string`}}
 
 ### Node

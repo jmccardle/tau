@@ -629,3 +629,16 @@ async def test_a_web_root_without_an_index_is_refused_at_start(tmp_path: Path) -
             h.driver, session="s", cwd=h.directory, http=HttpEdge(port=0, web_root=tmp_path)
         )
     await h.close()
+
+
+@scenario
+async def test_a_post_over_the_body_limit_is_413_whatever_it_carries(tmp_path: Path) -> None:
+    """An input's images (D31) are held to the same limit as any body: 64 MiB."""
+    h = await Harness.create(tmp_path)
+    raw = await Raw.open(*edge_of(h))
+    await raw.hello()
+    images = [{"data": "A" * (64 * 1024 * 1024)}]  # over MAX_BODY once wrapped in a request
+    answer = await raw.post(1, "send", cursor=h.cursor, text="", images=images)
+    assert answer.status_code == 413
+    await raw.close()
+    await h.close()

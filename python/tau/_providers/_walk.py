@@ -34,9 +34,9 @@ class SystemTurn:
 
 @dataclass(frozen=True)
 class UserTurn:
-    """A `User` node, or a `Results` node that answers no batch (the conversion that keeps the
-    walk legal, 10.5): its outcomes are in `text` as `outcome_markup` lines, and their images in
-    `images`, after the text (D30)."""
+    """A `User` node, with its images after its text (D31), or a `Results` node that answers no
+    batch (the conversion that keeps the walk legal, 10.5): its outcomes are in `text` as
+    `outcome_markup` lines, and their images in `images`, after the text (D30)."""
 
     text: str
     images: tuple[Image, ...] = ()
@@ -204,8 +204,8 @@ def _base_turns(walk: Sequence[Node]) -> list[Turn]:
         match body:
             case Body.System(text=text):
                 out.append(SystemTurn(text))
-            case Body.User(text=text):
-                out.append(UserTurn(text))
+            case Body.User(text=text, images=images):
+                out.append(UserTurn(text, tuple(images)))
             case Body.Assistant():
                 out.append(_assistant(body, isinstance(following, Body.Results)))
             case Body.Results():

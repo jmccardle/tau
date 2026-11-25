@@ -588,16 +588,18 @@ The session's nodes.
 ### Session.input
 
 ```python
-def input(self, cursor: int, by: Author, text: str) -> int
+def input(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int
 ```
 
 Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
 Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
+`images` (D31) follow the text; each carries its bytes, or is one this session keeps
+(`MissingImage` otherwise, and nothing is added).
 
 ### Session.send
 
 ```python
-def send(self, cursor: int, by: Author, text: str) -> int
+def send(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int
 ```
 
 Send: add an `Input` item for `cursor`, written `by` the author, and turn auto-step on,
@@ -606,6 +608,7 @@ with auto-step on, and a step already past its input phase is followed by one th
 offers it. `input` then `set_auto` as two calls can strand the item when a step runs
 between them. Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is
 not open.
+`images` as for `input`.
 
 ### Session.step
 

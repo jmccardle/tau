@@ -174,7 +174,7 @@ def test_a_newer_version_is_refused_by_name(tmp_path: Path) -> None:
     log = bytearray((directory / "log").read_bytes())
     log[8:12] = (9).to_bytes(4, "little")
     (directory / "log").write_bytes(bytes(log))
-    with pytest.raises(Version, match="version 9; this build reads 1 to 2"):
+    with pytest.raises(Version, match="version 9; this build reads 1 to 3"):
         Session.load(directory)
 
 

@@ -49,9 +49,17 @@ from tau._clock import SystemClock
 from tau._commands import Commands, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
-from tau._core import Answer, Author, Busy, Ending, Hook, ItemData, Job, Session
+from tau._core import Answer, Busy, Ending, Hook, ItemData, Job, Session
 from tau._counts import tools_ceiling, tools_hash
-from tau._effects import CallRun, SampleRun, call_gate, run_hooks
+from tau._effects import (
+    CallRun,
+    SampleRun,
+    call_gate,
+    image_gate,
+    input_checked,
+    open_for_tool,
+    run_hooks,
+)
 from tau._events import LiveDelta
 from tau._handles import Handles, Subject
 from tau._hook_order import HookOrder
@@ -306,6 +314,9 @@ class Driver:
             on_loop=on_loop,
             rescan=lambda: _rescan(self._extensions, self._commands),
         )
+        self._image_gate = image_gate(
+            self._providers, lambda: self._catalog, session, self._options.model
+        )
         self._calls = Calls(
             session,
             self.clock,
@@ -319,6 +330,7 @@ class Driver:
             catch_up=partial(_catch_up, self._out),
             rest=self.rest,
             left=self._leavers.left,
+            image_gate=self._image_gate,
         )
         # effect -> waits on cursors it has out
         self._waits: Counter[asyncio.Task[None]] = Counter()
@@ -615,7 +627,7 @@ class Driver:
             subject,
             self._order.at(job.point.name),
             lambda ext: self._handles.cursor(cursor, ext.name),
-            partial(_hook_failed, self._hub, cursor),
+            partial(self._hub.hook_failed, cursor),
             self._tools,
         )
         if job.point == Hook.PreSample:
@@ -626,6 +638,8 @@ class Driver:
             return self._counts.observing(at.id, sent, effect, partial(self._hub.notify, None))
         if job.point == Hook.PreStep:
             return self._commands.before(cursor, effect)
+        if job.point == Hook.PreInput:  # a hook may add images (D31)
+            return input_checked(effect, partial(self._image_gate, self.session.cursor(cursor).at))
         return effect
 
     def _offered_tools(self, cursor: int) -> tuple[Tool, ...]:
@@ -662,7 +676,7 @@ class Driver:
                 context = Context(
                     self._catalog,
                     session,
-                    partial(_open_for_tool, session, self.clock, self._hub, self._poke, node),
+                    partial(open_for_tool, session, self.clock, self._hub, self._poke, node),
                 )
                 gate = call_gate(self._providers, context, self._options.model, node)
                 runs = [
@@ -777,24 +791,9 @@ def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
     out.cancel()
 
 
-def _open_for_tool(
-    session: Session, clock: Clock, hub: Hub, poke: Callable[[], None], node: int
-) -> int:
-    """Open a cursor at `node` for a tool argument of `"new"`."""
-    cursor = session.open(node, Author.Tools(), clock.now())
-    hub.sync()
-    poke()
-    return cursor
-
-
 def _rescan(extensions: Sequence[Extension], commands: Commands) -> None:
     """Ask each extension that has a `rescan` (the commands it lists come from files) whether its
     commands changed, and run the new ones if any did."""
     changed = [e.rescan() for e in extensions if isinstance(e, Rescanning)]
     if any(changed):
         commands.use(assemble_commands(extensions))
-
-
-def _hook_failed(hub: Hub, cursor: int, point: str, extension: str, error: str) -> None:
-    """A cursor hook's failure, as the `hook_error` of the cursor it ran for."""
-    hub.hook_failed(cursor, point, extension, error)

@@ -9,6 +9,8 @@ up to the next `User` node; the latest is turn N.
 - Turn N-1 keeps its messages and calls, with each outcome reduced to `ok` or `error` and the
   reasoning dropped.
 - Turn N keeps its calls and their results, with the reasoning dropped.
+- Only turn N keeps its images (D30, D31): a user message's images in turns 0 to N-1 become one
+  `[image WxH mime]` line each after its text, as turn N-1's `ok` results already have none.
 - In turns N-1 and N a string argument of a call over 200 characters becomes `[pruned: N chars]`.
 
 The result is a new line built as compaction builds one: under the end of the prefix, with a copy
@@ -25,6 +27,7 @@ from typing import Annotated, cast
 from tau._core import Body, Node, Outcome, Part
 from tau._counts import NONE, Count, ImageRule, ceiling_of, image_rule, show
 from tau._handles import Cursor
+from tau._images import labels
 from tau._lines import Planned, copy_of, prefix_length, write_line
 
 LONG = 200
@@ -147,7 +150,7 @@ def _account(turn: list[Node]) -> str:
     left = len(replies) - (shown is not None)
     carried, text = _split(user.text)
     lines = [] if carried is None else [carried]
-    lines.append(f"User: {text}")
+    lines.append(f"User: {_labelled(text, user)}")
     if left or calls:
         lines.append(f"[pruned: {_plural(left, 'message')}, {_plural(calls, 'tool call')}]")
     if shown is not None:
@@ -175,7 +178,7 @@ def prune_line(walk: list[Node]) -> list[Planned]:
         if number < len(old):
             planned += [copy_of(n) for n in turn if not _message(n)]
             continue
-        if old and number == len(old):
+        if number == last - 1:
             planned.append(_with_transcript(turn[0], old))
         else:
             planned.append(copy_of(turn[0]))
@@ -201,12 +204,21 @@ def _kept(node: Node, *, reduced: bool) -> list[Planned]:
     return [copy_of(node)]
 
 
+def _labelled(text: str, user: Body.User) -> str:
+    """`text` with a label line for each of `user`'s images after it."""
+    return "\n".join([text, *labels(user.images)] if text else labels(user.images))
+
+
 def _with_transcript(user: Node, old: list[list[Node]]) -> Planned:
-    """Turn N-1's user message with the transcript of the `old` turns before its text."""
+    """Turn N-1's user message with the transcript of the `old` turns (if any) before its text,
+    and its images as labels after it."""
     body = user.body
     assert isinstance(body, Body.User)
+    if not old and not body.images:
+        return copy_of(user)
     accounts = "\n".join(_account(turn) for turn in old)
-    return Planned(Body.User(f"{_OPEN}{accounts}{_CLOSE}{body.text}"), derived_from=user.id)
+    transcript = f"{_OPEN}{accounts}{_CLOSE}" if old else ""
+    return Planned(Body.User(transcript + _labelled(body.text, body)), derived_from=user.id)
 
 
 class Prune:

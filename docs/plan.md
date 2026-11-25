@@ -420,6 +420,11 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   Merged as `feat/bundle-web-client` after `ffwf-tau-web` 0.17.0 reached PyPI. `ffwf-tau` depends on `ffwf-tau-web>=0.17,<0.18` (tau-code's
   client), so `tau serve` serves it by default; `--no-web` serves none; a broken install is
   warned and gets a help page (D29 §9). Release order: `ffwf-tau-web`, then `ffwf-tau`.
+- **0.18.0 (unreleased): images in user messages (D31), `PROTOCOL` 3.** `send`/`input` take
+  `images`, `image(sha256)` reads one, `@path` attaches an image file; the store says version 3
+  only once a user image is written. On `master` as `feat/user-images`; tau-code's composer and
+  `ffwf-tau-web` 0.18 (released first) follow, then the version bump and the pin
+  `ffwf-tau-web>=0.18,<0.19`.
 - **The HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
   and POST, a bearer token in the serve record), both transports by default; `RemoteClient`
   dials it; the behavior suite runs a third wired mode, `http`. Merged as `ea0a3dcd`. Windows' HTTP-only serve is T2 (D29 Open 1).

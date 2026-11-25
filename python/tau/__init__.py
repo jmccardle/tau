@@ -131,7 +131,7 @@ from tau._extensions import (
 )
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._http_edge import HttpEdge
-from tau._images import ImageLimits
+from tau._images import MAX_INPUT_BYTES, MAX_INPUT_IMAGES, ImageInput, ImageLimits
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
@@ -196,6 +196,8 @@ __version__ = version("ffwf-tau")
 
 __all__ = [
     "CURSOR_POINTS",
+    "MAX_INPUT_BYTES",
+    "MAX_INPUT_IMAGES",
     "PROTOCOL",
     "TOOL_POINTS",
     "Agents",
@@ -265,6 +267,7 @@ __all__ = [
     "HookFailure",
     "HttpEdge",
     "Image",
+    "ImageInput",
     "ImageLimits",
     "ImageRule",
     "Item",

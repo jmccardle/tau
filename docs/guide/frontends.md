@@ -194,6 +194,11 @@ All calls are `async` and act for the client's id. In groups:
   while the cursor has not taken it: `LookupError` once it has (or while a `pre_input` hook is
   being offered it), `PermissionError` for another
   client's or an extension's item. It wakes nothing.
+- **Images** (D31): `send(cursor, text, images)` and `input` take up to 20 `tau.ImageInput`s,
+  each `ImageInput.of(png_bytes)` (a PNG, JPEG, GIF or WebP file's bytes, at most 20 MiB) or
+  `ImageInput(sha256=...)` for an image the session already holds. A model that does not take
+  images (its config lacks `images: true`) refuses them with `ValueError`, and nothing is added.
+  `image(sha256)` answers an image's bytes as base64, to draw a node's `Image`.
 - **Moving**: `go_to(cursor, node)` moves the cursor, aborting a busy step, and turns auto-step
   off. Going to an earlier node and sending is how you branch. `open(node)` makes a new cursor
   there; `close_cursor` and `reopen`; `set_label` and `remove_label`.
@@ -377,7 +382,7 @@ asyncio.run(main())
 ```
 
 ```text expect
-Welcome(protocol=2, version='<*>', session='<*>', cwd='<*>', pid=<*>)
+Welcome(protocol=3, version='<*>', session='<*>', cwd='<*>', pid=<*>)
 mock: hello over the wire
 ```
 

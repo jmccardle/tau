@@ -35,6 +35,7 @@ from tau import (
     Event,
     Extension,
     HttpEdge,
+    ImageInput,
     Item,
     ItemData,
     LocalClient,
@@ -258,11 +259,15 @@ class Harness:
 
     # The client's calls (client "term")
 
-    async def input(self, text: str, cursor: int | None = None) -> int:
-        return await self.client.input(self._c(cursor), text)
+    async def input(
+        self, text: str, cursor: int | None = None, images: Sequence[ImageInput] = ()
+    ) -> int:
+        return await self.client.input(self._c(cursor), text, images)
 
-    async def send(self, text: str, cursor: int | None = None) -> int:
-        return await self.client.send(self._c(cursor), text)
+    async def send(
+        self, text: str, cursor: int | None = None, images: Sequence[ImageInput] = ()
+    ) -> int:
+        return await self.client.send(self._c(cursor), text, images)
 
     async def step(self, cursor: int | None = None) -> None:
         await self.client.step(self._c(cursor))

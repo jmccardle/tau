@@ -23,7 +23,7 @@ from enum import StrEnum
 from typing import Literal, Protocol
 
 from tau._config import ModelConfig
-from tau._core import Author, Body, Image, Node, Outcome, Part
+from tau._core import Author, Body, Node, Outcome, Part
 
 
 class Basis(StrEnum):
@@ -189,13 +189,7 @@ def image_estimate(width: int, height: int) -> int:
 
 
 def _image_tokens(body: Body, rule: ImageRule) -> int:
-    return sum(rule.tokens(i.width, i.height) for i in _images(body))
-
-
-def _images(body: Body) -> list[Image]:
-    if not isinstance(body, Body.Results):
-        return []
-    return [i for _, o, _ in body.outcomes if isinstance(o, Outcome.Ok) for i in o.images]
+    return sum(rule.tokens(i.width, i.height) for i in body.images)
 
 
 def image_why(
@@ -207,7 +201,7 @@ def image_why(
         return None
     for node in walk:
         count = counts.get(node.id)
-        if count is not None and count.basis is not Basis.REPORTED and _images(node.body):
+        if count is not None and count.basis is not Basis.REPORTED and node.body.images:
             who = f"provider {rule.provider!r}" if rule.provider else "a model not in the catalog"
             return (
                 f"images on {model} are estimated ({who} has no published cap for every "

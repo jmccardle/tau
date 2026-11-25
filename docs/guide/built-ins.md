@@ -98,6 +98,12 @@ model is given a reference instead, so it can `read` the part it needs:
 <reference path="/work/big.log" size="2.1 MB" reason="over the 10 kB limit"/>
 ```
 
+An image file (a PNG, JPEG, GIF or WebP, judged by its bytes) is attached as an image, which a
+model that can see is shown after your text. The text gains one line naming it,
+`[image @shot.png: image/png 640x480]`. The 10 kB limit is for text; an image may be up to 20 MiB.
+A model whose config lacks `images: true` does not take it: the message is not sent, and a notice
+says why.
+
 The limit is an option, in bytes. `--set attachments.limit=100000` changes it for one run,
 `/config attachments limit=100000 --save` for good. `tau ext disable attachments` turns `@file` off.
 The terminal UI completes the path when you press Tab after an `@` word. It offers only what would

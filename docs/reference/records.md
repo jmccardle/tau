@@ -109,6 +109,15 @@ class Body
 What a node holds. `System`, `User`, `Assistant` and `Results` are what the model reads;
 `Config` and `Custom` never reach it.
 
+### Body.images
+
+```python
+property images: list[Image]
+```
+
+The images this body holds, in order: a `User` message's (after its text), or those of a
+`Results` node's `Ok` outcomes, in call order; none for any other body.
+
 ### Body.System
 
 ```python
@@ -137,12 +146,13 @@ The system text.
 class User(Body)
 ```
 
-A message from the person (or an extension) using the session.
+A message from the person (or an extension) using the session: its text, then its
+images (D31).
 
 #### Body.User.__new__
 
 ```python
-def __new__(cls, text: str) -> Body.User
+def __new__(cls, text: str, images: Sequence[Image] = ...) -> Body.User
 ```
 
 #### Body.User.text
@@ -466,12 +476,12 @@ What a scratchpad item holds: an `Input`, or an `Extension`'s own data.
 class Input(ItemData)
 ```
 
-A line for the cursor to take as a `User` message.
+A line for the cursor to take as a `User` message, with its images (D31).
 
 #### ItemData.Input.__new__
 
 ```python
-def __new__(cls, by: Author, text: str) -> ItemData.Input
+def __new__(cls, by: Author, text: str, images: Sequence[Image] = ...) -> ItemData.Input
 ```
 
 #### ItemData.Input.by
@@ -489,6 +499,14 @@ property text: str
 ```
 
 The line.
+
+#### ItemData.Input.images
+
+```python
+property images: list[Image]
+```
+
+The images sent with it, after the text; empty for most inputs.
 
 ### ItemData.Extension
 
@@ -927,6 +945,16 @@ def image(self, image: Image) -> Image
 `image` with its bytes: as it is when it has them, else read from the session (its image
 directory, or, in memory, a node that holds them). `MissingImage` if the session has no
 such image. What a tool's image taken from a node loaded from disk is checked with.
+
+### Tree.image_named
+
+```python
+def image_named(self, sha256: str) -> Image
+```
+
+The image of this session named `sha256` (a node's or a scratchpad input's), with its
+bytes. `MissingImage` if the session has none by that name (D31: what a client's
+`image` call reads, and an input that names an image the session keeps).
 
 ### Tree.children
 

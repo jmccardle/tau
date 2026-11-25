@@ -107,17 +107,18 @@ def _thinkless_loop(all_turns: list[Turn]) -> int | None:
     """Under manual extended thinking (`thinking.type` `enabled`) the docs make a tool-use loop
     one assistant turn, and the final assistant turn of the request must start with a thinking
     block. So when the walk ends in `tool_result` blocks, the loop in progress (everything after
-    the last user message holding more than `tool_result`) must open with thinking in its first
-    assistant message. Returns the index of that turn when it does not (a loop begun by another
-    provider), and the loop's batches then go as text, as do their results, so the walk stays
-    sendable (a failure here would fail every later sample on the branch, `model.md` 10.7). Only
-    the walk decides, so the answer is the same for every request of the loop."""
+    the last user message holding more than `tool_result`: text or an image) must open with
+    thinking in its first assistant message. Returns the index of that turn when it does not (a
+    loop begun by another provider), and the loop's batches then go as text, as do their
+    results, so the walk stays sendable (a failure here would fail every later sample on the
+    branch, `model.md` 10.7). Only the walk decides, so the answer is the same for every request
+    of the loop."""
     if not all_turns or not isinstance(all_turns[-1], ToolResults):
         return None
     start = 0
     spoken = False  # a turn other than `System` has been seen
     for i, turn in enumerate(all_turns):
-        if (isinstance(turn, UserTurn) and turn.text.strip()) or (
+        if (isinstance(turn, UserTurn) and (turn.text.strip() or turn.images)) or (
             isinstance(turn, SystemTurn) and spoken
         ):
             start = i + 1
