@@ -422,6 +422,8 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   warned and gets a help page (D29 §9). Release order: `ffwf-tau-web`, then `ffwf-tau`.
 - **0.17.2 (released 2026-11-25): a fix release.** A slow client hears a clean prefix of each
   reply, and the TUI no longer crashes with `KeyError` on parallel tool calls.
+- **0.17.3: a fix release.** Skill and template frontmatter is read as YAML (folded, literal and
+  quoted values), so a Claude Code skill with `description: >-` no longer stops τ from starting.
 - **The HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
   and POST, a bearer token in the serve record), both transports by default; `RemoteClient`
   dials it; the behavior suite runs a third wired mode, `http`. Merged as `ea0a3dcd`. Windows' HTTP-only serve is T2 (D29 Open 1).
