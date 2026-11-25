@@ -18,6 +18,7 @@ class HttpEdge
     heartbeat: float = HEARTBEAT
     allow_network: bool = False
     web_root: Path | None = None
+    web: bool = True
 ```
 
 Where and how a `Server` listens over HTTP (D29). `port` `None` tries 3393 and then any free
@@ -25,7 +26,9 @@ port; `0` takes any free port; any other port is bound or the start fails. `toke
 bearer token every request must carry (`None`: the server makes one). `origins` are the web
 origins allowed to call (none by default). `heartbeat` is the seconds between pings. A `host`
 that is not loopback needs `allow_network`: `ValueError` otherwise. `web_root` is a built web
-client's directory to serve (`None`: an installed `tau_web`'s, else the help page).
+client's directory to serve (`None`: the installed `tau_web`'s, else the help page, which says
+the install is broken). `web` off serves no client, only a page saying so (`ValueError`
+with a `web_root`).
 
 ## Json
 

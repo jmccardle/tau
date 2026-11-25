@@ -3295,7 +3295,7 @@ JSON-RPC error for a stream that is not open). Every request carries `Authorizat
 <token>` (`401` otherwise); one with an `Origin` header is refused (`403`) unless allowed. Built on
 asyncio streams and `h11`. **HttpEdge** is where and how a `Server` listens on it: `host`
 (loopback unless `allow_network`), `port` (`None`: 3393, else any free one; `0`: any; N: N or
-fail), `token` (`None`: a fresh one), `origins`, `heartbeat`, `web_root`. Not a frontend and not a provider:
+fail), `token` (`None`: a fresh one), `origins`, `heartbeat`, `web_root`, `web` (`False`: serve no web client). Not a frontend and not a provider:
 the server's side of a transport.
 
 ### stream, connection id
@@ -3319,19 +3319,24 @@ A failed write is a disconnect: the stream's client closes and its questions go 
 
 `<url>#token=<token>`: the edge's URL with its token in the fragment (which a browser does not send
 to a server), printed as a second banner line only to a terminal and only without `--quiet`:
-`open: …` when the edge serves a web client, which reads the token from its own address, and
-`for a web client: …` when it serves only the help page.
+`open: …` when the edge serves a web client (the default), which reads the token from its own
+address, and `for a web client: …` when it serves only a page (`--no-web`, or a broken install).
 
 ### web client, web root, tau_web, help page, own origin
-`tau._web_client` (private), `HttpEdge.web_root`, `tau serve --web-root` · D29 §9 · new
+`tau._web_client` (private), `HttpEdge.web_root`, `HttpEdge.web`, `tau serve --web-root`, `tau serve --no-web` · D29 §9 · new
 
 The **web client** is a browser frontend's built files, which the HTTP edge serves without a
 token on every `GET` that is not the wire (a path with no extension gets `index.html`; nothing
-outside the root). Its **web root** is `--web-root DIR`, else the `dist/` of an installed package
-**`tau_web`**, else there is none and `/` is the **help page**: a static page saying what the URL
-is and how to get a client, with nothing of the session in it. The edge's **own origin**
-(`http://<host>:<port>`; on loopback both `127.0.0.1` and `localhost`) may call the wire, so the
-client it served can; any other origin needs `--allow-origin`.
+outside the root). Its **web root** is `--web-root DIR`, else the `dist/` of the installed package
+**`tau_web`** (the wheel `ffwf-tau-web`, built from tau-code, which `ffwf-tau` depends on, so a plain
+`tau serve` serves it). With `--no-web` (`HttpEdge(web=False)`) there is no root, and `/` is a short
+page saying the server was started with `--no-web` and speaks only the wire at `/stream`. If
+`tau_web` is missing (a broken install), the server starts, warns on stderr, and `/` is the
+**help page**: a static page saying what the URL is, why its `#token=` never reached the server,
+that the install is broken, and how to fix it (reinstall, or `--web-root`), with nothing of the
+session in it. The edge's **own origin** (`http://<host>:<port>`; on loopback both `127.0.0.1` and
+`localhost`) may call the wire, so the client it served can; any other origin needs
+`--allow-origin`.
 
 ### `.tcp` file (not built)
 the serve record · D29 · not built

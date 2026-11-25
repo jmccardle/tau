@@ -61,7 +61,7 @@ from tau._session_start import Started, start_report, start_session
 from tau._sessions import SessionFlags, is_leased, read_name
 from tau._startup import load_config, prompts
 from tau._trust import tau_home
-from tau._web_client import web_client
+from tau._web_client import MISSING, installed, web_client
 
 IDLE_SECONDS: Final = 600.0
 """How long a detached server rests (no client connected, every cursor at rest) before it exits."""
@@ -105,9 +105,25 @@ def serve(run: Process, args: argparse.Namespace) -> int:
         return 0
     if args.stop:
         return asyncio.run(_stop(run, args))
+    if args.detached_log is None:  # the process a person started, not the child of `-d`
+        _warn_without_client(run, args)
     if args.detach and args.detached_log is None:
         return asyncio.run(_detach(run, args))
     return asyncio.run(_foreground(run, args))
+
+
+def _warn_without_client(run: Process, args: argparse.Namespace) -> None:
+    """Say that τ's web client is not installed, when the edge would serve the help page: a
+    broken install, which the server outlives (it still serves the wire)."""
+    wants_installed = not (args.no_http or args.no_web or args.web_root is not None)
+    if not wants_installed:
+        return
+    try:
+        missing = installed() is None
+    except ValueError:
+        return  # a `tau_web` without a client: `transports` refuses it, naming it
+    if missing:
+        run.stderr.write("tau: " + MISSING + "\n")
 
 
 def _emit(run: Process, data: Mapping[str, object]) -> None:
@@ -186,8 +202,12 @@ def transport_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--web-root",
         metavar="DIR",
-        help="serve the built web client in DIR over HTTP (default: an installed tau_web's, "
-        "else a help page)",
+        help="serve the built web client in DIR over HTTP (default: the installed tau_web's)",
+    )
+    parser.add_argument(
+        "--no-web",
+        action="store_true",
+        help="serve no web client over HTTP, only the wire",
     )
     parser.add_argument(
         "--quiet", action="store_true", help="do not print the URL with the token in it"
@@ -198,9 +218,9 @@ def transports(args: argparse.Namespace, cwd: Path) -> tuple[bool, HttpEdge | No
     """Whether to listen on the Unix socket, and the HTTP edge to listen on (`None`: none), as
     the flags say (`--web-root` is read from `cwd`). `ConfigError` for flags that leave nowhere to
     listen or contradict each other: both off, `--socket` without the socket, `--port`, `--host`,
-    `--allow-origin` or `--web-root` without HTTP, `--unix` on Windows, a port out of range, a
-    host that is not loopback without `--allow-network`, a web root (or an installed `tau_web`)
-    that holds no client."""
+    `--allow-origin`, `--web-root` or `--no-web` without HTTP, `--web-root` with `--no-web`,
+    `--unix` on Windows, a port out of range, a host that is not loopback without
+    `--allow-network`, a web root (or an installed `tau_web`) that holds no client."""
     if sys.platform == "win32" and args.unix:
         raise ConfigError("--unix is not available on Windows: tau serve listens over HTTP there")
     unix = sys.platform != "win32" and not args.no_unix
@@ -219,8 +239,9 @@ def transports(args: argparse.Namespace, cwd: Path) -> tuple[bool, HttpEdge | No
             origins=tuple(args.allow_origin),
             allow_network=args.allow_network,
             web_root=web_root,
+            web=not args.no_web,
         )
-        web_client(web_root)  # a client that cannot load is said now, before the session starts
+        web_client(web_root, web=edge.web)  # a client that cannot load is said now
     except ValueError as e:
         raise ConfigError(str(e)) from None
     return unix, edge
@@ -233,6 +254,7 @@ def _without_http(args: argparse.Namespace, *, unix: bool) -> None:
     named = (("--port", args.port), ("--host", args.host), ("--web-root", args.web_root))
     given = [f for f, v in named if v is not None]
     given += ["--allow-origin"] if args.allow_origin else []
+    given += ["--no-web"] if args.no_web else []
     if given:
         raise ConfigError(f"{' and '.join(given)} configure HTTP, which --no-http turns off")
 
@@ -361,9 +383,15 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
 
 def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
     """The detached server: this command line without `-d` and `--json`, with the log it writes
-    until it knows its session's id. No terminal, its own session."""
+    until it knows its session's id, run by this interpreter with this interpreter's flags (`-I`
+    among them: a runtime started isolated keeps the user's site-packages out of its server too).
+    No terminal, its own session."""
     kept = [a for a in run.argv if a not in ("-d", "--detach", "--json")]
-    command = [sys.executable, "-m", "tau", "serve", *kept, "--detached-log", str(pending)]
+    command = [
+        sys.executable,
+        *interpreter_flags(),
+        *("-m", "tau", "serve", *kept, "--detached-log", str(pending)),
+    ]
     with os.fdopen(os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as log:
         return subprocess.Popen(
             command,
@@ -374,6 +402,29 @@ def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
             env=dict(run.environ),
             start_new_session=True,
         )
+
+
+def interpreter_flags() -> list[str]:
+    """The flags this interpreter was started with that decide what a child imports and how
+    (`-I`, or `-E`, `-s` and `-P`; `-B`; `-O`), for a child that must import as this process did."""
+    flags = sys.flags
+    if flags.isolated:
+        chosen = ["-I"]  # -E, -s and -P together
+    else:
+        chosen = [
+            f
+            for f, on in (
+                ("-E", flags.ignore_environment),
+                ("-s", flags.no_user_site),
+                ("-P", flags.safe_path),
+            )
+            if on
+        ]
+    if flags.dont_write_bytecode:
+        chosen.append("-B")
+    if flags.optimize:
+        chosen.append("-" + "O" * flags.optimize)
+    return chosen
 
 
 async def _record_of(
@@ -452,7 +503,7 @@ def _serves_client(run: Process, args: argparse.Namespace) -> bool:
     """Whether the edge serves a web client (else its `/` is the help page)."""
     root = None if args.web_root is None else run.cwd / args.web_root
     try:
-        return web_client(root).root is not None
+        return web_client(root, web=not args.no_web).root is not None
     except ValueError:
         return False
 

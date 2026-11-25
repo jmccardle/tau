@@ -5,6 +5,7 @@ behavior suite run in `http` mode is the test of the whole `Client`; these are t
 edge has. Requests are made by hand with httpx, as a client in another language would."""
 
 import asyncio
+import importlib.util
 import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -271,7 +272,9 @@ async def test_a_second_stream_cannot_claim_an_id_there_is_no_resume(tmp_path: P
         claimed = await http.get(f"stream/{raw.id}", headers={"Authorization": f"Bearer {token}"})
         assert claimed.status_code == 409
         elsewhere = await http.get("ws", headers={"Authorization": f"Bearer {token}"})
-        assert elsewhere.status_code == 404
+        assert elsewhere.headers["content-type"] == "text/html; charset=utf-8", (
+            "no other wire: a path without an extension is the web client's own route"
+        )
         wrong = await http.post("stream", headers={"Authorization": f"Bearer {token}"})
         assert wrong.status_code == 405
     await raw.hello()  # the first stream is untouched
@@ -505,21 +508,44 @@ def edge_answer(answer: bytes) -> int:
 
 
 @scenario
-async def test_the_help_page_is_served_without_a_token_and_says_nothing_of_the_session(
+async def test_the_installed_web_client_is_served_by_default_without_a_token(
     tmp_path: Path,
 ) -> None:
+    """`ffwf-tau` depends on `ffwf-tau-web`: a plain `tau serve` serves its client."""
+    spec = importlib.util.find_spec("tau_web")
+    assert spec is not None, "ffwf-tau-web is a dependency of ffwf-tau"
+    assert spec.submodule_search_locations is not None
+    dist = Path(next(iter(spec.submodule_search_locations))) / "dist"
     h = await Harness.create(tmp_path)
     url, token = edge_of(h)
     async with plain(url) as http:
+        page = await http.get("")
+        assert page.status_code == 200
+        assert page.content == (dist / "index.html").read_bytes()
+        assert "connect-src 'self'" in page.headers["content-security-policy"]
+        assert token not in page.text
+    await h.close()
+
+
+@scenario
+async def test_with_the_web_client_off_the_root_says_so_and_nothing_else_is_served(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path)
+    server = await Server.start(
+        h.driver, session="s", cwd=h.directory, http=HttpEdge(port=0, web=False)
+    )
+    assert server.url is not None
+    async with plain(server.url) as http:
         for path in ("", "index.html"):
             page = await http.get(path)
             assert page.status_code == 200
             assert page.headers["content-type"] == "text/html; charset=utf-8"
             assert "connect-src 'self'" in page.headers["content-security-policy"]
             assert page.headers["referrer-policy"] == "no-referrer"
-            assert "tau serve --web-root DIR" in page.text
+            assert "--no-web" in page.text
             assert str(h.directory) not in page.text
-            assert token not in page.text
+            assert str(server.token) not in page.text
         head = await http.head("")
         assert head.status_code == 200
         assert head.content == b""
@@ -527,7 +553,13 @@ async def test_the_help_page_is_served_without_a_token_and_says_nothing_of_the_s
         assert (await http.get("app.js")).status_code == 404, "no client: nothing else"
         assert (await http.post("")).status_code == 405
         assert (await http.get("stream")).status_code == 401, "the wire still needs the token"
+    await server.close()
     await h.close()
+
+
+def test_a_web_root_with_the_web_client_off_is_refused() -> None:
+    with pytest.raises(ValueError, match="one or the other"):
+        HttpEdge(web=False, web_root=Path("client"))
 
 
 @scenario

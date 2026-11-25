@@ -5,7 +5,9 @@
    `minijinja-contrib`, `tau-tokens`.
 2. **Lockstep.** Both wheels take their version from the Cargo workspace, and the `tokens` extra
    of `ffwf-tau` pins `ffwf-tau-tokens` to exactly that version, in PEP 440 form. The tokenizer
-   wheel depends on nothing.
+   wheel depends on nothing. The web client's wheel, `ffwf-tau-web` (tau-code's, D29 §9), is
+   pinned to the workspace's minor version (`>=0.17,<0.18` for 0.17.x): the wire's `PROTOCOL`
+   changes only with τ's minor version, so a web client of the same minor speaks it.
 3. **No C.** Nothing the tokenizer wheel is built from needs a C toolchain or a system library
    (`cc`, `cmake`, Oniguruma, OpenSSL) or fetches anything (`hf-hub`, `ureq`, `reqwest`): that is
    what lets it build for every platform the main wheel builds for.
@@ -64,6 +66,10 @@ def lockstep() -> list[str]:
             f"pyproject.toml: the `tokens` extra must be {wanted} (the workspace version), "
             f"not {main.get('optional-dependencies', {}).get('tokens')}"
         )
+    major, minor = version.split(".")[:2]
+    web = f"ffwf-tau-web>={major}.{minor},<{major}.{int(minor) + 1}"
+    if [d for d in main["dependencies"] if d.startswith("ffwf-tau-web")] != [web]:
+        problems.append(f"pyproject.toml: must depend on {web!r} (the workspace's minor version)")
     if (main["name"], tokens["name"]) != tuple(WHEELS):
         problems.append(f"the wheels must be named {' and '.join(WHEELS)}")
     if "version" not in main["dynamic"] or "version" not in tokens["dynamic"]:

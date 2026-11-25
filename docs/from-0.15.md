@@ -252,7 +252,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | `tau serve --stop` | **built** | stops the server of the session the session flags name |
 | `tau serve --tail [SESSION]` | **post-0.16** | plan.md "After 0.16.0 ... Later" |
 | `tau serve --connect ADDR` | **dropped** | D21: attaching is automatic (D22 §8); `--connect` is dropped with `--listen` |
-| `tau serve --web-root DIR` (static web client, origin check) | **post-0.16** | D21 and plan.md "After 0.16.0" (tau-code): the web client comes with TCP, after 0.16.0 |
+| `tau serve --web-root DIR` (static web client, origin check) | **built** (changed, 0.17.0) | D29 §9: the edge serves static files from `--web-root`, else the `ffwf-tau-web` wheel that `ffwf-tau` depends on (0.17.1; `--no-web` serves none); the origin check is `--allow-origin` |
 | `tau serve --schema` | **built** | prints the wire's JSON Schema (`docs/protocol.schema.json`); the ratatui example and tau-code generate types from it |
 | `tau ext list [-e] [--json]` | **built** | D19; also `--no-extensions`. One row per source and why it is on or off |
 | `tau ext authorize NAME [--package]` | **dropped** | see 2.5 |
@@ -279,7 +279,7 @@ the step debugger have none, which matches section 2: the suite is smaller becau
 | `tau serve` multiplexer daemon, `RemoteClient` | `serve/` (8 files) | **built** (changed) | D21: one server per session, not a multiplexer; `RemoteClient` in `tau`; the schema is `tau serve --schema` |
 | VS Code / tau-code head | `docs/VSCODE-HEAD.md` | **post-0.16** | plan.md "After 0.16.0" and D27: tau-code's protocol package is regenerated from `--schema`, its components carry over; it is not part of 0.16.0 |
 | Ratatui example client | none | **built** (8D, new) | `examples/ratatui/`: a Rust client of `tau serve` (its own Cargo package), types generated from the schema; transcript, send, Esc, questions, `/` lines, tree browser, `/config` forms, reconnect after `CutOff` |
-| Web client served by `tau serve` | `serve/http.py` | **post-0.16** | tau-code's web client, with TCP (D21 Open 4; plan.md "After 0.16.0") |
+| Web client served by `tau serve` | `serve/http.py` | **built** (changed, 0.17.0) | D29 §9: tau-code's web client, installed with `ffwf-tau` as `ffwf-tau-web` (0.17.1) |
 | Session picker | `session_picker.py` | **built** (8C-2) | see 2.3 |
 | Compare view | `compare_view.py` | **post-0.16** | see 2.3 |
 | Slash commands `/compact`, `/model`, `/name` | `capabilities.py` `FLOWS` | **built** | `/compact` (compaction), `/model` (`tau`), `/name` (`session_name`); `/usage`, `/prune` and `/config` are new, and each prompt template and skill is a command (2.5) |
