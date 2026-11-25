@@ -344,7 +344,7 @@ def _on_signals(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> No
     `add_signal_handler`: there the handler is the interpreter's, which runs in the main thread
     and hands `then` to the loop."""
 
-    def handler(_number: int, _frame: object) -> None:
+    def handler(_number: int, _stack: object) -> None:
         loop.call_soon_threadsafe(then)
 
     for number in _STOPPING:

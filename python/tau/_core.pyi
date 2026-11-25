@@ -77,6 +77,7 @@ __all__ = [
     "calibration_features",
     "first_message",
     "is_leased",
+    "private_dir",
     "stop_trace",
     "trace_clock",
     "trace_to",

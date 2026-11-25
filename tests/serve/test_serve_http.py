@@ -103,8 +103,12 @@ def end(server: subprocess.Popen[str]) -> None:
 
 @contextlib.contextmanager
 def holding(port: int) -> Iterator[bool]:
-    """A listener on 127.0.0.1:`port` for the duration (`False`: something else holds it)."""
+    """A listener on 127.0.0.1:`port` for the duration (`False`: something else holds it). Bound
+    as asyncio binds a server (`SO_REUSEADDR` off Windows), so a closed connection's TIME_WAIT on
+    the port does not count as a holder: it does not stop the server from binding."""
     listener = socket.socket()
+    if sys.platform != "win32":  # on Windows the option lets a second listener share the port
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         listener.bind(("127.0.0.1", port))
         listener.listen()
