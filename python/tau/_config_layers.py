@@ -46,20 +46,12 @@ from tau._values import Context, DefinitionError
 CLI = "session"
 ALWAYS = ("tau", "session_name")
 """The extensions every start has, outside the sources (D19): the driver's and the startup's."""
-MODEL_KEYS = (  # the keys of a model; any other object is a section (D28)
-    "model",
-    "base_url",
-    "api_key_env",
-    "api_key",
-    "provider",
-    "max_tokens",
-    "context_window",
-    "images",
-    "options",
-)
-_INT_KEYS = ("max_tokens", "context_window")
+_INT_KEYS = ("max_tokens", "context_window", "image_tokens")
 _BOOL_KEYS = ("images",)  # D30: whether the model takes images
 _OBJECT_KEYS = ("options",)  # settings that are objects, merged by key; so is a section
+_TEXT_KEYS = ("model", "base_url", "api_key_env", "api_key", "provider")
+MODEL_KEYS = (*_TEXT_KEYS, *_INT_KEYS, *_BOOL_KEYS, *_OBJECT_KEYS)
+"""The keys of a model; any other object is a section (D28)."""
 _MOVED = {"price": "usage.price"}  # a model key that became an extension's section (D28)
 _TOP_KEYS = (
     "models",
@@ -395,6 +387,7 @@ def _model_config(texts: dict[str, str], merged: _Settings) -> ModelConfig:
         numbers.get("context_window"),
         sections,
         images=bool(merged["images"][0].value) if "images" in merged else False,
+        image_tokens=numbers.get("image_tokens"),
     )
 
 

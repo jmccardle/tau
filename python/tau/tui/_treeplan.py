@@ -21,8 +21,12 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from tau._core import Body, Node, Part
-from tau._counts import Count
+from tau._counts import Count, ImageRule
 from tau._meter import Meter
+
+_IMAGES = ImageRule("")
+"""The tree knows no branch's model, so its images are counted by the published formulas'
+estimate (`tau._counts.image_estimate`), as a provider tau does not know would count them."""
 
 RowKind = Literal["node", "turn", "stub"]
 Key = tuple[RowKind, int]
@@ -52,7 +56,7 @@ class WalkLength:
 
     def of(self, node_id: int) -> tuple[int, Count]:
         """The walk to `node_id`: its length in nodes and its count."""
-        return self._lengths[node_id], self._meter.measure(node_id).request.total
+        return self._lengths[node_id], self._meter.measure(node_id, _IMAGES).request.total
 
 
 @dataclass(frozen=True)

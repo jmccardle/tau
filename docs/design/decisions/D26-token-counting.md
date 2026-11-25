@@ -440,6 +440,17 @@ it with a lock file, re-read, add, write-to-temp and rename, at mode 600.
   `⌈w/28⌉·⌈h/28⌉` after the tier's resize (max edge 1,568 px and 1,568 tokens; 2,576 px and 4,784
   for Claude 4.7 and later), OpenAI's patch and tile formulas. Exact from pixel sizes. These are
   formulas, not tokenizers, so they will belong to core's meter when image parts land.
+  **As built (TC-05, 2026-11-24):** the meter counts an image by its model's `ImageRule` (the
+  model's `provider` and its `image_tokens` key), from the providers' pages as read that day.
+  `anthropic`: `min(⌈w/28⌉·⌈h/28⌉, 4784)`, a bound for both tiers without reading the model's name
+  (Anthropic's reference resize lowers patches only; tested against it). `gemini`:
+  `max(1120, 258·⌈w/768⌉·⌈h/768⌉)` (258 at most 384 px a side), 1,120 being Gemini 4 and 3's most at
+  the default and `high` `mediaResolution` (`ultra_high` is per part, which τ never sets) and the
+  tiles Gemini 2.5's rule. `openai` and any other provider: the old `max(⌈w/28⌉·⌈h/28⌉,
+  85 + 170·tiles)`, labelled an estimate in `why`, since one adapter serves GPT-4o mini (2,833 +
+  5,667 per tile), patch-billed models with multipliers up to 2.46, and local models with their
+  own caps; a model's `image_tokens` turns it into a bound. A 3840x2160 screenshot: 10,764 before;
+  4,784 on Claude, 3,870 on Gemini, 10,764 (estimate) on `openai` unless `image_tokens` is set.
 
 **7.4 Tokenizer identity and fingerprinting.**
 

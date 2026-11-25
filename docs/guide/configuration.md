@@ -52,7 +52,7 @@ An unknown key is an error that names the closest key you might have meant.
 ## Models and groups
 
 A model has these keys: `model` (the name the API knows), `provider`, `base_url`, `api_key_env`,
-`max_tokens`, `context_window`, `images` and `options`. An object with a `models` object inside it is a **group**: its other
+`max_tokens`, `context_window`, `images`, `image_tokens` and `options`. An object with a `models` object inside it is a **group**: its other
 keys apply to every model in it, and groups nest. A model's **qualified name** is the path of
 group names and its own name joined by colons, such as `work:fast`; names may not hold a colon.
 
@@ -112,6 +112,16 @@ image is an error that says so, and the model can make a smaller copy and read t
 A llama.cpp server takes images when it runs with the model's projector (`--mmproj`; its `/props`
 says `"vision": true`). τ sends a tool's images in a `user` message after the tool's text, which
 is the form llama.cpp, vLLM and OpenAI accept.
+
+Until a server bills it, an image is counted by its provider's published rule: on `anthropic` at
+most 4,784 tokens (one per 28-pixel patch, and Claude scales a larger image down to that), on
+`gemini` at most 1,120 (Gemini 4 and 3) or 258 per 768-pixel tile (earlier models), whichever is
+more. `openai` speaks to many servers that count images differently, so there it is an estimate
+(28-pixel patches or OpenAI's 512-pixel tiles, whichever is more, with no cap), and the count's
+`why` says so. **`image_tokens`** (a positive integer) is the most one image costs on a model, as
+its server caps it (llama.cpp's `--image-max-tokens`, or a hosted model's documented figure); with
+it the estimate becomes that bound. A 4K screenshot is then not counted at 10k tokens on a model
+that sees it as 1k.
 
 - **`provider`** is `openai` (the default: any OpenAI-compatible chat API, such as llama.cpp,
   vLLM or OpenAI), `anthropic`, `gemini`, or `mock` (echoes, for trying things). `base_url` is

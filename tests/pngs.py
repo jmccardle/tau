@@ -43,6 +43,18 @@ def png(width: int, height: int, pixel: Callable[[int, int], Rgb] = lambda x, y:
     )
 
 
+def blank(width: int, height: int) -> bytes:
+    """A white PNG of `width` by `height`, made fast enough for a 4K screenshot."""
+    rows = (b"\0" + b"\xff" * (3 * width)) * height
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", header)
+        + _chunk(b"IDAT", zlib.compress(rows, 6))
+        + _chunk(b"IEND", b"")
+    )
+
+
 def picture(width: int = 320, height: int = 240, scale: int = 6) -> bytes:
     """A red disc on white with `WORD` in black across its middle."""
     cx, cy, r = width // 2, height // 2, min(width, height) * 2 // 5

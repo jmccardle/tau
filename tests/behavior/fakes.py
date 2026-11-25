@@ -127,14 +127,16 @@ class Request:
 class FakeProvider:
     """Answers each sample with the next scripted reply and records the request. `check`
     reports `problems` for every model. `image_limits` is what it says one image may be (D30);
-    `None` sends no images."""
+    `None` sends no images. `name` is what a model's `provider` setting calls it."""
 
     def __init__(
         self,
         script: Sequence[Reply | Fail],
         problems: Sequence[str] = (),
         image_limits: ImageLimits | None = None,
+        name: str = FAKE_PROVIDER,
     ) -> None:
+        self._name = name
         self._script = list(script)
         self._problems = list(problems)
         self._next = 0
@@ -143,7 +145,7 @@ class FakeProvider:
 
     @property
     def name(self) -> str:
-        return FAKE_PROVIDER
+        return self._name
 
     def check(self, model: ModelConfig) -> list[str]:
         return list(self._problems)

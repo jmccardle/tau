@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Annotated, cast
 
 from tau._core import Body, Node, Outcome, Part
-from tau._counts import NONE, Count, ceiling_of, show
+from tau._counts import NONE, Count, ImageRule, ceiling_of, image_rule, show
 from tau._handles import Cursor
 from tau._lines import Planned, copy_of, prefix_length, write_line
 
@@ -227,8 +227,11 @@ class Prune:
         if not any(p.derived_from is not None for p in planned):
             return "nothing to prune"
         kept = prefix_length(walk)
-        before = _ceilings(n.body for n in walk)
-        after = _ceilings(p.body for p in planned) + _ceilings(n.body for n in walk[:kept])
+        images = image_rule(cursor.resolved_model())
+        before = _ceilings((n.body for n in walk), images)
+        after = _ceilings((p.body for p in planned), images) + _ceilings(
+            (n.body for n in walk[:kept]), images
+        )
         if after.upper >= before.upper:
             return "nothing to prune: it would not be shorter"
         last = write_line(cursor, walk[kept - 1].id, planned)[-1]
@@ -239,10 +242,10 @@ class Prune:
         )
 
 
-def _ceilings(bodies: Iterable[Body]) -> Count:
+def _ceilings(bodies: Iterable[Body], images: ImageRule) -> Count:
     """The ceilings of `bodies` added up: both sides of a comparison of lines that are not sent
     yet are counted the same way, so one that is shorter by its bytes is shown shorter."""
     total = NONE
     for body in bodies:
-        total += ceiling_of(body)
+        total += ceiling_of(body, images)
     return total

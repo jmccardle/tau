@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -757,6 +757,40 @@ property qualified: str
 
 `extension:name` for a command, which nothing can take the name of; `name` for a form
 with no extension.
+
+## ImageRule
+
+```python
+@dataclass(frozen=True)
+class ImageRule
+    provider: str
+    cap: int | None = None
+```
+
+How a model's images are counted (D26 section 7.3): by the rule of its `provider` (the
+model's `provider` setting, the adapter that sends the request, never a guess from the model's
+name) and its `image_tokens` setting, `cap`. `bound` says whether `tokens` is an upper bound:
+it is for `anthropic` and `gemini`, whose published resizes cap every model they serve, and
+for any model with a `cap`. Anything else (`openai`, which speaks to OpenAI and to every
+OpenAI-compatible server, and a provider tau does not know) gets an estimate from the published
+formulas, which a server that tiles or caps differently can exceed.
+
+### ImageRule.bound
+
+```python
+property bound: bool
+```
+
+Whether `tokens` is the most an image can cost.
+
+### ImageRule.tokens
+
+```python
+def tokens(self, width: int, height: int) -> int
+```
+
+What one image of `width` by `height` pixels costs at most (or, where not `bound`, is
+estimated to cost).
 
 ## LabelName
 
@@ -1542,6 +1576,14 @@ Whether `node`'s reply counts toward usage: one a provider sampled (`node.by` is
 billed), that is not a copy (`node.copied_from is None`) and not rewritten from another
 (`derived_from`: a pruned reply keeps the `meta` of the sample it came from). This is the one
 place the rule lives.
+
+## image_rule
+
+```python
+def image_rule(model: ModelConfig) -> ImageRule
+```
+
+The `ImageRule` of a model: its provider's, with its `image_tokens`.
 
 ## reading
 

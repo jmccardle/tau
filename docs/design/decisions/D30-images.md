@@ -171,7 +171,7 @@ generated from the 0.16 schema meets an unknown shape, so `PROTOCOL` is 2 and a 
 
 | where | rule |
 |---|---|
-| **Counting** (D26) | base64 is never in the byte ceiling; an image's ceiling is `image_ceiling(w, h)`, the most the published formulas give for its pixels without a resize: `max(⌈w/28⌉·⌈h/28⌉, 85 + 170·tiles)` (Anthropic and Qwen-VL's 28-pixel patches; OpenAI's 512-pixel tiles after its fit to 2048 and 768). `lowest_tokens` adds nothing. |
+| **Counting** (D26) | base64 is never in the byte ceiling; an image's ceiling is its model's `ImageRule.tokens(w, h)` (as built in TC-05; it was `max(⌈w/28⌉·⌈h/28⌉, 85 + 170·tiles)` for every model, before any resize, 10,764 for a 4K screenshot): `anthropic` `min(⌈w/28⌉·⌈h/28⌉, 4784)`; `gemini` `max(1120, 258·tiles of 768)`; any other provider the old formula as an estimate, which `why` names; a model's `image_tokens` caps any of them. D26 §7.3. `lowest_tokens` adds nothing. |
 | **Prune** | only the newest turn keeps its images: turn N-1's results become `ok` (no images), turns before are transcript text, and turn N is copied with its images. |
 | **Compaction** | the summarizer is sent the head with its images (so it can describe them); the tail is copied by reference and keeps them; the head's images are gone with the head. |
 | **TUI** | a tool result shows one line per image, `[image WxH mime]`, under its text. |
