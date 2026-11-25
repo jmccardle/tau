@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "tau-core"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "serde",
  "serde_json",
