@@ -38,10 +38,12 @@ async def running(  # noqa: PLR0913 - what a test may vary of the app
     sessions: Path | None = None,
     welcome: Welcome | None = None,
     size: tuple[int, int] = SIZE,
+    buffer: int = 256,
 ) -> AsyncIterator[tuple[TauApp, Pilot[None]]]:
     """The app over a new client of the Harness, running headless; the client is closed after.
-    `sessions` is the sessions directory Ctrl+O lists, with `home` the `TAU_HOME` beside it."""
-    connected = await h.connect(client)
+    `sessions` is the sessions directory Ctrl+O lists, with `home` the `TAU_HOME` beside it;
+    `buffer` is the client's (how many `Live` it holds before it drops one)."""
+    connected = await h.connect(client, buffer=buffer)
     app = TauApp(
         connected,
         h.cursor,

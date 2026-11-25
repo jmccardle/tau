@@ -6,9 +6,12 @@ hears, the live layer: what the sample in flight has said and the tree does not 
 Textual and no calls: the widgets read it, and `tests/tui` drives it with events alone.
 
 The live layer follows model.md section 9's client rules: a reply's deltas are drawn over the
-cursor and dropped when its view has another `at` or is not busy; a `CallArgs` whose `CallNamed`
-was never heard is ignored; a call's tool progress, keyed by `(node, call_id)`, is dropped when
-the `Results` node answering it arrives (or when the cursor is no longer busy).
+cursor and dropped when its view has another `at` or is not busy; a call's tool progress, keyed by
+`(node, call_id)`, is dropped when the `Results` node answering it arrives (or when the cursor is
+no longer busy). What a client hears of a reply is a prefix of it (a stream that drops a `Live`
+drops the rest of that reply, `tau._hub.Feed`), so a `CallArgs` whose `CallNamed` was never heard
+is a broken stream, not a slow one: `hear` raises `LiveOutOfOrder`, and the layer holds no reply
+until that one is over.
 """
 
 from collections.abc import Iterable
@@ -33,6 +36,11 @@ from tau._events import (
 )
 
 
+class LiveOutOfOrder(ValueError):
+    """A live delta that does not follow from what the stream said before it: the arguments of a
+    call that was never named. The stream is broken (a bug), and the reply is not drawn live."""
+
+
 @dataclass
 class FormingCall:
     """A call the model is still writing: its provider `id`, the `tool` and the `args` text so far
@@ -49,7 +57,8 @@ class LiveLayer:
     and `thinking` so far, the `calls` forming (by their index in the reply), and each running
     call's `progress` output keyed by `(node, call_id)`. `retrying` is the `Retrying` the provider
     last said, until the sample says anything else or ends. `at` is the cursor's node when the
-    first delta arrived: the layer is drawn over it."""
+    first delta arrived: the layer is drawn over it. `broken` is why the reply in flight cannot be
+    drawn (`LiveOutOfOrder`); its deltas are ignored until it is over."""
 
     at: int | None = None
     text: str = ""
@@ -57,6 +66,7 @@ class LiveLayer:
     calls: dict[int, FormingCall] = field(default_factory=lambda: {})
     progress: dict[tuple[int, str], str] = field(default_factory=lambda: {})
     retrying: Retrying | None = None
+    broken: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -67,6 +77,7 @@ class LiveLayer:
         """Forget the reply's text, thinking and calls (the node arrived, or the step ended)."""
         self.at = None
         self.retrying = None
+        self.broken = None
         self.text = ""
         self.thinking = ""
         self.calls = {}
@@ -92,7 +103,8 @@ class SessionView:
         """Every `Notice`, oldest first."""
 
     def hear(self, event: Event) -> None:
-        """Take one event into the picture."""
+        """Take one event into the picture. `LiveOutOfOrder` for a `Live` the stream could not
+        have said; the picture holds no reply for its cursor until that reply is over."""
         match event:
             case CursorView():
                 self._view(event)
@@ -159,6 +171,8 @@ class SessionView:
         if layer.at is None and view is not None:
             layer.at = view.at
         if not isinstance(delta, Retrying | ToolProgress):
+            if layer.broken is not None:
+                return  # said once, by the delta that broke it
             layer.retrying = None  # the sample is going again
         match delta:
             case Retrying():
@@ -170,8 +184,16 @@ class SessionView:
             case CallNamed(index=index, id=id, tool=tool):
                 layer.calls[index] = FormingCall(id, tool)
             case CallArgs(index=index, text=text):
-                if index in layer.calls:
-                    layer.calls[index].args += text
+                if index not in layer.calls:
+                    broken = (
+                        f"cursor {cursor}: the arguments of call {index} came before the call "
+                        f"was named (calls named: {sorted(layer.calls) or 'none'})"
+                    )
+                    at = layer.at
+                    layer.drop_reply()
+                    layer.at, layer.broken = at, broken  # the view that ends this reply clears it
+                    raise LiveOutOfOrder(broken)
+                layer.calls[index].args += text
             case ToolProgress(node=node, call_id=call_id, text=text):
                 key = (node, call_id)
                 layer.progress[key] = layer.progress.get(key, "") + text

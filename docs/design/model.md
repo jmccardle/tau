@@ -525,14 +525,18 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
   each newly watched cursor with a catch-up taken in the same act: the parts of the sample in
   flight that are not in the tree yet and the text of the open part. Tool progress has no
   catch-up; its result arrives as `Appended`.
-- **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped) and `buffer` of
+- **Bounds.** A client's buffer holds `buffer` `Live` (more are dropped; once one of a cursor's is
+  dropped, so is the rest of its reply in flight, until the cursor's `CursorView` has another `at`
+  or is not busy or the cursor is watched afresh, so what a client hears of a reply is a prefix
+  of it) and `buffer` of
   `Appended` and `Notice` (one more cuts the client off: its stream ends with `CutOff`, a `ConnectionError`, and it
   reconnects to a snapshot), plus one `CursorView` (or `CursorGone`) per cursor and one `Labels`. The pump never
   waits on a client. A `RemoteClient` keeps its events in the same kind of buffer, so a remote
   client that falls behind is cut off exactly as a local one; the server's own buffer for the
   connection holds only what a slow socket has not yet taken.
-- **Client rules for `Live`** (D15, restated): ignore a `CallArgs` whose `CallNamed` you never
-  saw; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
+- **Client rules for `Live`** (D15, restated): a `CallArgs` whose `CallNamed` you never saw is a
+  broken stream (the bound above means a lost `CallNamed` loses its `CallArgs` too, and a
+  catch-up names every call it replays): say so and draw that reply from its node; draw a cursor's reply deltas as a layer and drop it when its `CursorView` has another `at`
   or is not busy; drop a call's `ToolProgress` layer, keyed by `(node, call_id)`, when the
   `Results` node answering it arrives.
 - **Notices.** `cursor.tell(text, to=None)` (by default every connected client) and core's own (a `pre_input` hook refused an

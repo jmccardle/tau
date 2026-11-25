@@ -24,7 +24,7 @@ from tau._counts import tokens
 from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
 from tau._images import shown
 from tau.tui._chat import MessageBox, QuietCollapsible
-from tau.tui._view import LiveLayer
+from tau.tui._view import LiveLayer, LiveOutOfOrder
 from tau.tui._window import tail_start
 from tau.tui._windowed import WindowedWalk
 
@@ -286,7 +286,11 @@ class ChatDisplay(WindowedWalk):
             case CallNamed(id=call, tool=tool):
                 self._live.add_tool_call(tool, "", call)
             case CallArgs(index=index):
-                call = layer.calls[index]
+                call = layer.calls.get(index)
+                if call is None:  # `SessionView.hear` refuses such a delta before it is drawn
+                    raise LiveOutOfOrder(f"call {index}'s arguments to draw, but no such call")
+                if call.id not in self._live.tool_boxes:  # named while not drawn: draw it now
+                    self._live.add_tool_call(call.tool, "", call.id)
                 self._live.tool_boxes[call.id].set_arguments(call.args)
             case _:
                 return
