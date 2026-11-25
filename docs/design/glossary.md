@@ -1333,7 +1333,8 @@ saying a relative path in it starts from the skill's directory (nothing in it is
 the arguments. The **skills list** is one `System` node, written at a session's
 first step when a `read` tool is offered and `advertise` is on, naming each skill that is not
 `disable-model-invocation: true` with its description and path; it is then part of the prefix of
-the walk. Frontmatter is `key: value` lines between `---`.
+the walk. Frontmatter is the YAML block mapping between `---` lines (quoted, folded and block
+scalar values; other keys ignored).
 
 ### PromptFile, Trusted.prompt_files, _project_read
 `tau._prompt_files.PromptFile` (private), `tau.Trusted.prompt_files`, modules `tau._prompt_files` and `tau._project_read` · D24 section 6 · new (8E-1)

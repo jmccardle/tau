@@ -27,7 +27,24 @@ from tau._protocols import EXTENSION_NAME
 _PLACEHOLDER = re.compile(r"\$(\$|ARGUMENTS|[1-9][0-9]*|\{[1-9][0-9]*\})")
 _FENCE = "---"
 _KNOWN = ("name", "description", "argument-hint", "disable-model-invocation")
-_BLOCK = ("|", ">")
+_HEADER = re.compile(r"([|>])([1-9][-+]?|[-+][1-9]?|)(?:[ \t]+#.*)?")  # a block scalar's first line
+_NESTED = re.compile(r"-(?:\s|$)|[^\s#][^:]*:(?:\s|$)")  # a line that opens a list item or a key
+_COMMENT = re.compile(r"(?:^|[ \t])#")  # where a comment starts in a plain value
+_ESCAPE = re.compile(r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)", re.DOTALL)
+_HEX = ("x", "u", "U")
+_BOOLEANS = {
+    "true": True,
+    "True": True,
+    "TRUE": True,
+    "false": False,
+    "False": False,
+    "FALSE": False,
+}
+_ESCAPES = {
+    "0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f",
+    "r": "\r", "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85", "_": "\xa0",
+    "L": "\u2028", "P": "\u2029",
+}  # fmt: skip
 _TEMPLATE_SUFFIX = ".md"
 _QUOTE = '"'
 
@@ -132,29 +149,179 @@ def words_of(args: str) -> list[str]:
     return words
 
 
-# -- reading a file
+# -- reading a file: the frontmatter, the YAML a Claude Code skill writes
 
 
 def _frontmatter(text: str, where: Path) -> tuple[dict[str, str], str]:
-    """The `key: value` lines between the `---` lines that open `text`, and the rest of it."""
+    """The keys between the `---` lines that open `text`, and the rest of it.
+
+    The frontmatter is read as the block mapping of YAML that a Claude Code skill writes: plain,
+    `'single'` and `"double"` quoted values (on one line or folded over several), `|` and `>` block
+    scalars, and comments. Only the values of the four keys `_KNOWN` names are read, so any other
+    key, whatever its value holds, never stops a file. Of those four, a list or a mapping
+    (indented, or `- item` lines under it) is read as `""`, and a flow value (`[a, b]`) as its
+    text, as an `argument-hint: [file]` needs."""
     lines = text.replace("\r\n", "\n").split("\n")
     if lines[0].strip() != _FENCE:
         return {}, "\n".join(lines)
     end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == _FENCE), None)
     if end is None:
         raise SkillFileError(f"{where}: the frontmatter opens with --- and never closes")
-    found: dict[str, str] = {}
-    for number, line in enumerate(lines[1:end], 2):
-        if not line.strip() or line.lstrip().startswith("#") or line[0] in " \t":
+    found = {
+        key: _value(first, rest, f"{where}:{number}", key)
+        for number, key, first, rest in _keys(lines[1:end], where)
+        if key in _KNOWN
+    }
+    for key in _KNOWN:
+        if key in found and not found[key]:
+            raise SkillFileError(f"{where}: `{key}` must be text, not empty, a list or a mapping")
+    return found, "\n".join(lines[end + 1 :])
+
+
+def _keys(lines: list[str], where: Path) -> list[tuple[int, str, str, list[str]]]:
+    """Each top-level key of a frontmatter's `lines`: its line number, the key, the text after its
+    colon, and the lines that follow it (indented, blank, or `- item` under an empty value)."""
+    found: list[tuple[int, str, str, list[str]]] = []
+    open_ = False  # whether the lines that follow still belong to the last key
+    for number, line in enumerate(lines, 2):
+        if not line.strip() or line[0] in " \t" or (open_ and _item_of_empty(line, found)):
+            if open_:
+                found[-1][3].append(line)
+            continue
+        if line.startswith("#"):
+            open_ = False
             continue
         key, colon, value = line.partition(":")
         if not colon or not key.strip():
             raise SkillFileError(f"{where}:{number}: expected `key: value`, got {line!r}")
-        found[key.strip()] = _unquoted(value.strip())
-    for key in _KNOWN:
-        if key in found and (not found[key] or found[key][0] in _BLOCK):
-            raise SkillFileError(f"{where}: `{key}` must be one line of text after the colon")
-    return found, "\n".join(lines[end + 1 :])
+        found.append((number, _unquoted(key.strip()), value.strip(), []))
+        open_ = True
+    return found
+
+
+def _item_of_empty(line: str, found: list[tuple[int, str, str, list[str]]]) -> bool:
+    """Whether `line` is a `- item` of a list written at the key's own indent (`key:` then
+    `- a`), which YAML allows."""
+    return line[0] == "-" and line[1:2] in ("", " ") and bool(found) and not found[-1][2]
+
+
+def _value(first: str, rest: list[str], where: str, key: str) -> str:
+    """The text of one key's value: `first`, what follows its colon, and `rest`, its lines."""
+    if first[:1] in ("'", '"'):
+        return _quoted(first, rest, where, key)
+    header = _HEADER.fullmatch(first)
+    if header:
+        return _block(header.group(1), header.group(2), rest)
+    if not first and _nested(rest):
+        return ""
+    return _plain([first, *rest])
+
+
+def _nested(rest: list[str]) -> bool:
+    """Whether the first line of `rest` with text opens a list item or a key: the value is a list
+    or a mapping, not text that goes on from the line of the key."""
+    first = next((s for s in (line.strip() for line in rest) if s and s[0] != "#"), "")
+    return bool(first) and bool(_NESTED.match(first))
+
+
+def _plain(parts: list[str]) -> str:
+    """A plain value over one or more lines: folded, and ended by a comment."""
+    lines: list[str] = []
+    for part in parts:
+        text = part.strip()
+        comment = _COMMENT.search(text)
+        if comment:
+            lines.append(text[: comment.start()].rstrip())
+            break
+        lines.append(text)
+    return _folded(lines).strip()
+
+
+def _block(style: str, indicators: str, rest: list[str]) -> str:
+    """A `|` (lines kept) or `>` (lines folded) block scalar of the lines `rest`. Its chomping
+    indicator is read and has no effect, since the value is stripped."""
+    texts = [line for line in rest if line.strip()]
+    if not texts:
+        return ""
+    digits = [c for c in indicators if c.isdigit()]
+    indent = int(digits[0]) if digits else len(texts[0]) - len(texts[0].lstrip(" "))
+    lines = [line[min(indent, len(line) - len(line.lstrip(" "))) :] for line in rest]
+    lines = [line if line.strip() else "" for line in lines]
+    text = "\n".join(lines) if style == "|" else _folded(lines)
+    return text.strip()
+
+
+def _folded(lines: list[str]) -> str:
+    """`lines` folded as YAML folds them: a line break between two lines of text is a space, each
+    blank line is a line break, and a line that starts with a space keeps the breaks around it."""
+    text, breaks, kept_before = "", 0, False
+    for line in lines:
+        if not line:
+            breaks += 1
+            continue
+        kept = line[0] in " \t"
+        if text:
+            text += "\n" * (breaks + 1) if kept or kept_before else "\n" * breaks or " "
+        text, breaks, kept_before = text + line, 0, kept
+    return text
+
+
+def _quoted(first: str, rest: list[str], where: str, key: str) -> str:
+    """A `'single'` or `"double"` quoted value that opens in `first` and may go on into `rest`.
+    What follows the closing quote is not read."""
+    mark = first[0]
+    text = "\n".join([first[1:], *rest])
+    close = _closing(text, mark)
+    if close is None:
+        raise SkillFileError(f"{where}: the {mark} that opens `{key}` never closes")
+    lines = text[:close].split("\n")
+    if len(lines) > 1:
+        joined: list[str] = []
+        for line in (line.strip() for line in lines):
+            if joined and joined[-1] and mark == '"' and _escapes_break(joined[-1]):
+                joined[-1] = joined[-1][:-1] + line
+            else:
+                joined.append(line)
+        lines = [_folded(joined)]
+    if mark == "'":
+        return lines[0].replace("''", "'")
+    return _unescaped(lines[0], where, key)
+
+
+def _closing(text: str, mark: str) -> int | None:
+    """Where the quote `mark` that closes `text` is (`text` starts after the opening one)."""
+    escape = "\\" if mark == '"' else mark  # `\x` in double quotes, `''` in single ones
+    i = 0
+    while i < len(text):
+        if text[i] == escape and (mark == '"' or text[i + 1 : i + 2] == mark):
+            i += 2
+        elif text[i] == mark:
+            return i
+        else:
+            i += 1
+    return None
+
+
+def _escapes_break(line: str) -> bool:
+    """Whether a line of a double-quoted value ends with a `\\` that escapes its line break."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
+def _unescaped(text: str, where: str, key: str) -> str:
+    """A double-quoted value's escapes (`\\n`, `\\"`, `\\u00e9`, ...) replaced by what they are."""
+
+    def one(match: re.Match[str]) -> str:
+        code = match.group(1)
+        if code[0] in _HEX and len(code) > 1:
+            try:
+                return chr(int(code[1:], 16))
+            except ValueError:
+                pass
+        elif code in _ESCAPES:
+            return _ESCAPES[code]
+        raise SkillFileError(f"{where}: `{key}` has an unknown escape, \\{code}")
+
+    return _ESCAPE.sub(one, text)
 
 
 def _unquoted(value: str) -> str:
@@ -165,9 +332,9 @@ def _unquoted(value: str) -> str:
 
 def _flag(meta: Mapping[str, str], where: Path) -> bool:
     given = meta.get("disable-model-invocation", "false")
-    if given not in ("true", "false"):
+    if given not in _BOOLEANS:
         raise SkillFileError(f"{where}: `disable-model-invocation` is {given!r}, not true or false")
-    return given == "false"
+    return not _BOOLEANS[given]
 
 
 def _read_file(kind: Literal["template", "skill"], name: str, raw: bytes, path: Path) -> PromptFile:

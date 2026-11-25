@@ -422,6 +422,8 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   warned and gets a help page (D29 §9). Release order: `ffwf-tau-web`, then `ffwf-tau`.
 - **0.17.2 (released 2026-11-25): a fix release.** A slow client hears a clean prefix of each
   reply, and the TUI no longer crashes with `KeyError` on parallel tool calls.
+- **0.17.3 (released 2026-11-25): a fix release.** Skill and template frontmatter is read as YAML (folded, literal and
+  quoted values), so a Claude Code skill with `description: >-` no longer stops τ from starting.
 - **0.18.0 (unreleased): images in user messages (D31), `PROTOCOL` 3.** `send`/`input` take
   `images`, `image(sha256)` reads one, `@path` attaches an image file; the store says version 3
   only once a user image is written. On `master` as `feat/user-images`; tau-code's composer and

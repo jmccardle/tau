@@ -270,8 +270,9 @@ command of the extension is listed or run when a stat says a file was added, rem
 (8E-5; no timer, no watcher; the skills list for the model stays written once). For one name the
 project wins over the user, by D19's nearest-row rule. A template and a skill with one name in
 one directory are a load error naming both. A name must obey the extension-name rule (letters,
-digits, `_`, `-`). Frontmatter is `key: value` lines between `---` (`description`, `name`,
-`argument-hint`, `disable-model-invocation`), with no YAML library.
+digits, `_`, `-`). Frontmatter is the YAML block mapping between `---` (`description`, `name`,
+`argument-hint`, `disable-model-invocation`), read by a small reader of that subset, with no YAML
+library (amended in 0.17.3: block scalars, folded and quoted values are read).
 
 **Key and options.** `skills`, on by default. One option, `advertise` (default `true`): write the
 list for the model.
@@ -548,8 +549,11 @@ shared pieces of §1. Where the build differs from the text above, or the text d
 - **`skills`**: `name` in the frontmatter, which §6 lists without a rule, must equal the file's
   name (a mismatch is a load error) rather than rename the command. `argument-hint` becomes the
   description of the command's `args` field (what a form shows); the command's help stays the
-  `description`. Unknown keys and indented lines are ignored (a Claude Code skill loads); a block
-  scalar (`description: >`) is refused. Every problem with a file (name, encoding, frontmatter, no
+  `description`. Unknown keys, and the lists and mappings under them, are ignored (a Claude Code
+  skill loads). Amended in 0.17.3: a block scalar (`description: >`) was refused, which stopped τ
+  from starting on a Claude Code skill; values are now read as YAML reads them (plain over several
+  lines, `'single'` and `"double"` quoted with escapes, `|` and `>` block scalars, comments). A
+  known key whose value is empty, a list or a mapping is refused. Every problem with a file (name, encoding, frontmatter, no
   description, a template and a skill of one name in one directory, a command named `config`) is an
   `ExtensionLoadError` naming the file and ending in `tau ext disable skills`. A skill's tag is
   `<skill name="NAME" path="/abs/SKILL.md">`, a newline, the body, a newline, `</skill>`. Hidden

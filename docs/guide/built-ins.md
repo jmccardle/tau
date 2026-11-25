@@ -231,11 +231,13 @@ not read from subdirectories) and `prompts/x.MD` (`.md` in lower case). All the 
 at once, and `tau trust` refuses a project whose files have any, listing all of them.
 `tau ext disable skills` starts without them. A byte order mark at the start of a file is ignored.
 
-A file may begin with frontmatter, `key: value` lines between two `---` lines. Read are
-`description` (one line), `argument-hint`, `disable-model-invocation` (`true` or `false`) and
-`name` (which, if given, must be the file's name). Other keys, comments and indented lines are
-ignored, so a Claude Code skill loads as it is. There is no YAML: `description: >` is refused,
-not misread.
+A file may begin with frontmatter, YAML `key: value` lines between two `---` lines. Read are
+`description`, `argument-hint`, `disable-model-invocation` (`true` or `false`) and `name` (which,
+if given, must be the file's name). Values are read as YAML reads them: plain text that goes on
+over indented lines, `'single'` and `"double"` quoted text, and `|` (lines kept) and `>` (lines
+folded) block scalars, as in `description: >-` followed by indented lines. Other keys, the lists
+and mappings under them, and comments are ignored, so a Claude Code skill loads as it is. One of
+the four keys whose value is empty, a list or a mapping is refused.
 
 A project's files are text the model will be told to follow, so they are pinned like the rest of
 `.tau/`: `tau trust` lists them and shows the text of each that is new or changed (the first 2000

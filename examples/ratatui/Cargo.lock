@@ -2067,7 +2067,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tau-ratatui"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "base64",
  "clap",
