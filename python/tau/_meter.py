@@ -13,8 +13,9 @@ For the replies that report (the **reports**, in walk order):
 - **A span** is the nodes from one report's reply up to the next report's. Its cost is the
   difference of the two `input`s, and that is exact only if the first request is a prefix of the
   second as the server sees it. It is **proved** in one of three ways (`Span.proof`): `cache`,
-  the second reports `cached` equal to the first's `input` (the server found the whole first
-  request in its cache: Anthropic); `slot`, llama.cpp's `timings` say the second request read at
+  the second reports `cached` equal to the first's `input`, or to the first's `cached` plus
+  `written` (the server found the whole first request, up to its last block, in its cache:
+  Anthropic); `slot`, llama.cpp's `timings` say the second request read at
   least the whole first request from its slot (`cache_n` of the second is no less than
   `prompt_n + cache_n` of the first); `prefix`, the second reply's `meta.sent.extends` names the
   first reply (the provider found the first request to be a byte prefix of the second when it
@@ -174,6 +175,17 @@ def _base(
     return Count(left, Basis.HEURISTIC if bounded else Basis.REPORTED)
 
 
+def _read_whole_cache(before: Reading, after: Reading) -> bool:
+    """Whether the second request read from the cache exactly what the first had cached:
+    everything up to its last breakpoint, which τ puts on the last block. Anthropic bills a few
+    tokens after that block (10 on Claude Haiku 4.5 with tools and thinking, recorded), so its
+    `cached` never equals the first `input`; the same few close every request, so the
+    difference of the two bills is still the span's cost."""
+    if before.cached is None or before.written is None or after.cached is None:
+        return False
+    return after.cached > 0 and after.cached == before.cached + before.written
+
+
 def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | None:
     """How the span from one report to the next is proved (the module docstring), or `None` if it
     is not. Another reply between them, reporting or not, breaks the chain of requests, and a
@@ -185,7 +197,7 @@ def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | Non
         or any(counted(walk[k]) for k in range(first.at + 1, second.at))
     ):
         return None
-    if after.cached == before.input:
+    if after.cached == before.input or _read_whole_cache(before, after):
         return "cache"
     if first.slot is not None and second.slot is not None and second.slot[1] >= sum(first.slot):
         return "slot"

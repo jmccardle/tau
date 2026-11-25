@@ -1568,8 +1568,9 @@ A **span** (of a walk; not a `tracing` span, below) is the nodes added between t
 requests: the first request's reply, then the inputs before the second request. Its cost is the
 second bill's `input` less the first's, and that is exact only if the first request is a prefix of
 the second as the server sees it. A span is **proved**, and is a lump with a `reported` count, in
-one of three ways: **`cache`**, the second reply reports `cached` equal to the first's `input`
-(Anthropic, where τ marks the last block of every request for caching); **`slot`**, llama.cpp's
+one of three ways: **`cache`**, the second reply reports `cached` equal to the first's `input`,
+or to the first's `cached` plus `written` (Anthropic, where τ marks the last block of every
+request for caching, and bills a few tokens after that block outside the cache); **`slot`**, llama.cpp's
 `timings` say the second request read at least the whole first request from its slot (`cache_n` of
 the second is no less than `prompt_n + cache_n` of the first; more is usual, since the slot also
 holds the reply it generated); **`prefix`**, the second reply's `meta.sent.extends` names the first
@@ -1633,8 +1634,8 @@ answers from a table) and what τ computed (`expected.json`: each reply's normal
 and finish reason). The script's docstring is the format's spec. It writes nothing unless the run
 succeeded and no file holds the key: request and response headers are kept by whitelist, secret
 query parameters are stripped, and a key found anywhere in what would be written fails the run.
-The families are `anthropic`, `openai`, `gemini`, `openrouter`, `llamacpp`, `vllm` and any
-number of `oaicompat-<name>`. A replay runs the case offline through the same provider; a family
+The families are `anthropic`, `openai`, `gemini`, `openrouter`, `mistral` (OpenAI-compatible),
+`llamacpp`, `vllm` and any number of `oaicompat-<name>`. A replay runs the case offline through the same provider; a family
 with no fixture is skipped by its tests with the command that records it. A body written by hand
 is **synthetic**, lives in a test file, and is never under `tests/fixtures/providers/`.
 
@@ -1642,9 +1643,11 @@ From TC-01 a case is one **scenario** of the recorder's list (`SCENARIOS`, `--sc
 `turns` (and its rounds `turns-2`, ...), `tool-image`, `length` and `counted` through the driver,
 and the **raw** ones it builds by hand for what the provider never sends (`user-image`,
 `nonstream-text`, `nonstream-tools`, `error-bad-request`, `error-overflow`, Gemini's
-`builtin-tool`). `case.json` names its `scenario`; a raw case has `raw` (`stream`, `adapter`: whether
+`builtin-tool`), and Anthropic's `cached` (`turns` over a system text past the minimum cacheable
+prompt, then a turn after the gap). `case.json` names its `scenario`; a raw case has `raw` (`stream`, `adapter`: whether
 the provider reads its response, `error`: whether the server was meant to refuse it), and
-`expected.json` has `error`, the `SampleError` a refused one gives. `record_provider.py all` records
+`expected.json` has `error`, the `SampleError` a refused one gives; a refusal with a status
+outside the scenario's (no credit, no model, a rate limit) is a failed run, not a fixture. `record_provider.py all` records
 every scenario of every family the **keys file** (`~/.config/tau-fixtures/keys.env`, `--keys`)
 sets up and says which it skips; `--dry-run` prints the plan, its token estimate and cost. Beyond
 the key's value, a file is refused when anything in it is shaped like a key or an auth header, and

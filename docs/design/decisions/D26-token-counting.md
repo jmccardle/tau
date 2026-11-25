@@ -1032,6 +1032,40 @@ recorded, eleven cases. What they settle or show:
   size (131072 tokens)`). τ does not mark the second as a context overflow (D24 ruling 8 makes no
   use of it).
 
+**Hosted fixtures, first pass (2026-11-25).** Recorded with the defaults of
+`record_provider.py all`: Anthropic `claude-haiku-4-5` (11 cases, including `cached`), Gemini
+`gemini-3.5-flash-lite` (9; free tier), Mistral `mistral-small-2603` through `OpenAIProvider` at
+`api.mistral.ai/v1` (9; τ has no Mistral adapter of its own). Not recorded: OpenRouter (the
+account has no credit: 402), OpenAI (no key), Gemini's and Mistral's `error-overflow` (their
+tiers' per-minute token limits refuse a request past the window with 429 before its size is
+looked at; a Gemini window of 1,048,576 cannot fit in a free tier's 250,000 a minute) and Gemini's
+`builtin-tool` (429 on the free tier). What they show:
+
+- **The ceiling holds as text**: the largest proved span is 0.22 of its ceiling on Anthropic,
+  0.36 on Mistral; Gemini's text spans likewise. **Not for images on this branch**: a 64×64 PNG
+  costs Gemini 1,089 tokens (its `countTokens` says so, modality `IMAGE`) against
+  `image_ceiling`'s 255, so the `tool-image` span costs 1,132 against a 397-token ceiling.
+  TC-05's Gemini rule (`max(1120, 258 per 768-px tile)`, `fix/image-token-caps`) bounds it; the
+  fixture test counts images by TC-05's rules for that reason. The same image costs 12 tokens on
+  Anthropic (`count_tokens`, 30 with it, 18 without), where TC-05's Anthropic rule gives
+  `⌈64/28⌉² = 9`: **a small image costs a few tokens more than the patch formula** (the node's
+  16 absorbs it here, not in general); 12 on Mistral and 11 on llama.cpp, where the old formula's
+  255 is loose but safe.
+- **Anthropic's `cache` proof as §3.1 states it never fires.** Each request bills a few tokens
+  after its last block, outside the cache (10 here, with tools and thinking), so `cached(n+1)`
+  is `input(n) − 10`. The meter now also proves a span when `cached(n+1) = cached(n) +
+  written(n)`: the second request read all the first had cached, up to its last block. Below
+  the minimum cacheable prompt (Haiku 4.5: the 700-token `turns`) nothing is cached at all and
+  no span is proved, so `cached` pads the system text past it (8.4k tokens). There, the requests
+  after a tool call prove their spans (3 of 6), a new user turn does not (Anthropic drops the
+  previous turn's thinking, so the earlier request is no prefix), and the turn after the 6-minute
+  gap reads nothing.
+- **Gemini and Mistral are proved by `prefix`** (16 spans each). Gemini's free tier reports no
+  cache on these small prompts; Mistral reports `cached` in blocks of 64 tokens (128 of 152), so
+  equality never holds there either.
+- **Mistral's refusal of a malformed body is 422** (FastAPI's validation error), Anthropic's and
+  Gemini's 400; all three become `SampleError` with the server's words.
+
 Image formulas land with image parts, which is not part of this ADR's stages.
 
 ### 11. Glossary entries proposed
