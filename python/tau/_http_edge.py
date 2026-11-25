@@ -82,7 +82,9 @@ class HttpEdge:
     bearer token every request must carry (`None`: the server makes one). `origins` are the web
     origins allowed to call (none by default). `heartbeat` is the seconds between pings. A `host`
     that is not loopback needs `allow_network`: `ValueError` otherwise. `web_root` is a built web
-    client's directory to serve (`None`: an installed `tau_web`'s, else the help page)."""
+    client's directory to serve (`None`: the installed `tau_web`'s, else the help page, which says
+    the install is broken). `web` off serves no client, only a page saying so (`ValueError`
+    with a `web_root`)."""
 
     host: str = "127.0.0.1"
     port: int | None = None
@@ -91,8 +93,11 @@ class HttpEdge:
     heartbeat: float = HEARTBEAT
     allow_network: bool = False
     web_root: Path | None = None
+    web: bool = True
 
     def __post_init__(self) -> None:
+        if not self.web and self.web_root is not None:
+            raise ValueError("a web root with the web client off: give one or the other")
         if self.port is not None and not 0 <= self.port <= 65535:  # noqa: PLR2004 - TCP's range
             raise ValueError(f"port {self.port} is not a TCP port (0 to 65535)")
         if self.heartbeat <= 0:
@@ -284,7 +289,7 @@ class Edge:
         self, edge: HttpEdge, token: str, handle: Callable[[Stream], Awaitable[None]]
     ) -> None:
         self._edge = edge
-        self._web = web_client(edge.web_root)
+        self._web = web_client(edge.web_root, web=edge.web)
         self._own: frozenset[str] = frozenset()
         self.token = token
         self._handle = handle

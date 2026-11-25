@@ -52,8 +52,8 @@ serialized.
     `Authorization: Bearer <token>` (`401` otherwise); one with an `Origin` header is refused
     (`403`) unless it is the edge's own origin or `tau serve --allow-origin` names it. The stream
     writes `: ping` every 15 seconds. There is no resume: a new stream is a new `hello`. Every
-    other `GET` is a web client's static files (`--web-root`), or a help page at `/`, with no
-    token.
+    other `GET` is the web client's static files (installed with `ffwf-tau`; `--web-root` names
+    another, `--no-web` serves none), or a short page at `/`, with no token.
 
   `tau serve -d --json` prints the serve record, which names the socket, the URL and the token;
   see [the quickstart](quickstart.md).

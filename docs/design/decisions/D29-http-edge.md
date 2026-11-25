@@ -4,6 +4,11 @@
 Open 4 (TCP for browsers). D21's messages, `PROTOCOL = 1` and `docs/protocol.schema.json` do not
 change: this is framing and access only.
 
+**Amended 2026-11-24 (0.17.1, unreleased):** §9. `ffwf-tau` now depends on `ffwf-tau-web`, so the
+web client is served by default; `--no-web` and `HttpEdge(web=False)` turn it off; a missing
+`tau_web` is a warned, served-as-such broken install, not a startup error. Lockstep versions,
+`PROTOCOL` only on a minor bump, and the release order are rules (§9). Open 4 is closed.
+
 ## Context
 
 D21 serves a session on a Unix socket, with the file permissions as the only access control, and
@@ -124,8 +129,9 @@ serving 20261120-174140-62d20e on /home/u/.tau/serve/20261120-174140-62d20e.sock
 
 and, only when stdout is a terminal and `--quiet` is not given, a second line with the **paste
 URL**, the edge's URL with `#token=<token>` (a fragment is not sent to a server): `open: URL#token=…`
-when the edge serves a web client (§9), which reads the token from its own address, and `for a
-web client: URL#token=…` when it serves only the help page. `-d` prints the same lines with
+when the edge serves a web client (§9, the default), which reads the token from its own address,
+and `for a web client: URL#token=…` when it serves only a help page (`--no-web`, or a broken
+install). `-d` prints the same lines with
 `started` or `already serving`.
 
 ### 8. Built on
@@ -145,11 +151,29 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
 (`sessionStorage`) and sends it as `Authorization`; no proxy has to inject it.
 
 - **Where the files come from**, first found: `tau serve --web-root DIR` (`HttpEdge.web_root`); else
-  the `dist/` of an installed package **`tau_web`** (tau-code publishes it; τ's wheel carries no
-  JavaScript); else none, and `/` is the **help page**: what the URL is, why its `#token=` never
-  reached the server, how to get a client. The help page says that no client is installed: it is
-  the gap, reported, not a stand-in. A web root (or a `tau_web`) without `index.html` fails at
-  start (`ConfigError` naming it).
+  the `dist/` of the installed package **`tau_web`**, which is tau-code's built client, published as
+  the wheel `ffwf-tau-web` (data only, `py3-none-any`, no dependency on `ffwf-tau`). **`ffwf-tau`
+  depends on it** (`ffwf-tau-web>=0.17,<0.18`), so a plain `tau serve` serves the client at `/`
+  with nothing more installed. τ's own wheel still carries no JavaScript: the files arrive in the
+  other wheel. A web root (or a `tau_web`) without `index.html` fails at start (`ConfigError`
+  naming it).
+- **`--no-web`** (`HttpEdge(web=False)`) serves no client: `/` is a short page saying the server
+  was started with `--no-web` and speaks only the wire at `/stream`. `--no-web` with `--web-root`
+  is refused ("one or the other"), and with `--no-http` it is refused too (there is no edge to
+  serve from).
+- **A broken install** (`tau_web` missing although the dependency says it is there) does not stop
+  the server: it warns on stderr (`tau: τ's web client is not installed (...): this install is
+  broken, and / serves a page that says so. Reinstall ffwf-tau, or give --web-root DIR, or
+  --no-web`) and serves the wire. `/` is then the **help page**: what the URL is, why its `#token=`
+  never reached the server, that the install is broken, and how to fix it (reinstall, or
+  `--web-root`). This is the gap, reported, not a stand-in and not a startup error, by decision:
+  the wire is what the server is for, and the page names the fault to whoever opens it.
+- **Versions.** `ffwf-tau-web` goes in lockstep with τ's minor: 0.17.x pairs with 0.17.x. The wire's
+  `PROTOCOL` changes only on a τ minor bump (a rule, so the pin `>=0.17,<0.18` is also a promise
+  that the client speaks the server's protocol; `scripts/check_tokens_wheel.py` checks the pin
+  against the workspace version). The release order is always `ffwf-tau-web` first, then `ffwf-tau`,
+  because the pin must resolve on PyPI when `ffwf-tau` publishes. The `ffwf-tau-web` wheel is built
+  from tau-code and must speak the current `PROTOCOL`.
 - **Routes.** `/stream` and `/stream/<id>` are the wire. Any other `GET` or `HEAD` is a file under
   the root; a path that escapes it (`..`, encoded or not, a backslash, a link out) is `404`; a path
   with no extension is the client's own route and gets `index.html`; a missing file is `404`.
@@ -184,11 +208,11 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
    the serve tests on Windows. Port them and un-skip the tests in the release workflow.
 2. **`tau sessions --json`** could mark sessions with a live endpoint (nice to have).
 3. **`name` in the record** is the name at start; a rename while serving is not reflected.
-4. **The `ffwf-tau[web]` extra** is to name tau-code's package once it is published; until then a
-   client is installed by hand (or `--web-root`).
+4. ~~**The `ffwf-tau[web]` extra**~~ Closed in 0.17.1: no extra; the client is a plain dependency
+   (§9).
 
 ## Glossary additions
 
-HTTP edge, `HttpEdge`, stream and connection id, heartbeat, paste URL, web client and web root
-(`tau_web`), help page, own origin; the serve record's edge fields (what was planned as the `.tcp`
+HTTP edge, `HttpEdge` (with `web`), stream and connection id, heartbeat, paste URL, web client and
+web root (`tau_web`, `ffwf-tau-web`, `--no-web`), help page, own origin; the serve record's edge fields (what was planned as the `.tcp`
 file).

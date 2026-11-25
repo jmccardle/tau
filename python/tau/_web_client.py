@@ -1,11 +1,14 @@
 """The web client the HTTP edge serves (D29 section 9): static files, without a token.
 
-Where the files come from, first found: `HttpEdge.web_root` (`tau serve --web-root DIR`), else the
-`dist/` directory of an installed package `tau_web` (a web client built elsewhere, tau-code's, and
-installed beside τ), else none, and `/` is the **help page**: what this URL is, why its
-`#token=...` never reached the server, and how to get a client. A client's directory must hold
-`index.html` (`ValueError` otherwise: a client that cannot load is said at start, not at the first
-page). Nothing here reads the session: the files are the same for anyone who asks.
+τ's own client is tau-code's, installed as the package `tau_web` (the wheel `ffwf-tau-web`, a
+dependency of `ffwf-tau`). Where the files come from, first found: `HttpEdge.web_root`
+(`tau serve --web-root DIR`), else the `dist/` directory of the installed `tau_web`. With
+`HttpEdge.web` off (`tau serve --no-web`) there are none, and `/` is a page saying that the server
+speaks only the wire. With no `tau_web` installed, `/` is the **help page**: the install is
+broken, what this URL is, why its `#token=...` never reached the server, and how to get a
+client. A client's directory must hold `index.html` (`ValueError` otherwise: a client that cannot
+load is said at start, not at the first page). Nothing here reads the session: the files are the
+same for anyone who asks.
 
 A path that names a file under the root is that file; one that escapes the root (`..`, an encoded
 `..`, a backslash) is `404`; one with no extension is a page of the client's own routing and gets
@@ -37,35 +40,57 @@ HEADERS: Final = (
 )
 """What every page and file is sent with."""
 
-HELP: Final = """\
+_PAGE: Final = """\
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>tau serve</title>
 <style>
-body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
-code { background: #8881; padding: 0 .25em; border-radius: 3px; }
+body {{ font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto;
+  padding: 0 1rem; }}
+code {{ background: #8881; padding: 0 .25em; border-radius: 3px; }}
 </style>
 </head>
 <body>
 <h1>τ: <code>tau serve</code></h1>
-<p>This is the HTTP edge of a <code>tau serve</code> session. No web client is installed in this
-τ, so there is nothing to open here yet.</p>
+{body}
+<p>Programs speak the wire at <code>/stream</code>: see τ's <code>docs/guide/protocol.md</code>.</p>
+</body>
+</html>
+"""
+
+HELP: Final = _PAGE.format(
+    body="""\
+<p>This is the HTTP edge of a <code>tau serve</code> session. <strong>τ's web client is not
+installed</strong>: the package <code>tau_web</code>, from the wheel <code>ffwf-tau-web</code>,
+which <code>ffwf-tau</code> depends on. This install of τ is broken: it lacks a dependency.</p>
 <p>The <code>#token=…</code> at the end of the URL you opened is for a web client: browsers never
 send that part to a server, so the client reads it from the page's own address and sends it as a
 bearer token. Nothing this page could do with it is needed.</p>
 <h2>Get a client</h2>
 <ul>
-<li>Run <code>tau serve --web-root DIR</code> with a built web client in <code>DIR</code>
+<li>Reinstall τ with its dependencies: <code>pip install --force-reinstall ffwf-tau</code>, or
+<code>pip install ffwf-tau-web</code> beside it.</li>
+<li>Or run <code>tau serve --web-root DIR</code> with a built web client in <code>DIR</code>
 (its <code>index.html</code> and files).</li>
-<li>Or install a client package that provides <code>tau_web</code> beside τ; <code>tau serve</code>
-then serves it here.</li>
-</ul>
-<p>Programs speak the wire at <code>/stream</code>: see τ's <code>docs/guide/protocol.md</code>.</p>
-</body>
-</html>
-"""
+</ul>"""
+)
+"""`/` when no `tau_web` is installed: a broken install, said, not a stand-in for the client."""
+
+NO_WEB: Final = _PAGE.format(
+    body="""\
+<p>This is the HTTP edge of a <code>tau serve</code> session started with <code>--no-web</code>:
+it serves no web client.</p>"""
+)
+"""`/` with `HttpEdge.web` off (`tau serve --no-web`)."""
+
+MISSING: Final = (
+    "τ's web client is not installed (the package tau_web, from ffwf-tau-web, which ffwf-tau "
+    "depends on): this install is broken, and / serves a page that says so. Reinstall "
+    "ffwf-tau, or give --web-root DIR, or --no-web"
+)
+"""What `tau serve` warns at start when it would serve the help page."""
 
 
 @dataclass(frozen=True)
@@ -79,16 +104,18 @@ class Page:
 
 @dataclass(frozen=True)
 class WebClient:
-    """The files the edge serves: the client's `root`, or `None` for the help page alone."""
+    """The files the edge serves: the client's `root`, or `None` for `page_at_root` alone (the
+    help page or the `--no-web` page)."""
 
     root: Path | None
+    page_at_root: str = HELP
 
     def page(self, target: str) -> Page:
         """What a GET of `target` (a request target: a path and maybe a query) answers."""
         path = unquote(target.split("?", 1)[0])
         if self.root is None:
             if path in ("/", "/" + INDEX):
-                return Page(200, HELP.encode(), "text/html; charset=utf-8")
+                return Page(200, self.page_at_root.encode(), "text/html; charset=utf-8")
             return _missing()
         found = _under(self.root, path)
         if found is None:
@@ -143,7 +170,12 @@ def installed() -> Path | None:
     return checked_root(Path(next(iter(spec.submodule_search_locations))) / "dist")
 
 
-def web_client(root: Path | None) -> WebClient:
-    """The client to serve: `root` if given, else an installed `tau_web`'s, else none (the help
-    page). `ValueError` for a root that holds no client."""
+def web_client(root: Path | None, *, web: bool = True) -> WebClient:
+    """The client to serve: none with `web` off (the `--no-web` page), else `root` if given, else
+    the installed `tau_web`'s, else none (the help page: a broken install). `ValueError` for a root
+    that holds no client, or for a `root` with `web` off."""
+    if not web:
+        if root is not None:
+            raise ValueError("a web root with the web client off: give one or the other")
+        return WebClient(None, NO_WEB)
     return WebClient(checked_root(root) if root is not None else installed())

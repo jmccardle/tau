@@ -785,6 +785,7 @@ class HttpEdge
     origins: tuple[str, ...] = ()
     port: int | None = None
     token: str | None = None
+    web: bool = True
     web_root: Path | None = None
 Json = dict[str, object]
 PROTOCOL: Final = 2

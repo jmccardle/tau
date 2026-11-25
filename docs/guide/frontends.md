@@ -433,11 +433,14 @@ fails. Run `tau serve` in a terminal and it prints a URL with the token in its f
 (`http://127.0.0.1:3393/#token=...`); `--quiet` leaves it out. `--no-unix` and `--no-http` turn
 one transport off. D29 has the details.
 
-**A web client** is served by the edge itself: `tau serve --web-root DIR` serves a built client's
-files (or an installed `tau_web` package's), without a token, from the same origin as the wire.
+**A web client** is served by the edge itself, and `ffwf-tau` installs it (the `ffwf-tau-web`
+wheel, package `tau_web`): a plain `tau serve` serves it, without a token, from the same origin as
+the wire. `--web-root DIR` serves another built client's files instead, and `--no-web` serves none.
 The client reads the token from the URL's `#token=` (a browser never sends the fragment to the
 server) and sends it as `Authorization: Bearer` on `/stream`. The banner then says `open:` before
-that URL. With no client installed, `/` is a help page saying so.
+that URL (`for a web client:` with `--no-web`). With `--no-web`, `/` is a short page saying so. If
+the client is missing from a broken install, the server warns on stderr and `/` is a help page that
+says the install is broken and how to fix it (reinstall `ffwf-tau`, or `--web-root`).
 
 ## The terminal UI
 

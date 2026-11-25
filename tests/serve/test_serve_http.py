@@ -352,9 +352,14 @@ def on_a_terminal(
     return text.decode().replace("\r\n", "\n").splitlines(), record
 
 
-def test_on_a_terminal_a_second_line_is_the_paste_url_with_the_token(home: World) -> None:
+def test_on_a_terminal_a_second_line_opens_the_installed_client_with_the_token(home: World) -> None:
     lines, record = on_a_terminal(home, "--no-unix")
     assert lines[0] == f"serving {OLD} on {record['url']} (pid {record['pid']})"
+    assert lines[1] == f"open: {record['url']}#token={record['token']}"
+
+
+def test_with_no_web_the_paste_url_is_for_a_web_client_served_elsewhere(home: World) -> None:
+    lines, record = on_a_terminal(home, "--no-unix", "--no-web")
     assert lines[1] == f"for a web client: {record['url']}#token={record['token']}"
 
 
@@ -429,3 +434,48 @@ def test_an_installed_tau_web_is_served(home: World) -> None:
     page = httpx.get(str(record["url"]), trust_env=False, timeout=5)
     assert page.text.endswith("<title>installed</title>")
     stop(home)
+
+
+def without_tau_web(world: World) -> World:
+    """`world` where `tau_web` is a plain module, not the package: as good as not installed."""
+    shadow = world.home / "shadow"
+    shadow.mkdir()
+    (shadow / "tau_web.py").write_text("", encoding="utf-8")
+    return dataclasses.replace(world, environ={**world.environ, "PYTHONPATH": str(shadow)})
+
+
+def test_without_tau_web_the_server_says_the_install_is_broken_and_serves_the_wire(
+    home: World,
+) -> None:
+    broken = without_tau_web(home)
+    result = serve(broken, "-d", "--json", "--session", OLD, "--no-unix")
+    assert result.code == 0, result.err
+    assert "web client is not installed" in result.err
+    assert "this install is broken" in result.err
+    record = json.loads(result.out)
+    page = httpx.get(str(record["url"]), trust_env=False, timeout=5)
+    assert page.status_code == 200
+    assert "web client is not installed" in page.text
+    assert "ffwf-tau-web" in page.text
+    assert str(record["token"]) not in page.text
+    assert asyncio.run(welcome_over_http(record)) is not None, "the wire is served all the same"
+    stop(home)
+
+
+def test_no_web_says_nothing_of_a_missing_client(home: World) -> None:
+    result = serve(without_tau_web(home), "-d", "--json", "--session", OLD, "--no-unix", "--no-web")
+    assert result.code == 0, result.err
+    assert "not installed" not in result.err
+    stop(home)
+
+
+def test_no_web_with_a_web_root_is_refused(home: World) -> None:
+    result = serve(home, "--no-web", "--web-root", ".", "--session", OLD)
+    assert result.code != 0
+    assert "one or the other" in result.err
+
+
+def test_no_web_without_http_is_refused(home: World) -> None:
+    result = serve(home, "--no-http", "--no-web", "--session", OLD)
+    assert result.code != 0
+    assert "--no-web configure HTTP, which --no-http turns off" in result.err

@@ -23,6 +23,7 @@ projects (`.tau/`) and path patterns in permission rules (`read:GLOB`; the bare 
 not available and say so when used. Its test suite runs there with the tests of those skipped, each naming why.
 
 `pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
+`pip install 'ffwf-tau'` also installs the web client that `tau serve` serves at its URL (`--no-web` turns it off).
 New in 0.17: the HTTP edge of `tau serve`, and images in tool results ([0.17.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.0.md)).
 Coming from 0.15? Read the [0.16.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.16.0.md) first: 0.16 is a
 rewrite and does not read 0.15 sessions or load 0.15 extensions.
