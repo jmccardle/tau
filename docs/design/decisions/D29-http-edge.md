@@ -4,7 +4,7 @@
 Open 4 (TCP for browsers). D21's messages, `PROTOCOL = 1` and `docs/protocol.schema.json` do not
 change: this is framing and access only.
 
-**Amended 2026-11-24 (0.17.1, unreleased):** §9. `ffwf-tau` now depends on `ffwf-tau-web`, so the
+**Amended 2026-11-24 (released in 0.17.1):** §9. `ffwf-tau` now depends on `ffwf-tau-web`, so the
 web client is served by default; `--no-web` and `HttpEdge(web=False)` turn it off; a missing
 `tau_web` is a warned, served-as-such broken install, not a startup error. Lockstep versions,
 `PROTOCOL` only on a minor bump, and the release order are rules (§9). Open 4 is closed.

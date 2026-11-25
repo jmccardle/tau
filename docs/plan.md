@@ -416,8 +416,8 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
 ### After 0.16.0
 - **0.17.0 (released 2026-11-24): the HTTP edge (D29) and images in tool results (D30).** The edge was
   planned as 0.16.1, which was not released.
-- **0.17.1 (in progress): the web client ships with τ.** Branch `feat/bundle-web-client`, unmerged
-  until `ffwf-tau-web` 0.17.0 is on PyPI. `ffwf-tau` depends on `ffwf-tau-web>=0.17,<0.18` (tau-code's
+- **0.17.1 (released 2026-11-24): the web client ships with τ, and `-d` keeps `-I` (#79).**
+  Merged as `feat/bundle-web-client` after `ffwf-tau-web` 0.17.0 reached PyPI. `ffwf-tau` depends on `ffwf-tau-web>=0.17,<0.18` (tau-code's
   client), so `tau serve` serves it by default; `--no-web` serves none; a broken install is
   warned and gets a help page (D29 §9). Release order: `ffwf-tau-web`, then `ffwf-tau`.
 - **The HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
