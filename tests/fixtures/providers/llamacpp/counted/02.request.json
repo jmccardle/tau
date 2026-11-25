@@ -1,0 +1,44 @@
+{
+  "method": "POST",
+  "url": "http://llamacpp.invalid/apply-template",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "qwen3.8-27b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details."
+      },
+      {
+        "role": "user",
+        "content": "Look up part A-113 and tell me which bin it is in."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_part",
+          "description": "Look up one part by its part number: what it is, its bin and its stock.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "part": {
+                "type": "string",
+                "description": "a part number, like A-113"
+              }
+            },
+            "required": [
+              "part"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "max_tokens": 2048
+  }
+}

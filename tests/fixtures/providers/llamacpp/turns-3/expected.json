@@ -1,0 +1,59 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 382,
+        "output": 65,
+        "cached": 378
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_calls"
+    },
+    {
+      "usage": {
+        "input": 460,
+        "output": 103,
+        "cached": 378
+      },
+      "stop": "End",
+      "finish_reason": "stop"
+    },
+    {
+      "usage": {
+        "input": 537,
+        "output": 106,
+        "cached": 456
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_calls"
+    },
+    {
+      "usage": {
+        "input": 670,
+        "output": 84,
+        "cached": 533
+      },
+      "stop": "End",
+      "finish_reason": "stop"
+    },
+    {
+      "usage": {
+        "input": 754,
+        "output": 54,
+        "cached": 666
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_calls"
+    },
+    {
+      "usage": {
+        "input": 813,
+        "output": 63,
+        "cached": 750
+      },
+      "stop": "End",
+      "finish_reason": "stop"
+    }
+  ],
+  "error": null
+}

@@ -1,0 +1,7 @@
+{
+  "replies": [],
+  "error": {
+    "status": 400,
+    "message": "HTTP 400: exceed_context_size_error: request (144236 tokens) exceeds the available context size (131072 tokens), try increasing it"
+  }
+}

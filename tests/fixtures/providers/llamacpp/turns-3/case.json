@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "family": "llamacpp",
+  "provider": "openai",
+  "kind": "turns",
+  "scenario": "turns",
+  "model": {
+    "provider": "openai",
+    "model": "qwen3.8-27b",
+    "base_url": "http://llamacpp.invalid/v1",
+    "max_tokens": 2048
+  },
+  "system": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+  "turns": [
+    "Look up part A-113 and tell me which bin it is in.",
+    "Now look up B-207 and C-042 and tell me which of the two has more in stock.",
+    "Look up part Z-999. If there is no such part, say so in one sentence."
+  ],
+  "gaps": [
+    0,
+    0,
+    0
+  ],
+  "tools": [
+    {
+      "name": "lookup_part",
+      "description": "Look up one part by its part number: what it is, its bin and its stock.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "part": {
+            "type": "string",
+            "description": "a part number, like A-113"
+          }
+        },
+        "required": [
+          "part"
+        ],
+        "additionalProperties": false
+      },
+      "answers": {
+        "A-113": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock.",
+        "B-207": "B-207: flat washer M8, stainless. Bin 3. 1450 in stock.",
+        "C-042": "C-042: lock nut M8, nylon insert. Bin 9. 85 in stock."
+      },
+      "key": "part"
+    }
+  ],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

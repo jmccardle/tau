@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "family": "llamacpp",
+  "provider": "openai",
+  "kind": "turns",
+  "scenario": "length",
+  "model": {
+    "provider": "openai",
+    "model": "qwen3.8-27b",
+    "base_url": "http://llamacpp.invalid/v1",
+    "max_tokens": 24
+  },
+  "system": "Be terse.",
+  "turns": [
+    "Count from 1 to 300, separated by commas."
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}
