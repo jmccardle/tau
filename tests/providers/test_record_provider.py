@@ -504,11 +504,10 @@ def test_a_family_without_fixtures_has_no_cases_and_a_command_that_records_it(
     (tmp_path / "gemini" / ".recording-left").mkdir()
     for family in FAMILIES:
         assert cases(family, tmp_path) == []
-        assert f"scripts/record_provider.py {family} --model MODEL_ID" in RECORD[family]
+        assert f"scripts/record_provider.py all --only {family}" in RECORD[family]
     assert set(RECORD) == set(FAMILIES)
-    assert "--gap 360" in RECORD["anthropic"]
-    assert "--case builtin-tool" in RECORD["gemini"]
-    assert "--base-url http://HOST:8100/v1" in RECORD["llamacpp"]
+    assert "ANTHROPIC_API_KEY" in RECORD["anthropic"]
+    assert "LLAMACPP_BASE_URL" in RECORD["llamacpp"]
 
 
 FIT = SCRIPT.parent / "fit_prior.py"
@@ -550,3 +549,111 @@ def test_the_prior_script_writes_nothing_when_there_is_nothing_to_fit(tmp_path: 
     assert done.returncode == 1
     assert "nothing to fit" in done.stderr
     assert not out.exists(), "it never invents a number"
+
+
+def recorder_module() -> Any:
+    spec = importlib.util.spec_from_file_location("record_provider", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def keys_file(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "keys.env"
+    path.write_text(text)
+    path.chmod(0o600)
+    return path
+
+
+def everything(
+    tmp_path: Path, keys: Path, out: Path, *more: object
+) -> subprocess.CompletedProcess[str]:
+    return script("all", "--keys", keys, "--out", out, *more, key=None)
+
+
+def test_all_records_what_the_keys_file_sets_up_and_says_what_it_skips(tmp_path: Path) -> None:
+    server = Scripted([], status=400)
+    out = tmp_path / "out"
+    with server.running() as root:
+        keys = keys_file(
+            tmp_path,
+            "# a comment\nOPENAI_API_KEY=\nexport ANTHROPIC_API_KEY=''\n"
+            f'LLAMACPP_BASE_URL="{root}/v1"\nLLAMACPP_MODEL={MODEL}\n',
+        )
+        done = everything(tmp_path, keys, out, "--only", "llamacpp,openai,anthropic",
+                          "--scenarios", "error-bad-request")  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert "openai: skipped: OPENAI_API_KEY is empty" in done.stdout
+    assert "anthropic: skipped: ANTHROPIC_API_KEY is empty" in done.stdout
+    case_dir = out / "llamacpp" / "error-bad-request"
+    case = read(case_dir / "case.json")
+    assert (case["kind"], case["scenario"], case["raw"]["error"]) == (
+        "raw",
+        "error-bad-request",
+        True,
+    )
+    assert read(case_dir / "00.request.json")["body"]["messages"] == "not a list of messages"
+    expected = read(case_dir / "expected.json")
+    assert expected["replies"] == []
+    assert expected["error"]["status"] == 400
+    assert sorted(p.parent.name for p in out.glob("*/*/case.json")) == ["error-bad-request"]
+
+
+def test_a_dry_run_sends_nothing_billed_and_prints_the_plan(tmp_path: Path) -> None:
+    server = Scripted([])
+    with server.running() as root:
+        keys = keys_file(tmp_path, f"LLAMACPP_BASE_URL={root}/v1\nLLAMACPP_MODEL={MODEL}\n")
+        done = everything(tmp_path, keys, tmp_path / "out", "--only", "llamacpp", "--dry-run")
+    assert done.returncode == 0, done.stderr
+    assert [m for m, _, _ in server.requests if m != "GET"] == [], "only free model lists"
+    assert "total: ~" in done.stdout
+    assert "counted" in done.stdout, "llama.cpp counts for free"
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_key_the_server_sends_back_is_named_by_its_variable_and_never_printed(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-local-0123456789abcdefghij"
+    server = Scripted(STREAMS, echo=True)
+    with server.running() as root:
+        keys = keys_file(
+            tmp_path,
+            f"OAICOMPAT_BOX_BASE_URL={root}/v1\nOAICOMPAT_BOX_API_KEY={secret}\n"
+            f"OAICOMPAT_BOX_MODEL={MODEL}\n",
+        )
+        done = everything(tmp_path, keys, tmp_path / "out", "--only", "oaicompat-box",
+                          "--scenarios", "turns", "--rounds", "1")  # fmt: skip
+    assert done.returncode == 1
+    assert "would hold the value of OAICOMPAT_BOX_API_KEY" in done.stderr
+    assert secret not in done.stdout + done.stderr
+    assert not (tmp_path / "out" / "oaicompat-box" / "turns").exists()
+
+
+def test_a_local_servers_address_and_anything_shaped_like_a_key_stay_out() -> None:
+    recorder = recorder_module()
+    origin = recorder.private_origin
+    assert origin("http://192.168.1.100:8100/v1", local=True) == "http://192.168.1.100:8100"
+    assert origin("http://gpu-box.lan:8000/v1", local=True) == "http://gpu-box.lan:8000"
+    assert origin("http://10.0.0.7:8000/v1", local=False) == "http://10.0.0.7:8000"
+    assert origin("http://127.0.0.1:8100/v1", local=True) is None
+    assert origin("http://localhost:8100/v1", local=True) is None
+    assert origin("https://api.openai.com/v1", local=False) is None
+    shaped = recorder.find_shape
+    assert shaped({"a": b'{"x": "sk-proj-' + b"a" * 30 + b'"}'}) is not None
+    assert shaped({"a": b'{"headers": {"x-api-key": "k"}}'}) is not None
+    assert shaped({"a": b"http://192.168.1.100:8100/v1"}) is not None
+    assert shaped({"a": b'{"model": "qwen", "id": "chatcmpl-abc"}'}) is None
+    assert (
+        recorder.scrub(f"said {KEY} twice {KEY}", {"K": KEY}) == "said <redacted> twice <redacted>"
+    )
+
+
+def test_the_keys_file_refuses_a_line_without_showing_it(tmp_path: Path) -> None:
+    keys = keys_file(tmp_path, "OPENAI_API_KEY sk-not-an-assignment-0123456789\n")
+    done = everything(tmp_path, keys, tmp_path / "out")
+    assert done.returncode == 2
+    assert "keys.env:1: not NAME=VALUE" in done.stderr
+    assert "sk-not" not in done.stderr

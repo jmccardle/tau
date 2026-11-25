@@ -5,11 +5,12 @@ Anthropic case proves its spans and none across its cache miss. A family nobody 
 is skipped, saying how to record it (`replay.RECORD`): until its fixtures exist, nothing here says
 anything about that family's real server."""
 
+import json
 from pathlib import Path
 
 import pytest
 from harness import scenario
-from replay import FAMILIES, RECORD, Run, cases, replayed
+from replay import FAMILIES, RECORD, Run, cases, recorded_families, replayed
 
 from tau import Body, Node, Outcome, Part
 
@@ -19,21 +20,34 @@ of D26: raise it if a fixture's per-message overhead comes close (`test_..._ceil
 the closest)."""
 
 
+def wire_only(case_dir: Path) -> bool:
+    """A raw case the provider cannot read (a response that is not streamed): a fixture of
+    the wire alone."""
+    case = json.loads((case_dir / "case.json").read_text())
+    return case["kind"] == "raw" and not case.get("raw", {}).get("adapter", True)
+
+
 @scenario
 async def replays_as_recorded(case_dir: Path, tmp_path: Path) -> None:
+    if wire_only(case_dir):
+        return
     async with replayed(case_dir, tmp_path) as run:
         assert run.replies == run.expected, f"{case_dir}: usage, stop or finish_reason changed"
+        assert run.error == run.expected_error, f"{case_dir}: the error read changed"
         if run.case["kind"] == "turns":
             assert run.sent == run.recorded, f"{case_dir}: the provider sends other requests now"
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+FAMILIES_ON_DISK = tuple(sorted({*FAMILIES, *recorded_families()}))
+
+
+@pytest.mark.parametrize("family", FAMILIES_ON_DISK)
 def test_a_recorded_case_replays_to_its_golden_replies_and_its_requests(
     family: str, tmp_path: Path
 ) -> None:
     recorded = cases(family)
     if not recorded:
-        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD[family]}`")
+        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD.get(family, family)}`")
     for case_dir in recorded:
         replays_as_recorded(case_dir, tmp_path)
 
@@ -83,9 +97,9 @@ async def replay_of(case_dir: Path, tmp_path: Path) -> Run:
 
 
 def turn_cases(family: str) -> list[Path]:
-    recorded = cases(family)
+    recorded = [c for c in cases(family) if not wire_only(c)]
     if not recorded:
-        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD[family]}`")
+        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD.get(family, family)}`")
     return recorded
 
 
@@ -102,7 +116,7 @@ async def spans_fit_their_ceilings(case_dir: Path, tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("family", FAMILIES_ON_DISK)
 def test_no_proved_span_costs_more_than_its_ceilings(family: str, tmp_path: Path) -> None:
     """D26 T2: on every fixture. It starts to say something the day a family's fixtures land."""
     for case_dir in turn_cases(family):
@@ -124,7 +138,7 @@ def test_a_recorded_conversation_proves_spans(family: str, tmp_path: Path) -> No
     @scenario
     async def check(case_dir: Path) -> None:
         run = await replay_of(case_dir, tmp_path)
-        if run.case["kind"] != "turns":
+        if run.case["kind"] != "turns" or len(run.replies) < 2:  # one request proves nothing
             return
         assert run.spans, f"{case_dir}: no span was proved in a recorded conversation"
         assert {s.proof for s in run.spans} <= proofs[family]
