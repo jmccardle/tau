@@ -1,12 +1,14 @@
 # D32: Completion items, attributed notices, the `Commands` event, and extension start/stop
 
-**Status:** proposed, for 0.18.0 (unreleased), for review before any of it is built. **Amends**
+**Status:** accepted 2026-11-25 with John's rulings on the four open questions (Rulings, below),
+for 0.18.0 (unreleased). **Amends**
 D16 §5 (`complete` answers items, not strings; a `Notice` says who and how loud; a new state
 event), D19 (a start that raises is a load error), D21 §3 and §8 (the events, and what `PROTOCOL`
 3 holds), D23 (the TUI stops polling `commands`), D31 §4 (`PROTOCOL` 3 holds more than images),
 `model.md` §7 (a handle that outlives a hook) and §9 (the events table). Proposal trail: akb #639,
 #640 (SC-01), #641 (PC-01..PC-15, CV-01..CV-06), #642 (John's rulings Q-a..Q-e), #643 (PC-16
-rejected). John's decisions there are marked **fixed**.
+rejected). John's decisions there are marked **fixed**, and so are his rulings of 2026-11-25 on
+this ADR's open questions (Rulings).
 
 ## Context
 
@@ -124,8 +126,8 @@ class Notice:
 - **`error`**: what a client asked for was not done (an input refused), or an extension's work
   failed.
 
-Two deliberate departures from #641's sketch, for review: the field is **`extension`**, not
-`source`, because D19 already uses *source* for where extension code comes from, and every other
+Two deliberate departures from #641's sketch (**fixed**, Ruling 1): the field is **`extension`**,
+not `source`, because D19 already uses *source* for where extension code comes from, and every other
 event names its extension `extension` (`OpenQuestion`, `HookFailure`, `Form`); and the middle
 level is **`warning`**, not `warn`, as the config checker's `Severity` (`"error"`, `"warning"`)
 and Textual's toast severities spell it.
@@ -140,6 +142,8 @@ cannot speak as another, or as τ. `cursor` is the handle's own where it has one
 | `TreeHandle.tell(text, *, to=None, cursor=None, level="info")` (new, §4) | the argument (`NoSuchCursor` if not open) | the handle's | the argument |
 | a command's `progress(text)` | the cursor it was run on | the command's owner (`tau` for the built-in's) | `info` |
 | a `pre_input` hook halts a client's input (core's notice) | the input's cursor | the hook's extension | `error` |
+| a task started by `TreeHandle.spawn` raises (§4) | `None` | the handle's | `error` |
+| a `stop` that raises or times out during a reload (§4) | `None` | the extension stopped | `error` |
 | the image rule halts an input after `pre_input` (D31 §5) | the input's cursor | `None` | `error` |
 
 A `level` outside the three is a `ValueError` at the `tell`. Old call sites keep compiling and
@@ -259,6 +263,21 @@ loop-only, as now.
 The tree handle gains:
 
 - `tell(text, *, to=None, cursor=None, level="info")`, §2.
+- `spawn(coro) -> asyncio.Task[None]` (**fixed**, Ruling 2): run `coro` as a task the driver owns
+  for this extension. On the loop only (`RuntimeError` off it, as `asyncio` says), on a live handle
+  (`NotInHook` on a retired one), and never on a stopped driver (`ConnectionError`). The task is
+  the extension's, whichever of its handles spawned it: a hook's handle may spawn one that
+  outlives the hook. An exception in it (anything but its cancelling) is reported, never
+  swallowed: an `error` `Notice` to every client, `cursor` `None`, `extension` the spawner's, text
+  `"task failed: Type: msg"`, and its traceback on stderr with the extension's name, as a hook's
+  failure is. It does not fail the driver or the extension: the extension goes on, and it is the
+  administrator's call to restart. The tasks are cancelled and awaited when the extension is
+  stopped, **before** its `stop` runs (at shutdown, and when a reload stops it), so `stop` never
+  races its own tasks; a task that ignores the cancel delays that stop up to its `STOP_TIMEOUT`.
+  The returned task may be cancelled by the extension itself; a cancel is not a failure. They are
+  not the driver's effects: `DriverState.units` does not count them, so a harness's quiet does not
+  wait for them. A coroutine the extension runs with `asyncio.create_task` itself stays its own, as
+  before: unwatched.
 - `reassemble()`: this extension's `tools` or `commands` changed (an MCP server listed its tools,
   or listed them again). The driver assembles tools and commands again from every extension, from
   the next job it dispatches, as `use_catalog` does for models; hooks, options and hook order are
@@ -282,20 +301,40 @@ The tree handle gains:
   tools and commands are assembled again (a `start` may have filled them), then the pump starts.
   Inside `start`, the handle's `rest` and `close_cursor` raise `ValueError` ("the driver has not
   started"): waiting there would never end. An extension that wants to wait starts its own task.
-- **Reload.** `Driver.reload(extensions)` becomes `async` and keeps its refusals (`Busy` while
-  work is out; `DefinitionError` with nothing changed). An extension object in both the old and
-  the new list (the same object) is neither stopped nor started. The new ones are **started first**,
-  in load order; if one fails, those started are stopped (reverse order) and the reload raises
-  with nothing changed, the old set still running. Then the driver adopts the new set, publishes
-  (`Commands`, §3), and stops the old ones that left, in reverse load order.
-- **Shutdown.** `Driver.stop()` marks the driver stopped and cancels every task as now, then runs
-  each started extension's `stop` in reverse load order, then ends the streams. A `stop` that
+- **Reload** (**fixed**, Ruling 3: stop first). `Driver.reload(extensions)` becomes `async`. It
+  refuses, with nothing changed: `Busy` if any cursor is not at rest (busy, or an effect out), or
+  another reload is in progress; it does not wait for rest, a caller that wants to retries.
+  `DefinitionError` (or `ConfigError` for a hook order that does not fit) if the new set does
+  not fit, checked before anything is stopped. Then, in this order:
+  1. Dispatching is held: the pump takes no job until the reload ends, so no hook of a new
+     extension runs before its `start` has returned, and a client's input meanwhile waits.
+  2. The old extensions that leave are **stopped first**, in reverse load order (their spawned
+     tasks cancelled, then `stop`). An extension object in both lists (the same object) is
+     neither stopped nor started, and keeps its handle and tasks. A `stop` that raises or times
+     out is written to stderr and told to clients as an `error` `Notice` from that extension;
+     the reload goes on.
+  3. The driver adopts the new set (hooks, tools, commands, options).
+  4. The new ones are started, in load order, with their `START_TIMEOUT`s. Their handles' `rest`
+     and `close_cursor` are refused while the reload holds dispatching, as inside a driver start.
+  5. Dispatching is released; the hub publishes (`Commands`, §3).
+
+  **A failed start** (a raise or a timeout) leaves no half-started set and is not hidden: the
+  extensions this reload started are stopped (reverse order), and the driver adopts the set the
+  reload kept: the extensions in both lists, without any new one. That is what is loaded
+  afterwards, and clients see it in `Commands`. `reload` then raises `ExtensionLoadError` naming
+  the extension and its failure (`extension 'mcp' did not start: TimeoutError: …`), and that the
+  reload left only the kept extensions running. There is no way back to the old instances: they
+  were stopped. **Reload is best effort for well-behaved extensions** (a `stop` that lets go of
+  what its `start` took); restarting the harness is the safer path, and the one to take after a
+  failed reload.
+- **Shutdown.** `Driver.stop()` marks the driver stopped and cancels every task as now, the
+  extensions' spawned tasks included, then runs each started extension's `stop` in reverse load order, then ends the streams. A `stop` that
   raises or times out is written to stderr with the extension's name and traceback (as a hook's
   failure is) and the next `stop` still runs: shutdown must finish, because the session's lease
   and the providers are released after it. `Driver.stop()` does not raise for it.
 
-**Failure (Fail Early).** A `start` that raises, or does not return within `START_TIMEOUT`
-(30 s), is a load failure: the starts already done are stopped in reverse order, nothing is
+**Failure (Fail Early).** A `start` that raises, or does not return within its start timeout
+(`START_TIMEOUT`, 30 s, unless configured), is a load failure: the starts already done are stopped in reverse order, nothing is
 served, and `Driver.start()` raises `ExtensionLoadError` naming the extension and its failure
 (`extension 'mcp' did not start: TimeoutError: …`). `start_session` adds the source row as every
 load failure has it (D19: the key, the origin, and the command that gets past it: `tau ext disable
@@ -304,10 +343,24 @@ the same way they stop for an import that fails. `STOP_TIMEOUT` is 5 s. (If impo
 `ExtensionLoadError` into the driver makes a cycle, it moves to a leaf module; it stays exported
 from `tau`.)
 
+**Timeouts** (**fixed**, Ruling 4). `START_TIMEOUT` (30 s) and `STOP_TIMEOUT` (5 s) are the
+defaults, exported from `tau`. The harness's config files override them per extension:
+`extensions.NAME.start_timeout` and `extensions.NAME.stop_timeout`, a positive number of seconds.
+They sit beside `extensions.NAME.order` (D28) and are read the same way: from the config layers
+(user, project, `--set`/`TAU_SETTINGS`), popped from the extension's options before the options
+are built, so they are never options, never in the `config` form and never settable by a client
+(`set_options`, `/config`, a `Config` node): a client configures what an extension offers it, an
+administrator how the harness runs it (akb #643). A value that is not a positive number is a
+config `error`; one for an extension that has no `start` (or no `stop`) is a `warning`, ignored,
+as other configuration that names something the start does not have. `ModelCatalog.timeouts`
+carries them, keyed by extension name, `(start, stop)` with `None` for the default; the driver
+reads them where it starts or stops an extension, so a `use_catalog` applies to the next one.
+
 **Concurrency.** Starts are sequential, so the order and the failing extension are deterministic.
 Work an extension does after `start` returns is its own: tasks it creates are its to cancel in
 `stop`, and a failure in one is its to report, with `tree.tell(…, level="error")`. The driver
-does not watch tasks it did not start (but see Open 2). A hook of the extension and its lifecycle
+does not watch tasks it did not start; `spawn` (above) is how an extension hands a task to the
+driver to watch. A hook of the extension and its lifecycle
 handle may write at once; core serializes the writes, as it does for two hooks today.
 
 **PC-03 from the lifecycle.** At driver start there is no client, so the first `Commands` a client
@@ -382,7 +435,7 @@ wire shape is checked by a `RemoteClient` decoding exactly what a `LocalClient` 
 | PC-01 | behavior: each named type's items (label and detail as §1's table; a `path` directory with no size; a `cursor` with labels; a `node` summary for each body kind); `complete_line` command names with description detail; list items (value the whole text, label the item); enum and bool items bare; quoting in `value`, none in `label`. `tests/behavior/test_commandline.py` and `test_line_calls.py`. TUI pilot: the popup shows label and detail and inserts value (`tests/tui/test_slash.py`). Schema: `complete`'s `x-result` is an array of `Completion`, only `value` required. | M | `_complete.py`, `commandline.py`, `_client.py`, `_remote.py`, `_commands.py`, a shared node summary (with the tree pane's), `tui/_editor.py`, `tui/_line.py`, the pickers, `__init__.py`, schema, `surface.txt`, `docs/guide/frontends.md`, glossary |
 | PC-02 | behavior: `Cursor.tell`, `NodeHandle.tell`, `TreeHandle.tell` (with and without `cursor`) each give the right `cursor`, `extension`, `level`; a bad `level` is `ValueError`; a command's `progress`; a hook-halted input tells only its author, with the hook's extension and `error`; the image rule's halt has `extension` `None`. `tests/behavior/test_events.py`, `test_asking.py`, `test_user_images.py`. TUI: severity and title. Schema: `Notice`'s fields, `level`'s enum. | S–M (Rust S) | `_events.py`, `_handles.py`, `_hub.py`, `_commands.py`, `_effects.py`, `crates/tau-core/src/step.rs`, `tree.rs`, `crates/tau-py/src/session.rs`, `_core.pyi`, the eight producer call sites (§2), `tui/_app.py`, `tui/_view.py`, schema, glossary |
 | PC-03 | behavior: the snapshot opens with `Commands` equal to `commands()`; a reload to other forms sends one `Commands` after `Labels` and before its notices; a reload to equal forms sends none; a reload that changes only an options type sends one; a skill file added is announced on the next `commands` call; a slow client holds one `Commands` however many changes; `Commands` never cuts a client off. `tests/behavior/test_events.py`, `test_event_order.py`, `test_reload.py`, `test_skills.py`. Schema: `Event`'s `oneOf` has `Commands`. TUI: the palette follows a reload without `renew`. | S | `_events.py`, `_hub.py` (`Feed._is_state`, `_publish`, `connect`), `_commands.py` (rename, generation), `_options.py` (generation), `_client.py` docstring, `tui/_line.py`, `tui/_app.py`, schema, glossary, D16/D21 cross-references |
-| P18-04 | behavior: `start` runs once per extension, in load order, before any hook; a `start` that raises or times out is `ExtensionLoadError` naming it, the earlier ones stopped in reverse, the pump never started; `rest` inside `start` is `ValueError`; the handle works from a task after `start` (`send`, `add_item`, `open`, `tell`) and is retired after `stop` (`NotInHook`); `stop` runs in reverse at `Driver.stop`, after effects are cancelled, and one that raises does not stop the rest; reload starts the new before stopping the old, and a failed new start leaves the old running; `reassemble` changes the tools from the next sample and sends `Commands`. `tests/behavior/test_lifecycle.py` (new), `test_reload.py`, `test_driver_contracts.py`. CLI and serve: a drop-in whose `start` raises stops `tau -p` and `tau serve` with D19's message and exit status (`tests/cli`, `tests/serve/test_serve_command.py`). | M | `_protocols.py` (contract, check), `_driver.py` (`start`, `reload`, `stop` async; reassemble), `_handles.py` (lifecycle handle, `tell`, `reassemble`), `_session_start.py`, `_extensions.py` (error enrichment), every `driver.start()` and `reload` call site (about 30 in tests, the harness), `docs/guide/extensions.md`, `model.md` §7, glossary |
+| P18-04 | behavior: `start` runs once per extension, in load order, before any hook; a `start` that raises or times out is `ExtensionLoadError` naming it, the earlier ones stopped in reverse, the pump never started; `rest` inside `start` is `ValueError`; the handle works from a task after `start` (`send`, `add_item`, `open`, `tell`) and is retired after `stop` (`NotInHook`); `stop` runs in reverse at `Driver.stop`, after effects are cancelled, and one that raises does not stop the rest; reload stops the old before starting the new, refuses with `Busy` while a cursor is busy, and a failed new start raises `ExtensionLoadError` naming it and leaves the kept extensions alone; `spawn`'s failure is an `error` `Notice` from the extension, and its tasks are cancelled before `stop`; a configured `start_timeout` applies, and a bad one is a config error; `reassemble` changes the tools from the next sample and sends `Commands`. `tests/behavior/test_lifecycle.py` (new), `test_reload.py`, `test_driver_contracts.py`. CLI and serve: a drop-in whose `start` raises stops `tau -p` and `tau serve` with D19's message and exit status (`tests/cli`, `tests/serve/test_serve_command.py`). | M | `_protocols.py` (contract, check), `_driver.py` (`start`, `reload`, `stop` async; reassemble), `_handles.py` (lifecycle handle, `tell`, `reassemble`), `_session_start.py`, `_extensions.py` (error enrichment), every `driver.start()` and `reload` call site (about 30 in tests, the harness), `docs/guide/extensions.md`, `model.md` §7, glossary |
 | TG-32 | behavior: `TreeHandle.send(images=…)` delivers a `User` with the images; a model without images refuses at the call; 21 images is `ValueError`; an unkept `sha256`-only image is `MissingImage`. `tests/behavior/test_user_images.py`. | S | `_handles.py`, `Handles` (the image gate), glossary |
 
 Each item also regenerates `docs/protocol.schema.json`, `docs/guide/protocol.md`,
@@ -406,32 +459,41 @@ against the frozen schema.
 - **PC-03 carrying the options forms**: their defaults are per cursor. Rejected.
 - **Lifecycle as one long `run(tree)` coroutine** the driver owns and cancels: it surfaces a
   failure by itself, but every extension then needs a body that never returns, and "started" has
-  no moment to fail at. Rejected for start/stop; a driver-owned task helper is Open 2.
-- **Reload stopping the old before starting the new**: no two instances at once, but a failed
-  start leaves the driver without the extension and with no way back. Rejected for atomicity;
-  Open 3.
+  no moment to fail at. Rejected for start/stop; `spawn` is the driver-owned task (Ruling 2).
+- **Reload starting the new before stopping the old** (this ADR's first proposal): atomic, but two
+  instances of one extension run at once and the new one can fail on what the old holds (a port,
+  a lock file, an MCP server's process). Rejected (Ruling 3): stop first, and say plainly that a
+  failed reload leaves only the kept extensions.
+- **Reload waiting for rest**: a reload that waits while a client keeps a cursor busy would block
+  its caller for as long. Rejected (Ruling 3): `Busy`, and the caller retries.
+- **Timeouts as extension options**: options are what a client may set (akb #643). Rejected
+  (Ruling 4): config keys beside `order`.
 - **Concurrent starts**: faster with several slow extensions, but the order and the failing one
   stop being deterministic. Rejected for 0.18; `mcp` starts its servers concurrently inside its
   own `start`.
 
-## Open
+## Rulings (John, 2026-11-25)
 
-1. **Names.** `extension` (not #641's `source`) and `warning` (not `warn`) on `Notice`, as §2
-   recommends: confirm.
-2. **Background failures.** An extension's own tasks fail silently unless it tells. Should 0.18.0
-   add `TreeHandle.spawn(coro)`, a driver-owned task whose exception becomes a `Notice` (`error`,
-   the extension's) and a stderr traceback, cancelled before `stop`? Recommendation: yes if
-   `mcp` or `scheduled` would otherwise each write that wrapper; otherwise 0.18.x (no wire).
-3. **Reload overlap.** Starting the new instance before stopping the old can fail on a resource
-   the old holds (a port, a lock file). Accept, or stop first and lose atomicity?
-4. **Timeouts.** `START_TIMEOUT` 30 s and `STOP_TIMEOUT` 5 s, fixed; an MCP server started through
-   `npx` may download for longer on its first run. Fixed, or `extensions.NAME.start_timeout`?
+1. **Names.** `extension` (not #641's `source`) and `warning` (not `warn`) on `Notice`: confirmed.
+2. **Background failures.** `TreeHandle.spawn(coro)` is in 0.18.0 (§4): a driver-owned task for
+   an extension; an exception in it becomes an `error` `Notice` attributed to the extension
+   (PC-02), and its tasks are cancelled and awaited at that extension's stop (and so before a
+   reload starts anything).
+3. **Reload overlap.** Stop first: the old extensions are stopped, then the new ones started.
+   Reload is refused with `Busy` if any cursor is not at rest; it does not wait. A full restart is
+   the safer path; reload is best effort for well-behaved extensions. There is no "a failed reload
+   changes nothing" guarantee: a failed start is reported naming the extension, and afterwards the
+   kept extensions alone are loaded (§4).
+4. **Timeouts.** 30 s to start, 5 s to stop, by default; the harness's config files override them
+   per extension (`extensions.NAME.start_timeout`, `extensions.NAME.stop_timeout`), which is
+   administrator configuration, not a client-facing option (akb #643).
 
 ## Glossary additions
 
 `Completion` (and *completion item*: `value`, `label`, `detail`), the per-kind labels in
 *complete*; `Notice.cursor`, `Notice.extension`, `Notice.level`, `NoticeLevel`; the event
 `Commands`; *start* and *stop* (an extension's), *lifecycle handle* (amending *retired handle*),
-`START_TIMEOUT`, `STOP_TIMEOUT`, `TreeHandle.tell`, `TreeHandle.reassemble`,
+`START_TIMEOUT`, `STOP_TIMEOUT`, `extensions.NAME.start_timeout` and `stop_timeout`,
+`ModelCatalog.timeouts`, `TreeHandle.tell`, `TreeHandle.spawn`, `TreeHandle.reassemble`,
 `TreeHandle.send(images=)`; `Answer.Hooks.halted_by`; *notice* (core's) gains its cursor and
 extension; `PROTOCOL` 3's contents; `CommandTable` (the renamed private class needs none).
