@@ -101,7 +101,7 @@ async def test_the_base_tools_extension_gives_a_session_the_model_can_edit_and_f
     tmp_path: Path, world: World
 ) -> None:
     """Loaded as the shared start loads it, in the working directory the session starts in."""
-    work = tmp_path / "work"
+    work = world.home / "work"  # inside the world: the project walk stops at its HOME
     work.mkdir()
     (work / "a.txt").write_bytes(b"one\ntwo\n")
     (work / "sub").mkdir()
@@ -116,7 +116,7 @@ async def test_the_base_tools_extension_gives_a_session_the_model_can_edit_and_f
     )
     with in_directory(work):
         extensions = load_extensions(load_config(work, world.environ, ask=None))
-    h = await Harness.create(tmp_path, provider=provider, extensions=extensions)
+    h = await Harness.create(world.home, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
     assert provider.requests[0].tool_names == OFFERED
@@ -137,8 +137,8 @@ async def test_with_load_false_the_model_is_offered_none_of_them(
 ) -> None:
     world.user_config({"load": {"base_tools": False}})
     provider = FakeProvider([Reply([Part.Text("hi")])])
-    extensions = load_extensions(load_config(tmp_path, world.environ, ask=None))
-    h = await Harness.create(tmp_path, provider=provider, extensions=extensions)
+    extensions = load_extensions(load_config(world.home, world.environ, ask=None))
+    h = await Harness.create(world.home, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
     assert provider.requests[0].tool_names == []
@@ -150,9 +150,9 @@ async def test_with_no_extensions_the_model_is_still_offered_them(
     tmp_path: Path, world: World
 ) -> None:
     provider = FakeProvider([Reply([Part.Text("hi")])])
-    config = load_config(tmp_path, world.environ, ask=None)
+    config = load_config(world.home, world.environ, ask=None)
     h = await Harness.create(
-        tmp_path, provider=provider, extensions=load_extensions(config, discover=False)
+        world.home, provider=provider, extensions=load_extensions(config, discover=False)
     )
     await h.send("go")
     await h.settle()

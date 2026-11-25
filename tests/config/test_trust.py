@@ -93,8 +93,8 @@ def test_outside_home_the_search_runs_to_the_root(world: World, tmp_path: Path) 
     assert has_project(world, deep)
 
 
-def test_the_parent_of_tau_home_is_never_a_project(world: World, tmp_path: Path) -> None:
-    shared = tmp_path / "shared"
+def test_the_parent_of_tau_home_is_never_a_project(world: World) -> None:
+    shared = world.home / "shared"  # inside the world: outside HOME the walk runs to `/`
     (shared / ".tau").mkdir(parents=True)
     work = shared / "work"
     work.mkdir()
@@ -612,13 +612,11 @@ def test_an_untrusted_project_with_errors_does_not_offer_the_trust_command(world
 
 
 @PROJECTS
-def test_a_symlinked_tau_above_does_not_block_trusting_below_it(
-    world: World, tmp_path: Path
-) -> None:
-    shared = tmp_path / "shared"
+def test_a_symlinked_tau_above_does_not_block_trusting_below_it(world: World) -> None:
+    shared = world.home / "shared"  # inside the world: outside HOME the walk runs to `/`
     (shared / "proj").mkdir(parents=True)
-    (shared / ".tau").symlink_to(tmp_path / "nowhere")
-    result = tau(world, "trust", str(shared / "proj"), cwd=tmp_path)
+    (shared / ".tau").symlink_to(world.home / "nowhere")
+    result = tau(world, "trust", str(shared / "proj"), cwd=world.home)
     assert result.code == 0, result.err
     assert (shared / "proj" / ".tau").is_dir()
     assert project_root(world, shared / "proj") == shared / "proj"
