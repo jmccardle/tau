@@ -16,8 +16,17 @@
 # picks the tag from the interpreter it builds for: 3.12 gives abi3, 3.14t the
 # version-specific one.
 #
+# `trusty` (the Rust terminal client in examples/ratatui, outside the cargo
+# workspace) is built and smoke-tested beside the wheels on every target that
+# has Unix sockets (no Windows: it connects over them only). Linux binaries are
+# musl-static, so they run on any distribution whatever its glibc; macOS ones
+# target 11.0 like the wheels. It has no dependency on the wheels' jobs.
+#
 # Publishing happens only for a pushed `v*` tag (see the `publish` job's `if`).
-# A push to `publish-draft` and a manual run build and test, nothing more.
+# A push to `publish-draft` and a manual run build and test, nothing more. After
+# `publish` succeeds, the `release` job attaches the trusty archives to the
+# GitHub Release of that tag; it comes after `publish` so a failed upload to
+# PyPI never leaves binaries advertising a τ that was not published.
 #
 # Fail early: no `continue-on-error`, no `|| true`. Shell steps run under
 # `set -euo pipefail`. Every job has a `timeout-minutes` about twice its usual
@@ -60,10 +69,12 @@ jobs:
     outputs:
       packages: ${{ steps.lists.outputs.packages }}
       targets: ${{ steps.lists.outputs.targets }}
+      trusty_targets: ${{ steps.lists.outputs.trusty_targets }}
     steps:
       - uses: actions/checkout@v5
-      # A tag must name the version the wheels will carry: checked here, in
-      # seconds, rather than by `publish` after the whole matrix has run.
+      # A tag must name the version the wheels will carry, and trusty carries the
+      # same one (`trusty --version`): checked here, in seconds, rather than by
+      # `publish` after the whole matrix has run.
       - name: tag is the workspace version
         if: github.ref_type == 'tag'
         shell: bash
@@ -72,6 +83,11 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "tag $GITHUB_REF_NAME is not the workspace version $version (Cargo.toml)" >&2
+            exit 1
+          fi
+          trusty="$(sed -n 's/^version = "\(.*\)"$/\1/p' examples/ratatui/Cargo.toml | head -n1)"
+          if [ "$trusty" != "$version" ]; then
+            echo "trusty's version $trusty (examples/ratatui/Cargo.toml) is not the workspace version $version" >&2
             exit 1
           fi
       - id: lists
@@ -85,14 +101,16 @@ jobs:
              "tests": "tests/tokens", "pytest": ""}
           ]'
           targets='[
-            {"name": "linux-x86_64", "runner": "ubuntu-24.04"},
-            {"name": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
-            {"name": "macos-arm64", "runner": "macos-15"},
-            {"name": "macos-x86_64", "runner": "macos-15-intel"},
-            {"name": "windows-x86_64", "runner": "windows-2025"}
+            {"name": "linux-x86_64", "runner": "ubuntu-24.04", "triple": "x86_64-unknown-linux-musl"},
+            {"name": "linux-aarch64", "runner": "ubuntu-24.04-arm", "triple": "aarch64-unknown-linux-musl"},
+            {"name": "macos-arm64", "runner": "macos-15", "triple": "aarch64-apple-darwin"},
+            {"name": "macos-x86_64", "runner": "macos-15-intel", "triple": "x86_64-apple-darwin"},
+            {"name": "windows-x86_64", "runner": "windows-2025", "triple": "x86_64-pc-windows-msvc"}
           ]'
           echo "packages=$(jq -c . <<<"$packages")" >>"$GITHUB_OUTPUT"
           echo "targets=$(jq -c . <<<"$targets")" >>"$GITHUB_OUTPUT"
+          # trusty speaks Unix sockets only: every target but Windows.
+          echo "trusty_targets=$(jq -c 'map(select(.name | startswith("windows") | not))' <<<"$targets")" >>"$GITHUB_OUTPUT"
 
   wheels:
     name: wheel ${{ matrix.package.dist }} ${{ matrix.target.name }} py${{ matrix.python }}
@@ -283,6 +301,68 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # trusty: a release build, a smoke run, and an archive per target. The
+  # archives are uploaded as workflow artifacts on every run; only `release`
+  # (a pushed tag, after PyPI) turns them into downloads.
+  trusty:
+    name: trusty ${{ matrix.target.name }}
+    needs: matrix
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.matrix.outputs.trusty_targets) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: rust toolchain (pinned by rust-toolchain.toml)
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          # The pinned toolchain ships the host target only; musl (Linux) and
+          # the other macOS architecture need theirs.
+          rustup target add ${{ matrix.target.triple }}
+          rustc --version
+      - name: build
+        run: |
+          set -euo pipefail
+          # macOS: the oldest release the binary claims to run on, as for the wheels.
+          if [ "$RUNNER_OS" = macOS ]; then export MACOSX_DEPLOYMENT_TARGET=11.0; fi
+          cargo build --release --locked --target ${{ matrix.target.triple }} \
+            --manifest-path examples/ratatui/Cargo.toml
+      - name: smoke
+        run: |
+          set -euo pipefail
+          bin=examples/ratatui/target/${{ matrix.target.triple }}/release/trusty
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' examples/ratatui/Cargo.toml | head -n1)"
+          "$bin" --help
+          test "$("$bin" --version)" = "trusty $version"
+          # Linux must be static: that is the portability claim.
+          if [ "$RUNNER_OS" = Linux ]; then file "$bin" | tee /dev/stderr | grep -q 'static'; fi
+      - name: package
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' examples/ratatui/Cargo.toml | head -n1)"
+          name="trusty-$version-${{ matrix.target.name }}"
+          mkdir -p "stage/$name" out
+          cp examples/ratatui/target/${{ matrix.target.triple }}/release/trusty \
+            examples/ratatui/README.md LICENSE "stage/$name/"
+          tar -C stage -czf "out/$name.tar.gz" "$name"
+          # shasum, not sha256sum: macOS runners have only the former. The
+          # file is `sha256sum -c` compatible (hash, two spaces, name).
+          (cd out && shasum -a 256 "$name.tar.gz" >"$name.tar.gz.sha256")
+          ls -l out
+          cat out/*.sha256
+      - uses: actions/upload-artifact@v5
+        with:
+          name: trusty-${{ matrix.target.name }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish to PyPI
     needs: [test, cargo-test, sdist]
@@ -318,3 +398,46 @@ jobs:
         with:
           packages-dir: dist/
           # skip-existing stays false: re-uploading a version is an error.
+
+  # The GitHub Release of the tag, with trusty's archives. After `publish`, so
+  # a failed PyPI upload never leaves binaries for an unpublished τ. The same
+  # tag-only condition as `publish`. `contents: write` is this job's alone.
+  release:
+    name: trusty on the GitHub Release
+    needs: [publish, trusty]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: trusty-*
+          path: dist
+          merge-multiple: true
+      - name: the archives are trusty at the tag's version, one per target
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist
+          want="${GITHUB_REF_NAME#v}"
+          for t in linux-x86_64 linux-aarch64 macos-arm64 macos-x86_64; do
+            for f in "trusty-$want-$t.tar.gz" "trusty-$want-$t.tar.gz.sha256"; do
+              test -f "dist/$f" || { echo "missing dist/$f" >&2; exit 1; }
+            done
+          done
+          test "$(find dist -type f | wc -l)" -eq 8
+      - name: create the release if absent, upload the archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --verify-tag: the tag must already exist (it does: it triggered this
+          # run). No --clobber: re-uploading an asset is an error, as on PyPI.
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "τ ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/*

@@ -110,6 +110,14 @@ scripts/check.sh                          # the gate
   and aarch64, macOS arm64 and x86_64 and Windows x86_64, and publishes only
   for a pushed `v*` tag. Push a branch named `publish-draft` there to run it
   without publishing. The Forgejo CI stays Linux x86_64 only.
+- Releasing: set the workspace `version` (Cargo.toml), `ffwf-tau-tokens==` in
+  pyproject.toml, and `examples/ratatui/Cargo.toml` (trusty carries τ's version;
+  refresh its Cargo.lock with `cargo update -p tau-ratatui --manifest-path
+  examples/ratatui/Cargo.toml --offline`) to one number, then push tag `vX.Y.Z`
+  to `github`. The `matrix` job fails the run if the tag, the workspace and
+  trusty disagree. After PyPI accepts the wheels, the `release` job creates the
+  GitHub Release and attaches `trusty-<version>-<target>.tar.gz` (musl-static
+  on Linux, no Windows) with a `.sha256` each.
 
 ## Python versions and wheels
 
