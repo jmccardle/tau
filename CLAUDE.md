@@ -86,7 +86,8 @@ changing a public signature.
 source ~/.cargo/env                       # cargo is not on the default PATH here
 # venv: Python 3.12 is the floor
 ~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv .venv
-.venv/bin/pip install --group dev        # pip >= 25.1
+.venv/bin/pip install -U 'pip>=25.1'     # a fresh 3.12 venv's pip is too old for --group
+.venv/bin/pip install --group dev        # --group needs pip >= 25.1
 VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release   # rebuild after any Rust change
 (cd tokens && VIRTUAL_ENV=$PWD/../.venv ../.venv/bin/maturin develop --release)   # the second wheel, tau_tokens
 scripts/check.sh                          # the gate
