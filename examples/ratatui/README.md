@@ -6,8 +6,8 @@ the first client of τ that is not Python, and it shares no code with τ: it spe
 to write a client in another language.
 
 It is a chat client with a tree browser and `/config` forms: a cursor's conversation (messages,
-thinking, tool calls and results, the live text of a reply), a line to type, questions, a status
-line, the session's tree, and an extension's options as a form. It has no session picker, cursor
+thinking, tool calls and results, the live text of a reply, the images in them), a line to type,
+questions, a status line, the session's tree, and an extension's options as a form. It has no session picker, cursor
 bar, themes or Ctrl+Z (`tau` has all of those), and it does not start a server. It shows the
 first cursor at first; the tree's `v` changes which one.
 
@@ -52,8 +52,42 @@ It finds the server in one of three ways:
 | neither | the one `tau serve` whose session runs in the current directory. A record whose server no longer answers is stale and does not count (as for `tau`; the record is left for `tau` to clean up). If several answer, it lists them and stops; if none, it says so and names `tau serve -d` |
 
 `--client ID` sets the client id (default `user@host:trusty`), the name other clients see on
-what you send. A refused `hello` (a server of another protocol, say) or a connection that cannot
+what you send. `--images` says how images are drawn (below). A refused `hello` (a server of another protocol, say) or a connection that cannot
 be made exits with status 1 and the server's own message.
+
+## Images
+
+An image in a message you or another client sent, or in a tool's result, is one line,
+`[image 640x480 image/png]`, and under it a thumbnail of the picture: its size in cells at the
+terminal's font, shrunk (never grown) to at most 8 rows and 60 columns, so a screenshot does not
+take the screen. To send one, name the file: `look at @shot.png`. The server's `attachments`
+extension reads it from the session's directory and puts it on the message, as for `tau` (an image
+file becomes an image, any other file its text; the model must take images, or the message is
+refused with why).
+
+| `--images` | draws |
+|---|---|
+| `auto` (default) | asks the terminal at start, before anything else is read: kitty graphics, else sixel, else halfblocks (iTerm2 by its environment variables) |
+| `kitty`, `sixel`, `iterm2` | that protocol, whatever the terminal says (it is still asked the size of its cells) |
+| `halfblocks` | coloured half blocks, two pixels a cell; any terminal, and nothing is asked |
+| `off` | the `[image ...]` line only; nothing is fetched |
+
+A terminal that answers nothing when asked gets halfblocks after 2 seconds, and the reader asking
+may keep the first keys typed; `--images halfblocks` (or `off`) does not ask.
+
+The bytes are fetched with the call `image` once the image's line comes into view, decoded off
+the screen's loop, shrunk to a thumbnail's pixels, and kept: the 32 used last. Until they arrive
+the line says `fetching` and the picture's rows are kept, so nothing moves when it is drawn. A
+fetch or decode that fails says so on the line (`cannot show: cannot fetch it: ...`) and is not
+retried until a reconnect.
+
+A picture scrolled partly out of view is cut at the edge, row by row, in every protocol (kitty by
+its Unicode placeholders, which are characters; sixel by its bands; iTerm2 one image a row). A
+sixel or iTerm2 picture is pixels over the cells, which writing the cells again may not erase, so
+whenever pictures move, come or go (a scroll, a new line, a resize, the tree opened) the screen is
+cleared and drawn whole; kitty's and halfblocks' are characters, rewritten like any text. Under a
+`/config` form no picture is drawn (a sixel drawn from a cell outside the form's box would cover
+it); its line and rows stay. Folding tool boxes (Ctrl+T) folds their images with them.
 
 ## Keys
 
@@ -155,10 +189,15 @@ What is written by hand is what the schema does not describe or cannot type:
 | `src/run.rs`, `src/run/modes.rs`, `src/ui.rs`, `src/editor.rs` | keys, drawing, the line editor, the screens over the chat |
 | `src/plan.rs`, `src/tree.rs`, `src/treetext.rs`, `src/treeui.rs` | the tree: the plan (pure), its state and keys, row words, drawing |
 | `src/form.rs`, `src/formui.rs` | a form from a JSON Schema, and drawing it |
+| `src/images.rs`, `src/transcript.rs` | the pictures: the terminal's graphics, fetching, decoding and keeping images, thumbnails' sizes; the transcript laid out with them and drawn ([ratatui-image](https://github.com/ratatui/ratatui-image), without chafa) |
 | `testdata/session.jsonl` | what a real server sent, replayed by the model's tests |
 
 `cargo test` covers the pure pieces (finding the socket, the model against the recorded stream,
-wrapping, the editor). `tests/serve/test_ratatui.py` builds the binary and drives it in a
-pseudo-terminal against a real `tau serve` with the mock model: a chat, Esc, questions answered
-and declined, the tree (a second client's branch as a stub, `v`, Enter, `o`, `l`, a busy cursor),
-`/config` forms (applied, saved, refused), being cut off, and every way of failing to connect.
+wrapping, the editor, a thumbnail's size, decoding, the images kept and failed, pictures cut by
+the scroll, when a screen of pixels is repainted). `tests/serve/test_ratatui.py` builds the binary
+and drives it in a pseudo-terminal against a real `tau serve` with the mock model: a chat, Esc,
+questions answered and declined, the tree (a second client's branch as a stub, `v`, Enter, `o`,
+`l`, a busy cursor), `/config` forms (applied, saved, refused), being cut off, every way of
+failing to connect, and images (`@shot.png` attached by the server, a user's and a tool's image
+drawn in halfblocks, a thumbnail's height, one that cannot be fetched, `--images off`). Its
+terminal answers the graphics question as a VT102 does, so `auto` is what runs there.

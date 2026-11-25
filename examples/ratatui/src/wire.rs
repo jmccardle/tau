@@ -19,11 +19,14 @@ mod generated {
 
 pub use generated::*;
 
-/// The text, then one `[image WxH mime]` line per image; never the bytes.
+/// The line that stands for an image: `[image WxH mime]`; never the bytes.
+pub fn caption(image: &Image) -> String {
+    format!("[image {}x{} {}]", image.width, image.height, image.mime)
+}
+
+/// The text, then one `[image WxH mime]` line per image.
 fn with_images(text: &str, images: &[Image]) -> String {
-    let lines = images
-        .iter()
-        .map(|i| format!("[image {}x{} {}]", i.width, i.height, i.mime));
+    let lines = images.iter().map(caption);
     let text = (!text.is_empty()).then(|| text.to_owned());
     text.into_iter().chain(lines).collect::<Vec<_>>().join("\n")
 }
@@ -33,6 +36,14 @@ impl BodyUser {
     pub fn text(&self) -> &str {
         match self {
             Self::String(text) | Self::Object { text, .. } => text,
+        }
+    }
+
+    /// The images after the text (D31), in order.
+    pub fn images(&self) -> &[Image] {
+        match self {
+            Self::String(_) => &[],
+            Self::Object { images, .. } => images,
         }
     }
 
@@ -50,6 +61,14 @@ impl OutcomeOk {
     pub fn value(&self) -> &str {
         match self {
             Self::String(value) | Self::Object { value, .. } => value,
+        }
+    }
+
+    /// The images the tool returned (D30), in order.
+    pub fn images(&self) -> &[Image] {
+        match self {
+            Self::String(_) => &[],
+            Self::Object { images, .. } => images,
         }
     }
 

@@ -28,9 +28,11 @@ _TAKE_THE_TERMINAL = (
 
 class Screen:
     """A program on a pseudo-terminal, and what it has drawn: `tau` with `argv`, or, given
-    `program`, that program (and `quit_key` is what leaves it)."""
+    `program`, that program (and `quit_key` is what leaves it). With `answers`, the terminal
+    answers what a VT102 answers (device attributes, status, cursor position) as it reads them,
+    as a real terminal does: for a program that asks before it draws."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the program, its terminal, and how the terminal behaves
         self,
         world: World,
         *argv: str,
@@ -38,6 +40,7 @@ class Screen:
         program: Path | None = None,
         quit_key: str = "\x11",
         env: dict[str, str] | None = None,
+        answers: bool = False,
     ) -> None:
         self.quit_key = quit_key
         command = [sys.executable, "-m", "tau"] if program is None else [str(program)]
@@ -67,6 +70,17 @@ class Screen:
         self._terminal = pyte.Screen(120, 40)
         self._stream = pyte.ByteStream(self._terminal)
         self._fed = 0
+        self._answers = answers
+        if answers:
+            self._terminal.write_process_input = self._answer  # pyright: ignore[reportAttributeAccessIssue]
+
+    def _answer(self, data: str) -> None:
+        with contextlib.suppress(OSError):  # the program is gone: nobody to answer
+            os.write(self.fd, data.encode())
+
+    def _feed(self) -> None:
+        self._stream.feed(self.seen[self._fed :])
+        self._fed = len(self.seen)
 
     def text(self) -> str:
         return ANSI.sub(b"", self.seen).decode("utf-8", "replace")
@@ -74,8 +88,7 @@ class Screen:
     def display(self) -> str:
         """The screen as it looks now, one line per row: for a program that draws by moving the
         cursor and rewriting only what changed, whose output is no text (`text` is for `tau`)."""
-        self._stream.feed(self.seen[self._fed :])
-        self._fed = len(self.seen)
+        self._feed()
         return "\n".join(line.rstrip() for line in self._terminal.display)
 
     def wait_for(self, text: str, seconds: float = 20, *, on_screen: bool = False) -> None:
@@ -96,6 +109,8 @@ class Screen:
                 self.seen += os.read(self.fd, 65536)
             except OSError:
                 return False
+            if self._answers:
+                self._feed()
         return True
 
     def pump(self, seconds: float = 0.1) -> None:

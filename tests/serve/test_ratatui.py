@@ -22,16 +22,17 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from pngs import RED, WHITE, png
 from proctable import alive
 from ptykit import Screen
 from websockets.asyncio.server import ServerConnection, unix_serve
 from world import World, tau
 
-from tau import PROTOCOL, Author, Body, Outcome, Part, RemoteClient, Session, Stop
+from tau import PROTOCOL, Author, Body, Image, Outcome, Part, RemoteClient, Session, Stop
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / "examples" / "ratatui" / "Cargo.toml"
@@ -198,7 +199,8 @@ def close_screens() -> Iterator[None]:
 
 
 def client(world: World, binary: Path, *argv: str, **kwargs: str) -> Screen:
-    """The example on a terminal, quitting with Ctrl+C."""
+    """The example on a terminal, quitting with Ctrl+C. The terminal answers as a VT102 does, so
+    the client's question about its graphics (`--images auto`) gets halfblocks."""
     screen = Screen(
         world,
         *argv,
@@ -206,6 +208,7 @@ def client(world: World, binary: Path, *argv: str, **kwargs: str) -> Screen:
         program=binary,
         quit_key=CTRL_C,
         env={"USER": "tester", **kwargs},
+        answers=True,
     )
     OPEN.append(screen)
     return screen
@@ -874,4 +877,121 @@ def test_save_with_nothing_changed_still_saves(home: World, binary: Path) -> Non
     screen.type(TAB * 3 + " " + TAB + "\r")  # to the save switch, on, Apply
     screen.wait_for("saved for every session (no option changed", on_screen=True)
     assert "nothing changed" not in screen.display()
+    assert screen.quit() == 0
+
+
+# -- images (D31)
+
+IMAGING = {
+    "default_model": "m",
+    "models": {"m": {"model": "m", "provider": "mock", "images": True, "options": {"delay_ms": 0}}},
+}
+# Stripes ten pixels tall, red then white: 20 by 5 cells at halfblocks' 10 by 20 pixel cells, and
+# every cell's halves differ, so each is drawn as a half block.
+STRIPES = png(200, 100, lambda x, y: RED if (y // 10) % 2 == 0 else WHITE)
+HALF_BLOCKS = ("\u2580", "\u2584")
+
+
+def picture_rows(screen: Screen, under: str, seconds: float = 20) -> list[str]:
+    """The rows of half blocks under the line holding `under`, once they are drawn."""
+    deadline = time.monotonic() + seconds
+    while True:
+        lines = screen.display().splitlines()
+        at = next((i for i, line in enumerate(lines) if under in line), None)
+        rows = []
+        for line in lines[at + 1 :] if at is not None else []:
+            if not any(block in line for block in HALF_BLOCKS):
+                break
+            rows.append(line)
+        if rows:
+            return rows
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no picture under {under!r}:\n{screen.display()}")
+        screen.pump()
+
+
+def with_image(text: str, image: bytes, *, outcome: bool = False) -> Callable[[Session, int], int]:
+    """A build that appends a user message `text` with `image`, or with `outcome` a tool call whose
+    result is `text` and `image`."""
+
+    def build(session: Session, tip: int) -> int:
+        if not outcome:
+            return session.append(tip, Body.User(text, [Image(image)]), Author.Frontend("t"), 0)
+        reply = Body.Assistant([Part.Call("c", "read", "{}")], Stop.Tools)
+        batch = session.append(tip, reply, Author.Provider(), 0)
+        results = Body.Results([("c", Outcome.Ok(text, [Image(image)]), Author.Tools())])
+        return session.append(batch, results, Author.Tools(), 0)
+
+    return build
+
+
+def test_an_at_path_image_is_attached_by_the_server_and_drawn(served: World, binary: Path) -> None:
+    served.user_config(IMAGING)
+    serving(served)
+    (work(served) / "shot.png").write_bytes(STRIPES)
+    screen = client(served, binary)
+    idle(screen)
+    screen.type("look at @shot.png\r")
+    # The mock names the images that reached the model: the server attached the file.
+    screen.wait_for("[1 image: image/png 200x100]", on_screen=True)
+    assert "[image @shot.png: image/png 200x100]" in screen.display()
+    assert len(picture_rows(screen, "[image 200x100 image/png]")) == 5
+    assert screen.quit() == 0
+    assert any("look at @shot.png" in body and "200x100" in body for body in log_of(served))
+
+
+def test_a_users_image_is_drawn_under_its_text_a_few_rows_tall(home: World, binary: Path) -> None:
+    home.session(OLD, cwd=work(home), build=with_image("look", STRIPES))
+    serving(home)
+    screen = client(home, binary)
+    screen.wait_for("[image 200x100 image/png]", on_screen=True)
+    rows = picture_rows(screen, "[image 200x100 image/png]")
+    assert len(rows) == 5, rows
+    assert "t: look" in screen.display()
+    assert all(row.startswith("   ") and row[3] != " " for row in rows), "under the text: t: "
+    assert screen.quit() == 0
+
+
+def test_a_screenshot_is_a_thumbnail(home: World, binary: Path) -> None:
+    # A gradient top to bottom, which shrinking keeps: each cell's halves still differ.
+    tall = png(400, 1200, lambda x, y: (y * 255 // 1200, 0, 0))
+    home.session(OLD, cwd=work(home), build=with_image("tall", tall))
+    serving(home)
+    screen = client(home, binary)
+    rows = picture_rows(screen, "[image 400x1200 image/png]")
+    assert len(rows) == 8, rows
+    assert screen.quit() == 0
+
+
+def test_a_tool_results_image_is_drawn_and_folds_with_its_box(home: World, binary: Path) -> None:
+    home.session(OLD, cwd=work(home), build=with_image("read it", STRIPES, outcome=True))
+    serving(home)
+    screen = client(home, binary)
+    assert len(picture_rows(screen, "[image 200x100 image/png]")) == 5
+    screen.type(CTRL_T)
+    screen.wait_for("read \u25b8 1 line", on_screen=True)
+    assert not any(block in screen.display() for block in HALF_BLOCKS), screen.display()
+    assert screen.quit() == 0
+
+
+def test_an_image_that_cannot_be_fetched_says_why_on_its_line(home: World, binary: Path) -> None:
+    directory = home.session(OLD, cwd=work(home), build=with_image("look", STRIPES))
+    for kept in (directory / "images").iterdir():
+        kept.unlink()  # the log names an image its directory no longer has
+    serving(home)
+    screen = client(home, binary)
+    screen.wait_for("[image 200x100 image/png] cannot show: cannot fetch it:", on_screen=True)
+    assert not any(block in screen.display() for block in HALF_BLOCKS)
+    idle(screen)  # and the session goes on
+    assert screen.quit() == 0
+
+
+def test_with_images_off_an_image_is_one_line(home: World, binary: Path) -> None:
+    home.session(OLD, cwd=work(home), build=with_image("look", STRIPES))
+    serving(home)
+    screen = client(home, binary, "--images", "off")
+    screen.wait_for("[image 200x100 image/png]", on_screen=True)
+    idle(screen)
+    assert "fetching" not in screen.display()
+    assert not any(block in screen.display() for block in HALF_BLOCKS)
     assert screen.quit() == 0
