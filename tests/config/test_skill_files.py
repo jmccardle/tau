@@ -303,9 +303,24 @@ def test_a_frontmatter_line_without_a_colon_stops_the_start(world: World) -> Non
     assert f"{path}:2: expected `key: value`, got 'description d'" in failure(world)
 
 
-def test_a_block_scalar_description_is_refused_not_misread(world: World) -> None:
-    path = put(world.tau, "prompts/review.md", "---\ndescription: >\n  long\n---\nbody")
-    assert f"{path}: `description` must be one line of text after the colon" in failure(world)
+def test_a_description_that_is_a_list_stops_the_start(world: World) -> None:
+    path = put(world.tau, "prompts/review.md", "---\ndescription:\n  - one\n---\nbody")
+    assert f"{path}: `description` must be text, not empty, a list or a mapping" in failure(world)
+
+
+def test_an_empty_block_scalar_description_stops_the_start(world: World) -> None:
+    path = put(world.tau, "skills/pdf/SKILL.md", "---\ndescription: >\nname: pdf\n---\nbody")
+    assert f"{path}: `description` must be text, not empty, a list or a mapping" in failure(world)
+
+
+def test_a_quote_that_never_closes_stops_the_start(world: World) -> None:
+    path = put(world.tau, "skills/pdf/SKILL.md", '---\nname: pdf\ndescription: "open\n---\nb')
+    assert f'{path}:3: the " that opens `description` never closes' in failure(world)
+
+
+def test_an_unknown_escape_in_a_double_quoted_value_stops_the_start(world: World) -> None:
+    path = put(world.tau, "skills/pdf/SKILL.md", '---\ndescription: "a \\q b"\n---\nb')
+    assert f"{path}:2: `description` has an unknown escape, \\q" in failure(world)
 
 
 def test_disable_model_invocation_must_be_true_or_false(world: World) -> None:
@@ -348,6 +363,96 @@ def test_quotes_comments_indented_lines_and_other_keys_are_read_as_a_claude_skil
         "Body",
     )
     assert prompt.listed
+
+
+CLAUDE_SKILL = """\
+---
+name: pdf-processing
+# Claude Code reads this description to decide when to use the skill.
+description: >-
+  Extract text and tables from PDF files, fill forms, merge documents.
+  Use when working with PDF files or when the user mentions PDFs,
+  forms, or document extraction.
+allowed-tools:
+- Read
+- Bash(python:*)
+metadata:
+  version: "1.2"
+  tags: [pdf, documents]
+license: Apache-2.0
+---
+
+# PDF processing
+
+Read `reference.md` first.
+"""
+
+
+def test_a_claude_code_skill_with_a_folded_description_loads_as_it_is(world: World) -> None:
+    """The regression for 0.17.3: a folded `description: >-` stopped tau from starting."""
+    put(world.tau, "skills/pdf-processing/SKILL.md", CLAUDE_SKILL)
+    (prompt,) = skills(world).prompts
+    assert prompt.description == (
+        "Extract text and tables from PDF files, fill forms, merge documents. Use when working "
+        "with PDF files or when the user mentions PDFs, forms, or document extraction."
+    )
+    assert prompt.body == "# PDF processing\n\nRead `reference.md` first."
+    assert prompt.listed
+    assert commands(world) == ["skills:pdf-processing"]
+
+
+BLOCKS = [
+    ("description: |\n  line one\n  line two\n", "line one\nline two"),
+    ("description: |+\n  kept\n\n", "kept"),
+    (
+        "description: >\n  folded\n  over lines\n\n  new paragraph\n",
+        "folded over lines\nnew paragraph",
+    ),
+    ("description: >\n  text\n    indented more\n  back\n", "text\n  indented more\nback"),
+    ("description: >2  # a comment\n   leading space\n", "leading space"),
+    ("description: Plain text\n  that goes on # and a comment\n", "Plain text that goes on"),
+    ("description:\n  on the next line\n", "on the next line"),
+    ("description: Use C# here # not this\n", "Use C# here"),
+    (
+        'description: "double \\"quoted\\" \\u00e9\\tand\n  folded"\n',
+        'double "quoted" \u00e9\tand folded',
+    ),
+    ('description: "escaped \\\n  break"\n', "escaped break"),
+    ("description: 'it''s single'\n", "it's single"),
+    ("description: 'single\n\n  with a blank line'\n", "single\nwith a blank line"),
+    ("description: [flow, text]\n", "[flow, text]"),
+]
+
+
+@pytest.mark.parametrize(("frontmatter", "description"), BLOCKS)
+def test_yaml_values_are_read_as_yaml_reads_them(
+    world: World, frontmatter: str, description: str
+) -> None:
+    put(world.tau, "skills/pdf/SKILL.md", f"---\n{frontmatter}---\nBody\n")
+    (prompt,) = skills(world).prompts
+    assert prompt.description == description
+
+
+def test_other_keys_are_not_read_so_even_broken_yaml_in_one_does_not_stop_the_start(
+    world: World,
+) -> None:
+    put(
+        world.tau,
+        "skills/pdf/SKILL.md",
+        '---\ndescription: d\nmetadata: "never closed\nother: "\\q"\nlist:\n- a\n---\nb',
+    )
+    (prompt,) = skills(world).prompts
+    assert prompt.description == "d"
+
+
+def test_disable_model_invocation_reads_the_yaml_spellings_of_true(world: World) -> None:
+    put(
+        world.tau,
+        "skills/pdf/SKILL.md",
+        "---\ndescription: d\ndisable-model-invocation: True\n---\nb",
+    )
+    (prompt,) = skills(world).prompts
+    assert not prompt.listed
 
 
 def test_crlf_files_are_read(world: World) -> None:

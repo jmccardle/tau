@@ -24,12 +24,13 @@ A project file that is no longer what trust approved is not used; its command sa
 with one name in one directory, a name that is not ASCII letters, digits, `_` and `-`, a file in
 the wrong place) is listed at once, and stops the start.
 
-A file may start with frontmatter, `key: value` lines between two `---` lines (no YAML): `name`
-(if given, it must be the file's name), `description` (a template's default is its first body
-line; a skill must have one), `argument-hint` (what the argument is, shown in the command's form)
-and `disable-model-invocation` (`true`: the skill is left out of the list below). Other keys are
-ignored, and so are indented lines, so a Claude Code skill loads as it is. A byte order mark
-before the frontmatter is ignored.
+A file may start with frontmatter between two `---` lines, read as the YAML block mapping a Claude
+Code skill writes (plain, quoted, folded `>` and literal `|` values, comments): `name` (if given,
+it must be the file's name), `description` (a template's default is its first body line; a skill
+must have one), `argument-hint` (what the argument is, shown in the command's form) and
+`disable-model-invocation` (`true`: the skill is left out of the list below). Other keys, and the
+lists and mappings under them, are ignored, so a Claude Code skill loads as it is. A byte order
+mark before the frontmatter is ignored.
 
 For the model: when a session's first step begins (its walk is the prefix and nothing else) and a
 `read` tool is offered, `pre_step` writes one `System` node listing each skill's name,
