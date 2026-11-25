@@ -134,7 +134,7 @@ extensions = [Flood()]
 
 @pytest.fixture(scope="session")
 def binary() -> Path:
-    """The example, built once. Without cargo the test is skipped locally and fails in CI, where
+    """The example, built once, in the target directory cargo reports. Without cargo the test is skipped locally and fails in CI, where
     a skipped test would hide that the example does not build."""
     cargo = shutil.which("cargo", path=f"{os.path.expanduser('~/.cargo/bin')}:{os.environ['PATH']}")
     if cargo is None:
@@ -149,7 +149,14 @@ def binary() -> Path:
         timeout=1200,  # a cold build takes minutes on a CI runner; a stuck one fails here
     )
     assert built.returncode == 0, built.stderr
-    return MANIFEST.parent / "target" / "debug" / "trusty"
+    # cargo says where it builds (`CARGO_TARGET_DIR`, `build.target-dir`, or the package's own)
+    meta = subprocess.run(
+        [cargo, "metadata", "--format-version", "1", "--no-deps", "--manifest-path", str(MANIFEST)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(json.loads(meta.stdout)["target_directory"]) / "debug" / "trusty"
 
 
 @pytest.fixture
