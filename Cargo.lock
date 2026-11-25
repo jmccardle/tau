@@ -1245,7 +1245,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tau-core"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "proptest",
  "schemars",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "tau-py"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "pyo3",
  "schemars",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "tau-store"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "crc32fast",
  "proptest",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "tau-tokens"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "minijinja",
  "minijinja-contrib",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "tau-tokens-py"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "pyo3",
  "tau-tokens",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "tau-tools"
-version = "0.17.1"
+version = "0.17.2"
 dependencies = [
  "fastrand",
  "globset",

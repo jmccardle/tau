@@ -420,6 +420,8 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   Merged as `feat/bundle-web-client` after `ffwf-tau-web` 0.17.0 reached PyPI. `ffwf-tau` depends on `ffwf-tau-web>=0.17,<0.18` (tau-code's
   client), so `tau serve` serves it by default; `--no-web` serves none; a broken install is
   warned and gets a help page (D29 §9). Release order: `ffwf-tau-web`, then `ffwf-tau`.
+- **0.17.2 (released 2026-11-25): a fix release.** A slow client hears a clean prefix of each
+  reply, and the TUI no longer crashes with `KeyError` on parallel tool calls.
 - **0.18.0 (unreleased): images in user messages (D31), `PROTOCOL` 3.** `send`/`input` take
   `images`, `image(sha256)` reads one, `@path` attaches an image file; the store says version 3
   only once a user image is written. On `master` as `feat/user-images`; tau-code's composer and

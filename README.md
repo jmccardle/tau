@@ -24,7 +24,7 @@ available and say so when used. `tau serve` runs there on its HTTP edge alone (n
 
 `pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
 `pip install 'ffwf-tau'` also installs the web client that `tau serve` serves at its URL (`--no-web` turns it off).
-New in 0.17: the HTTP edge of `tau serve`, and images in tool results ([0.17.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.0.md)); 0.17.1 ships the web client ([0.17.1 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.1.md)).
+New in 0.17: the HTTP edge of `tau serve`, and images in tool results ([0.17.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.0.md)); 0.17.1 ships the web client ([0.17.1 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.1.md)); 0.17.2 fixes a TUI crash ([0.17.2 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.2.md)).
 Coming from 0.15? Read the [0.16.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.16.0.md) first: 0.16 is a
 rewrite and does not read 0.15 sessions or load 0.15 extensions.
 
