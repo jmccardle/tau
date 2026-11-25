@@ -31,8 +31,8 @@ optional for them). The key is read from the environment variable `--key-env` na
 from the command line, and is never written.
 
 A `turns` scenario drives a real `Driver` and session over the built-in provider; a `raw` one
-sends one request built here, for what the provider never sends (a non-streamed request, an
-image in a user message, a malformed body, a request past the window). Both go through a
+sends one request built here, for what the provider never sends (a non-streamed request, a
+malformed body, a request past the window). Both go through a
 transport that forwards to the network and keeps every exchange. Nothing is written unless the
 whole run succeeded (a `raw` error scenario succeeds when the server refused it) and no file
 holds a key or anything shaped like one (`SECRET_SHAPES`). An existing case is never
@@ -60,8 +60,8 @@ scenario), 1 a run failed or a fixture is not publishable, 2 usage.
     {"format": 1, "family": ..., "provider": ..., "kind": "turns" | "raw",
      "scenario": "<name>", "model": {...}, "system": "...", "turns": ["...", ...],
      "gaps": [0, 0, 0, 360], "tools": [{"name", "description", "parameters", "answers",
-     "key", "images"?}], "extensions"?: {...}, "raw"?: {"stream", "adapter", "error"},
-     "tau": "<tau.__version__>", "recorded": "YYYY-MM-DD"}
+     "key", "images"?}], "extensions"?: {...}, "turn_images"?: [[{"width", "height", "rgb"}]],
+     "raw"?: {"stream", "adapter", "error"}, "tau": "<tau.__version__>", "recorded": "YYYY-MM-DD"}
 
 - `model` is the settings object the model catalog was given (`provider`, `model`,
   `base_url`, `max_tokens`, `options`, `api_key_env`; the unset ones absent). `api_key_env` is
@@ -83,6 +83,11 @@ scenario), 1 a run failed or a fixture is not publishable, 2 usage.
   `answers[K]` (and, when `images` has K, that PNG, base64, after the text), and with the
   error `no such <key>: K` otherwise (K is the arguments' text when they are not that shape).
   The rule is the same at record and at replay, so a replay reproduces the walk.
+- `turn_images` (optional; a case without it sends no user images) is one list per turn, in
+  `turns`' order, of the images the user attaches to that turn (D31): each is a flat-colour
+  PNG of `width` by `height` pixels and colour `rgb`, which `png()` writes the same way every
+  time, so a replay regenerates the exact bytes. They are sent with `Client.send(images=)`, so
+  the text goes first and the images after it, as tau sends them.
 
 Requests keep only the headers in `REQUEST_HEADERS` and responses those in `RESPONSE_HEADERS`;
 every other header is dropped. URLs lose the query parameters in `SECRET_PARAMS`. `body` is the
@@ -226,7 +231,25 @@ def png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
     )
 
 
-RED = base64.b64encode(png(64, 64, (220, 30, 30))).decode()
+@dataclass(frozen=True)
+class Swatch:
+    """A user image described deterministically: a flat-colour PNG (`case.json`'s
+    `turn_images`), so a replay regenerates the exact bytes."""
+
+    width: int
+    height: int
+    rgb: tuple[int, int, int]
+
+    def data(self) -> bytes:
+        return png(self.width, self.height, self.rgb)
+
+    def described(self) -> dict[str, object]:
+        return {"width": self.width, "height": self.height, "rgb": list(self.rgb)}
+
+
+RED_SWATCH = Swatch(64, 64, (220, 30, 30))
+UHD_SWATCH = Swatch(3840, 2160, (30, 160, 60))  # a 4K screenshot's size; flat, so a few kB
+RED = base64.b64encode(RED_SWATCH.data()).decode()
 BLUE = base64.b64encode(png(64, 64, (30, 60, 220))).decode()
 SWATCH_TOOL: dict[str, object] = {
     "name": "show_swatch",
@@ -304,7 +327,8 @@ class Scenario:
     tools: tuple[Mapping[str, object], ...] = (TOOL,)
     max_tokens: int | None = None  # None: the family's
     plain: bool = False  # True: none of the family's options (thinking needs room)
-    images: bool = False  # the model's `images: true` (D30): it is sent a tool's images
+    images: bool = False  # the model's `images: true` (D30): it takes a tool's or user's images
+    user_images: tuple[tuple[Swatch, ...], ...] = ()  # per turn, what the user attaches (D31)
     stream: bool = True
     adapter: bool = True
     error: bool = False
@@ -441,11 +465,6 @@ def _chat(  # noqa: PLR0913 - one request, every part of it said
             return RawRequest("POST", url, _gemini_headers(target), body)
 
 
-def _user_image(target: Target) -> RawRequest:
-    items = [("text", "What colour is this image?"), ("png", RED)]
-    return _chat(target, "Answer in one word.", items, stream=True)
-
-
 def _nonstream_text(target: Target) -> RawRequest:
     items = [("text", "Name the three primary colours of light.")]
     return _chat(target, "Be terse.", items, stream=False)
@@ -536,14 +555,45 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         "user-image",
-        "an image in a user message (the provider sends none yet: raw), streamed",
-        "raw",
+        "an image in a user message (D31), and the reply that reads it",
+        "turns",
         requests=1,
         tokens_in=900,
         tokens_out=300,
         system="Answer in one word.",
         turns=("What colour is this image?",),
-        build=_user_image,
+        tools=(),
+        images=True,
+        user_images=((RED_SWATCH,),),
+    ),
+    Scenario(
+        "user-image-large",
+        "a 3840x2160 image in a user message (flat, so small in bytes)",
+        "turns",
+        requests=1,
+        tokens_in=6000,
+        tokens_out=300,
+        system="Answer in one word.",
+        turns=("What colour is this image?",),
+        tools=(),
+        images=True,
+        user_images=((UHD_SWATCH,),),
+    ),
+    Scenario(
+        "user-and-tool-image",
+        "an image in a user message and a tool result's image, in one request (D30, D31)",
+        "turns",
+        requests=2,
+        tokens_in=2500,
+        tokens_out=600,
+        system="You describe colour swatches. Use show_swatch to see one before you answer.",
+        turns=(
+            "The attached image is a swatch of mine. What colour is it, and what colour is "
+            "swatch S-1? Answer as: mine is <colour>, S-1 is <colour>.",
+        ),
+        tools=(SWATCH_TOOL,),
+        images=True,
+        user_images=((RED_SWATCH,),),
     ),
     Scenario(
         "nonstream-text",
@@ -964,6 +1014,19 @@ def _extension_options(case: Mapping[str, object]) -> dict[str, object]:
     return {name: dict(options) for name, options in wanted.items()}  # type: ignore[call-overload]
 
 
+def _turn_images(case: Mapping[str, object]) -> list[list[tau.ImageInput]]:
+    """The images each turn of `case` sends, from `turn_images` (none for a case without it)."""
+    turns: list[str] = case["turns"]  # type: ignore[assignment]
+    wanted: list[list[Mapping[str, object]]] = case.get("turn_images") or [[] for _ in turns]  # type: ignore[assignment]
+    return [
+        [
+            tau.ImageInput.of(Swatch(d["width"], d["height"], tuple(d["rgb"])).data())  # type: ignore[arg-type]
+            for d in described
+        ]
+        for described in wanted
+    ]
+
+
 async def run_turns(
     provider: Provider, case: Mapping[str, object], directory: Path, *, sleep: bool
 ) -> list[dict[str, object]]:
@@ -972,6 +1035,7 @@ async def run_turns(
     turns: list[str] = case["turns"]  # type: ignore[assignment]
     gaps: list[float] = case["gaps"]  # type: ignore[assignment]
     specs: list[Mapping[str, object]] = case["tools"]  # type: ignore[assignment]
+    attached = _turn_images(case)
     clock = SystemClock()
     session = Session.create(model_config(ALIAS), str(case["system"]), clock.now(), directory)
     catalog = read_models(
@@ -988,11 +1052,11 @@ async def run_turns(
     driver.start()
     cursor = session.cursors()[0]
     try:
-        for i, (text, gap) in enumerate(zip(turns, gaps, strict=True), start=1):
+        for i, (text, gap, images) in enumerate(zip(turns, gaps, attached, strict=True), start=1):
             if sleep and gap > 0:
                 print(f"turn {i}: sleeping {gap:g} s first", flush=True)
                 await asyncio.sleep(gap)
-            await driver.client("recorder").send(cursor, text)
+            await driver.client("recorder").send(cursor, text, images)
             await driver.rest(cursor)
             error = _sample_error(session)
             if error is not None:
@@ -1267,6 +1331,9 @@ def build_case(target: Target, scenario: Scenario) -> dict[str, object]:
         "gaps": gaps,
         "tools": [dict(t) for t in scenario.tools] if scenario.kind == "turns" else [],
     }
+    if any(scenario.user_images):
+        images = [[sw.described() for sw in turn] for turn in scenario.user_images]
+        case["turn_images"] = [*images, *([] for _ in turns[len(images) :])]
     if scenario.extensions:
         case["extensions"] = {k: dict(v) for k, v in scenario.extensions.items()}
     if scenario.kind == "raw":

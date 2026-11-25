@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from harness import scenario
+from pngs import png
 
 from tau import (
     Appended,
@@ -14,6 +15,7 @@ from tau import (
     CursorView,
     Driver,
     Event,
+    ImageInput,
     Live,
     Part,
     Session,
@@ -138,3 +140,14 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_st
     assert WORDS.startswith(part.text)
     assert part.text.endswith(" ")
     assert len(part.text) < len(WORDS)
+
+
+@scenario
+async def test_the_mock_takes_a_users_images_and_names_them_in_its_echo() -> None:
+    """D31: a model on the mock with `images: true` takes them, and the echo says which came."""
+    async with mock_session(images=True, options={"delay_ms": 0}) as (session, driver, cursor):
+        images = [ImageInput.of(png(4, 3)), ImageInput.of(png(2, 2))]
+        await driver.client("term").send(cursor, "look", images)
+        await driver.rest(cursor)
+        (reply,) = replies(session)
+        assert reply.parts == [Part.Text("mock: look\n[2 images: image/png 4x3, image/png 2x2]")]

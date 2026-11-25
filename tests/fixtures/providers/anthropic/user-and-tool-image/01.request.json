@@ -1,0 +1,110 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The attached image is a swatch of mine. What colour is it, and what colour is swatch S-1? Answer as: mine is <colour>, S-1 is <colour>."
+          },
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user is asking me to identify the color of the image they've provided, and also to look at swatch S-1 and tell them what color that is.\n\nLooking at the image they provided, it appears to be a bright red color.\n\nNow I need to show swatch S-1 to see what color that is.",
+            "signature": "EqsECrgBCBQYAipAFujTqJlXFW9e7ZqGJ+Oxxuxm33lxItK4kSMPP8hLKd73es7U6fTUfECvnKDzybrH2cSg/qTt+WhjXc62c6iiDjIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAHYl5rYBhIMs1LdzqPD0qmGV1jiGgxI0QIpJP6dSboY4E8iMLOSiwAA8ZnEPM7eZoK2qrQLvmBzNZNngmn4XA+Qy3q0yH4J5j4Pu/KiE3itCdx3ICqfApixaXPINPRFQ2btgFCGQg9dx8uRaK+Oc0w9WHAPzJfurG+WrQlOo+4kKVyVsQTZlWSK33Yj818f3AcDO2SUZjfoFhrnXrmdZZ2E50X5CBeWcvl+PoJ4lxM805rTj9ohJ9J8ztXbLicWVeiWGGbnAl1jCL5+7nmbgqfuto1cVBirOBEoF/VqmSvwi1zBEmYvmTj7r9ilHGSQ5j50UjPTkXw3cXUlGRUBRfoATkF2moTDNQSqE8eT036FGe8AI2O8Z2ww9kMvxydkr7FX9MZ/XWoOVgy7dVMRLBgVKELzihxEQOIJRHnfoo3+jxXKbMzPW1n9hpSh4nzTXKBMXhgQWXAkVpqubaiXrYUG3PXm+iWX7DF5EdsY1rXGA475FT40GAE="
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_018rDyV3FytDHwD79sQ3DVNz",
+            "name": "show_swatch",
+            "input": {
+              "swatch": "S-1"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_018rDyV3FytDHwD79sQ3DVNz",
+            "content": [
+              {
+                "type": "text",
+                "text": "Swatch S-1, as an image:"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUElEQVR42u3PQQkAAAgEsEtiEvunMIwRfAuDFViq57UICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICFwWtHVhHrbirsAAAAAASUVORK5CYII="
+                }
+              }
+            ],
+            "is_error": false,
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You describe colour swatches. Use show_swatch to see one before you answer.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "show_swatch",
+        "description": "Show one colour swatch by its id, as an image.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "swatch": {
+              "type": "string",
+              "description": "a swatch id, like S-1"
+            }
+          },
+          "required": [
+            "swatch"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
+  }
+}

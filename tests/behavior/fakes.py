@@ -6,7 +6,6 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau import (
-    Body,
     CallDraft,
     Cursor,
     Delta,
@@ -112,7 +111,8 @@ class Fail:
 @dataclass(frozen=True)
 class Request:
     """What a sample was asked: the walk's node ids, the resolved model (I1), the tools, and the
-    images in the walk's results as the provider was handed them (with their bytes, D30)."""
+    images in the walk (its results' and its user messages', D31) as the provider was handed them
+    (with their bytes, D30)."""
 
     walk: tuple[int, ...]
     model: ModelConfig
@@ -160,14 +160,7 @@ class FakeProvider:
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncGenerator[Part | Finish | Delta, None]:
-        images = tuple(
-            i
-            for n in walk
-            if isinstance(n.body, Body.Results)
-            for _, o, _ in n.body.outcomes
-            if isinstance(o, Outcome.Ok)
-            for i in o.images
-        )
+        images = tuple(i for n in walk for i in n.body.images)
         self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools), images))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")

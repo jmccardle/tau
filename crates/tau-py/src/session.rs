@@ -11,7 +11,7 @@ use tau_store::Store;
 
 use crate::error::Failure;
 use crate::job::{Answer, Job};
-use crate::values::{Author, Body, Config, ItemData};
+use crate::values::{Author, Body, Config, Image, ItemData};
 use crate::view::{CursorState, Tree};
 
 #[derive(Debug)]
@@ -36,11 +36,7 @@ impl Inner {
         {
             return Ok(());
         }
-        let tree = &self.machine.session.tree;
-        let held = (0..tree.node_count() as u64)
-            .filter_map(|id| tree.node(id).ok())
-            .flat_map(|n| n.body.images())
-            .find(|i| i.sha256 == image.sha256 && i.data.is_some());
+        let held = self.named(&image.sha256).find(|i| i.data.is_some());
         match held {
             Some(i) => {
                 image.data.clone_from(&i.data);
@@ -48,6 +44,24 @@ impl Inner {
             }
             None => Err(tau_store::Error::MissingImage(image.sha256.clone()).into()),
         }
+    }
+
+    /// Every image the session's nodes and scratchpad name `sha256`, in node order, then pad
+    /// order (D31: an input's images are the session's before a node holds them).
+    pub(crate) fn named<'a>(&'a self, sha256: &'a str) -> impl Iterator<Item = &'a tree::Image> {
+        let session = &self.machine.session;
+        let tree = &session.tree;
+        (0..tree.node_count() as u64)
+            .filter_map(|id| tree.node(id).ok())
+            .flat_map(|n| n.body.images())
+            .chain(
+                session
+                    .scratchpad()
+                    .items
+                    .iter()
+                    .flat_map(|i| i.data.images()),
+            )
+            .filter(move |i| i.sha256 == sha256)
     }
 
     /// `know` every image of `body`.
@@ -393,10 +407,23 @@ impl Session {
 
     /// Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
     /// Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
-    fn input(&self, py: Python<'_>, cursor: u64, by: Author, text: &str) -> PyResult<u64> {
-        self.shared.write(py, tracing::info_span!("py.input"), |m| {
-            Ok(m.input(cursor, by.into(), text)?)
-        })
+    /// `images` (D31) follow the text; each carries its bytes, or is one this session keeps
+    /// (`MissingImage` otherwise, and nothing is added).
+    #[pyo3(signature = (cursor, by, text, images = Vec::new()))]
+    fn input(
+        &self,
+        py: Python<'_>,
+        cursor: u64,
+        by: Author,
+        text: &str,
+        images: Vec<Image>,
+    ) -> PyResult<u64> {
+        let mut images: Vec<tree::Image> = images.into_iter().map(|i| i.inner).collect();
+        self.shared
+            .write_inner(py, tracing::info_span!("py.input"), |i| {
+                images.iter_mut().try_for_each(|image| i.know(image))?;
+                Ok(i.machine.input(cursor, by.into(), text, images)?)
+            })
     }
 
     /// Send: add an `Input` item for `cursor`, written `by` the author, and turn auto-step on,
@@ -405,10 +432,22 @@ impl Session {
     /// offers it. `input` then `set_auto` as two calls can strand the item when a step runs
     /// between them. Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is
     /// not open.
-    fn send(&self, py: Python<'_>, cursor: u64, by: Author, text: &str) -> PyResult<u64> {
-        self.shared.write(py, tracing::info_span!("py.send"), |m| {
-            Ok(m.send(cursor, by.into(), text)?)
-        })
+    /// `images` as for `input`.
+    #[pyo3(signature = (cursor, by, text, images = Vec::new()))]
+    fn send(
+        &self,
+        py: Python<'_>,
+        cursor: u64,
+        by: Author,
+        text: &str,
+        images: Vec<Image>,
+    ) -> PyResult<u64> {
+        let mut images: Vec<tree::Image> = images.into_iter().map(|i| i.inner).collect();
+        self.shared
+            .write_inner(py, tracing::info_span!("py.send"), |i| {
+                images.iter_mut().try_for_each(|image| i.know(image))?;
+                Ok(i.machine.send(cursor, by.into(), text, images)?)
+            })
     }
 
     /// Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.

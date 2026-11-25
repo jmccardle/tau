@@ -14,13 +14,15 @@ frontend has one rule for all of them: `except ConnectionError`, then connect ag
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Collection, Mapping
+import base64
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from typing import Protocol, Self, cast
 
 from tau._calls import Calls
 from tau._core import Node
 from tau._events import Event
 from tau._hub import Feed
+from tau._images import ImageInput
 from tau._values import Form
 from tau.commandline import Parsed, completions, parse
 
@@ -44,6 +46,12 @@ class _TreeReads(Protocol):
 
     async def children(self, id: int) -> list[int]:
         """The ids of the children of node `id`, in append order."""
+        ...
+
+    async def image(self, sha256: str) -> str:
+        """The bytes of the image named `sha256` that this session holds (a node's, or an input's
+        on a scratchpad), as base64: what a client draws a node's `Image` with (D31).
+        `MissingImage` (a `LookupError`) if the session holds none by that name."""
         ...
 
 
@@ -120,11 +128,16 @@ class Client(_TreeReads, _CommandCalls, AsyncIterator[Event], Protocol):
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
 
-    async def input(self, cursor: int, text: str) -> int:
-        """Add `text` to the cursor's scratchpad as this client's input; returns the item."""
+    async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
+        """Add `text` to the cursor's scratchpad as this client's input, with `images` after it
+        (D31); returns the item. At most `MAX_INPUT_IMAGES` images, each an `ImageInput` (its
+        bytes are checked as it is made: `BadImage`). The images are held to the model of the
+        cursor's branch as a tool's are (D30 section 6): `ValueError` saying why if it does not
+        take images or one is over its provider's limits, `MissingImage` for a `sha256` the
+        session does not hold, `ValueError` for too many; nothing is added then."""
         ...
 
-    async def send(self, cursor: int, text: str) -> int:
+    async def send(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
         """`input` with auto-step on."""
         ...
 
@@ -263,6 +276,11 @@ class _LocalTreeReads(_Connected):
     async def children(self, id: int) -> list[int]:
         return self._up().session.tree.children(id)
 
+    async def image(self, sha256: str) -> str:
+        found = self._up().session.tree.image_named(sha256)
+        assert found.data is not None  # `image_named` gives the bytes
+        return base64.b64encode(found.data).decode("ascii")
+
 
 class _LocalCommandCalls(_Connected):
     """`LocalClient`'s command-line calls."""
@@ -302,11 +320,11 @@ class LocalClient(_LocalCommandCalls, _LocalTreeReads, Client):
     snapshot, in one act on the loop, so make it inside the running loop. Each call is
     documented on `Client`."""
 
-    async def input(self, cursor: int, text: str) -> int:
-        return self._up().input(cursor, self.id, text)
+    async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
+        return self._up().input(cursor, self.id, text, images)
 
-    async def send(self, cursor: int, text: str) -> int:
-        return self._up().send(cursor, self.id, text)
+    async def send(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
+        return self._up().send(cursor, self.id, text, images)
 
     async def step(self, cursor: int) -> None:
         self._up().step(cursor)

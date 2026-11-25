@@ -4,7 +4,7 @@
 
 A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed.
 
-Names: `Client`, `CommandFailed`, `LocalClient`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
+Names: `Client`, `CommandFailed`, `ImageInput`, `LocalClient`, `MAX_INPUT_BYTES`, `MAX_INPUT_IMAGES`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
 
 ## Client
 
@@ -22,15 +22,20 @@ driver has failed or stopped, or the client has been closed or cut off.
 ### Client.input
 
 ```python
-async def input(self, cursor: int, text: str) -> int
+async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int
 ```
 
-Add `text` to the cursor's scratchpad as this client's input; returns the item.
+Add `text` to the cursor's scratchpad as this client's input, with `images` after it
+(D31); returns the item. At most `MAX_INPUT_IMAGES` images, each an `ImageInput` (its
+bytes are checked as it is made: `BadImage`). The images are held to the model of the
+cursor's branch as a tool's are (D30 section 6): `ValueError` saying why if it does not
+take images or one is over its provider's limits, `MissingImage` for a `sha256` the
+session does not hold, `ValueError` for too many; nothing is added then.
 
 ### Client.send
 
 ```python
-async def send(self, cursor: int, text: str) -> int
+async def send(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int
 ```
 
 `input` with auto-step on.
@@ -185,6 +190,16 @@ async def children(self, id: int) -> list[int]
 
 The ids of the children of node `id`, in append order.
 
+### Client.image
+
+```python
+async def image(self, sha256: str) -> str
+```
+
+The bytes of the image named `sha256` that this session holds (a node's, or an input's
+on a scratchpad), as base64: what a client draws a node's `Image` with (D31).
+`MissingImage` (a `LookupError`) if the session holds none by that name.
+
 ### Client.commands
 
 ```python
@@ -289,6 +304,41 @@ it too. A command raises it itself to refuse (its arguments, say), with a messag
 person: the caller gets that message as written, with no traceback, and a command that takes
 a `Cursor` does not fail its step for it.
 
+## ImageInput
+
+```python
+@dataclass(frozen=True)
+class ImageInput
+    data: str | None = None
+    sha256: str | None = None
+```
+
+One image a client sends with an input (D31): exactly one of `data`, the image file's bytes
+in standard base64 (with padding, nothing else), or `sha256`, the name of an image this
+session already keeps (a node's or an input's; nothing is read from a path). The format and
+size are read from the bytes, never taken from the client. Built from the wire or by hand,
+it is checked at once: `BadImage` (a `ValueError`) for bytes that are not strict base64 of
+a PNG, JPEG, GIF or WebP image of at most `MAX_INPUT_BYTES`, or a `sha256` that is not 64
+lowercase hex digits. Its `repr` never shows the bytes.
+
+### ImageInput.of
+
+```python
+@classmethod
+def of(cls, data: bytes) -> Self
+```
+
+The input of the image file `data`: its bytes as base64.
+
+### ImageInput.image
+
+```python
+def image(self) -> Image | None
+```
+
+The image `data` holds, with its bytes; `None` for a `sha256`, which the session
+resolves. `BadImage` as at construction.
+
 ## LocalClient
 
 ```python
@@ -331,6 +381,22 @@ async def __aenter__(self) -> Self
 ```python
 async def __aexit__(self, *exc: object) -> None
 ```
+
+## MAX_INPUT_BYTES
+
+```python
+MAX_INPUT_BYTES: Final = 20 * MIB
+```
+
+The most bytes one image of an input may be, before base64 (D31; fixed for 0.18).
+
+## MAX_INPUT_IMAGES
+
+```python
+MAX_INPUT_IMAGES: Final = 20
+```
+
+The most images one input may carry (D31; fixed for 0.18).
 
 ## Parsed
 

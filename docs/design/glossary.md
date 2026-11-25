@@ -20,9 +20,13 @@ once (I2).
 ### body
 *spike* `Body` · retires entry type, `customType`
 
-What a node holds, one of: `System`, `User`, `Assistant { parts, stop }`,
+What a node holds, one of: `System`, `User { text, images }`, `Assistant { parts, stop }`,
 `Results`, `Config`, `Custom { kind, data }`. The first four are
-**message-bearing**; `Config` and `Custom` never reach the model (Q3).
+**message-bearing**; `Config` and `Custom` never reach the model (Q3). A `User`'s `images` (D31)
+follow its text, empty for most; it encodes as before (`{"User": "text"}`) when it has none, else
+`{"User": {"text", "images"}}`. **`Body.images`** (core `Body::images`) is every body's images: a
+`User`'s, then a `Results`' `Ok` outcomes' in call order; the store, a fork, the counts and the
+image check read images only through it.
 Known `Custom` kinds: `sample_error` (core, a sample that failed with no
 output).
 
@@ -168,7 +172,22 @@ file that no longer hashes to its name. A decode refuses a `sha256` that is not 
 digits. `Tree.image(image)` gives one image its bytes from the session. A node read back from disk has
 images without `data`; `Tree.walk(node, images=True)` reads them (the driver samples with it).
 **MissingImage** is an image without bytes that the session does not have: refused at the write
-that names it, or raised by `walk(images=True)` when the file is gone.
+that names it, or raised by `walk(images=True)` when the file is gone. D31 puts images in a
+`User` node and an `Input` item too (see **body**, **item**); `Tree.image_named(sha256)` is the
+image of that name a node or an input of the session holds, with its bytes (what `Client.image`
+reads; `MissingImage` for none).
+
+### ImageInput, MAX_INPUT_IMAGES, MAX_INPUT_BYTES, Client.image
+`tau.ImageInput(data=None, sha256=None)`, `tau.MAX_INPUT_IMAGES` (20), `tau.MAX_INPUT_BYTES`
+(20 MiB), `Client.image(sha256)` · D31 · new
+
+One image a client sends with `input` or `send`: exactly one of `data` (the file's bytes in strict
+standard base64) or `sha256` (an image the session already holds: never a path). Checked as it is
+made, so wherever the wire's params are decoded: `BadImage` for base64 that is not strict, bytes
+that are not a PNG, JPEG, GIF or WebP (the server sniffs them; a client's claims are ignored), or
+more than `MAX_INPUT_BYTES`; on the wire that is `InvalidParams`, as is a list of more than
+`MAX_INPUT_IMAGES`. `ImageInput.of(bytes)` encodes a file's bytes. Its `repr` shows `<N bytes>`,
+never the base64. `Client.image(sha256)` answers an image's bytes as base64, for a client to draw.
 
 ### author
 *spike* `Author` · retires `source`, `SubmissionSource`
@@ -315,14 +334,19 @@ its items, in the same sync as the `Close` record.
 ### item
 *spike* `Item`, `ItemId`, `ItemData` · new
 
-`{id, to, data}`. `data` is `Input { by, text }` (`by` an *author*) or
-`Extension { name, data }`. Ids are never reused (`next_item`).
+`{id, to, data}`. `data` is `Input { by, text, images }` (`by` an *author*; `images`, D31,
+omitted from the encoding when empty) or `Extension { name, data }`. Ids are never reused
+(`next_item`).
 
 ### input
 *spike* `ItemData::Input` · new
 
 What gives a cursor a `User` message: a frontend's line (`by` is `Frontend(client)`), or an
 extension's `send` (`by` is `Extension(name)`, needing no client). The one item kind core knows.
+A client's input may carry images (D31; `Client.input(cursor, text, images)`, see
+**ImageInput**): they are held to the image check when they are added and again after the
+`pre_input` hooks, and the store writes them to the image directory before the scratchpad that
+names them.
 The input phase commits it as a `User` node that delivers it, `by` the input's author, and
 `pre_input` hooks see that author in `Draft.by`. Core does not check it: authors are recorded only
 (Q7), and the handle fills in its own, so an extension cannot claim to be a frontend. A `pre_input`
@@ -1287,7 +1311,12 @@ expands and a relative path is the session's working directory. A word naming no
 (missing, a directory, `@alice`) stays text, and a file named twice is attached once. A word that
 looks like a path but names none is told to the typing client in a `Notice`. Only input a person
 typed (authored by a `Frontend`) is expanded: never what a tool or extension wrote (a sub-agent's
-task, a template's body).
+task, a template's body). A file whose bytes are a PNG, JPEG, GIF or WebP image is attached as an
+**image** (D31): the draft's `User` body gains it after any images the input had, and the text a
+line `[image @shot.png: image/png 640x480]` where a block would be (so `typed` keeps the line as
+typed); `limit` does not apply to it, `MAX_INPUT_BYTES` does (a bigger one is a reference), and
+the image check after the hooks halts it on a model that does not take images. A template's
+arguments (`attached_to`) attach an image file as a file, as before.
 
 ### Skills (extension), template, skill, skills list
 `tau.Skills` (`_skills.py`), key `skills`, option `advertise` · D24 section 6 · new (8E-1)
@@ -2533,11 +2562,14 @@ provider that does is `examples/retry.py` (`RetryProvider`); it reads `SampleErr
 What one image may be for a provider's API: at most `max_bytes` bytes (the raw file; positive) and
 `max_side` pixels on its longer side (`None`: no limit). A provider declares it as the optional
 attribute `image_limits`, as it may offer `render`: OpenAI-compatible 20 MiB, Anthropic 3.75 MiB
-and 8000 px, Gemini 15 MiB; the mock provider has none. **The image check** (`tau._images`) holds
+and 8000 px, Gemini 15 MiB, the mock provider 20 MiB (D31; it echoes a user's images as
+`[N images: mime WxH, ...]`). **The image check** (`tau._images`) holds
 images to a model: none if its `ModelConfig.images` is false, none if its provider has no
 `image_limits`, and each within them. The driver runs it on a tool's `Ok` with images (a misfit
-becomes that call's `Err(why)`) and on the walk before a sample (a misfit fails the sample with a
-`SampleError` naming the node and the model).
+becomes that call's `Err(why)`), on a client's input with images (D31: `input` and `send` raise
+`ValueError` with why and add nothing), on the draft the `pre_input` hooks leave (a misfit halts
+the step with why, as a hook's halt does), and on the walk before a sample (a misfit fails the
+sample with a `SampleError` naming the node and the model).
 
 ### builtin_providers
 `tau.builtin_providers(environ)` (module `tau._providers`) · D15 · new
@@ -3246,7 +3278,7 @@ buffer=256)`; `_client.py`) · D16 · new
 
 A frontend's whole view of a session (in process, or over the wire as a `RemoteClient`); it never
 touches `Driver` or `Session`. Async calls that
-act as the client (`input`, `send`, `remove_item(cursor, item)` (D23 ruling 4: takes back an
+act as the client (`input` and `send`, each with optional `images` (D31, see *ImageInput*), `remove_item(cursor, item)` (D23 ruling 4: takes back an
 `Input` item this client added and the cursor has not delivered; `LookupError` once it has,
 `PermissionError` for another's; wakes nothing), `step`, `go_to`, `set_auto`, `abort`, `open`,
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
@@ -3254,9 +3286,9 @@ the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watc
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
 (extension)*, */config*, *complete*), `parse_line` and `complete_line` (the command line, read and
 completed on the driver; see *parse_line*), the reads `node`, `nodes`, `walk`, `children`,
-`close`, and one event
+`image` (D31: an image's bytes as base64, see *ImageInput*), `close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
-`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
+`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`, `image`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
 Every argument and event is a plain frozen value; over the wire (D21) the core's `Node`, `Body`,
 `Author`, `Item`, `ItemData` and `Ending` travel in the log's own JSON encoding (see *wire
 coding*) and the rest as their type hints say. `LocalClient` is the
@@ -3294,7 +3326,8 @@ per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays t
 `tau.PROTOCOL`, `tau.ProtocolError`, `tau.ProtocolMismatch` (`_protocol.py`) · D21 §3, §8 · new
 
 `PROTOCOL` is the wire's version, an integer (1 in 0.16; 2 from 0.17, for `Outcome.Ok`'s images,
-D30 §8). By D12 a version marks a *released*
+D30 §8; 3 from 0.18, for a user's images: the `User` and `Input` shapes, `images` on `input` and
+`send`, and the call `image`, D31). By D12 a version marks a *released*
 protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
 tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
 again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
@@ -3781,9 +3814,12 @@ links it into place; `Store::open(dir)` takes the lease and loads;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
 `Leased`, `Exists`, `NotASession`, `Version` (a file outside the versions this build reads:
-`VERSION` is 2 since D30, and 1 is read too; the lease holder rewrites a v1 log's header to 2
-just before its first append, so a v1 session opened without a write, or one that fails to load,
-stays v1), `MissingImage` (an image a record names that is neither carried nor in the
+`VERSION` is 3 since D31 and `BASE` 2 (D30), and 1 is read too. A file is written as `BASE`
+until it holds a record only 3 reads (a `User` node with images; a scratchpad with an input
+that has images): the lease holder rewrites a log's header to `BASE` just before its first
+append and to 3 just before the first such record, and a new session starts at `BASE`, so a
+0.17 build still opens a session that never held a user image; a v1 session opened without a
+write, or one that fails to load, stays v1), `MissingImage` (an image a record names that is neither carried nor in the
 image directory), `Corrupt` (a damaged
 scratchpad file), `Undecodable` (an intact log record that does not decode),
 `Core` (the log does not replay), `TooLarge` (a record of 4 GiB or more, refused

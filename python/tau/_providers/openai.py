@@ -14,7 +14,7 @@ from typing import cast
 import httpx
 
 from tau._config import ConfigError, ModelConfig
-from tau._core import Body, Image, Node, Outcome, Part, Stop
+from tau._core import Image, Node, Part, Stop
 from tau._events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
 from tau._images import MIB, ImageLimits
 from tau._protocols import Finish, Rendered, SampleError, Tool
@@ -102,6 +102,14 @@ def _image_items(images: Sequence[Image]) -> list[Json]:
     ]
 
 
+def _user(turn: UserTurn) -> Json:
+    """A user message: its text, or its text then its images (an image alone: no empty text)."""
+    if not turn.images:
+        return {"role": "user", "content": turn.text}
+    said = [_text_item(turn.text)] if turn.text else []
+    return {"role": "user", "content": [*said, *_image_items(turn.images)]}
+
+
 def messages(walk: Sequence[Node], *, structured: bool) -> tuple[list[Json], list[list[int]]]:
     """The wire messages for a walk, and for each the node it came from. `Config` and `Custom`
     nodes never reach the model. A tool message holds only text, so a batch's images follow its
@@ -123,10 +131,8 @@ def messages(walk: Sequence[Node], *, structured: bool) -> tuple[list[Json], lis
                 pass
             case SystemTurn(text=text):
                 made.append({"role": "system", "content": text})
-            case UserTurn(text=text, images=()):
-                made.append({"role": "user", "content": text})
-            case UserTurn(text=text, images=images):
-                made.append({"role": "user", "content": [_text_item(text), *_image_items(images)]})
+            case UserTurn():
+                made.append(_user(turn))
             case AssistantTurn():
                 made.append(_assistant(turn))
             case ToolResults(results=results):
@@ -435,14 +441,6 @@ def _model_facts(listed: object, model: str) -> Json:
     return {key: fields[name] for key, name in wanted if count(fields.get(name)) is not None}
 
 
-def _has_image(node: Node) -> bool:
-    """Whether `node` is a tool result that holds an image (D30)."""
-    body = node.body
-    return isinstance(body, Body.Results) and any(
-        isinstance(o, Outcome.Ok) and o.images for _, o, _ in body.outcomes
-    )
-
-
 def _typed_body(model: ModelConfig) -> Json:
     """The request keys the model's own settings set, with their values."""
     options = model.options
@@ -578,7 +576,7 @@ class OpenAIProvider:
         base = model.base_url.rstrip("/")
         headers = self._headers(model)
         server = await self._server(base, model.model, headers)
-        if "build_info" not in server or any(_has_image(n) for n in walk):
+        if "build_info" not in server or any(n.body.images for n in walk):
             return None
         body = dict(self.render(walk, model, tools).body)
         for key in ("stream", "stream_options"):

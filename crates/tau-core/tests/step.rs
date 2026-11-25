@@ -107,6 +107,7 @@ fn send(s: &mut Session, cursor: u64, t: &str) {
     s.add_item(
         cursor,
         ItemData::Input {
+            images: vec![],
             by: Author::Frontend("term".into()),
             text: t.into(),
         },
@@ -229,7 +230,7 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
             let note = s
                 .write(
                     c,
-                    Body::User("(reminder)".into()),
+                    Body::user("(reminder)"),
                     vec![],
                     Author::Extension("ctx".into()),
                     0,
@@ -244,7 +245,7 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
     assert_eq!(
         bodies(&s, c)[3..],
         [
-            Body::User("(reminder)".into()),
+            Body::user("(reminder)"),
             Body::Assistant {
                 parts: vec![text("hello")],
                 stop: Stop::End,
@@ -339,7 +340,7 @@ fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
         _ => vec![echo(job)],
     });
     assert_eq!(ending(&jobs), Ending::Failed("HTTP 500".into()));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
     let side = s.tree.node(s.at(c).unwrap() + 1).unwrap();
     assert_eq!(side.parent, Some(s.at(c).unwrap()));
     assert!(matches!(&side.body, Body::Custom { kind, .. } if kind == "sample_error"));
@@ -400,7 +401,7 @@ fn abort_during_sample_with_no_parts_commits_nothing() {
             ..
         }
     )));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
 }
 
 #[test]
@@ -433,14 +434,14 @@ fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
     );
     let users: Vec<Body> = bodies(&s, c)
         .into_iter()
-        .filter(|b| matches!(b, Body::User(_)))
+        .filter(|b| matches!(b, Body::User { .. }))
         .collect();
     assert_eq!(
         users,
         [
-            Body::User("hi".into()),
-            Body::User("wait, also".into()),
-            Body::User("go on".into())
+            Body::user("hi"),
+            Body::user("wait, also"),
+            Body::user("go on")
         ]
     );
     assert_eq!(s.items(c).count(), 0);
@@ -463,7 +464,7 @@ fn a_cursor_hook_string_halts_the_step() {
     });
     assert!(!jobs.contains(&Job::Sample));
     assert_eq!(ending(&jobs), Ending::Halted("over budget".into()));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
     assert!(!s.auto[&c]);
 }
 
@@ -473,6 +474,7 @@ fn halted_input(by: Author) -> (Session, u64, Vec<Job>) {
     s.add_item(
         c,
         ItemData::Input {
+            images: vec![],
             by,
             text: "hi".into(),
         },
@@ -499,6 +501,7 @@ fn an_inputs_author_is_the_user_nodes_author() {
         s.add_item(
             c,
             ItemData::Input {
+                images: vec![],
                 by: by.clone(),
                 text: "hi".into(),
             },
@@ -510,7 +513,7 @@ fn an_inputs_author_is_the_user_nodes_author() {
             _ => vec![echo(job)],
         });
         let user = s.tree.node(s.at(c).unwrap() - 1).unwrap();
-        assert_eq!(user.body, Body::User("hi".into()));
+        assert_eq!(user.body, Body::user("hi"));
         assert_eq!(user.by, by);
     }
 }
@@ -543,15 +546,14 @@ fn a_pre_sample_move_chooses_what_is_sampled_and_where_the_reply_lands() {
         } = job
         {
             let by = Author::Extension("remind".into());
-            s.write(c, Body::User("(be brief)".into()), vec![], by, 0)
-                .unwrap();
+            s.write(c, Body::user("(be brief)"), vec![], by, 0).unwrap();
         }
         script(job, s)
     });
     assert_eq!(
         bodies(&s, c)[3..],
         [
-            Body::User("(be brief)".into()),
+            Body::user("(be brief)"),
             Body::Assistant {
                 parts: vec![text("hello")],
                 stop: Stop::End,
@@ -843,13 +845,13 @@ fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending
     let edited = Answer::Hooks {
         stop: None,
         draft: Some(Draft {
-            body: Body::User("edited".into()),
+            body: Body::user("edited"),
             delivers: vec![],
             by: handed.by.clone(),
         }),
     };
     step.answer(&mut s, edited, 0).unwrap();
-    assert_eq!(bodies(&s, c).last(), Some(&Body::User("edited".into())));
+    assert_eq!(bodies(&s, c).last(), Some(&Body::user("edited")));
     assert_eq!(
         s.items(c).count(),
         1,
@@ -872,7 +874,7 @@ fn a_pre_input_hook_that_leaves_no_draft_commits_nothing_and_the_input_stays_pen
         _ => vec![echo(job)],
     });
     assert!(
-        !bodies(&s, c).iter().any(|b| matches!(b, Body::User(_))),
+        !bodies(&s, c).iter().any(|b| matches!(b, Body::User { .. })),
         "no User node: the hook took the draft away"
     );
     assert_eq!(s.items(c).count(), 1, "the input is still pending");
@@ -959,7 +961,7 @@ fn a_pre_sample_hook_that_raises_fails_the_step_without_sampling() {
     let (s, c, jobs) = turn_with_hook_answer(Hook::PreSample, raised("boom"));
     assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
     assert!(!jobs.contains(&Job::Sample));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
     assert!(!s.auto[&c]);
 }
 
@@ -968,7 +970,7 @@ fn a_pre_reply_hook_that_raises_drops_the_reply_and_fails_the_step() {
     let (s, c, jobs) = turn_with_hook_answer(Hook::PreReply, raised("boom"));
     assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
     assert!(!ran(&jobs, Hook::PostReply));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
     assert!(!s.auto[&c]);
 }
 
@@ -977,7 +979,7 @@ fn a_pre_reply_hook_string_drops_the_reply_and_halts_the_step() {
     let (s, c, jobs) = turn_with_hook_answer(Hook::PreReply, halting("no reply"));
     assert_eq!(ending(&jobs), Ending::Halted("no reply".into()));
     assert!(!ran(&jobs, Hook::PostReply));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
     assert!(!s.auto[&c]);
 }
 
@@ -1152,7 +1154,7 @@ fn abort_while_the_pre_sample_hooks_run_ends_the_step_without_sampling() {
     }
     assert_eq!(ending(&jobs), Ending::Aborted);
     assert!(!jobs.iter().any(|j| matches!(j, Job::Sample)));
-    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::user("hi"));
 }
 
 #[test]

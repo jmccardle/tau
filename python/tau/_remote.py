@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import json
 import sys
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from os import PathLike
 from typing import Final, Self, cast
 
@@ -29,6 +29,7 @@ from tau._client import Client
 from tau._core import Node
 from tau._events import Event
 from tau._hub import Feed
+from tau._images import ImageInput
 from tau._protocol import (
     PROTOCOL,
     ProtocolError,
@@ -256,15 +257,36 @@ class _Channel:
         return await self.request(method, encode_params(method, args))
 
 
-class RemoteClient(_Channel, Client):
+class _RemoteTreeReads(_Channel):
+    """`RemoteClient`'s reads of the tree (as `LocalClient`'s are `_LocalTreeReads`)."""
+
+    async def node(self, id: int) -> Node:
+        return cast("Node", await self.call("node", id=id))
+
+    async def nodes(self, start: int, limit: int) -> list[Node]:
+        return cast("list[Node]", await self.call("nodes", start=start, limit=limit))
+
+    async def walk(self, id: int) -> list[Node]:
+        return cast("list[Node]", await self.call("walk", id=id))
+
+    async def children(self, id: int) -> list[int]:
+        return cast("list[int]", await self.call("children", id=id))
+
+    async def image(self, sha256: str) -> str:
+        return cast("str", await self.call("image", sha256=sha256))
+
+
+class RemoteClient(_RemoteTreeReads, Client):
     """A `Client` of a session served by `tau serve`: build one with `RemoteClient.connect`. Each
     call is documented once, on `Client`. It is also an async context manager that closes."""
 
-    async def input(self, cursor: int, text: str) -> int:
-        return cast("int", await self.call("input", cursor=cursor, text=text))
+    async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
+        more = {"images": images} if images else {}
+        return cast("int", await self.call("input", cursor=cursor, text=text, **more))
 
-    async def send(self, cursor: int, text: str) -> int:
-        return cast("int", await self.call("send", cursor=cursor, text=text))
+    async def send(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int:
+        more = {"images": images} if images else {}
+        return cast("int", await self.call("send", cursor=cursor, text=text, **more))
 
     async def step(self, cursor: int) -> None:
         await self.call("step", cursor=cursor)
@@ -333,15 +355,3 @@ class RemoteClient(_Channel, Client):
 
     async def complete_line(self, cursor: int, line: str) -> list[str]:
         return cast("list[str]", await self.call("complete_line", cursor=cursor, line=line))
-
-    async def node(self, id: int) -> Node:
-        return cast("Node", await self.call("node", id=id))
-
-    async def nodes(self, start: int, limit: int) -> list[Node]:
-        return cast("list[Node]", await self.call("nodes", start=start, limit=limit))
-
-    async def walk(self, id: int) -> list[Node]:
-        return cast("list[Node]", await self.call("walk", id=id))
-
-    async def children(self, id: int) -> list[int]:
-        return cast("list[int]", await self.call("children", id=id))

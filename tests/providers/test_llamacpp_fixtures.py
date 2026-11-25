@@ -90,6 +90,33 @@ async def test_a_tool_results_image_follows_its_tool_message_and_is_read(tmp_pat
 
 
 @pytest.mark.parametrize(
+    ("case", "colours"),
+    [
+        ("user-image", ("red",)),
+        ("user-image-large", ("green",)),
+        ("user-and-tool-image", ("red", "blue")),
+    ],
+)
+@scenario
+async def test_a_users_image_follows_its_text_and_is_read(
+    case: str, colours: tuple[str, ...], tmp_path: Path
+) -> None:
+    async with replayed(FAMILY / case, tmp_path) as run:
+        first = next(s for s in run.sent if isinstance(s, dict) and "messages" in s)
+        user = next(m for m in first["messages"] if m["role"] == "user")
+        assert [i["type"] for i in user["content"]] == ["text", "image_url"]
+        assert user["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+        answer = " ".join(
+            p.text
+            for n in run.walk
+            if isinstance(n.body, Body.Assistant)
+            for p in n.body.parts
+            if isinstance(p, Part.Text)
+        ).lower()
+        assert all(c in answer for c in colours), "the model saw the image"
+
+
+@pytest.mark.parametrize(
     ("case", "said"),
     [
         ("error-bad-request", "Expected 'messages' to be an array"),

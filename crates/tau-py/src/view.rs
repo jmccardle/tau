@@ -79,6 +79,21 @@ impl Tree {
         Ok(Image { inner })
     }
 
+    /// The image of this session named `sha256` (a node's or a scratchpad input's), with its
+    /// bytes. `MissingImage` if the session has none by that name (D31: what a client's
+    /// `image` call reads, and an input that names an image the session keeps).
+    fn image_named(&self, py: Python<'_>, sha256: &str) -> PyResult<Image> {
+        let found = self
+            .shared
+            .read(py, tracing::info_span!("py.tree.image_named"), |i| {
+                i.named(sha256)
+                    .max_by_key(|i| i.data.is_some())
+                    .cloned()
+                    .ok_or_else(|| tau_store::Error::MissingImage(sha256.into()).into())
+            })?;
+        self.image(py, Image { inner: found })
+    }
+
     /// The children of `node`, in append order.
     fn children(&self, py: Python<'_>, node: u64) -> PyResult<Vec<u64>> {
         self.shared

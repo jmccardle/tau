@@ -12,7 +12,7 @@ use tau_store::{Error, HEADER, Store, VERSION};
 
 /// Input, then auto-step on: what a frontend does to send.
 fn send(m: &mut Machine, cursor: u64, by: Author, text: &str) -> u64 {
-    let item = m.input(cursor, by, text).unwrap();
+    let item = m.input(cursor, by, text, vec![]).unwrap();
     m.set_auto(cursor, true).unwrap();
     item
 }
@@ -88,10 +88,7 @@ fn apply(s: &mut Session, op: &Op) {
     let by = Author::Core;
     match *op {
         Op::Open(t) => drop(s.open(node(t), by, 0).unwrap()),
-        Op::User(i) => drop(
-            s.write(cursor(i), Body::User("u".into()), vec![], by, 0)
-                .unwrap(),
-        ),
+        Op::User(i) => drop(s.write(cursor(i), Body::user("u"), vec![], by, 0).unwrap()),
         Op::Reply(i, with_meta) => {
             let body = Body::Assistant {
                 parts: vec![Part::text("r")],
@@ -106,6 +103,7 @@ fn apply(s: &mut Session, op: &Op) {
         Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
         Op::Input(i, a) => {
             let data = ItemData::Input {
+                images: vec![],
                 by: author(a),
                 text: "in".into(),
             };
@@ -114,7 +112,7 @@ fn apply(s: &mut Session, op: &Op) {
         Op::Deliver(i) => {
             let first = s.items(cursor(i)).next().map(|it| it.id);
             if let Some(item) = first {
-                s.write(cursor(i), Body::User("in".into()), vec![item], by, 0)
+                s.write(cursor(i), Body::user("in"), vec![item], by, 0)
                     .unwrap();
             }
         }
@@ -186,7 +184,7 @@ proptest! {
         prop_assert_eq!(store.dropped, 0);
         prop_assert_eq!(&again, want);
         // The session goes on from the cut, and that reloads too.
-        again.append(0, Author::Core, Body::User("after".into()), vec![], 0).unwrap();
+        again.append(0, Author::Core, Body::user("after"), vec![], 0).unwrap();
         again.sync();
         store = store.save(&mut again).unwrap();
         drop(store);
@@ -202,20 +200,15 @@ fn a_session_reopens_as_it_was_synced() {
     let mut store = Store::create(d.path(), &mut s).unwrap();
     s.set_label("main", c).unwrap();
     let data = ItemData::Input {
+        images: vec![],
         by: Author::Frontend("term".into()),
         text: "pending".into(),
     };
     s.add_item(c, data);
     s.sync();
     store = store.save(&mut s).unwrap();
-    s.write(
-        c,
-        Body::User("never synced".into()),
-        vec![],
-        Author::Core,
-        0,
-    )
-    .unwrap();
+    s.write(c, Body::user("never synced"), vec![], Author::Core, 0)
+        .unwrap();
     store = store.save(&mut s).unwrap();
     drop(store);
     let (store, loaded) = Store::open(d.path()).unwrap();
@@ -234,18 +227,19 @@ fn one_save_over_many_syncs_reopens_as_the_last() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let input = |text: &str| ItemData::Input {
+        images: vec![],
         by: Author::Frontend("term".into()),
         text: text.into(),
     };
     let first = s.add_item(c, input("first"));
     s.sync();
-    s.write(c, Body::User("first".into()), vec![first], Author::Core, 0)
+    s.write(c, Body::user("first"), vec![first], Author::Core, 0)
         .unwrap();
     s.sync();
     s.add_item(c, input("second"));
     s.sync();
     // The last `Sync` carries no pad: the newest is the one before it.
-    s.write(c, Body::User("plain".into()), vec![], Author::Core, 0)
+    s.write(c, Body::user("plain"), vec![], Author::Core, 0)
         .unwrap();
     s.sync();
     store = store.save(&mut s).unwrap();
@@ -263,6 +257,7 @@ fn the_log_never_holds_items() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let store = Store::create(d.path(), &mut s).unwrap();
     let data = ItemData::Input {
+        images: vec![],
         by: Author::Frontend("term".into()),
         text: "in the scratchpad only".into(),
     };
@@ -405,7 +400,7 @@ fn a_damaged_record_is_cut_not_believed() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let before = as_loaded(&s);
-    s.write(c, Body::User("hello".into()), vec![], Author::Core, 0)
+    s.write(c, Body::user("hello"), vec![], Author::Core, 0)
         .unwrap();
     s.sync();
     store = store.save(&mut s).unwrap();
@@ -493,7 +488,8 @@ fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     let block = d.path().join("scratchpad.new");
     fs::create_dir(&block).unwrap();
     let mut m = Machine::new(s);
-    m.input(c, Author::Frontend("term".into()), "hi").unwrap();
+    m.input(c, Author::Frontend("term".into()), "hi", vec![])
+        .unwrap();
     assert!(matches!(store.save(&mut m.session), Err(Error::Io(_))));
     // The store is gone with its lease, as after a crash: the session opens again.
     fs::remove_dir(&block).unwrap();
@@ -609,13 +605,13 @@ fn provenance_survives_a_reload() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let store = Store::create(d.path(), &mut s).unwrap();
     let a = s
-        .write(c, Body::User("a".into()), vec![], Author::Core, 1)
+        .write(c, Body::user("a"), vec![], Author::Core, 1)
         .unwrap();
     let copy = s
         .append_from(
             1,
             Author::Core,
-            Body::User("a".into()),
+            Body::user("a"),
             vec![],
             2,
             Provenance {
@@ -635,7 +631,7 @@ fn provenance_survives_a_reload() {
 #[test]
 fn a_fork_written_to_a_store_reloads_as_it_was() {
     let (mut s, c) = Session::create("{}", "sys", 0);
-    s.write(c, Body::User("a".into()), vec![], Author::Core, 3)
+    s.write(c, Body::user("a"), vec![], Author::Core, 3)
         .unwrap();
     let (mut copy, _) = s.fork(2, 9).unwrap();
     let d = dir();
@@ -649,7 +645,7 @@ fn a_fork_written_to_a_store_reloads_as_it_was() {
 fn held(d: &Path, text: &str) -> (Session, Store) {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let store = Store::create(d, &mut s).unwrap();
-    s.write(c, Body::User(text.into()), vec![], Author::Core, 0)
+    s.write(c, Body::user(text), vec![], Author::Core, 0)
         .unwrap();
     s.sync();
     (s, store)
@@ -660,7 +656,7 @@ fn read_takes_no_lease_and_sees_the_last_sync() {
     let d = dir();
     let (mut s, mut store) = held(d.path(), "first");
     store = store.save(&mut s).unwrap();
-    s.write(0, Body::User("unsynced".into()), vec![], Author::Core, 0)
+    s.write(0, Body::user("unsynced"), vec![], Author::Core, 0)
         .unwrap();
     store = store.save(&mut s).unwrap();
     let copy = Store::read(d.path()).unwrap();
@@ -700,6 +696,7 @@ fn read_with_a_scratchpad_older_than_the_log_drops_what_the_log_delivered() {
     let item = s.add_item(
         c,
         ItemData::Input {
+            images: vec![],
             by: Author::Core,
             text: "hi".into(),
         },
@@ -708,7 +705,7 @@ fn read_with_a_scratchpad_older_than_the_log_drops_what_the_log_delivered() {
     store = store.save(&mut s).unwrap();
     // The scratchpad file as it was while the item was pending.
     let older = fs::read(d.path().join("scratchpad")).unwrap();
-    s.write(c, Body::User("hi".into()), vec![item], Author::Core, 0)
+    s.write(c, Body::user("hi"), vec![item], Author::Core, 0)
         .unwrap();
     s.sync();
     drop(store.save(&mut s).unwrap());
@@ -734,7 +731,7 @@ fn first_user_reads_only_as_far_as_the_first_user_node() {
     let mut store = Store::create(d.path(), &mut s).unwrap();
     assert_eq!(Store::first_user(d.path()).unwrap(), None);
     for text in ["one", "two"] {
-        s.write(c, Body::User(text.into()), vec![], Author::Core, 0)
+        s.write(c, Body::user(text), vec![], Author::Core, 0)
             .unwrap();
         s.sync();
         store = store.save(&mut s).unwrap();

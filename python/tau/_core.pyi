@@ -683,6 +683,11 @@ class Body:
     def __eq__(self, other: object, /) -> bool: ...
     def __repr__(self) -> str: ...
     def __hash__(self) -> int: ...
+    @property
+    def images(self) -> list[Image]:
+        """The images this body holds, in order: a `User` message's (after its text), or those of a
+        `Results` node's `Ok` outcomes, in call order; none for any other body.
+        """
 
     @final
     class System(Body):
@@ -696,13 +701,18 @@ class Body:
 
     @final
     class User(Body):
-        """A message from the person (or an extension) using the session."""
+        """A message from the person (or an extension) using the session: its text, then its
+        images (D31).
+        """
 
         __match_args__: ClassVar[tuple[str, ...]]
-        def __new__(cls, text: str) -> Body.User: ...
+        def __new__(cls, text: str, images: Sequence[Image] = ...) -> Body.User: ...
         @property
         def text(self) -> str:
             """The message."""
+        @property
+        def images(self) -> list[Image]:
+            """The images sent with it, after the text; empty for most messages."""
 
     @final
     class Assistant(Body):
@@ -774,16 +784,21 @@ class ItemData:
 
     @final
     class Input(ItemData):
-        """A line for the cursor to take as a `User` message."""
+        """A line for the cursor to take as a `User` message, with its images (D31)."""
 
         __match_args__: ClassVar[tuple[str, ...]]
-        def __new__(cls, by: Author, text: str) -> ItemData.Input: ...
+        def __new__(
+            cls, by: Author, text: str, images: Sequence[Image] = ...
+        ) -> ItemData.Input: ...
         @property
         def by(self) -> Author:
             """Who wrote it."""
         @property
         def text(self) -> str:
             """The line."""
+        @property
+        def images(self) -> list[Image]:
+            """The images sent with it, after the text; empty for most inputs."""
 
     @final
     class Extension(ItemData):
@@ -1032,6 +1047,11 @@ class Tree:
         directory, or, in memory, a node that holds them). `MissingImage` if the session has no
         such image. What a tool's image taken from a node loaded from disk is checked with.
         """
+    def image_named(self, sha256: str) -> Image:
+        """The image of this session named `sha256` (a node's or a scratchpad input's), with its
+        bytes. `MissingImage` if the session has none by that name (D31: what a client's
+        `image` call reads, and an input that names an image the session keeps).
+        """
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
     def __len__(self) -> int: ...
@@ -1143,17 +1163,20 @@ class Session:
     @property
     def tree(self) -> Tree:
         """The session's nodes."""
-    def input(self, cursor: int, by: Author, text: str) -> int:
+    def input(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int:
         """Add an `Input` item for `cursor`, written `by` the author, and wake the cursor.
         Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is not open.
+        `images` (D31) follow the text; each carries its bytes, or is one this session keeps
+        (`MissingImage` otherwise, and nothing is added).
         """
-    def send(self, cursor: int, by: Author, text: str) -> int:
+    def send(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int:
         """Send: add an `Input` item for `cursor`, written `by` the author, and turn auto-step on,
         as one call. The cursor takes the item at its next input phase: a cursor at rest wakes
         with auto-step on, and a step already past its input phase is followed by one that
         offers it. `input` then `set_auto` as two calls can strand the item when a step runs
         between them. Returns the item's id. `NoSuchCursor` or `CursorClosed` if the cursor is
         not open.
+        `images` as for `input`.
         """
     def step(self, cursor: int) -> None:
         """Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.

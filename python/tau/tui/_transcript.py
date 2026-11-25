@@ -22,7 +22,7 @@ from textual.widgets import Collapsible, Static
 from tau._core import Author, Body, Node, Outcome, Part, Stop
 from tau._counts import tokens
 from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
-from tau._images import shown
+from tau._images import labels, shown
 from tau.tui._chat import MessageBox, QuietCollapsible
 from tau.tui._view import LiveLayer
 from tau.tui._window import tail_start
@@ -178,8 +178,8 @@ class ChatDisplay(WindowedWalk):
         widget: Static | MessageBox | Collapsible | None = None
         line = ""
         match body:
-            case Body.User(text=text):
-                text = typed(node)
+            case Body.User(images=images):
+                text = "\n".join(filter(None, [typed(node), *labels(images)]))
                 who = author_name(node.by)
                 title = "User" if node.by == Author.Frontend(self.client) else who
                 widget = MessageBox("user", title, text, source="verbatim")

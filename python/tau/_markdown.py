@@ -19,7 +19,7 @@ import re
 from collections.abc import Iterable
 
 from tau._core import Author, Body, Node, Outcome, Part, Stop
-from tau._images import shown
+from tau._images import labels, shown
 from tau._sessions import SessionInfo
 
 _TICKS = re.compile(r"`+")
@@ -90,8 +90,8 @@ def _node(node: Node, thinking: bool, tools: dict[str, str]) -> list[str]:
                 _fence(text),
                 "</details>",
             ]
-        case Body.User(text=text):
-            return [f"## User{_by(node.by)}", text]
+        case Body.User(text=text, images=images):
+            return [f"## User{_by(node.by)}", "\n".join(filter(None, [text, *labels(images)]))]
         case Body.Assistant() as body:
             tools.update({p.id: p.tool for p in body.parts if isinstance(p, Part.Call)})
             return _assistant(body, thinking)

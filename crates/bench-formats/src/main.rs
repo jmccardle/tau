@@ -70,7 +70,7 @@ impl Text {
 fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
     s.write(
         c,
-        Body::User(text.take(USER)),
+        Body::user(text.take(USER)),
         vec![],
         Author::Frontend("t".into()),
         0,
@@ -119,11 +119,11 @@ fn compact(s: &mut Session, c: CursorId, text: &mut Text) {
     let by = Author::Extension("compact".into());
     let mut parent = 1;
     for (i, body) in walk.into_iter().enumerate() {
-        if i >= recent || matches!(body, Body::User(_)) {
+        if i >= recent || matches!(body, Body::User { .. }) {
             parent = s.append(parent, by.clone(), body, vec![], 0).unwrap();
         }
     }
-    let summary = Body::User(text.take(SUMMARY));
+    let summary = Body::user(text.take(SUMMARY));
     let top = s
         .append(parent, by.clone(), summary, vec![], 0)
         .unwrap();
@@ -193,7 +193,7 @@ fn bson_dec(b: &[u8]) -> Record {
 /// The text of a body: each part, result, or message as stored.
 fn strings(body: &Body) -> Vec<&str> {
     match body {
-        Body::User(t) | Body::System(t) => vec![t],
+        Body::User { text: t, .. } | Body::System(t) => vec![t],
         Body::Assistant { parts, .. } => parts
             .iter()
             .map(|p| match p {

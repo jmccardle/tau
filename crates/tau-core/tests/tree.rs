@@ -4,8 +4,7 @@ use tau_core::step::{Answer, Job, Step};
 use tau_core::tree::{Author, Body, Config, Error, Node, Provenance, Record, Scratchpad, Session};
 
 fn user(s: &mut Session, c: u64, t: &str) -> u64 {
-    s.write(c, Body::User(t.into()), vec![], Author::Core, 0)
-        .unwrap()
+    s.write(c, Body::user(t), vec![], Author::Core, 0).unwrap()
 }
 
 #[test]
@@ -86,7 +85,7 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
     );
     let by = Author::Extension("nav".into());
     let note = s
-        .append(before, by.clone(), Body::User("n".into()), vec![], 0)
+        .append(before, by.clone(), Body::user("n"), vec![], 0)
         .unwrap();
     s.move_to(c, note, by.clone(), 0).unwrap();
     s.move_to(d, note, by, 0).unwrap(); // another cursor's move: not shown
@@ -130,29 +129,18 @@ fn a_logged_root_that_is_not_a_config_does_not_replay() {
 fn a_fork_is_one_walk_copied_node_for_node() {
     let (mut s, c) = Session::create("{}", "sys", 1);
     let a = s
-        .write(
-            c,
-            Body::User("a".into()),
-            vec![],
-            Author::Frontend("t".into()),
-            5,
-        )
+        .write(c, Body::user("a"), vec![], Author::Frontend("t".into()), 5)
         .unwrap();
     let b = user(&mut s, c, "b");
     // Another branch, a label, a second cursor and a pending item: none of them are copied.
     let other = s.open(a, Author::Core, 6).unwrap();
-    s.write(
-        other,
-        Body::User("elsewhere".into()),
-        vec![],
-        Author::Core,
-        7,
-    )
-    .unwrap();
+    s.write(other, Body::user("elsewhere"), vec![], Author::Core, 7)
+        .unwrap();
     s.set_label("main", c).unwrap();
     s.add_item(
         c,
         tau_core::tree::ItemData::Input {
+            images: vec![],
             by: Author::Core,
             text: "pending".into(),
         },
@@ -186,12 +174,13 @@ fn a_forks_delivers_are_emptied_and_a_missing_node_is_refused() {
     let item = s.add_item(
         c,
         tau_core::tree::ItemData::Input {
+            images: vec![],
             by: Author::Core,
             text: "hi".into(),
         },
     );
     let tip = s
-        .write(c, Body::User("hi".into()), vec![item], Author::Core, 0)
+        .write(c, Body::user("hi"), vec![item], Author::Core, 0)
         .unwrap();
     assert_eq!(s.tree.node(tip).unwrap().delivers, [item]);
     let (copy, _) = s.fork(tip, 0).unwrap();
@@ -203,13 +192,13 @@ fn a_forks_delivers_are_emptied_and_a_missing_node_is_refused() {
 fn a_node_records_where_it_came_from_and_the_source_must_exist() {
     let (mut s, _) = Session::create("{}", "sys", 0);
     let a = s
-        .append(1, Author::Core, Body::User("a".into()), vec![], 1)
+        .append(1, Author::Core, Body::user("a"), vec![], 1)
         .unwrap();
     let copy = s
         .append_from(
             1,
             Author::Core,
-            Body::User("a".into()),
+            Body::user("a"),
             vec![],
             2,
             Provenance {
@@ -222,7 +211,7 @@ fn a_node_records_where_it_came_from_and_the_source_must_exist() {
         .append_from(
             1,
             Author::Core,
-            Body::User("s".into()),
+            Body::user("s"),
             vec![],
             3,
             Provenance {
@@ -244,7 +233,7 @@ fn a_node_records_where_it_came_from_and_the_source_must_exist() {
         derived_from: None,
     };
     assert_eq!(
-        s.append_from(1, Author::Core, Body::User("x".into()), vec![], 4, missing),
+        s.append_from(1, Author::Core, Body::user("x"), vec![], 4, missing),
         Err(Error::NoSuchNode(99))
     );
     assert_eq!(s.tree.node_count(), before, "a refused node is not added");
@@ -254,16 +243,16 @@ fn a_node_records_where_it_came_from_and_the_source_must_exist() {
 fn a_fork_renumbers_provenance_and_drops_a_source_outside_the_walk() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let side = s
-        .append(1, Author::Core, Body::User("side".into()), vec![], 1)
+        .append(1, Author::Core, Body::user("side"), vec![], 1)
         .unwrap();
     let a = s
-        .write(c, Body::User("a".into()), vec![], Author::Core, 2)
+        .write(c, Body::user("a"), vec![], Author::Core, 2)
         .unwrap();
     let copy = s
         .append_from(
             a,
             Author::Core,
-            Body::User("b".into()),
+            Body::user("b"),
             vec![],
             3,
             Provenance {
@@ -301,7 +290,7 @@ fn a_fork_strips_usage_from_a_copy_whose_source_it_drops() {
         )
         .unwrap();
     let a = s
-        .write(c, Body::User("a".into()), vec![], Author::Core, 2)
+        .write(c, Body::user("a"), vec![], Author::Core, 2)
         .unwrap();
     let kept = s
         .append_from(

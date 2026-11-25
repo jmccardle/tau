@@ -2,11 +2,12 @@
   "replies": [
     {
       "usage": {
-        "input": 30,
-        "output": 4,
+        "input": 60,
+        "output": 47,
         "cached": 0,
         "written": 0,
-        "written_1h": 0
+        "written_1h": 0,
+        "reasoning": 40
       },
       "stop": "End",
       "finish_reason": "end_turn"

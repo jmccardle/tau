@@ -1,0 +1,29 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 691,
+        "output": 136,
+        "cached": 0,
+        "written": 0,
+        "written_1h": 0,
+        "reasoning": 76
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_use"
+    },
+    {
+      "usage": {
+        "input": 879,
+        "output": 14,
+        "cached": 0,
+        "written": 0,
+        "written_1h": 0,
+        "reasoning": 0
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    }
+  ],
+  "error": null
+}

@@ -525,6 +525,7 @@ async fn send(link: &Link, cursor: u64, text: &str) -> Result<(), String> {
     link.call(&SendParams {
         cursor,
         text: text.to_owned(),
+        images: vec![],
     })
     .await
     .map(|_| ())

@@ -1,10 +1,12 @@
 """What the recorded hosted fixtures (Anthropic Claude Haiku 4.5, Gemini 3.5 Flash-Lite, Mistral
 Small 2603 through the OpenAI-compatible provider) say about τ's reading of each, beyond the
 replay every family gets (`test_provider_fixtures.py`): one call, then two in parallel, then
-one that errors; a tool result's image read; a length stop; a malformed body refused with the
+one that errors; a tool result's image read; a user's image read (small, 4K, and with a
+tool's); a length stop; a malformed body refused with the
 server's words; and Anthropic's cache proving the spans of a conversation whose prompt is
 cacheable, and none across the cache miss after the gap."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from replay import ROOT, cases, replayed
 
 from tau import Body, Part
 
+PNG_BASE64 = "iVBORw0KGgo"  # what every PNG's base64 begins with
 HOSTED = [f for f in ("anthropic", "gemini", "mistral") if cases(f)]
 pytestmark = pytest.mark.skipif(not HOSTED, reason="no hosted fixtures")
 
@@ -52,6 +55,43 @@ def test_a_tool_results_image_is_read_and_a_reply_is_cut_at_max_tokens(
             assert "blue" in said.lower(), f"{family}: the model saw the swatch"
         async with replayed(ROOT / family / "length", tmp_path) as run:
             assert [r["stop"] for r in run.replies] == ["Length"]
+
+    check()
+
+
+def said_by(run: object) -> str:
+    return " ".join(p.text for r in replies(run) for p in r.parts if isinstance(p, Part.Text))
+
+
+@pytest.mark.parametrize("family", HOSTED)
+@pytest.mark.parametrize(("case", "colour"), [("user-image", "red"), ("user-image-large", "green")])
+def test_a_users_image_is_sent_after_its_text_and_read(
+    family: str, case: str, colour: str, tmp_path: Path
+) -> None:
+    @scenario
+    async def check() -> None:
+        async with replayed(ROOT / family / case, tmp_path) as run:
+            (images,) = run.case["turn_images"]
+            assert len(images) == 1
+            (user,) = (n.body for n in run.walk if isinstance(n.body, Body.User))
+            assert len(user.images) == 1
+            assert colour in said_by(run).lower(), f"{family}/{case}: the model saw the image"
+
+    check()
+
+
+@pytest.mark.parametrize("family", HOSTED)
+def test_a_users_image_and_a_tools_image_are_in_one_request(family: str, tmp_path: Path) -> None:
+    @scenario
+    async def check() -> None:
+        async with replayed(ROOT / family / "user-and-tool-image", tmp_path) as run:
+            posts = [s for s in run.sent if s is not None]  # not a probe's GET
+            assert len(posts) == 2
+            assert json.dumps(posts[-1]).count(PNG_BASE64) == 2, "both images, in the last request"
+            if family != "mistral":  # Mistral Small answered "white" for both: not asserted
+                said = said_by(run).lower()
+                assert "red" in said
+                assert "blue" in said
 
     check()
 

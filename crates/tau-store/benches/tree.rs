@@ -74,7 +74,7 @@ fn text(len: usize) -> String {
 
 fn body_bytes(b: &Body) -> usize {
     match b {
-        Body::System(t) | Body::User(t) => t.len(),
+        Body::System(t) | Body::User { text: t, .. } => t.len(),
         Body::Assistant { parts, .. } => parts
             .iter()
             .map(|p| match p {
@@ -180,7 +180,12 @@ impl Agent {
                 self.rounds = rig.payloads.shape.rounds;
                 let start = Instant::now();
                 rig.m
-                    .input(c, Author::Frontend("bench".into()), &rig.payloads.user)
+                    .input(
+                        c,
+                        Author::Frontend("bench".into()),
+                        &rig.payloads.user,
+                        vec![],
+                    )
                     .unwrap();
                 rig.m.set_auto(c, true).unwrap();
                 rig.stats.core += start.elapsed();
@@ -679,7 +684,7 @@ fn compact() {
             .append(
                 tip,
                 Author::Extension("compact".into()),
-                Body::User(summary),
+                Body::user(summary),
                 vec![],
                 rig.now,
             )
@@ -737,7 +742,9 @@ fn classify(s: &Session, c: CursorId) -> (Vec<Body>, Duration) {
         );
         let len = if round { 2 } else { 1 };
         let score = std::hint::black_box(byte_score(&node.body));
-        if i >= recent || (round && score.is_multiple_of(10)) || matches!(node.body, Body::User(_))
+        if i >= recent
+            || (round && score.is_multiple_of(10))
+            || matches!(node.body, Body::User { .. })
         {
             kept.extend(
                 walk[i..(i + len).min(walk.len())]

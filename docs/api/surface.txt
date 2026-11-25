@@ -431,8 +431,9 @@ class Body
         def __new__(cls, text: str) -> Body.System
         property text: str
     class User(Body)
-        def __new__(cls, text: str) -> Body.User
+        def __new__(cls, text: str, images: Sequence[Image] = ...) -> Body.User
         property text: str
+    property images: list[Image]
 class Config
     def __new__(cls, data: str) -> Config
     property data: str
@@ -460,8 +461,9 @@ class ItemData
         property data: str
         property name: str
     class Input(ItemData)
-        def __new__(cls, by: Author, text: str) -> ItemData.Input
+        def __new__(cls, by: Author, text: str, images: Sequence[Image] = ...) -> ItemData.Input
         property by: Author
+        property images: list[Image]
         property text: str
 class Move
     property by: Author
@@ -520,6 +522,7 @@ class Tree
     def children(self, node: int) -> list[int]
     def config_at(self, node: int) -> Config
     def image(self, image: Image) -> Image
+    def image_named(self, sha256: str) -> Image
     def lca(self, a: int, b: int) -> int | None
     def node(self, id: int) -> Node
     def walk(self, node: int, *, images: bool = False) -> list[Node]
@@ -544,7 +547,8 @@ class Client(AsyncIterator[Event], Protocol)
     ) -> None
     async def go_to(self, cursor: int, to: int) -> None
     id: str
-    async def input(self, cursor: int, text: str) -> int
+    async def image(self, sha256: str) -> str
+    async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int
     async def node(self, id: int) -> Node
     async def nodes(self, start: int, limit: int) -> list[Node]
     async def open(self, at: int) -> int
@@ -554,19 +558,28 @@ class Client(AsyncIterator[Event], Protocol)
     async def remove_label(self, label: str) -> None
     async def reopen(self, cursor: int) -> int
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None
-    async def send(self, cursor: int, text: str) -> int
+    async def send(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int
     async def set_auto(self, cursor: int, on: bool) -> None
     async def set_label(self, cursor: int, label: str) -> None
     async def step(self, cursor: int) -> None
     async def walk(self, id: int) -> list[Node]
     async def watch(self, cursors: Collection[int]) -> None
 class CommandFailed(RuntimeError)
+@dataclass(frozen=True)
+class ImageInput
+    data: str | None = None
+    def image(self) -> Image | None
+    @classmethod
+    def of(cls, data: bytes) -> Self
+    sha256: str | None = None
 class LocalClient(Client)
     async def __aenter__(self) -> Self
     async def __aexit__(self, *exc: object) -> None
     def __aiter__(self) -> Self
     async def __anext__(self) -> Event
     def take(self) -> list[Event]
+MAX_INPUT_BYTES: Final = 20 * MIB
+MAX_INPUT_IMAGES: Final = 20
 @dataclass(frozen=True)
 class Parsed
     args: dict[str, object]
@@ -814,7 +827,7 @@ class HttpEdge
     web: bool = True
     web_root: Path | None = None
 Json = dict[str, object]
-PROTOCOL: Final = 2
+PROTOCOL: Final = 3
 class ProtocolError(RuntimeError)
 class ProtocolMismatch(ProtocolError)
     def __init__(self, message: str, server: int) -> None
@@ -1131,7 +1144,7 @@ class Session
         copied_from: int | None = None,
         derived_from: int | None = None,
     ) -> int
-    def input(self, cursor: int, by: Author, text: str) -> int
+    def input(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int
     def label(self, label: str) -> int
     def labels(self) -> list[tuple[str, int]]
     @staticmethod
@@ -1142,7 +1155,7 @@ class Session
     def read(directory: str | PathLike[str]) -> Session
     def remove_item(self, id: int) -> None
     def remove_label(self, label: str) -> None
-    def send(self, cursor: int, by: Author, text: str) -> int
+    def send(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int
     def set_auto(self, cursor: int, on: bool) -> None
     def set_label(self, label: str, cursor: int) -> None
     def step(self, cursor: int) -> None

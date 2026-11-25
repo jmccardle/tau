@@ -4,6 +4,10 @@ Settings: `base_url` is refused (there is nothing to call). `options`, anything 
 problem in `check`: `reply` (the text to stream; default: the walk's last user input after
 `mock: `) and `delay_ms` (a non-negative integer, default 30, before each chunk). `max_tokens`
 caps the words streamed and ends the reply with the length stop.
+
+It takes images (`image_limits`, as an OpenAI-compatible server: 20 MiB, no side limit) for a
+model whose config says `images: true`, and echoes a user message's as one more line,
+`[N images: image/png 640x480, ...]` (D31): enough to see which reached the request.
 """
 
 import asyncio
@@ -13,8 +17,9 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import cast
 
 from tau._config import ModelConfig
-from tau._core import Body, Node, Part, Stop
+from tau._core import Body, Image, Node, Part, Stop
 from tau._events import Delta, TextDelta
+from tau._images import MIB, ImageLimits, count
 from tau._protocols import Finish, SampleError, Tool
 from tau._providers._wire import is_count, option_problems
 
@@ -24,8 +29,19 @@ _OPTIONS = ("reply", "delay_ms")
 _CHUNK = re.compile(r"\S+\s*|\s+")
 
 
+def _echoed(images: Sequence[Image]) -> str:
+    """A user message's images as the mock's reply names them; nothing for none."""
+    if not images:
+        return ""
+    shown = ", ".join(f"{i.mime} {i.width}x{i.height}" for i in images)
+    return f"\n[{count(len(images))}: {shown}]"
+
+
 class MockProvider:
     """Streams a canned or echoed reply. Holds nothing open."""
+
+    image_limits = ImageLimits(20 * MIB)
+    """What one image may be (D30): as an OpenAI-compatible server takes it."""
 
     @property
     def name(self) -> str:
@@ -54,7 +70,7 @@ class MockProvider:
             return cast("str", model.options["reply"])
         for node in reversed(walk):
             if isinstance(node.body, Body.User):
-                return f"mock: {node.body.text}"
+                return f"mock: {node.body.text}{_echoed(node.body.images)}"
         raise SampleError("the walk has no user input to echo and the model has no `reply` option")
 
     async def sample(

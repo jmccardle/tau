@@ -2,13 +2,14 @@
   "format": 1,
   "family": "anthropic",
   "provider": "anthropic",
-  "kind": "raw",
+  "kind": "turns",
   "scenario": "user-image",
   "model": {
     "provider": "anthropic",
     "model": "claude-haiku-4-5",
     "api_key_env": "ANTHROPIC_API_KEY",
     "max_tokens": 4096,
+    "images": true,
     "options": {
       "thinking": {
         "type": "enabled",
@@ -24,11 +25,19 @@
     0
   ],
   "tools": [],
-  "raw": {
-    "stream": true,
-    "adapter": true,
-    "error": false
-  },
+  "turn_images": [
+    [
+      {
+        "width": 64,
+        "height": 64,
+        "rgb": [
+          220,
+          30,
+          30
+        ]
+      }
+    ]
+  ],
   "tau": "0.17.1",
   "recorded": "2026-11-25"
 }

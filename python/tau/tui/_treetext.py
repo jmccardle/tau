@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from tau._core import Body, Node, Outcome, Part
 from tau._counts import Count, show
 from tau._events import CursorView
-from tau._images import shown
+from tau._images import labels, shown
 from tau.tui._transcript import author_name, config_line
 from tau.tui._treeplan import TreeRow
 
@@ -67,7 +67,9 @@ def full_text(node: Node) -> str:
     tag, short = describe(node)
     head = f"{tag}  ·  node {node.id}  ·  by {author_name(node.by)}\n\n"
     match node.body:
-        case Body.User(text=text) | Body.System(text=text):
+        case Body.User(text=text, images=images):
+            return head + "\n".join(filter(None, [text, *labels(images)]))
+        case Body.System(text=text):
             return head + text
         case Body.Assistant(parts=parts):
             lines = [

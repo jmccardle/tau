@@ -14,6 +14,12 @@ gets `<reference path="/abs/src/big.log" size="2.1 MB" reason="over the 10 kB li
 stays as text, and a file named twice is attached once. A `</attachment>` inside a file's text is
 written `<\\/attachment>`, so a file cannot end its own block and start another.
 
+A file whose bytes are a PNG, JPEG, GIF or WebP image (judged by its bytes, not its name) is
+attached as an image (D31): the draft carries it after the text, and the text gains one line,
+`[image @shot.png: image/png 640x480]`, where a file's block would be. The `limit` is for text: an
+image is held to `MAX_INPUT_BYTES` (20 MiB; a bigger one is a reference) and, after the hooks, to
+what the model takes, as every user image is: a model without images halts the input with why.
+
 A token is `@` followed by non-space characters, at the start of the text or after whitespace, or
 `@"` and a path with spaces up to the next `"` (`@"my notes.txt"`). As in a shell, a backslash
 makes the next character an ordinary one (`@my\\ notes.txt`; `\\\\` is a backslash); inside
@@ -44,9 +50,10 @@ from pathlib import Path
 from typing import Annotated, ClassVar
 
 from tau._config import ConfigError
-from tau._core import Author, Body, Draft
+from tau._core import Author, BadImage, Body, Draft, Image
 from tau._handles import Cursor, Subject
 from tau._hook_order import EDIT, GUARD
+from tau._images import MAX_INPUT_BYTES
 
 BEFORE_EDITS = (GUARD + EDIT) // 2
 """Between the guards and the edits: an edit every other edit must see (D28)."""
@@ -58,6 +65,7 @@ _CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
 _PATH_LIKE = re.compile(r"[\w~.+/-]*(?:/|\.\w|:\d+(?:-\d+)?$)[\w~.+/:-]*")
 _PUNCTUATION = ".,;:!?)]}>'\""
 _UNITS = ("B", "kB", "MB", "GB", "TB")
+_IMAGE_HEADS = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")
 _STEP = 1024
 
 
@@ -121,6 +129,34 @@ def _reference(path: Path, size: int | None, reason: str, limit: int = 0) -> str
     return f'<reference path="{quoted(str(path))}"{shown} reason="{quoted(reason)}"/>'
 
 
+def _looks_like_an_image(path: Path) -> bool:
+    """Whether the file starts as a PNG, JPEG, GIF or WebP does: worth reading whole as one."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(12)
+    except OSError:
+        return False
+    return head.startswith(_IMAGE_HEADS) or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+
+
+def _image(typed: str, path: Path) -> tuple[str, Image | None]:
+    """The line for the image file `typed` names and the image, read now; a reference (and no
+    image) for one over `MAX_INPUT_BYTES`, unreadable, or not an image after all."""
+    where = path.absolute()
+    size = None
+    try:
+        size = path.stat().st_size
+        if size > MAX_INPUT_BYTES:
+            limit = size_text(MAX_INPUT_BYTES)
+            return _reference(where, size, f"over the {limit} image limit", MAX_INPUT_BYTES), None
+        image = Image(path.read_bytes())
+    except OSError as e:
+        return _reference(where, None, f"unreadable: {e.strerror or e}"), None
+    except BadImage as e:
+        return _reference(where, size, f"not an image: {e}"), None
+    return f"[image @{typed}: {image.mime} {image.width}x{image.height}]", image
+
+
 def _block(typed: str, path: Path, limit: int) -> str:
     """The attachment or reference for the file `typed` names, read now."""
     where = path.absolute()
@@ -146,10 +182,28 @@ def _looks_like_a_path(token: str) -> bool:
     return _PATH_LIKE.fullmatch(word) is not None
 
 
-def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
+@dataclass(frozen=True)
+class Expanded:
+    """What `expand` made of a text: the `text` with the blocks, the `images` attached, in the
+    order named, and the `missed` words that look like a path but attach nothing, as typed."""
+
+    text: str
+    images: list[Image]
+    missed: list[str]
+
+
+def _attached(word: str, path: Path, limit: int, *, images: bool) -> tuple[str, Image | None]:
+    """The block or image line for the file `word` names, and the image if it is one."""
+    if images and _looks_like_an_image(path):
+        return _image(word, path)
+    return _block(word, path, limit), None
+
+
+def expand(text: str, cwd: Path, limit: int, *, images: bool = True) -> Expanded:
     """`text`, then the block of each file it names with `@` (the module docstring), each file
-    once, in the order first named; `text` itself is never changed. And the `@` words that look
-    like a path (and are not in code) but attach nothing, as typed."""
+    once, in the order first named; `text` itself is never changed. With `images`, an image file
+    is attached as an image and its line; without, it is a file like any other."""
+    attached: list[Image] = []
     blocks: list[str] = []
     seen: set[Path] = set()
     missed: list[str] = []
@@ -165,13 +219,15 @@ def expand(text: str, cwd: Path, limit: int) -> tuple[str, list[str]]:
             real = path.resolve()
             if real not in seen:
                 seen.add(real)
-                blocks.append(_block(word, path, limit))
+                line, image = _attached(word, path, limit, images=images)
+                blocks.append(line)
+                attached += [] if image is None else [image]
             break
         else:
             in_code = any(a <= match.start() < b for a, b in code)
             if not in_code and (quoted_word is not None or _looks_like_a_path(typed)):
                 missed.append(typed)
-    return (text if not blocks else text + "\n\n" + "\n".join(blocks)), missed
+    return Expanded(text if not blocks else text + "\n\n" + "\n".join(blocks), attached, missed)
 
 
 async def attached_to(cursor: Cursor, typed: str) -> str:
@@ -184,8 +240,8 @@ async def attached_to(cursor: Cursor, typed: str) -> str:
         limit = cursor.options_of(Attachments.name).limit
     except ConfigError:
         return ""
-    expanded = (await asyncio.to_thread(expand, typed, Path.cwd(), limit))[0]
-    return expanded[len(typed) :]
+    expanded = await asyncio.to_thread(expand, typed, Path.cwd(), limit, images=False)
+    return expanded.text[len(typed) :]
 
 
 class Attachments:
@@ -210,11 +266,12 @@ class Attachments:
         if not isinstance(draft.body, Body.User):
             return None
         limit = cursor.options().limit
-        text = draft.body.text
-        expanded, missed = await asyncio.to_thread(expand, text, self._cwd, limit)
-        if expanded != text:
-            subject.draft = Draft(Body.User(expanded), draft.delivers, draft.by)
-        for word in missed:
+        body = draft.body
+        found = await asyncio.to_thread(expand, body.text, self._cwd, limit)
+        if found.text != body.text:
+            images = [*body.images, *found.images]
+            subject.draft = Draft(Body.User(found.text, images), draft.delivers, draft.by)
+        for word in found.missed:
             cursor.tell(
                 f"attachments: @{word} names no regular file in {self._cwd}, so it is sent as text",
                 to=draft.by.client,

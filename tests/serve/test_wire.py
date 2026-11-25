@@ -117,7 +117,7 @@ async def test_hello_is_answered_with_the_session_after_the_snapshot(tmp_path: P
     assert all(m["method"] == "event" for m in heard[:-1])
     welcome = heard[-1]["result"]
     assert isinstance(welcome, dict)
-    assert welcome["protocol"] == PROTOCOL == 2
+    assert welcome["protocol"] == PROTOCOL == 3
     assert welcome["session"] == h.directory.name
     assert welcome["cwd"] == str(h.directory)
     assert welcome["pid"] == os.getpid()

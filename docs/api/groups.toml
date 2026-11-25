@@ -46,7 +46,8 @@ id = "clients"
 title = "Writing a frontend"
 reader = "A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed."
 names = [
-    "Client", "LocalClient", "RemoteClient", "CommandFailed", "Parsed", "UnknownCommand",
+    "Client", "LocalClient", "RemoteClient", "ImageInput", "MAX_INPUT_IMAGES", "MAX_INPUT_BYTES",
+    "CommandFailed", "Parsed", "UnknownCommand",
     "commandline.parse", "commandline.completions", "commandline.value", "commandline.values",
     "commandline.STDIN",
 ]
