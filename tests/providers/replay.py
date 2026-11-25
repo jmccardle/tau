@@ -45,7 +45,7 @@ from tau import (
     read_models,
 )
 
-FAMILIES = ("anthropic", "openai", "gemini", "openrouter", "llamacpp", "vllm")
+FAMILIES = ("anthropic", "openai", "gemini", "openrouter", "mistral", "llamacpp", "vllm")
 """The families the recorder knows by name; `oaicompat-<name>` families are found on disk
 (`recorded_families`)."""
 ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "providers"
@@ -60,6 +60,7 @@ _NEEDS = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
     "llamacpp": "LLAMACPP_BASE_URL",
     "vllm": "VLLM_BASE_URL",
 }

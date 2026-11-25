@@ -657,3 +657,16 @@ def test_the_keys_file_refuses_a_line_without_showing_it(tmp_path: Path) -> None
     assert done.returncode == 2
     assert "keys.env:1: not NAME=VALUE" in done.stderr
     assert "sk-not" not in done.stderr
+
+
+def test_a_refusal_for_another_reason_is_no_fixture(tmp_path: Path) -> None:
+    """A malformed body must be refused as malformed: no credit (402), no model (404) or a rate
+    limit (429) is a failed run, and nothing is written."""
+    server = Scripted([], status=402)
+    with server.running() as root:
+        keys = keys_file(tmp_path, f"LLAMACPP_BASE_URL={root}/v1\nLLAMACPP_MODEL={MODEL}\n")
+        done = everything(tmp_path, keys, tmp_path / "out", "--only", "llamacpp",
+                          "--scenarios", "error-bad-request")  # fmt: skip
+    assert done.returncode == 1
+    assert "refused, but for another reason: 402" in done.stderr
+    assert not (tmp_path / "out" / "llamacpp" / "error-bad-request").exists()

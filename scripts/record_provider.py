@@ -16,14 +16,14 @@ activated venv.)
 skips, saying so, each family whose key or URL is empty and each case already recorded. The keys
 file (`--keys`, default `$TAU_FIXTURE_KEYS`, else `~/.config/tau-fixtures/keys.env`) holds
 `NAME=VALUE` lines: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
-`OPENROUTER_API_KEY`, `LLAMACPP_BASE_URL`, `VLLM_BASE_URL`, and any number of
+`OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `LLAMACPP_BASE_URL`, `VLLM_BASE_URL`, and any number of
 `OAICOMPAT_<NAME>_BASE_URL` with an optional `OAICOMPAT_<NAME>_API_KEY` (the family
 `oaicompat-<name>`). `<PREFIX>_MODEL` overrides a family's model and `<PREFIX>_WINDOW` its
 context window (for `error-overflow`), where PREFIX is `OPENAI`, `ANTHROPIC`, `GEMINI`,
-`OPENROUTER`, `LLAMACPP`, `VLLM` or `OAICOMPAT_<NAME>`. The values never reach `os.environ`, a
-file written or anything printed. `--dry-run` sends nothing that costs: it prints each family's
-plan (scenarios, requests, estimated tokens and cost) and asks each provider's free model list
-whether the model exists.
+`OPENROUTER`, `MISTRAL`, `LLAMACPP`, `VLLM` or `OAICOMPAT_<NAME>`. The values never reach
+`os.environ`, a file written or anything printed. `--dry-run` sends nothing that costs: it
+prints each family's plan (scenarios, requests, estimated tokens and cost) and asks each
+provider's free model list whether the model exists.
 
 **FAMILY** records one scenario (`--case`, default `turns`) for one family: `anthropic`,
 `openai`, `gemini`, `openrouter`, `llamacpp` or `vllm` (the last two need `--base-url`; a key is
@@ -192,6 +192,19 @@ TOOL: dict[str, object] = {
     "key": "part",
 }
 
+CATALOGUE = "\n".join(
+    f"Part K-{n:03}: {kind}, grade {n % 7 + 2}. Bin {n % 40 + 1}. {(n * 37) % 900 + 10} in stock."
+    for n, kind in (
+        (n, ("hex bolt", "washer", "lock nut", "spring pin", "rivet")[n % 5]) for n in range(1, 321)
+    )
+)
+CACHED_SYSTEM = (
+    f"{SYSTEM}\n\nThe K-series catalogue below is for reference only; the parts asked about "
+    f"are never in it.\n\n{CATALOGUE}"
+)
+"""A system text past every Anthropic model's minimum cacheable prompt (4096 tokens for the
+smallest models), so its requests are cached and their spans proved by `cache` (D26 3.1)."""
+
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"  # the provider's own default
 ANTHROPIC_URL = "https://api.anthropic.com/v1"  # the provider's own default
 RAW_SYSTEM = "Answer in one short sentence."
@@ -295,11 +308,13 @@ class Scenario:
     stream: bool = True
     adapter: bool = True
     error: bool = False
+    refusals: frozenset[int] = frozenset((400, 413, 422))  # the statuses that are this refusal
     billed: bool = True
     local_only: bool = False
     extensions: Mapping[str, Mapping[str, object]] | None = None
     build: Callable[[Target], RawRequest] | None = None
     needs_window: bool = False
+    gapped: bool = False  # ends with GAP_TURN after the family's gap (Anthropic: a cache miss)
 
 
 def _openai_headers(target: Target) -> dict[str, str]:
@@ -412,7 +427,14 @@ def _chat(  # noqa: PLR0913 - one request, every part of it said
                 "generationConfig": {"maxOutputTokens": max_tokens},
             }
             if tools:
-                declared = [{k: t[k] for k in ("name", "description", "parameters")} for t in tools]
+                declared = [
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parametersJsonSchema": t["parameters"],  # as GeminiProvider sends it
+                    }
+                    for t in tools
+                ]
                 body["tools"] = [{"functionDeclarations": declared}]
             method = "streamGenerateContent?alt=sse" if stream else "generateContent"
             url = f"{target.root}/models/{target.model}:{method}"
@@ -474,6 +496,18 @@ SCENARIOS: tuple[Scenario, ...] = (
         requests=6,
         tokens_in=4500,
         tokens_out=2500,
+    ),
+    Scenario(
+        "cached",
+        "the turns scenario over a system text past the minimum cacheable prompt, so each "
+        "request reads the one before from the cache (D26 3.1), then a turn after the gap: a miss",
+        "turns",
+        requests=7,
+        tokens_in=48000,
+        tokens_out=2500,
+        wires=frozenset(("anthropic",)),
+        system=CACHED_SYSTEM,
+        gapped=True,
     ),
     Scenario(
         "tool-image",
@@ -633,7 +667,7 @@ FAMILIES: dict[str, Family] = {
     "gemini": Family(
         "gemini",
         "GEMINI_API_KEY",
-        model="gemini-2.5-flash-lite",
+        model="gemini-3.5-flash-lite",  # 2.5-flash-lite is refused to new users (2026-11)
         options={"thinking": {"include_thoughts": True}},
         window=1_048_576,
         price=(0.10, 0.40),
@@ -646,6 +680,14 @@ FAMILIES: dict[str, Family] = {
         window=400_000,
         price=(0.05, 0.40),
     ),
+    "mistral": Family(
+        "openai",
+        "MISTRAL_API_KEY",
+        "https://api.mistral.ai/v1",
+        model="mistral-small-2603",  # vision, tools and reasoning (its /v1/models capabilities)
+        window=262_144,
+        price=(0.10, 0.30),
+    ),
     "llamacpp": Family("openai", needs_base_url=True, local=True, counts=True),
     "vllm": Family("openai", needs_base_url=True, local=True, counts=True),
 }
@@ -657,6 +699,7 @@ PREFIXES = {
     "openai": "OPENAI",
     "gemini": "GEMINI",
     "openrouter": "OPENROUTER",
+    "mistral": "MISTRAL",
     "llamacpp": "LLAMACPP",
     "vllm": "VLLM",
 }
@@ -1025,9 +1068,12 @@ async def record_turns(
         await provider.aclose()
 
 
-async def record_raw(transport: Recording, request: RawRequest, expect_error: bool) -> None:
+async def record_raw(transport: Recording, request: RawRequest, scenario: Scenario) -> None:
     """Send one hand-built request and read its whole response. `Failed` when the server
-    refused a request that should pass, or passed one it should refuse."""
+    refused a request that should pass, or passed one it should refuse, or refused it for
+    another reason (a status outside `scenario.refusals`: no credit, no such model, a rate
+    limit)."""
+    expect_error = scenario.error
     async with httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(600)) as client:
         try:
             response = await client.request(
@@ -1036,6 +1082,10 @@ async def record_raw(transport: Recording, request: RawRequest, expect_error: bo
         except httpx.HTTPError as e:
             raise Failed(f"the request failed: {e}") from e
     refused = response.status_code >= httpx.codes.BAD_REQUEST
+    if refused and expect_error and response.status_code not in scenario.refusals:
+        raise Failed(
+            f"refused, but for another reason: {response.status_code}: {response.text[:2000]}"
+        )
     if refused != expect_error:
         expected = "a refusal" if expect_error else "200"
         raise Failed(
@@ -1158,7 +1208,7 @@ async def record_case(
                 request = scenario.build(target)
                 if request.kept is not None:
                     kept[0] = request.kept
-                await record_raw(transport, request, scenario.error)
+                await record_raw(transport, request, scenario)
                 expected: dict[str, object] | None = None
             else:
                 replies = await record_turns(transport, case, environ)
@@ -1182,7 +1232,8 @@ async def record_case(
 
 
 def build_case(target: Target, scenario: Scenario) -> dict[str, object]:
-    """The `case.json` of `scenario` for `target`."""
+    """The `case.json` of `scenario` for `target`; a `gapped` scenario ends with the gap turn
+    when the family has a gap."""
     base_url = target.base_url
     settings: dict[str, object] = {"provider": target.provider, "model": target.model}
     if base_url is not None:
@@ -1201,7 +1252,7 @@ def build_case(target: Target, scenario: Scenario) -> dict[str, object]:
         settings["images"] = True
     if options:
         settings["options"] = options
-    gapped = scenario.name in {"turns", "counted"} and target.gap > 0
+    gapped = scenario.gapped and target.gap > 0
     turns = [*scenario.turns, *([GAP_TURN] if gapped else [])]
     gaps = [*(0 for _ in scenario.turns), *([target.gap] if gapped else [])]
     case: dict[str, object] = {
@@ -1597,6 +1648,8 @@ def _single(args: argparse.Namespace, secrets: dict[str, str]) -> int:
     if target.key and target.key_env:
         secrets[target.key_env] = target.key
     scenario = BY_NAME[args.case]
+    if target.gap > 0:  # --gap: this run ends with the gap turn
+        scenario = replace(scenario, gapped=True)
     if args.dry_run:
         print(f"{target.family}/{args.case}: {scenario.what}")
         estimate = f"~{scenario.tokens_in}+{scenario.tokens_out} tokens"
