@@ -11,6 +11,22 @@ line, the session's tree, and an extension's options as a form. It has no sessio
 bar, themes or Ctrl+Z (`tau` has all of those), and it does not start a server. It shows the
 first cursor at first; the tree's `v` changes which one.
 
+## Install
+
+Each τ release on GitHub carries `trusty` for Linux (x86_64, aarch64; static, so any distribution)
+and macOS (arm64, x86_64; 11.0 and up). There is no Windows build: it connects over Unix sockets.
+Download `trusty-<version>-<target>.tar.gz` and its `.sha256` from the
+[Releases](https://github.com/jmccardle/tau/releases) page, then:
+
+```bash
+sha256sum -c trusty-<version>-<target>.tar.gz.sha256   # on macOS: shasum -a 256 -c
+tar xzf trusty-<version>-<target>.tar.gz
+install -m 755 trusty-<version>-<target>/trusty ~/.local/bin/   # any directory on your PATH
+trusty --version                                                # carries τ's version
+```
+
+To build it from source instead, see the next section.
+
 ## Build and run
 
 From the repository root (`cargo` must be on your `PATH`; `source ~/.cargo/env`):
