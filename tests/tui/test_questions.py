@@ -64,7 +64,10 @@ async def test_escape_in_a_question_declines_it_and_does_not_abort(tmp_path: Pat
     h, _tool, gate = await asking(tmp_path)
     async with running(h, tmp_path) as (app, pilot):
         await shows(pilot, app, "run ta?")
-        await pilot.press("escape")  # the keyboard is in the question box
+        # The box is in the screen's text once it is attached; it takes the keyboard after it is
+        # mounted (a deferred focus), and Esc in the editor aborts. Seen on a slow Windows runner.
+        await until(pilot, lambda: any(w is app.focused for w in app.query(".question-box *")))
+        await pilot.press("escape")
         await shows(pilot, app, "done")
         assert gate.verdicts == [None]
     await h.close()

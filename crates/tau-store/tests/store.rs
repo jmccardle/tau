@@ -172,7 +172,10 @@ proptest! {
         let log = fs::read(d.path().join("log")).unwrap();
         let first = usize::try_from(synced[0].0).unwrap();
         let len = first + cut.index(log.len() - first + 1);
-        let k = synced.iter().rposition(|(l, ..)| *l <= len as u64).unwrap();
+        // Garbage that starts with the bytes the cut took puts them back: the log is intact
+        // up to where the two differ.
+        let kept = len + garbage.iter().zip(&log[len..]).take_while(|(g, l)| g == l).count();
+        let k = synced.iter().rposition(|(l, ..)| *l <= kept as u64).unwrap();
         let (_, pad, want) = &synced[k];
         let crashed = crash_at(&log, len, &garbage, pad.as_ref());
         let (store, loaded) = Store::open(crashed.path()).unwrap();

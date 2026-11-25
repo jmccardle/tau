@@ -41,8 +41,7 @@ async def session_holders(
     server that does not answer, or a record that cannot be read, is a `no reply` row with the
     reason (the listing still opens). A session with no server whose lease is held is `in use`."""
     found: dict[str, Holder] = {}
-    # On Windows no server runs (`require_unix_sockets`), so there are no records to ask.
-    records = [] if sys.platform == "win32" else sorted(serve_directory(home).glob("*.json"))
+    records = sorted(serve_directory(home).glob("*.json"))
     directory = home / SERVE
     paths = {row.id: row.path for row in rows}
     for record in records:

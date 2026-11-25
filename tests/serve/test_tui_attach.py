@@ -3,19 +3,10 @@ through `open_client` and the app runs over the `RemoteClient`; what a running s
 is refused before the screen. The server is a real process with a mock model, started in a
 throwaway TAU_HOME and killed when the test is over."""
 
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
-        allow_module_level=True,
-    )
-
 import argparse
 import asyncio
 import io
+import sys
 
 import pytest
 from tuikit import SIZE, shows, type_line
@@ -97,6 +88,7 @@ def test_flags_the_running_server_would_ignore_are_refused_before_the_screen(hom
     assert "-n" in err.getvalue()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: no Unix socket (--socket)")
 def test_a_reconnect_dials_the_address_in_the_servers_record_and_close_closes_the_new_client(
     served: World,
 ) -> None:

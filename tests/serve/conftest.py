@@ -4,7 +4,6 @@ processes that are always killed when the test is over."""
 import contextlib
 import os
 import shutil
-import signal
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -12,8 +11,8 @@ from pathlib import Path
 
 import pytest
 from harness import Harness
-from proctable import with_argument
-from world import World
+from proctable import kill, with_argument
+from world import World, system_environ
 
 
 @pytest.fixture(autouse=True)
@@ -43,20 +42,21 @@ def _processes_for(base: Path) -> list[int]:
 def served() -> Iterator[World]:
     """A throwaway TAU_HOME and project, under a short directory (a socket path has a limit).
     Whatever `tau serve` the test left running is killed, even when the test failed."""
-    # macOS: the default temp directory is too long a prefix for a socket path.
+    # macOS: the default temp directory is too long a prefix for a socket path. Resolved: τ
+    # records and compares a session's working directory resolved, so a hand-written session's
+    # must be too (macOS's /tmp is a link; Windows's TEMP may hold an 8.3 name, `RUNNER~1`).
     base = Path(
-        tempfile.mkdtemp(
-            prefix="tau", dir=os.path.realpath("/tmp") if sys.platform == "darwin" else None
-        )
-    )
+        tempfile.mkdtemp(prefix="tau", dir="/tmp" if sys.platform == "darwin" else None)
+    ).resolve()
     home = base / "h"
     home.mkdir()
-    world = World(home, home / ".tau", {"HOME": str(home)})
+    # The servers the tests start run in this environment (`tau serve -d` hands it on).
+    world = World(home, home / ".tau", {"HOME": str(home), **system_environ()})
     (home / "work").mkdir()
     try:
         yield world
     finally:
         for pid in _processes_for(base):
             with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+                kill(pid)
         shutil.rmtree(base, ignore_errors=True)

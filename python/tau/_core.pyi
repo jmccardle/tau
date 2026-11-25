@@ -77,6 +77,7 @@ __all__ = [
     "calibration_features",
     "first_message",
     "is_leased",
+    "private_dir",
     "stop_trace",
     "trace_clock",
     "trace_to",
@@ -273,6 +274,14 @@ def is_leased(directory: str | PathLike[str]) -> bool:
     """Whether a store holds the lease of the session in `directory`, this process's included.
     The lease is taken and let go at once, so a session that is free stays free. `False` for a
     directory with no log.
+    """
+
+def private_dir(path: str | PathLike[str], what: str) -> None:
+    """Make the directory `path` if it is absent and check that it is private to this process's
+    user: a real directory (not a symlink or junction), owned by the user, that no one else may
+    use (Unix: mode 700; Windows: its access list grants only the user, SYSTEM and
+    Administrators). The base tools' overflow directory is checked so. `PermissionError` naming
+    `what` and the reason if it cannot be made or is not private.
     """
 
 def trace_to(path: str | PathLike[str]) -> None:

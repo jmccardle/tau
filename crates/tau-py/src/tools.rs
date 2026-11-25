@@ -34,6 +34,17 @@ pub fn stop_progress(py: Python<'_>) {
     py.detach(|| *EMITTING.write().unwrap_or_else(PoisonError::into_inner) = false);
 }
 
+/// Make the directory `path` if it is absent and check that it is private to this process's
+/// user: a real directory (not a symlink or junction), owned by the user, that no one else may
+/// use (Unix: mode 700; Windows: its access list grants only the user, SYSTEM and
+/// Administrators). The base tools' overflow directory is checked so. `PermissionError` naming
+/// `what` and the reason if it cannot be made or is not private.
+#[pyfunction]
+pub fn private_dir(py: Python<'_>, path: PathBuf, what: &str) -> PyResult<()> {
+    py.detach(move || tau_tools::limit::private_dir(&path, what))
+        .map_err(pyo3::exceptions::PyPermissionError::new_err)
+}
+
 fn outcome(result: Result<String, ToolError>) -> Outcome {
     match result {
         Ok(value) => Outcome::Ok {

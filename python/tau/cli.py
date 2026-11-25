@@ -714,7 +714,7 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         err.write("tau: standard output is closed\n")
         return 1
     given = sys.argv[1:] if argv is None else list(argv)
-    source = sys.stdin if stdin is None else stdin
+    source = utf8(sys.stdin) if stdin is None else stdin
     run = _Run(
         io.StringIO("") if source is None else source,
         out,

@@ -52,34 +52,10 @@ pub(super) struct PrivateDir {
 }
 
 impl PrivateDir {
-    /// Open `dir` (created if absent), refusing a reparse point, and check its owner and
-    /// access list on the open handle. Then drop what is old in it. The error is the
-    /// reason, for the note.
+    /// Open `dir` (created if absent) as [`checked`] does, then drop what is old in it. The
+    /// error is the reason, for the note.
     pub(super) fn open(dir: &Path) -> Result<Self, String> {
-        let shown = dir.display();
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("the overflow directory {shown} could not be created: {e}"))?;
-        let handle = OpenOptions::new()
-            .access_mode(READ_CONTROL | FILE_LIST_DIRECTORY)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(dir)
-            .map_err(|e| format!("the overflow directory {shown} cannot be opened: {e}"))?;
-        let attributes = handle
-            .metadata()
-            .map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?
-            .file_attributes();
-        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(format!("the overflow directory {shown} is a symlink"));
-        }
-        if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-            return Err(format!("the overflow directory {shown} is not a directory"));
-        }
-        if let Some(problem) = dir_problem(&handle)
-            .map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?
-        {
-            return Err(format!("the overflow directory {shown} {problem}"));
-        }
+        let handle = checked(dir, "the overflow directory")?;
         remove_old_files(dir);
         Ok(Self {
             path: dir.to_owned(),
@@ -100,6 +76,37 @@ impl PrivateDir {
             Err(e) => Err(e.to_string()),
         }
     }
+}
+
+/// Open `dir` (created if absent), refusing a reparse point, and check its owner and
+/// access list on the open handle, which is returned. The error is the reason, naming the
+/// directory as `what` (`"the overflow directory"`).
+pub(super) fn checked(dir: &Path, what: &str) -> Result<File, String> {
+    let shown = dir.display();
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("{what} {shown} could not be created: {e}"))?;
+    let handle = OpenOptions::new()
+        .access_mode(READ_CONTROL | FILE_LIST_DIRECTORY)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(dir)
+        .map_err(|e| format!("{what} {shown} cannot be opened: {e}"))?;
+    let attributes = handle
+        .metadata()
+        .map_err(|e| format!("cannot inspect {what} {shown}: {e}"))?
+        .file_attributes();
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("{what} {shown} is a symlink"));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(format!("{what} {shown} is not a directory"));
+    }
+    if let Some(problem) =
+        dir_problem(&handle).map_err(|e| format!("cannot inspect {what} {shown}: {e}"))?
+    {
+        return Err(format!("{what} {shown} {problem}"));
+    }
+    Ok(handle)
 }
 
 /// Remove the overflow files in `dir` older than [`KEEP_FILES`]. Cleanup: a file that

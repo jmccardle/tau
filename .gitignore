@@ -4,6 +4,7 @@ __pycache__/
 *.so
 *.pyd
 /dist/
+/dist-win/
 .pytest_cache/
 .ruff_cache/
 .claude/worktrees/

@@ -33,6 +33,13 @@ PROVIDERS = builtin_providers({})  # the names `check_config` accepts; nothing i
 EOF = "\x04"  # Ctrl-D at the start of a line, on a terminal
 
 
+def system_environ() -> dict[str, str]:
+    """What a process started with a test's environment needs from the real one to start at all:
+    on Windows `SYSTEMROOT`, without which an interpreter cannot load its socket provider
+    (`import asyncio` fails with WinError 10106); nothing elsewhere."""
+    return {"SYSTEMROOT": os.environ["SYSTEMROOT"]} if sys.platform == "win32" else {}
+
+
 @dataclass(frozen=True)
 class World:
     home: Path

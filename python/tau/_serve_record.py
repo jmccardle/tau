@@ -1,7 +1,8 @@
 """The serve directory and the serve record (D21 sections 2 and 9, D29): how a program finds the
 server of a session.
 
-`$TAU_HOME/serve/` (mode 700, and refused if another user owns it or can write it) holds, for a
+`$TAU_HOME/serve/` (mode 700, and refused if another user owns it or can write it; on Windows,
+refused unless its access list keeps out all but the user, SYSTEM and Administrators) holds, for a
 served session, `<session id>.sock` (the socket), `<session id>.json` (the **serve record**, mode
 600, removed when the server exits) and `<session id>.log` (a detached server's output). The
 socket's access control is the file permissions; the HTTP edge's is the bearer token, which only
@@ -26,9 +27,10 @@ from typing import Final
 from websockets.exceptions import WebSocketException
 
 from tau._config import ConfigError
+from tau._core import private_dir
 from tau._project_read import TrustError
 from tau._protocol import Welcome
-from tau._remote import RemoteClient, require_unix_sockets
+from tau._remote import RemoteClient
 from tau._sessions import is_leased
 from tau._trust import write_atomically
 
@@ -80,13 +82,15 @@ class ServeRecord:
 
 def serve_directory(home: Path) -> Path:
     """`<home>/serve`, made with mode 700 if it is not there. `TrustError` if it is not a
-    directory of yours. `ServeFailed` on Windows, where no server runs
-    (`require_unix_sockets`)."""
-    try:
-        require_unix_sockets("tau serve")
-    except OSError as e:
-        raise ServeFailed(str(e)) from e
+    directory of yours. On Windows the directory's access list is checked instead
+    (`tau._core.private_dir`): it holds the records, and a record holds the edge's token."""
     path = home / SERVE
+    if sys.platform == "win32":
+        try:
+            private_dir(path, "the serve directory")
+        except PermissionError as e:
+            raise TrustError(str(e), path) from e
+        return path
     try:
         path.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
         info = path.lstat()
@@ -126,12 +130,35 @@ def log_path(directory: Path, session: str) -> Path:
 def read_record(path: Path) -> ServeRecord | None:
     """The record in `path`, or `None` if there is none. `ConfigError` if it is not a record."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text(path))
         return ServeRecord(**data)
     except FileNotFoundError:
         return None
     except (ValueError, TypeError) as e:
         raise ConfigError(f"{path} is not a serve record: {e}") from e
+
+
+_SHARE_ALL: Final = 0x7
+"""`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`."""
+
+
+def _read_text(path: Path) -> str:
+    """`path`'s text. On Windows the file is opened sharing delete, as Python's `open` does not,
+    so a reader never makes the server's rename over its record, or its removal, fail; a record
+    being removed reads as missing (`FileNotFoundError`)."""
+    if sys.platform != "win32":
+        return path.read_text(encoding="utf-8")
+    import _winapi  # noqa: PLC0415 - Windows only
+    import msvcrt  # noqa: PLC0415 - Windows only
+
+    try:
+        handle = _winapi.CreateFile(
+            str(path), _winapi.GENERIC_READ, _SHARE_ALL, 0, _winapi.OPEN_EXISTING, 0, 0
+        )
+    except PermissionError as e:  # ERROR_ACCESS_DENIED: a file pending delete, in a private dir
+        raise FileNotFoundError(e.errno, f"{path} is being removed") from e
+    with open(msvcrt.open_osfhandle(handle, os.O_RDONLY), encoding="utf-8") as text:
+        return text.read()
 
 
 def write_record(path: Path, record: ServeRecord) -> None:
@@ -206,7 +233,10 @@ async def probe(socket: str) -> Welcome | None:
 
 
 def _alive(pid: int) -> bool:
-    """Whether a process with `pid` exists (this user's, or one we may not signal)."""
+    """Whether a process with `pid` exists (this user's, or one we may not signal). On Windows
+    `os.kill` would terminate it, so the process is opened and asked whether it has exited."""
+    if sys.platform == "win32":
+        return _alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -214,6 +244,27 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+_QUERY_LIMITED: Final = 0x1000
+"""`PROCESS_QUERY_LIMITED_INFORMATION`: enough to read an exit code, granted for most processes."""
+
+
+def _alive_windows(pid: int) -> bool:
+    if sys.platform != "win32":
+        raise AssertionError("Windows only")
+    import _winapi  # noqa: PLC0415 - Windows only
+
+    try:
+        handle = _winapi.OpenProcess(_QUERY_LIMITED, False, pid)
+    except PermissionError:  # another user's process (ERROR_ACCESS_DENIED)
+        return True
+    except OSError:  # ERROR_INVALID_PARAMETER: no process has that pid
+        return False
+    try:
+        return _winapi.GetExitCodeProcess(handle) == _winapi.STILL_ACTIVE
+    finally:
+        _winapi.CloseHandle(handle)
 
 
 async def live_server(

@@ -1,21 +1,12 @@
 """`tau -p` as a well-mannered console program: every kind of standard input (a terminal, a
 pipe, a file, /dev/null, an open pipe that never speaks, a closed descriptor) and every kind of
 standard output (a pipe, a closed descriptor, a reader that went away). Real descriptors, so
-these start the command in a subprocess or hand `main` a pipe."""
-
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: no pseudo-terminals (the pty, fcntl and termios modules are Unix only)",
-        allow_module_level=True,
-    )
+these start the command in a subprocess or hand `main` a pipe. On Windows, what needs a
+pseudo-terminal or a shell's descriptor juggling is skipped; the pipes are Windows' own, and a
+console program's newline there is CRLF, read back as LF."""
 
 import io
 import os
-import pty
 import subprocess
 import sys
 import threading
@@ -41,6 +32,8 @@ SLOW = {
         }
     },
 }
+WINDOWS = sys.platform == "win32"
+posix_only = pytest.mark.skipif(WINDOWS, reason="Windows: no pseudo-terminals or sh descriptors")
 SILENT_WAIT = 3  # tau._launch.STDIN_WAIT, which tests can only observe
 
 
@@ -50,6 +43,20 @@ def configured(world: World) -> World:
     return world
 
 
+def environment(world: World) -> dict[str, str]:
+    """The child's whole environment: `HOME` and `PATH` (and on Windows `SYSTEMROOT`, without
+    which an interpreter cannot start its sockets or its random)."""
+    env = {"HOME": str(world.home), "PATH": os.environ["PATH"]}
+    if WINDOWS:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return env
+
+
+def lf(text: bytes) -> bytes:
+    """`text` with a Windows console program's CRLF read back as LF."""
+    return text.replace(b"\r\n", b"\n") if WINDOWS else text
+
+
 def run(
     world: World, *argv: str, shell: str | None = None, **streams: object
 ) -> subprocess.CompletedProcess[bytes]:
@@ -57,7 +64,7 @@ def run(
     its descriptors up before `python -m tau` starts. Streams default to /dev/null in, pipes out."""
     command: list[str] = [sys.executable, "-m", "tau", "-p", "--no-session", *argv]
     settings: dict[str, object] = {
-        "env": {"HOME": str(world.home), "PATH": os.environ["PATH"]},
+        "env": environment(world),
         "cwd": world.home,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
@@ -67,7 +74,12 @@ def run(
     settings.update(streams)
     if shell is not None:
         command = ["sh", "-c", shell + ' exec "$@"', "sh", *command]
-    return subprocess.run(command, check=False, **settings)  # type: ignore[call-overload]
+    done = subprocess.run(command, check=False, **settings)  # type: ignore[call-overload]
+    if isinstance(done.stdout, bytes):
+        done.stdout = lf(done.stdout)
+    if isinstance(done.stderr, bytes):
+        done.stderr = lf(done.stderr)
+    return done
 
 
 # -- standard input
@@ -101,7 +113,12 @@ def test_dev_null_and_no_words_is_a_usage_error(configured: World) -> None:
     assert b"Traceback" not in done.stderr
 
 
+@posix_only
 def test_a_terminal_is_never_read(configured: World) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows: no pseudo-terminals")
+    import pty  # noqa: PLC0415 - Unix only
+
     master, slave = pty.openpty()
     try:
         with os.fdopen(slave, "rb", closefd=False) as stdin:
@@ -112,11 +129,13 @@ def test_a_terminal_is_never_read(configured: World) -> None:
     assert (done.returncode, done.stdout, done.stderr) == (0, b"mock: no wait\n", b"")
 
 
+@posix_only
 def test_a_closed_stdin_is_no_input(configured: World) -> None:
     done = run(configured, "alone", shell="exec <&-;")
     assert (done.returncode, done.stdout, done.stderr) == (0, b"mock: alone\n", b"")
 
 
+@posix_only
 def test_a_closed_stdin_and_no_words_is_a_usage_error(configured: World) -> None:
     done = run(configured, shell="exec <&-;")
     assert done.returncode == 2
@@ -131,7 +150,7 @@ def test_a_stdin_that_stays_open_and_silent_is_given_up_on_with_a_message(
     a few seconds."""
     process = subprocess.Popen(
         [sys.executable, "-m", "tau", "-p", "--no-session", "the", "words"],
-        env={"HOME": str(configured.home), "PATH": os.environ["PATH"]},
+        env=environment(configured),
         cwd=configured.home,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -144,7 +163,7 @@ def test_a_stdin_that_stays_open_and_silent_is_given_up_on_with_a_message(
         waited = time.monotonic() - started
         assert process.stdout is not None
         assert process.stderr is not None
-        out, err = process.stdout.read(), process.stderr.read()
+        out, err = lf(process.stdout.read()), lf(process.stderr.read())
     finally:
         process.kill()
         process.wait()
@@ -230,13 +249,14 @@ def test_stdin_that_is_not_text_is_a_usage_error_not_a_traceback(configured: Wor
 # -- standard output
 
 
+@posix_only
 def test_a_closed_stdout_is_an_error_not_a_traceback(configured: World) -> None:
     done = run(configured, "hi", shell="exec >&-;")
     assert done.returncode == 1
     assert done.stderr == b"tau: standard output is closed\n"
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="macOS has no /dev/full")
+@pytest.mark.skipif(sys.platform != "linux", reason="only Linux has /dev/full")
 def test_a_full_stdout_is_one_line_and_status_1(configured: World) -> None:
     with Path("/dev/full").open("wb") as stdout:
         done = run(configured, "hi", stdout=stdout)
@@ -302,7 +322,12 @@ def test_a_dash_after_the_first_word_is_a_word(configured: World) -> None:
     )
 
 
+@posix_only
 def test_a_dash_on_a_terminal_is_a_word(configured: World) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows: no pseudo-terminals")
+    import pty  # noqa: PLC0415 - Unix only
+
     master, slave = pty.openpty()
     try:
         with os.fdopen(slave, "rb", closefd=False) as stdin:

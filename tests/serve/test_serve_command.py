@@ -1,16 +1,8 @@
 """`tau serve` (D21 section 9) as a person or a program uses it: the foreground server, `-d` and its
 record, `--stop`, `--schema`. The servers are real processes with a mock model, started in a
-throwaway TAU_HOME under a short directory and killed when the test is over."""
-
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: tau serve does not run there (a Unix domain socket, D21; not ported)",
-        allow_module_level=True,
-    )
+throwaway TAU_HOME under a short directory and killed when the test is over. On Windows the server
+listens on its HTTP edge alone, clients dial what the record names, and a clean stop is Ctrl+Break
+to the server's process group where Unix sends SIGTERM."""
 
 import asyncio
 import json
@@ -25,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from proctable import alive
+from proctable import alive, first_line, interpreter, kill, own_console, signal_to
 from world import Result, World, tau
 
 from tau import (
@@ -41,6 +33,12 @@ MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}
 OLD = "20261030-091502-1c2d3e"
 REPO = Path(__file__).resolve().parents[2]
 SCHEMA = REPO / "docs" / "protocol.schema.json"
+WINDOWS = sys.platform == "win32"
+posix_only = pytest.mark.skipif(WINDOWS, reason="Windows: no Unix socket (D29: the edge alone)")
+CLEAN_STOPS = (
+    [signal.CTRL_BREAK_EVENT] if sys.platform == "win32" else [signal.SIGTERM, signal.SIGINT]
+)
+"""What stops a foreground server cleanly (on Windows, Ctrl+Break to its process group)."""
 
 
 @pytest.fixture
@@ -75,8 +73,15 @@ def wait_gone(pid: int, seconds: float = 10) -> None:
         time.sleep(0.02)
 
 
+async def dial(record: dict[str, object], client: str) -> RemoteClient:
+    """A client of the server `record` names: over its socket if it has one, else its edge."""
+    if "socket" in record:
+        return await RemoteClient.connect(str(record["socket"]), client)
+    return await RemoteClient.connect_http(str(record["url"]), str(record["token"]), client)
+
+
 async def welcome_of(record: dict[str, object]) -> object:
-    async with await RemoteClient.connect(str(record["socket"]), "test:probe") as client:
+    async with await dial(record, "test:probe") as client:
         return client.welcome
 
 
@@ -106,8 +111,11 @@ def test_d_starts_a_server_and_prints_its_record(home: World) -> None:
     assert record["protocol"] == PROTOCOL
     assert isinstance(record["pid"], int)
     serve_dir = home.tau / "serve"
-    assert (serve_dir.stat().st_mode & 0o777) == 0o700
-    assert record["socket"] == str(serve_dir / f"{OLD}.sock")
+    if WINDOWS:  # the access list is checked (test_a_serve_directory_others_may_use_is_refused)
+        assert "socket" not in record
+    else:
+        assert (serve_dir.stat().st_mode & 0o777) == 0o700
+        assert record["socket"] == str(serve_dir / f"{OLD}.sock")
     assert record["log"] == str(serve_dir / f"{OLD}.log")
     assert json.loads((serve_dir / f"{OLD}.json").read_text(encoding="utf-8")) == {
         k: v for k, v in record.items() if k != "started"
@@ -156,11 +164,11 @@ def test_a_record_whose_socket_does_not_answer_is_stale_and_replaced(home: World
     dead = record_of(serve(home, "-d", "--json", "--session", existing(home).name))
     pid = dead["pid"]
     assert isinstance(pid, int)
-    os.kill(pid, signal.SIGKILL)  # a crash: no cleanup, the record stays
+    kill(pid)  # a crash: no cleanup, the record stays
     wait_gone(pid)
     assert (home.tau / "serve" / f"{OLD}.json").exists()
     fresh = record_of(serve(home, "-d", "--json", "--session", OLD))
-    assert fresh["started"] is True
+    assert fresh.get("started") is True, fresh
     assert fresh["pid"] != pid
 
 
@@ -201,6 +209,9 @@ def test_a_start_that_fails_prints_its_message_intact_and_exits_1(home: World) -
     assert not list((home.tau / "serve").glob(".starting-*")), "the pending log is cleaned"
 
 
+@pytest.mark.skipif(
+    WINDOWS, reason="Windows: projects (D13) are not ported; finding one is an error"
+)
 def test_an_untrusted_project_is_refused_by_the_parent_before_any_child_starts(
     home: World,
 ) -> None:
@@ -222,6 +233,7 @@ def test_a_session_that_is_kept_in_memory_has_no_id_to_serve_under(home: World) 
         assert "--no-session" in result.err
 
 
+@posix_only
 def test_a_socket_path_that_is_too_long_fails_naming_socket(home: World) -> None:
     long = home.home / ("deep" * 25)
     long.mkdir()
@@ -304,7 +316,7 @@ def test_stop_aborts_what_is_running_and_closes_the_agents_first(home: World) ->
     assert isinstance(pid, int)
 
     async def start_work() -> None:
-        async with await RemoteClient.connect(str(record["socket"]), "test:starter") as client:
+        async with await dial(record, "test:starter") as client:
             await client.send(0, "go")
             deadline = time.monotonic() + 20
             while not Hanging.reached.is_set():
@@ -332,7 +344,7 @@ def test_stop_cleans_up_a_stale_record_and_the_session_serves_again(home: World)
     record = record_of(serve(home, "-d", "--json", "--session", existing(home).name))
     pid = record["pid"]
     assert isinstance(pid, int)
-    os.kill(pid, signal.SIGKILL)
+    kill(pid)
     wait_gone(pid)
     result = serve(home, "--stop", "--json", "--session", OLD)
     assert record_of(result) == {"session": OLD, "pid": None, "stopped": False}
@@ -349,7 +361,7 @@ def test_stopping_a_server_tells_its_clients_end(home: World) -> None:
     record = record_of(serve(home, "-d", "--json", "--session", existing(home).name))
 
     async def watch() -> list[Event]:
-        async with await RemoteClient.connect(str(record["socket"]), "test:watcher") as client:
+        async with await dial(record, "test:watcher") as client:
             first = await asyncio.wait_for(anext(client), 5)
             assert isinstance(first, CursorView)
             stopper = asyncio.get_running_loop().run_in_executor(
@@ -376,9 +388,8 @@ def test_verbose_reports_the_start_on_stderr_and_set_is_checked(home: World) -> 
         home, "--json", "--verbose", "--set", "step_limit.limit=3", "--session", OLD
     )
     try:
-        assert server.stdout is not None
-        json.loads(server.stdout.readline())
-        server.send_signal(signal.SIGTERM)
+        json.loads(first_line(server))
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
         assert server.stderr is not None
         report = server.stderr.read()
@@ -398,9 +409,8 @@ def test_a_server_starts_with_session_settings_and_says_what_the_config_lacks(
     home.user_config({**config, "load": {"deleted": True}})
     server = start_foreground(home, "--json", "--verbose", "--session", OLD)
     try:
-        assert server.stdout is not None
-        json.loads(server.stdout.readline())
-        server.send_signal(signal.SIGTERM)
+        json.loads(first_line(server))
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
         assert server.stderr is not None
         report = server.stderr.read()
@@ -412,32 +422,32 @@ def test_a_server_starts_with_session_settings_and_says_what_the_config_lacks(
 
 
 def start_foreground(world: World, *argv: str) -> subprocess.Popen[str]:
-    env = {**world.environ, "PYTHONUNBUFFERED": "1"}
+    program, env = interpreter({**world.environ, "PYTHONUNBUFFERED": "1"})
     return subprocess.Popen(
-        [sys.executable, "-m", "tau", "serve", *argv],
+        [program, "-m", "tau", "serve", *argv],
         cwd=work(world),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        **own_console(),
     )
 
 
-@pytest.mark.parametrize("stop", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize("stop", CLEAN_STOPS)
 def test_a_foreground_server_serves_until_signalled_then_cleans_up_and_exits_0(
-    home: World, stop: signal.Signals
+    home: World, stop: int
 ) -> None:
     existing(home)
     server = start_foreground(home, "--json", "--session", OLD)
     try:
-        assert server.stdout is not None
-        record = json.loads(server.stdout.readline())
+        record = json.loads(first_line(server))
         assert record["pid"] == server.pid
         assert record["log"] is None, "a foreground server has no log"
         assert (home.tau / "serve" / f"{OLD}.json").exists()
         welcome = asyncio.run(welcome_of(record))
         assert welcome.pid == server.pid  # type: ignore[attr-defined]
-        server.send_signal(stop)
+        signal_to(server, stop)
         assert server.wait(timeout=10) == 0
     finally:
         server.kill()
@@ -449,10 +459,10 @@ def test_a_foreground_server_names_itself_without_json(home: World) -> None:
     existing(home)
     server = start_foreground(home, "--session", OLD)
     try:
-        assert server.stdout is not None
-        line = server.stdout.readline()
-        assert line.startswith(f"serving {OLD} on {home.tau / 'serve' / OLD}")
-        server.terminate()
+        line = first_line(server)
+        where = "http://127.0.0.1:" if WINDOWS else str(home.tau / "serve" / OLD)
+        assert line.startswith(f"serving {OLD} on {where}")
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
     finally:
         server.kill()
@@ -463,20 +473,28 @@ def test_a_second_server_for_a_held_session_fails_with_leased(home: World) -> No
     existing(home)
     first = start_foreground(home, "--json", "--session", OLD)
     try:
-        assert first.stdout is not None
-        first.stdout.readline()
-        second = serve(home, "--session", OLD)
-        assert second.code == 1
-        assert "in use by another process" in second.err
-        assert f"tau --fork {OLD}" in second.err
+        json.loads(first_line(first))  # it serves, so it holds the lease
+        # A process of its own, and bounded: a second server that is not refused would serve on.
+        second = start_foreground(home, "--session", OLD)
+        try:
+            out, err = second.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            second.kill()
+            second.communicate()
+            pytest.fail("the second server was not refused: it served the held session")
+        assert second.returncode == 1, out
+        assert "in use by another process" in err
+        assert f"tau --fork {OLD}" in err
     finally:
-        first.terminate()
+        signal_to(first, CLEAN_STOPS[0])
         first.communicate(timeout=10)
 
 
 def test_a_server_that_is_slow_to_answer_is_not_taken_for_dead(home: World) -> None:
     """A live server whose loop is busy has a socket that accepts and does not answer `hello`:
     `--stop` says so and keeps its record."""
+    if sys.platform == "win32":
+        pytest.skip("Windows: no Unix socket (D29: the edge alone)")
     import socket as sockets  # noqa: PLC0415 - only this test makes a socket by hand
 
     serve_dir = home.tau / "serve"
@@ -507,3 +525,28 @@ def test_a_server_that_is_slow_to_answer_is_not_taken_for_dead(home: World) -> N
     assert isinstance(error, dict)
     assert str(where) in error["message"]
     assert path.exists(), "a timeout is not proof of death"
+
+
+# Windows: the serve directory's access list (D29 section 10)
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Unix: the serve directory's mode (test_d_starts_...)")
+def test_a_serve_directory_others_may_use_is_refused(home: World) -> None:
+    """The Windows reading of mode 700: an access list that lets Everyone in is refused before
+    a server starts, as a directory another user may write is on Unix."""
+    serve_dir = home.tau / "serve"
+    serve_dir.mkdir(parents=True)
+    granted = subprocess.run(
+        ["icacls", str(serve_dir), "/grant", "*S-1-1-0:(R)"],  # Everyone: read
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert granted.returncode == 0, granted.stdout + granted.stderr
+    result = serve(home, "-d", "--json", "--session", existing(home).name)
+    assert result.code == 1
+    error = record_of(result)["error"]
+    assert isinstance(error, dict)
+    assert "the serve directory" in error["message"]
+    assert "S-1-1-0" in error["message"]
+    assert not (serve_dir / f"{OLD}.json").exists()
