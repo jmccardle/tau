@@ -478,6 +478,19 @@ def test_without_tau_web_the_server_says_the_install_is_broken_and_serves_the_wi
     stop(home)
 
 
+def test_d_started_isolated_starts_its_server_isolated(home: World) -> None:
+    """`python -I -m tau serve -d` (a bundled runtime) re-launches the server with `-I` too (τ
+    #79): the child ignores `PYTHONPATH` and the user's site-packages as its parent did. Here
+    `PYTHONPATH` would shadow `tau_web`, which the test above shows a child without `-I` takes."""
+    result = detached_process(without_tau_web(home), isolated=True)
+    assert result.code == 0, result.err
+    assert "not installed" not in result.err
+    record = json.loads(result.out)
+    page = httpx.get(str(record["url"]), trust_env=False, timeout=5)
+    assert "is broken" not in page.text, "the child took PYTHONPATH: it lost -I"
+    stop(home)
+
+
 def test_no_web_says_nothing_of_a_missing_client(home: World) -> None:
     result = detached_process(without_tau_web(home), "--no-web")
     assert result.code == 0, result.err

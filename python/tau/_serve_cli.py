@@ -383,9 +383,15 @@ async def _detach(run: Process, args: argparse.Namespace) -> int:
 
 def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
     """The detached server: this command line without `-d` and `--json`, with the log it writes
-    until it knows its session's id. No terminal, its own session."""
+    until it knows its session's id, run by this interpreter with this interpreter's flags (`-I`
+    among them: a runtime started isolated keeps the user's site-packages out of its server too).
+    No terminal, its own session."""
     kept = [a for a in run.argv if a not in ("-d", "--detach", "--json")]
-    command = [sys.executable, "-m", "tau", "serve", *kept, "--detached-log", str(pending)]
+    command = [
+        sys.executable,
+        *interpreter_flags(),
+        *("-m", "tau", "serve", *kept, "--detached-log", str(pending)),
+    ]
     with os.fdopen(os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as log:
         return subprocess.Popen(
             command,
@@ -396,6 +402,29 @@ def _spawn(run: Process, pending: Path) -> subprocess.Popen[bytes]:
             env=dict(run.environ),
             start_new_session=True,
         )
+
+
+def interpreter_flags() -> list[str]:
+    """The flags this interpreter was started with that decide what a child imports and how
+    (`-I`, or `-E`, `-s` and `-P`; `-B`; `-O`), for a child that must import as this process did."""
+    flags = sys.flags
+    if flags.isolated:
+        chosen = ["-I"]  # -E, -s and -P together
+    else:
+        chosen = [
+            f
+            for f, on in (
+                ("-E", flags.ignore_environment),
+                ("-s", flags.no_user_site),
+                ("-P", flags.safe_path),
+            )
+            if on
+        ]
+    if flags.dont_write_bytecode:
+        chosen.append("-B")
+    if flags.optimize:
+        chosen.append("-" + "O" * flags.optimize)
+    return chosen
 
 
 async def _record_of(
