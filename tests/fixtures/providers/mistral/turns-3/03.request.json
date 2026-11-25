@@ -1,0 +1,75 @@
+{
+  "method": "POST",
+  "url": "https://api.mistral.ai/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "mistral-small-2603",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details."
+      },
+      {
+        "role": "user",
+        "content": "Look up part A-113 and tell me which bin it is in."
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "nnRECRZ9P",
+            "type": "function",
+            "function": {
+              "name": "lookup_part",
+              "arguments": "{\"part\": \"A-113\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "nnRECRZ9P",
+        "content": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock."
+      },
+      {
+        "role": "assistant",
+        "content": "Part **A-113** (hex bolt M8 x 40, zinc plated) is in **Bin 14**."
+      },
+      {
+        "role": "user",
+        "content": "Now look up B-207 and C-042 and tell me which of the two has more in stock."
+      }
+    ],
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_part",
+          "description": "Look up one part by its part number: what it is, its bin and its stock.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "part": {
+                "type": "string",
+                "description": "a part number, like A-113"
+              }
+            },
+            "required": [
+              "part"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "max_tokens": 2048,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

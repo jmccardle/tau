@@ -1,0 +1,15 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 40,
+        "output": 2,
+        "cached": 0,
+        "reasoning": 0
+      },
+      "stop": "End",
+      "finish_reason": "stop"
+    }
+  ],
+  "error": null
+}

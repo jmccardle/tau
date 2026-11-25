@@ -1,0 +1,7 @@
+{
+  "replies": [],
+  "error": {
+    "status": 400,
+    "message": "HTTP 400: Invalid value at 'contents' (type.googleapis.com/google.ai.generativelanguage.v1beta.Content), \"not a list of messages\""
+  }
+}

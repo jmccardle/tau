@@ -1,0 +1,49 @@
+{
+  "format": 1,
+  "family": "llamacpp",
+  "provider": "openai",
+  "kind": "turns",
+  "scenario": "tool-image",
+  "model": {
+    "provider": "openai",
+    "model": "qwen3.8-27b",
+    "base_url": "http://llamacpp.invalid/v1",
+    "max_tokens": 2048,
+    "images": true
+  },
+  "system": "You describe colour swatches. Use show_swatch to see one before you answer.",
+  "turns": [
+    "What colour is swatch S-1? Answer in one word."
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [
+    {
+      "name": "show_swatch",
+      "description": "Show one colour swatch by its id, as an image.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "swatch": {
+            "type": "string",
+            "description": "a swatch id, like S-1"
+          }
+        },
+        "required": [
+          "swatch"
+        ],
+        "additionalProperties": false
+      },
+      "answers": {
+        "S-1": "Swatch S-1, as an image:"
+      },
+      "images": {
+        "S-1": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUElEQVR42u3PQQkAAAgEsEtiEvunMIwRfAuDFViq57UICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICFwWtHVhHrbirsAAAAAASUVORK5CYII="
+      },
+      "key": "swatch"
+    }
+  ],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

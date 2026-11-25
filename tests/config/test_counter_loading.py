@@ -71,3 +71,21 @@ def test_a_counter_that_cannot_observe_is_refused(world: World) -> None:
     world.user_config({"load": {"tokens": False}})
     with pytest.raises(ExtensionLoadError, match=r"callable `observe\(observation\)` method"):
         load_extensions(loaded(world))
+
+
+def test_token_calls_is_off_by_default_and_loads_beside_the_counter(world: World) -> None:
+    assert "token_calls" not in names(world)
+    world.user_config({"load": {"token_calls": True}})
+    assert {"tokens", "token_calls"} <= set(names(world))
+
+
+def test_token_calls_without_the_counter_does_not_start(world: World) -> None:
+    world.user_config({"load": {"token_calls": True, "tokens": False}})
+    with pytest.raises(Exception, match=r"(?s)needs a counter.*tau ext enable tokens"):
+        load_extensions(loaded(world))
+
+
+def test_a_tokenizers_option_that_is_no_mode_does_not_start(world: World) -> None:
+    world.user_config({"extensions": {"tokens": {"tokenizers": "sometimes"}}})
+    with pytest.raises(Exception, match=r"tokenizers is 'sometimes'.*auto, off, require"):
+        load_extensions(loaded(world))

@@ -1,0 +1,89 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 8428,
+        "output": 102,
+        "cached": 0,
+        "written": 8418,
+        "written_1h": 0,
+        "reasoning": 45
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_use"
+    },
+    {
+      "usage": {
+        "input": 8569,
+        "output": 42,
+        "cached": 8418,
+        "written": 146,
+        "written_1h": 0,
+        "reasoning": 0
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    },
+    {
+      "usage": {
+        "input": 8592,
+        "output": 145,
+        "cached": 8418,
+        "written": 164,
+        "written_1h": 0,
+        "reasoning": 49
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_use"
+    },
+    {
+      "usage": {
+        "input": 8849,
+        "output": 90,
+        "cached": 8582,
+        "written": 260,
+        "written_1h": 0,
+        "reasoning": 0
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    },
+    {
+      "usage": {
+        "input": 8911,
+        "output": 97,
+        "cached": 8582,
+        "written": 319,
+        "written_1h": 0,
+        "reasoning": 39
+      },
+      "stop": "Tools",
+      "finish_reason": "tool_use"
+    },
+    {
+      "usage": {
+        "input": 9037,
+        "output": 15,
+        "cached": 8901,
+        "written": 129,
+        "written_1h": 0,
+        "reasoning": 0
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    },
+    {
+      "usage": {
+        "input": 9034,
+        "output": 177,
+        "cached": 0,
+        "written": 9024,
+        "written_1h": 0,
+        "reasoning": 144
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    }
+  ],
+  "error": null
+}

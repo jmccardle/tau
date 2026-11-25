@@ -13,8 +13,9 @@ For the replies that report (the **reports**, in walk order):
 - **A span** is the nodes from one report's reply up to the next report's. Its cost is the
   difference of the two `input`s, and that is exact only if the first request is a prefix of the
   second as the server sees it. It is **proved** in one of three ways (`Span.proof`): `cache`,
-  the second reports `cached` equal to the first's `input` (the server found the whole first
-  request in its cache: Anthropic); `slot`, llama.cpp's `timings` say the second request read at
+  the second reports `cached` equal to the first's `input`, or to the first's `cached` plus
+  `written` (the server found the whole first request, up to its last block, in its cache:
+  Anthropic); `slot`, llama.cpp's `timings` say the second request read at
   least the whole first request from its slot (`cache_n` of the second is no less than
   `prompt_n + cache_n` of the first); `prefix`, the second reply's `meta.sent.extends` names the
   first reply (the provider found the first request to be a byte prefix of the second when it
@@ -34,7 +35,7 @@ definitions.
 import asyncio
 import json
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import cast
@@ -53,6 +54,7 @@ from tau._counts import (
     RequestCount,
     Span,
     SpanProof,
+    _Described,  # pyright: ignore[reportPrivateUsage]
     ceiling_of,
     counted,
     image_rule,
@@ -61,6 +63,7 @@ from tau._counts import (
     reading,
     reported,
     sent,
+    tools_hash,
     wrapped_count,
 )
 from tau._lines import prefix_length
@@ -175,6 +178,17 @@ def _base(
     return Count(left, Basis.HEURISTIC if bounded else Basis.REPORTED)
 
 
+def _read_whole_cache(before: Reading, after: Reading) -> bool:
+    """Whether the second request read from the cache exactly what the first had cached:
+    everything up to its last breakpoint, which τ puts on the last block. Anthropic bills a few
+    tokens after that block (10 on Claude Haiku 4.5 with tools and thinking, recorded), so its
+    `cached` never equals the first `input`; the same few close every request, so the
+    difference of the two bills is still the span's cost."""
+    if before.cached is None or before.written is None or after.cached is None:
+        return False
+    return after.cached > 0 and after.cached == before.cached + before.written
+
+
 def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | None:
     """How the span from one report to the next is proved (the module docstring), or `None` if it
     is not. Another reply between them, reporting or not, breaks the chain of requests, and a
@@ -186,7 +200,7 @@ def _proof(walk: list[Node], first: _Report, second: _Report) -> SpanProof | Non
         or any(counted(walk[k]) for k in range(first.at + 1, second.at))
     ):
         return None
-    if after.cached == before.input:
+    if after.cached == before.input or _read_whole_cache(before, after):
         return "cache"
     if first.slot is not None and second.slot is not None and second.slot[1] >= sum(first.slot):
         return "slot"
@@ -363,7 +377,8 @@ class Counts:
     `node` reads a node, `model` the model of the branch at a node, `tools` the base offer, and
     `counter` the extension offering the counter, as `(key, counter)`, and `overhead` the ceiling
     of what a request carries besides its nodes (the tool definitions), which a line with no
-    report yet has to add itself."""
+    report yet has to add itself. `calls` gives the providers by name and the tools of the base
+    offer, for a count call (D26 section 8)."""
 
     def __init__(  # noqa: PLR0913, PLR0917 - one reader for each thing a count needs
         self,
@@ -373,7 +388,9 @@ class Counts:
         tools: Callable[[], tuple[str, ...]],
         counter: Callable[[], tuple[str, Counter] | None],
         overhead: Callable[[], Count],
+        calls: Callable[[], tuple[Mapping[str, object], Sequence[_Described]]] = lambda: ({}, ()),
     ) -> None:
+        self._calls = calls
         self._meter = Meter(node)
         self._node = node
         self._overhead = overhead
@@ -487,6 +504,7 @@ class Counts:
             request.base_nodes,
             {i: c for i, c in request.nodes.items() if c.basis is Basis.REPORTED},
             unreported,
+            tools_hash(self._calls()[1]),
         )
         answer = await asyncio.to_thread(counter.count, job)
         stray = [i for i in answer.nodes if i not in unreported]
@@ -497,5 +515,44 @@ class Counts:
             )
         merged = {**request.nodes, **answer.nodes}
         total = measured.anchor + _sum(merged[i] for i in measured.after)
+        if answer.total is not None:
+            if answer.total.basis not in {Basis.RENDERED, Basis.CALIBRATED}:
+                raise DefinitionError(
+                    f"extension {key!r} counted the whole request as {answer.total.basis}: a "
+                    "whole-request count must be rendered or calibrated"
+                )
+            total = answer.total
         said = "; ".join(w for w in (answer.why, why) if w) or None
         return replace(request, total=total, nodes=merged, why=said)
+
+    async def count_call(self, at: int) -> int | None:
+        """The server's own count of the request the walk to `at` makes with the base offer's
+        tools, from the model's provider's `count_call` (D26 section 8), shown to the counter as
+        a `count_call` observation; `None` when the provider has no count endpoint for that
+        model. What the provider raises (`SampleError`) propagates; so does what the counter's
+        `observe` raises."""
+        model = self._model(at)
+        resolved = self._resolved(model)
+        providers, tools = self._calls()
+        call = getattr(providers.get(resolved.provider), "count_call", None)
+        if call is None:
+            return None
+        walk = self._meter.walk(at)
+        counted: int | None = await call(walk, resolved, tools)
+        if counted is None:
+            return None
+        found = self._counter()
+        if found is not None:
+            observation = Observation(
+                "count_call",
+                model,
+                resolved,
+                tuple(n.id for n in walk),
+                {"input": counted},
+                {},
+                tools_hash(tools),
+                None,
+                walk[-1].time,
+            )
+            await asyncio.to_thread(found[1].observe, observation)
+        return counted

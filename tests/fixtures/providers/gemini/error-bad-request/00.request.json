@@ -1,0 +1,21 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Be terse."
+        }
+      ]
+    },
+    "contents": "not a list of messages",
+    "generationConfig": {
+      "maxOutputTokens": 512
+    }
+  }
+}

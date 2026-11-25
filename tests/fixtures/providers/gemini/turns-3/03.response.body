@@ -1,0 +1,8 @@
+data: {"candidates": [{"content": {"parts": [{"text": "B-"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 2,"totalTokenCount": 336,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "0l0Ga4zHIo60xdIPlMu4sQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "207 has more in stock (1450 in stock, compared to "}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 20,"totalTokenCount": 354,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "0l0Ga4zHIo60xdIPlMu4sQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "85 for C-042)."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 29,"totalTokenCount": 363,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "0l0Ga4zHIo60xdIPlMu4sQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpYBCpMBAWkUfROtuGD0uWtgz8rz+48P4j1SqDTRhyb6MpUdXDThOjnJnHUktbj87JclYjewxF/mpabICILb7IZDWE+xCOcTVmchqynaaGm4LQbDr7EWhL50lU1uWFBrantOBoloaj6VpAzW6XCi0vTAiWnoXjZpSUgLKh24yhhK90A6EEaJ2W5dp42fZRD9YaumMZ2RZbBz"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 334,"candidatesTokenCount": 29,"totalTokenCount": 363,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 334}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "0l0Ga4zHIo60xdIPlMu4sQs"}
+

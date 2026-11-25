@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "family": "gemini",
+  "provider": "gemini",
+  "kind": "turns",
+  "scenario": "length",
+  "model": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "GEMINI_API_KEY",
+    "max_tokens": 24
+  },
+  "system": "Be terse.",
+  "turns": [
+    "Count from 1 to 300, separated by commas."
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

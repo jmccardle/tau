@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "There is"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 433,"candidatesTokenCount": 2,"totalTokenCount": 435,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 433}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "c10Ga_jmAYCfuMYP19GuqQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " no such part."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 433,"candidatesTokenCount": 6,"totalTokenCount": 439,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 433}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "c10Ga_jmAYCfuMYP19GuqQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpYBCpMBAWkUfRNjOqj8DjXHpLcWAKP4lUbWe4oNuW6RMtHA+fC4bjuKnTR4GzfJhbBCvo014lh2XljGYDliI3da3evRTXbRkiRvBQwd+eo9jYalycapcGGW5pSxW4IKP7ku/HCubgYHxWsliKNKHHR11n2z9tp6Rn3akDwC0xNjdQJ3hDT6baBhWfOTRay0W6mj/sy72v0J"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 433,"candidatesTokenCount": 6,"totalTokenCount": 439,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 433}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "c10Ga_jmAYCfuMYP19GuqQs"}
+

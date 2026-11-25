@@ -5,13 +5,14 @@ Anthropic case proves its spans and none across its cache miss. A family nobody 
 is skipped, saying how to record it (`replay.RECORD`): until its fixtures exist, nothing here says
 anything about that family's real server."""
 
+import json
 from pathlib import Path
 
 import pytest
 from harness import scenario
-from replay import FAMILIES, RECORD, Run, cases, replayed
+from replay import FAMILIES, RECORD, Run, cases, recorded_families, replayed
 
-from tau import Body, Node, Outcome, Part
+from tau import Body, ImageRule, Node, Outcome, Part
 
 CEILING_PER_NODE = 16
 """D26 section 4: what a ceiling adds per node sent, on top of one token per byte. Decision 3
@@ -19,29 +20,43 @@ of D26: raise it if a fixture's per-message overhead comes close (`test_..._ceil
 the closest)."""
 
 
+def wire_only(case_dir: Path) -> bool:
+    """A raw case the provider cannot read (a response that is not streamed): a fixture of
+    the wire alone."""
+    case = json.loads((case_dir / "case.json").read_text())
+    return case["kind"] == "raw" and not case.get("raw", {}).get("adapter", True)
+
+
 @scenario
 async def replays_as_recorded(case_dir: Path, tmp_path: Path) -> None:
+    if wire_only(case_dir):
+        return
     async with replayed(case_dir, tmp_path) as run:
         assert run.replies == run.expected, f"{case_dir}: usage, stop or finish_reason changed"
+        assert run.error == run.expected_error, f"{case_dir}: the error read changed"
         if run.case["kind"] == "turns":
             assert run.sent == run.recorded, f"{case_dir}: the provider sends other requests now"
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+FAMILIES_ON_DISK = tuple(sorted({*FAMILIES, *recorded_families()}))
+
+
+@pytest.mark.parametrize("family", FAMILIES_ON_DISK)
 def test_a_recorded_case_replays_to_its_golden_replies_and_its_requests(
     family: str, tmp_path: Path
 ) -> None:
     recorded = cases(family)
     if not recorded:
-        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD[family]}`")
+        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD.get(family, family)}`")
     for case_dir in recorded:
         replays_as_recorded(case_dir, tmp_path)
 
 
-def ceiling(node: Node) -> int:
+def ceiling(node: Node, provider: str = "openai") -> int:
     """A node's ceiling as D26 section 4 defines it, computed here from the node alone: its
     UTF-8 bytes (text, reasoning, replay data, call ids, names and arguments, outcomes) plus
-    `CEILING_PER_NODE`; 0 for a node that is not sent."""
+    `CEILING_PER_NODE`, and each image's `ImageRule(provider).tokens` (TC-05, D26 section 7.3);
+    0 for a node that is not sent."""
 
     def size(*texts: str) -> int:
         return sum(len(t.encode()) for t in texts)
@@ -60,7 +75,8 @@ def ceiling(node: Node) -> int:
     def outcome(o: Outcome) -> int:
         match o:
             case Outcome.Ok(value=value):
-                return size(value)
+                pictures = sum(ImageRule(provider).tokens(i.width, i.height) for i in o.images)
+                return size(value) + pictures
             case Outcome.Err(error=error):
                 return size(error)
             case _:
@@ -83,9 +99,9 @@ async def replay_of(case_dir: Path, tmp_path: Path) -> Run:
 
 
 def turn_cases(family: str) -> list[Path]:
-    recorded = cases(family)
+    recorded = [c for c in cases(family) if not wire_only(c)]
     if not recorded:
-        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD[family]}`")
+        pytest.skip(f"no recorded fixtures for {family}: run `{RECORD.get(family, family)}`")
     return recorded
 
 
@@ -93,7 +109,7 @@ def turn_cases(family: str) -> list[Path]:
 async def spans_fit_their_ceilings(case_dir: Path, tmp_path: Path) -> None:
     run = await replay_of(case_dir, tmp_path)
     for span in run.spans:
-        most = sum(ceiling(n) for n in span.nodes)
+        most = sum(ceiling(n, run.case["provider"]) for n in span.nodes)
         ids = [n.id for n in span.nodes]
         assert span.cost <= most, (
             f"{case_dir}: the span of nodes {ids} cost {span.cost} tokens, more than its "
@@ -102,14 +118,14 @@ async def spans_fit_their_ceilings(case_dir: Path, tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("family", FAMILIES_ON_DISK)
 def test_no_proved_span_costs_more_than_its_ceilings(family: str, tmp_path: Path) -> None:
     """D26 T2: on every fixture. It starts to say something the day a family's fixtures land."""
     for case_dir in turn_cases(family):
         spans_fit_their_ceilings(case_dir, tmp_path)
 
 
-@pytest.mark.parametrize("family", [f for f in FAMILIES if f != "vllm"])
+@pytest.mark.parametrize("family", [f for f in FAMILIES_ON_DISK if f != "vllm"])
 def test_a_recorded_conversation_proves_spans(family: str, tmp_path: Path) -> None:
     """Each family's way of proving a span works against its real server: Anthropic by its
     cache report, llama.cpp by its slot or the request's prefix, OpenAI and Gemini by the
@@ -117,17 +133,17 @@ def test_a_recorded_conversation_proves_spans(family: str, tmp_path: Path) -> No
     proofs = {
         "anthropic": {"cache"},
         "llamacpp": {"slot", "prefix"},
-        "openai": {"prefix", "cache"},
-        "gemini": {"prefix", "cache"},
     }
 
     @scenario
     async def check(case_dir: Path) -> None:
         run = await replay_of(case_dir, tmp_path)
-        if run.case["kind"] != "turns":
+        if run.case["kind"] != "turns" or len(run.replies) < 2:  # one request proves nothing
             return
+        if family == "anthropic" and run.case.get("scenario") != "cached":
+            return  # under the minimum cacheable prompt nothing is cached: nothing to prove by
         assert run.spans, f"{case_dir}: no span was proved in a recorded conversation"
-        assert {s.proof for s in run.spans} <= proofs[family]
+        assert {s.proof for s in run.spans} <= proofs.get(family, {"prefix", "cache"})
 
     for case_dir in turn_cases(family):
         check(case_dir)
@@ -141,7 +157,7 @@ def test_the_anthropic_cache_miss_turn_proves_no_span(tmp_path: Path) -> None:
     async def check(case_dir: Path) -> None:
         run = await replay_of(case_dir, tmp_path)
         gaps = run.case["gaps"]
-        if not any(gaps):
+        if not any(gaps) or run.case.get("scenario") != "cached":
             return
         last_user = max(n.id for n in run.walk if isinstance(n.body, Body.User))
         covered = {n.id for s in run.spans for n in s.nodes}

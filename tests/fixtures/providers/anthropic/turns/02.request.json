@@ -1,0 +1,107 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up part A-113 and tell me which bin it is in."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user wants me to look up part A-113 and find which bin it's in. I have the lookup_part function available which takes a part number as a parameter. The user has provided the part number \"A-113\", so I have all the information I need to make the call.",
+            "signature": "EpkECrgBCBQYAipA9+0pMkcvUUkOtnngFlaQUfKD/aSfBkbmwC++uSv+KjXm3uZ8h4nVRyszs2QnJUvYe6jC4ufG2BEXwpSIEkPlYDIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAHIsZnYBhIMoUdxqlx1bpWSVBCaGgyGJGGXq6WEOl4OfiQiMP6OgsiG2mJ0S0TkcuH0YmeuxhnIUnOVcXOI38gQFfjqJiR9o9tGAOMn+SMoRDKlpyqNAm1njvkEQQQLE7PX5/Blq9EMCCtApeOBr9volPiX3sFARLyEQejkf5xIb1cx8H8AQTzydu5HksH3e/vD1+5DARDsO0skIebzBsiCIGVAtbU/1NEyR3q/GdDtordPDK2MN8c1FLAQojGvCKmyQNPziU5My4KOHFpzvhQspaZlmqWMeXZHnEOIXdLxM9WlRRFh0UzxQu6ZmRE4PP/wf1JhwRXEcQdRkPwvk4fKXZVQgQeR2o0RSUsHEV4PsMvJB1LTVOOG9ixr42az7XlqrMchSo43MQWbtoB5JlqeHsvzTvvEJNOf8BRS2oVAqwRjNGRYDGViNBQuu6a59aJiSaFmThwpizIJGPNt2W52cOx9GAE="
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01Re8pyhPvci5JChmUNAmCeJ",
+            "name": "lookup_part",
+            "input": {
+              "part": "A-113"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01Re8pyhPvci5JChmUNAmCeJ",
+            "content": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock.",
+            "is_error": false
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Part A-113 is in **Bin 14**."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Now look up B-207 and C-042 and tell me which of the two has more in stock.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "lookup_part",
+        "description": "Look up one part by its part number: what it is, its bin and its stock.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "part": {
+              "type": "string",
+              "description": "a part number, like A-113"
+            }
+          },
+          "required": [
+            "part"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
+  }
+}

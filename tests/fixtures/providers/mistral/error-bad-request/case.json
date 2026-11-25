@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "family": "mistral",
+  "provider": "openai",
+  "kind": "raw",
+  "scenario": "error-bad-request",
+  "model": {
+    "provider": "openai",
+    "model": "mistral-small-2603",
+    "base_url": "https://api.mistral.ai/v1",
+    "api_key_env": "MISTRAL_API_KEY",
+    "max_tokens": 2048
+  },
+  "system": "Be terse.",
+  "turns": [
+    "Hello."
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "raw": {
+    "stream": true,
+    "adapter": true,
+    "error": true
+  },
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

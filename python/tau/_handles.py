@@ -284,6 +284,18 @@ class TreeHandle:
             raise ValueError("count: this handle is on no node; say which with at=")
         return await self._counts.count(node)
 
+    async def count_call(self, at: int | None = None) -> int | None:
+        """The server's own count of the request the walk to node `at` makes, with every tool
+        offered (D26 section 8): the model's provider asks its count endpoint (llama.cpp's
+        `/apply-template` and `/tokenize`), and the counter is shown the answer, which it may
+        give as the `rendered` total of the next `count` of the same walk. `None` when the
+        provider has no count endpoint for the model (a hosted API, or a request with an
+        image). `at` defaults as `count`'s does. `SampleError` if the server fails the call."""
+        node = self._here() if at is None else at
+        if node is None:
+            raise ValueError("count_call: this handle is on no node; say which with at=")
+        return await self._counts.count_call(node)
+
     def spans(self, at: int | None = None) -> list[Span]:
         """The proved spans of the walk to node `at`, oldest first (D26 section 3): each is the
         nodes between two consecutive requests whose cost the two bills prove, with how. A span

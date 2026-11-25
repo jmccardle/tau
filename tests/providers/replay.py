@@ -9,9 +9,10 @@ format's spec; this reads format 1. Nothing here touches the network or needs a 
 A family with no recorded case is skipped loudly by its tests, with `RECORD[family]`: the
 command the repository's owner runs to record it."""
 
+import base64
 import json
 import tempfile
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,19 +29,25 @@ from tau import (
     Driver,
     Finish,
     GeminiProvider,
+    Image,
     Node,
     OpenAIProvider,
     Outcome,
     Provider,
+    SampleError,
     Session,
     Span,
     Stop,
     SystemClock,
+    TokenCalls,
+    Tokens,
     model_config,
     read_models,
 )
 
-FAMILIES = ("anthropic", "openai", "gemini", "llamacpp", "vllm")
+FAMILIES = ("anthropic", "openai", "gemini", "openrouter", "mistral", "llamacpp", "vllm")
+"""The families the recorder knows by name; `oaicompat-<name>` families are found on disk
+(`recorded_families`)."""
 ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "providers"
 FORMAT = 1
 ALIAS = "m"  # the catalog name of a case's one model
@@ -48,28 +55,21 @@ DUMMY_KEY = "replayed-no-key"
 SECRET_PARAMS = ("key", "api_key", "access_token", "token")
 
 _SCRIPT = ".venv/bin/python scripts/record_provider.py"
-RECORD: dict[str, str] = {
-    "anthropic": (
-        f"ANTHROPIC_API_KEY=... {_SCRIPT} anthropic --model MODEL_ID --gap 360 "
-        """--option 'thinking={"type":"enabled","budget_tokens":2048}' --max-tokens 4096"""
-        "  # MODEL_ID: Opus 5.5"
-    ),
-    "openai": f"OPENAI_API_KEY=... {_SCRIPT} openai --model MODEL_ID  # MODEL_ID: a gpt-5.x",
-    "gemini": (
-        f"GEMINI_API_KEY=... {_SCRIPT} gemini --model MODEL_ID "
-        """--option 'thinking={"include_thoughts":true}'"""
-        f" && GEMINI_API_KEY=... {_SCRIPT} gemini --model MODEL_ID --case builtin-tool"
-        "  # MODEL_ID: a Gemini 3.x"
-    ),
-    "llamacpp": (
-        f"{_SCRIPT} llamacpp --model MODEL_ID --base-url http://HOST:8100/v1"
-        "  # MODEL_ID: the Qwen3 id from /v1/models"
-    ),
-    "vllm": (
-        f"{_SCRIPT} vllm --model MODEL_ID --base-url http://HOST:8000/v1"
-        "  # MODEL_ID: the gpt-oss id from /v1/models; add --key-env VAR if the server wants a key"
-    ),
+_NEEDS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "llamacpp": "LLAMACPP_BASE_URL",
+    "vllm": "VLLM_BASE_URL",
 }
+RECORD: dict[str, str] = {
+    family: f"{_SCRIPT} all --only {family}  # with {variable} set in the keys file"
+    for family, variable in _NEEDS.items()
+}
+"""The command that records each family's fixtures: the recorder's `all` over the keys file
+(`~/.config/tau-fixtures/keys.env`; its docstring says what the file holds)."""
 
 _PROVIDERS = {"anthropic": AnthropicProvider, "openai": OpenAIProvider, "gemini": GeminiProvider}
 
@@ -77,6 +77,16 @@ _PROVIDERS = {"anthropic": AnthropicProvider, "openai": OpenAIProvider, "gemini"
 def cases(family: str, root: Path = ROOT) -> list[Path]:
     """The recorded case directories of `family` under `root`, sorted; empty if none."""
     return sorted(p.parent for p in (root / family).glob("*/case.json"))
+
+
+def recorded_families(root: Path = ROOT) -> list[str]:
+    """Every family with a recorded case under `root`, the named ones and `oaicompat-*`."""
+    return sorted({p.parent.parent.name for p in root.glob("*/*/case.json")})
+
+
+def all_cases(root: Path = ROOT) -> list[Path]:
+    """Every recorded case directory under `root`, sorted."""
+    return sorted(p.parent for p in root.glob("*/*/case.json"))
 
 
 def read_json(path: Path) -> Any:
@@ -104,7 +114,7 @@ class ReplayTransport(httpx.AsyncBaseTransport):
     may turn what its transport raises into a failed sample. `sent` is each request's JSON
     body (None when it had none); `recorded` is each recorded request's."""
 
-    def __init__(self, case_dir: Path) -> None:
+    def __init__(self, case_dir: Path, *, raw: bool = False) -> None:
         self._case_dir = case_dir
         self._requests: list[dict[str, Any]] = [
             read_json(p) for p in sorted(case_dir.glob("*.request.json"))
@@ -112,12 +122,17 @@ class ReplayTransport(httpx.AsyncBaseTransport):
         self.recorded: list[object] = [r["body"] for r in self._requests]
         self.sent: list[object] = []
         self.mismatch: str | None = None
+        self._raw = raw
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         k = len(self.sent)
+        got = f"{request.method} {strip_query(str(request.url))}"
+        if self._raw and request.method == "GET":  # a probe a raw case never recorded
+            at = self._requests[k] if k < len(self._requests) else None
+            if at is None or f"{at['method']} {at['url']}" != got:
+                return httpx.Response(404, json={"error": "not recorded"})
         content = await request.aread()
         self.sent.append(json.loads(content) if content else None)
-        got = f"{request.method} {strip_query(str(request.url))}"
         if k >= len(self._requests):
             self.mismatch = f"request {k:02} ({got}): only {len(self._requests)} were recorded"
         else:
@@ -140,6 +155,7 @@ class TableTool:
         self.description: str = spec["description"]
         self.parameters: Mapping[str, object] = spec["parameters"]
         self._answers: Mapping[str, str] = spec["answers"]
+        self._images: Mapping[str, str] = spec.get("images", {})
         self._key: str = spec["key"]
 
     async def call(self, args_raw: str) -> Outcome:
@@ -150,7 +166,9 @@ class TableTool:
         if isinstance(args, dict) and list(cast("dict[str, object]", args)) == [self._key]:
             wanted = cast("dict[str, object]", args)[self._key]
             if isinstance(wanted, str) and wanted in self._answers:
-                return Outcome.Ok(self._answers[wanted])
+                image = self._images.get(wanted)
+                images = [] if image is None else [Image(base64.b64decode(image))]
+                return Outcome.Ok(self._answers[wanted], images)
             return Outcome.Err(f"no such {self._key}: {wanted}")
         return Outcome.Err(f"no such {self._key}: {args_raw}")
 
@@ -204,6 +222,8 @@ class Run:
     started: Driver | None = None
     spans: tuple[Span, ...] = ()
     """The proved spans of the final walk (`TreeHandle.spans`); a raw case has none."""
+    error: dict[str, object] | None = None
+    """A raw case whose sample failed: the `SampleError`'s `status` and `message`."""
 
     @property
     def driver(self) -> Driver:
@@ -215,6 +235,11 @@ class Run:
     def expected(self) -> list[dict[str, object]]:
         """The `replies` of the case's `expected.json`."""
         return read_json(self.case_dir / "expected.json")["replies"]
+
+    @property
+    def expected_error(self) -> dict[str, object] | None:
+        """The `error` of the case's `expected.json` (absent in older cases: none)."""
+        return read_json(self.case_dir / "expected.json").get("error")
 
 
 def _metas(metas: list[str | None]) -> list[dict[str, Any] | None]:
@@ -233,16 +258,30 @@ def _failure(session: Session) -> str | None:
 
 
 @asynccontextmanager
-async def _turns(
-    case_dir: Path, case: dict[str, Any], provider: Provider, transport: ReplayTransport, at: Path
+async def _turns(  # noqa: PLR0913, PLR0917 - a case, and what runs it
+    case_dir: Path,
+    case: dict[str, Any],
+    provider: Provider,
+    transport: ReplayTransport,
+    at: Path,
+    more: Sequence[object] = (),
 ) -> AsyncIterator[Run]:
-    catalog = read_models(cli={"models": {ALIAS: case["model"]}})
+    wanted: dict[str, Any] = case.get("extensions") or {}
+    catalog = read_models(cli={"models": {ALIAS: case["model"]}, "extensions": wanted})
     clock = SystemClock()
     session = Session.create(model_config(ALIAS), case["system"], clock.now(), at)
     tools = [TableTool(spec) for spec in case["tools"]]
     probe = _Spans()
+    counting: list[object] = []
+    if "token_calls" in wanted:  # the counter it needs, as the recorder loaded it
+        counting = [Tokens(at.parent / "home"), TokenCalls()]
     driver = Driver(
-        session, {provider.name: provider}, catalog, tools=tools, extensions=[probe], clock=clock
+        session,
+        {provider.name: provider},
+        catalog,
+        tools=tools,
+        extensions=[*counting, probe, *more],  # pyright: ignore[reportArgumentType]
+        clock=clock,
     )
     driver.start()
     cursor = session.cursors()[0]
@@ -284,7 +323,11 @@ async def _raw(
         cursor = session.cursors()[0]
         user = Body.User(case["turns"][0])
         walk = session.tree.walk(session.append(session.cursor(cursor).at, user, Author.Core(), 0))
-        finishes = [i async for i in provider.sample(walk, model, ()) if isinstance(i, Finish)]
+        error = None
+        try:
+            finishes = [i async for i in provider.sample(walk, model, ()) if isinstance(i, Finish)]
+        except SampleError as e:
+            finishes, error = [], {"status": e.status, "message": str(e)}
         yield Run(
             case_dir,
             case,
@@ -295,21 +338,25 @@ async def _raw(
             _metas([f.meta for f in finishes]),
             transport.sent,
             transport.recorded,
+            error=error,
         )
     finally:
         session.close()
 
 
 @asynccontextmanager
-async def replayed(case_dir: Path, tmp_path: Path) -> AsyncIterator[Run]:
+async def replayed(
+    case_dir: Path, tmp_path: Path, extensions: Sequence[object] = ()
+) -> AsyncIterator[Run]:
     """Run the recorded case in `case_dir` again, offline, and yield it at rest: the provider
     over a `ReplayTransport`, any text as the key, the case's table tools, a session under
     `tmp_path` and a started driver, each scripted turn sent with auto-step on and waited for.
     `ReplayMismatch` if the provider's requests are not the recorded ones (method and URL;
-    compare `run.sent` with `run.recorded` for the bodies)."""
+    compare `run.sent` with `run.recorded` for the bodies). `extensions` are loaded beside the
+    case's own (a turns case only)."""
     case: dict[str, Any] = read_json(case_dir / "case.json")
     assert case["format"] == FORMAT, f"{case_dir}: format {case['format']}, this reads {FORMAT}"
-    transport = ReplayTransport(case_dir)
+    transport = ReplayTransport(case_dir, raw=case["kind"] == "raw")
     key_env = case["model"].get("api_key_env")
     provider = _PROVIDERS[case["provider"]](
         transport=transport, environ={} if key_env is None else {key_env: DUMMY_KEY}
@@ -318,7 +365,7 @@ async def replayed(case_dir: Path, tmp_path: Path) -> AsyncIterator[Run]:
         running = _raw(case_dir, case, provider, transport)
     else:
         directory = Path(tempfile.mkdtemp(prefix="replay-", dir=tmp_path)) / "s"
-        running = _turns(case_dir, case, provider, transport, directory)
+        running = _turns(case_dir, case, provider, transport, directory, extensions)
     at_rest = False
     try:
         async with running as run:

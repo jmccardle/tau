@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "family": "llamacpp",
+  "provider": "openai",
+  "kind": "raw",
+  "scenario": "user-image",
+  "model": {
+    "provider": "openai",
+    "model": "qwen3.8-27b",
+    "base_url": "http://llamacpp.invalid/v1",
+    "max_tokens": 2048
+  },
+  "system": "Answer in one word.",
+  "turns": [
+    "What colour is this image?"
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "raw": {
+    "stream": true,
+    "adapter": true,
+    "error": false
+  },
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

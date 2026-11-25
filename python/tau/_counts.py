@@ -364,7 +364,8 @@ class CountJob:
     """What a counter is asked: the walk to count, the model (its qualified name, and
     `resolved`, its settings in the catalog now) and tools of the request, and what core already
     knows (`base`, `base_nodes`, and in `known` the nodes a report covers). The counter answers
-    for the rest, `unreported`."""
+    for the rest, `unreported`. `digest` is the tool set's `tools_hash`, as a count call's
+    observation carries it (D26 section 8), or empty."""
 
     walk: tuple[Node, ...]
     model: str
@@ -374,28 +375,35 @@ class CountJob:
     base_nodes: int
     known: Mapping[int, Count]
     unreported: tuple[int, ...]
+    digest: str = ""
 
 
 @dataclass(frozen=True)
 class CounterAnswer:
     """A counter's answer: a count for some of the job's `unreported` nodes, and `why` the rest
-    stay as weak as they are (or `None`)."""
+    stay as weak as they are (or `None`). `total`, when given, is the whole request counted at
+    once, as a server's count endpoint counts it (D26 section 8): it replaces the sum of the
+    parts as `RequestCount.total`, and must be `rendered` or `calibrated`."""
 
     nodes: Mapping[int, Count]
     why: str | None = None
+    total: Count | None = None
 
 
 @dataclass(frozen=True)
 class Observation:
     """One reply that reported its usage, as the driver shows it to the counter once the reply
-    is in the tree (D26 section 4). `kind` is `reply` (`count_call` is D26 section 8's, not
-    built). `model` is the qualified name of the model that replied and `resolved` its settings
-    in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage` the
-    reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
+    is in the tree (D26 section 4), or one count call (D26 section 8). `kind` is `reply`, or
+    `count_call`. `model` is the qualified name of the model that replied and `resolved` its
+    settings in the catalog now; `walk` the ids of the nodes from the root to the reply; `usage`
+    the reply's normalized `meta.usage`; `markers` its drift markers by name (the served `model`,
     `system_fingerprint`, and llama.cpp's `build_info`, `template_sha256`, `model_size`,
     `n_params` and `n_vocab`, each as text, those the reply has); `tools` the digest of the tool
     set its request offered (`tools_hash`); `span` the proved span that ends at this reply, or
-    `None` if the reply proved none; `time` the reply's time in milliseconds."""
+    `None` if the reply proved none; `time` the reply's time in milliseconds. For a
+    `count_call`, `walk` is the walk counted, `usage` is `{"input": N}` (the server's count of
+    the request it makes with the tools `tools`, before it is sent), `markers` is empty, `span`
+    `None` and `time` the newest node's."""
 
     kind: Literal["reply", "count_call"]
     model: str
@@ -439,6 +447,10 @@ class Counting(Protocol):
 
     def spans(self, at: int) -> list[Span]:
         """The proved spans of the walk to node `at`."""
+        ...
+
+    async def count_call(self, at: int) -> int | None:
+        """The server's count of the request the walk to node `at` makes, or `None`."""
         ...
 
     def observation(self, reply: int, tools: str) -> Observation | None:

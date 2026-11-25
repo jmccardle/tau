@@ -1,0 +1,56 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You describe colour swatches. Use show_swatch to see one before you answer."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What colour is swatch S-1? Answer in one word."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "show_swatch",
+            "description": "Show one colour swatch by its id, as an image.",
+            "parametersJsonSchema": {
+              "type": "object",
+              "properties": {
+                "swatch": {
+                  "type": "string",
+                  "description": "a swatch id, like S-1"
+                }
+              },
+              "required": [
+                "swatch"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 2048,
+      "thinkingConfig": {
+        "includeThoughts": true
+      }
+    }
+  }
+}

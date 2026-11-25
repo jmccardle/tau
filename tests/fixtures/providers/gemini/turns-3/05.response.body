@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "There is"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 431,"candidatesTokenCount": 2,"totalTokenCount": 433,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 431}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "1F0Ga4W3LumIytMPgt3m4A4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " no such part as Z-999."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 431,"candidatesTokenCount": 12,"totalTokenCount": 443,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 431}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "1F0Ga4W3LumIytMPgt3m4A4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpYBCpMBAWkUfRM3haeIr5RJc07w9enHuq0IsuQS4q79n2I9SOPzEd/sZ99AYxwMwjJqt4xvwsE3wDcoqdpHURJ+y65aul0Dcn+yWowi59ezLBdeKLkZcaIOReYQ4XvbdQH9npdzW4WJF0vRgOg7pQCwvxFkmP7sfT7ahG0wLGRznAqmmXpZPj694IElX6Gg9WVRiTFN0cDL"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 431,"candidatesTokenCount": 12,"totalTokenCount": 443,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 431}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "1F0Ga4W3LumIytMPgt3m4A4"}
+

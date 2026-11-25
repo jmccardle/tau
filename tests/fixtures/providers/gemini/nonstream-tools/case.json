@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "family": "gemini",
+  "provider": "gemini",
+  "kind": "raw",
+  "scenario": "nonstream-tools",
+  "model": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "GEMINI_API_KEY",
+    "max_tokens": 2048,
+    "options": {
+      "thinking": {
+        "include_thoughts": true
+      }
+    }
+  },
+  "system": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+  "turns": [
+    "Look up part A-113 and tell me which bin it is in.",
+    "Now look up B-207 and C-042 and tell me which of the two has more in stock.",
+    "Look up part Z-999. If there is no such part, say so in one sentence."
+  ],
+  "gaps": [
+    0,
+    0,
+    0
+  ],
+  "tools": [],
+  "raw": {
+    "stream": false,
+    "adapter": false,
+    "error": false
+  },
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

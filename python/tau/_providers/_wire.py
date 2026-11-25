@@ -519,6 +519,24 @@ class Connection:
         except ValueError:
             return None
 
+    async def post_json(self, url: str, headers: Mapping[str, str], body: Json) -> object:
+        """POST `body` to `url` and return the JSON it answers with: a count call's (D26 section
+        8). An error response is the `SampleError` a sample's would be, an answer that is not
+        JSON a `SampleError` saying so, a failure to connect the `SampleError` of `_http_failure`;
+        `ProviderClosed` after `aclose()`."""
+        client = self._client()
+        try:
+            response = await client.post(url, headers=dict(headers), json=body)
+            if response.status_code != HTTP_OK:
+                await self._refuse(response)
+            text = response.text
+        except httpx.HTTPError as e:
+            raise self._http_failure(e, url) from None
+        try:
+            return strict_loads(text)
+        except ValueError as e:
+            raise SampleError(f"{url}: the answer is not JSON ({e})") from None
+
     async def sample(
         self,
         url: str,

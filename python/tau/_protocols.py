@@ -180,7 +180,12 @@ class Provider(Protocol):
     A provider that sends images (D30) has `image_limits`, an `ImageLimits`: what one image may be
     for its API. A model that takes images (`ModelConfig.images`) is held to them; a provider
     without the attribute sends none, and a walk holding an image fails its sample before
-    `sample` is called. `sample` is handed every image with its bytes (`Image.data`)."""
+    `sample` is called. `sample` is handed every image with its bytes (`Image.data`).
+
+    A provider **may** also have `async count_call(walk, model, tools) -> int | None`: the
+    server's own count of the request `sample` would send, asked before it is sent (D26 section
+    8), or `None` when it has no count endpoint for that model; `SampleError` when the server
+    fails the call. `OpenAIProvider` has it, for llama.cpp."""
 
     @property
     def name(self) -> str:
@@ -372,10 +377,40 @@ EXTENSION_NAME = re.compile(r"[A-Za-z0-9_-]+")
 """What an extension's name, and a source's key, must match (D19 section 1)."""
 
 
-def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
+def _check_hooks(name: str, candidate: object) -> None:
+    """`DefinitionError` if the extension `name` has a `pre_`/`post_` attribute that is not a
+    hook point, or a hook that is not callable."""
+    for attr in dir(candidate):
+        if not attr.startswith(("pre_", "post_")):
+            continue
+        if attr not in (*CURSOR_POINTS, *TOOL_POINTS):
+            raise DefinitionError(
+                f"extension {name!r}: `{attr}` is not a hook point "
+                f"(the points are {', '.join((*CURSOR_POINTS, *TOOL_POINTS))})"
+            )
+        if not callable(getattr(candidate, attr)):
+            raise DefinitionError(f"extension {name!r}: hook `{attr}` must be callable")
+
+
+def _offers_counter(name: str, candidate: object) -> bool:
+    """Whether the extension `name` offers a counter; `DefinitionError` if what it offers lacks
+    a method."""
+    offered: object = getattr(candidate, "counter", None)
+    if offered is None:
+        return False
+    for method in ("count(job)", "observe(observation)"):
+        if not callable(getattr(offered, method.partition("(")[0], None)):
+            raise DefinitionError(
+                f"extension {name!r}: `counter` must have a callable `{method}` method"
+            )
+    return True
+
+
+def check_extensions(extensions: Sequence[object], *, whole: bool = True) -> tuple[Extension, ...]:
     """The extensions, in order, each checked against the `Extension` contract (a `name` of
     letters, digits, `_` and `-`, unique; hooks that are points); raises `DefinitionError` naming
-    the extension."""
+    the extension. When `extensions` are the `whole` set a driver runs, one that sets
+    `needs_counter` (`token_calls`) is refused if none of them offers a counter."""
     names: set[str] = set()
     counters: list[str] = []
     for i, candidate in enumerate(extensions):
@@ -391,29 +426,29 @@ def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
         if name in names:
             raise DefinitionError(f"two extensions are named {name!r}")
         names.add(name)
-        offered: object = getattr(candidate, "counter", None)
-        if offered is not None:
-            for method in ("count(job)", "observe(observation)"):
-                if not callable(getattr(offered, method.partition("(")[0], None)):
-                    raise DefinitionError(
-                        f"extension {name!r}: `counter` must have a callable `{method}` method"
-                    )
+        if _offers_counter(name, candidate):
             counters.append(name)
             if len(counters) > 1:
                 raise DefinitionError(
                     f"two extensions offer a counter: {counters[0]!r} and {name!r}"
                 )
-        for attr in dir(candidate):
-            if not attr.startswith(("pre_", "post_")):
-                continue
-            if attr not in (*CURSOR_POINTS, *TOOL_POINTS):
-                raise DefinitionError(
-                    f"extension {name!r}: `{attr}` is not a hook point "
-                    f"(the points are {', '.join((*CURSOR_POINTS, *TOOL_POINTS))})"
-                )
-            if not callable(getattr(candidate, attr)):
-                raise DefinitionError(f"extension {name!r}: hook `{attr}` must be callable")
+        _check_hooks(name, candidate)
+    if whole and (needing := counter_needed(extensions, counters or None)):
+        raise DefinitionError(needing[0])
     return tuple(cast("Extension", e) for e in extensions)
+
+
+def counter_needed(extensions: Sequence[object], counter: object) -> list[str]:
+    """What stops a start: for each of `extensions` that sets `needs_counter` (`token_calls`)
+    while `counter` (where a counter comes from) is `None`, one line saying so."""
+    if counter is not None:
+        return []
+    return [
+        f"extension {getattr(e, 'name', '?')!r} needs a counter, and no extension offers one: "
+        "tau ext enable tokens"
+        for e in extensions
+        if getattr(e, "needs_counter", False)
+    ]
 
 
 def counter_of(extensions: Sequence[object]) -> tuple[str, Counter] | None:

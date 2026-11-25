@@ -1,0 +1,102 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "What colour is swatch S-1? Answer in one word."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user is asking me to describe the color of swatch S-1 in one word. I need to first show the swatch using the show_swatch function to see what it looks like.",
+            "signature": "ErwDCrgBCBQYAipAUFJ7m6hfIK4TgVCB99DuoNF4EsFbt0cJX/APGPlVFqdd+KL1pO/LzfaT0OtRCnje2/mEJ6Xn1jkUy0baKDlEGDIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okODBmMmFmZTktZjNlYy00MjYzLWI0YWYtMGFlNDFjNTczZWRkmgEbChljbGF1ZGUtaGFpa3UtNC01LTIwMjUxMDAxqAGXupnYBhIMDYQ843r5kvj/m+x/GgzeWB95lB1da/2gFLciMOO/Yee1mi2L/1lawvKy9z/M2ObyR+In/e4Y5NvCT3OXuL+BuffdnO0ZV2FMQSM8giqwAdOC1voeWrk3zEFftQI0bifbAvAM93WfrKQ5+vxrdDeONdkUd+lsplwY8qT52lv9Jzt7Rl5AmD54uBSmszoebeRiX2WJ4KD+SZI7Snq21I7v6YY3UHbjGiYN8VHcDpFhlHuOYJKfQgvVt5+Rdfr6IsNlVzkOEGqnH8gLJrjpHgQ5QrdDSUjBWMFMe4AnoPgHrid2BywBVES8q/mM6cgP3lPnHhEleaNp+XpV+88duzVlGAE="
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01UQg4A3DvYKLmVG86avQou7",
+            "name": "show_swatch",
+            "input": {
+              "swatch": "S-1"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01UQg4A3DvYKLmVG86avQou7",
+            "content": [
+              {
+                "type": "text",
+                "text": "Swatch S-1, as an image:"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "type": "base64",
+                  "media_type": "image/png",
+                  "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUElEQVR42u3PQQkAAAgEsEtiEvunMIwRfAuDFViq57UICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICFwWtHVhHrbirsAAAAAASUVORK5CYII="
+                }
+              }
+            ],
+            "is_error": false,
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "You describe colour swatches. Use show_swatch to see one before you answer.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "show_swatch",
+        "description": "Show one colour swatch by its id, as an image.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "swatch": {
+              "type": "string",
+              "description": "a swatch id, like S-1"
+            }
+          },
+          "required": [
+            "swatch"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
+  }
+}

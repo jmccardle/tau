@@ -1,0 +1,166 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up part A-113 and tell me which bin it is in."
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "lookup_part",
+              "args": {
+                "part": "A-113"
+              },
+              "id": "call_6477006884980078286"
+            },
+            "thoughtSignature": "EpYBCpMBAWkUfRMpxy3Jtf/TsphiJlwl1zU1cBTGshHLkiLEV3rRAvOLBrMxefiNSsziY/l+jwc2iWFyuI1BMYAWJOwoNMYWJfxTriHwEnjrnCfedRcxfJB4S9fDkYzhLXUO8M653atgDfD3PUcvO7s/uemg6siU1qs16AdcNCuCKzoO2n36tebC09gcR8hmlJt1/8Cr25n8"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "lookup_part",
+              "response": {
+                "result": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock."
+              },
+              "id": "call_6477006884980078286"
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "Part A-113 is in Bin 14.",
+            "thoughtSignature": "EpYBCpMBAWkUfRPuE7CW3MLjmMKaFYThGQbxbih8A4QvB93NByvfJ72RUTtym9T49D/4b5qaOAfAmnGpOOV40wlVeoU3Gw/64is9EvRuTYUsTLvrYzPfhkWCY5Wdnc8f7zDiFHb6SrEXYj1cKoF7Md4V5TxC3gViYcq5+R8CqG88NTTiW2/9iNr28t/iGlm+z7FDS6BaWO6U"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Now look up B-207 and C-042 and tell me which of the two has more in stock."
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "lookup_part",
+              "args": {
+                "part": "B-207"
+              },
+              "id": "call_10845369171175337866"
+            },
+            "thoughtSignature": "EpYBCpMBAWkUfRP+3TpC238YbwNh+tF7NoH7JjNIskoVUXqZglNPgqFkI0QovlurvrI9bMTnMXzqqfnfpVD3w3fnPJSZcHjlsMvkfI412aDsr7fZqqAus/ewtdbhi6M/ld+Lgb4j+qB/X9zr6h684C+1Qj/YmyZyIKHoYois7JwB6exKGGIY2FvRaXBuMMvWD95U7LWZGFaV"
+          },
+          {
+            "functionCall": {
+              "name": "lookup_part",
+              "args": {
+                "part": "C-042"
+              },
+              "id": "call_10845369171175336277"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "lookup_part",
+              "response": {
+                "result": "B-207: flat washer M8, stainless. Bin 3. 1450 in stock."
+              },
+              "id": "call_10845369171175337866"
+            }
+          },
+          {
+            "functionResponse": {
+              "name": "lookup_part",
+              "response": {
+                "result": "C-042: lock nut M8, nylon insert. Bin 9. 85 in stock."
+              },
+              "id": "call_10845369171175336277"
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "B-207 has more in stock, with 1450 units (compared to 85 units of C-042).",
+            "thoughtSignature": "EpYBCpMBAWkUfRPHNwxj+e1CLGkxzIn3RisxcP6NVlEmL7f5dhVlsdWWN0EoleDKRXRFQgD9FA4nJEulaZ8Kl3xp/4A2TycLa2HFVd6fBbf2ompwJ5tAXTaBnliBTlmcE6Mb03saiKYm9UAxD7wbf9jI79feFf/RnqxeWHhIEToRpF8wH4yp7iElBIwrEz2BNc4oVOfEppJr"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up part Z-999. If there is no such part, say so in one sentence."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup_part",
+            "description": "Look up one part by its part number: what it is, its bin and its stock.",
+            "parametersJsonSchema": {
+              "type": "object",
+              "properties": {
+                "part": {
+                  "type": "string",
+                  "description": "a part number, like A-113"
+                }
+              },
+              "required": [
+                "part"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 2048,
+      "thinkingConfig": {
+        "includeThoughts": true
+      }
+    }
+  }
+}

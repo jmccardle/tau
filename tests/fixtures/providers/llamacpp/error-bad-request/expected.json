@@ -1,0 +1,7 @@
+{
+  "replies": [],
+  "error": {
+    "status": 400,
+    "message": "HTTP 400: invalid_request_error: Expected 'messages' to be an array"
+  }
+}

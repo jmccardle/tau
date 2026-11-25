@@ -1,0 +1,45 @@
+{
+  "method": "POST",
+  "url": "https://api.anthropic.com/v1/messages",
+  "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 1024,
+    "system": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up part A-113."
+          }
+        ]
+      }
+    ],
+    "stream": false,
+    "tools": [
+      {
+        "name": "lookup_part",
+        "description": "Look up one part by its part number: what it is, its bin and its stock.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "part": {
+              "type": "string",
+              "description": "a part number, like A-113"
+            }
+          },
+          "required": [
+            "part"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

@@ -1468,7 +1468,11 @@ and two sources are an `ExtensionLoadError` naming both. `TreeHandle.counter` is
 extension that offers it, or `None`. The built-in `tokens` offers one (see *Tokens*), so another
 extension's counter loads only with `tokens` turned off (`tau ext disable tokens`). From T3 the
 job also carries `resolved`, the model's settings in the catalog now, and a counter has a second
-method, `observe` (see *Observation*); one without it is a `DefinitionError`.
+method, `observe` (see *Observation*); one without it is a `DefinitionError`. From T7 the job also
+carries `digest`, the `tools_hash` of the base offer, and an answer may carry **`total`**: the
+whole request counted at once (a count call's, see *count call*), `rendered` or `calibrated`
+(any other basis is a `DefinitionError`), which replaces the sum of the parts as
+`RequestCount.total`. The node counts are unchanged by it.
 
 ### Observation, Counter.observe, tools_hash
 `tau.Observation` (`kind`, `model`, `resolved`, `walk`, `usage`, `markers`, `tools`, `span`,
@@ -1476,7 +1480,8 @@ method, `observe` (see *Observation*); one without it is a `DefinitionError`.
 
 What the driver shows the counter of each reply that reports its usage, once the reply is in the
 tree and before its `post_reply` hooks: `counter.observe(observation)`, run in a thread. `kind` is
-`reply` (`count_call` is D26 section 8's, not built). `usage` is the reply's normalized usage,
+`reply`, or `count_call` for a count call (see *count call*: `usage` is `{"input": N}`, `markers`
+empty, `span` `None`). `usage` is the reply's normalized usage,
 `markers` its drift markers as text (a window, `n_ctx`, is not one), `tools` the digest of the tool
 set its request offered (`tools_hash`: names, descriptions and schemas, whatever their order), and
 `span` the proved span that ends at this reply, or `None`. A counter that raises is told to the
@@ -1500,6 +1505,47 @@ count is asked for and nothing written until a reply is observed, so with `load:
 no `calibration` directory appears. **`Tokenizers`** is the protocol of what `Tokens` will ask of
 the tokenizer wheel (`version`, `count(model, text)`); nothing provides one in this wheel, and
 `Tokens(home)` is "not installed".
+
+A count call's observation is kept in memory, not in the record: a count of the same walk with
+the same tool set (`CountJob.digest`) answers it as its `rendered` `total`, and `/tokens` adds
+`the server counted its last request: N`.
+
+### tokenizers (option), Tokens.configured
+`extensions.tokens.tokenizers` (`auto`, `off`, `require`; default `auto`); `Tokens(home,
+tokenizers=None, mode=..., importer=...)`, `Tokens.configured(home, extensions)`
+(`_tokens.py`, `_tokenizer_wheel.py`) · D26 section 7.2; akb #599, John's ruling of 2026-11-24 ·
+new (TC-07)
+
+What `tokens` does with the tokenizer wheel (`tau_tokens`), decided once, when the extension is
+built: `import tau_tokens` through `importer`, its `__version__` against τ's, and one count of a
+fixed text. **Broken** is any import failure but "not installed", or a wrong count; **stale** is
+another version. `require`: absent, broken or stale stops the start (`ImportError`, inside the
+`ExtensionLoadError`), naming `pip install 'ffwf-tau[tokens]==VERSION'`. `auto`: absent says
+nothing; broken or stale is not used, and the clients are told once (at the first step) with the
+same line and the escape (`extensions.tokens.tokenizers=off`); `/tokens` ends with `tokenizers: not
+used: ...`. `off`: never imported. `Tokens.configured` reads the option from the config layers, as
+a start does. Using the wheel to count is T4's join (TC-02), not built: a wheel found today is
+checked, not yet counted with.
+
+### count call, Cursor.count_call, Provider.count_call, TokenCalls (extension), needs_counter
+`TreeHandle.count_call(at=None)` (`_handles.py`), `Counts.count_call` (`_meter.py`); a provider's
+optional `async count_call(walk, model, tools) -> int | None` (`OpenAIProvider` for llama.cpp);
+`tau.TokenCalls` (`_tokens.py`), key `token_calls`, off by default, option `when`; an extension's
+`needs_counter` · D26 section 8 · new (TC-07)
+
+A **count call** is the server's own count of the request a walk makes, asked before it is sent.
+`count_call` asks the model's provider (with the base offer's tools), shows the answer to the
+counter as an observation of kind `count_call`, and returns it; `None` when the provider has no
+count endpoint for the model. `OpenAIProvider` counts on llama.cpp only (a server whose `/props`
+has `build_info`): `POST /apply-template` with the request body, then `POST /tokenize` of that text
+with special tokens added and parsed, which is exactly the `prompt_tokens` the sample reports
+(28 of 28 recorded text requests). A walk with an image answers `None`: the template's text holds a
+media marker, not the image's tokens. vLLM's `/tokenize` (messages and tools) slots in beside it.
+The built-in **`TokenCalls`** makes the call in `pre_sample`, before compaction's hard limit:
+`when: straddle` (default) only when the count's interval straddles the hard limit (compaction's,
+else the window), `when: always` before every sample. A failed call is told and the sample goes
+on. An extension with **`needs_counter`** true is refused, at load (`ExtensionLoadError`) and by
+the driver (`DefinitionError`), when no extension offers a counter.
 
 ### calibration record, calibration store, Calibration, CalibrationStore
 `tau.Calibration`, `tau.CalibrationStore`, `tau.CalibrationError`, `tau.CalibrationNewer`,
@@ -1541,8 +1587,9 @@ A **span** (of a walk; not a `tracing` span, below) is the nodes added between t
 requests: the first request's reply, then the inputs before the second request. Its cost is the
 second bill's `input` less the first's, and that is exact only if the first request is a prefix of
 the second as the server sees it. A span is **proved**, and is a lump with a `reported` count, in
-one of three ways: **`cache`**, the second reply reports `cached` equal to the first's `input`
-(Anthropic, where τ marks the last block of every request for caching); **`slot`**, llama.cpp's
+one of three ways: **`cache`**, the second reply reports `cached` equal to the first's `input`,
+or to the first's `cached` plus `written` (Anthropic, where τ marks the last block of every
+request for caching, and bills a few tokens after that block outside the cache); **`slot`**, llama.cpp's
 `timings` say the second request read at least the whole first request from its slot (`cache_n` of
 the second is no less than `prompt_n + cache_n` of the first; more is usual, since the slot also
 holds the reply it generated); **`prefix`**, the second reply's `meta.sent.extends` names the first
@@ -1606,10 +1653,25 @@ answers from a table) and what τ computed (`expected.json`: each reply's normal
 and finish reason). The script's docstring is the format's spec. It writes nothing unless the run
 succeeded and no file holds the key: request and response headers are kept by whitelist, secret
 query parameters are stripped, and a key found anywhere in what would be written fails the run.
-The families are `anthropic`, `openai`, `gemini`, `llamacpp` and `vllm`. A replay runs the case
-offline through the same provider; a family with no fixture is skipped by its tests with the
-command that records it. A body written by hand is **synthetic**, lives in a test file, and is
-never under `tests/fixtures/providers/`.
+The families are `anthropic`, `openai`, `gemini`, `openrouter`, `mistral` (OpenAI-compatible),
+`llamacpp`, `vllm` and any number of `oaicompat-<name>`. A replay runs the case offline through the same provider; a family
+with no fixture is skipped by its tests with the command that records it. A body written by hand
+is **synthetic**, lives in a test file, and is never under `tests/fixtures/providers/`.
+
+From TC-01 a case is one **scenario** of the recorder's list (`SCENARIOS`, `--scenarios-list`):
+`turns` (and its rounds `turns-2`, ...), `tool-image`, `length` and `counted` through the driver,
+and the **raw** ones it builds by hand for what the provider never sends (`user-image`,
+`nonstream-text`, `nonstream-tools`, `error-bad-request`, `error-overflow`, Gemini's
+`builtin-tool`), and Anthropic's `cached` (`turns` over a system text past the minimum cacheable
+prompt, then a turn after the gap). `case.json` names its `scenario`; a raw case has `raw` (`stream`, `adapter`: whether
+the provider reads its response, `error`: whether the server was meant to refuse it), and
+`expected.json` has `error`, the `SampleError` a refused one gives; a refusal with a status
+outside the scenario's (no credit, no model, a rate limit) is a failed run, not a fixture. `record_provider.py all` records
+every scenario of every family the **keys file** (`~/.config/tau-fixtures/keys.env`, `--keys`)
+sets up and says which it skips; `--dry-run` prints the plan, its token estimate and cost. Beyond
+the key's value, a file is refused when anything in it is shaped like a key or an auth header, and
+a local server's origin is written as `http://<family>.invalid`; `tests/providers/
+test_fixture_secrets.py` holds every committed file to its own list of shapes.
 
 ### Permissions (extension), rule
 `tau.Permissions` (`_permissions.py`), key `permissions`, options `ask`, `allow`, `deny` · D24 section 7 · new (8E-4)

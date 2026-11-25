@@ -89,6 +89,24 @@ async def test_a_cache_read_of_the_whole_previous_request_proves_a_span(tmp_path
 
 
 @scenario
+async def test_a_cache_read_of_everything_the_previous_request_cached_proves_a_span(
+    tmp_path: Path,
+) -> None:
+    """Anthropic bills a few tokens after the last block, outside the cache (10 on Claude Haiku
+    4.5 with tools and thinking, `tests/fixtures/providers/anthropic/cached`): the next request
+    reads `cached + written` of the previous one, never its `input`. A read that stops short
+    (the previous turn's thinking was dropped, so it was no prefix) proves nothing."""
+    replies = [
+        reply({"input": 1010, "output": 1000, "cached": 0, "written": 1000}),
+        reply({"input": 3010, "output": 1000, "cached": 1000, "written": 2000}),
+        reply({"input": 5010, "output": 1000, "cached": 1000, "written": 4000}),
+    ]
+    h, probe = await run(tmp_path, replies)
+    assert shape(probe.spans) == [((3, 4), 2000, "cache")]
+    await h.close()
+
+
+@scenario
 async def test_llama_cpps_slot_proves_a_span_when_it_held_at_least_the_whole_request(
     tmp_path: Path,
 ) -> None:

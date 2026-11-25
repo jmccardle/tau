@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Part A"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 180,"candidatesTokenCount": 2,"totalTokenCount": 182,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 180}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bF0Ga9uLOomswbUPzPfXqQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "-113 is in Bin 14."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 180,"candidatesTokenCount": 13,"totalTokenCount": 193,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 180}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bF0Ga9uLOomswbUPzPfXqQs"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpYBCpMBAWkUfRPuE7CW3MLjmMKaFYThGQbxbih8A4QvB93NByvfJ72RUTtym9T49D/4b5qaOAfAmnGpOOV40wlVeoU3Gw/64is9EvRuTYUsTLvrYzPfhkWCY5Wdnc8f7zDiFHb6SrEXYj1cKoF7Md4V5TxC3gViYcq5+R8CqG88NTTiW2/9iNr28t/iGlm+z7FDS6BaWO6U"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 180,"candidatesTokenCount": 13,"totalTokenCount": 193,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 180}],"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash-lite","responseId": "bF0Ga9uLOomswbUPzPfXqQs"}
+

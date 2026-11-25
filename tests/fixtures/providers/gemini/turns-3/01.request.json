@@ -1,0 +1,85 @@
+{
+  "method": "POST",
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are a parts clerk. Answer questions about parts only from what the lookup_part tool returns; never guess a part's details."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up part A-113 and tell me which bin it is in."
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "lookup_part",
+              "args": {
+                "part": "A-113"
+              },
+              "id": "call_7529210493244811393"
+            },
+            "thoughtSignature": "EpYBCpMBAWkUfRPCw72JJJdC4G2x88U8YOlUkV/pzv31fBOAUv/83rabK3Ojy7rlKl095KczNOyINdHdJ9yKfZG8St5nP7lf2TG0Iec+gEg/DFZGnriYsHHeblXFWtz02VaQmkGbjAEFbLIXFJbv6UceACG9S2tr/qumtvDr9o3ykENHkdZNqqne0ri++VPnpUUjeLQuBm9W"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "lookup_part",
+              "response": {
+                "result": "A-113: hex bolt M8 x 40, zinc plated. Bin 14. 220 in stock."
+              },
+              "id": "call_7529210493244811393"
+            }
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup_part",
+            "description": "Look up one part by its part number: what it is, its bin and its stock.",
+            "parametersJsonSchema": {
+              "type": "object",
+              "properties": {
+                "part": {
+                  "type": "string",
+                  "description": "a part number, like A-113"
+                }
+              },
+              "required": [
+                "part"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 2048,
+      "thinkingConfig": {
+        "includeThoughts": true
+      }
+    }
+  }
+}

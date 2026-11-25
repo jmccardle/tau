@@ -48,8 +48,9 @@ BUILT_INS = [
     "tokens",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "agents", "retry"])
-"""The keys `load` takes: `retry` is a provider wrapper, `agents` is off by default."""
+KEYS = sorted([*BUILT_INS, "agents", "retry", "token_calls"])
+"""The keys `load` takes: `retry` is a provider wrapper, `agents` and `token_calls` are off by
+default."""
 MODULE = """
 name = "{name}"
 {extra}
@@ -209,6 +210,7 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "retry",
         "skills",
         "step_limit",
+        "token_calls",
         "tokens",
         "usage",
         "search",

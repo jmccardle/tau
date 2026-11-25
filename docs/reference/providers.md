@@ -313,6 +313,26 @@ The request `sample` would send, without sending it or reading the key (D26 sect
 merged last. Each message is one node's (a `Results` node makes one per call). `check`
 has passed.
 
+### OpenAIProvider.count_call
+
+```python
+async def count_call(
+    self,
+    walk: Sequence[Node],
+    model: ModelConfig,
+    tools: Sequence[Tool],
+) -> int | None
+```
+
+The server's own count of the request `sample` would send for the same arguments
+(D26 section 8), before it is sent: on llama.cpp, the request rendered by the server's
+chat template (`POST /apply-template`, the same body) and that text tokenized as a
+sample's prompt is (`POST /tokenize`, special tokens added and parsed). It is the
+`prompt_tokens` the sample will report. `None` on a server that is not llama.cpp (it has
+no count endpoint here yet; vLLM's `/tokenize` takes the messages themselves and slots in
+beside it), and for a walk with an image, which llama.cpp counts by its own media
+encoder, not by the template's text. `SampleError` if the server fails either call.
+
 ### OpenAIProvider.sample
 
 ```python
@@ -352,6 +372,11 @@ A provider that sends images (D30) has `image_limits`, an `ImageLimits`: what on
 for its API. A model that takes images (`ModelConfig.images`) is held to them; a provider
 without the attribute sends none, and a walk holding an image fails its sample before
 `sample` is called. `sample` is handed every image with its bytes (`Image.data`).
+
+A provider **may** also have `async count_call(walk, model, tools) -> int | None`: the
+server's own count of the request `sample` would send, asked before it is sent (D26 section
+8), or `None` when it has no count endpoint for that model; `SampleError` when the server
+fails the call. `OpenAIProvider` has it, for llama.cpp.
 
 ### Provider.name
 

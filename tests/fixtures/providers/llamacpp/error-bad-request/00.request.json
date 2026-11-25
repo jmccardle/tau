@@ -1,0 +1,17 @@
+{
+  "method": "POST",
+  "url": "http://llamacpp.invalid/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "qwen3.8-27b",
+    "messages": "not a list of messages",
+    "stream": true,
+    "max_tokens": 512,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}
