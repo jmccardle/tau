@@ -1,0 +1,23 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 1211,
+        "output": 20,
+        "cached": 0
+      },
+      "stop": "Tools",
+      "finish_reason": "STOP"
+    },
+    {
+      "usage": {
+        "input": 2343,
+        "output": 9,
+        "cached": 0
+      },
+      "stop": "End",
+      "finish_reason": "STOP"
+    }
+  ],
+  "error": null
+}

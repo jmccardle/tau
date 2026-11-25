@@ -36,7 +36,7 @@ def client_calls() -> dict[str, inspect.Signature]:
 
 
 def test_the_protocol_is_an_integer_and_the_schema_says_which() -> None:
-    assert tau.PROTOCOL == 2
+    assert tau.PROTOCOL == 3
     assert schema()["x-protocol"] == tau.PROTOCOL
     assert schema()["$schema"] == "https://json-schema.org/draft/2020-12/schema"
 

@@ -2,13 +2,14 @@
   "format": 1,
   "family": "gemini",
   "provider": "gemini",
-  "kind": "raw",
+  "kind": "turns",
   "scenario": "user-image",
   "model": {
     "provider": "gemini",
     "model": "gemini-3.5-flash-lite",
     "api_key_env": "GEMINI_API_KEY",
     "max_tokens": 2048,
+    "images": true,
     "options": {
       "thinking": {
         "include_thoughts": true
@@ -23,11 +24,19 @@
     0
   ],
   "tools": [],
-  "raw": {
-    "stream": true,
-    "adapter": true,
-    "error": false
-  },
+  "turn_images": [
+    [
+      {
+        "width": 64,
+        "height": 64,
+        "rgb": [
+          220,
+          30,
+          30
+        ]
+      }
+    ]
+  ],
   "tau": "0.17.1",
   "recorded": "2026-11-25"
 }

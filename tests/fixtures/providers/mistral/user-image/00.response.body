@@ -1,8 +1,4 @@
-data: {"id":"c72b153c096a4c0ebb7832fa2b61762d","object":"chat.completion.chunk","created":1795579184,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
-
-data: {"id":"c72b153c096a4c0ebb7832fa2b61762d","object":"chat.completion.chunk","created":1795579184,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":"Black"},"finish_reason":null}],"p":"abcdefghijklmnopqrstuvwxyz"}
-
-data: {"id":"c72b153c096a4c0ebb7832fa2b61762d","object":"chat.completion.chunk","created":1795579184,"model":"mistral-small-2603","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"total_tokens":42,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"service_tier":"standard"},"p":"abcdefghijklmnopqrstuvwxyz0123456"}
-
-data: [DONE]
-
+{
+  "message":"no Route matched with those values",
+  "request_id":"16d7812c53f7dc0e1ef5110f80454c69"
+}

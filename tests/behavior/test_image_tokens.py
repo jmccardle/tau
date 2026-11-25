@@ -113,7 +113,8 @@ MEASURED = {
 }
 MEASURED_HIGH_TIER = {(3840, 2160): 4805}  # opus-5-5; the standard tier billed 1,581 (1,560 + 21)
 # Each image after the first in one result billed its patches + 13 (64x64: 22), and an image in a
-# user message its patches + 3 (64x64: 12, the recorded anthropic/user-image: 30 vs 18).
+# user message its patches + 3 (64x64: 12: a raw request of 30 tokens vs 18 without the image,
+# recorded before D31 replaced that fixture with tau's own request).
 
 
 @pytest.mark.parametrize(("size", "cost"), [*MEASURED.items(), *MEASURED_HIGH_TIER.items()])

@@ -8,8 +8,7 @@
   },
   "body": {
     "model": "claude-haiku-4-5",
-    "max_tokens": 512,
-    "system": "Answer in one word.",
+    "max_tokens": 4096,
     "messages": [
       {
         "role": "user",
@@ -24,11 +23,27 @@
               "type": "base64",
               "media_type": "image/png",
               "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=="
+            },
+            "cache_control": {
+              "type": "ephemeral"
             }
           }
         ]
       }
     ],
-    "stream": true
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "Answer in one word.",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    }
   }
 }

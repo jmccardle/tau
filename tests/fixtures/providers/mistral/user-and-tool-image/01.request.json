@@ -1,0 +1,59 @@
+{
+  "method": "POST",
+  "url": "https://api.mistral.ai/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "accept": "*/*"
+  },
+  "body": {
+    "model": "mistral-small-2603",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You describe colour swatches. Use show_swatch to see one before you answer."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "The attached image is a swatch of mine. What colour is it, and what colour is swatch S-1? Answer as: mine is <colour>, S-1 is <colour>."
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "show_swatch",
+          "description": "Show one colour swatch by its id, as an image.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "swatch": {
+                "type": "string",
+                "description": "a swatch id, like S-1"
+              }
+            },
+            "required": [
+              "swatch"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "max_tokens": 2048,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

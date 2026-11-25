@@ -1,0 +1,17 @@
+{
+  "replies": [
+    {
+      "usage": {
+        "input": 1611,
+        "output": 72,
+        "cached": 0,
+        "written": 0,
+        "written_1h": 0,
+        "reasoning": 66
+      },
+      "stop": "End",
+      "finish_reason": "end_turn"
+    }
+  ],
+  "error": null
+}

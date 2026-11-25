@@ -3,8 +3,8 @@
     {
       "usage": {
         "input": 75,
-        "output": 56,
-        "cached": 71
+        "output": 81,
+        "cached": 0
       },
       "stop": "End",
       "finish_reason": "stop"

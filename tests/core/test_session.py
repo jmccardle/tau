@@ -276,7 +276,7 @@ def test_a_draft_must_state_what_it_delivers() -> None:
 def test_values_have_a_readable_repr() -> None:
     session, cursor = new()
     session.input(cursor, Author.Frontend("term"), "hi")
-    assert repr(Body.User("hello")) == 'User { text: "hello" }'
+    assert repr(Body.User("hello")) == 'User { text: "hello", images: [] }'
     assert "hi" in repr(session.cursor(cursor).items[0])
     assert "System" in repr(session.tree.walk(session.cursor(cursor).at)[-1])
     assert "Ok" in repr(Outcome.Ok("fine"))

@@ -21,8 +21,8 @@
             "text": "What colour is this image?"
           },
           {
-            "inline_data": {
-              "mime_type": "image/png",
+            "inlineData": {
+              "mimeType": "image/png",
               "data": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=="
             }
           }
@@ -30,7 +30,10 @@
       }
     ],
     "generationConfig": {
-      "maxOutputTokens": 512
+      "maxOutputTokens": 2048,
+      "thinkingConfig": {
+        "includeThoughts": true
+      }
     }
   }
 }

@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "family": "mistral",
+  "provider": "openai",
+  "kind": "turns",
+  "scenario": "user-image-large",
+  "model": {
+    "provider": "openai",
+    "model": "mistral-small-2603",
+    "base_url": "https://api.mistral.ai/v1",
+    "api_key_env": "MISTRAL_API_KEY",
+    "max_tokens": 2048,
+    "images": true
+  },
+  "system": "Answer in one word.",
+  "turns": [
+    "What colour is this image?"
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [],
+  "turn_images": [
+    [
+      {
+        "width": 3840,
+        "height": 2160,
+        "rgb": [
+          30,
+          160,
+          60
+        ]
+      }
+    ]
+  ],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

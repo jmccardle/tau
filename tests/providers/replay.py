@@ -11,7 +11,9 @@ command the repository's owner runs to record it."""
 
 import base64
 import json
+import struct
 import tempfile
+import zlib
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -30,6 +32,7 @@ from tau import (
     Finish,
     GeminiProvider,
     Image,
+    ImageInput,
     Node,
     OpenAIProvider,
     Outcome,
@@ -173,6 +176,33 @@ class TableTool:
         return Outcome.Err(f"no such {self._key}: {args_raw}")
 
 
+def flat_png(width: int, height: int, rgb: Sequence[int]) -> bytes:
+    """The recorder's `png()`: a PNG of one colour, the same bytes every time, so a replay's
+    request is the recorded one."""
+
+    def block(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    row = b"\x00" + bytes(rgb) * width
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + block(b"IHDR", header)
+        + block(b"IDAT", zlib.compress(row * height, 9))
+        + block(b"IEND", b"")
+    )
+
+
+def turn_images(case: Mapping[str, Any]) -> list[list[ImageInput]]:
+    """The images each turn of `case` sends (`turn_images`; none for a case without it)."""
+    wanted: list[list[Mapping[str, Any]]] = case.get("turn_images") or [[] for _ in case["turns"]]
+    return [
+        [ImageInput.of(flat_png(d["width"], d["height"], d["rgb"])) for d in turn]
+        for turn in wanted
+    ]
+
+
 def reply_of(stop: Stop, finish_reason: str | None, meta: str | None) -> dict[str, object]:
     """One reply as `expected.json` holds it: `usage`, `stop`, `finish_reason`."""
     usage = None if meta is None else json.loads(meta).get("usage")
@@ -286,8 +316,8 @@ async def _turns(  # noqa: PLR0913, PLR0917 - a case, and what runs it
     driver.start()
     cursor = session.cursors()[0]
     try:
-        for text in case["turns"]:
-            await driver.client("replay").send(cursor, text)
+        for text, images in zip(case["turns"], turn_images(case), strict=True):
+            await driver.client("replay").send(cursor, text, images)
             await driver.rest(cursor)
             failure = _failure(session)
             if failure is not None:

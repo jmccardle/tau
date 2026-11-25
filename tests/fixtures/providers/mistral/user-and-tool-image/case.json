@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "family": "mistral",
+  "provider": "openai",
+  "kind": "turns",
+  "scenario": "user-and-tool-image",
+  "model": {
+    "provider": "openai",
+    "model": "mistral-small-2603",
+    "base_url": "https://api.mistral.ai/v1",
+    "api_key_env": "MISTRAL_API_KEY",
+    "max_tokens": 2048,
+    "images": true
+  },
+  "system": "You describe colour swatches. Use show_swatch to see one before you answer.",
+  "turns": [
+    "The attached image is a swatch of mine. What colour is it, and what colour is swatch S-1? Answer as: mine is <colour>, S-1 is <colour>."
+  ],
+  "gaps": [
+    0
+  ],
+  "tools": [
+    {
+      "name": "show_swatch",
+      "description": "Show one colour swatch by its id, as an image.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "swatch": {
+            "type": "string",
+            "description": "a swatch id, like S-1"
+          }
+        },
+        "required": [
+          "swatch"
+        ],
+        "additionalProperties": false
+      },
+      "answers": {
+        "S-1": "Swatch S-1, as an image:"
+      },
+      "images": {
+        "S-1": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUElEQVR42u3PQQkAAAgEsEtiEvunMIwRfAuDFViq57UICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICFwWtHVhHrbirsAAAAAASUVORK5CYII="
+      },
+      "key": "swatch"
+    }
+  ],
+  "turn_images": [
+    [
+      {
+        "width": 64,
+        "height": 64,
+        "rgb": [
+          220,
+          30,
+          30
+        ]
+      }
+    ]
+  ],
+  "tau": "0.17.1",
+  "recorded": "2026-11-25"
+}

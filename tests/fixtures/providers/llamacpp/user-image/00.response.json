@@ -1,6 +1,6 @@
 {
   "status": 200,
   "headers": {
-    "content-type": "text/event-stream"
+    "content-type": "application/json; charset=utf-8"
   }
 }
