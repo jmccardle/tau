@@ -42,12 +42,12 @@ def _processes_for(base: Path) -> list[int]:
 def served() -> Iterator[World]:
     """A throwaway TAU_HOME and project, under a short directory (a socket path has a limit).
     Whatever `tau serve` the test left running is killed, even when the test failed."""
-    # macOS: the default temp directory is too long a prefix for a socket path.
+    # macOS: the default temp directory is too long a prefix for a socket path. Resolved: τ
+    # records and compares a session's working directory resolved, so a hand-written session's
+    # must be too (macOS's /tmp is a link; Windows's TEMP may hold an 8.3 name, `RUNNER~1`).
     base = Path(
-        tempfile.mkdtemp(
-            prefix="tau", dir=os.path.realpath("/tmp") if sys.platform == "darwin" else None
-        )
-    )
+        tempfile.mkdtemp(prefix="tau", dir="/tmp" if sys.platform == "darwin" else None)
+    ).resolve()
     home = base / "h"
     home.mkdir()
     # The servers the tests start run in this environment (`tau serve -d` hands it on).
