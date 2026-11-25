@@ -62,10 +62,15 @@ jobs:
           "$py" -m pip install --group "$GITHUB_WORKSPACE/pyproject.toml:dev" dist/*.whl
           cd "$RUNNER_TEMP"
           "$py" -c "import tau._core as m, sys; print(m.__file__, sys.version)"
-          "$py" -m pytest -v -p no:cacheprovider -rfEs -m "not tokenizers" \
+          # --timeout (pytest-timeout, the dev group): a hung test fails after 5 min with every
+          # thread's stack, instead of the job running into its own timeout and being cancelled.
+          # Windows has no SIGALRM, so the plugin's thread method ends the run there; the log so
+          # far is still uploaded (below).
+          "$py" -m pytest -v -p no:cacheprovider -rfEs -m "not tokenizers" --timeout 300 \
             "$GITHUB_WORKSPACE/tests" 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+      # always(): the log of a failed, timed-out or cancelled run is the one most worth reading.
       - uses: actions/upload-artifact@v5
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         with:
           name: pytest-log-windows-x86_64-py3.12
           path: ${{ runner.temp }}/pytest.log

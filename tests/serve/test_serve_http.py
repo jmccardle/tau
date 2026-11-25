@@ -21,7 +21,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from proctable import interpreter
+from proctable import first_line, interpreter, own_console, signal_to
 from world import Result, World, tau
 
 from tau import RemoteClient
@@ -85,7 +85,7 @@ def foreground(
         stdout=stdout,
         stderr=subprocess.PIPE,
         text=True,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        **own_console(),
     )
 
 
@@ -98,7 +98,7 @@ process group (Ctrl+C is not delivered to a group of its own)."""
 
 def end(server: subprocess.Popen[str]) -> None:
     """Stop a `foreground` server as a person or a service manager does: cleanly."""
-    server.send_signal(CLEAN_STOPS[0])
+    signal_to(server, CLEAN_STOPS[0])
 
 
 @contextlib.contextmanager
@@ -292,10 +292,9 @@ def test_the_record_is_only_ever_read_whole(home: World) -> None:
 def test_a_signalled_server_removes_its_record(home: World, stopped: int) -> None:
     server = foreground(home, "--json", "--no-unix")
     try:
-        assert server.stdout is not None
-        record = json.loads(server.stdout.readline())
+        record = json.loads(first_line(server))
         assert record_file(home).exists()
-        server.send_signal(stopped)
+        signal_to(server, stopped)
         assert server.wait(timeout=10) == 0
     finally:
         server.kill()
@@ -324,8 +323,7 @@ def test_a_stale_record_of_the_session_is_replaced_at_startup(home: World) -> No
     record_file(home).write_text(json.dumps(stale), encoding="utf-8")
     server = foreground(home, "--json", "--no-unix")
     try:
-        assert server.stdout is not None
-        record = json.loads(server.stdout.readline())
+        record = json.loads(first_line(server))
         assert record["pid"] == server.pid
         on_disk = json.loads(record_file(home).read_text(encoding="utf-8"))
         assert on_disk["pid"] == server.pid
@@ -343,8 +341,7 @@ def test_the_banner_names_every_endpoint_on_one_line_and_no_token_off_a_terminal
 ) -> None:
     server = foreground(home)
     try:
-        assert server.stdout is not None
-        line = server.stdout.readline().rstrip("\n")
+        line = first_line(server).rstrip("\n")
         record = json.loads(record_file(home).read_text(encoding="utf-8"))
         socket_file = home.tau / "serve" / f"{OLD}.sock"
         where = record["url"] if WINDOWS else f"{socket_file} and {record['url']}"
@@ -577,8 +574,7 @@ def test_shutdown_needs_the_token_and_post(home: World) -> None:
 def test_shutdown_with_the_token_stops_the_server_as_a_signal_does(home: World) -> None:
     server = foreground(home, "--json", "--no-unix")
     try:
-        assert server.stdout is not None
-        record = json.loads(server.stdout.readline())
+        record = json.loads(first_line(server))
         assert shutdown(record, str(record["token"])).status_code == 202
         assert server.wait(timeout=15) == 0
     finally:

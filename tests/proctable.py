@@ -1,11 +1,13 @@
 """The process table, as the tests look at it: whether a process is alive and which processes run
-with which arguments, and how a test kills one. Linux reads `/proc`; macOS has none and asks `ps`;
-Windows opens the process to read its exit code, and asks PowerShell for the command lines."""
+with which arguments, and how a test stops or kills one. Linux reads `/proc`; macOS has none and
+asks `ps`; Windows opens the process to read its exit code, and asks PowerShell for the command
+lines."""
 
 import os
 import signal
 import subprocess
 import sys
+from typing import Any
 
 # Starts `sleep 13` in a session of its own (it leaves the command's session), goes on once it
 # is there (a bare `setsid ... &` races with the end of the command), and saves its pid in `pid`.
@@ -91,6 +93,64 @@ def kill(pid: int) -> None:
     os.kill(pid, signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL)
 
 
+def own_console() -> dict[str, Any]:
+    """`subprocess.Popen` keywords for a server a test stops as a person does, with `signal_to`: on
+    Windows a console of its own (hidden) and a process group of its own, so a console event can
+    be sent to it whether or not the test has a console (a CI runner, or a PowerShell step run
+    with no window, has none). Nothing elsewhere."""
+    if sys.platform != "win32":
+        return {}
+    hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=0)
+    return {
+        "creationflags": subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP,
+        "startupinfo": hidden,
+    }
+
+
+def signal_to(process: "subprocess.Popen[str]", number: int) -> None:
+    """Send `number` to `process` (started with `own_console`): a signal; on Windows
+    `signal.CTRL_BREAK_EVENT`, the one console event a process group of its own receives."""
+    if sys.platform != "win32":
+        process.send_signal(number)
+        return
+    if number != signal.CTRL_BREAK_EVENT:
+        raise AssertionError(f"Windows: a server is stopped with Ctrl+Break, not {number}")
+    _ctrl_break(process.pid)
+
+
+# Run in a helper with no console: it attaches to the server's console and sends Ctrl+Break to
+# the server's group, ignoring Ctrl+C itself (the event reaches only that group).
+_BREAK = """
+import ctypes, sys
+kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+pid = int(sys.argv[1])
+if not kernel.AttachConsole(pid):
+    sys.exit(f"AttachConsole({pid}): error {ctypes.get_last_error()}")
+kernel.SetConsoleCtrlHandler(None, True)
+if not kernel.GenerateConsoleCtrlEvent(1, pid):  # CTRL_BREAK_EVENT, to the group led by pid
+    sys.exit(f"GenerateConsoleCtrlEvent({pid}): error {ctypes.get_last_error()}")
+"""
+
+
+def _ctrl_break(pid: int) -> None:
+    """Ctrl+Break to the process group `pid` leads, on `pid`'s console. `GenerateConsoleCtrlEvent`
+    reaches only processes on the sender's console, so a helper started with none attaches to
+    `pid`'s and sends it from there."""
+    if sys.platform != "win32":
+        raise AssertionError("Windows only")
+    program, env = interpreter(dict(os.environ))
+    sent = subprocess.run(
+        [program, "-I", "-c", _BREAK, str(pid)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        creationflags=subprocess.DETACHED_PROCESS,
+    )
+    assert sent.returncode == 0, f"Ctrl+Break to {pid}: {sent.stderr.strip()}"
+
+
 def _alive_windows(pid: int) -> bool:
     if sys.platform != "win32":
         raise AssertionError("Windows only")
@@ -130,3 +190,15 @@ def _commands_windows() -> dict[int, list[str]]:
         if pid.strip().isdigit() and line_of_args:
             found[int(pid)] = [line_of_args]
     return found
+
+
+def first_line(process: "subprocess.Popen[str]") -> str:
+    """The first line `process` prints (a server's record or its banner). A process that ends
+    before it prints one fails the test with what it said on stderr, instead of letting the test
+    go on as if it were running."""
+    assert process.stdout is not None
+    line = process.stdout.readline()
+    if line:
+        return line
+    _, err = process.communicate(timeout=30)
+    raise AssertionError(f"the process ended ({process.returncode}) before it printed: {err}")

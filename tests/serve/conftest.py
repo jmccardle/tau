@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from harness import Harness
 from proctable import kill, with_argument
-from world import World
+from world import World, system_environ
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,8 @@ def served() -> Iterator[World]:
     )
     home = base / "h"
     home.mkdir()
-    world = World(home, home / ".tau", {"HOME": str(home)})
+    # The servers the tests start run in this environment (`tau serve -d` hands it on).
+    world = World(home, home / ".tau", {"HOME": str(home), **system_environ()})
     (home / "work").mkdir()
     try:
         yield world

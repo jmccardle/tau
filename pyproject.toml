@@ -52,6 +52,7 @@ tau = "tau.cli:main"
 dev = [
     "maturin>=1.15,<2",
     "pytest>=8",
+    "pytest-timeout>=2.3",  # a hung test fails with its stack instead of hanging the run
     # tests/tui/test_snapshots.py compares SVGs of Textual's own drawing, so the drawing is pinned
     "textual==8.2.8",
     "rich==15.0.0",

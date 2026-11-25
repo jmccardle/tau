@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from proctable import alive, interpreter, kill
+from proctable import alive, first_line, interpreter, kill, own_console, signal_to
 from world import Result, World, tau
 
 from tau import (
@@ -168,7 +168,7 @@ def test_a_record_whose_socket_does_not_answer_is_stale_and_replaced(home: World
     wait_gone(pid)
     assert (home.tau / "serve" / f"{OLD}.json").exists()
     fresh = record_of(serve(home, "-d", "--json", "--session", OLD))
-    assert fresh["started"] is True
+    assert fresh.get("started") is True, fresh
     assert fresh["pid"] != pid
 
 
@@ -388,9 +388,8 @@ def test_verbose_reports_the_start_on_stderr_and_set_is_checked(home: World) -> 
         home, "--json", "--verbose", "--set", "step_limit.limit=3", "--session", OLD
     )
     try:
-        assert server.stdout is not None
-        json.loads(server.stdout.readline())
-        server.send_signal(CLEAN_STOPS[0])
+        json.loads(first_line(server))
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
         assert server.stderr is not None
         report = server.stderr.read()
@@ -410,9 +409,8 @@ def test_a_server_starts_with_session_settings_and_says_what_the_config_lacks(
     home.user_config({**config, "load": {"deleted": True}})
     server = start_foreground(home, "--json", "--verbose", "--session", OLD)
     try:
-        assert server.stdout is not None
-        json.loads(server.stdout.readline())
-        server.send_signal(CLEAN_STOPS[0])
+        json.loads(first_line(server))
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
         assert server.stderr is not None
         report = server.stderr.read()
@@ -432,7 +430,7 @@ def start_foreground(world: World, *argv: str) -> subprocess.Popen[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        **own_console(),
     )
 
 
@@ -443,14 +441,13 @@ def test_a_foreground_server_serves_until_signalled_then_cleans_up_and_exits_0(
     existing(home)
     server = start_foreground(home, "--json", "--session", OLD)
     try:
-        assert server.stdout is not None
-        record = json.loads(server.stdout.readline())
+        record = json.loads(first_line(server))
         assert record["pid"] == server.pid
         assert record["log"] is None, "a foreground server has no log"
         assert (home.tau / "serve" / f"{OLD}.json").exists()
         welcome = asyncio.run(welcome_of(record))
         assert welcome.pid == server.pid  # type: ignore[attr-defined]
-        server.send_signal(stop)
+        signal_to(server, stop)
         assert server.wait(timeout=10) == 0
     finally:
         server.kill()
@@ -462,11 +459,10 @@ def test_a_foreground_server_names_itself_without_json(home: World) -> None:
     existing(home)
     server = start_foreground(home, "--session", OLD)
     try:
-        assert server.stdout is not None
-        line = server.stdout.readline()
+        line = first_line(server)
         where = "http://127.0.0.1:" if WINDOWS else str(home.tau / "serve" / OLD)
         assert line.startswith(f"serving {OLD} on {where}")
-        server.send_signal(CLEAN_STOPS[0])
+        signal_to(server, CLEAN_STOPS[0])
         assert server.wait(timeout=10) == 0
     finally:
         server.kill()
@@ -477,14 +473,20 @@ def test_a_second_server_for_a_held_session_fails_with_leased(home: World) -> No
     existing(home)
     first = start_foreground(home, "--json", "--session", OLD)
     try:
-        assert first.stdout is not None
-        first.stdout.readline()
-        second = serve(home, "--session", OLD)
-        assert second.code == 1
-        assert "in use by another process" in second.err
-        assert f"tau --fork {OLD}" in second.err
+        json.loads(first_line(first))  # it serves, so it holds the lease
+        # A process of its own, and bounded: a second server that is not refused would serve on.
+        second = start_foreground(home, "--session", OLD)
+        try:
+            out, err = second.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            second.kill()
+            second.communicate()
+            pytest.fail("the second server was not refused: it served the held session")
+        assert second.returncode == 1, out
+        assert "in use by another process" in err
+        assert f"tau --fork {OLD}" in err
     finally:
-        first.send_signal(CLEAN_STOPS[0])
+        signal_to(first, CLEAN_STOPS[0])
         first.communicate(timeout=10)
 
 

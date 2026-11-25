@@ -165,7 +165,9 @@ if ($installed -ne 0) {
     New-Item -ItemType Directory -Path $work | Out-Null
     Push-Location $work
     try {
-        $common = @('-m', 'pytest', '-p', 'no:cacheprovider', '-rfEs', '-m', 'not tokenizers')
+        # --timeout (pytest-timeout): a hung test ends the run with every thread's stack, well
+        # before the step's own timeout kills it with nothing said.
+        $common = @('-m', 'pytest', '-p', 'no:cacheprovider', '-rfEs', '-m', 'not tokenizers', '--timeout', '300')
         $serve = @((Join-Path $src 'tests\serve'), (Join-Path $src 'tests\cli\test_console_streams.py'), (Join-Path $src 'tests\cli\test_windows.py'))
         $null = Step 'pytest: serve and console' $py ($common + @('-v') + $serve) $null 1800
         if (-not $Quick) {
