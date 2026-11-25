@@ -272,7 +272,9 @@ async def test_a_second_stream_cannot_claim_an_id_there_is_no_resume(tmp_path: P
         claimed = await http.get(f"stream/{raw.id}", headers={"Authorization": f"Bearer {token}"})
         assert claimed.status_code == 409
         elsewhere = await http.get("ws", headers={"Authorization": f"Bearer {token}"})
-        assert elsewhere.status_code == 404
+        assert elsewhere.headers["content-type"] == "text/html; charset=utf-8", (
+            "no other wire: a path without an extension is the web client's own route"
+        )
         wrong = await http.post("stream", headers={"Authorization": f"Bearer {token}"})
         assert wrong.status_code == 405
     await raw.hello()  # the first stream is untouched

@@ -437,25 +437,41 @@ def test_an_installed_tau_web_is_served(home: World) -> None:
 
 
 def without_tau_web(world: World) -> World:
-    """`world` where `tau_web` is a plain module, not the package: as good as not installed."""
+    """`world` where `tau_web` is a plain module, not the package: as good as not installed, to a
+    process that reads `PYTHONPATH`."""
     shadow = world.home / "shadow"
     shadow.mkdir()
     (shadow / "tau_web.py").write_text("", encoding="utf-8")
     return dataclasses.replace(world, environ={**world.environ, "PYTHONPATH": str(shadow)})
 
 
+def detached_process(world: World, *argv: str, isolated: bool = False) -> Result:
+    """`tau serve -d --json` for OLD as its own process (`python -I` if `isolated`), so that the
+    parent, too, reads `world`'s environment."""
+    command = [sys.executable, *(["-I"] if isolated else []), "-m", "tau", "serve", "-d", "--json"]
+    done = subprocess.run(
+        [*command, "--session", OLD, "--no-unix", *argv],
+        cwd=work(world),
+        env=world.environ,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return Result(done.returncode, done.stdout, done.stderr)
+
+
 def test_without_tau_web_the_server_says_the_install_is_broken_and_serves_the_wire(
     home: World,
 ) -> None:
-    broken = without_tau_web(home)
-    result = serve(broken, "-d", "--json", "--session", OLD, "--no-unix")
+    result = detached_process(without_tau_web(home))
     assert result.code == 0, result.err
     assert "web client is not installed" in result.err
     assert "this install is broken" in result.err
     record = json.loads(result.out)
     page = httpx.get(str(record["url"]), trust_env=False, timeout=5)
     assert page.status_code == 200
-    assert "web client is not installed" in page.text
+    assert "This install of τ is broken" in page.text
     assert "ffwf-tau-web" in page.text
     assert str(record["token"]) not in page.text
     assert asyncio.run(welcome_over_http(record)) is not None, "the wire is served all the same"
@@ -463,7 +479,7 @@ def test_without_tau_web_the_server_says_the_install_is_broken_and_serves_the_wi
 
 
 def test_no_web_says_nothing_of_a_missing_client(home: World) -> None:
-    result = serve(without_tau_web(home), "-d", "--json", "--session", OLD, "--no-unix", "--no-web")
+    result = detached_process(without_tau_web(home), "--no-web")
     assert result.code == 0, result.err
     assert "not installed" not in result.err
     stop(home)
