@@ -114,13 +114,15 @@ says `"vision": true`). τ sends a tool's images in a `user` message after the t
 is the form llama.cpp, vLLM and OpenAI accept.
 
 Until a server bills it, an image is counted by its provider's published rule: on `anthropic` at
-most 4,784 tokens (one per 28-pixel patch, and Claude scales a larger image down to that), on
+most 4,805 tokens (one per 28-pixel patch, at most 4,784 because Claude scales a larger image down
+to that, plus 21 that Claude bills around each image in a tool result), on
 `gemini` at most 1,120 (Gemini 4 and 3) or 258 per 768-pixel tile (earlier models), whichever is
 more. `openai` speaks to many servers that count images differently, so there it is an estimate
 (28-pixel patches or OpenAI's 512-pixel tiles, whichever is more, with no cap), and the count's
 `why` says so. **`image_tokens`** (a positive integer) is the most one image costs on a model, as
-its server caps it (llama.cpp's `--image-max-tokens`, or a hosted model's documented figure); with
-it the estimate becomes that bound. A 4K screenshot is then not counted at 10k tokens on a model
+its server caps it (llama.cpp's `--image-max-tokens`, or a hosted model's documented figure; on `anthropic`
+the visual tokens, such as 1,568 for a standard-tier Claude, and the 21 is added); with it the
+estimate becomes that bound. A 4K screenshot is then not counted at 10k tokens on a model
 that sees it as 1k.
 
 - **`provider`** is `openai` (the default: any OpenAI-compatible chat API, such as llama.cpp,

@@ -4,7 +4,9 @@ provider, with the provider's published resize, and the model's `image_tokens` o
 The figures are the providers' published rules, read 2026-11-24:
 - Anthropic (platform.claude.com, "Vision" and "Coordinates and bounding boxes"): one token for each
   28-pixel patch; a larger image is scaled down to the tier's long edge and visual-token limit
-  (1,568 px and 1,568 tokens; 2,576 px and 4,784 tokens on Claude 4.7 and later).
+  (1,568 px and 1,568 tokens; 2,576 px and 4,784 tokens on Claude 4.7 and later). Not published,
+  measured with `count_tokens` on 2026-11-25 (`MEASURED`): an image in a tool result bills 21
+  tokens more than its patches (`ANTHROPIC_IMAGE_FRAME`), the first of a result with text.
 - Gemini (aistudio.google.com, "Media resolution" and "Tokens"): Gemini 4 and 3 at most 1,120 per
   image at the default and `high` resolution; earlier models 258 per 768-pixel tile, and 258 for
   an image at most 384 pixels a side.
@@ -42,7 +44,7 @@ SIZES = [(1, 1), (1024, 768), (1920, 1080), (3840, 2160), (8000, 100), (100, 800
 
 # Each provider's figure for each of SIZES, in that order.
 EXPECTED = {
-    "anthropic": [1, 1036, 2691, 4784, 1144, 1144, 4784],
+    "anthropic": [22, 1057, 2712, 4805, 1165, 1165, 4805],
     "gemini": [1120, 1120, 1548, 3870, 2838, 2838, 31218],
     "openai": [255, 1036, 2691, 10764, 1144, 1144, 81796],
 }
@@ -56,7 +58,7 @@ def test_each_provider_counts_the_published_sizes(provider: str) -> None:
 
 def test_a_4k_screenshot_is_capped_by_the_providers_that_publish_a_cap() -> None:
     """The bug of TC-05: 3840x2160 was 10,764 for every model, before any resize."""
-    assert ImageRule("anthropic").tokens(3840, 2160) == 4784
+    assert ImageRule("anthropic").tokens(3840, 2160) == 4784 + 21
     assert ImageRule("gemini").tokens(3840, 2160) == 3870
     assert ImageRule("openai").tokens(3840, 2160) == 10764, "no cap holds for every server"
 
@@ -97,14 +99,36 @@ def test_the_claude_ceiling_is_never_under_either_tiers_real_cost(width: int, he
     most = ImageRule("anthropic").tokens(width, height)
     for edge, budget in TIERS:
         w, h = _claude_resized(width, height, edge, budget)
-        assert math.ceil(w / 28) * math.ceil(h / 28) <= most, (edge, w, h)
+        assert math.ceil(w / 28) * math.ceil(h / 28) + 21 <= most, (edge, w, h)
+
+
+MEASURED = {
+    # Messages `count_tokens`, 2026-11-25, on claude-haiku-4-5, claude-sonnet-4-6 (standard tier),
+    # claude-opus-4-7 and claude-opus-5-5 (high tier): what one PNG of (width, height) added to a
+    # `tool_result` whose content was the text "Swatch S-1, as an image:" (tau's form: the text,
+    # then the images). The same on all four models where the tiers agree.
+    (1, 1): 22,
+    (64, 64): 30,  # also the recorded tests/fixtures/providers/anthropic/tool-image: 810 vs 780
+    (1000, 1000): 1317,
+}
+MEASURED_HIGH_TIER = {(3840, 2160): 4805}  # opus-5-5; the standard tier billed 1,581 (1,560 + 21)
+# Each image after the first in one result billed its patches + 13 (64x64: 22), and an image in a
+# user message its patches + 3 (64x64: 12, the recorded anthropic/user-image: 30 vs 18).
+
+
+@pytest.mark.parametrize(("size", "cost"), [*MEASURED.items(), *MEASURED_HIGH_TIER.items()])
+def test_the_claude_ceiling_is_never_under_a_measured_cost(
+    size: tuple[int, int], cost: int
+) -> None:
+    """The first image of a result is billed exactly the ceiling; later ones 8 less."""
+    assert ImageRule("anthropic").tokens(*size) == cost
 
 
 def test_the_published_examples_of_the_claude_tiers() -> None:
     """The Vision page's table: 1920x1080 is 1,560 on the standard tier and 2,691 on the high one;
     3840x2160 is 1,560 and 4,784. The ceiling is the high tier's, since it holds for both."""
     assert _claude_resized(1920, 1080, 1568, 1568) == (1456, 819)
-    assert ImageRule("anthropic").tokens(1920, 1080) == 2691
+    assert ImageRule("anthropic").tokens(1920, 1080) == 2691 + 21
     assert _claude_resized(3840, 2160, 2576, 4784) == (2576, 1449)
 
 
@@ -126,8 +150,8 @@ def test_which_rules_are_bounds() -> None:
 def test_a_models_image_tokens_caps_its_providers_rule() -> None:
     assert ImageRule("openai", 1024).tokens(1, 1) == 1024, "the cap is the most, for any size"
     assert ImageRule("openai", 1024).tokens(3840, 2160) == 1024
-    assert ImageRule("anthropic", 1568).tokens(3840, 2160) == 1568, "a standard-tier Claude"
-    assert ImageRule("anthropic", 1568).tokens(28, 28) == 1, "under the cap: the patches"
+    assert ImageRule("anthropic", 1568).tokens(3840, 2160) == 1568 + 21, "a standard-tier Claude"
+    assert ImageRule("anthropic", 1568).tokens(28, 28) == 1 + 21, "under the cap: the patches"
     assert ImageRule("gemini", 5000).tokens(3840, 2160) == 3870
 
 
@@ -197,7 +221,7 @@ async def _count_shot(tmp_path: Path, provider: str, **model: object) -> tuple[i
 @scenario
 async def test_a_4k_screenshot_on_claude_counts_at_most_the_high_tiers_cap(tmp_path: Path) -> None:
     image, count = await _count_shot(tmp_path, "anthropic")
-    assert image == 4784
+    assert image == 4784 + 21
     assert count.why is None
 
 

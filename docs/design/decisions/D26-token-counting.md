@@ -443,15 +443,40 @@ it with a lock file, re-read, add, write-to-temp and rename, at mode 600.
   formulas, not tokenizers, so they will belong to core's meter when image parts land.
   **As built (TC-05, 2026-11-24):** the meter counts an image by its model's `ImageRule` (the
   model's `provider` and its `image_tokens` key), from the providers' pages as read that day.
-  `anthropic`: `min(⌈w/28⌉·⌈h/28⌉, 4784)`, a bound for both tiers without reading the model's name
-  (Anthropic's reference resize lowers patches only; tested against it). `gemini`:
+  `anthropic`: `min(⌈w/28⌉·⌈h/28⌉, 4784) + 21`, a bound for both tiers without reading the model's
+  name (Anthropic's reference resize lowers patches only; tested against it). The `+ 21` is not
+  published; see *Claude's image frame* below. `gemini`:
   `max(1120, 258·⌈w/768⌉·⌈h/768⌉)` (258 at most 384 px a side), 1,120 being Gemini 4 and 3's most at
   the default and `high` `mediaResolution` (`ultra_high` is per part, which τ never sets) and the
   tiles Gemini 2.5's rule. `openai` and any other provider: the old `max(⌈w/28⌉·⌈h/28⌉,
   85 + 170·tiles)`, labelled an estimate in `why`, since one adapter serves GPT-4o mini (2,833 +
   5,667 per tile), patch-billed models with multipliers up to 2.46, and local models with their
   own caps; a model's `image_tokens` turns it into a bound. A 3840x2160 screenshot: 10,764 before;
-  4,784 on Claude, 3,870 on Gemini, 10,764 (estimate) on `openai` unless `image_tokens` is set.
+  4,805 on Claude, 3,870 on Gemini, 10,764 (estimate) on `openai` unless `image_tokens` is set.
+
+  **Claude's image frame (2026-11-25).** The Vision page's rule (one visual token per 28-pixel
+  patch after the resize) is what an image's pixels cost, not what a request with it is billed.
+  The hosted fixtures showed it first: the recorded `anthropic/user-image` 64×64 PNG is billed 12
+  (`count_tokens`: 30 with it, 18 without), the rule says 9. Measured with `count_tokens` on
+  `claude-haiku-4-5`, `claude-sonnet-4-6` (standard tier), `claude-opus-4-7` and `claude-opus-5-5`
+  (high tier), PNGs from 1×1 to 3840×2160, the four models agree to the token:
+
+  | where the image is | billed per image |
+  |---|---|
+  | a user message | resized patches + 3 |
+  | a `tool_result`, each image | resized patches + 13 |
+  | a `tool_result` with images, its text block | 8 more than the same text alone |
+
+  τ sends images only in tool results (`_tool_result`: the text if any, then the images), so an
+  image's ceiling is its capped patches plus `ANTHROPIC_IMAGE_FRAME` = 13 + 8 = 21. The first image
+  of a result with text costs exactly that; each later one 8 less; with no text, 8 less too.
+  Checked against both recorded Anthropic images: `tool-image` (64×64 in a tool result, re-counted
+  from the recorded request: 810 with it, 780 without, so 30; ceiling 9 + 21 = 30, margin 0, with
+  the node's 16 and the text's bytes on top) and `user-image` (64×64 in a user message, 12;
+  ceiling 30, margin 18). The cap and the frame stay apart: a model's `image_tokens` on
+  `anthropic` caps the visual tokens (1,568 for a standard-tier model) and the frame is added
+  after it. Anthropic does not publish the frame, so it can change without notice; a fixture that
+  records an image re-checks it (`test_no_proved_span_costs_more_than_its_ceilings`).
 
 **7.4 Tokenizer identity and fingerprinting.**
 
@@ -1060,7 +1085,8 @@ looked at; a Gemini window of 1,048,576 cannot fit in a free tier's 250,000 a mi
   fixture test counts images by TC-05's rules for that reason. The same image costs 12 tokens on
   Anthropic (`count_tokens`, 30 with it, 18 without), where TC-05's Anthropic rule gives
   `⌈64/28⌉² = 9`: **a small image costs a few tokens more than the patch formula** (the node's
-  16 absorbs it here, not in general); 12 on Mistral and 11 on llama.cpp, where the old formula's
+  16 absorbs it here, not in general; TC-05's rule now adds Claude's 21-token image frame, §7.3);
+  12 on Mistral and 11 on llama.cpp, where the old formula's
   255 is loose but safe.
 - **Anthropic's `cache` proof as §3.1 states it never fires.** Each request bills a few tokens
   after its last block, outside the cache (10 here, with tools and thinking), so `cached(n+1)`

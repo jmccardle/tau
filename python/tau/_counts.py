@@ -91,8 +91,15 @@ def ceiling_of(body: Body, images: "ImageRule") -> Count:
 
 
 ANTHROPIC_IMAGE_TOKENS = 4784
-"""The most one image costs on any Claude model: the high-resolution tier's visual-token limit
+"""The most visual tokens one image costs on any Claude model: the high-resolution tier's limit
 (Claude 4.7 and later; 1,568 on the standard tier). Claude resizes a larger image to fit it."""
+ANTHROPIC_IMAGE_FRAME = 21
+"""What Claude bills for an image in a tool result beyond its visual tokens, which the published
+rule leaves out. `count_tokens` (2026-11-25; Haiku 4.5, Sonnet 4.6, Opus 4.7 and 5.5 alike, 1x1 to
+3840x2160) bills every image its resized patches plus 3 in a user message, plus 13 in a
+`tool_result`, and a `tool_result` that holds images also bills its text block 8 more than as
+plain text. τ sends images only in tool results, as one text block (if any) and then the images,
+so 13 + 8 bounds every image: the first of a result costs exactly that (D26 section 7.3)."""
 GEMINI_IMAGE_TOKENS = 1120
 """The most one image costs on Gemini 4 and 3 at any `mediaResolution` a request can set for all
 its parts (`high`, and the default); `ultra_high` (2,240) is set per part, which τ never does."""
@@ -111,7 +118,9 @@ class ImageRule:
     it is for `anthropic` and `gemini`, whose published resizes cap every model they serve, and
     for any model with a `cap`. Anything else (`openai`, which speaks to OpenAI and to every
     OpenAI-compatible server, and a provider tau does not know) gets an estimate from the published
-    formulas, which a server that tiles or caps differently can exceed."""
+    formulas, which a server that tiles or caps differently can exceed. On `anthropic` the `cap`
+    caps the visual tokens (the tier's published limit, 1,568 on the standard tier), and the
+    image's `ANTHROPIC_IMAGE_FRAME` is added after it."""
 
     provider: str
     cap: int | None = None
@@ -125,8 +134,8 @@ class ImageRule:
         """What one image of `width` by `height` pixels costs at most (or, where not `bound`, is
         estimated to cost)."""
         if self.provider == "anthropic":
-            most = anthropic_image_tokens(width, height)
-        elif self.provider == "gemini":
+            return anthropic_image_tokens(width, height, self.cap)
+        if self.provider == "gemini":
             most = gemini_image_tokens(width, height)
         elif self.cap is not None:
             return self.cap
@@ -144,11 +153,13 @@ def _patches(width: int, height: int, side: int) -> int:
     return math.ceil(width / side) * math.ceil(height / side)
 
 
-def anthropic_image_tokens(width: int, height: int) -> int:
-    """The most an image costs on Claude: one token for each 28-pixel patch,
-    `ceil(w/28) * ceil(h/28)`, at most `ANTHROPIC_IMAGE_TOKENS` (a larger image is scaled down to
-    fit the tier's edge and token limits, which only lowers its patches)."""
-    return min(_patches(width, height, 28), ANTHROPIC_IMAGE_TOKENS)
+def anthropic_image_tokens(width: int, height: int, cap: int | None = None) -> int:
+    """The most an image costs on Claude: its visual tokens, one for each 28-pixel patch,
+    `ceil(w/28) * ceil(h/28)`, at most `ANTHROPIC_IMAGE_TOKENS` or the model's `cap` (its tier's
+    visual-token limit; a larger image is scaled down to fit the tier's edge and token limits,
+    which only lowers its patches), plus `ANTHROPIC_IMAGE_FRAME`."""
+    most = ANTHROPIC_IMAGE_TOKENS if cap is None else min(cap, ANTHROPIC_IMAGE_TOKENS)
+    return min(_patches(width, height, 28), most) + ANTHROPIC_IMAGE_FRAME
 
 
 def gemini_image_tokens(width: int, height: int) -> int:

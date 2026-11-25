@@ -1434,7 +1434,9 @@ own, so a cut never lands inside one. The newest reply's count is its `output`.
 How a model's images are counted until a server bills them. The rule is the model's `provider`
 setting (the adapter that sends the request; never a guess from the model's name) and its
 `image_tokens` (`cap`). `anthropic`: one token per 28-pixel patch, at most 4,784 (Claude's
-high-resolution tier; the standard tier's 1,568 is lower, so the higher holds for both). `gemini`:
+high-resolution tier; the standard tier's 1,568 is lower, so the higher holds for both), plus the
+21 tokens Claude bills around an image in a tool result (measured, not published; D26 section
+7.3), added after any `cap`. `gemini`:
 the larger of 1,120 (Gemini 4 and 3 at the default and `high` media resolution) and 258 per
 768-pixel tile (earlier models; 258 for an image at most 384 pixels a side). Those two are **bound**
 (an upper bound for every model they serve). Any other provider, `openai` included (one adapter for
