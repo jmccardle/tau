@@ -156,6 +156,59 @@ async def test_env_reaches_the_server_and_stderr_is_not_shown(
 
 
 @scenario
+async def test_stdout_that_is_not_json_is_skipped_and_kept_for_the_exit(tmp_path: Path) -> None:
+    """Servers print banners and stray log lines: such a line fails nothing, and when a server
+    exits it is what the exit names (it is usually the reason)."""
+    servers = [
+        stdio(tmp_path / "log", BANNER="Server v1 listening on stdio"),
+        stdio(tmp_path / "down", "down", STDOUT_EXIT="Error: cannot open the database"),
+    ]
+    noise, echo = calling("mcp__test__garbage"), calling("mcp__test__echo", {"text": "ok"})
+    h = await run(tmp_path, servers, noise, echo)
+    await h.send("go")
+    await h.settle()
+    results = [b.outcomes[0][1] for b in h.bodies() if isinstance(b, Body.Results)]
+    assert results == [Outcome.Ok("answered after the noise"), Outcome.Ok("ok")]
+    down = (
+        "MCP server down exited (status 2): [stdout] Error: cannot open the database; "
+        "τ starts without it"
+    )
+    assert [n.text for n in h.notice_events()] == [down]
+    await h.close()
+
+
+@scenario
+async def test_a_tool_that_cannot_be_offered_is_left_out_and_said(tmp_path: Path) -> None:
+    """No input schema, one that is not an object, or a name too long: that tool is left out,
+    with a warning naming it, when the server starts and when it lists its tools again."""
+    h = await run(
+        tmp_path,
+        [stdio(tmp_path / "log", BAD_TOOLS="1")],
+        calling("mcp__test__grow"),
+        calling("mcp__test__echo", {"text": "the rest work"}),
+    )
+    await h.send("go")
+    await h.settle()
+    offered = h.provider.requests[0].tool_names
+    assert "mcp__test__echo" in offered
+    assert not [n for n in offered if "schema" in n or "xxx" in n]
+    assert outcome_of(h) == Outcome.Ok("the rest work")
+    said = [n.text for n in h.notice_events() if n.level == "error"]
+    long = "mcp__test__" + "x" * 60
+    left_out = [
+        *(
+            f"MCP server test: its tool {name!r} has no input schema that is a JSON object "
+            "(inputSchema), so it is left out"
+            for name in ("no_schema", "odd_schema")
+        ),
+        f"MCP server test: its tool {'x' * 60!r} would be named {long!r}, 71 characters (the "
+        "limit is 64), so it is left out; give the server a shorter name",
+    ]
+    assert said == left_out * 2  # at the start, and when it listed its tools again
+    await h.close()
+
+
+@scenario
 async def test_a_server_that_fails_to_start_is_reported_and_the_rest_start(
     tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:

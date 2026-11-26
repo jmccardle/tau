@@ -4,6 +4,7 @@ the trust report and `tau ext list` say."""
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -260,3 +261,42 @@ def test_tau_p_goes_on_when_a_server_does_not_start_and_says_so(
     assert result.code == 0, result.err
     assert result.out == "mock: hi\n"
     assert "tau: MCP server down exited (status 2): no database; τ starts without it" in result.err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test server's signals")
+def test_a_stdio_server_gets_only_the_minimal_environment_and_its_env(
+    world: World, tmp_path: Path
+) -> None:
+    """A key in τ's environment reaches only the servers whose `env` names it: the others get
+    `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` (Windows: its own list), as the MCP SDK's
+    clients give."""
+    world.user_config({**MOCK, "load": {"mcp": True}})
+    server = Path(__file__).parents[1] / "mcp_server.py"
+    log = tmp_path / "log"
+    env = {"MCP_LOG": str(log), "GITHUB_TOKEN": "${TAU_CANARY_PASSED}"}
+    spec = {"command": sys.executable, "args": [str(server)], "env": env}
+    write(world.tau / "mcp.json", {"gh": spec})
+    environ = {
+        **world.environ,
+        "PATH": os.environ["PATH"],
+        "TAU_CANARY_SECRET": "must-not-leak",
+        "TAU_CANARY_PASSED": "passed-on-purpose",
+    }
+    done = subprocess.run(
+        [sys.executable, "-m", "tau", "-p", "--no-session", "/mcp"],
+        env=environ,
+        cwd=world.home,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith("gh (stdio: "), done.stdout
+    (started,) = [e for e in map(json.loads, log.read_text().splitlines()) if "started" in e]
+    got = started["environ"]
+    assert "TAU_CANARY_SECRET" not in got
+    assert "TAU_CANARY_PASSED" not in got  # passed only under the name `env` gives it
+    assert got["GITHUB_TOKEN"] == "passed-on-purpose"
+    assert got["PATH"] == os.environ["PATH"]
+    assert got["HOME"] == world.environ["HOME"]

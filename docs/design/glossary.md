@@ -1875,6 +1875,16 @@ tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name r
 answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
 process and its group, signalled through a pidfd where there is one.
 
+### inherited environment (of a stdio MCP server)
+`tau._mcp_process.INHERITED_ENVIRONMENT`, `environment` (private) · D24 section 12 · new (0.18)
+
+The variables of τ's environment a stdio MCP server's process gets: `HOME`, `LOGNAME`, `PATH`,
+`SHELL`, `TERM`, `USER` (Windows: `APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`,
+`PATHEXT`, `PROCESSOR_ARCHITECTURE`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`,
+`USERPROFILE`), the MCP Python SDK's `DEFAULT_INHERITED_ENV_VARS`; a value that is a shell function
+(`()…`) is not passed. The server's `env` goes over them, and is the only way any other variable,
+a key above all, reaches it.
+
 ### standing notice
 `Hub.stand`, `Hub.forget_standing` (private); `TreeHandle.tell` from a `start` · D24 section 12 (amends D32 §2, §4) · new (0.18)
 
