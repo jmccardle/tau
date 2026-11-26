@@ -1346,7 +1346,8 @@ authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argumen
 to `$N` (its words: whitespace splits, `"` groups, `'` is a character; a missing one is empty,
 `$$` is `$`) and appends the arguments after a blank line if it has no placeholder; a skill sends `<skill name="NAME" path="/abs/SKILL.md">`, the body, a line
 saying a relative path in it starts from the skill's directory (nothing in it is attached), then
-the arguments. The **skills list** is one `System` node, written at a session's
+the arguments. A file that cannot be used is skipped and named in `Skills.warnings` (one line each: the
+start prints them; D24 section 6); only a name two files claim stops the start. The **skills list** is one `System` node, written at a session's
 first step when a `read` tool is offered and `advertise` is on, naming each skill that is not
 `disable-model-invocation: true` with its description and path; it is then part of the prefix of
 the walk. Frontmatter is the YAML block mapping between `---` lines (quoted, folded and block
@@ -1360,12 +1361,35 @@ A **`PromptFile`** is one template or skill read: `kind`, `name`, `description`,
 **`Trusted.prompt_files`** maps `prompts/NAME.md` and `skills/NAME/SKILL.md` (paths under `.tau/`)
 to the bytes trust approved; they are what the project's `PromptFile`s are read from.
 **`_project_read`** holds what every read inside a project goes through: `TrustError`,
-`read_regular` (refuses symlinks and non-regular files), `read_prompt_files`, and `safe_text`
+`read_regular` (refuses symlinks and non-regular files, unless `follow=True`, which only
+`read_prompt_files` passes: prompt and skill files may be symlinks, and `prompt_links` says where
+each leads, for the trust report), `read_prompt_files`, and `safe_text`
 (moved out of `_trust.py`). **`_prompt_files`** holds `PromptFile`, how a file's bytes become one and
 `read_row`, which returns the prompts and every **`Problem`** (a message, and the command name the
-file would have had) at once, so the start, `tau trust` and a reload list everything wrong together.
+file would have had, and whether it is `fatal`: two files claim one name; any other is a warning and the
+file is skipped) at once, so the start, `tau trust` and a reload list everything wrong together.
 `Trusted.prompt_files` also holds the files that look like a template or skill in the wrong place
 (`prompt_candidates`), so they are pinned and are problems.
+
+### hooks (extension), command hook, hooks file
+`tau.CommandHooks` (`_command_hooks.py`; `_command_hooks_file.py` and `_command_hooks_run.py`), key `hooks`, no options, off by default · D34 · new
+
+The built-in extension that runs shell commands at τ's hook points, by the convention Claude Code,
+Codex and Gemini CLI share. A **command hook** is one such command: it is given an event as JSON on
+its standard input, and answers with its exit code (2 blocks, standard error is the reason) or a
+JSON object on its standard output. The **events** are Claude Code's names, mapped onto τ:
+`PreToolUse` is `pre_tool`, `PostToolUse` and `PostToolUseFailure` are `pre_result` (an `Ok` and an
+`Err` outcome), `UserPromptSubmit` is `pre_input` (a `Frontend`'s), `Stop` is `post_step` at the end
+of a person's turn, and `SessionStart` and `SessionEnd` are the extension's `start` and `stop`. The
+**hooks file** is `hooks.json` in `$TAU_HOME` and `.tau/hooks.json` of a trusted project (the
+`hooks` key of a Claude Code `settings.json`: matcher groups of `command` handlers with `timeout`
+and `onFailure`); the project's is pinned by trust (`Trusted.hooks_file`, the approved bytes) and is
+admin configuration, not an option a client can set (akb #643). A **failure** (it did not start,
+timed out, exited other than 0 and 2, or answered with what τ cannot honor) is an `error` notice
+naming the command, and at a gate (`pre_tool`, `pre_input`) also a block unless the handler's
+`onFailure` is `continue`. Anything Claude Code has that τ does not (events, handler types and
+keys, output fields) is refused or a failure naming it; nothing is dropped silently. Not available
+on Windows (`CommandHooksUnavailable`). `_trust_report` holds the text the trust report shows of the hooks file.
 
 ### rescan (an extension), stdin (a command parameter)
 `Skills.rescan`, `tau.commandline.STDIN` · D24 section 6 · new (8E-5)

@@ -59,6 +59,18 @@ class CallDraft
     def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None
     property id: str
     property tool: str
+class CommandHooks
+    name = NAME
+    @classmethod
+    def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
+    order: Mapping[str, int] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> None
+    async def post_step(self, cursor: Cursor, subject: Subject) -> None
+    async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+    async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
+    async def start(self, tree: TreeHandle) -> None
+    async def stop(self) -> None
 class Compaction
     def __init__(self) -> None
     async def compact(self, cursor: Cursor, focus: str = '') -> str
@@ -1337,6 +1349,7 @@ class Trusted
     config_text: str | None
     env_text: str | None
     extension_files: Mapping[str, bytes] | None
+    hooks_file: bytes | None = None
     def layer(self) -> LayerText | None
     mcp_files: Mapping[str, bytes]
     prompt_files: Mapping[str, bytes]

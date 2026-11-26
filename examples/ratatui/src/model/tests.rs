@@ -390,7 +390,10 @@ fn a_notice_is_shown_under_its_extension_and_coloured_by_its_level() {
 fn commands_are_replaced_whole_each_time_they_are_sent() {
     let mut model = Model::new(ME);
     assert!(model.commands().is_empty());
-    let form = |name: &str| serde_json::json!({"name": name, "description": "d", "extension": null, "schema": {}});
+    let form = |name: &str| {
+        serde_json::json!({"name": name, "description": "d", "extension": null, "yields": false,
+                           "schema": {}})
+    };
     let sent = |names: &[&str]| {
         event(&serde_json::json!({
             "kind": "Commands", "forms": names.iter().map(|n| form(n)).collect::<Vec<_>>()

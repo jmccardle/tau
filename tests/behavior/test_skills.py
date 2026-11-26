@@ -682,10 +682,14 @@ async def test_the_project_wins_over_the_home_and_tau_over_agents_over_claude(
     await h.close()
 
 
-def test_a_broken_foreign_skill_is_an_error_naming_its_file(world: World) -> None:
+def test_a_broken_foreign_skill_is_a_warning_naming_its_file(world: World) -> None:
     path = foreign(world.home, ".claude", "broken", "---\ndescription: 'unclosed\n---\nb")
-    with pytest.raises(ValueError, match=str(path)):
-        Skills.of(loaded(world))
+    foreign(world.home, ".claude", "fine", "---\ndescription: d\n---\nb")
+    found = Skills.of(loaded(world))
+    assert [p.name for p in found.prompts] == ["fine"]
+    (warning,) = found.warnings
+    assert str(path) in warning
+    assert "never closes" in warning
 
 
 def test_foreign_directories_hold_only_skills_so_other_files_there_are_not_misplaced(
@@ -696,16 +700,3 @@ def test_foreign_directories_hold_only_skills_so_other_files_there_are_not_mispl
     (world.home / ".claude" / "commands").mkdir()
     (world.home / ".claude" / "commands" / "x.md").write_text("x", encoding="utf-8")
     assert [p.name for p in Skills.of(loaded(world)).prompts] == ["fine"]
-
-
-def test_a_symlinked_claude_skills_directory_in_a_project_is_refused_by_trust(
-    world: World,
-) -> None:
-    root = world.project()
-    foreign(root, ".agents", "real", "---\ndescription: d\n---\nb")
-    (root / ".claude").mkdir()
-    (root / ".claude" / "skills").symlink_to(root / ".agents" / "skills")
-    result = tau(world, "trust", cwd=root)
-    assert result.code != 0
-    assert ".claude/skills" in result.err
-    assert "symlink" in result.err

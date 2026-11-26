@@ -383,6 +383,7 @@ class Trusted
     system_md: bytes | None
     prompt_files: Mapping[str, bytes]
     mcp_files: Mapping[str, bytes]
+    hooks_file: bytes | None = None
 ```
 
 A trusted project: its `root`, and the exact `.tau/config.json` and `.env` text that
@@ -394,7 +395,9 @@ reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.
 relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
 `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
 reads. `mcp_files` are the approved `.mcp.json` and `.tau/mcp.json` (path relative to the
-project, to bytes; only those that exist), which the mcp extension reads. Use `layer()`,
+project, to bytes; only those that exist), which the mcp extension reads.
+`hooks_file` is the bytes of `.tau/hooks.json` as approved (`None`: no such file), which the
+`hooks` extension runs. Use `layer()`,
 `read_models()` and `project_environment` rather than re-reading the files.
 
 ### Trusted.layer
