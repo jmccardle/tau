@@ -1411,9 +1411,11 @@ yield, so a template cannot take `/model` or `/name`.
 ### prefix (of a walk)
 D24 section 1 · new (8E-1)
 
-The root `Config` and the `System` nodes before the first other message. It holds the system
-prompt, the context files and the skills list, so it is also the prompt-cache prefix every
-cursor of a session shares.
+The root `Config` and the `System` nodes before the first other message, with any `Config` between
+them (a model chosen before the first message); it ends at the last of those `System` nodes. It
+holds the system prompt, the context files and the skills list, so it is also the prompt-cache
+prefix every cursor of a session shares. `/compact`, `/prune` and `/clear` hang their new line
+under its last node (`prefix_length`).
 
 ### line (a new line), new-line building
 `tau._lines` (private: `Planned`, `copy_of`, `prefix_length`, `write_line`, `characters`) · D24 sections 2, 9 · new (8E-3)
@@ -1477,20 +1479,21 @@ text. The first is the undo marker.
 
 ### undo marker, UndoMarker, return_to, reverses, priority (a marker's)
 `tau.UndoMarker` (`label`, `return_to`, `reverses`, `priority`, `extra`; `body()`, `of(body)`),
-`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`) · D33 §1 (CV-01) · new (0.18)
+`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`, `PRIORITY`) · D33 §1 (CV-01) · new (0.18)
 
 A `Custom` node of kind `undo` whose data is a JSON object: **`label`** (what was done, as a
 person names it), **`return_to`** (the node going back puts the cursor on), **`reverses`** (the
 kind of change, named by its owner: `compact`, `prune`, `clear`), **`priority`** (`move`, the
 default: a change to the tree that moving the cursor back reverses; any other name, by convention
-`file`, is the owner's to reverse), and the owner's own keys (`extra`). Written by the extension
+`file`, is the owner's to reverse; `PRIORITY` is its form: lower-case letters, digits, `_`, `-`),
+and the owner's own keys (`extra`). Written by the extension
 that made the change (its `by`). Never sent; decides nothing (core's `deciding` skips it), so a
 marker written mid-turn leaves the turn going on. `UndoMarker.of` is `None` for any other body
 and `ValueError` for malformed data. A copy on a new line marks the same change.
 
 ### Undo (extension), /undo, edit-last (the harness's)
 `tau._undo.Undo` (not exported; `shipped("undo")` in tests), key `undo`, command `/undo
-[priority] [at] [json]` · D33 §2 (EX-20) · new (0.18)
+[priority] [at] [format]` · D33 §2 (EX-20) · new (0.18)
 
 The built-in, default-on and removable, that walks back from the cursor's node to the nearest
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
@@ -1498,8 +1501,10 @@ undo marker of the priority asked (`move` unless given), or, for `move`, the las
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
 parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
 mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
-unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
-user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
+unless the cursor is on that node. Answers text, or with `format=json` `{from, to, marker, label,
+user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last. A priority
+with no marker on the walk is refused saying how the word was read (and which priorities the walk
+has markers of); a word that is not a priority, naming the form.
 
 ### reverse (an extension's undo hook), Cursor.reverse, REVERSE
 `Extension.reverse`, `Cursor.reverse(marker) -> bool`, `tau._protocols.REVERSE`, `reverser_of`,
@@ -1515,12 +1520,14 @@ build.
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
 
-The built-in, default-on and removable. **`/clear`**: under the last `System` node of the walk's
-prefix, a `Config` with the branch's folded settings (`folded`: model and options, each `Config`
-a delta) if they differ from the root's, then an undo marker (`/clear`); the cursor moves onto it
+The built-in, default-on and removable. **`/clear`**: under the last node of the walk's prefix,
+a `Config` with the branch's folded settings (`folded`: model and options, each `Config` a delta)
+if they differ from those folded along the prefix, then an undo marker (`/clear`); the cursor moves onto it
 and rests. One root, and the first request after it is byte for byte a new session's.
-**`/branch [label]`**: `open` a cursor at this one's node. **`/tree [at]`**: the tree as text
-(`tree_lines`, `describe_node`). **`/export [path] [thinking]`**: `to_markdown` of the walk. No
+**`/branch [label]`**: `open` a cursor at this one's node (a label a cursor has is refused).
+**`/tree [at]`**: the tree as text (`tree_lines`, a node summary per line). **`/export [path]
+[thinking]`**: `to_markdown` of the walk, without `tau export`'s header; an existing file is
+refused, a failed write is `CommandFailed`. No
 `/new`: a client's move.
 
 ### Count, Basis, ceiling
@@ -2399,8 +2406,8 @@ replaces 0.15's session sidebar and stream strip.
 Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
 message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
 busy cursor it asks first, because a go-to aborts the step. With `undo:undo` among the commands and
-the cursor at rest it runs the harness's `/undo` instead (D33 §5: `json=true`, `at` the viewed
-node), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
+the cursor at rest it runs the harness's `/undo` instead (D33 §5: `format=json`, `at` the viewed
+node; `run_undo`, which a typed `/undo` runs too), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
 an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
 editor.
 
@@ -3342,7 +3349,8 @@ a list item's `value` is the whole list text and its `label` the item; on a comm
 item's `label` is its own, else the unquoted value, and a command name is detailed with the first
 line of its description and its extension. The **node summary** is a node in one line, its kind
 and what it says first (`User · fix the parser…`, `Results · 2 calls`, `Config · model x`,
-`System`, `Custom · todo`): a `node` item's detail.
+`System`, `Custom · todo`, an undo marker `Custom · undo /clear`), cut at `DETAIL_WIDTH`: a
+`node` item's detail, and each line of `/tree`.
 
 ### commandline
 `tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new

@@ -30,10 +30,15 @@ def copy_of(node: Node) -> Planned:
 
 def prefix_length(walk: Sequence[Node]) -> int:
     """How many nodes at the start of `walk` are its prefix: the root `Config` and the `System`
-    nodes before the first other message (the prompt-cache prefix every cursor shares)."""
+    nodes before the first other message (the prompt-cache prefix every cursor shares), with any
+    `Config` between them (a model chosen before the first message). It ends at the last of those
+    `System` nodes, so a new line hung under its last node keeps all of them."""
     length = 1 if walk and isinstance(walk[0].body, Body.Config) else 0
-    while length < len(walk) and isinstance(walk[length].body, Body.System):
-        length += 1
+    for i, node in enumerate(walk):
+        if isinstance(node.body, Body.System):
+            length = i + 1
+        elif not isinstance(node.body, Body.Config):
+            break
     return length
 
 

@@ -9,7 +9,6 @@ a dialog; none changes the screen itself, `TauApp.view` does. A refusal (the ses
 the call, a connection lost) is a toast, never a crash.
 """
 
-import json
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,14 +27,11 @@ from tau._sessions import SessionInfo, is_leased, list_sessions
 from tau._user_config import UserConfig
 from tau.tui._choose import PickDialog
 from tau.tui._dialogs import ConfirmDialog
+from tau.tui._line import UNDO, run_undo
 from tau.tui._picker import SessionPicker
 from tau.tui._switch import Switch, session_holders
 from tau.tui._tree import TreeIntent, TreeScreen, read_nodes
 from tau.tui._view import SessionView
-
-UNDO = "undo:undo"
-"""The qualified name of the `undo` extension's `/undo` (D33), which Ctrl+Z calls when it is
-loaded."""
 
 
 class Mover(Protocol):
@@ -141,19 +137,10 @@ class Moves:
     async def _undo(self, cursor: int) -> None:
         """The harness's `/undo` on `cursor`, refused if the cursor moved since it was viewed:
         the message it gives back goes into the editor; a change it undid is a toast."""
-        app = self.app
-        args = {"json": True, "at": self._view(cursor).at}
         try:
-            result = await app.client.run(cursor, UNDO, args)
+            await run_undo(self.app, cursor, {"at": self._view(cursor).at})
         except CommandFailed as e:
-            app.toast(str(e), severity="warning")
-            return
-        assert result is not None
-        answer = json.loads(result)
-        if answer["user"] is not None:
-            app.restore_draft(answer["user"]["text"])
-        else:
-            app.toast(f"undid {answer['label']}", title="undo")
+            self.app.toast(str(e), severity="warning")
 
     async def _tree(self, cursor: int) -> None:
         """Ctrl+G: the tree screen, and the call it came back with, made on the cursor that was

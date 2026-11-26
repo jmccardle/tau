@@ -4,6 +4,7 @@
 `shipped(name)` does that, on an empty `TAU_HOME`, and returns a fresh instance each call.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -12,11 +13,19 @@ from tau import Extension, load_config, load_extensions
 _HOME = tempfile.TemporaryDirectory(prefix="tau-shipped-")
 
 
-def shipped(name: str) -> Extension:
-    """A fresh instance of the built-in extension `name`, as `load_extensions` builds it."""
+def shipped(name: str, cwd: Path | None = None) -> Extension:
+    """A fresh instance of the built-in extension `name`, as `load_extensions` builds it: in
+    `cwd`, if given, as a start in that working directory would (`session` writes `/export`'s
+    files there)."""
     home = Path(_HOME.name)
     loaded = load_config(home, {"HOME": str(home), "TAU_HOME": str(home)}, ask=None)
-    for extension in load_extensions(loaded, explicit=(name,), discover=False):
+    before = Path.cwd()
+    os.chdir(cwd or before)
+    try:
+        built = load_extensions(loaded, explicit=(name,), discover=False)
+    finally:
+        os.chdir(before)
+    for extension in built:
         if extension.name == name:
             return extension
     raise LookupError(f"no built-in extension is named {name!r}")

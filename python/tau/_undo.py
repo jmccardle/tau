@@ -21,13 +21,13 @@ going back never starts the model.
 Without this extension, markers are inert `Custom` nodes and nothing else changes.
 """
 
-from json import dumps
-from typing import Annotated
+import json
+from typing import Annotated, Literal
 
 from tau._commands import CommandFailed
 from tau._core import Author, Body, Node, NoSuchNode
 from tau._handles import Cursor
-from tau._markers import MOVE, UndoMarker
+from tau._markers import MOVE, PRIORITY, UndoMarker
 from tau._values import NodeId
 
 
@@ -44,6 +44,24 @@ def _target(walk: list[Node], priority: str) -> tuple[Node, UndoMarker | None] |
         if priority == MOVE and isinstance(node.body, Body.User) and node.parent is not None:
             return node, None
     return None
+
+
+def _nothing(walk: list[Node], priority: str) -> CommandFailed:
+    """Why `/undo <priority>` found nothing on `walk`, saying how the word was read: a word that
+    is no priority, or the priorities this branch does have markers of."""
+    if priority == MOVE:
+        return CommandFailed("nothing to undo on this branch")
+    if not PRIORITY.fullmatch(priority):
+        return CommandFailed(
+            f"{priority!r} is not a priority: one is lower-case letters, digits, _ and -"
+        )
+    markers = (UndoMarker.of(n.body) for n in walk)
+    marked = sorted({m.priority for m in markers if m is not None})
+    have = f", which has markers of priority {', '.join(marked)}" if marked else ""
+    return CommandFailed(
+        f"no undo marker of priority {priority!r} on this branch{have}; "
+        "a plain /undo follows move markers and your last message"
+    )
 
 
 def _refill(node: Node) -> str:
@@ -65,7 +83,7 @@ class Undo:
         cursor: Cursor,
         priority: Annotated[str, "which markers to follow (move: the tree's own changes)"] = MOVE,
         at: Annotated[NodeId | None, "refuse unless the cursor is on this node"] = None,
-        json: Annotated[bool, "answer as JSON: from, to, marker, label, user"] = False,
+        format: Annotated[Literal["text", "json"], "json: the same answer, for a program"] = "text",
     ) -> str:
         """Go back over the last change on this branch: /compact, /prune, /clear, or else your
         last message, which is given back to edit. The old line stays in the tree."""
@@ -74,10 +92,10 @@ class Undo:
             raise CommandFailed(
                 f"cursor {cursor.id} is at node {state.at}, not {at}: it moved; nothing undone"
             )
-        found = _target(cursor.walk(), priority)
+        walk = cursor.walk()
+        found = _target(walk, priority)
         if found is None:
-            what = "" if priority == MOVE else f" of priority {priority!r}"
-            raise CommandFailed(f"nothing to undo{what} on this branch")
+            raise _nothing(walk, priority)
         node, marker = found
         if marker is None:
             assert node.parent is not None
@@ -85,8 +103,8 @@ class Undo:
         else:
             to, label, user = await self._reverse(cursor, node, marker), marker.label, None
         cursor.move(to)
-        if json:
-            return dumps(
+        if format == "json":
+            return json.dumps(
                 {
                     "from": state.at,
                     "to": to,
