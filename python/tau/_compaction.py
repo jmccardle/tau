@@ -3,8 +3,9 @@
 When a branch nears its model's context window, the next sample is preceded by a summary: the
 older part of the branch (the **head**) becomes one `User` node, and the newest part (the
 **tail**, at most `keep` tokens unless the newest turn is bigger) is copied. They hang from the
-end of the prefix as a new line, and the cursor moves onto it. The old line stays in the tree.
-`/compact [focus]` does it now, with text the summary should keep in mind.
+end of the prefix as a new line, and the cursor moves onto it. The old line stays in the tree, and
+the new one ends in an undo marker (D33) that returns to it, so `/undo` goes back. `/compact
+[focus]` does it now, with text the summary should keep in mind.
 
 The summary is written by a **summarizer cursor**: a cursor opened at the branch's node, sent
 the summary prompt, and waited for. It shows in the tree and its reply is counted by `usage`; it
@@ -43,6 +44,7 @@ from tau._counts import (
 from tau._handles import Cursor, NodeHandle, Subject
 from tau._hook_order import GUARD
 from tau._lines import Planned, copy_of, prefix_length, write_line
+from tau._markers import UndoMarker
 from tau._protocols import CallDraft
 from tau._values import Model
 
@@ -224,6 +226,12 @@ def _text(reply: Node) -> str:
     if body.stop == Stop.Length:
         raise CompactionFailed("the summary was cut off at the model's output limit")
     return text
+
+
+def _marker(mode: Mode, at: int) -> UndoMarker:
+    """The undo marker a compaction asked for by `mode` ends its line in, back to `at` (D33)."""
+    label = "/compact" if mode == "manual" else f"automatic compaction ({mode} limit)"
+    return UndoMarker(label, at, "compact")
 
 
 def _turn_ended(node: Node) -> bool:
@@ -598,6 +606,7 @@ class Compaction:
         summary_at = len(planned) - 1
         kept = asked + body[start:]
         planned += [copy_of(n) for n in kept]
+        planned.append(Planned(_marker(mode, cursor.node().id).body()))
         ids = write_line(cursor, plan.walk[plan.prefix - 1].id, planned)
         cursor.move(ids[-1])
         self._futile.pop(cursor.id, None)

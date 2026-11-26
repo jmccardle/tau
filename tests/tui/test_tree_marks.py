@@ -101,9 +101,12 @@ async def test_the_detail_pane_says_where_a_node_came_from_and_p_goes_there(
         await h.run("prune")
         await h.settle()
         await open_tree(pilot, app)
-        tip = h.session.cursor(h.cursor).at
+        marker = h.session.cursor(h.cursor).at  # the pruned line ends in its undo marker (D33)
+        await until(pilot, lambda: highlighted(app).node.id == marker)
+        tip = h.session.tree.node(marker).parent
+        await pilot.press("up")
         await until(pilot, lambda: highlighted(app).node.id == tip)
-        source = h.session.tree.node(tip).derived_from
+        source = h.session.tree.node(tip or 0).derived_from
         assert source is not None
         text = detail(app)
         assert f"derived from node {source}\nwalk before: 8 nodes, ≤1.0k tokens\n" in text

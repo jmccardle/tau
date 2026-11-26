@@ -16,7 +16,8 @@ up to the next `User` node; the latest is turn N.
 The result is a new line built as compaction builds one: under the end of the prefix, with a copy
 of every node kept (`copied_from`) and a node computed here carrying `derived_from`; the cursor
 moves onto it, and the old line stays in the tree. A node is derived only if it differs from the
-one it replaces, so a conversation that has nothing to prune writes nothing.
+one it replaces, so a conversation that has nothing to prune writes nothing. The line ends in an
+undo marker (D33) that returns to where the cursor was, so `/undo` goes back to the old line.
 """
 
 import json
@@ -29,6 +30,7 @@ from tau._counts import NONE, Count, ImageRule, ceiling_of, image_rule, show
 from tau._handles import Cursor
 from tau._images import labels
 from tau._lines import Planned, copy_of, prefix_length, write_line
+from tau._markers import UndoMarker
 
 LONG = 200
 """A string argument longer than this many characters is pruned."""
@@ -246,8 +248,10 @@ class Prune:
         )
         if after.upper >= before.upper:
             return "nothing to prune: it would not be shorter"
-        last = write_line(cursor, walk[kept - 1].id, planned)[-1]
-        cursor.move(last)
+        marker = UndoMarker("/prune", walk[-1].id, "prune")
+        ids = write_line(cursor, walk[kept - 1].id, [*planned, Planned(marker.body())])
+        last = ids[-2]
+        cursor.move(ids[-1])
         return (
             f"pruned {show(before)} → {show(after)} tokens "
             f"(node {last}; the old line is still in the tree)"
