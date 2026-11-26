@@ -61,7 +61,7 @@ The convention is documented for clients and extensions in `docs/guide/conventio
 
 ### 2. `/undo` (EX-20)
 
-`/undo [priority] [at=NODE] [json=true]`, the built-in `undo`, default-on, removable.
+`/undo [priority] [at=NODE] [format=json]`, the built-in `undo`, default-on, removable.
 
 - It walks back from the cursor's node toward the root, to the first of: a marker whose priority
   is the one asked (`move` unless given); for `move` only, a `User` node (edit-last). The walk is
@@ -70,7 +70,10 @@ The convention is documented for clients and extensions in `docs/guide/conventio
 - **Priority.** `move` is a change to the tree alone, which moving the cursor back reverses
   (`/compact`, `/prune`, `/clear`), and edit-last is one too. Any other priority is followed only
   when asked for (`/undo file`), so a checkpoint written mid-turn never takes over edit-last, and
-  a plain `/undo` passes over it.
+  a plain `/undo` passes over it. Extensions name their own priorities, so any priority word is
+  read as one: a priority with no marker on the walk is refused saying how the word was read and
+  which priorities the walk does have markers of, and a word that is not a priority (lower-case
+  letters, digits, `_`, `-`) is refused naming that rule.
 - **The owner's reversal.** For a marker of any priority but `move`, the owner reverses what it
   marks before the cursor moves: `Cursor.reverse(marker)` calls the owning extension's `async def
   reverse(self, cursor, marker)` (§3). If the owner is not loaded, has no `reverse`, or the marker
@@ -93,10 +96,12 @@ The convention is documented for clients and extensions in `docs/guide/conventio
   at once in any case: the second is `Busy`.)
 - **The answer** is text for a line client: `undid /compact: back to node 41`, or for edit-last
   `back to node 12, before your message:` and the message, so a client with no editor to refill
-  still shows it. `json=true` answers `{"from", "to", "marker", "label", "user"}`, with `user`
+  still shows it. `format=json` answers `{"from", "to", "marker", "label", "user"}`, with `user`
   `{"node", "text"}` for edit-last (the node's `typed`, else its text) and `null` otherwise: what
   a client refills its editor with. A command's result is a string (D16 §2); a JSON form chosen by
-  an argument keeps that, and needs no wire change.
+  an argument keeps that, and needs no wire change. The argument is `format`, as `/usage`'s is
+  (CV-02): one idea, one spelling. With nothing to undo it answers `nothing to undo on this
+  branch`.
 
 Without `undo`, markers are inert `Custom` nodes, and nothing else changes.
 
@@ -126,31 +131,41 @@ The built-in `session`, default-on, removable. `/clear`, `/branch` and `/export`
 the cursor (`Busy` unless at rest) and halt their step if they leave it mid-turn (§2); `/tree`
 runs at once.
 
-- **`/clear`**: hang a new line under the last `System` node of the walk's prefix (the root
-  `Config` and its `System` nodes, `prefix_length`). If the branch's settings, folded along the
-  walk's `Config` nodes (each a delta, #640), differ from the root's, one `Config` with them comes
-  first (`model_config(model, extensions)`); then an undo marker (`/clear`, `clear`) that returns
+- **`/clear`**: hang a new line under the last node of the walk's prefix (`prefix_length`: the
+  root `Config` and the `System` nodes before the first message, with any `Config` among them, such
+  as a `/model` typed before the first message), where `/compact` and `/prune` hang theirs. If the
+  branch's settings, folded along the walk's `Config` nodes (each a delta, #640), differ from
+  those folded along the prefix, one `Config` with them comes first (`model_config(model, extensions)`); then an undo marker (`/clear`, `clear`) that returns
   to where the cursor was. The cursor moves onto the marker, auto-step off, and rests (the marker
   and the `Config` decide nothing; the `System` node decides `Wait`). One root; the system prompt
   is not repeated, so the first request after `/clear` is byte for byte the first request of a new
   session with the same settings, and a provider's prompt cache stays warm. A branch with nothing
   said writes nothing; a walk with no `System` node in its prefix (a detached root) is refused.
 - **`/branch [label]`**: open a new cursor on this cursor's node, and label it. This cursor stays.
+  A label a cursor already has (open or closed) is refused, naming that cursor, before anything is
+  opened: moving the label would leave that cursor unnamed.
 - **`/tree [at]`**: the session's tree as text for a line client (trusty, the web client's
-  command line): one line per node (`12 user: fix the parser`), a single child at the same indent,
-  the children of a node with several drawn as branches (`├─`, `└─`), each open cursor where it is
-  (`◀ 0 main`). `at` draws only the part below a node.
-- **`/export [path] [thinking]`**: the cursor's walk as Markdown, `tau export`'s format: the
-  answer, or written to `path` (relative to the session's working directory). A file that exists
-  is refused, never overwritten: a client's command does not clobber the server's files.
+  command line): one line per node, its id and its node summary (D32 §1, `12 User · fix the
+  parser`, an undo marker `9 Custom · undo /clear`), a single child at the same indent, the
+  children of a node with several drawn as branches (`├─`, `└─`), each open cursor where it is
+  (`◀ 0 main`; a closed cursor is not marked). `at` draws only the part below a node.
+- **`/export [path] [thinking]`**: the cursor's walk as Markdown, `tau export`'s format without
+  its header (title, id, `cwd`, node: `/export` has no session row to read them from): the
+  answer, or written to `path`. A relative `path` resolves against the session's working
+  directory; an absolute one, or one under `~` (the server's user's home), is taken as given: a
+  path follows the filesystem's rules, so where the server's user may write, `/export` writes. A
+  file that exists is refused, never overwritten: a client's command does not clobber the
+  server's files. A write that fails (no such directory, no permission) is refused as
+  `cannot write PATH: reason`.
 - **No `/new`** (ruling 3): a new session is a client's move (Ctrl+N in the TUI).
 
 ### 5. Clients
 
 - **The TUI.** Ctrl+Z on an empty editor, with `undo:undo` among the commands and the cursor at
-  rest, runs `/undo` with `json=true` and `at` set to the node it viewed: the message it gives
+  rest, runs `/undo` with `format=json` and `at` set to the node it viewed: the message it gives
   back goes into the editor, a change it undid is a toast (`undo: undid /clear`), a refusal a
-  warning toast. Without the extension, or on a busy cursor, Ctrl+Z is its own edit-last, as
+  warning toast. A typed `/undo` (without `format`) runs the same way, so it refills the editor
+  too. The transcript shows an undo marker by its label (`undo: /clear`). Without the extension, or on a busy cursor, Ctrl+Z is its own edit-last, as
   before. This is one-way composition (#640 SC-D3): a client move may call a harness command;
   the harness never calls a client.
 - **trusty and the web client** need nothing: a slash line goes to `run` as typed.

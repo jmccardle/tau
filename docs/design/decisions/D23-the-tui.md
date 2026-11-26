@@ -96,7 +96,7 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
   editor: 0.15's rollback, as a branch). New: Ctrl+O the session picker, Alt+Left/Right the
   previous or next cursor.
   *Amended by D33 (0.18): with the `undo` built-in loaded and the cursor at rest, Ctrl+Z runs the
-  harness's `/undo` (`json=true`, `at` the viewed node), which also goes back over `/compact`,
+  harness's `/undo` (`format=json`, `at` the viewed node), which also goes back over `/compact`,
   `/prune` and `/clear` and gives the message back for the editor; on a busy cursor it is this
   move. `/undo`, `/clear`, `/branch`, `/tree` and `/export` are slash commands from 0.18.*
 - **Notices** are toasts, and are kept in a list (`TauApp.toasts`; the palette that opens it is

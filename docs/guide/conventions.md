@@ -103,8 +103,9 @@ and the status bar says so: step to carry on.
 ### What `/undo` answers
 
 `/undo` answers text for a person (`undid /compact: back to node 41`; for the last message, `back
-to node 12, before your message:` and the message). With `json=true` it answers an object a client
-acts on:
+to node 12, before your message:` and the message; with nothing to go back over, `nothing to undo
+on this branch`). With `format=json` (`client.run(cursor, "undo", {"format": "json"})`, or `/undo
+format=json` typed) it answers an object a client acts on:
 
 ```json
 {"from": 44, "to": 12, "marker": null, "label": "your last message", "user": {"node": 13, "text": "fix the parser"}}
