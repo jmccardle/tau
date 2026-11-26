@@ -8,7 +8,7 @@ class Agents
         self,
         node: NodeHandle,
         task: Annotated[str, 'everything the agent needs: it sees none of this conversation'],
-        to: Annotated[str | None, 'an earlier agent to continue, such as agent:1'] = None,
+        to: Annotated[str | None, 'an earlier agent to continue, such as agent:0:1'] = None,
     ) -> str
     name = 'agents'
     options = Options
@@ -60,8 +60,6 @@ class CallDraft
     property id: str
     property tool: str
 class CommandHooks
-    @classmethod
-    def load(cls, loaded: LoadedConfig) -> 'CommandHooks'
     name = NAME
     @classmethod
     def of(cls, loaded: LoadedConfig) -> 'CommandHooks'

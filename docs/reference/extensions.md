@@ -37,7 +37,7 @@ async def agent(
     self,
     node: NodeHandle,
     task: Annotated[str, 'everything the agent needs: it sees none of this conversation'],
-    to: Annotated[str | None, 'an earlier agent to continue, such as agent:1'] = None,
+    to: Annotated[str | None, 'an earlier agent to continue, such as agent:0:1'] = None,
 ) -> str
 ```
 
@@ -349,16 +349,6 @@ def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
 
 The extension for the hooks files `loaded` can read: the user's, then the trusted
 project's approved bytes. `HookFileError` names every problem if a file cannot be used.
-
-### CommandHooks.load
-
-```python
-@classmethod
-def load(cls, loaded: LoadedConfig) -> 'CommandHooks'
-```
-
-`of`, for the extension loader: a file it cannot use, or a platform with no shell,
-stops the start naming why.
 
 ### CommandHooks.pre_input
 

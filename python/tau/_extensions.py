@@ -28,27 +28,20 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
-from tau._agents import Agents
-from tau._attachments import Attachments
-from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
-from tau._command_hooks import CommandHooks
+from tau._builtins import BUILTINS, OFF_BY_DEFAULT
+from tau._command_hooks import CommandHooksUnavailable
+from tau._command_hooks_file import HookFileError
 from tau._commands import assemble_commands
-from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
-from tau._extension_error import ExtensionLoadError
 from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
-from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
+from tau._prompt_files import SkillFileError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
-from tau._prune import Prune
-from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
-from tau._step_limit import StepLimit
-from tau._tokens import TokenCalls, Tokens
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -59,7 +52,6 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
-from tau._usage import Usage
 from tau._user_config import UserConfig
 
 SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
@@ -80,36 +72,22 @@ RETRY = "retry"
 it is switched on and off, and listed, like one."""
 
 
-def _skills(loaded: LoadedConfig) -> Skills:
-    """`Skills` for the files `loaded` reads; a file it cannot use stops the start."""
-    try:
-        return Skills.of(loaded)
-    except SkillFileError as e:
-        raise ExtensionLoadError(str(e)) from None
-
-
-_BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
-    Agents.name: lambda loaded: Agents(),
-    Attachments.name: lambda loaded: Attachments(Path.cwd()),
-    BaseTools.name: lambda loaded: BaseTools(),
-    Compaction.name: lambda loaded: Compaction(),
-    CommandHooks.name: CommandHooks.load,
-    Permissions.name: lambda loaded: Permissions(Path.cwd()),
-    Prune.name: lambda loaded: Prune(),
-    Skills.name: _skills,
-    StepLimit.name: lambda loaded: StepLimit(),
-    Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
-    TokenCalls.name: lambda loaded: TokenCalls(),
-    Usage.name: lambda loaded: Usage(),
-}
-OFF_BY_DEFAULT = frozenset({Agents.name, CommandHooks.name, TokenCalls.name})
-"""The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
-BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
+BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*BUILTINS, RETRY]))
 """The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
+
+
+class ExtensionLoadError(ImportError):
+    """One or more extension sources did not load: the message is every failure (what failed,
+    its source, the underlying error, and the command that gets past it), and `sources` their
+    `ExtensionSource` records. The first underlying exception is `__cause__`."""
+
+    def __init__(self, message: str, sources: Sequence["ExtensionSource"] = ()) -> None:
+        super().__init__(message)
+        self.sources = tuple(sources)
 
 
 @dataclass(frozen=True)
@@ -271,6 +249,15 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
     return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
+def _made(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> list[object]:
+    """The built-in `make` builds from `loaded`; a skill file or a hooks file it cannot use, or a
+    platform that has no shell for the hooks, stops the start."""
+    try:
+        return [make(loaded)]
+    except (SkillFileError, HookFileError, CommandHooksUnavailable) as e:
+        raise ExtensionLoadError(str(e)) from None
+
+
 def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
     made = [
         _Candidate(
@@ -279,9 +266,9 @@ def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
             "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            lambda m=make: [m(loaded)],
+            lambda m=make: _made(m, loaded),
         )
-        for key, make in _BUILTINS.items()
+        for key, make in BUILTINS.items()
     ]
     wrapper = _Candidate(
         RETRY,

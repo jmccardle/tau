@@ -124,8 +124,8 @@ from tau._events import (
     ThinkingDelta,
     ToolProgress,
 )
-from tau._extension_error import ExtensionLoadError
 from tau._extensions import (
+    ExtensionLoadError,
     ExtensionSource,
     SourceKind,
     SourceState,

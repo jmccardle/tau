@@ -47,7 +47,6 @@ from tau._command_hooks_file import (
 from tau._command_hooks_run import HookFailed, Verdict, interpret, run_command
 from tau._core import Author, Body, Draft, Ending, Node, Outcome, Part
 from tau._events import NoticeLevel
-from tau._extension_error import ExtensionLoadError
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._hook_order import GUARD, OBSERVE
 from tau._protocols import CallDraft
@@ -168,15 +167,6 @@ class CommandHooks:
                 path = str(root / ".tau" / FILE)
                 rules += parse_hooks(loaded.project.hooks_file.decode("utf-8"), path)
         return cls(rules, Path.cwd(), root)
-
-    @classmethod
-    def load(cls, loaded: LoadedConfig) -> "CommandHooks":
-        """`of`, for the extension loader: a file it cannot use, or a platform with no shell,
-        stops the start naming why."""
-        try:
-            return cls.of(loaded)
-        except (HookFileError, CommandHooksUnavailable) as e:
-            raise ExtensionLoadError(str(e)) from None
 
     # -- listing
 
