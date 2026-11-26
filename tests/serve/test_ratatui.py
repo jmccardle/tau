@@ -479,7 +479,8 @@ def test_a_cut_off_client_says_hello_again_and_reads_the_walk_again(
                 os.kill(screen.pid, signal.SIGCONT)
 
     asyncio.run(flood(1, "a notice", stopped=False))
-    screen.wait_for("a notice", on_screen=True)  # the status line holds the last notice
+    # the status line holds the last notice, under the extension that told it
+    screen.wait_for("[flood] a notice", on_screen=True)
     # While the client is stopped the server has more for it than its stream holds.
     asyncio.run(flood(400, "x" * 20000, stopped=True))
     deadline = time.monotonic() + 20

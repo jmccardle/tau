@@ -18,7 +18,7 @@ use crate::{
     images::Images,
     model::{Kind, Model, Row},
     transcript,
-    wire::{self, OpenQuestion},
+    wire::{self, NoticeLevel, OpenQuestion},
 };
 
 /// The question the keyboard is in, and how it is being answered.
@@ -311,10 +311,14 @@ fn status(screen: &Screen) -> Line<'static> {
     }
     if let Some(trouble) = model.trouble() {
         spans.push(Span::styled(format!(" | {trouble}"), style(Kind::Failure)));
-    } else if let Some(notice) = model.notices().last() {
+    } else if let Some((level, notice)) = model.notices().last() {
+        let colour = match level {
+            NoticeLevel::Error => Color::Red,
+            NoticeLevel::Info | NoticeLevel::Warning => Color::Yellow,
+        };
         spans.push(Span::styled(
             format!(" | {notice}"),
-            Style::new().fg(Color::Yellow),
+            Style::new().fg(colour),
         ));
     }
     Line::from(spans)

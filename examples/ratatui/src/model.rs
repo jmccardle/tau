@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::wire::{
-    Author, Body, CursorView, Ending, Event, Image, ItemData, Live, LiveDelta, Node, OpenQuestion,
-    Outcome, Part, Prose, Stop,
+    Author, Body, CursorView, Ending, Event, Form, Image, ItemData, Live, LiveDelta, Node,
+    NoticeLevel, OpenQuestion, Outcome, Part, Prose, Stop,
 };
 
 /// What the model now needs from the server.
@@ -145,7 +145,9 @@ pub struct Model {
     walk: Vec<u64>,
     fetching: Option<u64>,
     layer: Layer,
-    notices: VecDeque<String>,
+    notices: VecDeque<(NoticeLevel, String)>,
+    /// The command forms the server last sent (`Commands`), whole.
+    commands: Vec<Form>,
     lost: Option<String>,
     /// Whether thinking rows are folded: every one, and every one yet to come.
     thinking_folded: bool,
@@ -169,6 +171,7 @@ impl Model {
             fetching: None,
             layer: Layer::default(),
             notices: VecDeque::new(),
+            commands: Vec::new(),
             lost: None,
             thinking_folded: false,
             tools_folded: false,
@@ -262,12 +265,24 @@ impl Model {
     }
 
     /// The most recent notices, oldest first.
-    pub fn notices(&self) -> impl Iterator<Item = &String> {
-        self.notices.iter()
+    pub fn notices(&self) -> impl Iterator<Item = (NoticeLevel, &str)> {
+        self.notices
+            .iter()
+            .map(|(level, text)| (*level, text.as_str()))
+    }
+
+    /// The commands' forms, as of the last `Commands` event (empty before the first).
+    #[allow(dead_code)] // trusty asks `parse_line` per slash line; completion will read this
+    pub fn commands(&self) -> &[Form] {
+        &self.commands
     }
 
     pub fn notify(&mut self, text: impl Into<String>) {
-        self.notices.push_back(text.into());
+        self.notify_at(NoticeLevel::Info, text);
+    }
+
+    pub fn notify_at(&mut self, level: NoticeLevel, text: impl Into<String>) {
+        self.notices.push_back((level, text.into()));
         while self.notices.len() > NOTICES_KEPT {
             self.notices.pop_front();
         }
@@ -333,7 +348,15 @@ impl Model {
                 self.resync()
             }
             Event::Notice(notice) => {
-                self.notify(notice.text);
+                let text = match &notice.extension {
+                    Some(extension) => format!("[{extension}] {}", notice.text),
+                    None => notice.text,
+                };
+                self.notify_at(notice.level.unwrap_or(NoticeLevel::Info), text);
+                Vec::new()
+            }
+            Event::Commands(commands) => {
+                self.commands = commands.forms;
                 Vec::new()
             }
             Event::Live(live) => {
