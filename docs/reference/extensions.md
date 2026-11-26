@@ -1049,7 +1049,8 @@ class Skills
 
 The built-in extension `skills`: a command for each template and skill, and the skills list
 for the model (the module docstring). `prompts` are what `Skills.of` found; an extension made
-of `prompts` alone reads no files again.
+of `prompts` alone reads no files again. `warnings` say, one line each, which file `Skills.of`
+skipped and why.
 
 ### Skills.of
 
@@ -1058,8 +1059,8 @@ of `prompts` alone reads no files again.
 def of(cls, loaded: LoadedConfig) -> 'Skills'
 ```
 
-The extension for the files `loaded` can read. `SkillFileError`, naming every problem
-with a file, if any cannot be used.
+The extension for the files `loaded` can read. A file that cannot be used is skipped
+and named in `warnings`; `SkillFileError` if two files claim one name.
 
 ### Skills.rescan
 

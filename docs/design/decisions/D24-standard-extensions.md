@@ -283,6 +283,29 @@ refused, as `.tau/`'s are, when they are symlinks. For one name `.tau/skills` wi
 `.agents/skills`, which wins over `.claude/skills`, with no message (the same skill is often
 in both), and the project wins over the user, as before.
 
+**Amended in 0.18 (a file that cannot be loaded is a warning; symlinks).** (1) A template or skill
+file that cannot be used is **skipped with a warning**, never a start failure: frontmatter that does
+not parse, a name that is not a command's (letters, digits, `_`, `-`; and not `config`), no
+`description` (a skill) or no text (a template), not UTF-8, unreadable, or in the wrong place. It
+holds for every directory, `.tau/`'s and the project's `.agents` and `.claude` included. The
+warning names the file and why, and is printed on stderr at the start, as the start's other
+warnings are (`Started.warnings`; `tau config check` prints them too; a client that attaches later
+has no startup to hear, so there is no `Notice`: the commands list is where it sees what loaded).
+`tau trust` shows them under "Prompt and skill files tau cannot load" and approves the project all
+the same. The rest load. A file edited into an error while τ runs is still a command that says why
+when it is used. What still stops the start is a name two files claim (a template and a skill with
+one name in one directory): which one is meant is not ours to guess. (2) **Symlinks are followed
+in the prompt and skill files**: a `SKILL.md` or `NAME.md` that is a symlink, a skill directory
+that is one, and `.agents`, `.claude`, `skills` and `prompts` themselves (so
+`.claude/skills -> .agents/skills` works), to a target inside or outside the project. Trust pins
+the bytes it read through the link, so a changed target asks for `tau trust` again; its report
+names, under each file reached through a link, the resolved path the bytes came from. Still refused,
+as for any file in a project: a link that leads nowhere, a target that is not a regular file
+(a FIFO, a device, a directory where a file is wanted) or is over 1 MiB, a loop of links, and a
+symlinked `.tau/` itself. Everything else under `.tau/` (config, `.env`, `SYSTEM.md`,
+`extensions/`) refuses symlinks as before. The link is read as it is when trust reads it: the
+approval keeps no promise that a link keeps its target, only that the bytes are the ones approved.
+
 **Key and options.** `skills`, on by default. One option, `advertise` (default `true`): write the
 list for the model.
 

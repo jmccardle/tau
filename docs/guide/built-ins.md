@@ -204,7 +204,7 @@ bytes `/name` sends, not the bytes the model reads later. `--set skills.advertis
 
 A generated command gives way: when any other command has the name (`/model`, `/name`, an
 extension's), the bare `/NAME` is that command and the file is `/skills:NAME`, which always means
-the file. A file named `config` is a start error: `/config` is the built-in command.
+the file. A file named `config` is skipped with a warning: `/config` is the built-in command.
 
 `tau -p "/review main.rs"` prints the model's reply, after the command's own result if it has one,
 as `tau -p "review main.rs"` would.
@@ -217,21 +217,30 @@ as `tau -p "review main.rs"` would.
 | `$TAU_HOME/skills/NAME/SKILL.md` | a skill |
 | `.tau/prompts/NAME.md`, `.tau/skills/NAME/SKILL.md` in a trusted project | the same, for the project; for one name the project's wins |
 | `~/.agents/skills/NAME/SKILL.md`, `~/.claude/skills/NAME/SKILL.md` | a skill, so a skill written for Claude Code or another agent loads as it is |
-| `.agents/skills/NAME/SKILL.md`, `.claude/skills/NAME/SKILL.md` in a trusted project | the same, for the project, pinned by trust like `.tau/skills`; a symlink there is refused. For one name `.tau/skills` wins over `.agents/skills`, which wins over `.claude/skills` |
+| `.agents/skills/NAME/SKILL.md`, `.claude/skills/NAME/SKILL.md` in a trusted project | the same, for the project, pinned by trust like `.tau/skills`. For one name `.tau/skills` wins over `.agents/skills`, which wins over `.claude/skills` |
 
 For one name, **a project's file hides the user's**: if `.tau/prompts/review.md` and
 `$TAU_HOME/prompts/review.md` both exist in a trusted project, `/review` is the project's, and
 nothing says the user's was hidden. A project's skill hides a user's template of that name too.
 
-A name is ASCII letters, digits, `_` and `-`. A template and a skill with one name in one
-directory, a bad name, a file that is not UTF-8 and a skill without a description each stop the
-start with a message naming the file, because a command that quietly went missing would be harder
-to find. So does a file in the wrong place: `skills/pdf/skill.md` (the file is `SKILL.md`,
-in capitals), a flat `skills/pdf.md` (a skill is a directory), `skills/group/pdf/SKILL.md` (skills are not
-read from subdirectories), `prompts/sub/x.md` (templates are
-not read from subdirectories) and `prompts/x.MD` (`.md` in lower case). All the problems are listed
-at once, and `tau trust` refuses a project whose files have any, listing all of them.
-`tau ext disable skills` starts without them. A byte order mark at the start of a file is ignored.
+A name is ASCII letters, digits, `_` and `-`. A file τ cannot use is **skipped with a warning**
+that names the file and why, and τ starts without it: a bad name, a file that is not UTF-8 or
+cannot be read, a skill without a description, frontmatter that does not parse, or a file in the
+wrong place: `skills/pdf/skill.md` (the file is `SKILL.md`, in capitals), a flat `skills/pdf.md`
+(a skill is a directory), `skills/group/pdf/SKILL.md` (skills are not read from subdirectories),
+`prompts/sub/x.md` (templates are not read from subdirectories) and `prompts/x.MD` (`.md` in lower
+case). This holds for every directory, a trusted project's included, and the others still load. The
+warnings are printed on standard error at the start (and by `tau config check`), and `tau trust`
+lists them without refusing the project. Only a template and a skill with one name in one directory
+stop the start, since which one you meant is not for τ to guess.
+
+A skill, a template, or a directory between (`.claude/skills`, say) may be a **symlink**, so
+`.claude/skills -> .agents/skills` or a skill directory that links to a shared collection works,
+inside the project or out of it. What τ reads through the link is what `tau trust` pins, so a
+changed target asks for `tau trust` again, and the report names the path each linked file resolves
+to. A link that leads nowhere, to something that is not a regular file, or to a file over 1 MiB
+is refused, as any such file is.
+`tau ext disable skills` starts without any of them. A byte order mark at the start of a file is ignored.
 
 A file may begin with frontmatter, YAML `key: value` lines between two `---` lines. Read are
 `description`, `argument-hint`, `disable-model-invocation` (`true` or `false`) and `name` (which,

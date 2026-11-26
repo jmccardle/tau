@@ -11,7 +11,9 @@ no owner check on any file. What is used afterwards is the bytes that were appro
 The files are read once per `ensure_trusted` call. The report, the question,
 and the approval all work from those bytes; approval re-reads and refuses if
 they changed. Everything inside a project is read through one helper that
-refuses symlinks and anything not a regular file.
+refuses symlinks and anything not a regular file; the one exception is the prompt and skill
+files, which may be (or be in) symlinks, read through to the regular file they lead to, with the
+resolved path in the report: what is pinned is those bytes.
 """
 
 import contextlib
@@ -34,6 +36,7 @@ from tau._dotenv import DotenvError, parse_dotenv
 from tau._project_read import (
     FOREIGN_BASES,
     TrustError,
+    prompt_links,
     read_prompt_files,
     read_regular,
     refusal,
@@ -42,7 +45,7 @@ from tau._project_read import (
     shown,
     unless_io_fails,
 )
-from tau._prompt_files import problems_in
+from tau._prompt_files import problems_in, prompt_report
 from tau._providers import builtin_providers
 
 TAU_DIR = ".tau"
@@ -131,6 +134,7 @@ class _Seen:
     prompts: dict[str, bytes]
     prompts_sha: str
     tau_mode: int
+    prompt_targets: Mapping[str, Path]  # prompt key -> where its symlink leads (not pinned)
 
 
 # -- paths
@@ -351,6 +355,7 @@ class _Read(NamedTuple):
     extensions: dict[str, bytes] | None
     system: bytes | None
     prompts: dict[str, bytes]
+    targets: Mapping[str, Path]
 
     def digests(self) -> tuple[str, str, str, str, str]:
         return (
@@ -363,12 +368,14 @@ class _Read(NamedTuple):
 
 
 def _read_all(root: Path) -> _Read:
+    prompts = read_prompt_files(root / TAU_DIR)
     return _Read(
         read_regular(project_config_path(root)),
         read_regular(root / _ENV),
         _read_extensions(root),
         read_regular(root / TAU_DIR / SYSTEM_MD),
-        read_prompt_files(root / TAU_DIR),
+        prompts,
+        prompt_links(root / TAU_DIR, prompts),
     )
 
 
@@ -389,6 +396,7 @@ def _see(root: Path) -> _Seen:
         read.prompts,
         prompts_sha,
         stat.S_IMODE(info.st_mode),
+        read.targets,
     )
 
 
@@ -548,7 +556,7 @@ def _errors(seen: _Seen, home: Path) -> list[str]:
             parse_dotenv(seen.env, shown(seen.root / _ENV))
         except DotenvError as e:
             errors.append(safe_text(str(e)))
-    return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR)]
+    return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR, fatal=True)]
 
 
 def _env_names(seen: _Seen) -> list[str]:
@@ -643,20 +651,6 @@ def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
     return lines
 
 
-_SHOWN_CHARS = 2000
-"""How much of one prompt or skill file the report shows."""
-
-
-def _prompt_text(raw: bytes) -> list[str]:
-    """The text of a prompt or skill file as report lines, cut at `_SHOWN_CHARS` characters, which
-    the last line says."""
-    text = raw.decode("utf-8", errors="replace")
-    lines = [f"    {line}" for line in safe_block(text[:_SHOWN_CHARS].rstrip()).split("\n")]
-    if len(text) > _SHOWN_CHARS:
-        lines.append(f"    ... cut: {len(text) - _SHOWN_CHARS} more characters not shown")
-    return lines
-
-
 def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
     """The files that will run with your authority by name and size, and the prompt and skill
     files, with the text of each that is new or changed since approval."""
@@ -668,12 +662,9 @@ def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
         lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
     if seen.prompts:
         before: Mapping[str, str] = {} if approval is None else approval.prompts
-        hashes = _file_hashes(seen.prompts)
-        lines += ["", "Its prompt templates and skills (text the model will read):"]
-        for path, raw in seen.prompts.items():
-            lines.append(safe_text(f"  {path}  {len(raw)} bytes"))
-            if before.get(path) != hashes[path]:
-                lines += _prompt_text(raw)
+        lines += prompt_report(
+            seen.prompts, seen.prompt_targets, before, _file_hashes(seen.prompts)
+        )
     return lines
 
 
@@ -694,6 +685,12 @@ def _assess(seen: _Seen, home: Path, approval: _Approval | None) -> _Assessment:
     if names := _env_names(seen):
         lines += ["", f"Its .env sets: {', '.join(names)}"]
     lines += _code_listing(seen, approval)
+    if skipped := problems_in(seen.prompts, seen.root / TAU_DIR, fatal=False):
+        lines += [
+            "",
+            "Prompt and skill files tau cannot load (skipped; it starts without them):",
+        ]
+        lines += [f"  {p}" for p in skipped]
     lines += ["", "Checks:", *_checks(seen)]
     if approval is not None and not errors:
         lines += ["", "Changes since approval:", *_changes(approval, seen)]
