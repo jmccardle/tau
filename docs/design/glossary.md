@@ -1959,8 +1959,9 @@ the branch and survives a reload). In it, `pre_sample` briefs the model once (a 
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
 and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
 (order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
-of read-only commands, that chains, redirects or substitutes, or whose arguments are not an object
-with a string `command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
+of read-only commands, that chains, redirects or substitutes, that has an argument in
+`REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string
+`command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
 `approve | revise | reject` (approve leaves the mode, writes the approval and turns auto-step on).
 What is read-only is in its *settings file*, not an option (a client's `/config` must not widen
 it). A guard, not a sandbox.

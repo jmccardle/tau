@@ -8,7 +8,9 @@ and the line "plan mode" every client is sent in `CursorView.shown` while it hol
 
 import asyncio
 import importlib.util
+import json
 import shutil
+import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -23,6 +25,7 @@ import tau
 from tau import (
     Agents,
     Author,
+    BashTool,
     Body,
     Client,
     CursorView,
@@ -526,4 +529,50 @@ async def test_a_copy_of_the_package_with_its_settings_edited_shadows_the_built_
     await h.settle()
     assert h.provider.requests[0].tool_names == ["read", "bash"], "grep is no longer offered"
     assert asked(await h.view()) == ["Approve this plan?"]
+    await h.close()
+
+
+def git_repo(path: Path) -> Path:
+    """A repository with one commit and a change, so `git diff` and `git log` have output."""
+    path.mkdir()
+    (path / "a").write_text("a\n", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "a"], ["commit", "-qm", "a"]):
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args]
+        subprocess.run(git, cwd=path, check=True)
+    (path / "a").write_text("a\nb\n", encoding="utf-8")
+    return path
+
+
+@scenario
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+async def test_an_argument_that_makes_a_read_only_command_write_is_refused(tmp_path: Path) -> None:
+    """`settings.REFUSED_ARGUMENTS`: `git diff --output=f` would write `f`, and `--ext-diff`
+    would run a configured program. The same commands without them still run."""
+    repo = git_repo(tmp_path / "repo")
+    refused = [
+        "git diff --output=zz",
+        "git diff --output zz",
+        "git log -p --output=zz",
+        "git diff '--output'=zz",
+        "git log -p --ext-diff",
+    ]
+    ran = ["git diff --stat", "git log -n 1 --oneline"]
+    calls = [
+        Part.Call(str(i), "bash", json.dumps({"command": c})) for i, c in enumerate(refused + ran)
+    ]
+    h = await started(
+        tmp_path,
+        [Reply(calls, Stop.Tools), say(PLAN)],
+        [BashTool(repo)],  # pyright: ignore[reportArgumentType]
+    )
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    results = h.bodies()[-2]
+    assert isinstance(results, Body.Results)
+    outcomes = [o for _, o, _ in results.outcomes]
+    assert outcomes[: len(refused)] == [Outcome.Err(REFUSED)] * len(refused)
+    assert all(isinstance(o, Outcome.Ok) for o in outcomes[len(refused) :]), outcomes
+    assert not (repo / "zz").exists(), "nothing was written"
     await h.close()

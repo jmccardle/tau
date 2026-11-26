@@ -796,8 +796,10 @@ none, it prints the plan and stops at the question (exit 3). `tau -p --answer pl
 the plan and changes nothing; `--answer plan_mode=approve` carries it out in the same run.
 
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
-back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
-not a sandbox: `git diff --output=f` writes a file. The lists of tools and commands are not
+back to a node from before `/plan` leaves it, and a second cursor is unaffected. A listed command
+with an argument that makes it write or run something (`git diff --output=f`, `git log
+--ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
+external diff or textconv program the repository's own config names. The lists of tools and commands are not
 options, because a `/config` from any client could widen them. They are in the extension's
 [settings file](extensions.md#options-or-settings), `settings.py`: to change them, copy the
 built-in's package to your extensions directory, where it shadows the built-in, and edit the

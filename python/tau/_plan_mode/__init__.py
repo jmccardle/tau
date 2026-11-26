@@ -10,7 +10,9 @@ and `go_to`, and `/config plan_mode mode=act` leaves it by hand). In plan mode:
 - a call to a tool it was not offered is refused by the driver (`tool not offered: write`); a
   `bash` call is checked against the command list (`pre_tool`), and one that chains, redirects or
   substitutes, or whose arguments are not an object with a string `command`, is refused with plan
-  mode's own sentence. This is a guard, not a sandbox (`git diff --output=f` writes). It runs
+  mode's own sentence, as is a listed command with an argument in `settings.REFUSED_ARGUMENTS`
+  (`git diff --output=f` would write `f`). This is a guard, not a sandbox: a plain `git diff`
+  still runs the external diff or textconv program a repository's own config names. It runs
   before `permissions`, so nobody is asked about a call plan mode refuses;
 - the line `plan mode` is shown on the cursor (`cursor.show`), so every client has the badge;
 - when a reply ends the plan (`Stop.End`), the person is asked to approve, revise or reject it.
@@ -26,6 +28,7 @@ package to `$TAU_HOME/extensions/plan_mode` (it shadows the built-in, D19) and e
 
 import json
 import re
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, ClassVar, Literal, cast
@@ -62,11 +65,22 @@ def _command(args_raw: str) -> str | None:
     return command if isinstance(command, str) else None
 
 
+def _refused_word(word: str) -> bool:
+    return any(word == a or word.startswith(a + "=") for a in settings.REFUSED_ARGUMENTS)
+
+
 def _allowed(command: str) -> bool:
-    """Whether `command` is one of `settings.READ_ONLY_COMMANDS`, with no shell syntax."""
+    """Whether `command` is one of `settings.READ_ONLY_COMMANDS`, with no shell syntax and no
+    word in `settings.REFUSED_ARGUMENTS` (read as the shell reads them: `'--output'=f` is one)."""
     command = command.strip()
     listed = (command == a or command.startswith(a + " ") for a in settings.READ_ONLY_COMMANDS)
-    return not SHELL_SYNTAX.search(command) and any(listed)
+    if SHELL_SYNTAX.search(command) or not any(listed):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:  # an unclosed quote: not a command we can read
+        return False
+    return not any(map(_refused_word, words))
 
 
 class PlanMode:
@@ -156,7 +170,7 @@ class PlanMode:
             return None
         command = _command(call.args_raw) if call.tool == "bash" else None
         if command is not None and _allowed(command):
-            return None  # not a sandbox: `git diff --output=f` writes. A guard, not a wall.
+            return None
         return f"plan mode: {call.tool} is refused. Put the change in your plan instead."
 
 
