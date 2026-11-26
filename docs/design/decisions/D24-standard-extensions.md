@@ -272,7 +272,16 @@ project wins over the user, by D19's nearest-row rule. A template and a skill wi
 one directory are a load error naming both. A name must obey the extension-name rule (letters,
 digits, `_`, `-`). Frontmatter is the YAML block mapping between `---` (`description`, `name`,
 `argument-hint`, `disable-model-invocation`), read by a small reader of that subset, with no YAML
-library (amended in 0.17.3: block scalars, folded and quoted values are read).
+library (amended in 0.17.3: block scalars, folded and quoted values are read). **Amended in
+0.18:** skills are also read from `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md`,
+where other agents keep theirs, in the user's home directory (`$HOME`, not `$TAU_HOME`) and in the
+trusted project, where trust pins them as it pins `.tau/skills` (D19 §4; their keys in
+`Trusted.prompt_files` start with `.agents` or `.claude` and are relative to the project, the others to
+`.tau/`, so no existing approval changes). Only `skills/NAME/SKILL.md` is read there: other files in
+those directories are other tools' and are not misplaced skills. The project's directories are
+refused, as `.tau/`'s are, when they are symlinks. For one name `.tau/skills` wins over
+`.agents/skills`, which wins over `.claude/skills`, with no message (the same skill is often
+in both), and the project wins over the user, as before.
 
 **Key and options.** `skills`, on by default. One option, `advertise` (default `true`): write the
 list for the model.

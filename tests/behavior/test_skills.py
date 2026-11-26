@@ -558,3 +558,154 @@ async def test_a_project_file_changed_since_it_was_trusted_is_not_used(
     await h.settle()
     assert users(h) == ["swapped text"]
     await h.close()
+
+
+# -- Claude Code skills, where Claude Code and other tools keep them (D24 section 6)
+
+CLAUDE_SKILL = """---
+name: pdf-tools
+description: >
+  Extract text and tables from PDF files, fill forms, and merge documents.
+  Use when the user mentions PDFs.
+allowed-tools:
+  - Read
+  - "Bash(pdftotext:*)"
+metadata: {author: "someone", tags: [a, b]}
+---
+# PDF tools
+
+Run `pdftotext` first.
+"""
+
+
+def foreign(base: Path, where: str, name: str, text: str) -> Path:
+    """`base/WHERE/skills/NAME/SKILL.md`, for WHERE `.claude` or `.agents`."""
+    path = base / where / "skills" / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+async def project_session(tmp_path: Path, world: World, root: Path) -> Harness:
+    return await Harness.create(
+        tmp_path,
+        provider=FakeProvider([DONE] * 2),
+        extensions=[Skills.of(loaded(world, root))],
+        tools=[FakeTool("read", "contents")],
+    )
+
+
+@scenario
+async def test_a_claude_code_skill_with_yaml_frontmatter_loads_as_it_is(
+    tmp_path: Path, world: World
+) -> None:
+    path = foreign(world.home, ".claude", "pdf-tools", CLAUDE_SKILL)
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([DONE] * 2),
+        extensions=[Skills.of(loaded(world))],
+        tools=[FakeTool("read", "contents")],
+    )
+    await h.send("hello")
+    await h.settle()
+    assert (
+        "<description>Extract text and tables from PDF files, fill forms, and merge documents. "
+        "Use when the user mentions PDFs.</description>" in prefix(h)[1]
+    )
+    await h.run("pdf-tools")
+    await h.settle()
+    assert users(h)[-1].startswith(f'<skill name="pdf-tools" path="{path}">\n# PDF tools\n')
+    await h.close()
+
+
+@scenario
+async def test_the_home_directorys_agents_and_claude_skills_are_commands_and_in_the_list(
+    tmp_path: Path, world: World
+) -> None:
+    claude = foreign(world.home, ".claude", "from-claude", "---\ndescription: c\n---\nb")
+    agents = foreign(world.home, ".agents", "from-agents", "---\ndescription: a\n---\nb")
+    h = await session(tmp_path, world, tools=True)
+    await h.send("hello")
+    await h.settle()
+    assert f"<path>{claude}</path>" in prefix(h)[1]
+    assert f"<path>{agents}</path>" in prefix(h)[1]
+    await h.run("from-agents")
+    await h.settle()
+    assert users(h)[-1].startswith(f'<skill name="from-agents" path="{agents}">')
+    await h.close()
+
+
+@scenario
+async def test_a_trusted_projects_agents_and_claude_skills_are_pinned_and_read(
+    tmp_path: Path, world: World
+) -> None:
+    root = world.project()
+    claude = foreign(root, ".claude", "pdf-tools", CLAUDE_SKILL)
+    agents = foreign(root, ".agents", "deploy", "---\ndescription: Deploy it\n---\nship")
+    trust(world, root)
+    h = await project_session(tmp_path, world, root)
+    await h.run("pdf-tools")
+    await h.settle()
+    await h.run("deploy")
+    await h.settle()
+    assert [u.split("\n")[0] for u in users(h)] == [
+        f'<skill name="pdf-tools" path="{claude}">',
+        f'<skill name="deploy" path="{agents}">',
+    ]
+    claude.write_text(CLAUDE_SKILL + "Now with a changed line.\n", encoding="utf-8")
+    with pytest.raises(CommandFailed, match="has changed since you approved it") as caught:
+        await h.run("pdf-tools")
+    assert "tau trust" in str(caught.value)
+    await h.close()
+
+
+@scenario
+async def test_the_project_wins_over_the_home_and_tau_over_agents_over_claude(
+    tmp_path: Path, world: World
+) -> None:
+    root = world.project()
+    foreign(world.home, ".claude", "x", "---\ndescription: home claude\n---\nhome")
+    foreign(root, ".claude", "x", "---\ndescription: d\n---\nproject claude")
+    foreign(root, ".claude", "y", "---\ndescription: d\n---\nclaude y")
+    foreign(root, ".agents", "y", "---\ndescription: d\n---\nagents y")
+    foreign(root, ".claude", "z", "---\ndescription: d\n---\nclaude z")
+    foreign(root, ".agents", "z", "---\ndescription: d\n---\nagents z")
+    own = root / ".tau" / "skills" / "z" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("---\ndescription: d\n---\ntau z", encoding="utf-8")
+    trust(world, root)
+    h = await project_session(tmp_path, world, root)
+    for name in ("x", "y", "z"):
+        await h.run(name)
+        await h.settle()
+    assert [u.split("\n")[1] for u in users(h)] == ["project claude", "agents y", "tau z"]
+    await h.close()
+
+
+def test_a_broken_foreign_skill_is_an_error_naming_its_file(world: World) -> None:
+    path = foreign(world.home, ".claude", "broken", "---\ndescription: 'unclosed\n---\nb")
+    with pytest.raises(ValueError, match=str(path)):
+        Skills.of(loaded(world))
+
+
+def test_foreign_directories_hold_only_skills_so_other_files_there_are_not_misplaced(
+    world: World,
+) -> None:
+    foreign(world.home, ".claude", "fine", "---\ndescription: d\n---\nb")
+    (world.home / ".claude" / "skills" / "notes.md").write_text("not a skill", encoding="utf-8")
+    (world.home / ".claude" / "commands").mkdir()
+    (world.home / ".claude" / "commands" / "x.md").write_text("x", encoding="utf-8")
+    assert [p.name for p in Skills.of(loaded(world)).prompts] == ["fine"]
+
+
+def test_a_symlinked_claude_skills_directory_in_a_project_is_refused_by_trust(
+    world: World,
+) -> None:
+    root = world.project()
+    foreign(root, ".agents", "real", "---\ndescription: d\n---\nb")
+    (root / ".claude").mkdir()
+    (root / ".claude" / "skills").symlink_to(root / ".agents" / "skills")
+    result = tau(world, "trust", cwd=root)
+    assert result.code != 0
+    assert ".claude/skills" in result.err
+    assert "symlink" in result.err
