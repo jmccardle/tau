@@ -607,7 +607,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`agents`, `attachments`, `base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit`, `tokens` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
+| built-in | inside τ (`agents`, `attachments`, `bash_guard`, `base_tools`, `compaction`, `permissions`, `plan_mode`, `prune`, `router`, `skills`, `step_limit`, `tokens` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |
@@ -681,8 +681,10 @@ Every failing source is reported at once.
 
 ## Where to look next
 
-- [`examples/speculative/`](../../examples/speculative/): seven larger extensions (plan mode, a
-  loop, a router, a bash guard...), each with a note on what it needed from τ.
+- [`examples/speculative/`](../../examples/speculative/): four larger extensions (a loop, a
+  game master, a tree search, an agent that inspects its harness), each with a note on what it
+  needed from τ. Plan mode, the router and the bash guard started there and are
+  [built-ins](built-ins.md) since 0.18.
 - [The reference for extensions](../reference/extensions.md): every handle method and its
   signature, from the docstrings.
 - [`docs/design/glossary.md`](../design/glossary.md), under "Hooks": the exact rules.
