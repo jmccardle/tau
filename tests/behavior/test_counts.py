@@ -13,6 +13,7 @@ from shipped import shipped
 
 from tau import (
     Basis,
+    Body,
     CommandFailed,
     Compaction,
     Count,
@@ -196,7 +197,16 @@ async def test_a_copy_that_holds_a_whole_lump_takes_its_originals_count(tmp_path
         await h.send(K)
         await h.settle()
     line = h.session.tree.walk(h.session.cursor(h.cursor).at)
-    assert [n.copied_from is not None for n in line] == [False, False, False, True, True, True]
+    assert [n.copied_from is not None for n in line] == [
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert isinstance(line[-1].body, Body.Custom), "the line ends in its undo marker (D33)"
     await h.run("probe")
     (counted,) = probe.counted
     copies = [n for n in line if n.copied_from is not None]

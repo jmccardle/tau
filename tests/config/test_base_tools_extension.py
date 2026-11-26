@@ -51,9 +51,11 @@ def test_it_loads_before_step_limit(world: World) -> None:
         "permissions",
         "plan_mode",
         "prune",
+        "session",
         "skills",
         "step_limit",
         "tokens",
+        "undo",
         "usage",
     ]
 
@@ -68,9 +70,11 @@ def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -
         "permissions",
         "plan_mode",
         "prune",
+        "session",
         "skills",
         "step_limit",
         "tokens",
+        "undo",
         "usage",
     ]
     found = row(world)
@@ -90,9 +94,11 @@ def test_no_extensions_leaves_it_on_and_load_false_still_turns_it_off(world: Wor
         "permissions",
         "plan_mode",
         "prune",
+        "session",
         "skills",
         "step_limit",
         "tokens",
+        "undo",
         "usage",
     ]
     assert row(world, "--no-extensions")["state"] == "on"

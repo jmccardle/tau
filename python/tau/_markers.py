@@ -1,0 +1,142 @@
+"""Undo markers (D33, CV-01): how a change to a cursor's line says where going back goes.
+
+An **undo marker** is a `Custom` node of kind `undo` whose data is a JSON object:
+
+    {"label": "/compact", "return_to": 41, "reverses": "compact", "priority": "move", ...}
+
+- `label`: what was done, as a person would name it (`/compact`, `/clear`, `edit of a.py`).
+- `return_to`: the node going back puts the cursor on: where it was before the change.
+- `reverses`: what kind of change it was, a short name its owner chooses (`compact`, `prune`,
+  `clear`, `checkpoint`).
+- `priority`: which `/undo` follows it. `move` (the default) is a change to the tree alone, which
+  moving the cursor back reverses; a plain `/undo` follows these, and edit-last. Any other value
+  (`file`, for a checkpoint of the working tree) is followed only by `/undo <priority>`, and only
+  if the extension that wrote it is loaded and reverses it itself (its `reverse`).
+- Any other key is the owner's own (a checkpoint's commit, say), kept as `extra`.
+
+The marker is written by the extension that made the change, so its `by` names the owner. It is a
+`Custom` node, so it is never sent to a model, and decides nothing: where a cursor rests is
+decided by the node before it. It is a convention over what the tree already holds, not a protocol
+change; a session without the `undo` extension keeps its markers as inert records.
+
+`Stays` is what the `undo` and `session` commands share: a command that runs as a step of its
+cursor and leaves it on a node where the step would carry on (a mid-turn node) halts that step in
+its own `pre_step`, so going back never starts the model.
+"""
+
+import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TYPE_CHECKING, cast
+
+from tau._core import Body, Next
+
+if TYPE_CHECKING:
+    from tau._handles import Cursor
+
+UNDO_KIND = "undo"
+"""The `kind` of every undo marker's `Custom` node."""
+MOVE = "move"
+"""The priority of a marker that moving the cursor back reverses: what a plain `/undo` follows."""
+FILE = "file"
+"""The priority, by convention, of a marker for a change outside the tree (a file checkpoint):
+followed only by `/undo file`, and reversed by the extension that wrote it."""
+_KEYS = ("label", "return_to", "reverses", "priority")
+_PRIORITY = re.compile(r"[a-z0-9_-]+")
+
+
+@dataclass(frozen=True)
+class UndoMarker:
+    """One undo marker (the module docstring): `label`, `return_to`, `reverses`, `priority`
+    (`MOVE` unless given) and `extra`, the owner's own keys. `ValueError` for an empty `label` or
+    `reverses`, a `return_to` that is not a node id, a `priority` other than lower-case letters,
+    digits, `_` and `-`, or an `extra` key that is one of the four."""
+
+    label: str
+    return_to: int
+    reverses: str
+    priority: str = "move"
+    extra: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        for name in ("label", "reverses"):
+            value: object = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"an undo marker's {name} is a non-empty string, not {value!r}")
+        if not isinstance(self.return_to, int) or isinstance(self.return_to, bool):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise ValueError(f"an undo marker's return_to is a node id, not {self.return_to!r}")
+        if self.return_to < 0:
+            raise ValueError(f"an undo marker's return_to is a node id, not {self.return_to}")
+        if not isinstance(self.priority, str) or not _PRIORITY.fullmatch(self.priority):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise ValueError(
+                f"an undo marker's priority is lower-case letters, digits, _ and -, not "
+                f"{self.priority!r}"
+            )
+        clash = sorted(set(self.extra) & set(_KEYS))
+        if clash:
+            raise ValueError(f"an undo marker's extra keys cannot be {clash}")
+        object.__setattr__(self, "extra", MappingProxyType(dict(self.extra)))
+
+    def body(self) -> Body:
+        """The marker as the `Custom` node body to write (`cursor.write(marker.body())`)."""
+        data = {
+            **self.extra,
+            "label": self.label,
+            "return_to": self.return_to,
+            "reverses": self.reverses,
+            "priority": self.priority,
+        }
+        return Body.Custom(UNDO_KIND, json.dumps(data, ensure_ascii=False))
+
+    @classmethod
+    def of(cls, body: Body) -> "UndoMarker | None":
+        """The marker `body` holds; `None` if it is not a `Custom` of kind `undo`. `ValueError`
+        naming the problem for one whose data is not a marker's (not a JSON object, a key
+        missing, a value of the wrong kind)."""
+        if not isinstance(body, Body.Custom) or body.kind != UNDO_KIND:
+            return None
+        try:
+            data: object = json.loads(body.data)
+        except ValueError as e:
+            raise ValueError(f"an undo marker's data is not JSON: {e}") from None
+        if not isinstance(data, dict):
+            raise ValueError(f"an undo marker's data is a JSON object, not {type(data).__name__}")
+        fields = cast("dict[str, object]", data)
+        missing = [k for k in ("label", "return_to", "reverses") if k not in fields]
+        if missing:
+            raise ValueError(f"an undo marker's data lacks {missing}")
+        return cls(
+            cast("str", fields["label"]),
+            cast("int", fields["return_to"]),
+            cast("str", fields["reverses"]),
+            cast("str", fields.get("priority", MOVE)),
+            {k: v for k, v in fields.items() if k not in _KEYS},
+        )
+
+
+class Stays:
+    """The cursors a command of this extension left on a node where its step would carry on:
+    `leave` records one, the extension's `pre_step` halts the step with `halt`, and its
+    `post_step` drops what an aborted step left (`forget`)."""
+
+    def __init__(self) -> None:
+        self._left: dict[int, str] = {}
+
+    def leave(self, cursor: "Cursor", what: str) -> None:
+        """`what` (`/undo`) has put `cursor` where it now is: if a step from there would sample
+        or run tools, the step that runs the command halts before it does."""
+        state = cursor.cursor(cursor.id)
+        if state.next != Next.Wait:
+            self._left[cursor.id] = (
+                f"{what} left the cursor at node {state.at}, mid-turn: step to carry on from there"
+            )
+
+    def halt(self, cursor: int) -> str | None:
+        """The reason the step of `cursor` stops now, if a command left it mid-turn."""
+        return self._left.pop(cursor, None)
+
+    def forget(self, cursor: int) -> None:
+        """The step of `cursor` ended: nothing it left applies to the next one."""
+        self._left.pop(cursor, None)

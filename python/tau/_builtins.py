@@ -20,10 +20,12 @@ from tau._plan_mode import PlanMode
 from tau._prune import Prune
 from tau._router import Router
 from tau._search import Search
+from tau._session_commands import SessionCommands
 from tau._skills import Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
 from tau._tokens import TokenCalls, Tokens
+from tau._undo import Undo
 from tau._usage import Usage
 
 BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
@@ -38,10 +40,12 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Prune.name: lambda loaded: Prune(),
     Router.name: lambda loaded: Router(),
     Search.name: lambda loaded: Search.configured(loaded.catalog.extensions, loaded.environ),
+    SessionCommands.name: lambda loaded: SessionCommands(Path.cwd()),
     Skills.name: Skills.of,  # a file it cannot use raises `SkillFileError`: the start stops
     StepLimit.name: lambda loaded: StepLimit(),
     Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
     TokenCalls.name: lambda loaded: TokenCalls(),
+    Undo.name: lambda loaded: Undo(),
     Usage.name: lambda loaded: Usage(),
 }
 OFF_BY_DEFAULT = frozenset({BashGuard.name, Router.name, Search.name, TokenCalls.name})

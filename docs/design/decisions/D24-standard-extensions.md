@@ -51,6 +51,9 @@ those missing pieces in one table: that is the main result of this ADR.
 
 ### 2. Compaction
 
+*Amended by D33 (0.18): the new line ends in an undo marker that returns to where the cursor
+was, so `/undo` goes back to the old line.*
+
 **What the user sees.** When a branch nears its model's context window, the next sample is
 preceded by a summary. The cursor shows `compacting…` while it runs, then a notice:
 `compacted 182k → 23k tokens (nodes 4–418 summarized as node 431)`. The old nodes stay in the
@@ -362,6 +365,9 @@ labels serve for 0.16.0.
 do the same), `max_usd` and `max_seconds`, and forcing parallel children read-only.
 
 ### 9. Prune: compaction without a model
+
+*Amended by D33 (0.18): the new line ends in an undo marker that returns to where the cursor
+was, so `/undo` goes back to the old line.*
 
 Prune has no 0.15 counterpart. Phase 0's plan and Phase 1's model.md defined it ("post-expiry
 deterministic rewrite: old tool outputs, old thinking, branch from the LCA"); that text was lost
