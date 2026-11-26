@@ -32,16 +32,21 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
    `User` node is a `Frontend`'s, so sub-agents and summarizers never run it); `SessionStart` and
    `SessionEnd` → `start` and `stop`. Every other Claude Code event is a load error naming it.
 4. **Matcher** (tool events): Claude Code's syntax (empty/`*`, exact names split on `|` `,`, else a
-   regular expression, here Python's `re`); also Claude Code's names for τ's base tools
-   (`Bash`→`bash`, ...). A matcher on an event with no tool is an error (Claude Code ignores it).
-   `tool_name` and `tool_input` are τ's own; the fields differ from Claude Code's for τ's file
-   tools, which is stated, not hidden.
+   regular expression, here Python's `re`, tried on a tool's τ name and its Claude Code name);
+   also Claude Code's names for τ's base tools (`Bash`→`bash`, ...), and no others: τ is not
+   Claude Code. A matcher on an event with no tool is an error (Claude Code ignores it). A name no
+   tool of the session has, and a permission rule (`Bash(git *)`), can never match: a warning when
+   the first input arrives, where the assembled tools are known (`mcp__` names are exempt: a server
+   may list its tools later). `tool_name` and `tool_input` are τ's own; the fields differ from
+   Claude Code's for τ's file tools, which is stated, not hidden.
 5. **Answers.** Exit 0: JSON object (a stdout starting with `{` that does not parse is a failure) or
    text (context at `UserPromptSubmit`; dropped, said on stderr, at `SessionStart`; unused elsewhere).
    Exit 2: block, standard error the reason; at the post events, feedback; at the session events, a
    failure. Other exits, 1 included: a failure. JSON fields supported: `permissionDecision`
    (`allow`, `deny`, `ask` as a yes/no question to the person, `defer` unsupported),
-   `permissionDecisionReason`, `updatedInput`, `decision` (`block`; `approve` at `PreToolUse`),
+   `permissionDecisionReason`, `updatedInput` (the tree keeps the model's arguments, so the
+   result starts with `[hooks rewrote the arguments: ...]`, as `bash_guard` says what it ran),
+   `decision` (`block`; `approve` at `PreToolUse`),
    `reason`, `additionalContext`, `updatedToolOutput` (text), `systemMessage`, `suppressOutput`.
    `continue: false`, `stopReason`, and every other field are failures naming the field, and so is
    a supported field at an event that does not take it.
@@ -57,6 +62,10 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
    connected). At a gate (`PreToolUse`, `UserPromptSubmit`) it also *blocks*, unless the handler's
    `onFailure` is `continue` (Claude Code's own key). At `PostToolUse*` and `Stop` there is nothing
    to refuse and it only reports. Claude Code lets a call through on exit 1; τ does not.
+   A process group is ended by SIGTERM, then SIGKILL after 2 s: at a timeout, when the hook is
+   cancelled, and for every command still running at the extension's `stop`. Once the command
+   itself exits, τ takes what it wrote (a 0.1 s drain) and goes on; a child it left in the
+   background is left alone, as Claude Code leaves it.
 8. **Stop** sends the reason as an input authored by `Extension("hooks")`, so the model continues.
    `stop_hook_active` says the last stop was already held open; after 8 in a row (Claude Code's cap)
    the turn ends with a warning; with auto-step off the hook is told and the turn ends.
@@ -67,8 +76,10 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
    without the hash matches while the project has no hooks file.
 10. **Windows.** Unavailable: commands run through `/bin/sh`, which τ does not have there (the
     `bash` tool's reason). Enabling it fails naming the platform; its tests are skipped there.
-11. **Not sent**: `session_id`, `transcript_path`, `permission_mode`, `effort` (the extension is
-    built before a session directory is chosen). Not supported: the other 27 events, the handler
+11. **Not sent**: `session_id`, `transcript_path`, `permission_mode`, `effort`, `agent_id`,
+    `agent_type`, `prompt_id` (the extension is built before a session directory is chosen).
+    `tool_response` is the result's text, a string (Claude Code sends an object); `source` is
+    always `startup` and `reason` always `other`. Not supported: the other 27 events, the handler
     types `http`, `mcp_tool`, `prompt`, `agent`, and the keys `if`, `async`, `asyncRewake`,
     `shell`, `statusMessage`, `once`.
 
@@ -89,3 +100,8 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
 - A `SessionStart` hook's output as context would need a `System` node written at the first step
   (`skills` does this for its list).
 - `PreCompact`, `SubagentStop` and `Notification` could map once those have hook points.
+- **An abort does not end a running command.** Abort never cancels a hook (model.md §8, Q34), and
+  a hook has no way to learn its cursor was aborted, so the step waits for the command or its
+  `timeout`. Ending it needs the driver: a handle that tells a hook of the abort, or abort
+  cancelling a hook that opts in. Likewise `tau -p`'s second Ctrl+C (`os._exit`) and a SIGTERM or
+  SIGHUP of `tau -p` or the TUI end τ without `stop`, leaving a running command's group behind.
