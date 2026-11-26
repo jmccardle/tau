@@ -511,7 +511,7 @@ async fn submit_line(
                 cursor,
                 extension,
                 values,
-                save,
+                save: Some(save),
             })
             .await
             .map(|_| None)

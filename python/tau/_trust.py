@@ -11,7 +11,9 @@ no owner check on any file. What is used afterwards is the bytes that were appro
 The files are read once per `ensure_trusted` call. The report, the question,
 and the approval all work from those bytes; approval re-reads and refuses if
 they changed. Everything inside a project is read through one helper that
-refuses symlinks and anything not a regular file.
+refuses symlinks and anything not a regular file; the one exception is the prompt and skill
+files, which may be (or be in) symlinks, read through to the regular file they lead to, with the
+resolved path in the report: what is pinned is those bytes.
 """
 
 import contextlib
@@ -34,6 +36,7 @@ from tau._mcp_config import describe as describe_mcp
 from tau._project_read import (
     FOREIGN_BASES,
     TrustError,
+    prompt_links,
     read_prompt_files,
     read_regular,
     refusal,
@@ -42,7 +45,7 @@ from tau._project_read import (
     shown,
     unless_io_fails,
 )
-from tau._prompt_files import problems_in
+from tau._prompt_files import problems_in, prompt_report
 from tau._providers import builtin_providers
 from tau._trust_record import Approval as _Approval
 from tau._trust_record import approved as _approved
@@ -50,6 +53,7 @@ from tau._trust_record import digest as _digest
 from tau._trust_record import file_hashes as _file_hashes
 from tau._trust_record import files_digest as _extensions_digest
 from tau._trust_record import record, redacted
+from tau._trust_report import hooks_listing, hooks_problems
 
 TAU_DIR = ".tau"
 _ENV = ".env"
@@ -57,6 +61,7 @@ _GITIGNORE = "*\n"
 _PRIVATE = 0o700
 _PUBLIC_FILE = 0o644
 EXTENSIONS_DIR = "extensions"
+HOOKS_FILE = "hooks.json"
 SYSTEM_MD = "SYSTEM.md"
 
 
@@ -82,7 +87,9 @@ class Trusted:
     relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
     `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
     reads. `mcp_files` are the approved `.mcp.json` and `.tau/mcp.json` (path relative to the
-    project, to bytes; only those that exist), which the mcp extension reads. Use `layer()`,
+    project, to bytes; only those that exist), which the mcp extension reads.
+    `hooks_file` is the bytes of `.tau/hooks.json` as approved (`None`: no such file), which the
+    `hooks` extension runs. Use `layer()`,
     `read_models()` and `project_environment` rather than re-reading the files."""
 
     root: Path
@@ -92,6 +99,7 @@ class Trusted:
     system_md: bytes | None
     prompt_files: Mapping[str, bytes]
     mcp_files: Mapping[str, bytes]
+    hooks_file: bytes | None = None
 
     def layer(self) -> LayerText | None:
         """The project config layer for `read_models`, or `None` if there is no file."""
@@ -126,7 +134,10 @@ class _Seen:
     prompts_sha: str
     mcp: dict[str, bytes]
     mcp_sha: str
+    hooks: bytes | None
+    hooks_sha: str
     tau_mode: int
+    prompt_targets: Mapping[str, Path]  # prompt key -> where its symlink leads (not pinned)
 
 
 # -- paths
@@ -332,8 +343,10 @@ class _Read(NamedTuple):
     system: bytes | None
     prompts: dict[str, bytes]
     mcp: dict[str, bytes]
+    hooks: bytes | None
+    targets: Mapping[str, Path]
 
-    def digests(self) -> tuple[str, str, str, str, str, str]:
+    def digests(self) -> tuple[str, str, str, str, str, str, str]:
         return (
             _digest(self.config),
             _digest(self.env),
@@ -341,24 +354,28 @@ class _Read(NamedTuple):
             _digest(self.system),
             _extensions_digest(self.prompts),
             _extensions_digest(self.mcp),
+            _digest(self.hooks),
         )
 
 
 def _read_all(root: Path) -> _Read:
+    prompts = read_prompt_files(root / TAU_DIR)
     return _Read(
         read_regular(project_config_path(root)),
         read_regular(root / _ENV),
         _read_extensions(root),
         read_regular(root / TAU_DIR / SYSTEM_MD),
-        read_prompt_files(root / TAU_DIR),
+        prompts,
         {p: raw for p in MCP_FILES if (raw := read_regular(root / p)) is not None},
+        read_regular(root / TAU_DIR / HOOKS_FILE),
+        prompt_links(root / TAU_DIR, prompts),
     )
 
 
 def _see(root: Path) -> _Seen:
     with _tau_dir(root) as (_, info):
         read = _read_all(root)
-    sha, env_sha, extensions_sha, system_sha, prompts_sha, mcp_sha = read.digests()
+    sha, env_sha, extensions_sha, system_sha, prompts_sha, mcp_sha, hooks_sha = read.digests()
     return _Seen(
         root,
         _decode(read.config, project_config_path(root)),
@@ -373,7 +390,10 @@ def _see(root: Path) -> _Seen:
         prompts_sha,
         read.mcp,
         mcp_sha,
+        read.hooks,
+        hooks_sha,
         stat.S_IMODE(info.st_mode),
+        read.targets,
     )
 
 
@@ -392,6 +412,7 @@ def _record(home: Path, seen: _Seen) -> None:
         _file_hashes(seen.extensions or {}),
         _file_hashes(seen.prompts),
         _file_hashes(seen.mcp),
+        seen.hooks_sha,
     )
     record(home, seen.root, approval)
 
@@ -405,6 +426,7 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
         and approval.system_sha256 == seen.system_sha
         and approval.prompts_sha256 == seen.prompts_sha
         and approval.mcp_sha256 == seen.mcp_sha
+        and approval.hooks_sha256 == seen.hooks_sha
     )
 
 
@@ -440,7 +462,8 @@ def _errors(seen: _Seen, home: Path) -> list[str]:
             parse_dotenv(seen.env, shown(seen.root / _ENV))
         except DotenvError as e:
             errors.append(safe_text(str(e)))
-    return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR)]
+    errors += hooks_problems(seen.hooks, seen.root / TAU_DIR / HOOKS_FILE)
+    return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR, fatal=True)]
 
 
 def _env_names(seen: _Seen) -> list[str]:
@@ -513,6 +536,8 @@ def _code_changes(approval: _Approval, seen: _Seen) -> list[str]:
         lines.append("  .tau/extensions/ appeared or went away")
     if approval.system_sha256 != seen.system_sha:
         lines.append("  .tau/SYSTEM.md changed since you approved it")
+    if approval.hooks_sha256 != seen.hooks_sha:
+        lines.append("  .tau/hooks.json changed since you approved it")
     return lines + _mcp_changes(approval, seen) + _prompt_changes(approval, seen)
 
 
@@ -546,20 +571,6 @@ def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
     return lines
 
 
-_SHOWN_CHARS = 2000
-"""How much of one prompt or skill file the report shows."""
-
-
-def _prompt_text(raw: bytes) -> list[str]:
-    """The text of a prompt or skill file as report lines, cut at `_SHOWN_CHARS` characters, which
-    the last line says."""
-    text = raw.decode("utf-8", errors="replace")
-    lines = [f"    {line}" for line in safe_block(text[:_SHOWN_CHARS].rstrip()).split("\n")]
-    if len(text) > _SHOWN_CHARS:
-        lines.append(f"    ... cut: {len(text) - _SHOWN_CHARS} more characters not shown")
-    return lines
-
-
 def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
     """The files that will run with your authority by name and size, and the prompt and skill
     files, with the text of each that is new or changed since approval."""
@@ -569,17 +580,17 @@ def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
         lines += [safe_text(f"  {p}  {len(raw)} bytes") for p, raw in seen.extensions.items()]
     if seen.system is not None:
         lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
+    if seen.hooks is not None:
+        changed = approval is None or approval.hooks_sha256 != seen.hooks_sha
+        lines += hooks_listing(seen.hooks, changed=changed)
     for path, raw in seen.mcp.items():
         lines += ["", f"Its {path}: MCP servers (commands run with your authority if mcp is on):"]
         lines += [f"  {safe_text(line)}" for line in describe_mcp(raw, path)]
     if seen.prompts:
         before: Mapping[str, str] = {} if approval is None else approval.prompts
-        hashes = _file_hashes(seen.prompts)
-        lines += ["", "Its prompt templates and skills (text the model will read):"]
-        for path, raw in seen.prompts.items():
-            lines.append(safe_text(f"  {path}  {len(raw)} bytes"))
-            if before.get(path) != hashes[path]:
-                lines += _prompt_text(raw)
+        lines += prompt_report(
+            seen.prompts, seen.prompt_targets, before, _file_hashes(seen.prompts)
+        )
     return lines
 
 
@@ -600,6 +611,12 @@ def _assess(seen: _Seen, home: Path, approval: _Approval | None) -> _Assessment:
     if names := _env_names(seen):
         lines += ["", f"Its .env sets: {', '.join(names)}"]
     lines += _code_listing(seen, approval)
+    if skipped := problems_in(seen.prompts, seen.root / TAU_DIR, fatal=False):
+        lines += [
+            "",
+            "Prompt and skill files tau cannot load (skipped; it starts without them):",
+        ]
+        lines += [f"  {p}" for p in skipped]
     lines += ["", "Checks:", *_checks(seen)]
     if approval is not None and not errors:
         lines += ["", "Changes since approval:", *_changes(approval, seen)]
@@ -631,6 +648,7 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
             seen.system_sha,
             seen.prompts_sha,
             seen.mcp_sha,
+            seen.hooks_sha,
         ):
             raise TrustError(
                 f"{shown(root)}: a file under .tau/ changed while you were reading; run again", root
@@ -644,7 +662,14 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
 
 def _trusted(seen: _Seen) -> Trusted:
     return Trusted(
-        seen.root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts, seen.mcp
+        seen.root,
+        seen.config,
+        seen.env,
+        seen.extensions,
+        seen.system,
+        seen.prompts,
+        seen.mcp,
+        seen.hooks,
     )
 
 
