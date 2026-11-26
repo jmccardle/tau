@@ -934,20 +934,29 @@ redirects.
 
 - **A web page** comes back as Markdown: its main content (the `main` element, or the one
   `article`, else the body) with headings, lists, quotes, code, tables as rows, and links made
-  absolute. Navigation, footers, sidebars, scripts, styles and hidden elements are left out. A page
+  absolute. Navigation, footers, sidebars, scripts, styles and hidden elements (the `hidden`
+  attribute, `aria-hidden="true"`, an inline `display: none`) are left out, and so are table rows
+  with no text. A page
   that is empty until a script fills it has no text for tau to read, and the call says so; τ runs no
   JavaScript.
 - **Text**, JSON, XML and the like come back as they are, decoded by their charset. A PDF or another
-  binary type is an error naming the type; tau reads text and images only.
+  binary type is an error naming the type; tau reads text and images only. The bytes are looked at
+  too: a body served as text that is plainly binary is refused, a PDF is a PDF whatever type it is
+  served as, and a body served with no type may be an image.
 - **An image** (PNG, JPEG, GIF, WebP) comes back as an image if the model takes images (`images:
   true` in its config, within its provider's limits, as for `read`); otherwise as one line saying
   what it is.
 - **A long page** is cut at `max_chars` (at most 200000), and the first line says which characters
-  are there and `call again with start=N for more`. Each call fetches the page again.
+  are there and `call again with start=N for more`. Each call fetches the page again. A page that
+  puts its own menus inside its main content without marking them as navigation (Wikipedia's list
+  of the article's other languages, for one) spends its first characters on them; the article
+  follows, and `start` reads on to it.
 - **A redirect** to the same host is followed. One to another host is not: the answer is the URL it
   names, and the model calls `fetch` again. That is what makes the permission rules below mean
   something: every host the model reads from is a call they see.
-- An error status, a timeout and a failed connection are errors naming what happened.
+- An error status, a timeout and a failed connection are errors naming what happened (`connecting
+  to example.com took over 10 s`), and so is a redirect with no `Location` or to something that is
+  not an http URL.
 
 A URL whose host is, or resolves to, a loopback, private, link-local or other non-public address
 (`localhost`, `192.168.1.5`, `169.254.169.254`) is refused, a redirect's too: a page's link, or a

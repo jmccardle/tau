@@ -12,12 +12,16 @@ so), 20 MiB for an image, 5 redirects, and 60 s for the whole call (the administ
 - **Text** (`text/*`, JSON, XML, JavaScript, YAML) is returned as it is, decoded by its charset.
 - **An image** (PNG, JPEG, GIF, WebP) is returned as the tool's image (D30) when the model takes
   images, within its provider's limits; for a model that does not, the answer says what the image
-  is. Other binary types, PDFs included, are an error naming the type.
+  is. Other binary types, PDFs included, are an error naming the type. What a body is, is read
+  from its bytes too: one served with no type (or `application/octet-stream`) may be an image of
+  up to 20 MiB, and one served as text that is plainly binary (a NUL, an image's or a PDF's first
+  bytes) is refused naming the type it was served as.
 - **A long answer** is cut at `max_chars` (at most 200000) and says where to continue: call again
   with `start`. Each call fetches the page again.
 - **Redirects** to the same host are followed. One to another host is not: the answer names the
   URL, and the model calls `fetch` again, so the permission rules (`fetch:HOST`, below) see every
-  host the model reads from.
+  host the model reads from. A redirect with no `Location`, or to something that is not an http
+  URL, is an error that says so.
 - A status of 400 or more, a timeout and a failed connection are errors naming what happened.
 
 Fetched text is marked untrusted, once, ahead of the page: it is data, not instructions.
