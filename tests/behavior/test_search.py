@@ -250,6 +250,11 @@ def test_the_key_may_be_in_another_variable_and_is_never_shown(tmp_path: Path) -
         ),
         ({"api_key": KEY}, "extensions.search.api_key: 'search' has no such setting"),
         ({"base_url": 3}, "extensions.search.base_url must be a string, not 3"),
+        ({"base_url": ""}, "extensions.search.base_url is ''; it is an http or https URL"),
+        (
+            {"provider": "searxng", "base_url": "127.0.0.1:8400"},
+            "extensions.search.base_url is '127.0.0.1:8400'; it is an http or https URL",
+        ),
     ],
 )
 def test_the_administrators_constants_are_checked(
@@ -268,3 +273,65 @@ def test_a_key_in_a_config_file_is_refused_by_name_of_the_setting(tmp_path: Path
         built(tmp_path, "search", {"api_key": KEY}, {"BRAVE_API_KEY": KEY})
     assert re.search(r"extensions\.search\.api_key", str(caught.value))
     assert KEY not in str(caught.value)
+
+
+@scenario
+async def test_a_key_the_provider_echoes_is_hidden_in_the_error(tmp_path: Path) -> None:
+    """The key is replaced before the provider's text is cut, so not even a part of it is shown."""
+    echo = "x" * 190 + f"token {KEY} is unknown"
+    with serving({"/res/v1/web/search": Page(echo, "text/plain", 500)}) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert KEY[:6] not in error(out)
+    assert error(out).startswith("the search provider answered HTTP 500: 'xxx")
+
+
+@scenario
+async def test_braves_422_for_an_unknown_key_is_a_rejected_key(tmp_path: Path) -> None:
+    invalid = {"error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "status": 422}}
+    other = {"error": {"code": "VALIDATION", "detail": "count is too large"}}
+    with serving({"/res/v1/web/search": Page(json.dumps(invalid), JSON, 422)}) as site:
+        (rejected,) = await asked(tmp_path, site, {}, {"query": "a"})
+    with serving({"/res/v1/web/search": Page(json.dumps(other), JSON, 422)}) as site:
+        (general,) = await asked(tmp_path / "o", site, {}, {"query": "a"})
+    assert error(rejected) == "the search provider rejected the API key (HTTP 422)"
+    assert error(general).startswith("the search provider answered HTTP 422: ")
+
+
+@scenario
+async def test_a_searxng_without_json_says_how_to_enable_it(tmp_path: Path) -> None:
+    """SearXNG has no key: its 403 is the JSON format turned off, and so is an HTML answer."""
+    hint = "enable `json` under `search.formats` in its settings.yml"
+    with serving({"/search": Page("Forbidden", "text/plain", 403)}) as site:
+        (refused,) = await asked(tmp_path, site, {"provider": "searxng"}, {"query": "a"})
+    with serving({"/search": Page("<html>results</html>", "text/html")}) as site:
+        (html,) = await asked(tmp_path / "h", site, {"provider": "searxng"}, {"query": "a"})
+    assert error(refused).startswith("the search provider refused the search (HTTP 403); ")
+    assert "API key" not in error(refused)
+    assert error(refused).endswith(hint)
+    assert error(html).endswith(hint)
+
+
+@scenario
+async def test_a_snippet_keeps_text_that_was_escaped_markup(tmp_path: Path) -> None:
+    body = {
+        "web": {
+            "results": [
+                {
+                    "title": "A <b>div</b>",
+                    "url": "https://a.example/",
+                    "description": "use &lt;div&gt;",
+                }
+            ]
+        }
+    }
+    with serving(answering("/res/v1/web/search", body)) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert text(out).endswith("1. A div\n   https://a.example/\n   use <div>")
+
+
+@scenario
+async def test_rows_without_an_address_are_not_no_results(tmp_path: Path) -> None:
+    body = {"web": {"results": [{"title": "a"}, {"title": "b", "link": "https://b.example/"}]}}
+    with serving(answering("/res/v1/web/search", body)) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert error(out) == "the search provider answered 2 results, none with a url"
