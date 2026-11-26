@@ -866,7 +866,5 @@ def test_a_timeout_for_an_extension_without_that_method_is_a_warning(tmp_path: P
     found = check_config(
         write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=[_Starts()]
     )
-    assert [(p.severity, p.path) for p in found] == [
-        ("warning", "extensions.starts.stop_timeout")
-    ]
+    assert [(p.severity, p.path) for p in found] == [("warning", "extensions.starts.stop_timeout")]
     assert "has no stop; stop_timeout is ignored" in found[0].message
