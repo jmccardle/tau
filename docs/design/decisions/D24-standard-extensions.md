@@ -500,8 +500,12 @@ turns a server off and, written in a nearer file, turns off a farther file's ser
 reader does not know (other clients' `timeout`, `alwaysAllow`) are ignored, so a file written for
 another client loads as it is. `${VAR}` and `${VAR:-default}` in `command`, `args`, `env`, `url`
 and `headers` are replaced from the environment τ reads keys from (the shell's over the project's
-`.env`): a token stays out of the file. An unset `${VAR}` with no default is an error naming the
-server and the variable. Why:
+`.env`): a token stays out of the file. What cannot be used is skipped with a warning, as
+`skills` skips a file it cannot use: a file that is not JSON (or whose `mcpServers` is not an
+object) is left out whole, and a server with a bad name, no `command` or `url`, the SSE transport,
+or an unset `${VAR}` with no default is left out alone (it still hides a farther file's server of
+its name), each named with its file and reason. A file `TAU_MCP_CONFIG` names that is not there is
+the one error: the program that named it made the mistake. Why:
 
 - **Its own file, not an option.** A server is a command τ runs with the user's authority;
   options are what a client may set (`/config`, `set_options`, akb #643), so the servers are no
@@ -546,19 +550,37 @@ are its text, `image` blocks its images (D30), a text `resource` its text; anyth
 saying it was left out; `structuredContent` stands in for no text; `isError` is `Err`. An abort
 cancels the call (`notifications/cancelled`).
 
-**Start, and a server that fails (Fail Early).** `start` starts every server at once and returns
-when each has shaken hands and listed its tools, so the first step has them all (`tau -p "use the
-github tool"` must not race the server). **A server that fails to start stops τ**: the start
-raises naming every server that failed and why (`MCP server gh exited (status 1): <its last stderr
-line>`, `MCP server db: cannot start uvx: No such file or directory`), and the ones that started
-are stopped. The alternative, an `error` notice and the server marked failed while the others
-work, is what some clients do, but in τ a `start` runs before any client is connected (D32 §4),
-so the notice would reach no one: the session would quietly lack the tools, the model would say
-it has none, and the person would not know why. With several servers every failure is named at
-once, so one edit fixes them; `"disabled": true` on the server (or `tau ext disable mcp`) starts
-without it. The start's timeout is D32's, `extensions.mcp.start_timeout` (30 s by default); a
-first `npx` or `uvx` run downloads its package and can take longer, so when the start is cancelled
-the servers still starting are named on stderr with that key. There is no per-server timeout.
+**Start, and a server that fails (a warning; ruling of 2026-11-26).** `start` starts every
+server at once and returns when each has shaken hands and listed its tools, so the first step has
+them all (`tau -p "use the github tool"` must not race the server). **A server that fails to start
+is reported and τ starts without it**, as an unloadable skill is (John's ruling, 2026-11-26,
+replacing the first build's "stop τ"): with several servers, one that is down (a remote service,
+a token that expired) must not take the others and the session with it. Reported means, for each
+skipped file or server, each server that failed (a spawn error, a failed handshake or tool list,
+a refusing HTTP server: the reason, with the last line its process wrote to stderr) and each tool
+that cannot be named:
+
+- a line on stderr at the start, `tau: mcp: MCP server gh exited (status 1): <last stderr line>;
+  τ starts without it`, the same in `tau` and `tau serve` (`tau -p` silences stray stderr unless
+  `-v`, and prints the notice below instead: `tau: MCP server gh exited ...`);
+- `/mcp` lists the server as `failed: <why>`, and the skipped configuration after the servers;
+- an `error` `Notice` from `mcp` (D32 PC-02) to every client, **including those that connect
+  later**. A start runs before any client is connected (D32 §4), so a plain `tell` would reach no
+  one. The mechanism is the **standing notice**: a notice to everyone that an extension's `start`
+  tells is kept by the hub and sent to each client when it connects, after its snapshot, until that
+  extension is stopped (a reload forgets them). It is general (any extension's start may need
+  to say something to the people who come), needs no new call or event (protocol 3 is unchanged:
+  it is a `Notice` like any other), and is what a client would want: the TUI toasts it, `tau -p`
+  prints it, a web client that opens an hour later still learns the server is down. Not chosen: a
+  `shown` text on a cursor (it is a status line for one cursor, not an error about the session),
+  or a notice on the first step's `pre_step` (a client that only watches would never get it).
+
+**Timeouts.** The servers' start is bounded inside `mcp`'s own start: the extension's D32 start
+timeout (`extensions.mcp.start_timeout`, 30 s by default) less 1.5 s, the time left to stop the
+servers still starting (each is killed quickly: one that has not finished its handshake has
+nothing to save). A server still starting then is reported like any other failure, naming the
+command and the key to raise (a first `npx` or `uvx` run downloads its package), so a slow server
+never trips D32's timeout and stops τ.
 
 **While it runs.** A server's `notifications/tools/list_changed` lists it again and calls
 `reassemble` (clients get `Commands` if the forms changed; the tools change from the next sample,
