@@ -15,7 +15,8 @@ from typing import cast
 
 from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, read_models
-from tau._trust import user_config_path, write_atomically
+from tau._trust import user_config_path
+from tau._trust_record import write_atomically
 
 
 @dataclass(frozen=True)
