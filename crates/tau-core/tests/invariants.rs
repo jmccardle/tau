@@ -16,7 +16,8 @@ use tau_core::tree::{
 enum Op {
     Send(usize, usize),
     Input(usize, usize),
-    Step(usize),
+    /// A step, or with `true` a command's step (D16 §2).
+    Step(usize, bool),
     Go(usize, usize),
     Auto(usize, bool),
     Abort(usize),
@@ -30,7 +31,7 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         1 => (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Send(c, a)),
         1 => (n.clone(), 0..4usize).prop_map(|(c, a)| Op::Input(c, a)),
-        1 => n.clone().prop_map(Op::Step),
+        1 => (n.clone(), any::<bool>()).prop_map(|(c, command)| Op::Step(c, command)),
         1 => (n.clone(), n.clone()).prop_map(|(c, t)| Op::Go(c, t)),
         1 => (n.clone(), any::<bool>()).prop_map(|(c, on)| Op::Auto(c, on)),
         1 => n.clone().prop_map(Op::Abort),
@@ -282,9 +283,9 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     match *op {
         Op::Send(i, a) => drop(m.send(cursor(i), author(a), "hello", vec![]).unwrap()),
         Op::Input(i, a) => drop(m.input(cursor(i), author(a), "more", vec![]).unwrap()),
-        Op::Step(i) => {
+        Op::Step(i, command) => {
             let busy = m.busy(cursor(i));
-            let stepped = m.step(cursor(i));
+            let stepped = m.step(cursor(i), command);
             prop_assert_eq!(
                 stepped,
                 if busy {

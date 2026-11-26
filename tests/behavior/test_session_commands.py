@@ -245,8 +245,9 @@ async def test_export_names_a_path_it_cannot_write(tmp_path: Path) -> None:
 
 
 @scenario
-async def test_a_command_run_where_the_turn_would_go_on_halts_its_step(tmp_path: Path) -> None:
-    """A cursor resting mid-turn (gone back to a batch) is not stepped on by `/export`."""
+async def test_a_command_run_where_the_turn_would_go_on_rests(tmp_path: Path) -> None:
+    """A cursor resting mid-turn (gone back to a batch) is not stepped on by `/export`: its step
+    ends when it returns (D16 section 2), `Done`, with no halt to say so."""
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([Reply([Part.Call("c", "work", "{}")], Stop.Tools), say("done")]),
@@ -263,8 +264,9 @@ async def test_a_command_run_where_the_turn_would_go_on_halts_its_step(tmp_path:
     await h.settle()
     assert (len(h.provider.requests), len(h.nodes())) == (requests, nodes), "nothing ran"
     view = await h.view()
-    assert isinstance(view.ending, Ending.Halted)
-    assert view.ending.reason.startswith(f"/export left the cursor at node {batch}, mid-turn")
+    assert isinstance(view.ending, Ending.Done)
+    assert not view.busy
+    assert view.at == batch
     await h.close()
 
 

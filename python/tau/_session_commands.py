@@ -19,8 +19,9 @@
   taken as given. An existing file is refused, never overwritten.
 
 There is no `/new`: a new session is a client's move (Ctrl+N in the TUI), not the harness's.
-`/clear`, `/branch` and `/export` run as steps of the cursor (`Busy` when it is not at rest), and
-halt that step if it would carry a turn on from where the cursor stands (`Stays`).
+`/clear`, `/branch` and `/export` run as steps of the cursor (`Busy` when it is not at rest); each
+step ends when its command returns (D16 §2), so none carries a turn on from where the cursor
+stands.
 """
 
 from collections.abc import Iterator, Mapping
@@ -31,10 +32,10 @@ from tau._commands import CommandFailed
 from tau._complete import node_summary
 from tau._config import config_fields, model_config
 from tau._core import Body, Node, NoSuchLabel, Tree
-from tau._handles import Cursor, Subject, TreeHandle
+from tau._handles import Cursor, TreeHandle
 from tau._lines import Planned, prefix_length, write_line
 from tau._markdown import to_markdown
-from tau._markers import Stays, UndoMarker
+from tau._markers import UndoMarker
 from tau._values import NodeId
 
 Settings = tuple[str | None, Mapping[str, Mapping[str, object]]]
@@ -80,17 +81,7 @@ class SessionCommands:
 
     def __init__(self, cwd: Path) -> None:
         self._cwd = cwd
-        self._stays = Stays()
         self.commands = (self.clear, self.branch, self.tree, self.export)
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Halt the step of a command that left its cursor mid-turn."""
-        return self._stays.halt(cursor.id)
-
-    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Forget what an aborted step's command left."""
-        self._stays.forget(cursor.id)
-        return None
 
     async def clear(self, cursor: Cursor) -> str:
         """Start this conversation again, keeping the system prompt and this branch's settings
@@ -111,7 +102,6 @@ class SessionCommands:
         planned.append(Planned(UndoMarker("/clear", here, "clear").body()))
         ids = write_line(cursor, walk[prefix - 1].id, planned)
         cursor.move(ids[-1])
-        cursor.set_auto(False)
         kept = " and this branch's settings" if len(planned) > 1 else ""
         return (
             f"cleared: a new line under the system prompt{kept} (node {ids[-1]}; /undo goes back)"
@@ -127,7 +117,6 @@ class SessionCommands:
         new = cursor.open(here)
         if label:
             cursor.set_label(label, new)
-        self._stays.leave(cursor, "/branch")
         named = f" ({label})" if label else ""
         return f"opened cursor {new}{named} at node {here}"
 
@@ -154,7 +143,6 @@ class SessionCommands:
     ) -> str:
         """Write this conversation as Markdown, as `tau export` does without its header."""
         text = to_markdown(cursor.walk(), thinking=thinking)
-        self._stays.leave(cursor, "/export")
         if path is None:
             return text
         target = path if path.is_absolute() else self._cwd / path

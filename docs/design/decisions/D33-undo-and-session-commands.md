@@ -85,12 +85,14 @@ The convention is documented for clients and extensions in `docs/guide/conventio
 - **Busy.** `/undo` runs as a step of its cursor, so a busy cursor refuses it with `Busy`, as
   every cursor command (`/compact`, `/config`) is refused. The TUI's Ctrl+Z on a busy cursor stays
   its own edit-last (it asks, then a go-to aborts the step), §5.
-- **Mid-turn.** A command's step goes on after the command (D16 §2), so a cursor put on a node
-  that would sample or run tools (a checkpoint's `return_to`, a hard compaction's) would start the
-  model. `undo`'s own `pre_step` halts that step instead (`halted: /undo left the cursor at node
-  N, mid-turn: step to carry on from there`); `session` does the same for its commands. The rule
-  is the extension's, not the driver's: a command that moves and *wants* the step to go on (a
-  regenerate) keeps working.
+- **Mid-turn.** A cursor put on a node that would sample or run tools (a checkpoint's
+  `return_to`, a hard compaction's) rests there: a command's step ends when the command returns
+  (D16 §2, amended 2026-11-26), so going back never starts the model, and the step ends `Done`.
+  A command that moves and *wants* the model to go on (a regenerate) turns auto-step on
+  (`cursor.set_auto(True)`). *Superseded:* as first built, a command's step went on after the
+  command, and `undo` and `session` halted it in their own `pre_step` (`Stays`, `halted: /undo
+  left the cursor at node N, mid-turn: step to carry on from there`); the ruling of 2026-11-26
+  made that the driver's rule for every command, and `Stays` was removed.
 - **Two clients.** `at=NODE` refuses unless the cursor is on that node, so of two clients that saw
   the same node and undo, one moves the cursor and the other is told it moved. (The two cannot run
   at once in any case: the second is `Busy`.)
@@ -128,8 +130,8 @@ extension's answer about one node it wrote, asked by one command. Why not a wire
 ### 4. The session commands (EX-21)
 
 The built-in `session`, default-on, removable. `/clear`, `/branch` and `/export` run as steps of
-the cursor (`Busy` unless at rest) and halt their step if they leave it mid-turn (§2); `/tree`
-runs at once.
+the cursor (`Busy` unless at rest), and each step ends when its command returns, so none carries
+a turn on from where it leaves the cursor (§2); `/tree` runs at once.
 
 - **`/clear`**: hang a new line under the last node of the walk's prefix (`prefix_length`: the
   root `Config` and the `System` nodes before the first message, with any `Config` among them, such

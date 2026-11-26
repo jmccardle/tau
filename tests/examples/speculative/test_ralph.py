@@ -183,7 +183,9 @@ async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_pa
 
 @scenario
 async def test_step_limit_counts_steps_not_iterations(tmp_path: Path) -> None:
-    """One tool call per iteration is two steps, so a limit of 4 is two iterations."""
+    """One tool call per iteration is two steps, so a limit of 5 is two iterations: the `/ralph`
+    command's own step counts too, since it turns auto-step on (its step ends when it returns, D16
+    section 2, and the first iteration samples in the next step)."""
     prompt = prompt_file(tmp_path)
     call = Reply([Part.Call("c", "t", "{}")], Stop.Tools)
     h = await Harness.create(
@@ -191,7 +193,7 @@ async def test_step_limit_counts_steps_not_iterations(tmp_path: Path) -> None:
         provider=FakeProvider([call, say("a"), call, say("b"), call, say("c")]),
         tools=[FakeTool("t", "ok")],
         extensions=[StepLimit(), ralph.Ralph()],
-        config=config(step_limit={"limit": 4}),
+        config=config(step_limit={"limit": 5}),
     )
     await h.run("ralph", {"prompt": str(prompt)})
     await h.settle()
@@ -217,7 +219,7 @@ async def test_ordered_before_step_limit_the_loop_leaves_a_prompt_nobody_sent(
         tmp_path / "s",
         provider=FakeProvider([say(f"r{i}") for i in range(6)]),
         extensions=[StepLimit(), Early()],
-        config=config(step_limit={"limit": 3}),
+        config=config(step_limit={"limit": 4}),  # the command's step and three iterations
     )
     await h.run("ralph", {"prompt": str(prompt)})
     await h.settle()

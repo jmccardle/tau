@@ -1185,9 +1185,12 @@ class Session:
         not open.
         `images` as for `input`.
         """
-    def step(self, cursor: int) -> None:
-        """Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.
-        `Busy` if a step is already running.
+    def step(self, cursor: int, command: bool = False) -> None:
+        """Run one step of `cursor` whether or not auto-step is on, leaving auto-step as it is.
+        With `command`, it is a command's step instead (D16 §2): auto-step goes off, as for a
+        go-to, and only `pre_step` (where the driver runs the command) and `post_step` run; it ends
+        `Done` unless a hook says otherwise, and the next step starts at once if the command
+        turned auto-step on and there is work, or if an item came. `Busy` if a step is already running.
         """
     def go_to(self, cursor: int, to: int, client: str, now: int) -> bool:
         """Move `cursor` to node `to` for the frontend named `client`, turn auto-step off and wake
