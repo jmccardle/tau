@@ -16,11 +16,13 @@ from tau._bash_guard import BashGuard
 from tau._command_hooks import CommandHooks, CommandHooksUnavailable
 from tau._command_hooks_file import HookFileError
 from tau._compaction import Compaction
+from tau._fetch import Fetch
 from tau._mcp import Mcp, McpConfigError
 from tau._permissions import Permissions
 from tau._plan_mode import PlanMode
 from tau._prune import Prune
 from tau._router import Router
+from tau._search import Search
 from tau._session_commands import SessionCommands
 from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
@@ -35,12 +37,14 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     BaseTools.name: lambda loaded: BaseTools(),
     BashGuard.name: lambda loaded: BashGuard(),
     Compaction.name: lambda loaded: Compaction(),
+    Fetch.name: lambda loaded: Fetch.configured(loaded.catalog.extensions),
     CommandHooks.name: CommandHooks.of,  # a file it cannot use raises `HookFileError`
     Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # `McpConfigError`: the start stops
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     PlanMode.name: lambda loaded: PlanMode(),
     Prune.name: lambda loaded: Prune(),
     Router.name: lambda loaded: Router(),
+    Search.name: lambda loaded: Search.configured(loaded.catalog.extensions, loaded.environ),
     SessionCommands.name: lambda loaded: SessionCommands(Path.cwd()),
     Skills.name: Skills.of,  # a file it cannot use raises `SkillFileError`: the start stops
     StepLimit.name: lambda loaded: StepLimit(),
@@ -50,7 +54,7 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Usage.name: lambda loaded: Usage(),
 }
 OFF_BY_DEFAULT = frozenset(
-    {BashGuard.name, CommandHooks.name, Mcp.name, Router.name, TokenCalls.name}
+    {BashGuard.name, CommandHooks.name, Mcp.name, Router.name, Search.name, TokenCalls.name}
 )
 """The built-ins that `load` must turn on (`load: {router: true}`, `tau ext enable router`)."""
 FILE_ERRORS = (SkillFileError, McpConfigError, HookFileError, CommandHooksUnavailable)

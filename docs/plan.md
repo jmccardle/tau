@@ -439,7 +439,8 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   `tau serve --web-root`.
 - **tau-search:** a small port. Its `tau_agent_core` imports
   (`tool_from_function`, `ToolError`) become a plain function and `tau`'s
-  `ToolError`, and its dependency becomes `ffwf-tau`.
+  `ToolError`, and its dependency becomes `ffwf-tau`. (Done differently in 0.18: `fetch` and
+  `search` are built in, `search` off by default and keyed; the package is not ported.)
 - **JMFTS replica and Tectum**, in one pass (decided 2026-10-31: very
   important, but no rush). Tectum needs the same protocol over stdio, for
   programs that run `tau` as a subprocess (0.15's `--mode rpc`), and its
