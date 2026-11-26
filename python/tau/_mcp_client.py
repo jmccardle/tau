@@ -72,7 +72,7 @@ class McpTool:
 class _Transport(Protocol):
     async def send(self, message: Message) -> None: ...
     def post(self, message: Message) -> None: ...
-    async def close(self) -> None: ...
+    async def close(self, grace: float) -> None: ...
 
 
 class McpClient:
@@ -94,9 +94,12 @@ class McpClient:
         self.relisting: asyncio.Task[None] | None = None  # set by its owner while it lists again
 
     @classmethod
-    async def start(cls, server: McpServer, cwd: Path) -> "McpClient":
+    async def start(
+        cls, server: McpServer, cwd: Path, *, cancel_grace: float = STOP_GRACE
+    ) -> "McpClient":
         """Start or reach the server and shake hands. `McpStartError` naming it, with nothing
-        left running, if that fails; cancelling it stops what it started."""
+        left running, if that fails; cancelling it stops what it started, with `cancel_grace`
+        between each step of the stop."""
         client = cls(server)
         try:
             if server.transport == "stdio":
@@ -111,7 +114,7 @@ class McpClient:
             await client.stop()
             raise McpStartError(f"MCP server {server.name}: {e}") from None
         except BaseException:
-            await client.stop()
+            await client.stop(grace=cancel_grace)
             raise
         return client
 
@@ -248,11 +251,12 @@ class McpClient:
         else:
             future.set_exception(McpMalformed(f"returned a malformed result: {result!r:.80}"))
 
-    async def stop(self) -> None:
-        """End the server (a stdio process stopped, an HTTP session deleted)."""
+    async def stop(self, grace: float = STOP_GRACE) -> None:
+        """End the server (a stdio process stopped, with `grace` between closing its stdin,
+        SIGTERM and SIGKILL; an HTTP session deleted)."""
         self.stopping = True
         if self._transport is not None:
-            await self._transport.close()
+            await self._transport.close(grace)
         self.ended("stopped")
 
 
@@ -331,8 +335,8 @@ class _Stdio:
                 if text:
                     self.tail.append(text[:300])
 
-    async def close(self) -> None:
-        await stop(self._child, STOP_GRACE)
+    async def close(self, grace: float) -> None:
+        await stop(self._child, grace)
         await asyncio.gather(*self._readers, return_exceptions=True)
 
 
@@ -409,11 +413,11 @@ class _Http:
         if data:
             self._client.receive("\n".join(data))
 
-    async def close(self) -> None:
+    async def close(self, grace: float) -> None:
         for task in list(self._posts):
             task.cancel()
         await asyncio.gather(*self._posts, return_exceptions=True)
         if self._session is not None:
             with contextlib.suppress(httpx.HTTPError):
-                await self._http.delete(self._url, headers=self._headers(), timeout=STOP_GRACE)
+                await self._http.delete(self._url, headers=self._headers(), timeout=grace)
         await self._http.aclose()
