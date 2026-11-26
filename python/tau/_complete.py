@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from tau._core import Body, Node, Part, Session
+from tau._markers import UndoMarker
 from tau._model_list import ModelInfo, model_detail
 from tau._values import NEW
 
@@ -26,6 +27,11 @@ DETAIL_WIDTH = 80
 def _line(text: str | None) -> str | None:
     """`text` on one line: its whitespace runs, newlines included, made one space."""
     return None if text is None else " ".join(text.split())
+
+
+def _cut(line: str) -> str:
+    """`line` cut at `DETAIL_WIDTH` characters, ending in `…` if it was longer."""
+    return line if len(line) <= DETAIL_WIDTH else line[: DETAIL_WIDTH - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -43,10 +49,8 @@ class Completion:
 
     def __post_init__(self) -> None:
         detail = _line(self.detail)
-        if detail is not None and len(detail) > DETAIL_WIDTH:
-            detail = detail[: DETAIL_WIDTH - 1] + "…"
         object.__setattr__(self, "label", _line(self.label))
-        object.__setattr__(self, "detail", detail)
+        object.__setattr__(self, "detail", None if detail is None else _cut(detail))
 
 
 def _size(size: int) -> str:
@@ -145,9 +149,10 @@ def _config(data: str) -> str:
 
 
 def node_summary(node: Node) -> str:
-    """A node in one line: its kind, and what it says first. `User · fix the parser so that…`,
-    `Assistant · calls read, bash`, `Results · 2 calls`, `Config · model anthropic:sonnet`,
-    `System`, `Custom · todo`. What a `node` completion's detail is."""
+    """A node in one line of at most `DETAIL_WIDTH` characters: its kind, and what it says first.
+    `User · fix the parser so that…`, `Assistant · calls read, bash`, `Results · 2 calls`,
+    `Config · model anthropic:sonnet`, `System`, `Custom · todo`, and for an undo marker its label,
+    `Custom · undo /clear`. What a `node` completion's detail is, and each line of `/tree`."""
     match node.body:
         case Body.User(text=text):
             kind, said = "User", _first_line(text)
@@ -160,10 +165,21 @@ def node_summary(node: Node) -> str:
         case Body.System():
             kind, said = "System", ""
         case Body.Custom(kind=custom):
-            kind, said = "Custom", custom
+            label = _marker_label(node.body)
+            kind, said = "Custom", custom if label is None else f"{custom} {label}"
         case _:
             raise TypeError(f"node {node.id} holds a body completion does not know")
-    return f"{kind} · {said}" if said else kind
+    return _cut(" ".join(f"{kind} · {said}".split()) if said else kind)
+
+
+def _marker_label(body: Body) -> str | None:
+    """The label of the undo marker `body` holds; `None` for any other body, and for a malformed
+    marker, which its kind alone (`undo`) names in one line."""
+    try:
+        marker = UndoMarker.of(body)
+    except ValueError:  # what is wrong with it is `/undo`'s to say, when it reaches it
+        return None
+    return None if marker is None else marker.label
 
 
 def _first_line(text: str) -> str:

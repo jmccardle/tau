@@ -53,6 +53,7 @@ async def test_ctrl_z_goes_back_over_clear_and_says_so(tmp_path: Path) -> None:
             lambda: isinstance(h.session.tree.node(h.session.cursor(0).at).body, Body.Custom),
         )
         await until(pilot, lambda: not h.session.cursor(h.cursor).busy)
+        await shows(pilot, app, "undo: /clear")  # the marker by its label, not its JSON
         await pilot.press("ctrl+z")
         await until(pilot, lambda: "undo: undid /clear" in app.toasts)
         assert (await h.view()).at == before
@@ -67,4 +68,20 @@ async def test_ctrl_z_with_nothing_to_undo_says_so(tmp_path: Path) -> None:
         await until(pilot, lambda: any(f.name == "undo" for f in app.session.commands))
         await pilot.press("ctrl+z")
         await until(pilot, lambda: "nothing to undo on this branch" in app.toasts)
+    await h.close()
+
+
+@scenario
+async def test_a_typed_undo_puts_back_what_was_typed_as_ctrl_z_does(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("first")]), extensions=[shipped("undo")]
+    )
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, "hello there")
+        await pilot.press("enter")
+        await shows(pilot, app, "first")
+        await type_line(pilot, "/undo")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.draft == "hello there")
+        assert (await h.view()).at == SYS
     await h.close()

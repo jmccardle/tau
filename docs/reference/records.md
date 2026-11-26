@@ -351,6 +351,15 @@ property busy: bool
 
 A step is running.
 
+### CursorState.command
+
+```python
+property command: bool
+```
+
+The running step is a command's (D16 §2): it ends when the command returns. False at
+rest.
+
 ### CursorState.next
 
 ```python

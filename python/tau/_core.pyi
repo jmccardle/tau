@@ -1087,6 +1087,11 @@ class CursorState:
     def busy(self) -> bool:
         """A step is running."""
     @property
+    def command(self) -> bool:
+        """The running step is a command's (D16 §2): it ends when the command returns. False at
+        rest.
+        """
+    @property
     def next(self) -> Next:
         """What the cursor needs next, read from its walk alone."""
     @property

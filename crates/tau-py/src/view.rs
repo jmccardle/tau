@@ -158,6 +158,10 @@ pub struct CursorState {
     /// A step is running.
     #[pyo3(get)]
     busy: bool,
+    /// The running step is a command's (D16 §2): it ends when the command returns. False at
+    /// rest.
+    #[pyo3(get)]
+    command: bool,
     /// What the cursor needs next, read from its walk alone.
     #[pyo3(get)]
     next: Next,
@@ -209,6 +213,7 @@ impl std::fmt::Debug for CursorState {
             .field("at", &self.at)
             .field("auto", &self.auto)
             .field("busy", &self.busy)
+            .field("command", &self.command)
             .field("next", &self.next)
             .field("items", &self.items.len())
             .field("labels", &self.labels.len())
@@ -230,6 +235,7 @@ impl CursorState {
             at: s.at(cursor)?,
             auto: s.auto[&cursor],
             busy: machine.busy(cursor),
+            command: machine.in_command(cursor),
             next: s.next(cursor).into(),
             items: s.items(cursor).cloned().collect(),
             labels: s.labels_of(cursor).map(String::from).collect(),

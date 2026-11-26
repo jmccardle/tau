@@ -123,6 +123,16 @@ async def test_config_with_options_that_do_not_fit_is_refused_and_writes_nothing
 
 
 @scenario
+async def test_config_with_no_options_changes_nothing_and_writes_nothing(tmp_path: Path) -> None:
+    """`/config tuner` alone: no node says the branch changed when it did not."""
+    h = await Harness.create(tmp_path, extensions=[Tuner()])
+    before = len(h.nodes())
+    await h.configure("tuner", {})
+    await h.settle()
+    assert len(h.nodes()) == before
+
+
+@scenario
 async def test_the_config_form_names_only_the_extensions_that_have_options(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, extensions=[Tuner(), StepLimit()])
     (config,) = [c for c in await h.client.commands() if c.name == "config"]

@@ -259,7 +259,7 @@ async def test_prune_keeps_the_config_nodes_it_passes(tmp_path: Path) -> None:
         await h.send(text)
         await h.settle()
         if n == 0:
-            await h.configure("prune", {})
+            await h.configure("prune", {"auto": False})
             await h.settle()
     old = h.session.tree.walk(h.session.cursor(h.cursor).at)
     configs = [n.id for n in old[2:] if isinstance(n.body, Body.Config)]
