@@ -781,7 +781,7 @@ split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"
 
 `/plan` puts the branch in plan mode, and nothing in a session changes until you type it. In plan
 mode the model is told to research and propose a plan, and is offered only tools that read:
-`read`, `grep`, `find`, and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
+`read`, `grep`, `find`, `fetch` (a web page; it still goes through permissions), and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
 `head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
 redirects or substitutes nothing. A call to a tool it was not offered fails with `tool not
 offered: write`; any other `bash` command is refused with `plan mode: bash is refused. Put the

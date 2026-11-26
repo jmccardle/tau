@@ -4,7 +4,7 @@ Only assignments. To change them, copy this package to `$TAU_HOME/extensions/pla
 shadows the built-in) and edit this file there; the next start reads it.
 """
 
-READ_ONLY_TOOLS = ("read", "grep", "find")
+READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")
 """The tools plan mode offers and lets run, as far as the driver has them. A tool added here can
 change files the moment a model calls it, so add only tools that read."""
 

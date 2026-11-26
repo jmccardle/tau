@@ -1991,7 +1991,7 @@ The built-in extension, **on by default and inert until `/plan`**, for planning 
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
+`fetch` and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
 (order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
 of read-only commands, that chains, redirects or substitutes, that has an argument in
 `REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string

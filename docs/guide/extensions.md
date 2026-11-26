@@ -312,7 +312,7 @@ plan mode is the client's choice. What counts as read-only is not, or a `/config
 so the lists are in `tau/_plan_mode/settings.py`:
 
 ```python skip
-READ_ONLY_TOOLS = ("read", "grep", "find")
+READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")
 """The tools plan mode offers and lets run, as far as the driver has them. ..."""
 ```
 
