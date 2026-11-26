@@ -32,7 +32,8 @@ ARTICLE = """<!doctype html><html><head><title>The  Article</title>
     return 1
 </code></pre>
 <table><tr><th>Name</th><th>Size</th></tr><tr><td>a|b</td><td>9</td></tr></table>
-<p hidden>hidden words</p><img src="/pic.png" alt="a picture"><img src="/deco.png">
+<p hidden>hidden words</p><p style="color:red; DISPLAY : None">styled away</p>
+<img src="/pic.png" alt="a picture"><img src="/deco.png">
 </main><footer>Footer words</footer><script>more()</script></body></html>"""
 
 
@@ -100,8 +101,21 @@ async def test_a_page_becomes_markdown_of_its_main_content(tmp_path: Path) -> No
         "| Name | Size |\n| --- | --- |\n| a\\|b | 9 |\n\n"
         f"![a picture]({site.url}/pic.png)"
     )
-    for gone in ("Menu", "Footer", "track", "color", "hidden words", "more()"):
+    for gone in ("Menu", "Footer", "track", "color", "hidden words", "styled away", "more()"):
         assert gone not in shown
+
+
+@scenario
+async def test_a_table_row_with_nothing_to_read_is_left_out(tmp_path: Path) -> None:
+    page = (
+        "<main><table><tr><th colspan=2>Title</th></tr>"
+        '<tr><td colspan=2><img src="/x.png"></td></tr>'
+        '<tr style="display: none"><td>secret</td></tr>'
+        "<tr><th>Label</th><td>Value</td></tr></table></main>"
+    )
+    with serving({"/t": Page(page)}) as site:
+        (out,) = await run(tmp_path, site.url, {"url": "/t"})
+    assert text(out).split("\n", 3)[3] == "| Title |\n| --- |\n| Label | Value |"
 
 
 @scenario
