@@ -44,7 +44,8 @@ FILE = "file"
 """The priority, by convention, of a marker for a change outside the tree (a file checkpoint):
 followed only by `/undo file`, and reversed by the extension that wrote it."""
 _KEYS = ("label", "return_to", "reverses", "priority")
-_PRIORITY = re.compile(r"[a-z0-9_-]+")
+PRIORITY = re.compile(r"[a-z0-9_-]+")
+"""What a priority is made of: lower-case letters, digits, `_` and `-` (`fullmatch` it)."""
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ class UndoMarker:
             raise ValueError(f"an undo marker's return_to is a node id, not {self.return_to!r}")
         if self.return_to < 0:
             raise ValueError(f"an undo marker's return_to is a node id, not {self.return_to}")
-        if not isinstance(self.priority, str) or not _PRIORITY.fullmatch(self.priority):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(self.priority, str) or not PRIORITY.fullmatch(self.priority):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError(
                 f"an undo marker's priority is lower-case letters, digits, _ and -, not "
                 f"{self.priority!r}"
