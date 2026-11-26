@@ -7,7 +7,9 @@ Everything that can refuse the launch (usage, an unknown theme, a session anothe
 flags a server would ignore) does so before the screen is taken.
 
 `-r` runs the session picker first, as a small app of its own (`PickerApp`), and becomes
-`--session ID`. When the person leaves the screen for another session (Ctrl+O, Ctrl+N) the launch
+`--session ID`. SIGTERM and SIGHUP (the terminal closed) end the app as leaving it does, then
+the session closes as on any exit (`tau._signals`): the status is 128 + the signal. When the
+person leaves the screen for another session (Ctrl+O, Ctrl+N) the launch
 returns the `Switch` after closing the session, and `tui_mode` replaces the process with `tau`
 started for it (D23 section 5).
 """
@@ -23,9 +25,11 @@ from tau._config_layers import read_models
 from tau._events import CursorView
 from tau._launch import UsageError
 from tau._open import Opened, client_id, open_client
+from tau._print_mode import detach
 from tau._project_read import safe_block
 from tau._session_start import start_report
 from tau._sessions import SessionFlags, UnknownSession, list_sessions, sessions_directory
+from tau._signals import HANGUP, off_ending, on_ending, status
 from tau._startup import prompts
 from tau._trust import tau_home, user_config_path
 from tau.tui._app import TauApp
@@ -80,11 +84,44 @@ def report(opened: Opened) -> list[str]:
     return lines
 
 
+class _Ended:
+    """The signal that ended the launch (`tau._signals.ENDING`), and the app to end with it."""
+
+    def __init__(self) -> None:
+        self.signal: int | None = None
+        self.app: TauApp | None = None
+        self.task: asyncio.Task[tuple[int, Switch | None]] | None = None
+
+    def __call__(self, number: int) -> None:
+        """The app leaves as on a quit; before it runs, or on a second signal, the launch is
+        cancelled. Either way `launch` closes the session on its way out."""
+        first = self.signal is None
+        self.signal = self.signal or number
+        if first and self.app is not None and self.app.is_running:
+            self.app.exit(return_code=status(number))
+        elif self.task is not None:
+            self.task.cancel()
+
+
 async def launch(
-    process: Process, args: object, theme: str | None, home: Path
+    process: Process, args: object, theme: str | None, home: Path, ended: _Ended
 ) -> tuple[int, Switch | None]:
     """Open the session, run the app on this loop, close the session; the exit status and where
-    the person asked to go next, if they did."""
+    the person asked to go next, if they did. On a SIGTERM or SIGHUP (`ended.signal`) the
+    status is 128 + the signal, or, before the app runs, `asyncio.CancelledError` is raised once
+    the session is closed."""
+    loop = asyncio.get_running_loop()
+    ended.task = asyncio.current_task()
+    on_ending(loop, ended)
+    try:
+        return await _launch(process, args, theme, home, ended)
+    finally:
+        off_ending(loop)
+
+
+async def _launch(
+    process: Process, args: object, theme: str | None, home: Path, ended: _Ended
+) -> tuple[int, Switch | None]:
     me = client_id("tui")
     opened = await open_client(
         args,
@@ -112,7 +149,10 @@ async def launch(
             reconnect=opened.reconnect if opened.started is None else None,
             sessions=sessions_directory(home, flags.directory),
         )
+        ended.app = app
         await app.run_async()
+        if ended.signal is not None:
+            return status(ended.signal), None
         return app.return_code or 0, app.switch
     finally:
         await opened.close()
@@ -159,7 +199,17 @@ def tui_mode(process: Process, args: object) -> int:
     if getattr(args, "resume") and not choose_session(process, args, theme, home):  # noqa: B009
         process.stderr.write("tau: no session chosen\n")
         return 1
-    status, switch = asyncio.run(launch(process, args, theme, home))
+    ended = _Ended()
+    try:
+        code, switch = asyncio.run(launch(process, args, theme, home, ended))
+    except asyncio.CancelledError:
+        if ended.signal is None:
+            raise
+        code, switch = status(ended.signal), None
+    finally:
+        if ended.signal is not None and ended.signal == HANGUP:  # the last flush must not fail
+            detach(process.stdout)
+            detach(process.stderr)
     if switch is not None:
         replace_process(process, args, theme, switch)
-    return status
+    return code

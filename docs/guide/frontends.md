@@ -82,6 +82,14 @@ What to know:
 - **`opened.close()`** closes the client, and for a local start stops the driver and releases the
   session. A session that was never used is deleted. `opened.started` is the `Started` of a local
   start (`None` when attached) if you need the driver or the session.
+- **Make sure `opened.close()` runs when your program is told to stop.** Stopping the driver runs
+  each extension's `stop`, and that is what ends the processes extensions started: hook
+  commands, MCP servers, a running `bash` command. A Python program that dies of SIGTERM (`kill`)
+  or SIGHUP (its terminal closed) runs no `finally`, and leaves them running. Turn both into
+  cancellation, as `asyncio.run` already does for SIGINT: `loop.add_signal_handler` for each,
+  cancelling the main task, then exit 128 + the signal. `examples/common.py`
+  (`run_until_signalled`) does this; `tau -p`, the terminal UI and `tau serve` do it too. Windows
+  has no SIGHUP and its event loop no `add_signal_handler`.
 - A program with its own extensions passes `own=[MyExtension()]`. A program with its own system
   prompt passes `system=`, a function that is given the working directory and the loaded config
   and returns the text; the prompt flags are then an error, since they would be ignored.

@@ -84,7 +84,9 @@ one `Client`, one cursor, no person to ask.
    busy. A `send` wakes the cursor, so the view that call published is busy (D21 §3's order holds
    locally too). Meanwhile answer questions (§5).
 5. Print (§3, §4), close the client, stop, and exit (§6). SIGINT aborts the cursor, waits for it
-   to rest, stops and exits 130; a second SIGINT exits 130 at once. If the run's message has no
+   to rest, stops and exits 130; a second SIGINT leaves within 2 s (below). SIGTERM and SIGHUP
+   do what SIGINT does, but wait at most 2 s for the cursor to rest, and exit 143 and 129
+   (amended 2026-11-26). If the run's message has no
    reply node yet (the `User` node is the only node the run added), the interrupt takes it back so
    the next `-c` does not send two user messages in a row (8E-5): nodes are written once, so the
    node stays in the tree as a dead branch and the cursor goes to the node before it (a message
@@ -203,7 +205,8 @@ was about to answer it. Now no rule matching is never a decline:
 | 1 | a failure: ending `Failed` (a sample or a hook), `CommandFailed`, a start error (`ConfigError`, `TrustError`, `Leased`, ...), a refused `--answer` value, the driver failed or the server went away; the run's last reply was refused (`Stop.Refused`, amended 2026-11-12): stderr says `the model refused (finish reason R)`, its text, if any, is still printed, and under `--json` the error type is `Refused` |
 | 2 | usage: bad flags, nothing to send, a command line missing arguments, `-r` |
 | 3 | stopped before finishing: the cursor rested with auto-step off (`StepLimit`, a hook turned it off, a step did not move) or ending `Halted`, or the message is still pending (a `pre_input` hook refused it) |
-| 130 | interrupted |
+| 130 | interrupted (SIGINT) |
+| 143, 129 | stopped by SIGTERM, SIGHUP: 128 + the signal (amended 2026-11-26) |
 
 At exits 3, and 1 after the model spoke, stdout carries the model's text of the turn (§3).
 
@@ -409,8 +412,19 @@ Where the code differs from the text above, or the text left a choice:
 - **A command line on a session `-c` opened** waits first for the cursor's view to rest: loading
   wakes every cursor (model.md Q39), so the step it starts is under way when `-p` sends the
   command, and a command that runs as a step of the cursor would find it busy (8E-5).
-- **Second SIGINT** writes `tau: interrupted` and calls `os._exit(130)` at once, running no
-  cleanup, since hooks are never cancelled (model.md §8) and an abort waits for the one in flight.
+- **Second SIGINT** (or any second signal of SIGINT, SIGTERM, SIGHUP) writes `tau: interrupted`
+  and stops waiting for the abort: an abort never cancels a hook (model.md §8), so it could wait
+  for ever. It closes the session at once instead, as a normal exit does: the driver stops,
+  cancelling the hooks, and runs each extension's `stop`, which ends the processes the extension
+  started (hook commands, MCP servers). That close has `LEAVE_SECONDS` (2 s); if it has not
+  finished by then (a hook or a `stop` that will not end), `os._exit` with the first signal's
+  status (130 for Ctrl+C). Amended 2026-11-26: before, the second SIGINT called `os._exit(130)`
+  at once, running no cleanup, and left those processes running.
+- **SIGTERM and SIGHUP** (amended 2026-11-26) are the first SIGINT's stop with a bound: the
+  abort and the take-back get `LEAVE_SECONDS`, then the session closes as above, stderr says
+  `tau: stopped by SIGTERM` (or `SIGHUP`; nothing if the terminal is gone), and the status is
+  128 + the signal. Before, neither was handled and the interpreter died of it, leaving the
+  extensions' processes orphaned. Windows has neither signal to catch (`tau._signals`).
 - **Standard input and output** (8E-6). `tau -p` never blocks silently on stdin, and behaves as a
   Unix filter does for each kind:
 
@@ -439,7 +453,7 @@ Where the code differs from the text above, or the text left a choice:
 - **Retries** are told on stderr, one line each, with or without `--verbose` (`tau: HTTP 429: busy:
   retry 1 of 3 in 2 s`); `--json` also carries them as `Live` events.
 - **Interrupt.** If the first SIGINT's stop is still waiting for a hook after 2 s, stderr says so
-  and that a second SIGINT leaves the message in the session. The second leaves at once
+  and that a second SIGINT leaves the message in the session. The second leaves within 2 s
   (above), so a message already written stays: the next `-c` then sees two user messages in a row
   (the first has no reply). Taking it back needs the move to be applied by the core, which a
   hook still running prevents.
