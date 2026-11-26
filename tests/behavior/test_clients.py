@@ -8,7 +8,7 @@ from typing import Literal
 
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
-from harness import Connected, Harness, scenario
+from harness import Connected, Harness, scenario, snapshot
 
 from tau import (
     Appended,
@@ -16,6 +16,7 @@ from tau import (
     CallArgs,
     CallNamed,
     Client,
+    Commands,
     Cursor,
     CursorView,
     CutOff,
@@ -61,7 +62,7 @@ async def test_a_client_connecting_mid_sample_is_told_where_everything_stands(
     await h.send("go")
     await h.settle()  # the sample is in flight
     late = await h.connect("late")
-    *views, labels = await first(late, 3)
+    *views, labels = await snapshot(late, 2)
     assert labels == Labels((("main", h.cursor),)), "after the cursors it names"
     assert [v.cursor for v in views if isinstance(v, CursorView)] == [h.cursor, other]
     mine = views[0]
@@ -115,7 +116,7 @@ async def test_a_state_that_replaces_an_earlier_copy_takes_its_place(tmp_path: P
     assert [(v.cursor, v.auto) for v in views] == [(h.cursor, False), (other, True)], (
         "one copy of each, the latest, in the order of the snapshot"
     )
-    assert [type(e) for e in events] == [CursorView, CursorView, Labels]
+    assert [type(e) for e in events] == [Commands, CursorView, CursorView, Labels]
 
 
 # Watching
@@ -140,7 +141,7 @@ async def test_watching_catches_up_on_the_reply_in_flight(tmp_path: Path) -> Non
     await h.send("go")
     await h.settle()
     late = await h.connect("late")
-    await first(late, 2)
+    await snapshot(late)
     await late.watch([h.cursor])
     caught = await first(late, 4)
     assert caught == [
@@ -182,7 +183,7 @@ async def test_a_client_that_falls_behind_is_cut_off_and_reconnects_to_a_consist
         await asyncio.wait_for(_read_all(slow), 1)
     assert isinstance(cut.value, CutOff)
     again = await h.connect("slow", buffer=2)
-    view, _labels = await first(again, 2)
+    view, _labels = await snapshot(again)
     assert isinstance(view, CursorView)
     assert view.at == len(h.nodes()) - 1
     assert not view.busy
@@ -290,7 +291,7 @@ async def test_every_client_is_told_of_a_question_and_of_its_close(tmp_path: Pat
     asks = Asks("go on?", to="alice")
     h, (alice, bob) = await asked(tmp_path, asks, "alice", "bob")
     for client in (alice, bob):
-        views = [e for e in await first(client, 2) if isinstance(e, CursorView)]
+        views = [e for e in await snapshot(client) if isinstance(e, CursorView)]
         assert [q.text for q in views[0].questions] == ["go on?"]
     (question,) = (await h.view()).questions
     await alice.answer(question.id, "no")
@@ -329,13 +330,13 @@ async def test_a_question_for_a_client_that_disconnects_is_open_to_everyone(
     h, (alice, bob) = await asked(tmp_path, asks, "alice", "bob")
     (question,) = (await h.view()).questions
     assert question.to == "alice"
-    await first(bob, 2)  # the snapshot and the question's view
+    await snapshot(bob)  # including the question's view
     await alice.close()
     pooled = await _next_view(bob)
     assert [(q.id, q.to) for q in pooled.questions] == [(question.id, None)], "bob may answer"
     assert asks.answers == [], "a disconnect declines nothing"
     again = await h.connect("alice")
-    seen = [e for e in await first(again, 2) if isinstance(e, CursorView)]
+    seen = [e for e in await snapshot(again) if isinstance(e, CursorView)]
     assert [(q.id, q.to) for q in seen[0].questions] == [(question.id, None)], (
         "it stays in the pool when its client returns"
     )
@@ -532,7 +533,7 @@ async def test_a_refused_input_is_a_notice_to_the_client_that_typed_it_alone(
 ) -> None:
     h = await Harness.create(tmp_path, extensions=[Refuses()])
     bystander = await h.connect("bystander")
-    await first(bystander, 2)
+    await snapshot(bystander)
     await h.send("/oops")
     await h.settle()
     assert h.notices() == ["no commands here"]
@@ -562,7 +563,7 @@ async def test_a_hook_tells_one_client(tmp_path: Path) -> None:
     await h.settle()
     async with asyncio.timeout(1):
         notice = await anext(e async for e in alice if isinstance(e, Notice))
-    assert notice == Notice("build done")
+    assert notice == Notice("build done", cursor=h.cursor, extension="tells")
     (events,) = await _drain(h, bob)
     assert not [e for e in events if isinstance(e, Notice)]
 
@@ -573,8 +574,8 @@ async def test_a_notice_for_a_client_that_is_not_connected_is_dropped(tmp_path: 
     await h.step()
     await h.settle()
     alice = await h.connect("alice")
-    snapshot = await first(alice, 2)
-    assert not [e for e in snapshot if isinstance(e, Notice)]
+    heard = await snapshot(alice)
+    assert not [e for e in heard if isinstance(e, Notice)]
     await h.close()
 
 
@@ -596,7 +597,7 @@ async def test_watching_catches_up_on_calls_under_the_providers_own_index(tmp_pa
     await h.send("go")
     await h.settle()
     late = await h.connect("late")
-    await first(late, 2)
+    await snapshot(late)
     await late.watch([h.cursor])
     caught = await first(late, 5)
     assert caught == [

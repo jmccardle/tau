@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from tau._config import ConfigError, ModelConfig, config_fields
-from tau._config_keys import ORDER
+from tau._config_keys import ORDER, TIMEOUTS
 from tau._core import Body, Node, Session
 from tau._model_sections import build_section, model_options_type
 from tau._values import (
@@ -55,10 +55,11 @@ def option_fields(extension: str, options: object) -> tuple[Field, ...]:
     hints = get_type_hints(options, include_extras=True)
     fields: list[Field] = []
     for f in dataclasses.fields(options):
-        if f.name == ORDER:
+        if f.name in (ORDER, *TIMEOUTS):
             raise DefinitionError(
-                f"{where} field {f.name!r}: `order` is reserved under extensions.NAME for the "
-                "extension's hook order (D28); name the option for what it holds"
+                f"{where} field {f.name!r}: `{f.name}` is reserved under extensions.NAME for the "
+                "harness's own setting of the extension (D28, D32); name the option for what it "
+                "holds"
             )
         if f.default_factory is not dataclasses.MISSING:
             raise DefinitionError(f"{where} field {f.name!r}: use a plain default")
@@ -172,6 +173,7 @@ class ExtensionOptions:
         # Per node, the options its walk's Config nodes set. A node never changes, so each is
         # folded once, from its parent's; a node that is no Config shares its parent's.
         self._folds: dict[int, _Fold] = {}
+        self.generation = 0  # up by one at each `reload`: the hub compares the forms only then
         self.reload(extensions)
 
     def reload(self, extensions: Sequence[object]) -> None:
@@ -191,6 +193,12 @@ class ExtensionOptions:
                 types[name] = cast("type", options)
         self._types, self._fields, self._sections = types, fields, sections
         self._folds.clear()
+        self.generation += 1
+
+    def types(self) -> tuple[tuple[str, type], ...]:
+        """Each extension's options type, by name: what a reload that changes only a type
+        changes."""
+        return tuple(self._types.items())
 
     def names(self) -> tuple[str, ...]:
         """The extensions that have options."""
@@ -321,10 +329,11 @@ class ExtensionOptions:
         if model is not None:
             self._catalog().resolve(model)
         for name, new in extensions.items():
-            if ORDER in new:
+            if reserved := [k for k in (ORDER, *TIMEOUTS) if k in new]:
                 raise ConfigError(
-                    f"{name}.{ORDER} is not set on a branch: hook order (D28) is read from the "
-                    f"config files, or `--set {name}.{ORDER}=N` for one run"
+                    f"{name}.{reserved[0]} is not set on a branch: it is the harness's (D28, "
+                    f"D32), read from the config files, or `--set {name}.{reserved[0]}=N` for one "
+                    "run"
                 )
             if name in self._fields and (extra := unknown_options(self._fields[name], dict(new))):
                 raise ConfigError(f"extension {name!r}: unexpected options {extra}")

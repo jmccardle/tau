@@ -24,6 +24,7 @@ from tau import (
     PROTOCOL,
     Appended,
     Body,
+    Commands,
     CursorView,
     Ending,
     Event,
@@ -710,7 +711,9 @@ def test_json_is_a_welcome_then_the_events_the_wire_would_send(configured: World
     assert welcome.pid == os.getpid()
     assert welcome.cwd == str(configured.home.resolve())
     kinds = [event["kind"] for event in events]
-    assert kinds[0] == "CursorView", "the snapshot first"
+    assert kinds[:2] == ["Commands", "CursorView"], (
+        "the snapshot first, the command forms before it"
+    )
     assert "Live" in kinds, "the watched cursor's Live"
 
 
@@ -725,7 +728,7 @@ def test_json_lines_decode_as_a_client_of_the_wire_hears_them(configured: World)
     heard = decoded(events)
     # A client's stream keeps one view per cursor and drops the Live it did not ask for: what it
     # decoded is the events' end state, and every line fit the schema or it would have raised.
-    assert isinstance(heard[0], Labels | CursorView)
+    assert isinstance(heard[0], Commands | Labels | CursorView)
     appended = [n for e in heard if isinstance(e, Appended) for n in e.nodes]
     replies = [n.body for n in appended if isinstance(n.body, Body.Assistant)]
     assert [part.text for part in replies[-1].parts] == ["mock: hi"]  # type: ignore[attr-defined]
@@ -738,7 +741,7 @@ def test_json_with_no_session_has_no_welcome_line(configured: World) -> None:
     result = p(configured, "--json", "--no-session", "hi")
     assert result.code == 0, result.err
     assert all(line["kind"] != "Welcome" for line in objects(result))
-    assert objects(result)[0]["kind"] == "CursorView"
+    assert objects(result)[0]["kind"] == "Commands"
     assert sessions(configured) == []
 
 
@@ -1138,3 +1141,30 @@ def test_verbose_says_one_call_not_1_calls(world: World) -> None:
     assert result.code == 0, result.err
     assert "tau: node 3 Assistant: 1 call: bash" in result.err
     assert "calls" not in result.err
+
+
+NO_START = """
+class NoStart:
+    name = "nostart"
+
+    async def start(self, tree):
+        raise RuntimeError("no server")
+
+extensions = [NoStart()]
+"""
+
+
+def test_a_drop_in_whose_start_raises_stops_the_start_as_a_failed_import_does(
+    configured: World,
+) -> None:
+    """D32 section 4: a `start` that fails is a load failure, with its source's row (D19)."""
+    directory = configured.tau / "extensions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "nostart.py").write_text(NO_START, encoding="utf-8")
+    result = p(configured, "go")
+    assert result.code == 1
+    assert 'extension "nostart" failed to start; tau did not start.' in result.err
+    assert f"source: {directory / 'nostart.py'}" in result.err
+    assert "extension 'nostart' did not start: RuntimeError: no server" in result.err
+    assert "to start without it: tau ext disable nostart   (or: tau --no-extensions)" in result.err
+    assert sessions(configured) == [], "nothing is served, and the new session is removed"

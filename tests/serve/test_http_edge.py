@@ -142,7 +142,7 @@ async def test_hello_is_posted_and_answered_on_the_stream_after_the_snapshot(
     h = await Harness.create(tmp_path)
     raw = await Raw.open(*edge_of(h))
     heard = await raw.hello("john@laptop:vscode")
-    assert [m["params"]["kind"] for m in heard[:-1]] == ["CursorView", "Labels"]
+    assert [m["params"]["kind"] for m in heard[:-1]] == ["Commands", "CursorView", "Labels"]
     assert all(m["method"] == "event" for m in heard[:-1])
     welcome = heard[-1]["result"]
     assert welcome["protocol"] == PROTOCOL

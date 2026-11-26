@@ -62,6 +62,7 @@ fn echo(job: &Job) -> Answer {
     match job {
         Job::Hooks { draft, .. } => Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: draft.clone(),
         },
         _ => ok(),
@@ -71,6 +72,7 @@ fn echo(job: &Job) -> Answer {
 fn ok() -> Answer {
     Answer::Hooks {
         stop: None,
+        halted_by: None,
         draft: None,
     }
 }
@@ -458,6 +460,7 @@ fn a_cursor_hook_string_halts_the_step() {
             ..
         } => vec![Answer::Hooks {
             stop: Some("over budget".into()),
+            halted_by: None,
             draft: None,
         }],
         _ => vec![echo(job)],
@@ -520,11 +523,16 @@ fn an_inputs_author_is_the_user_nodes_author() {
 
 #[test]
 fn a_halted_input_notifies_a_frontend_but_not_an_extension() {
-    let (s, _, jobs) = halted_input(Author::Frontend("term".into()));
+    let (s, c, jobs) = halted_input(Author::Frontend("term".into()));
     assert_eq!(ending(&jobs), Ending::Halted("no thanks".into()));
     assert_eq!(
         s.notices,
-        vec![("term".to_string(), "no thanks".to_string())]
+        vec![(
+            "term".to_string(),
+            c,
+            Some("guard".to_string()),
+            "no thanks".to_string()
+        )]
     );
 
     let (s, c, jobs) = halted_input(Author::Extension("gm".into()));
@@ -705,6 +713,7 @@ fn refused(s: &mut Session, step: &mut Step, c: u64, answer: Answer) {
 fn stop() -> Answer {
     Answer::Hooks {
         stop: Some("no".into()),
+        halted_by: None,
         draft: None,
     }
 }
@@ -844,6 +853,7 @@ fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending
     };
     let edited = Answer::Hooks {
         stop: None,
+        halted_by: None,
         draft: Some(Draft {
             body: Body::user("edited"),
             delivers: vec![],
@@ -924,6 +934,7 @@ fn turn_with_hook_answer(point: Hook, answer: Answer) -> (Session, u64, Vec<Job>
 fn halting(reason: &str) -> Answer {
     Answer::Hooks {
         stop: Some(reason.into()),
+        halted_by: Some("guard".into()),
         draft: None,
     }
 }

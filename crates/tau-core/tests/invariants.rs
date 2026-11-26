@@ -209,6 +209,7 @@ fn hook(
 ) -> Result<Answer, TestCaseError> {
     let echo = || Answer::Hooks {
         stop: None,
+        halted_by: None,
         draft: draft.clone(),
     };
     if point == Hook::PreSample {
@@ -218,6 +219,7 @@ fn hook(
     Ok(match k % 16 {
         0 => Answer::Hooks {
             stop: Some("halt".into()),
+            halted_by: None,
             draft: None,
         },
         1 => Answer::HookFailed("boom".into()),
@@ -234,6 +236,7 @@ fn hook(
         }
         3 if point == Hook::PreSample => Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: Some(reply(vec![Part::text("answered")], Stop::End)),
         },
         _ => echo(),

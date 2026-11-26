@@ -350,8 +350,15 @@ class Extension(Protocol):
     sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
     field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
 
-    Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`, and
-    `rescan` (`Rescanning`).
+    Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`,
+    `rescan` (`Rescanning`), and the lifecycle (D32 section 4): `async def start(self, tree:
+    TreeHandle) -> None`, run once before the driver takes its first job (and when a reload adds
+    the extension), handed a tree handle that stays live until `stop` returns; and `async def
+    stop(self) -> None`, run at shutdown (and when a reload removes it), after the tasks it
+    `spawn`ed are cancelled. A `start` or `stop` that is not a coroutine function is refused when
+    the driver is built (`DefinitionError`). A `start` that raises or outlives its timeout
+    (`START_TIMEOUT`, or `extensions.NAME.start_timeout`) stops the driver's start with
+    `ExtensionLoadError`; a `stop` that does is reported and the next one runs.
     """
 
     @property
@@ -377,9 +384,21 @@ EXTENSION_NAME = re.compile(r"[A-Za-z0-9_-]+")
 """What an extension's name, and a source's key, must match (D19 section 1)."""
 
 
+LIFECYCLE: tuple[str, ...] = ("start", "stop")
+"""An extension's lifecycle methods (D32 section 4): each optional, each a coroutine function."""
+
+
 def _check_hooks(name: str, candidate: object) -> None:
     """`DefinitionError` if the extension `name` has a `pre_`/`post_` attribute that is not a
-    hook point, or a hook that is not callable."""
+    hook point, a hook that is not callable, or a `start` or `stop` that is not a coroutine
+    function."""
+    for attr in LIFECYCLE:
+        method = getattr(candidate, attr, None)
+        if method is not None and not inspect.iscoroutinefunction(method):
+            raise DefinitionError(
+                f"extension {name!r}: `{attr}` must be an async method (`async def {attr}`), "
+                f"the extension's lifecycle, not {method!r}"
+            )
     for attr in dir(candidate):
         if not attr.startswith(("pre_", "post_")):
             continue

@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager, contextmanager
 from typing import cast
 
 from tau import trace
-from tau._commands import Commands
+from tau._commands import CommandTable
 from tau._config_layers import ModelCatalog
 from tau._core import Author, Busy, CursorClosed, Image, ItemData, Node, NoSuchItem, Session
 from tau._events import LiveDelta
@@ -50,7 +50,7 @@ class Calls:
         clock: Clock,
         hub: Hub,
         questions: Questions,
-        commands: Commands,
+        commands: CommandTable,
         catalog: Callable[[], ModelCatalog],
         *,
         changing: Callable[[], AbstractContextManager[None]],
@@ -97,15 +97,28 @@ class Calls:
         the session does not hold. Nothing is added then."""
         if not inputs:
             return []
-        if len(inputs) > MAX_INPUT_IMAGES:
-            raise ValueError(
-                f"an input carries at most {MAX_INPUT_IMAGES} images, not {len(inputs)}"
-            )
+        self._at_most(len(inputs))
         images = [i.image() or self.session.tree.image_named(cast("str", i.sha256)) for i in inputs]
-        problem = self._image_gate(self.session.cursor(cursor).at, images)
+        return self.checked_images(cursor, images)
+
+    @staticmethod
+    def _at_most(found: int) -> None:
+        if found > MAX_INPUT_IMAGES:
+            raise ValueError(f"an input carries at most {MAX_INPUT_IMAGES} images, not {found}")
+
+    def checked_images(self, cursor: int, images: Sequence[Image]) -> list[Image]:
+        """`images` for an input to `cursor`, each with its bytes (one without them is the one the
+        session keeps by its `sha256`: `MissingImage` if it keeps none), held to the model of the
+        cursor's branch: `ValueError` saying why they cannot go, or for too many. What a
+        `TreeHandle.send` with images meets (D32 section 4, TG-32), and a client's input too."""
+        self._at_most(len(images))
+        found = [
+            i if i.data is not None else self.session.tree.image_named(i.sha256) for i in images
+        ]
+        problem = self._image_gate(self.session.cursor(cursor).at, found)
         if problem is not None:
-            raise ValueError(f"{count(len(images))} not sent: {problem}")
-        return images
+            raise ValueError(f"{count(len(found))} not sent: {problem}")
+        return found
 
     def step(self, cursor: int) -> None:
         with self._changing():

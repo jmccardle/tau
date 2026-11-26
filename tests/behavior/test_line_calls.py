@@ -9,7 +9,7 @@ import pytest
 from harness import Harness, scenario
 
 from tau import Cursor, NoSuchNode
-from tau.commandline import UnknownCommand, completions, parse
+from tau.commandline import Completion, UnknownCommand, completions, parse
 
 
 def configure(cursor: Cursor, mode: Literal["fast", "slow"], size: int) -> None:
@@ -93,8 +93,10 @@ async def test_complete_line_is_completions_on_the_driver(tmp_path: Path) -> Non
     for line in ["/", "/conf", "/configure ", "/configure s", "/config ", "/config tuner ", "no"]:
         found = await h.client.complete_line(h.cursor, line)
         assert found == await completions(line, forms, h.client, h.cursor, options), line
-    assert await h.client.complete_line(h.cursor, "/configure s") == ["slow"]
-    assert "/config" in await h.client.complete_line(h.cursor, "/conf")
+    assert await h.client.complete_line(h.cursor, "/configure s") == [Completion("slow", "slow")]
+    names = await h.client.complete_line(h.cursor, "/conf")
+    assert Completion("/config", None, "Change an extension's options on this branch.") in names
+    assert Completion("/configure", None, "Configure. · tuner") in names
     await h.close()
 
 

@@ -88,7 +88,7 @@ async def test_after_a_reload_the_commands_options_tools_and_hooks_are_the_new_o
     assert getattr(old, "stepped", False)
 
     new = New()
-    h.driver.reload([new])
+    await h.driver.reload([new])
     assert {f.name for f in await h.client.commands()} == {
         "model",
         "new_command",
@@ -116,10 +116,10 @@ async def test_a_reload_is_refused_while_an_effect_is_out_and_says_which(tmp_pat
     await h.send("go")
     await h.settle()
     with pytest.raises(Busy, match=rf"cursors \[{h.cursor}\]"):
-        h.driver.reload([Unrelated()])
+        await h.driver.reload([Unrelated()])
     gate.release()
     await h.settle()
-    h.driver.reload([Unrelated()])
+    await h.driver.reload([Unrelated()])
     await h.close()
 
 
@@ -131,10 +131,10 @@ async def test_a_reload_is_refused_while_a_command_waits_for_its_step(tmp_path: 
     waiting = asyncio.ensure_future(h.client.configure(h.cursor, "thing", {"size": 7}))
     await h.until(lambda: h.session.cursor(h.cursor).busy)
     with pytest.raises(Busy, match=rf"cursors \[{h.cursor}\]"):
-        h.driver.reload([New()])
+        await h.driver.reload([New()])
     await waiting
     await h.settle()
-    h.driver.reload([New()])
+    await h.driver.reload([New()])
     await h.close()
 
 
@@ -154,7 +154,7 @@ async def test_a_reload_drops_what_the_extensions_it_removed_showed(tmp_path: Pa
     await h.run("shine", {"text": "plan mode"})
     await h.settle()
     assert (await h.view()).shown == (("badge", "plan mode"),)
-    h.driver.reload([Old()])
+    await h.driver.reload([Old()])
     await h.settle()
     assert (await h.view()).shown == ()
     last = [e for e in h.heard if isinstance(e, CursorView)][-1]
@@ -167,7 +167,7 @@ async def test_a_reload_keeps_what_the_extensions_it_keeps_showed(tmp_path: Path
     h = await Harness.create(tmp_path, extensions=[Badge(), Old()], provider=FakeProvider([]))
     await h.run("shine", {"text": "plan mode"})
     await h.settle()
-    h.driver.reload([Old(), Badge()])
+    await h.driver.reload([Old(), Badge()])
     await h.settle()
     assert (await h.view()).shown == (("badge", "plan mode"),)
     await h.close()
@@ -182,7 +182,7 @@ async def test_a_refused_reload_changes_nothing(tmp_path: Path) -> None:
         commands = (old_command, old_command)
 
     with pytest.raises(DefinitionError, match="two commands are named 'old_command'"):
-        h.driver.reload([New(), Twice()])
+        await h.driver.reload([New(), Twice()])
     assert {f.name for f in await h.client.commands()} == {"model", "old_command", "config"}
     await h.send("one")
     await h.settle()
@@ -200,7 +200,7 @@ async def test_a_config_node_an_extension_can_no_longer_read_fails_when_read(
     nodes = len(h.session.tree)
     assert (await h.client.options(h.cursor, "thing")).schema["properties"]["size"]["default"] == 7  # type: ignore[index]
 
-    h.driver.reload([Unrelated()])
+    await h.driver.reload([Unrelated()])
     assert len(h.session.tree) == nodes, "the tree is not rewritten"
     config = h.session.tree.node(h.session.cursor(h.cursor).at).body
     assert isinstance(config, Body.Config)
@@ -208,7 +208,7 @@ async def test_a_config_node_an_extension_can_no_longer_read_fails_when_read(
     with pytest.raises(ConfigError, match="has no options"):
         await h.client.options(h.cursor, "thing")
 
-    h.driver.reload([New()])  # the same name, another type: 7 is not a str
+    await h.driver.reload([New()])  # the same name, another type: 7 is not a str
     with pytest.raises(CommandFailed, match=r"ConfigError: extension 'thing': .*size"):
         await h.run("read_size")
     await h.close()
@@ -219,7 +219,7 @@ async def test_a_stopped_driver_cannot_reload(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path)
     await h.driver.stop()
     with pytest.raises(ConnectionError, match="the driver is stopped"):
-        h.driver.reload([])
+        await h.driver.reload([])
     h.session.close()
 
 
@@ -233,7 +233,7 @@ async def test_the_hooks_of_a_reloaded_extension_run_and_the_old_ones_do_not(
     )
     await h.send("one")
     await h.settle()
-    h.driver.reload([after])
+    await h.driver.reload([after])
     await h.send("two")
     await h.settle()
     assert "pre_step" in before.points

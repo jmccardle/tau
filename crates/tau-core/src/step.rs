@@ -105,6 +105,8 @@ pub enum Answer {
     Hooks {
         stop: Option<String>,
         draft: Option<Draft>,
+        /// The extension whose hook returned `stop`; `None` for a halt that is not a hook's.
+        halted_by: Option<String>,
     },
     HookFailed(String),
     /// `parts`: what streamed before `end`. Core decides the reply: a finish is
@@ -379,7 +381,11 @@ impl Step {
         self.out = false;
         match answer {
             Answer::HookFailed(e) => self.on_hook_failed(s, e),
-            Answer::Hooks { stop, draft } => self.on_hooks(s, stop, draft, now),
+            Answer::Hooks {
+                stop,
+                draft,
+                halted_by,
+            } => self.on_hooks(s, stop, draft, halted_by, now),
             Answer::Sampled { parts, end } => self.on_sampled(s, parts, end, now)?,
             Answer::CallDone { call, outcome, by } => self.on_call(s, &call, outcome, by, now)?,
         }
@@ -399,7 +405,14 @@ impl Step {
     }
 
     /// A hook returned. `accepts` admits it only at a hook position.
-    fn on_hooks(&mut self, s: &mut Session, stop: Option<String>, draft: Option<Draft>, now: u64) {
+    fn on_hooks(
+        &mut self,
+        s: &mut Session,
+        stop: Option<String>,
+        draft: Option<Draft>,
+        halted_by: Option<String>,
+        now: u64,
+    ) {
         match (self.pos, stop) {
             (Pos::PostStep, stop) => {
                 if stop.is_some() {
@@ -407,7 +420,7 @@ impl Step {
                 }
                 self.after(s);
             }
-            (_, Some(reason)) => self.on_hook_stop(s, reason),
+            (_, Some(reason)) => self.on_hook_stop(s, reason, halted_by),
             (Pos::PreStep, None) => self.go(Pos::Input),
             (Pos::Input | Pos::PreReply, None) => {
                 self.draft = None;
@@ -429,12 +442,13 @@ impl Step {
     }
 
     /// A hook halted the step. At `pre_input` the offered item is removed and
-    /// its client told why.
-    fn on_hook_stop(&mut self, s: &mut Session, reason: String) {
+    /// its client told why, on which cursor, and by which extension.
+    fn on_hook_stop(&mut self, s: &mut Session, reason: String, halted_by: Option<String>) {
         if let (Pos::Input, Some(d)) = (self.pos, self.draft.take()) {
             s.remove_item(d.delivers[0]);
             if let Author::Frontend(client) = d.by {
-                s.notices.push((client, reason.clone()));
+                s.notices
+                    .push((client, self.cursor, halted_by, reason.clone()));
             }
         }
         self.draft = None;

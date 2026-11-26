@@ -13,6 +13,7 @@ from types import TracebackType
 from tau._core import Ending, Session
 from tau._events import (
     Appended,
+    Commands,
     CursorGone,
     CursorView,
     CutOff,
@@ -24,18 +25,23 @@ from tau._events import (
     Notice,
     OpenQuestion,
 )
+from tau._values import Form
+
+Forms = Callable[[], tuple[tuple[Form, ...], object]]
+"""The command forms as `Client.commands()` would return them now, without rescanning, and the
+identities of the options types (a reload that changes only one is a change too)."""
 
 
 class Feed:
     """One client's stream: an async iterator of `Event` with its own bounded buffer, for a
     single consumer (a second concurrent `anext` raises `RuntimeError`).
 
-    The stream keeps the order things happened in. `Labels` and a `CursorView` replace their own
-    earlier copy, and a `CursorGone` its cursor's `CursorView`, only if nothing but state events
-    follows the held copy; a `CursorView` or `CursorGone` then takes its slot, a `Labels` goes to
-    the end (after the cursors it names). Otherwise the new one is appended after everything
-    and the held one stays. Moving it to the end instead would drop a cursor from the snapshot
-    (which ends at its `Labels`), and keeping the slot would put a `CursorView` before the
+    The stream keeps the order things happened in. `Commands`, `Labels` and a `CursorView` replace
+    their own earlier copy, and a `CursorGone` its cursor's `CursorView`, only if nothing but state
+    events follows the held copy; a `Commands`, `CursorView` or `CursorGone` then takes its slot, a
+    `Labels` goes to the end (after the cursors it names). Otherwise the new one is appended after
+    everything and the held one stays. Moving it to the end instead would drop a cursor from the
+    snapshot (which ends at its `Labels`), and keeping the slot would put a `CursorView` before the
     `Appended` nodes it points at and before the `Live` deltas of its step.
 
     `Live` is heard only for the cursors being `watching`, and dropped when `capacity` are
@@ -234,7 +240,7 @@ class Feed:
 
 
 def _is_state(event: Event) -> bool:
-    return isinstance(event, CursorView | CursorGone | Labels)
+    return isinstance(event, Commands | CursorView | CursorGone | Labels)
 
 
 def _replaces(new: Event, held: Event) -> bool:
@@ -249,18 +255,25 @@ class Hub:
 
     `questions` says a cursor's open questions, and `lost(client)` is told, once, that a client
     that had a stream open has none now (closed, cut off, or abandoned and collected). `model`
-    says the model a node's branch is on, or `None`. A step's ending, a hook's failure and the
-    text an extension shows are told to the hub (`began`, `ended`, `hook_failed`, `show`) because
-    core keeps none of them."""
+    says the model a node's branch is on, or `None`. `generation` changes whenever the commands or
+    the options were assembled again, and only then are `forms` read and compared (D32 section
+    3). A step's ending, a hook's failure and the text an extension shows are told to the hub
+    (`began`, `ended`, `hook_failed`, `show`) because core keeps none of them."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - what the hub publishes, each read from the driver
         self,
         session: Session,
         questions: Callable[[int], tuple[OpenQuestion, ...]],
         lost: Callable[[str], None],
         model: Callable[[int], str | None],
+        generation: Callable[[], object],
+        forms: Forms,
     ) -> None:
         self._session = session
+        self._generation = generation
+        self._read_forms = forms
+        self._seen: object = None  # the generation whose forms were last compared
+        self._forms: tuple[tuple[Form, ...], object] | None = None  # as last sent
         self._questions = questions
         self._lost = lost
         self._model = model
@@ -288,9 +301,9 @@ class Hub:
         return {feed.client for feed in self._feeds}
 
     def connect(self, client: str, capacity: int) -> Feed:
-        """A new stream for `client`, opening with the snapshot: a `CursorView` per open cursor and
-        a `CursorGone` per closed one, then `Labels` (which name cursors the client has by then
-        been sent, closed ones included), as they stand. Publishing
+        """A new stream for `client`, opening with the snapshot: `Commands`, a `CursorView` per open
+        cursor and a `CursorGone` per closed one, then `Labels` (which name cursors the client has
+        by then been sent, closed ones included), as they stand. Publishing
         what is pending first and taking the snapshot from what was published make it one act:
         nothing falls between the snapshot and what follows. The nodes are not in it: a node
         never changes, so a client reads the ones it needs by id, and ignores an `Appended` one
@@ -300,7 +313,9 @@ class Hub:
             feed.end(self._ended[0])
             return feed
         self.sync()
-        for event in (*self._views.values(), *self._gone.values(), Labels(self._labels)):
+        assert self._forms is not None  # `sync` read them
+        snapshot = (Commands(self._forms[0]), *self._views.values(), *self._gone.values())
+        for event in (*snapshot, Labels(self._labels)):
             feed.offer(event)
         self._feeds.add(feed)
         self._clients.add(client)
@@ -364,9 +379,9 @@ class Hub:
         """Send what changed since the last call: the new nodes, then each changed `CursorView`
         (so a view never points at nodes the client has not been sent), then a `CursorGone` for
         each cursor closed since, then `Labels` (so a label never names a cursor the client has
-        not been sent), then the session's notices to
-        the clients they name. A client that has no stream left is `lost` first, so the views
-        sent are the ones its loss changed."""
+        not been sent), then `Commands` if the forms changed (so a notice about new commands comes
+        after them), then the session's notices to the clients they name. A client that has no
+        stream left is `lost` first, so the views sent are the ones its loss changed."""
         if self._ended is not None or self._syncing:
             return
         self._syncing = True
@@ -404,15 +419,30 @@ class Hub:
         if labels != self._labels:
             self._labels = labels
             self._send(Labels(labels))
-        for client, text in session.take_notices():
-            self.notify(client, text)
+        self._publish_forms()
+        for client, cursor, extension, text in session.take_notices():
+            self.notify(client, Notice(text, cursor, extension, "error"))
 
-    def notify(self, client: str | None, text: str) -> None:
-        """Send `text` to `client` as a `Notice`, or to every client if `None`; dropped if
-        `client` is not connected."""
+    def _publish_forms(self) -> None:
+        """Send `Commands` if the commands or options were assembled again and the forms, or the
+        options types, are not what was last sent."""
+        generation = self._generation()
+        if generation == self._seen and self._forms is not None:
+            return
+        self._seen = generation
+        forms = self._read_forms()
+        if forms != self._forms:
+            known = self._forms is not None  # the first read is the snapshot's, sent to nobody
+            self._forms = forms
+            if known:
+                self._send(Commands(forms[0]))
+
+    def notify(self, client: str | None, notice: Notice) -> None:
+        """Send `notice` to `client`, or to every client if `None`; dropped if `client` is not
+        connected."""
         for feed in tuple(self._feeds):
             if client in (None, feed.client):
-                feed.offer(Notice(text))
+                feed.offer(notice)
 
     def end(self, failure: Exception | None = None) -> None:
         """End every stream (with `failure`, if any) and forget them. Streams connected later

@@ -271,13 +271,16 @@ impl From<SampleEnd> for step::SampleEnd {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Answer {
     /// The hooks ran.
-    #[pyo3(constructor = (stop = None, draft = None))]
+    #[pyo3(constructor = (stop = None, draft = None, halted_by = None))]
     Hooks {
         /// A halt reason if a hook halted the step, else `None`.
         stop: Option<String>,
         /// The draft after the hooks edited it; `None` commits nothing. At `pre_sample`, a
         /// reply here stands in for the sample.
         draft: Option<Draft>,
+        /// The extension whose hook returned `stop`, for the notice a halted input's author is
+        /// sent; `None` for a halt that is not a hook's (the driver's image rule).
+        halted_by: Option<String>,
     },
     /// A hook raised.
     HookFailed {
@@ -305,9 +308,14 @@ pub enum Answer {
 impl From<Answer> for step::Answer {
     fn from(f: Answer) -> Self {
         match f {
-            Answer::Hooks { stop, draft } => Self::Hooks {
+            Answer::Hooks {
+                stop,
+                draft,
+                halted_by,
+            } => Self::Hooks {
                 stop,
                 draft: draft.map(Into::into),
+                halted_by,
             },
             Answer::HookFailed { error } => Self::HookFailed(error),
             Answer::Sampled { parts, end } => Self::Sampled {

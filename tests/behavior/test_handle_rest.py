@@ -36,7 +36,7 @@ class Boss:
         self.threads: list[int] = []
         self.refused: list[str] = []  # by a tool's handle
         self.hook_refused: list[str] = []  # by a cursor hook's
-        self.tools = (self.relay, self.look, self.stop, self.stop_self, self.wait_for_self)
+        self.tools = (self.relay, self.look, self.abort_worker, self.stop_self, self.wait_for_self)
         self.commands = (self.peek, self.cut_off)
 
     async def relay(self, node: NodeHandle) -> str:
@@ -50,7 +50,7 @@ class Boss:
         self.seen.append(await node.rest(self.target))
         return "looked"
 
-    def stop(self, node: NodeHandle) -> str:
+    def abort_worker(self, node: NodeHandle) -> str:
         """Abort the target, from a worker thread."""
         self.threads.append(threading.get_ident())
         node.abort(self.target)
@@ -166,7 +166,7 @@ async def test_a_sync_tool_aborts_another_cursor_from_its_worker_thread(tmp_path
     recorder = Recorder()
     h = await Harness.create(
         tmp_path,
-        provider=FakeProvider([held, calls("stop"), say("done")]),
+        provider=FakeProvider([held, calls("abort_worker"), say("done")]),
         extensions=[boss, recorder],
     )
     try:

@@ -22,6 +22,7 @@ from world import Result, World, tau
 
 from tau import (
     PROTOCOL,
+    Commands,
     CursorView,
     Event,
     RemoteClient,
@@ -209,6 +210,28 @@ def test_a_start_that_fails_prints_its_message_intact_and_exits_1(home: World) -
     assert not list((home.tau / "serve").glob(".starting-*")), "the pending log is cleaned"
 
 
+def test_a_drop_in_whose_start_raises_stops_the_server_starting_with_its_source(
+    home: World,
+) -> None:
+    """D32 section 4: a `start` that fails is a load failure, as an import that fails is."""
+    directory = home.tau / "extensions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "nostart.py").write_text(
+        "class NoStart:\n"
+        "    name = 'nostart'\n\n"
+        "    async def start(self, tree):\n"
+        "        raise RuntimeError('no server')\n\n"
+        "extensions = [NoStart()]\n",
+        encoding="utf-8",
+    )
+    result = serve(home, "-d")
+    assert result.code == 1
+    assert 'extension "nostart" failed to start; tau did not start.' in result.err
+    assert "extension 'nostart' did not start: RuntimeError: no server" in result.err
+    assert "tau ext disable nostart" in result.err
+    assert not list((home.tau / "serve").glob("*.json")), "no server record"
+
+
 @pytest.mark.skipif(
     WINDOWS, reason="Windows: projects (D13) are not ported; finding one is an error"
 )
@@ -362,6 +385,8 @@ def test_stopping_a_server_tells_its_clients_end(home: World) -> None:
 
     async def watch() -> list[Event]:
         async with await dial(record, "test:watcher") as client:
+            commands = await asyncio.wait_for(anext(client), 5)
+            assert isinstance(commands, Commands), "the snapshot opens with the command forms"
             first = await asyncio.wait_for(anext(client), 5)
             assert isinstance(first, CursorView)
             stopper = asyncio.get_running_loop().run_in_executor(

@@ -56,6 +56,7 @@ from typing import Annotated, ClassVar, Literal, cast
 
 from tau._agents import Agents
 from tau._base_tools import BaseTools
+from tau._events import NoticeLevel
 from tau._handles import NodeHandle
 from tau._hook_order import GUARD
 from tau._protocols import CallDraft
@@ -556,7 +557,8 @@ class Permissions:
         if answer == "always":
             exact = Rule.exact(seen)
             if not exact:
-                node.tell(f"permissions: {_unsaved(seen)}, so no rule was saved; it ran this once")
+                said = f"{_unsaved(seen)}, so no rule was saved; it ran this once"
+                node.tell(said, level="warning")
             for rule in exact:
                 self._always(node, str(rule))
         return None if answer in ("yes", "always") else REFUSED
@@ -568,12 +570,12 @@ class Permissions:
         if rule not in saved:
             node.save_options(allow=[*saved, rule])
         self._approved.add(rule)
-        said = (
-            f"permissions: {rule!r} is allowed from now on (written to allow in your config file)"
-        )
+        said = f"{rule!r} is allowed from now on (written to allow in your config file)"
+        level: NoticeLevel = "info"
         if rule not in node.options().allow:
             said = (
-                f"permissions: {rule!r} is allowed for this run and written to your config file, "
-                "but a project layer, --set or a Config node sets permissions.allow and hides it"
+                f"{rule!r} is allowed for this run and written to your config file, but a "
+                "project layer, --set or a Config node sets permissions.allow and hides it"
             )
-        node.tell(said)
+            level = "warning"
+        node.tell(said, level=level)

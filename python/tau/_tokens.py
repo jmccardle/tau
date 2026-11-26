@@ -47,6 +47,7 @@ from tau._counts import (
     ceiling_of,
     image_rule,
 )
+from tau._events import NoticeLevel
 from tau._handles import Cursor, Subject, TreeHandle
 from tau._hook_order import GUARD, OBSERVE
 from tau._tokenizer_wheel import Mode, discover, mode_of
@@ -159,9 +160,11 @@ class Tokens:
         self._lock = threading.Lock()  # `count` and `observe` run in threads
         self._held: dict[str, _Held] = {}
         self._models: dict[str, str] = {}  # qualified model name -> its record's name
-        self._news: list[str] = []  # what the next `post_reply` tells the clients
+        # what the next `post_reply` tells the clients, each with its level
+        self._news: list[tuple[NoticeLevel, str]] = []
         if self._wheel.problem is not None:
-            self._news.append(f"tokens: the tokenizer wheel is not used: {self._wheel.problem}")
+            problem = self._wheel.problem
+            self._news.append(("warning", f"the tokenizer wheel is not used: {problem}"))
         self._told: set[str] = set()  # problems already told
         self.counter = self
         self.commands = (self.tokens,)
@@ -253,10 +256,10 @@ class Tokens:
                 self._held[name] = _Held(problem=problem)
                 if problem not in self._told:
                     self._told.add(problem)
-                    self._news.append(f"{observation.model}: {problem}")
+                    self._news.append(("warning", f"{observation.model}: {problem}"))
                 return
             self._held[name] = _Held(record)
-            self._news += [_news(observation.model, event) for event in events]
+            self._news.extend(("info", _news(observation.model, event)) for event in events)
 
     # The extension
 
@@ -269,8 +272,8 @@ class Tokens:
         """Tell the clients what the last observations found (a model that changed)."""
         with self._lock:
             news, self._news = self._news, []
-        for text in news:
-            cursor.tell(text)
+        for level, text in news:
+            cursor.tell(text, level=level)
         return None
 
     def tokens(self, tree: TreeHandle) -> str:
@@ -349,7 +352,7 @@ class TokenCalls:
         try:
             await cursor.count_call()
         except Exception as e:  # the step goes on with the counter's own count
-            cursor.tell(f"token_calls: the count call failed: {type(e).__name__}: {e}")
+            cursor.tell(f"the count call failed: {type(e).__name__}: {e}", level="warning")
 
 
 async def _straddles(cursor: Cursor) -> bool:

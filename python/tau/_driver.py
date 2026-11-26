@@ -25,14 +25,11 @@ rules about performing one effect:
 """
 
 import asyncio
-import concurrent.futures
-import contextvars
 import threading
 from collections import Counter
 from collections.abc import (
     Awaitable,
     Callable,
-    Coroutine,
     Generator,
     Mapping,
     Sequence,
@@ -40,17 +37,19 @@ from collections.abc import (
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Any
 
 from tau import trace
 from tau._builtin import Tau
 from tau._calls import Calls, frontend
 from tau._client import LocalClient
 from tau._clock import SystemClock
-from tau._commands import Commands, assemble_commands
+from tau._commands import CommandTable, assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Busy, Ending, Hook, ItemData, Job, Session
 from tau._counts import tools_ceiling, tools_hash
+from tau._driver_tasks import EFFECT, Leavers, Tasks, Waiters, on_loop, on_loop_wait
 from tau._effects import (
     CallRun,
     SampleRun,
@@ -60,10 +59,11 @@ from tau._effects import (
     open_for_tool,
     run_hooks,
 )
-from tau._events import LiveDelta
+from tau._events import LiveDelta, Notice
 from tau._handles import Handles, Subject
 from tau._hook_order import HookOrder
 from tau._hub import Hub
+from tau._lifecycle import Lifecycle, configured_timeouts
 from tau._meter import Counts
 from tau._options import ExtensionOptions
 from tau._protocols import (
@@ -82,55 +82,6 @@ from tau._user_config import UserConfig
 from tau._values import Context, Kind
 
 
-class _Waiters:
-    """Coroutines waiting for the pump to come to rest."""
-
-    def __init__(self) -> None:
-        self._futures: list[asyncio.Future[None]] = []
-
-    async def wait(self) -> None:
-        future = asyncio.get_running_loop().create_future()
-        self._futures.append(future)
-        await future
-
-    def wake(self) -> None:
-        futures, self._futures = self._futures, []
-        for future in futures:
-            if not future.done():
-                future.set_result(None)
-
-
-class _Leavers:
-    """The waits on other cursors, by the cursor that waits: a hook's `rest` ends when its own
-    cursor is aborted or sent elsewhere, since an abort never cancels a hook (M7)."""
-
-    def __init__(self, wake: Callable[[], None]) -> None:
-        self._wake = wake  # the waits are woken to see they ended
-        self._waiting: Counter[int] = Counter()
-        self._gone: set[int] = set()
-
-    @contextmanager
-    def waiting(self, cursor: int) -> Generator[None]:
-        """`cursor` has a wait out."""
-        self._waiting[cursor] += 1
-        try:
-            yield
-        finally:
-            self._waiting[cursor] -= 1
-            if not self._waiting[cursor]:
-                del self._waiting[cursor]
-                self._gone.discard(cursor)
-
-    def left(self, cursor: int) -> None:
-        """`cursor` was aborted or sent elsewhere: a wait of it that is out ends."""
-        if cursor in self._waiting:
-            self._gone.add(cursor)
-            self._wake()
-
-    def has_left(self, cursor: int) -> bool:
-        return cursor in self._gone
-
-
 @dataclass
 class _Outstanding:
     """One cursor's effect in flight: how to cancel it."""
@@ -145,39 +96,6 @@ class _Outstanding:
             self.sample.cancel()
         for call in self.calls:
             call.abort()
-
-
-_EFFECT: contextvars.ContextVar[asyncio.Task[None] | None] = contextvars.ContextVar(
-    "effect", default=None
-)
-"""The effect task the running code belongs to, tasks it starts included."""
-
-
-class _Tasks:
-    """Every task the driver runs: the pump and the effects (`effects`, the ones that answer)."""
-
-    def __init__(self) -> None:
-        self.all: set[asyncio.Task[None]] = set()
-        self.effects: set[asyncio.Task[None]] = set()
-
-    def spawn(self, coro: Coroutine[object, object, None], *, effect: bool = False) -> None:
-        run = coro
-        if effect:
-
-            async def run_as_effect() -> None:
-                # Inside the task, so its first step sees it, even when the loop's task factory
-                # starts a task eagerly (Textual's does) before `create_task` returns.
-                task = asyncio.current_task()
-                _EFFECT.set(task)
-                await coro
-
-            run = run_as_effect()
-        task = asyncio.create_task(run)
-        if effect:  # a task cancelled before its first step never started `coro`: close it
-            task.add_done_callback(lambda _: coro.close())
-        for held in (self.all, self.effects) if effect else (self.all,):
-            held.add(task)
-            task.add_done_callback(held.discard)
 
 
 @dataclass(frozen=True)
@@ -201,6 +119,19 @@ class DriverState:
     def check(self) -> None:
         """Raise `ConnectionError` if the driver has failed or is stopped."""
         _running(self.failure, self.stopped)
+
+
+@dataclass(frozen=True)
+class _Assembled:
+    """A set of extensions checked and assembled by `_fitted`, applied by `Driver._apply`."""
+
+    checked: tuple[Extension, ...]
+    every: tuple[Extension, ...]
+    tools: dict[str, Tool]
+    keywords: dict[str, frozenset[str]]
+    owners: dict[str, str]
+    commands: Mapping[str, Any]
+    order: HookOrder
 
 
 class Driver:
@@ -264,14 +195,21 @@ class Driver:
             lambda: self._hub.sync(),  # noqa: PLW0108
             lambda client: self._hub.connected(client),  # noqa: PLW0108
         )
-        self._rested = _Waiters()
-        self._leavers = _Leavers(self._rested.wake)
-        self._hub = Hub(session, self._questions.open, self._questions.pool, self._model_at)
-        self._tasks = _Tasks()
+        self._rested = Waiters()
+        self._leavers = Leavers(self._rested.wake)
+        self._hub = Hub(
+            session,
+            self._questions.open,
+            self._questions.pool,
+            self._model_at,
+            lambda: (self._commands.generation, self._options.generation),
+            lambda: (self._commands.forms_now(), self._options.types()),
+        )
+        self._tasks = Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
         # A sync tool or command writes through its handle from a worker thread; what the
         # handle tells the driver goes back to the loop's thread (`start` finds it).
-        on_loop = partial(_on_loop, lambda: self._home)
+        safe = partial(on_loop, lambda: self._home)
         self._home: tuple[asyncio.AbstractEventLoop, int] | None = None  # the loop, its thread
         self._counts = Counts(
             session.tree.node,
@@ -285,22 +223,32 @@ class Driver:
         self._handles = Handles(
             session,
             self._ask,
-            lambda client, text: on_loop(partial(self._hub.notify, client, text))(),
+            lambda client, notice: safe(partial(self._hub.notify, client, notice))(),
             self.clock.now,
-            on_loop(self._poke),
-            on_loop(self._hub.sync),
+            safe(self._poke),
+            safe(self._hub.sync),
             self._options,
             self._ending_at_rest,
-            lambda cursor: _on_loop_wait(lambda: self._home, partial(self._calls.abort, cursor)),
+            lambda cursor: on_loop_wait(lambda: self._home, partial(self._calls.abort, cursor)),
             self._close_cursor,
-            lambda cursor, extension, text: _on_loop_wait(
+            lambda cursor, extension, text: on_loop_wait(
                 lambda: self._home, partial(self._hub.show, cursor, extension, text)
             ),
             lambda: tuple(self._tools),
             self._counts,
+            lambda extension, coro: self._life.spawn(extension, coro),  # noqa: PLW0108 - made later
+            lambda: on_loop_wait(lambda: self._home, self._reassemble),
+            lambda cursor, images: self._calls.checked_images(cursor, images),  # noqa: PLW0108
+            lambda: self._life.starting(),  # noqa: PLW0108 - made later
+        )
+        self._life = Lifecycle(
+            self._handles.lifecycle,
+            lambda name: configured_timeouts(self._catalog.timeouts)(name),  # noqa: PLW0108
+            partial(_tell_all, self._hub),
+            self._check,
         )
         self._changing = frontend(self._check, self._hub, self._poke)
-        self._commands = Commands(
+        self._commands = CommandTable(
             {},
             session=session,
             catalog=lambda: self._catalog,
@@ -311,8 +259,8 @@ class Driver:
             frontend=self._changing,
             at_rest=lambda c: not (session.cursor(c).busy or c in self._out),
             spawn=lambda coro: self._tasks.spawn(coro, effect=True),
-            on_loop=on_loop,
-            rescan=lambda: _rescan(self._extensions, self._commands),
+            on_loop=safe,
+            rescan=lambda: _rescan(self._extensions, self._commands, self._hub),
         )
         self._image_gate = image_gate(
             self._providers, lambda: self._catalog, session, self._options.model
@@ -334,24 +282,28 @@ class Driver:
         )
         # effect -> waits on cursors it has out
         self._waits: Counter[asyncio.Task[None]] = Counter()
-        self._adopt(extensions)
+        self._apply(_fitted(self._given, self._catalog, extensions))
 
-    def _adopt(self, extensions: Sequence[Extension]) -> None:
-        """Make `extensions` (and the driver's own `tools`) what the driver runs from the next
-        job it dispatches. `DefinitionError` (or `ConfigError` for a configured hook order that
-        does not fit them), with nothing changed, as at construction."""
-        checked = check_extensions(extensions)
-        every = check_extensions([Tau(), *checked])
-        listed, owners = assemble_tools(self._given, every)
+    def _apply(self, fitted: "_Assembled") -> None:
+        """Make the `fitted` extensions (and the driver's own `tools`) what the driver runs from
+        the next job it dispatches."""
+        self._options.reload(fitted.checked)
+        self._hub.keep_shown([e.name for e in fitted.every])
+        self._commands.use(fitted.commands)
+        self._order = fitted.order
+        self._extensions, self._tools, self._owners = fitted.every, fitted.tools, fitted.owners
+        self._tool_keywords = fitted.keywords
+
+    def _reassemble(self) -> None:
+        """`TreeHandle.reassemble`: the tools and commands assembled again from every extension,
+        from the next job dispatched; hooks, options and order untouched. `DefinitionError`,
+        nothing changed, if they do not fit."""
+        listed, owners = assemble_tools(self._given, self._extensions)
         tools, keywords = check_tools(listed)
-        commands = assemble_commands(every)
-        order = HookOrder.of(every, self._catalog.orders)  # before any change: it may raise
-        self._options.reload(checked)
-        self._hub.keep_shown([e.name for e in every])
+        commands = assemble_commands(self._extensions)
         self._commands.use(commands)
-        self._order = order
-        self._extensions, self._tools, self._owners = every, tools, owners
-        self._tool_keywords = keywords
+        self._tools, self._owners, self._tool_keywords = tools, owners, keywords
+        self._hub.sync()
 
     def _model_at(self, node: int) -> str | None:
         """The model the branch at `node` is on, for a `CursorView`: `None` if no `Config` on it
@@ -385,44 +337,79 @@ class Driver:
         self._order = HookOrder.of(self._extensions, catalog.orders)
         self._catalog = catalog
 
-    def reload(self, extensions: Sequence[Extension]) -> None:
+    async def reload(self, extensions: Sequence[Extension]) -> None:
         """Run `extensions` (listed in load order, as at construction) instead of the ones the
-        driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
-        and forget every folded `Config`. Only when nothing is in flight: no cursor busy (a
-        command waiting for its step has none out yet, but its cursor is busy) and no effect
-        out, since every job holds the set it was dispatched with (`Busy` naming the cursors);
-        the next job dispatched uses the new one. `DefinitionError` (nothing changes) as at
-        construction. The tree is not rewritten: a `Config` node that sets options of an
-        extension no longer here (or no longer fitting its type) fails when it is read
-        (`ConfigError`), not now. Clients are told nothing, as after `use_catalog`: they ask
-        `commands()` and `options()` again."""
+        driver has, with the same `tools` (D32 section 4: stop first). Refused, with nothing
+        changed: `Busy` unless every cursor is at rest with no effect out (it does not wait; retry)
+        or while another reload runs; `DefinitionError` (or `ConfigError`) if the new set does not
+        fit, checked before anything stops. Then, while the driver takes no job: the extensions
+        that leave are stopped in reverse load order (their spawned tasks cancelled, then `stop`;
+        a failure is reported, not raised), the new set is adopted (options, tools, tool owners,
+        commands; every folded `Config` forgotten), and the new extensions are started in load
+        order. An extension object in both lists is neither stopped nor started. Clients are sent
+        `Commands` if the forms changed. A `start` that fails stops those this reload started, and
+        the driver adopts the extensions both lists share alone; `ExtensionLoadError` names it.
+        There is no way back to the old instances: restarting is the safer path. The tree is not
+        rewritten: a `Config` node that sets options of an extension no longer here (or no longer
+        fitting its type) fails when it is read (`ConfigError`), not now."""
         self._check()
         busy = sorted(
             {c for c in self.session.cursors() if self.session.cursor(c).busy} | set(self._out)
         )
-        if busy or self._tasks.effects:
+        if busy or self._tasks.effects or self._life.held:
+            what = "a reload is running" if self._life.held else f"cursors {busy}"
             raise Busy(
-                f"cannot reload while work is out: cursors {busy}, "
+                f"cannot reload while work is out: {what}, "
                 f"{len(self._tasks.effects)} effects running"
             )
-        self._adopt(extensions)
-        self._hub.sync()  # what an extension that is gone showed
+        fitted = _fitted(self._given, self._catalog, extensions)
+        old = self._extensions
+        kept = [e for e in fitted.checked if any(e is o for o in old)]
+        self._life.held = True
+        try:
+            await self._life.stop([o for o in old if not any(o is e for e in fitted.every)])
+            self._apply(fitted)
+            try:
+                await self._life.start(fitted.every)
+            except BaseException:
+                self._apply(_fitted(self._given, self._catalog, kept))
+                raise
+        finally:
+            self._life.held = False
+            self._hub.sync()  # what an extension that is gone showed; the forms
+            self._poke()
 
     # Lifecycle
 
-    def start(self) -> None:
-        """Start the pump. Call inside the running loop."""
+    async def start(self) -> None:
+        """Run each extension's `start`, in load order, then start the pump. Call inside the
+        running loop, once. A `start` that raises or outlives its timeout stops the ones started
+        before it (reverse order) and raises `ExtensionLoadError` naming it; the pump never runs,
+        and the driver is stopped."""
         self._home = (asyncio.get_running_loop(), threading.get_ident())
+        self._life.held = True
+        try:
+            await self._life.start(self._extensions)
+        except BaseException:
+            self._stopped = True
+            self._hub.end()
+            raise
+        finally:
+            self._life.held = False
+        self._reassemble()  # a start may have filled its tools or commands
         self._tasks.spawn(self._pump())
 
     async def stop(self) -> None:
-        """Cancel everything without answering, as a crash would. `rest` and every frontend
-        call raise from now on; client streams end, later ones at once."""
+        """Cancel everything without answering, as a crash would; then stop every started
+        extension in reverse load order (its spawned tasks cancelled, then its `stop`; a failure is
+        written to stderr and the next one runs). `rest` and every frontend call raise from now
+        on; client streams end, later ones at once."""
         self._stopped = True
         tasks = list(self._tasks.all)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await self._life.stop(self._life.started())
         self._hub.end()
         self._commands.clear()
         self._out.clear()
@@ -465,20 +452,15 @@ class Driver:
                 return
             await self._rested.wait()
 
-    @staticmethod
-    def _effect() -> asyncio.Task[None]:
-        """The running effect. Only a handle asks or waits, and a handle is only ever in an
-        effect's hands."""
-        effect = _EFFECT.get()
-        if effect is None:
-            raise RuntimeError("a handle was used outside an effect: a handle is not for keeping")
-        return effect
-
     @contextmanager
     def _waiting(self) -> Generator[None]:
         """The running effect waits on another cursor: `state` counts it parked, once however
-        many such waits it has out."""
-        effect = self._effect()
+        many such waits it has out. An extension's own task (a lifecycle handle's) is no effect,
+        and is not counted."""
+        effect = EFFECT.get()
+        if effect is None:
+            yield
+            return
         self._waits[effect] += 1
         try:
             yield
@@ -497,9 +479,7 @@ class Driver:
         new_cursor: Callable[[], int],
     ) -> object:
         """A handle's question (`Questions.ask`), for the running effect."""
-        return await self._questions.ask(
-            cursor, extension, text, expect, to, new_cursor, self._effect()
-        )
+        return await self._questions.ask(cursor, extension, text, expect, to, new_cursor, _effect())
 
     async def _ending_at_rest(self, cursor: int, waiter: int | None) -> Ending | None:
         """`rest`, then how the cursor's last step ended (`None` if not known): what a handle's
@@ -541,7 +521,7 @@ class Driver:
     async def _pump(self) -> None:
         try:
             while self._failure is None:
-                for cursor in self.session.cursors():
+                for cursor in () if self._life.held else self.session.cursors():
                     if cursor in self._out:
                         continue
                     if not self.session.cursor(cursor).busy:
@@ -635,7 +615,9 @@ class Driver:
         if job.point == Hook.PostReply and at is not None:
             names = self._made_with.get(cursor, (0, tuple(self._tools)))[1]
             sent = tools_hash(self._tools[n] for n in names if n in self._tools)
-            return self._counts.observing(at.id, sent, effect, partial(self._hub.notify, None))
+            return self._counts.observing(
+                at.id, sent, effect, partial(_counter_failed, self._hub, cursor)
+            )
         if job.point == Hook.PreStep:
             return self._commands.before(cursor, effect)
         if job.point == Hook.PreInput:  # a hook may add images (D31)
@@ -704,6 +686,41 @@ class Driver:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
 
+def _effect() -> asyncio.Task[None]:
+    """The running effect. Only a handle asks, and a handle that asks is only ever in an effect's
+    hands (a hook's or a tool's)."""
+    effect = EFFECT.get()
+    if effect is None:
+        raise RuntimeError("a handle was used outside an effect: a handle is not for keeping")
+    return effect
+
+
+def _fitted(
+    given: Sequence[object], catalog: ModelCatalog, extensions: Sequence[Extension]
+) -> _Assembled:
+    """`extensions` checked and assembled with the driver's own tools `given`, nothing changed:
+    what `Driver._apply` runs. `DefinitionError` (or `ConfigError` for a configured hook order
+    that does not fit them)."""
+    checked = check_extensions(extensions)
+    every = check_extensions([Tau(), *checked])
+    listed, owners = assemble_tools(given, every)
+    tools, keywords = check_tools(listed)
+    commands = assemble_commands(every)
+    order = HookOrder.of(every, catalog.orders)
+    return _Assembled(checked, every, tools, keywords, owners, commands, order)
+
+
+def _counter_failed(hub: Hub, cursor: int, text: str) -> None:
+    """The counter could not observe a reply of `cursor`: a `warning` for every client."""
+    hub.notify(None, Notice(text, cursor, None, "warning"))
+
+
+def _tell_all(hub: Hub, notice: Notice) -> None:
+    """A notice to every client, after what is pending is published."""
+    hub.sync()
+    hub.notify(None, notice)
+
+
 def _offer_of(
     made: tuple[int, tuple[str, ...]] | None, parent: int | None
 ) -> tuple[str, ...] | None:
@@ -716,46 +733,6 @@ def _offer_of(
 # What the pump and the effects never take for a failure: the driver's own cancelling, and the
 # process being told to go.
 _PASSES = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
-
-
-def _on_loop(
-    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None], call: Callable[[], None]
-) -> Callable[[], None]:
-    """`call`, made safe to call from any thread: off the loop's thread it is scheduled on the
-    loop (once the driver has started and `home` knows it; before, it is called as it is)."""
-
-    def safe() -> None:
-        where = home()
-        if where is None or threading.get_ident() == where[1]:
-            call()
-        else:
-            where[0].call_soon_threadsafe(call)
-
-    return safe
-
-
-def _on_loop_wait[T](
-    home: Callable[[], tuple[asyncio.AbstractEventLoop, int] | None], call: Callable[[], T]
-) -> T:
-    """`call()` on the loop's thread, whichever thread asks, and its result (or what it
-    raises) returned to the asker, who waits for it. Unlike `_on_loop` this is for a call whose
-    effect the asker's next step depends on (an abort made before a `send` must come first) or
-    whose refusal the asker must hear (a `show` on a cursor that is gone).
-    `RuntimeError` if the loop is closed; the asker waits for as long as the loop is not run."""
-    where = home()
-    if where is None or threading.get_ident() == where[1]:
-        return call()
-    loop = where[0]
-    done: concurrent.futures.Future[T] = concurrent.futures.Future()
-
-    def run() -> None:
-        try:
-            done.set_result(call())
-        except BaseException as e:
-            done.set_exception(e)
-
-    loop.call_soon_threadsafe(run)
-    return done.result()
 
 
 def _as_failure(error: BaseException) -> Exception:
@@ -791,9 +768,10 @@ def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
     out.cancel()
 
 
-def _rescan(extensions: Sequence[Extension], commands: Commands) -> None:
+def _rescan(extensions: Sequence[Extension], commands: CommandTable, hub: Hub) -> None:
     """Ask each extension that has a `rescan` (the commands it lists come from files) whether its
-    commands changed, and run the new ones if any did."""
+    commands changed, and run the new ones if any did; clients are sent them (`Commands`)."""
     changed = [e.rescan() for e in extensions if isinstance(e, Rescanning)]
     if any(changed):
         commands.use(assemble_commands(extensions))
+        hub.sync()

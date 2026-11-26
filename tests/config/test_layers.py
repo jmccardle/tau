@@ -829,3 +829,44 @@ def test_an_order_by_hook_over_an_integer_keeps_the_integer_for_the_other_hooks(
     assert dict(catalog.orders["usage"]) == {"*": 50, "pre_sample": -100}  # type: ignore[call-overload]
     nearer = read_models(user, cli={"extensions": {"usage": {"order": 7}}})
     assert nearer.orders["usage"] == 7, "a nearer integer replaces the whole order"
+
+
+# Lifecycle timeouts (D32 section 4): beside `order`, the administrator's, never options.
+
+
+class _Starts:
+    name = "starts"
+
+    async def start(self, tree: object) -> None:
+        pass
+
+
+def test_start_and_stop_timeouts_are_read_apart_from_the_options(tmp_path: Path) -> None:
+    user = write(
+        tmp_path / "c.json",
+        {"extensions": {"usage": {"start_timeout": 120, "stop_timeout": 2.5, "order": 5}}},
+    )
+    catalog = read_models(user)
+    assert catalog.timeouts["usage"] == (120.0, 2.5)
+    assert "start_timeout" not in catalog.extensions["usage"], "not an option"
+    nearer = read_models(user, cli={"extensions": {"usage": {"stop_timeout": 1}}})
+    assert nearer.timeouts["usage"] == (120.0, 1.0)
+
+
+def test_a_timeout_that_is_not_a_positive_number_is_an_error(tmp_path: Path) -> None:
+    for bad in (0, -1, "30", True):
+        user = write(tmp_path / "c.json", {"extensions": {"usage": {"start_timeout": bad}}})
+        problem = only_error(check_config(user, providers=PROVIDERS))
+        assert problem.path == "extensions.usage.start_timeout"
+        assert "must be a positive number of seconds" in problem.message
+
+
+def test_a_timeout_for_an_extension_without_that_method_is_a_warning(tmp_path: Path) -> None:
+    config = {"extensions": {"starts": {"start_timeout": 60, "stop_timeout": 9}}}
+    found = check_config(
+        write(tmp_path / "c.json", config), providers=PROVIDERS, extensions=[_Starts()]
+    )
+    assert [(p.severity, p.path) for p in found] == [
+        ("warning", "extensions.starts.stop_timeout")
+    ]
+    assert "has no stop; stop_timeout is ignored" in found[0].message

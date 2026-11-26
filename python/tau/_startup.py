@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
 from tau._config import ConfigError
-from tau._config_keys import ORDER
+from tau._config_keys import ORDER, TIMEOUTS
 from tau._config_layers import ModelCatalog, read_models
 from tau._config_tree import ConfigProblem
 from tau._hook_order import order_problem
@@ -86,9 +86,10 @@ def option_changes(
     `extensions`' options: per extension, its options type (`None` for one without options), its
     fields and the JSON values set, each text read as `/config` reads it
     (`tau.commandline.value`). The field `order` (an integer: every hook) and `order.HOOK` (one
-    hook) set the extension's hook order (D28), whatever options it has. `ConfigError` for an
-    extension without options, a field it does not have, a text its field refuses, or an order
-    that is not an integer or names a hook the extension does not have."""
+    hook) set the extension's hook order (D28), and `start_timeout` and `stop_timeout` (seconds)
+    its lifecycle's (D32), whatever options it has. `ConfigError` for an extension without
+    options, a field it does not have, a text its field refuses, an order that is not an integer
+    or names a hook the extension does not have, or a timeout that is not a positive number."""
     known = {cast("str", getattr(e, "name")): e for e in extensions}  # noqa: B009
     changes: dict[str, tuple[type | None, tuple[Field, ...], Json]] = {}
     for extension, name, given in assignments:
@@ -100,6 +101,9 @@ def option_changes(
             )
         if name.partition(".")[0] == ORDER:
             _order_change(known, extension, name, given, changes)
+            continue
+        if name in TIMEOUTS:
+            _timeout_change(known, extension, name, given, changes)
             continue
         options = getattr(known.get(extension), "options", None)
         if options is None:
@@ -117,6 +121,30 @@ def option_changes(
             raise ConfigError(f"{extension}.{name}: {e}") from None
         changes.setdefault(extension, (options, fields, {}))[2][name] = decoded
     return changes
+
+
+def _timeout_change(
+    known: Mapping[str, object],
+    extension: str,
+    name: str,
+    given: str,
+    changes: dict[str, tuple[type | None, tuple[Field, ...], Json]],
+) -> None:
+    """`EXTENSION.start_timeout=S` or `EXTENSION.stop_timeout=S` into `changes`."""
+    found = known.get(extension)
+    if found is None:
+        raise ConfigError(
+            f"no loaded extension is named {extension!r}; those that are: {list(known)}"
+        )
+    try:
+        seconds = float(given.strip())
+    except ValueError:
+        seconds = 0.0
+    if not seconds > 0 or seconds == float("inf"):
+        raise ConfigError(f"{extension}.{name} must be a positive number of seconds, not {given!r}")
+    options = getattr(found, "options", None)
+    fields = () if options is None else option_fields(extension, options)
+    changes.setdefault(extension, (options, fields, {}))[2][name] = seconds
 
 
 def _order_change(

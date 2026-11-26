@@ -24,6 +24,8 @@ from tau._config_keys import (
     load_switches,
     match_names,
     system_prompt,
+    timeout_problems,
+    timeouts,
     tui_settings,
 )
 from tau._config_tree import (
@@ -111,7 +113,8 @@ class ModelCatalog:
     `extension_sources` the layer that set each extension's options (`NAME`) and each option
     (`NAME.FIELD`), for the problems found in them. `orders` is each extension's
     `extensions.NAME.order` (D28: an int or an object of hook point to int, unchecked here: the
-    hooks are the extension's), which is not among its `extensions` options.
+    hooks are the extension's), which is not among its `extensions` options, and `timeouts` its
+    `start_timeout` and `stop_timeout` in seconds (D32: `None` for the default), nor are they.
     `system_prompt` is the merged top-level key of that name (D20: the nearest layer's base text;
     `None`: no layer sets one, so the built-in text is used) and `system_prompt_source` the layer
     that set it (`CLI` for `--system-prompt`). `context_files` is the merged key of that name (D20:
@@ -126,6 +129,7 @@ class ModelCatalog:
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=lambda: {})
     extension_sources: Mapping[str, str] = field(default_factory=lambda: {})
     orders: Mapping[str, object] = field(default_factory=lambda: {})
+    timeouts: Mapping[str, tuple[float | None, float | None]] = field(default_factory=lambda: {})
     load: Mapping[str, bool] = field(default_factory=lambda: {})
     load_sources: Mapping[str, str] = field(default_factory=lambda: {})
     system_prompt: str | None = None
@@ -655,6 +659,7 @@ def _build(
     prompt, prompt_source = system_prompt(merged, problems)
     context, context_source = context_files(merged, problems)
     options, option_sources, orders = extensions(merged, problems)
+    lifecycle = timeouts(options, option_sources, problems)
     tui = tui_settings(merged, problems)
     found = tuple(problems.found)
     warnings = tuple(p for p in found if p.severity == "warning")
@@ -665,6 +670,7 @@ def _build(
         extensions=options,
         extension_sources=option_sources,
         orders=orders,
+        timeouts=lifecycle,
         load=switches,
         load_sources=switched_by,
         system_prompt=prompt,
@@ -749,6 +755,7 @@ def option_problems(
         if check is not None:  # an option that names tools: each should be one a start offers
             for message in check(tools):
                 warn(message, f"extensions.{name}")
+    problems += timeout_problems(catalog.timeouts, extensions, where)
     return (*problems, *section_problems(catalog, extensions, off))
 
 

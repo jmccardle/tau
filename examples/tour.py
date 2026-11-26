@@ -72,7 +72,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 extensions=[StepLimit()],
                 clock=clock,
             )
-            driver.start()
+            await driver.start()
             cursor = session.cursors()[0]
 
             print("== 1. bash with output past the 10 kB limit")

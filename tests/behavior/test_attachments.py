@@ -15,6 +15,7 @@ from tau import (
     Attachments,
     Body,
     Ending,
+    Notice,
     Part,
     Stop,
     TreeHandle,
@@ -183,7 +184,7 @@ async def test_a_limit_below_one_fails_the_step_and_names_the_option(tmp_path: P
     await h.close()
 
 
-async def sent_with_notices(tmp_path: Path, line: str) -> tuple[str, list[str]]:
+async def sent_with_notices(tmp_path: Path, line: str) -> tuple[str, list[Notice]]:
     """Like `sent`, and the notices the typing client heard."""
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
@@ -193,7 +194,7 @@ async def sent_with_notices(tmp_path: Path, line: str) -> tuple[str, list[str]]:
     await h.send(line)
     await h.settle()
     (text,) = [b.text for b in h.bodies() if isinstance(b, Body.User)]
-    notices = h.notices()
+    notices = h.notice_events()
     await h.close()
     return text, notices
 
@@ -270,12 +271,13 @@ async def test_a_path_that_attaches_nothing_is_said(tmp_path: Path) -> None:
     line = "look at @missing.txt and @src/none.rs and @main.rs:10 and @file:10"
     text, notices = await sent_with_notices(tmp_path, line)
     assert text == line
-    assert [n.split(" names")[0] for n in notices] == [
-        "attachments: @missing.txt",
-        "attachments: @src/none.rs",
-        "attachments: @main.rs:10",
-        "attachments: @file:10",
+    assert [n.text.split(" names")[0] for n in notices] == [
+        "@missing.txt",
+        "@src/none.rs",
+        "@main.rs:10",
+        "@file:10",
     ]
+    assert {(n.extension, n.level, n.cursor) for n in notices} == {("attachments", "warning", 0)}
 
 
 @scenario

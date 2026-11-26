@@ -3,13 +3,16 @@ read from the merged tree into a plain value, with its problems added to the lay
 `tui` is the terminal UI's own (D23): an object whose only key is `theme`, and the user's alone
 (a project that sets it is an error, found as the layers are read)."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import cast
 
-from tau._config_tree import Leaf, Problems, Tree, plain, source_of, suggest
+from tau._config_tree import ConfigProblem, Leaf, Problems, Tree, plain, source_of, suggest
 
 ORDER = "order"
 """The key of `extensions.NAME` that is the extension's hook order, not an option (D28)."""
+TIMEOUTS = ("start_timeout", "stop_timeout")
+"""The keys of `extensions.NAME` that are the extension's start and stop timeouts in seconds (D32
+section 4): the administrator's, like `order`, never options a client sets."""
 TUI_KEYS = ("theme",)
 """What `tui` may hold."""
 
@@ -45,6 +48,49 @@ def extensions(
             if (where := source_of(setting)) is not None:
                 sources[f"{name}.{field}"] = where
     return out, sources, orders
+
+
+def timeouts(
+    options: dict[str, dict[str, object]], sources: dict[str, str], problems: Problems
+) -> dict[str, tuple[float | None, float | None]]:
+    """Each extension's `start_timeout` and `stop_timeout` (`None`: the default), taken out of
+    its `options` (D32 section 4). A value that is not a positive number is an `error`."""
+    found: dict[str, tuple[float | None, float | None]] = {}
+    for name, values in options.items():
+        pair: list[float | None] = [None, None]
+        for i, key in enumerate(TIMEOUTS):
+            if key not in values:
+                continue
+            value = values.pop(key)
+            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+                message = f"'extensions.{name}.{key}' must be a positive number of seconds"
+                where = sources.get(f"{name}.{key}") or sources.get(name)
+                problems.add("error", message, where, f"extensions.{name}.{key}")
+                continue
+            pair[i] = float(value)
+        if pair != [None, None]:
+            found[name] = (pair[0], pair[1])
+    return found
+
+
+def timeout_problems(
+    timeouts: Mapping[str, tuple[float | None, float | None]],
+    extensions: Iterable[object],
+    sources: Mapping[str, str],
+) -> list[ConfigProblem]:
+    """A `warning` for each timeout set for a loaded extension that has no `start` (or no
+    `stop`): it is ignored, as other configuration that names what a start does not have."""
+    found: list[ConfigProblem] = []
+    for ext in extensions:
+        name = cast("str", getattr(ext, "name"))  # noqa: B009
+        for key, value, method in zip(
+            TIMEOUTS, timeouts.get(name, (None, None)), ("start", "stop"), strict=True
+        ):
+            if value is not None and getattr(ext, method, None) is None:
+                said = f"extension {name!r} has no {method}; {key} is ignored"
+                where = sources.get(f"{name}.{key}") or sources.get(name)
+                found.append(ConfigProblem("warning", said, where, f"extensions.{name}.{key}"))
+    return found
 
 
 def load_switches(merged: Tree, problems: Problems) -> tuple[dict[str, bool], dict[str, str]]:

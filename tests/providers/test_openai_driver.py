@@ -176,7 +176,7 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
         tools=[read_file],
         extensions=[StepLimit()],
     )
-    driver.start()
+    await driver.start()
     c = session.cursors()[0]
     try:
         await driver.client("test").send(c, f"Read {secret} and tell me the phrase in it.")

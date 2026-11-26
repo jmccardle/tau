@@ -641,7 +641,7 @@ class Compaction:
             self._futile[cursor.id] = (plan.limits, cursor.node().id)
         if (cursor.id, mode, part) not in self._warned:
             self._warned.add((cursor.id, mode, part))
-            cursor.tell(f"compaction cannot keep this under its soft limit: {why}")
+            cursor.tell(f"cannot keep this under the soft limit: {why}", level="warning")
         return why
 
     def _summarizer_input(self, cursor: Cursor, focus: str) -> tuple[int, str]:

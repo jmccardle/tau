@@ -20,6 +20,7 @@ from tau import (
     Body,
     Client,
     CommandFailed,
+    Commands,
     Config,
     ConfigError,
     CursorView,
@@ -749,7 +750,8 @@ def test_the_first_cursor_is_the_lowest_open_one(configured: World) -> None:
         assert session.cursors() == [1, 2]
         assert found.cursor == 1
         assert first_cursor_node(session) == found.started.session.cursor(1).at  # type: ignore[union-attr]
-        assert isinstance(found.snapshot[0], CursorView)
+        assert isinstance(found.snapshot[0], Commands)
+        assert isinstance(found.snapshot[1], CursorView)
         assert isinstance(found.snapshot[-1], Labels), "every event up to the first Labels"
         assert found.welcome is not None
         assert (found.welcome.session, found.welcome.pid) == (OLD, os.getpid())

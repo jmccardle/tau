@@ -1,6 +1,6 @@
 """Commands (D16 section 2): plain functions an extension lists in `commands`, run as `/name`.
 
-`Commands` holds the driver's commands and runs them for clients. A command that takes a
+`CommandTable` holds the driver's commands and runs them for clients. A command that takes a
 `Cursor` runs as a step of that cursor: `run` keeps it in memory and asks for the step
 (`Session.step`), the driver gives it to `before` when the step's `pre_step` job is
 dispatched, and it runs ahead of the extensions' `pre_step` hooks. Any other command runs at
@@ -10,7 +10,8 @@ ends its step `Failed`, as a failing hook does (the cursor's `hook_error` names 
 the extension that lists the command). A command may raise `CommandFailed` itself to refuse (its
 arguments, say): its caller is told the message as written, and it is no hook failure. The future
 is answered when the command returns or raises, not when its step ends. Each `progress` call of a
-command is a `Notice` to the client that ran it.
+command is an `info` `Notice` to the client that ran it, about the cursor it was run on, from the
+extension that lists the command.
 
 `/config` is not a function: its values are a mapping, which the type language has no hint
 for. `configure` runs the built-in `config` the same way a `Cursor` command runs.
@@ -24,11 +25,12 @@ from functools import partial
 from typing import cast
 
 from tau import _builtin
-from tau._complete import complete
+from tau._complete import Completion, complete
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
 from tau._core import Answer, Author, Busy, Session
 from tau._effects import describe_failure
+from tau._events import Notice
 from tau._functions import INJECT_CURSOR, INJECT_NODE, Described, describe, invoke
 from tau._handles import Handles, TreeHandle
 from tau._hub import Hub
@@ -113,8 +115,8 @@ class _Command:
 def assemble_commands(extensions: Sequence[object]) -> dict[str, _Command]:
     """Each extension's `commands` attribute, a plain function described as a command, by
     qualified name (`extension:name`). Two extensions may list one name: the bare `/name` is
-    then ambiguous (`Commands.run`). `DefinitionError` for a `commands` that is not a sequence of
-    functions, a name two commands of one extension share or `config` (the built-in `/config` is
+    then ambiguous (`CommandTable.run`). `DefinitionError` for a `commands` that is not a sequence
+    of functions, a name two commands of one extension share or `config` (the built-in `/config` is
     named so), or a function that cannot be described (a `NodeHandle` parameter is refused)."""
     found: dict[str, _Command] = {}
     for ext in extensions:
@@ -162,8 +164,9 @@ class _Pending:
     future: "asyncio.Future[str | None]"
 
 
-class Commands:
-    """The driver's commands, and running them for clients (the module docstring)."""
+class CommandTable:
+    """The driver's commands, and running them for clients (the module docstring). `generation`
+    goes up each time the commands are replaced (`use`), so the hub compares the forms only then."""
 
     def __init__(  # noqa: PLR0913 - what running a command needs of the driver
         self,
@@ -182,6 +185,7 @@ class Commands:
         rescan: Callable[[], None] = lambda: None,
     ) -> None:
         self._commands = dict(commands)
+        self.generation = 0
         self._rescan = rescan
         self._session = session
         self._catalog = catalog
@@ -205,11 +209,17 @@ class Commands:
     def use(self, commands: Mapping[str, _Command]) -> None:
         """Run `commands` (`assemble_commands`) from now on."""
         self._commands = dict(commands)
+        self.generation += 1
 
     def forms(self) -> tuple[Form, ...]:
         """Each command's form, and `/config`'s if some extension has options: its one
-        parameter is the extension, and `options` has the rest."""
+        parameter is the extension, and `options` has the rest. A skill file changed since is
+        read first (`rescan`)."""
         self._rescan()
+        return self.forms_now()
+
+    def forms_now(self) -> tuple[Form, ...]:
+        """`forms` without the rescan: what the hub sends as `Commands`."""
         forms = tuple(c.form for c in self._commands.values())
         names = self._options.names()
         if not names:
@@ -232,7 +242,7 @@ class Commands:
         at = self._session.cursor(cursor).at
         return {name: self._options.form(name, at) for name in self._options.names()}
 
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         """The values of the named type `named` that start with `prefix`."""
         return await complete(self._session, self._catalog(), cursor, named, prefix)
 
@@ -317,7 +327,7 @@ class Commands:
     ) -> "asyncio.Future[str | None]":
         future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
         if not command.on_cursor:
-            self._spawn(self._background(command, bound, client, future))
+            self._spawn(self._background(command, bound, client, cursor, future))
             return future
         self._pending[cursor] = _Pending(command, bound, client, future)
         try:
@@ -365,7 +375,7 @@ class Commands:
             owner = pending.command.owner
             handle = self._handles.cursor(cursor, owner)
             running = asyncio.ensure_future(
-                self._call(pending.command, pending.bound, pending.client, handle)
+                self._call(pending.command, pending.bound, pending.client, cursor, handle)
             )
             self._running[cursor] = running
             try:
@@ -398,11 +408,12 @@ class Commands:
         command: _Command,
         bound: dict[str, object],
         client: str,
+        cursor: int,
         future: "asyncio.Future[str | None]",
     ) -> None:
         handle = self._handles.tree(command.owner)
         try:
-            _settle(future, await self._call(command, bound, client, handle))
+            _settle(future, await self._call(command, bound, client, cursor, handle))
         except asyncio.CancelledError:
             future.cancel()
             raise
@@ -414,7 +425,12 @@ class Commands:
             handle.retire()
 
     async def _call(
-        self, command: _Command, bound: dict[str, object], client: str, handle: TreeHandle
+        self,
+        command: _Command,
+        bound: dict[str, object],
+        client: str,
+        cursor: int,
+        handle: TreeHandle,
     ) -> str | None:
         """Run the command with its injected parameters; its result, which must be a `str` or
         `None`. Anything it raises is for the caller."""
@@ -422,21 +438,22 @@ class Commands:
             command.function,
             command.described,
             bound,
-            progress=self._say(client),
+            progress=self._say(client, cursor, command.owner),
             handle=handle,
         )
         if result is not None and not isinstance(result, str):
             raise TypeError(f"{command.described.name} returned {result!r}, not a str or None")
         return result
 
-    def _say(self, client: str) -> Callable[[str], None]:
-        """A `Notice` to `client`, after what the command has written so far is published."""
+    def _say(self, client: str, cursor: int, owner: str) -> Callable[[str], None]:
+        """An `info` `Notice` to `client` about `cursor` from `owner`, after what the command has
+        written so far is published."""
 
         def say(text: str) -> None:
-            self._on_loop(partial(self._notify, client, text))()
+            self._on_loop(partial(self._notify, client, Notice(text, cursor, owner)))()
 
         return say
 
-    def _notify(self, client: str, text: str) -> None:
+    def _notify(self, client: str, notice: Notice) -> None:
         self._hub.sync()
-        self._hub.notify(client, text)
+        self._hub.notify(client, notice)

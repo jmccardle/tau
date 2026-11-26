@@ -313,7 +313,7 @@ async def _turns(  # noqa: PLR0913, PLR0917 - a case, and what runs it
         extensions=[*counting, probe, *more],  # pyright: ignore[reportArgumentType]
         clock=clock,
     )
-    driver.start()
+    await driver.start()
     cursor = session.cursors()[0]
     try:
         for text, images in zip(case["turns"], turn_images(case), strict=True):

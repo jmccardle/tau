@@ -76,7 +76,7 @@ async def main() -> None:
         )
         tools = base_tools(tmp, overflow_dir=Path(tmp) / "overflow")
         driver = Driver(session, {"scripted": provider}, catalog, tools=tools, clock=clock)
-        driver.start()
+        await driver.start()
         cursor = session.cursors()[0]
         client = driver.client("example")
         await client.watch([cursor])

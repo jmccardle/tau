@@ -135,7 +135,7 @@ async def test_when_the_overhead_and_the_tail_alone_pass_the_soft_limit_no_summa
         await say(h)
     assert len(h.provider.requests) == 3, "no summarizer was sampled"
     (said,) = told(h, "soft limit")
-    assert "cannot keep this under its soft limit" in said
+    assert "cannot keep this under the soft limit" in said
     assert (await h.view()).hook_error is None
     await h.close()
 

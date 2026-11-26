@@ -4,16 +4,18 @@ A provider's `sample` stream yields deltas (no cursor: the provider does not kno
 cursor it serves), and a running tool reports `ToolProgress` through its `progress` callback.
 The driver wraps each as a `Live` naming the cursor. Everything else a client hears is state
 sent whole whenever it changes: `CursorView` per open cursor (or `CursorGone` once it is closed),
-`Labels`, the nodes `Appended`, and a `Notice` for one client. A stream opens with a `CursorView`
-per open cursor, a `CursorGone` per closed one, and `Labels`. Every event
+`Labels`, the command forms (`Commands`), the nodes `Appended`, and a `Notice` for one client. A
+stream opens with `Commands`, a `CursorView` per open cursor, a `CursorGone` per closed one, and
+`Labels`. Every event
 is a plain frozen value, compared by value. A `CursorView` holds its questions' schemas, which
 are dicts, so it is not hashable: a frontend keys on `cursor`, not on the event.
 """
 
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from tau._core import Ending, Item, Node
-from tau._values import Json
+from tau._values import Form, Json
 
 
 @dataclass(frozen=True)
@@ -162,15 +164,47 @@ class Appended:
     nodes: tuple[Node, ...]
 
 
+NoticeLevel = Literal["info", "warning", "error"]
+"""How loud a `Notice` is (D32 section 2). `info`: for the record, nothing needs doing.
+`warning`: the session went on, but not quite as asked, or it costs (a fallback was taken,
+something was skipped, a limit is near). `error`: what a client asked for was not done (an input
+refused), or an extension's work failed."""
+
+NOTICE_LEVELS: tuple[str, ...] = get_args(NoticeLevel)
+
+
+def notice_level(level: object) -> NoticeLevel:
+    """`level` if it is a `NoticeLevel`; `ValueError` naming the levels otherwise."""
+    if level not in NOTICE_LEVELS:
+        raise ValueError(f"a notice's level is one of {list(NOTICE_LEVELS)}, not {level!r}")
+    return level  # type: ignore[return-value]
+
+
 @dataclass(frozen=True)
 class Notice:
-    """A message for one client, or for all of them: `cursor.tell` (to every client unless it
-    names one), or an input a hook refused (to its author)."""
+    """A message for one client, or for all of them: a handle's `tell` (to every client unless
+    it names one), a command's progress, or an input a hook refused (to its author). `cursor` is
+    the cursor it is about (`None`: the session), `extension` the extension that said it (`None`:
+    τ itself), filled in from the handle, never by the caller, and `level` how loud it is."""
 
     text: str
+    cursor: int | None = None
+    extension: str | None = None
+    level: NoticeLevel = "info"
 
 
-Event = Live | CursorView | CursorGone | Labels | Appended | Notice
+@dataclass(frozen=True)
+class Commands:
+    """Every command's form, and `config`'s when some extension has options: exactly what
+    `Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an
+    extension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a
+    stream's snapshot, so a client keeps the last one and never polls. It also says that the
+    options forms a client holds may be stale: read them again from `options()` when next shown."""
+
+    forms: tuple[Form, ...]
+
+
+Event = Live | Commands | CursorView | CursorGone | Labels | Appended | Notice
 """Everything a `Client`'s stream yields: a live event (never saved) or one of the saved ones."""
 
 

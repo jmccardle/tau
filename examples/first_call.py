@@ -42,7 +42,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 model_config(name), "You are terse.", clock.now(), Path(tmp) / "session"
             )
             driver = Driver(session, providers, loaded.catalog, clock=clock)
-            driver.start()
+            await driver.start()
             cursor = session.cursors()[0]
             await driver.client("example").send(cursor, "hello")
             await rest(driver, session, cursor)
