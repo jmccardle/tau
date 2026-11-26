@@ -999,15 +999,15 @@ search        off        built-in
 
 The provider, its key and its address are the administrator's, in the config file and the
 environment, and no client can read or change them. The key is never in a config file: the setting
-`api_key_env` names the variable that holds it. Turning the tool on without the key stops the start
-and says which variable is missing:
+`api_key_env` names the variable that holds it. Turning the tool on without the key is a warning,
+not a failure: τ starts without the `search` tool (the model is not offered a tool that could only
+fail), and says which variable to set when you turn it on, on the terminal as τ starts, to every
+client as a warning, and in `tau ext list`:
 
 ```text
-extension "search" failed to load; tau did not start.
-  source: built-in search
-  ConfigError: the search tool is on and the brave provider needs an API key, but the environment
-  variable BRAVE_API_KEY is not set. Set it in the environment, or in a trusted project's .env file
-  to start without it: tau ext disable search
+$ tau ext enable search
+set load.search = true in /home/you/.tau/config.json
+search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; τ starts without the search tool. Set it in the environment, or in a trusted project's .env file
 ```
 
 | `provider` | service | key | `base_url` |
@@ -1026,6 +1026,13 @@ extension "search" failed to load; tau did not start.
 ```
 
 The settings are `provider`, `api_key_env` (the variable that holds the key, if it is not the one in
-the table) and `base_url` (a proxy, or your instance). A setting that is not one of these, `api_key`
-included, stops the start and names itself. A rejected key and a rate limit come back as tool errors
-that say so, and never contain the key. Permissions know the tool as `search`, by its bare name.
+the table) and `base_url` (a proxy, or your instance: an `http` or `https` URL). These are mistakes in
+a file, so they stop the start and name themselves: a setting that is not one of these (`api_key`
+included), an unknown `provider`, a `base_url` that is not a URL, a `searxng` without one.
+
+A rejected key (HTTP 401 or 403, and Brave's 422 `SUBSCRIPTION_TOKEN_INVALID`) and a rate limit (429,
+with the wait the provider asks for) come back as tool errors that say so; any other error status is
+quoted, with the key replaced if the provider echoed it. SearXNG has no key: a 403 from it, or an
+answer in HTML, almost always means the instance does not allow `format=json`, and the error says
+to enable `json` under `search.formats` in its `settings.yml`. Permissions know the tool as
+`search`, by its bare name.

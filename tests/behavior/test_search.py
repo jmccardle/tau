@@ -213,28 +213,40 @@ async def test_a_bad_query_or_limit_is_refused_before_anything_is_sent(tmp_path:
     assert site.seen == []
 
 
-def test_it_is_built_only_with_its_key_and_the_error_names_the_variable(tmp_path: Path) -> None:
-    with pytest.raises(ExtensionLoadError) as caught:
-        built(tmp_path, "search")
-    said = str(caught.value)
-    assert (
-        "the brave provider needs an API key, but the environment variable BRAVE_API_KEY is not set"
-        in said
+def test_without_its_key_it_offers_no_tool_and_says_which_variable(tmp_path: Path) -> None:
+    unset = built(tmp_path, "search")
+    assert getattr(unset, "tools") == ()  # noqa: B009
+    assert getattr(unset, "warnings") == (  # noqa: B009 - not on the Extension protocol
+        "the brave provider needs an API key in BRAVE_API_KEY, which is not set; τ starts without "
+        "the search tool. Set it in the environment, or in a trusted project's .env file",
     )
-    assert "tau ext disable search" in said
-    with pytest.raises(ExtensionLoadError, match="MARGINALIA_API_KEY is not set"):
-        built(tmp_path, "search", {"provider": "marginalia"}, {"BRAVE_API_KEY": KEY})
-    with pytest.raises(ExtensionLoadError, match="BRAVE_API_KEY is not set") as blank:
-        built(tmp_path, "search", None, {"BRAVE_API_KEY": "  "})
-    assert "  " not in str(blank.value).split("environment variable")[1][:30]
+    other = built(tmp_path, "search", {"provider": "marginalia"}, {"BRAVE_API_KEY": KEY})
+    assert "MARGINALIA_API_KEY, which is not set" in str(getattr(other, "warnings"))  # noqa: B009
+    blank = built(tmp_path, "search", None, {"BRAVE_API_KEY": "  "})
+    assert getattr(blank, "tools") == ()  # noqa: B009
+
+
+@scenario
+async def test_a_model_is_not_offered_search_without_its_key(tmp_path: Path) -> None:
+    provider = FakeProvider([say("done")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[built(tmp_path, "search")],
+        config=model_config(FAKE_MODEL),
+    )
+    await h.send("go")
+    await h.settle()
+    await h.close()
+    assert "search" not in [t.name for t in provider.requests[0].tools]
 
 
 def test_the_key_may_be_in_another_variable_and_is_never_shown(tmp_path: Path) -> None:
     found = built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"WORK_SEARCH": KEY})
     assert found.name == "search"
     assert KEY not in repr(found)
-    with pytest.raises(ExtensionLoadError, match="WORK_SEARCH is not set"):
-        built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"BRAVE_API_KEY": KEY})
+    unset = built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"BRAVE_API_KEY": KEY})
+    assert "WORK_SEARCH, which is not set" in str(getattr(unset, "warnings"))  # noqa: B009
 
 
 @pytest.mark.parametrize(

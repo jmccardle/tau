@@ -431,6 +431,11 @@ def _ext_switch(run: _Run, key: str, on: bool) -> int:
     run.stdout.write(safe_text(f"set load.{key} = {str(on).lower()} in {path}") + "\n")
     if note is not None:
         run.stdout.write(safe_text(note) + "\n")
+    if on:  # what it will need, said now rather than at the next start (search's key)
+        rows = list_extensions(run.cwd, run.environ)
+        for row in rows:
+            if row.key == key and row.state in ("on", "failed") and row.detail:
+                run.stdout.write(safe_text(f"{key}: {row.detail}") + "\n")
     return 0
 
 

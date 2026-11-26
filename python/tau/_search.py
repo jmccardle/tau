@@ -15,8 +15,13 @@ the administrator's constants `extensions.search.provider` (`tau._constants`):
 
 The other constants are `api_key_env`, the name of the variable that holds the key if it is not the
 provider's own, and `base_url`, the provider's address if it is not the usual one (a proxy; required
-for `searxng`; an `http` or `https` URL with a host). Starting with the extension on and its key
-missing fails, naming the variable: the session does not start with a tool that could only fail.
+for `searxng`; an `http` or `https` URL with a host).
+
+**A missing key is a warning, and τ starts** (as an MCP server that does not start is): the
+extension offers no tool, so the model is never offered one that could only fail, and its `start`
+says which variable to set, on stderr and as a `warning` notice that every client gets, those that
+connect later too. A constant that is wrong (an unknown provider or key, a value of another type, a
+`base_url` that is no URL) is a mistake in a file, and stops the start (`ConfigError`).
 
 A rate limit, a rejected key and any other error answer are tool errors naming the status. The key
 is never in an answer, a notice or a log: text the provider sends back is quoted with the key's
@@ -25,6 +30,7 @@ value replaced (`_hidden`).
 
 import html
 import re
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Final, cast
 
@@ -33,6 +39,7 @@ import httpx
 from tau._config import ConfigError
 from tau._constants import constants
 from tau._fetch import host_of
+from tau._handles import TreeHandle
 from tau._tools import ToolError
 
 NAME = "search"
@@ -186,7 +193,8 @@ _PROVIDERS: Final = {
 class Search:
     """Gives the model the `search` tool (the module docstring). Build it with `configured`, which
     reads the administrator's constants and the key; `provider`, `key` and `base_url` are what that
-    finds."""
+    finds. `warnings` says what keeps the tool from being offered (its key is not set); with one,
+    `tools` is empty."""
 
     name = NAME
 
@@ -195,8 +203,9 @@ class Search:
         cls, extensions: Mapping[str, Mapping[str, object]], environ: Mapping[str, str]
     ) -> "Search":
         """`Search` as a start builds it: from the constants of `extensions.search` and the key in
-        `environ`. `ConfigError` for an unknown setting or provider, a `searxng` with no
-        `base_url`, and a provider that needs a key when the variable holding it is not set."""
+        `environ`. `ConfigError` for an unknown setting or provider, and a `base_url` that is not
+        an `http` or `https` URL with a host (a `searxng` needs one). A provider whose key is not
+        set is built without its tool, with a warning naming the variable."""
         given = constants(extensions, NAME, _SETTINGS)
         provider = str(given.get("provider", "brave"))
         if provider not in _PROVIDERS:
@@ -215,24 +224,33 @@ class Search:
                 f"extensions.search.base_url is {base!r}; it is an http or https URL with a host"
             )
         env = str(given.get("api_key_env", spec.key_env)) if spec.key_env else None
-        if env is None:
-            return cls(provider, None, base)
-        key = environ.get(env, "").strip()
-        if not key:
-            raise ConfigError(
-                f"the search tool is on and the {provider} provider needs an API key, but the "
-                f"environment variable {env} is not set. Set it in the environment, or in a "
-                "trusted project's .env file"
+        key = environ.get(env, "").strip() if env else None
+        if env is not None and not key:
+            unset = (
+                f"the {provider} provider needs an API key in {env}, which is not set; τ starts "
+                "without the search tool. Set it in the environment, or in a trusted project's "
+                ".env file"
             )
+            return cls(provider, None, base, warnings=(unset,))
         return cls(provider, key, base)
 
-    def __init__(self, provider: str, key: str | None, base_url: str) -> None:
+    def __init__(
+        self, provider: str, key: str | None, base_url: str, *, warnings: tuple[str, ...] = ()
+    ) -> None:
         self.provider, self.base_url = provider, base_url.rstrip("/")
         self._key = key
-        self.tools = (self.search,)
+        self.warnings = warnings
+        self.tools = () if warnings else (self.search,)
 
     def __repr__(self) -> str:
         return f"Search(provider={self.provider!r}, base_url={self.base_url!r})"  # never the key
+
+    async def start(self, tree: TreeHandle) -> None:
+        """Say each warning on stderr and, as a `warning` notice, to every client (one told
+        during `start` reaches each client when it connects)."""
+        for warning in self.warnings:
+            print(f"tau: search: {warning}", file=sys.stderr)
+            tree.tell(warning, level="warning")
 
     async def search(
         self,

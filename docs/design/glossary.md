@@ -1889,9 +1889,11 @@ The built-in extension, **off by default** (`tau ext enable search`), that lets 
 through a **provider** the administrator chose: `brave` (the default; key in `BRAVE_API_KEY`),
 `marginalia` (`MARGINALIA_API_KEY`) or `searxng` (an instance at `base_url`, no key). The answer is a
 numbered list of title, address and snippet (markup removed) under the untrusted notice; at most
-`limit` results (1 to 20). It is built from the layers' constants and the environment, and fails the
-start naming the variable when its key is not set. A rejected key, a rate limit and any other failure are
-tool errors that never hold the key. The provider's table (`_Provider`: its address, its key variable and
+`limit` results (1 to 20). It is built from the layers' constants and the environment. When its key
+is not set it is built without its tool and with a `warnings` line naming the variable, which its `start`
+says on stderr and as a standing `warning` notice, and `tau ext list` shows; a wrong constant stops the
+start. A rejected key, a rate limit and any other failure are tool errors that never hold the key (a
+provider's text is quoted with the key's value replaced). The provider's table (`_Provider`: its address, its key variable and
 its way of asking) and `Hits` (a provider's answer: `(title, url, snippet)` for each result) are private.
 
 ### administrator constants (an extension's), `constants`
@@ -2040,8 +2042,11 @@ program adds `session_name` (D18) after `load_extensions` returns (see *session_
 same and returns one **`ExtensionSource`** per source in load order, `tau` and `session_name` (both `always`) first: `key`, `state`
 (a **`SourceState`**: `always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
 asked, and imported not at all), `kind` (a **`SourceKind`**: `built-in`, `package`, `user`, `project`, `explicit`, or
-`load` for a `load` key no source has), `origin`, `detail` (why not on), and for a source that is on
-the `extensions`, qualified `commands` and `tools` it provides. It is not served over the wire.
+`load` for a `load` key no source has), `origin`, `detail` (why not on; for a source that is on, its
+extensions' **`warnings`**, the lines an extension may carry to say what it could not do, such as
+`search` without its key), and for a source that is on the `extensions`, qualified `commands` and
+`tools` it provides. It is not served over the wire. `tau ext enable KEY` prints that detail, so a
+warning is heard when the source is turned on, not first at the next start.
 
 ### tau ext, -e, --no-extensions
 `tau.cli` · D19 · new
