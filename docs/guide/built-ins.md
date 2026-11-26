@@ -855,6 +855,56 @@ so a server's README snippet goes in as it is:
       "type": "http",
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+    }
+  }
+}
+```
+
+A server with a `command` runs on your machine and speaks over its stdin and stdout; one with a
+`url` is reached over streamable HTTP (the older SSE transport, `"type": "sse"`, is not supported).
+`${NAME}` is replaced from your environment, or from a trusted project's `.env`, so the token stays
+out of the file; `${NAME:-default}` gives a default. A name that is not set and has no default
+stops the start and says which.
+
+A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
+Code reads), so a project set up for Claude Code works as it is. Both are pinned by
+[trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
+`headers`, never their values), and a change to either file asks again. For one server name the
+nearest file wins: `.tau/mcp.json`, then `.mcp.json`, then yours. `"disabled": true` turns a
+server off, and `{"mcpServers": {"github": {"disabled": true}}}` in `.tau/mcp.json` turns off a
+`.mcp.json` server you do not want, without editing that file.
+
+A program that starts τ with servers of its own (an editor, through tau-acp) names its files in
+the environment variable `TAU_MCP_CONFIG` (several separated by `:`, `;` on Windows), and turns
+`mcp` on for that run: `TAU_MCP_CONFIG=/run/editor-mcp.json tau serve --set load.mcp=true`. Those
+files are nearest of all, so their servers win a name, and a file named there must exist. It is
+set by whoever starts τ, like `--set`: no client can set it.
+
+The model sees each tool as `mcp__SERVER__TOOL` (`mcp__github__create_issue`). They are asked
+about like any other tool, and a rule that names the server names every tool it has:
+
+```json
+{ "extensions": { "permissions": { "ask": ["mcp__github"], "allow": ["mcp__github__get_issue"] } } }
+```
+
+When τ starts it starts every server at once and waits until each has listed its tools, so the
+first message already has them. **A server that does not start stops τ**, naming every server
+that failed and why (with the last line it wrote to its error output):
+
+```text
+extension 'mcp' did not start: McpStartError: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set
+```
+
+Fix it, add `"disabled": true` to it, or `tau ext disable mcp`. τ waits 30 seconds for the
+servers; the first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
+more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the
+command once by hand first.
+
+While τ runs, `/mcp` lists the servers, whether each is running and their tools. A server that
+lists new tools has them offered from the model's next request. A server that exits is reported
+(an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
+server. A tool's text and images reach the model; other kinds of content are named and left out.
+Prompts and resources that a server offers are not used.
 
 ## Reading the web and searching it
 
@@ -926,52 +976,6 @@ host under `python.org` and not `python.org` itself. The host is read as the req
   }
 }
 ```
-
-A server with a `command` runs on your machine and speaks over its stdin and stdout; one with a
-`url` is reached over streamable HTTP (the older SSE transport, `"type": "sse"`, is not supported).
-`${NAME}` is replaced from your environment, or from a trusted project's `.env`, so the token stays
-out of the file; `${NAME:-default}` gives a default. A name that is not set and has no default
-stops the start and says which.
-
-A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
-Code reads), so a project set up for Claude Code works as it is. Both are pinned by
-[trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
-`headers`, never their values), and a change to either file asks again. For one server name the
-nearest file wins: `.tau/mcp.json`, then `.mcp.json`, then yours. `"disabled": true` turns a
-server off, and `{"mcpServers": {"github": {"disabled": true}}}` in `.tau/mcp.json` turns off a
-`.mcp.json` server you do not want, without editing that file.
-
-A program that starts τ with servers of its own (an editor, through tau-acp) names its files in
-the environment variable `TAU_MCP_CONFIG` (several separated by `:`, `;` on Windows), and turns
-`mcp` on for that run: `TAU_MCP_CONFIG=/run/editor-mcp.json tau serve --set load.mcp=true`. Those
-files are nearest of all, so their servers win a name, and a file named there must exist. It is
-set by whoever starts τ, like `--set`: no client can set it.
-
-The model sees each tool as `mcp__SERVER__TOOL` (`mcp__github__create_issue`). They are asked
-about like any other tool, and a rule that names the server names every tool it has:
-
-```json
-{ "extensions": { "permissions": { "ask": ["mcp__github"], "allow": ["mcp__github__get_issue"] } } }
-```
-
-When τ starts it starts every server at once and waits until each has listed its tools, so the
-first message already has them. **A server that does not start stops τ**, naming every server
-that failed and why (with the last line it wrote to its error output):
-
-```text
-extension 'mcp' did not start: McpStartError: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set
-```
-
-Fix it, add `"disabled": true` to it, or `tau ext disable mcp`. τ waits 30 seconds for the
-servers; the first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
-more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the
-command once by hand first.
-
-While τ runs, `/mcp` lists the servers, whether each is running and their tools. A server that
-lists new tools has them offered from the model's next request. A server that exits is reported
-(an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
-server. A tool's text and images reach the model; other kinds of content are named and left out.
-Prompts and resources that a server offers are not used.
 
 That reads two documentation sites freely and asks about any other host; answering `always` writes
 `fetch:HOST` for that host. A `deny` rule works the same way.
