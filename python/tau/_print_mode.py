@@ -6,7 +6,9 @@ stops the run: it is never declined for want of a rule.
 
 - **stdout** is the answer: the text of the last `Assistant` node of the run's own turn (from its
   own message to the next message another client wrote), if it has no calls, taken from the node
-  (`Appended`), never from `Live`. With `--json` it is instead the
+  (`Appended`), never from `Live`. A run that does not finish (exit 3, or exit 1 after the model
+  spoke) prints instead all the text the model wrote in that turn, node by node, calls and
+  results left out: what it said before it was cut off. With `--json` it is instead the
   `Welcome` line and the events the client hears, one object per line, as the wire sends them.
 - **stderr** gets one line each, prefixed `tau: `: every `Notice`, a hook's failure, each wait
   before a retry (`tau: HTTP 429: busy: retry 1 of 3 in 2 s`), each question answered or
@@ -304,11 +306,34 @@ class Run:
         text = "\n".join(p.text for p in parts if isinstance(p, Part.Text)).rstrip("\n")
         return text or None
 
-    def failed(self, kind: str, message: str, shown: str | None = None) -> int:
-        """A failure: said on stderr, and under `--json` the last line of stdout."""
+    def partial(self) -> str:
+        """Every word the model wrote in this run's own turn so far: the text parts of each
+        `Assistant` node, nodes separated by a blank line, calls and results left out. What a run
+        that stopped, or failed after the model spoke, still shows. Empty if it wrote none."""
+        view = self.views.get(self.cursor)
+        if view is None:
+            return ""
+        texts = (
+            "\n".join(p.text for p in n.body.parts if isinstance(p, Part.Text)).rstrip("\n")
+            for n in self.turn(view.at)
+            if isinstance(n.body, Body.Assistant)
+        )
+        return "\n\n".join(t for t in texts if t.strip())
+
+    def failed(
+        self, kind: str, message: str, shown: str | None = None, *, partial: bool = True
+    ) -> int:
+        """A failure: what the model wrote so far on stdout (`--json`: in the last line), then
+        said on stderr. `partial=False` when the caller printed the text itself."""
+        text = self.partial() if partial else ""
+        if text and not self.json:
+            self.write(self.out, text + "\n")
         self.note(shown or message)
         if self.json:
-            self.line({"error": {"type": kind, "message": message}})
+            error: dict[str, str] = {"type": kind, "message": message}
+            if text:
+                error["partial"] = text
+            self.line({"error": error})
         return 1
 
     def verdict(self, view: CursorView, *, message: bool) -> int:
@@ -335,7 +360,7 @@ class Run:
         if reply is not None and not self.json:
             self.write(self.out, reply + "\n")
         reason = last.finish_reason or "none given"
-        return self.failed("Refused", f"the model refused (finish reason {reason})")
+        return self.failed("Refused", f"the model refused (finish reason {reason})", partial=False)
 
     def ended(self, ending: Ending | None) -> int:
         """The status of how a step ended: 0 for `Done`."""
@@ -352,7 +377,17 @@ class Run:
                 return 0
 
     def stopped(self, why: str) -> int:
+        """The run stopped before it finished (exit 3): what the model wrote so far on stdout
+        (`--json`: a last line `{"stopped": {"message", "partial"}}`), then why on stderr."""
+        text = self.partial()
+        if text and not self.json:
+            self.write(self.out, text + "\n")
         self.note(f"stopped before finishing: {why}")
+        if self.json:
+            stop: dict[str, str] = {"message": f"stopped before finishing: {why}"}
+            if text:
+                stop["partial"] = text
+            self.line({"stopped": stop})
         return 3
 
 
@@ -430,7 +465,7 @@ async def _send(run: Run, message: str) -> int:
     await run.client.send(run.cursor, message)
     view = await run.rest()
     code = run.verdict(view, message=True)
-    if code in (0, 3):
+    if code == 0:
         reply = run.reply(view.at)
         if reply is not None and not run.json:
             run.write(run.out, reply + "\n")
@@ -469,10 +504,10 @@ async def _command(run: Run, line: str, piped: str) -> int:
     if view.busy:
         view = await run.rest()
     sent = bool(view.items) or bool(run.turn(view.at))
-    code = run.verdict(view, message=sent)  # a command that sent input is held to a message's rules
     if result is not None:
         run.write(run.err if run.json else run.out, result + "\n")
-    if sent and code in (0, 3):
+    code = run.verdict(view, message=sent)  # a command that sent input is held to a message's rules
+    if sent and code == 0:
         reply = run.reply(view.at)
         if reply is not None and not run.json:
             run.write(run.out, reply + "\n")

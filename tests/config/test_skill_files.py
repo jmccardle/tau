@@ -48,6 +48,11 @@ def failure(world: World, cwd: Path | None = None) -> str:
     return str(caught.value)
 
 
+def warned(world: World, cwd: Path | None = None) -> str:
+    """What `skills` says about the files it skipped: the start loads, and says these."""
+    return "\n".join(skills(world, cwd).warnings)
+
+
 # -- where they are
 
 
@@ -217,24 +222,103 @@ def test_one_that_has_prompt_files_asks_again_and_says_which_were_added(world: W
     assert ".tau/prompts/deploy.md added" in report
 
 
-def test_a_symlinked_prompt_is_never_read(world: World, tmp_path: Path) -> None:
+def test_a_symlinked_prompt_is_read_and_pinned_by_its_bytes(world: World, tmp_path: Path) -> None:
     root = world.project()
     outside = put(tmp_path, "elsewhere.md", "secret")
     (root / ".tau" / "prompts").mkdir()
     (root / ".tau" / "prompts" / "link.md").symlink_to(outside)
-    result = tau(world, "trust", cwd=root)
-    assert result.code == 1
-    assert "link.md is a symlink; tau refuses symlinks inside a project" in result.err
+    report = tau(world, "trust", cwd=root).out
+    assert f"a symlink: these are the bytes of {outside.resolve()}" in report
+    assert [p.body for p in skills(world, root).prompts] == ["secret"]
+    outside.write_text("changed", encoding="utf-8")
+    with pytest.raises(UntrustedProject, match=r"\.tau/prompts/link\.md changed"):
+        load_config(root, world.environ, ask=None)
+    again = tau(world, "trust", cwd=root).out
+    assert "changed" in again
+    assert [p.body for p in skills(world, root).prompts] == ["changed"]
 
 
-def test_a_symlinked_skill_directory_is_never_read(world: World, tmp_path: Path) -> None:
+def test_a_symlinked_skill_directory_is_read_and_its_target_is_in_the_report(
+    world: World, tmp_path: Path
+) -> None:
     root = world.project()
     put(tmp_path, "elsewhere/SKILL.md", SKILL)
     (root / ".tau" / "skills").mkdir()
     (root / ".tau" / "skills" / "linked").symlink_to(tmp_path / "elsewhere")
+    report = tau(world, "trust", cwd=root).out
+    assert (
+        f"a symlink: these are the bytes of {(tmp_path / 'elsewhere' / 'SKILL.md').resolve()}"
+        in (report)
+    )
+    assert [p.name for p in skills(world, root).prompts] == ["linked"]
+
+
+def test_claude_skills_may_link_to_agents_skills(world: World) -> None:
+    root = world.project()
+    put(root, ".agents/skills/pdf/SKILL.md", SKILL)
+    (root / ".claude").mkdir()
+    (root / ".claude" / "skills").symlink_to(root / ".agents" / "skills")
+    report = tau(world, "trust", cwd=root).out
+    assert ".claude/skills/pdf/SKILL.md" in report
+    assert (
+        f"a symlink: these are the bytes of {(root / '.agents/skills/pdf/SKILL.md').resolve()}"
+        in (report)
+    )
+    assert [p.name for p in skills(world, root).prompts] == ["pdf"]
+
+
+def test_a_symlinked_skill_file_and_a_symlinked_dot_claude_are_read_too(
+    world: World, tmp_path: Path
+) -> None:
+    root = world.project()
+    put(tmp_path, "shared/.claude/skills/one/SKILL.md", SKILL)
+    (root / ".claude").symlink_to(tmp_path / "shared" / ".claude")
+    put(tmp_path, "file/SKILL.md", SKILL)
+    (root / ".tau" / "skills" / "two").mkdir(parents=True)
+    (root / ".tau" / "skills" / "two" / "SKILL.md").symlink_to(tmp_path / "file" / "SKILL.md")
+    trust(world, root)
+    assert [p.name for p in skills(world, root).prompts] == ["one", "two"]
+
+
+def test_a_symlink_that_leads_nowhere_is_still_refused(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    (root / ".tau" / "prompts").mkdir()
+    (root / ".tau" / "prompts" / "gone.md").symlink_to(tmp_path / "missing.md")
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
-    assert "linked is a symlink; tau refuses symlinks inside a project" in result.err
+    assert "gone.md is a symlink to nothing" in result.err
+
+
+def test_a_symlink_to_a_fifo_or_a_directory_is_refused_as_it_is_without_one(
+    world: World, tmp_path: Path
+) -> None:
+    root = world.project()
+    (root / ".tau" / "prompts").mkdir()
+    os.mkfifo(tmp_path / "pipe.md")
+    (root / ".tau" / "prompts" / "pipe.md").symlink_to(tmp_path / "pipe.md")
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    assert "pipe.md is not a regular file" in result.err
+
+
+def test_a_symlink_to_an_oversize_file_is_refused(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    (root / ".tau" / "prompts").mkdir()
+    big = put(tmp_path, "big.md", "x" * ((1 << 20) + 1))
+    (root / ".tau" / "prompts" / "big.md").symlink_to(big)
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    assert "big.md is 1048577 bytes; the limit is 1048576" in result.err
+
+
+def test_a_symlinked_tau_directory_is_still_not_a_project(world: World, tmp_path: Path) -> None:
+    root = world.home / "linked"
+    root.mkdir()
+    put(tmp_path, "real/prompts/x.md", "x")
+    (root / ".tau").symlink_to(tmp_path / "real")
+    result = tau(world, "trust", cwd=root)
+    assert result.code != 0
+    assert "symlink" in result.err
 
 
 def test_trusted_json_records_the_prompt_hashes(world: World) -> None:
@@ -269,58 +353,56 @@ def test_the_same_name_in_the_users_and_the_projects_is_not_a_clash(world: World
     assert commands(world, root) == ["skills:review"]
 
 
-def test_a_name_that_is_not_letters_digits_underscore_and_hyphen_stops_the_start(
+def test_a_name_that_is_not_letters_digits_underscore_and_hyphen_is_skipped_with_a_warning(
     world: World,
 ) -> None:
     path = put(world.tau, "prompts/my notes.md", "t")
-    assert f"{path}: the name 'my notes' is not ASCII letters, digits, `_` and `-`" in failure(
-        world
-    )
+    assert f"{path}: the name 'my notes' is not ASCII letters, digits, `_` and `-`" in warned(world)
 
 
 def test_a_skill_needs_a_description(world: World) -> None:
     path = put(world.tau, "skills/pdf/SKILL.md", "no frontmatter at all")
-    assert f"{path}: no description, and a skill needs a `description`" in failure(world)
+    assert f"{path}: no description, and a skill needs a `description`" in warned(world)
 
 
-def test_an_empty_template_with_no_description_stops_the_start(world: World) -> None:
+def test_an_empty_template_with_no_description_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "prompts/empty.md", "---\nargument-hint: x\n---\n\n")
-    assert f"{path}: no description, and it has no text" in failure(world)
+    assert f"{path}: no description, and it has no text" in warned(world)
 
 
 def test_a_name_in_the_frontmatter_must_be_the_files(world: World) -> None:
     path = put(world.tau, "prompts/review.md", "---\nname: other\n---\nt")
-    assert f"{path}: `name: other` is not the file's name, 'review'" in failure(world)
+    assert f"{path}: `name: other` is not the file's name, 'review'" in warned(world)
 
 
-def test_a_frontmatter_that_never_closes_stops_the_start(world: World) -> None:
+def test_a_frontmatter_that_never_closes_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "prompts/review.md", "---\ndescription: d\nbody")
-    assert f"{path}: the frontmatter opens with --- and never closes" in failure(world)
+    assert f"{path}: the frontmatter opens with --- and never closes" in warned(world)
 
 
-def test_a_frontmatter_line_without_a_colon_stops_the_start(world: World) -> None:
+def test_a_frontmatter_line_without_a_colon_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "prompts/review.md", "---\ndescription d\n---\nbody")
-    assert f"{path}:2: expected `key: value`, got 'description d'" in failure(world)
+    assert f"{path}:2: expected `key: value`, got 'description d'" in warned(world)
 
 
-def test_a_description_that_is_a_list_stops_the_start(world: World) -> None:
+def test_a_description_that_is_a_list_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "prompts/review.md", "---\ndescription:\n  - one\n---\nbody")
-    assert f"{path}: `description` must be text, not empty, a list or a mapping" in failure(world)
+    assert f"{path}: `description` must be text, not empty, a list or a mapping" in warned(world)
 
 
-def test_an_empty_block_scalar_description_stops_the_start(world: World) -> None:
+def test_an_empty_block_scalar_description_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "skills/pdf/SKILL.md", "---\ndescription: >\nname: pdf\n---\nbody")
-    assert f"{path}: `description` must be text, not empty, a list or a mapping" in failure(world)
+    assert f"{path}: `description` must be text, not empty, a list or a mapping" in warned(world)
 
 
-def test_a_quote_that_never_closes_stops_the_start(world: World) -> None:
+def test_a_quote_that_never_closes_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "skills/pdf/SKILL.md", '---\nname: pdf\ndescription: "open\n---\nb')
-    assert f'{path}:3: the " that opens `description` never closes' in failure(world)
+    assert f'{path}:3: the " that opens `description` never closes' in warned(world)
 
 
-def test_an_unknown_escape_in_a_double_quoted_value_stops_the_start(world: World) -> None:
+def test_an_unknown_escape_in_a_double_quoted_value_is_skipped_with_a_warning(world: World) -> None:
     path = put(world.tau, "skills/pdf/SKILL.md", '---\ndescription: "a \\q b"\n---\nb')
-    assert f"{path}:2: `description` has an unknown escape, \\q" in failure(world)
+    assert f"{path}:2: `description` has an unknown escape, \\q" in warned(world)
 
 
 def test_disable_model_invocation_must_be_true_or_false(world: World) -> None:
@@ -329,19 +411,20 @@ def test_disable_model_invocation_must_be_true_or_false(world: World) -> None:
         "skills/pdf/SKILL.md",
         "---\ndescription: d\ndisable-model-invocation: maybe\n---\nb",
     )
-    assert f"{path}: `disable-model-invocation` is 'maybe', not true or false" in failure(world)
+    assert f"{path}: `disable-model-invocation` is 'maybe', not true or false" in warned(world)
 
 
-def test_a_file_that_is_not_utf8_stops_the_start(world: World) -> None:
+def test_a_file_that_is_not_utf8_is_skipped_with_a_warning(world: World) -> None:
     path = world.tau / "prompts" / "bad.md"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"\xff\xfe")
-    assert f"{path}: not valid UTF-8" in failure(world)
+    assert f"{path}: not valid UTF-8" in warned(world)
 
 
-def test_a_template_named_config_stops_the_start_on_the_commands_rule(world: World) -> None:
+def test_a_template_named_config_is_skipped_with_a_warning(world: World) -> None:
     put(world.tau, "prompts/config.md", "t")
-    assert "a command cannot be named 'config'" in failure(world)
+    assert "the name 'config' is the built-in /config's" in warned(world)
+    assert skills(world).prompts == ()
 
 
 # -- what a frontmatter may hold
@@ -473,34 +556,83 @@ MISPLACED = [
 
 
 @pytest.mark.parametrize(("relative", "name", "message"), MISPLACED)
-def test_a_file_in_the_wrong_place_stops_the_start(
+def test_a_file_in_the_wrong_place_is_skipped_with_a_warning(
     world: World, relative: str, name: str, message: str
 ) -> None:
     path = put(world.tau, relative, SKILL)
-    assert f"{path}: {message}" in failure(world)
+    assert f"{path}: {message}" in warned(world)
 
 
-def test_every_problem_is_listed_at_once(world: World) -> None:
+def test_every_problem_is_listed_at_once_and_the_good_files_still_load(world: World) -> None:
     put(world.tau, "prompts/a.b.md", "x")
     put(world.tau, "skills/bad/SKILL.md", "no frontmatter")
     put(world.tau, "prompts/z.MD", "x")
-    message = failure(world)
+    put(world.tau, "prompts/fine.md", "x")
+    message = warned(world)
     assert "a.b.md: the name 'a.b'" in message
     assert f"{Path('skills', 'bad', 'SKILL.md')}: no description" in message
     assert "z.MD: misplaced template" in message
+    assert [p.name for p in skills(world).prompts] == ["fine"]
 
 
-def test_tau_trust_refuses_a_project_with_file_errors_and_lists_all_of_them(
+def test_the_start_prints_a_warning_naming_the_file_and_goes_on(world: World) -> None:
+    path = put(world.tau, "skills/pdf/SKILL.md", "no frontmatter at all")
+    put(world.tau, "prompts/fine.md", "ok")
+    result = tau(world, "config", "check")
+    assert result.code == 0, result.err
+    assert f"warning: {path}: no description, and a skill needs a `description` (skipped)" in (
+        result.out
+    )
+    assert commands(world) == ["skills:fine"]
+
+
+def test_a_template_and_a_skill_with_one_name_still_stop_the_start_when_others_are_skipped(
+    world: World,
+) -> None:
+    put(world.tau, "prompts/bad name.md", "x")
+    put(world.tau, "prompts/review.md", "t")
+    put(world.tau, "skills/review/SKILL.md", SKILL)
+    message = failure(world)
+    assert "/review is both a template" in message
+    assert "bad name" not in message, "the skipped file is a warning, not part of the failure"
+
+
+def test_an_unreadable_user_file_is_skipped_with_a_warning(world: World) -> None:
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("a file mode does not keep this reader out")
+    path = put(world.tau, "prompts/locked.md", "x")
+    path.chmod(0)
+    try:
+        assert f"{path}: cannot be read" in warned(world)
+    finally:
+        path.chmod(0o600)
+
+
+def test_a_file_that_is_broken_in_the_project_is_skipped_and_does_not_stop_trust(
     world: World,
 ) -> None:
     root = world.project()
     put(root, ".tau/prompts/a.b.md", "x")
     put(root, ".tau/skills/bad/SKILL.md", "no frontmatter")
     put(root, ".tau/skills/loose.md", SKILL)
+    put(root, ".tau/prompts/fine.md", "ok")
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 0, result.err
+    for line in ("a.b.md: the name 'a.b'", "bad/SKILL.md: no description", "loose.md: misplaced"):
+        assert line in result.out, result.out
+    assert "tau cannot load (skipped; it starts without them)" in result.out
+    assert "cannot be trusted" not in result.out
+    assert [p.name for p in skills(world, root).prompts] == ["fine"]
+    assert (world.tau / "trusted.json").exists()
+
+
+def test_tau_trust_still_refuses_a_name_two_files_claim(world: World) -> None:
+    root = world.project()
+    put(root, ".tau/prompts/review.md", "t")
+    put(root, ".tau/skills/review/SKILL.md", SKILL)
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
-    for line in ("a.b.md: the name 'a.b'", "bad/SKILL.md: no description", "loose.md: misplaced"):
-        assert line in result.err, result.err
+    assert "/review is both a template" in result.err
     assert "cannot be trusted until these are fixed" in result.err
     assert not (world.tau / "trusted.json").exists()
 

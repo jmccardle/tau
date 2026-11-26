@@ -135,7 +135,9 @@ D20's file, if the owner accepts D20 Open 2).
   `system_sha256`, like `env_sha256`. A missing directory or file has its own marker, so adding
   the first file untrusts the project, as adding a `.env` does.
 - Symlinks, FIFOs and oversize files are refused with the reader `_trust` uses, `SYSTEM.md`
-  included: it is never read through a symlink.
+  included: it is never read through a symlink. The one exception (0.18, D24 §6) is the prompt and
+  skill files, which may be, or be in, symlinks: read through to a regular file, pinned by those
+  bytes, the resolved path shown in the report.
 - The trust report lists the files with sizes, and "Changes since approval" says which were
   added, removed or changed; it prints no code. A record without `extensions_sha256` or
   `system_sha256` is not approved (the `env_sha256` precedent): the project is asked once more.

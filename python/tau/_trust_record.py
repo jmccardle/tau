@@ -53,6 +53,7 @@ class Approval:
     extensions: Mapping[str, str]  # path under .tau/extensions/ -> sha256, for showing diffs
     prompts: Mapping[str, str]  # path under .tau/ -> sha256 of each prompt and skill file
     mcp: Mapping[str, str]  # path under the project (`.mcp.json`, `.tau/mcp.json`) -> sha256
+    hooks_sha256: str
 
 
 def trusted_path(home: Path) -> Path:
@@ -93,6 +94,7 @@ def approved(home: Path) -> dict[str, Approval]:
                 dict(cast("dict[str, str]", r["extensions"])),
                 dict(cast("dict[str, str]", r.get("prompts", {}))),
                 dict(cast("dict[str, str]", r.get("mcp", {}))),
+                str(r.get("hooks_sha256", digest(None))),
             )
             for root, r in current.items()
         }
@@ -118,6 +120,7 @@ def record(home: Path, root: Path, approval: Approval) -> None:
                     "extensions": a.extensions,
                     "prompts": a.prompts,
                     "mcp": a.mcp,
+                    "hooks_sha256": a.hooks_sha256,
                 }
                 for r, a in projects.items()
             }

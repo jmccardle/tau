@@ -352,7 +352,7 @@ impl Model {
                     Some(extension) => format!("[{extension}] {}", notice.text),
                     None => notice.text,
                 };
-                self.notify_at(notice.level.unwrap_or(NoticeLevel::Info), text);
+                self.notify_at(notice.level, text);
                 Vec::new()
             }
             Event::Commands(commands) => {

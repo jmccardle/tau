@@ -13,6 +13,8 @@ from tau._agents import Agents
 from tau._attachments import Attachments
 from tau._base_tools import BaseTools
 from tau._bash_guard import BashGuard
+from tau._command_hooks import CommandHooks, CommandHooksUnavailable
+from tau._command_hooks_file import HookFileError
 from tau._compaction import Compaction
 from tau._fetch import Fetch
 from tau._mcp import Mcp, McpConfigError
@@ -36,6 +38,7 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     BashGuard.name: lambda loaded: BashGuard(),
     Compaction.name: lambda loaded: Compaction(),
     Fetch.name: lambda loaded: Fetch.configured(loaded.catalog.extensions),
+    CommandHooks.name: CommandHooks.of,  # a file it cannot use raises `HookFileError`
     Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # a TAU_MCP_CONFIG file must exist
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     PlanMode.name: lambda loaded: PlanMode(),
@@ -50,8 +53,10 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Undo.name: lambda loaded: Undo(),
     Usage.name: lambda loaded: Usage(),
 }
-OFF_BY_DEFAULT = frozenset({BashGuard.name, Mcp.name, Router.name, Search.name, TokenCalls.name})
+OFF_BY_DEFAULT = frozenset(
+    {BashGuard.name, CommandHooks.name, Mcp.name, Router.name, Search.name, TokenCalls.name}
+)
 """The built-ins that `load` must turn on (`load: {router: true}`, `tau ext enable router`)."""
-FILE_ERRORS = (SkillFileError, McpConfigError)
+FILE_ERRORS = (SkillFileError, McpConfigError, HookFileError, CommandHooksUnavailable)
 """What a built-in raises for a user's or a project's file it cannot use: the message names the
 file, and the start stops with it alone (it is not τ's fault, so no traceback)."""

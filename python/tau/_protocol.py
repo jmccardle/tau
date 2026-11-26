@@ -583,10 +583,15 @@ def non_negative(schema: Json) -> Json:
 
 
 class _Defs:
-    """The `$defs` being collected: a dataclass is defined where a hint first reaches it."""
+    """The `$defs` being collected: a dataclass is defined where a hint first reaches it. One a
+    call's result or an event holds is **sent**, and the encoding always writes every field (a
+    default is for building it in Python), so every field is `required`, `null` where it may be
+    none; one a call's params hold is received, and a field with a default may be left out."""
 
     def __init__(self, core: Json) -> None:
         self.defs: Json = dict(core)
+        self._sending = True
+        self._direction: dict[str, bool] = {}
 
     def define(self, name: str, schema: Mapping[str, object]) -> None:
         if name in self.defs:
@@ -636,6 +641,7 @@ class _Defs:
         """The `$ref` to the definition of dataclass `parts[0]`, made if it is new."""
         cls: type = parts[0]
         if cls.__name__ not in self.defs:
+            self._direction[cls.__name__] = self._sending
             hints = typing.get_type_hints(cls)
             properties: Json = {}
             required: list[str] = []
@@ -645,7 +651,7 @@ class _Defs:
             for field in dataclasses.fields(cast("Any", cls)):
                 found = self.hint(hints[field.name])
                 properties[field.name] = non_negative(found) if field.name in ID_FIELDS else found
-                if (
+                if self._sending or (
                     field.default is dataclasses.MISSING
                     and field.default_factory is dataclasses.MISSING
                 ):
@@ -656,11 +662,19 @@ class _Defs:
                 | {"properties": properties}
                 | ({"required": required} if required else {}),
             )
+        elif self._direction.get(cls.__name__, self._sending) != self._sending:
+            raise ValueError(
+                f"{cls.__name__} is both sent by the server and received from a client"
+            )
         return _ref(cls.__name__)
 
     def _param(self, param: Param) -> Json:
         """A param's schema: an id is never negative; a list in `MAX_ITEMS` has `maxItems`."""
-        found = self.hint(param.hint)
+        self._sending = False
+        try:
+            found = self.hint(param.hint)
+        finally:
+            self._sending = True
         if param.name in ID_FIELDS:
             return non_negative(found)
         most = MAX_ITEMS.get(param.name)
