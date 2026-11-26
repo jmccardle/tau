@@ -16,10 +16,10 @@ from mcp_http import HttpMcp
 
 from tau import (
     Body,
-    ExtensionLoadError,
     ImageLimits,
     Mcp,
     McpServer,
+    Notice,
     Outcome,
     Part,
     Permissions,
@@ -156,27 +156,48 @@ async def test_env_reaches_the_server_and_stderr_is_not_shown(
 
 
 @scenario
-async def test_a_server_that_fails_to_start_stops_the_start_naming_every_failure(
-    tmp_path: Path,
+async def test_a_server_that_fails_to_start_is_reported_and_the_rest_start(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    good, log = tmp_path / "good", tmp_path / "bad"
+    good = tmp_path / "good"
     servers = [
-        stdio(log, "broken", FAIL_START="cannot open the database"),
+        stdio(tmp_path / "bad", "broken", FAIL_START="cannot open the database"),
         McpServer("missing", "test", "stdio", command=str(tmp_path / "no-such-program")),
         stdio(good, "good"),
     ]
-    with pytest.raises(ExtensionLoadError) as caught:
-        await Harness.create(
-            tmp_path, provider=FakeProvider([]), extensions=[Mcp(servers, tmp_path)]
-        )
-    message = str(caught.value)
-    assert "extension 'mcp' did not start: McpStartError: " in message
-    assert "MCP server broken exited (status 2): cannot open the database" in message
-    assert (
-        f"MCP server missing: cannot start {tmp_path / 'no-such-program'}: No such file" in message
+    h = await run(tmp_path, servers, calling("mcp__good__echo", {"text": "still here"}))
+    broken = "MCP server broken exited (status 2): cannot open the database; τ starts without it"
+    missing = f"MCP server missing: cannot start {tmp_path / 'no-such-program'}: No such file"
+    err = capfd.readouterr().err
+    assert f"tau: mcp: {broken}" in err
+    assert f"tau: mcp: {missing}" in err
+    await h.send("go")
+    await h.settle()
+    notices = [(n.extension, n.level, n.text) for n in h.notice_events()]
+    assert ("mcp", "error", broken) in notices  # told during start, heard on connecting
+    assert any(text.startswith(missing) for _, _, text in notices)
+    assert outcome_of(h) == Outcome.Ok("still here")
+    assert not [n for n in h.provider.requests[0].tool_names if not n.startswith("mcp__good__")]
+    listing = str(await h.run("mcp")).splitlines()
+    assert listing[0].startswith("broken (stdio: ")
+    assert listing[0].endswith(
+        ": failed: MCP server broken exited (status 2): cannot open the database"
     )
-    assert "good" not in message
-    assert {"stdin": "closed"} in logged(good)  # the one that started was stopped
+    await h.close()
+
+
+@scenario
+async def test_a_client_that_connects_later_hears_what_did_not_start(tmp_path: Path) -> None:
+    h = await run(tmp_path, [stdio(tmp_path / "bad", "broken", FAIL_START="no db")])
+    later = await h.connect("later")
+    heard: list[object] = []
+    while not any(isinstance(e, Notice) for e in heard):  # after its snapshot
+        heard.append(await asyncio.wait_for(anext(later), 5))
+    (notice,) = [e for e in heard if isinstance(e, Notice)]
+    assert (notice.extension, notice.level, notice.cursor) == ("mcp", "error", None)
+    assert notice.text == "MCP server broken exited (status 2): no db; τ starts without it"
+    await later.close()
+    await h.close()
 
 
 @scenario
@@ -300,31 +321,40 @@ async def test_over_http_with_a_session_and_headers(tmp_path: Path) -> None:
 
 
 @scenario
-async def test_an_http_server_that_refuses_stops_the_start(tmp_path: Path) -> None:
+async def test_an_http_server_that_refuses_is_reported(tmp_path: Path) -> None:
     server = HttpMcp(token="right")
     spec = McpServer(
         "web", "test", "http", url=server.url, headers={"Authorization": "Bearer wrong"}
     )
-    with pytest.raises(ExtensionLoadError) as caught:
-        await Harness.create(
-            tmp_path, provider=FakeProvider([]), extensions=[Mcp([spec], tmp_path)]
-        )
+    h = await run(tmp_path, [spec])
     server.close()
-    assert f"MCP server web: {server.url} refused the request (HTTP 401)" in str(caught.value)
-    assert "wrong" not in str(caught.value)
+    await h.settle()
+    (notice,) = h.notice_events()
+    assert notice.text == (
+        f"MCP server web: {server.url} refused the request (HTTP 401); τ starts without it"
+    )
+    assert "wrong" not in notice.text
+    await h.close()
 
 
 @scenario
-async def test_a_slow_start_is_cut_at_its_timeout_and_the_slow_servers_named(
+async def test_a_slow_server_is_cut_before_the_start_timeout_and_named(
     tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
     catalog = dataclasses.replace(fake_catalog(), timeouts={"mcp": (0.5, None)})
     hung = stdio(tmp_path / "log", "hung", HANG_START="1")
-    with pytest.raises(ExtensionLoadError, match=r"it did not return within 0\.5 s"):
-        await Harness.create(
-            tmp_path, provider=FakeProvider([]), catalog=catalog, extensions=[Mcp([hung], tmp_path)]
-        )
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([]),
+        catalog=catalog,
+        extensions=[Mcp([hung], tmp_path, start_timeout=0.5)],
+    )
     err = capfd.readouterr().err
-    assert f"still starting: hung ({sys.executable} {SERVER})" in err
+    assert f"MCP server hung did not start within 0.25 s ({sys.executable} {SERVER}; a first" in err
     assert "raise extensions.mcp.start_timeout" in err
+    for _ in range(100):  # it was stopped; its log is written in its own time
+        if {"stdin": "closed"} in logged(tmp_path / "log"):
+            break
+        await asyncio.sleep(0.02)
     assert {"stdin": "closed"} in logged(tmp_path / "log")
+    await h.close()

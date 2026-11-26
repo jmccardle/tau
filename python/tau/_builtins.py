@@ -33,7 +33,9 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     BaseTools.name: lambda loaded: BaseTools(),
     BashGuard.name: lambda loaded: BashGuard(),
     Compaction.name: lambda loaded: Compaction(),
-    Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # `McpConfigError`: the start stops
+    Mcp.name: lambda loaded: Mcp.of(
+        loaded, Path.cwd()
+    ),  # a file TAU_MCP_CONFIG names must be there
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     PlanMode.name: lambda loaded: PlanMode(),
     Prune.name: lambda loaded: Prune(),

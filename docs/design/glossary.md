@@ -1847,13 +1847,24 @@ all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are
 from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
 (`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
 are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
-used. `start` starts every server at once and returns when each has listed its tools; one that
-fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+used now only for a file `TAU_MCP_CONFIG` names that is not there; a file or server the
+configuration cannot use is skipped and named in `Mcp.warnings`. `start` starts every server at
+once and returns when each has listed its tools, within the start timeout less 1.5 s; one that
+fails or is too slow is skipped (`Mcp.failed`, its reason), said on stderr, and told as a
+*standing notice*: τ starts without it. Each
 tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
 `[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
 `list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
 answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
 process and its group, signalled through a pidfd where there is one.
+
+### standing notice
+`Hub.stand`, `Hub.forget_standing` (private); `TreeHandle.tell` from a `start` · D24 section 12 (amends D32 §2, §4) · new (0.18)
+
+A notice to every client that an extension's `start` tells. A start runs before any client is
+connected, so the hub keeps it and sends it to each client that connects, after its snapshot
+(`Commands`, the views, `Labels`), until that extension is stopped (a reload forgets it). It is
+an ordinary `Notice`: no wire change. `mcp` reports a server that did not start this way.
 
 ### mcp__SERVER (a permission rule)
 `tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)

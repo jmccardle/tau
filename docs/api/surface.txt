@@ -142,7 +142,14 @@ class ImageRule
     def tokens(self, width: int, height: int) -> int
 LabelName = NewType('LabelName', str)
 class Mcp
-    def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+    def __init__(
+        self,
+        servers: Sequence[McpServer],
+        cwd: Path,
+        *,
+        warnings: Sequence[str] = (),
+        start_timeout: float | None = None,
+    ) -> None
     def mcp(self) -> str
     name = NAME
     @classmethod
