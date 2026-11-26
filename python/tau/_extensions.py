@@ -29,7 +29,7 @@ from types import ModuleType
 from typing import Literal, cast
 
 from tau._builtin import SESSION_NAME, Tau
-from tau._builtin_factories import FACTORIES, OFF_BY_DEFAULT
+from tau._builtins import BUILTINS, OFF_BY_DEFAULT
 from tau._commands import assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
@@ -37,8 +37,8 @@ from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
 from tau._project_code import ApprovedFiles, forget
+from tau._prompt_files import SkillFileError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
-from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._tools import assemble_tools
 from tau._trust import (
@@ -70,19 +70,10 @@ RETRY = "retry"
 it is switched on and off, and listed, like one."""
 
 
-def _skills(loaded: LoadedConfig) -> Skills:
-    """`Skills` for the files `loaded` reads; a file it cannot use stops the start."""
-    try:
-        return Skills.of(loaded)
-    except SkillFileError as e:
-        raise ExtensionLoadError(str(e)) from None
-
-
-_BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {**FACTORIES, Skills.name: _skills}
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
-BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
+BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*BUILTINS, RETRY]))
 """The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
 
@@ -256,6 +247,14 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
     return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
+def _made(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> list[object]:
+    """The built-in `make` builds from `loaded`; a skill file it cannot use stops the start."""
+    try:
+        return [make(loaded)]
+    except SkillFileError as e:
+        raise ExtensionLoadError(str(e)) from None
+
+
 def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
     made = [
         _Candidate(
@@ -264,9 +263,9 @@ def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
             "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            lambda m=make: [m(loaded)],
+            lambda m=make: _made(m, loaded),
         )
-        for key, make in _BUILTINS.items()
+        for key, make in BUILTINS.items()
     ]
     wrapper = _Candidate(
         RETRY,

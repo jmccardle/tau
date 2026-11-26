@@ -81,8 +81,9 @@ commands = (which_tools,)
 '''
 # Windows leaves the `bash` tool out (README: not ported there)
 BASE_TOOLS = "read, write, edit, grep, find" + ("" if sys.platform == "win32" else ", bash")
-# The tools of the other built-ins that are on by default, after the base tools': `fetch`.
-OFFERED = f"{BASE_TOOLS}, fetch"
+# What a start offers: the tools of the other built-ins that are on by default (`agent`, `fetch`)
+# around the base tools (extensions load in key order).
+OFFERED = f"agent, {BASE_TOOLS}, fetch"
 MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}}}
 
 
@@ -698,7 +699,7 @@ def test_a_started_session_offers_the_base_tools(configured: World) -> None:
 
 def test_load_false_in_the_config_starts_a_session_without_them(configured: World) -> None:
     configured.user_config({**MOCK, "load": {"base_tools": False}})
-    assert offered(configured) == "fetch"
+    assert offered(configured) == "agent, fetch"
 
 
 def test_no_extensions_leaves_them_offered(configured: World) -> None:
@@ -707,7 +708,7 @@ def test_no_extensions_leaves_them_offered(configured: World) -> None:
 
 def test_load_false_beats_no_extensions_for_them(configured: World) -> None:
     configured.user_config({**MOCK, "load": {"base_tools": False}})
-    assert offered(configured, "--no-extensions") == "fetch"
+    assert offered(configured, "--no-extensions") == "agent, fetch"
 
 
 # -- the first cursor

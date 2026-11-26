@@ -14,14 +14,17 @@ from typing import Any
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, say, scenario
+from shipped import shipped
 
 from tau import (
     Author,
     Body,
     CallArgs,
+    CallDraft,
     CallNamed,
     CursorView,
     Labels,
+    NodeHandle,
     Outcome,
     Part,
     Stop,
@@ -41,7 +44,15 @@ def load(name: str) -> Any:
 
 
 harness_sense = load("harness_sense")
-plan_mode = load("plan_mode")
+
+
+class Guard:
+    """An extension that refuses `bash`: what `hook_errors` has something to list for."""
+
+    name = "guard"
+
+    async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        return "guard: bash is refused" if call.tool == "bash" else None
 
 
 def use(tool: str, **args: object) -> Reply:
@@ -87,7 +98,7 @@ async def test_whereami_says_where_the_cursor_is_and_what_the_harness_offers(
         tmp_path,
         [use("whereami"), say("ok")],
         tools=[FakeTool("read", "x")],
-        extras=[plan_mode],
+        extras=[shipped("plan_mode")],
     )
     await h.client.set_label(h.cursor, "main")
     await h.send("hi")
@@ -96,11 +107,11 @@ async def test_whereami_says_where_the_cursor_is_and_what_the_harness_offers(
     batch = h.session.cursor(h.cursor).at - 2
     assert f"cursor [0] at node {batch}, depth 3, labels ['main'], model fake" in answer
     assert "extension plan_mode (" in answer
-    assert "plan_mode.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_step'" in answer
+    assert "_plan_mode.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_step'" in answer
     assert "extension harness_sense (" in answer
     assert "harness_sense.py)" in answer
     assert "tools offered: read, whereami, tree, context_budget" in answer
-    assert "options now: {'mode': 'act'," in answer, "options as they stand"
+    assert "options now: {'mode': 'act'}" in answer, "options as they stand"
     await h.close()
 
 
@@ -198,17 +209,10 @@ async def test_hook_errors_remembers_what_the_next_step_erases_from_the_view(
 async def test_hook_errors_lists_the_calls_an_extension_refused(tmp_path: Path) -> None:
     script = [use("bash", command="rm x"), use("hook_errors"), say("ok")]
     tools = [FakeTool(n, "ran") for n in ("read", "write", "grep", "bash")]
-    h, _ = await sensed(tmp_path, script, tools=tools, extras=[plan_mode])
-    await h.run("plan")
-    await h.settle()  # `run` came back before its step ended: /config now would be Busy
-    # "read-only" is not a property of a tool: plan mode knows `read` and `grep` by name, so
-    # every observation tool of every other extension has to be named to it
-    await h.configure("plan_mode", {"allow_tools": ["read", "grep", "hook_errors"]})
+    h, _ = await sensed(tmp_path, script, tools=tools, extras=[Guard()])
     await h.send("go")
     await h.settle()
-    assert told(h).endswith(
-        "call c: plan mode: bash is refused. Put the change in your plan instead. (by plan_mode)"
-    )
+    assert told(h).endswith("call c: guard: bash is refused (by guard)")
     await h.close()
 
 

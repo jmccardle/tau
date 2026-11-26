@@ -1,13 +1,27 @@
-"""bash_guard: ask before a `bash` call that is likely to print a lot.
+"""`BashGuard`: the built-in extension, off by default, that asks before a `bash` call that is
+likely to print a lot (`tau ext enable bash_guard`).
 
-A `pre_tool` hook matches the command against `Options.patterns`. On a match it asks the
-frontend `reject | allow | always | truncate`. `truncate` asks again for a grep pattern and
-rewrites the call's `command` to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. A reject is the
-call's `Err`, written so the model can narrow the command. `always` is saved to the user's
-config file (`NodeHandle.save_options(allow=...)`), appended to the file's own `allow`
-(`saved_options`), never to what the project's layer, the overrides or a node add to it. It holds
-in every session and shows in `/config bash_guard`. When nobody answers within `wait` seconds (a
-question waits even with no client connected) `unattended` decides.
+A `pre_tool` hook matches the command against the option `patterns` (regexes; the built-in ones
+are its default, so `/config bash_guard` shows them). A command already piped to `head`, `tail`
+or `wc` is never asked about. On a match it asks the clients `reject | allow | always | truncate`:
+
+- `reject` is the call's `Err`, which tells the model to narrow the command;
+- `allow` runs it;
+- `always` runs it and appends the pattern to the user's config file's own `allow` (never to what
+  a project layer, an override or a node adds), so it holds in every session and shows in
+  `/config bash_guard`;
+- `truncate` asks for a grep pattern (declined: just the tail) and rewrites the call's `command`
+  to `{ cmd } 2>&1 | grep -e PATTERN | tail -n 200`. The tree keeps the model's own arguments,
+  so the result starts with `[bash_guard ran: ...]`, which tells the model (and a reader) what
+  really ran.
+
+A question nobody answers within `wait` seconds (it waits with no client connected too), or that
+is declined or aborted, is decided by `unattended`. `ask` cannot say which of those it was, so the
+refusal says only that nobody answered.
+
+The options are what a person may tune for themselves: what is asked about, what is allowed for
+good, what happens unattended and how long to wait. They are checked when set (a bad regex is a
+`ConfigError`, nothing is written).
 """
 
 import asyncio
@@ -17,7 +31,9 @@ import shlex
 from dataclasses import dataclass
 from typing import Annotated, Literal, cast
 
-from tau import CallDraft, NodeHandle, Outcome
+from tau._core import Outcome
+from tau._handles import NodeHandle
+from tau._protocols import CallDraft
 
 TAIL = 200
 BOUNDED = re.compile(r"\|\s*(?:head|tail|wc)\b")  # already piped to something short
@@ -31,11 +47,12 @@ BUILT_IN = (
     r"(?s)\bjournalctl\b(?!.*\s-n\s*\d)",
     r"(?s)\bdocker\s+logs\b(?!.*--tail)",
 )
+"""The patterns `Options.patterns` starts as: commands that tend to print a lot."""
 
 
 @dataclass(frozen=True)
 class Options:
-    """bash_guard's options."""
+    """`BashGuard`'s options (`/config bash_guard`)."""
 
     # A list option's default is a tuple (a dataclass refuses a list); the value is a list.
     patterns: Annotated[list[str], "regexes of commands that print a lot"] = BUILT_IN  # pyright: ignore[reportAssignmentType]
@@ -63,13 +80,15 @@ class Options:
 
 
 class BashGuard:
+    """The built-in extension `bash_guard` (the module docstring)."""
+
     name = "bash_guard"
     options = Options
 
     def __init__(self) -> None:
-        self.ran: dict[tuple[int, str], str] = {}  # (batch node, call id) -> what really ran
+        self._ran: dict[tuple[int, str], str] = {}  # (batch node, call id) -> what really ran
 
-    async def ask(self, node: NodeHandle, text: str, expect: object) -> object:
+    async def _ask(self, node: NodeHandle, text: str, expect: object) -> object:
         """`node.ask`, giving up after `wait` seconds: none connected, or none looking."""
         try:
             async with asyncio.timeout(node.options().wait):
@@ -78,6 +97,7 @@ class BashGuard:
             return None
 
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
+        """Ask about a `bash` call that matches a pattern, and act on the answer."""
         if call.tool != "bash":
             return None
         try:
@@ -89,7 +109,7 @@ class BashGuard:
         pattern = options.hit(command)
         if pattern is None:
             return None
-        answer = await self.ask(
+        answer = await self._ask(
             node,
             f"bash would print a lot (matches /{pattern}/):\n  {command}",
             Literal["reject", "allow", "always", "truncate"],
@@ -104,16 +124,16 @@ class BashGuard:
             return None
         if verdict == "truncate":
             keep = (
-                await self.ask(node, "grep -e what? (decline: just the tail)", str)
+                await self._ask(node, "grep -e what? (decline: just the tail)", str)
                 if answer
                 else None
             )
             pipe = f"grep -e {shlex.quote(str(keep))} | " if keep else ""
             ran = f"{{ {command}\n}} 2>&1 | {pipe}tail -n {TAIL}"
             call.args_raw = json.dumps({**args, "command": ran})
-            self.ran[node.id, call.id] = ran
+            self._ran[node.id, call.id] = ran
             return None
-        who = "the user said no" if answer else "nobody was there to approve it"
+        who = "the user said no" if answer else "nobody answered"
         return (
             f"bash_guard did not run `{command}`: it matches /{pattern}/ and would print a lot "
             f"({who}). Narrow it (-n, -l, --tail, a path, | head) and call bash again."
@@ -121,14 +141,13 @@ class BashGuard:
 
     async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None:
         """The tree keeps the model's own `args_raw`; tell the model what ran instead."""
-        ran = self.ran.pop((node.id, call.id), None)
+        ran = self._ran.pop((node.id, call.id), None)
         note = f"[bash_guard ran: {ran}]\n"
         match call.outcome:
             case Outcome.Ok(value=value) if ran:
                 call.outcome = Outcome.Ok(note + value)
             case Outcome.Err(error=error) if ran:
                 call.outcome = Outcome.Err(note + error)
+            case _:
+                pass  # no rewrite, or no outcome to put a note on
         return None
-
-
-extensions = [BashGuard()]  # what `chat.py --extension` adds

@@ -12,10 +12,9 @@ in-session branching; cross-session fork is a glossary term). Review
 catches those.
 
 A **leaf** built-in (D28 section 6) is one tau could ship without: nothing in `python/tau`
-imports its module except the table of built-ins (`_builtin_factories.py`'s `FACTORIES`), so
-deleting the module and its one row there leaves a working tau. `usage` is one: a replacement
-takes its counting rules from the public `tau.Reading`, `reading` and `counted`, not from
-`tau._usage`.
+imports its module except the table of built-ins (`_builtins.py`'s `BUILTINS`), so deleting
+the module and its one row there leaves a working tau. `usage` is one: a replacement takes its
+counting rules from the public `tau.Reading`, `reading` and `counted`, not from `tau._usage`.
 
 A line may use a banned word for an unrelated meaning by saying so on that
 line, naming the word and the reason:
@@ -58,7 +57,7 @@ BANNED_RE = re.compile(
 # and `isIncomplete` are checked as `Lane_Id`, `Side_Entry`, `is_Incomplete`.
 CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 ALLOW_RE = re.compile(r"rules: allow\((\w+)\): \S")
-LEAVES = {"tau._usage": Path("python/tau/_builtin_factories.py")}
+LEAVES = {"tau._usage": Path("python/tau/_builtins.py")}
 """Each leaf built-in's module, and the one file that may import it."""
 
 

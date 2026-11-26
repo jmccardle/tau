@@ -19,8 +19,9 @@ BASH_GAP = pytest.mark.skipif(
 )
 # The tools the model is offered: `bash` is not one of them on Windows.
 OFFERED = ["read", "write", "edit", "grep", "find", *([] if sys.platform == "win32" else ["bash"])]
-# What a default start offers: those, then the tools of the other built-ins that are on (`fetch`).
-STARTED = [*OFFERED, "fetch"]
+# What a default start offers: the base tools, between the tools of the other built-ins that are on
+# (`agent`, `fetch`; extensions load in key order).
+STARTED = ["agent", *OFFERED, "fetch"]
 
 
 @scenario
@@ -143,7 +144,7 @@ async def test_with_load_false_the_model_is_offered_none_of_them(
     h = await Harness.create(world.home, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == ["fetch"], "none of the base tools, only the web read"
+    assert provider.requests[0].tool_names == ["agent", "fetch"], "none of the base tools"
     await h.close()
 
 
