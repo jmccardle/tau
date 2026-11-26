@@ -60,12 +60,13 @@ class CallDraft
     property id: str
     property tool: str
 class CommandHooks
+    def hooks(self) -> str
     name = NAME
     @classmethod
     def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
-    order: Mapping[str, int] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
-    async def post_reply(self, cursor: Cursor, subject: Subject) -> None
-    async def post_step(self, cursor: Cursor, subject: Subject) -> None
+    order: ClassVar[Mapping[str, int]] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
