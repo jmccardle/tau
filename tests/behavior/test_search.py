@@ -1,7 +1,9 @@
-"""`search` (D24 section 9), the built-in web search: off by default, a provider chosen and keyed by
+"""`search`, the built-in web search: off by default, a provider chosen and keyed by
 the administrator's constants and the environment, results answered as numbered lines under the
 untrusted notice, and every failure a tool error that names it without the key. Against a server of
-the test's own: nothing here reaches the network."""
+the test's own: nothing here reaches the network.
+
+See the guide: built-ins, "Reading the web"."""
 
 import asyncio
 import json

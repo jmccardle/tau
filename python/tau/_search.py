@@ -1,5 +1,5 @@
 """`Search`: the built-in extension that gives the model the `search` tool, a web search that
-answers titles, addresses and snippets (D24 section 9). It is **off by default** (`tau ext enable
+answers titles, addresses and snippets. It is **off by default** (`tau ext enable
 search`) because it needs an account: a provider's API key, which the administrator keeps in the
 environment, never in a config file and never as an option a client could read or change.
 

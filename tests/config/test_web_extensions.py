@@ -1,6 +1,8 @@
-"""`fetch` and `search`, the built-in web extensions (D24 section 9), as `tau ext` and a start see
+"""`fetch` and `search`, the built-in web extensions, as `tau ext` and a start see
 them: `fetch` is on, `search` is off until it is turned on and has its key. Through `tau` on real
-config files."""
+config files.
+
+See the guide: built-ins, "Reading the web"."""
 
 import json
 

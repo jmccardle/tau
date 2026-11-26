@@ -1,5 +1,5 @@
 """`Fetch`: the built-in extension that gives the model the `fetch` tool, a web page or file read
-over HTTP (D24 section 9). It is on by default and needs no key.
+over HTTP (guide: built-ins, "Reading the web"). It is on by default and needs no key.
 
 `fetch(url, max_chars=20000, start=0)` is one GET, with a browser-compatible `User-Agent`, an
 `Accept` that prefers Markdown, and these limits, never options a client could change: 10 s to

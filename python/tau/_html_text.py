@@ -1,4 +1,4 @@
-"""HTML to readable Markdown text, for the `fetch` tool (D24 section 9), with the standard library
+"""HTML to readable Markdown text, for the `fetch` tool, with the standard library
 only: a page is parsed into a small tree (`html.parser`), its main content is chosen, and the tree
 is written as Markdown: headings, paragraphs, lists, block quotes, fenced code, tables as rows,
 links as `[text](absolute-url)` and emphasis. Scripts, styles, navigation, footers, sidebars,
