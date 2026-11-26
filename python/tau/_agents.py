@@ -2,16 +2,19 @@
 
 The model gets a tool, `agent(task, to=None)`. A call opens a cursor at the end of the session's
 prefix (the root `Config` and the system prompt: a fresh context that shares the prompt-cache
-prefix), labelled `agent:N`, sends it the task, waits for it to rest, and returns its final reply
-as `agent:N answered:` and the text. A finished agent is closed (D17): its label and its nodes
-stay in the tree. `to="agent:N"` reopens that agent and sends it a follow-up, so it remembers its
-earlier work. Several calls in one reply run at once.
+prefix), labelled `agent:P:N`, sends it the task, waits for it to rest, and returns its final
+reply as `agent:P:N answered:` and the text. `P` is the id of the cursor whose call it is, `N`
+counts that cursor's agents from 1: a client groups children under their parent by reading the
+label (docs/guide/conventions.md, CV-04). A finished agent is closed (D17): its label and its
+nodes stay in the tree. `to="agent:P:N"` reopens that agent and sends it a follow-up, so it
+remembers its earlier work. Several calls in one reply run at once.
 
 An agent's cursor is offered the `tools` option's tools, or every tool except `agent`, so there is
 no recursion and no depth counter. Nothing else is special about it: the step limit bounds it,
 the other extensions' hooks (permissions' questions included) run on its cursor, and usage counts
 its replies. If the call is cancelled (the parent is aborted) its `finally` closes the agent,
-which aborts it first. It is off by default: `load: {agents: true}`, or `tau ext enable agents`.
+which aborts it first. It is on by default; `load: {agents: false}`, or `tau ext disable agents`,
+removes the tool.
 """
 
 import contextlib
@@ -28,6 +31,7 @@ from tau._values import Model
 
 TOOL = "agent"
 PREFIX = "agent:"
+"""What every agent's label starts with: `agent:P:N` (the module docstring)."""
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,7 @@ class Agents:
         self,
         node: NodeHandle,
         task: Annotated[str, "everything the agent needs: it sees none of this conversation"],
-        to: Annotated[str | None, "an earlier agent to continue, such as agent:1"] = None,
+        to: Annotated[str | None, "an earlier agent to continue, such as agent:0:1"] = None,
     ) -> str:
         """Give a task to a sub-agent that starts with a fresh context and returns its final
         reply. With `to`, send a follow-up to an agent you used before; it remembers its work."""
@@ -126,7 +130,7 @@ class Agents:
 
     def _start(self, node: NodeHandle, model: str | None) -> tuple[int, str]:
         """A new agent: a cursor at the end of the prefix, on `model` (the branch's own if none),
-        labelled with the first `agent:N` no cursor has."""
+        labelled `agent:P:N` for the calling cursor `P` and the first `N` it has not used."""
         walk = node.walk()
         at = walk[prefix_length(walk) - 1].id
         wanted = model or node.model()
@@ -134,9 +138,9 @@ class Agents:
             at = node.append(at, Body.Config(model_config(wanted)))
         child = node.open(at)
         number = 1
-        while self._labelled(node, f"{PREFIX}{number}"):
+        while self._labelled(node, f"{PREFIX}{node.cursor_id}:{number}"):
             number += 1
-        label = f"{PREFIX}{number}"
+        label = f"{PREFIX}{node.cursor_id}:{number}"
         node.set_label(label, child)
         return child, label
 

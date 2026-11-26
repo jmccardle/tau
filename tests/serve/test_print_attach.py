@@ -505,9 +505,9 @@ class _Delegating(BaseHTTPRequestHandler):
 
 
 class _Resuming(_Delegating):
-    """As `_Delegating`, but the parent continues the agent `agent:1` the session already has."""
+    """As `_Delegating`, but the parent continues the agent `agent:0:1` the session already has."""
 
-    ARGS: ClassVar[dict[str, str]] = {"task": "more", "to": "agent:1"}
+    ARGS: ClassVar[dict[str, str]] = {"task": "more", "to": "agent:0:1"}
 
 
 def _serving_model(home: World, handler: type[BaseHTTPRequestHandler]) -> Iterator[World]:
@@ -574,11 +574,11 @@ def test_a_decline_rule_declines_a_sub_agents_question(delegating: World) -> Non
 def test_an_agent_the_session_already_had_open_is_the_attached_runs_when_it_is_sent_a_task(
     resuming: World,
 ) -> None:
-    """A crash left `agent:1` open at rest, so it is in the attach snapshot; the run's model sends
+    """A crash left `agent:0:1` open at rest, so it is in the attach snapshot; the run's model sends
     it a follow-up, and its question is the run's to answer: no other client is there to."""
 
     def leftover(made: Session, tip: int) -> int:
-        made.set_label("agent:1", made.open(tip, Author.Core(), 0))
+        made.set_label("agent:0:1", made.open(tip, Author.Core(), 0))
         return tip
 
     resuming.session(OLD, cwd=work(resuming), build=leftover)

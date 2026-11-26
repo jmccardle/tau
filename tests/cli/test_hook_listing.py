@@ -63,7 +63,7 @@ def test_hooks_lists_each_point_with_its_extensions_in_run_order(world: World) -
     lines = {line.split()[0]: line for line in result.out.splitlines()}
     assert "guard -100" in lines["pre_input"]
     assert lines["pre_input"].index("guard") < lines["pre_input"].index("plain 0")
-    assert lines["pre_sample"].endswith("usage -100, compaction 0")
+    assert lines["pre_sample"].endswith("usage -100, agents 0, compaction 0, plan_mode 0")
     widths = {re.match(r"\S+\s+", line).end() for line in lines.values()}  # type: ignore[union-attr]
     assert len(widths) == 1, "the points are aligned"
 
