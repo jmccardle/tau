@@ -4,11 +4,11 @@
 
 One page per group of the public surface (`docs/api/README.md` says who each is for).
 
-- [Writing an extension](extensions.md): 45 names
+- [Writing an extension](extensions.md): 47 names
 - [Tools](tools.md): 12 names
 - [The session's records](records.md): 14 names
-- [Writing a frontend](clients.md): 14 names
-- [Events](events.md): 18 names
+- [Writing a frontend](clients.md): 16 names
+- [Events](events.md): 20 names
 - [Starting and finding sessions](sessions.md): 19 names
 - [The wire](wire.md): 7 names
 - [Embedding tau](driver.md): 5 names

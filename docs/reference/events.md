@@ -4,7 +4,7 @@
 
 What a client's stream yields.
 
-Names: `Appended`, `CallArgs`, `CallNamed`, `CursorGone`, `CursorView`, `CutOff`, `Delta`, `Event`, `HookFailure`, `Labels`, `Live`, `LiveDelta`, `Notice`, `OpenQuestion`, `Retrying`, `TextDelta`, `ThinkingDelta`, `ToolProgress`
+Names: `Appended`, `CallArgs`, `CallNamed`, `Commands`, `CursorGone`, `CursorView`, `CutOff`, `Delta`, `Event`, `HookFailure`, `Labels`, `Live`, `LiveDelta`, `Notice`, `NoticeLevel`, `OpenQuestion`, `Retrying`, `TextDelta`, `ThinkingDelta`, `ToolProgress`
 
 ## Appended
 
@@ -38,6 +38,20 @@ class CallNamed
 ```
 
 A call begins forming: call number `index` in this reply, with its `id` and tool.
+
+## Commands
+
+```python
+@dataclass(frozen=True)
+class Commands
+    forms: tuple[Form, ...]
+```
+
+Every command's form, and `config`'s when some extension has options: exactly what
+`Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an
+extension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a
+stream's snapshot, so a client keeps the last one and never polls. It also says that the
+options forms a client holds may be stale: read them again from `options()` when next shown.
 
 ## CursorGone
 
@@ -101,7 +115,7 @@ again.
 ## Event
 
 ```python
-Event = Live | CursorView | CursorGone | Labels | Appended | Notice
+Event = Live | Commands | CursorView | CursorGone | Labels | Appended | Notice
 ```
 
 Everything a `Client`'s stream yields: a live event (never saved) or one of the saved ones.
@@ -156,10 +170,26 @@ What a `Live` carries: a provider's delta, or a tool's progress.
 @dataclass(frozen=True)
 class Notice
     text: str
+    cursor: int | None = None
+    extension: str | None = None
+    level: NoticeLevel = 'info'
 ```
 
-A message for one client, or for all of them: `cursor.tell` (to every client unless it
-names one), or an input a hook refused (to its author).
+A message for one client, or for all of them: a handle's `tell` (to every client unless
+it names one), a command's progress, or an input a hook refused (to its author). `cursor` is
+the cursor it is about (`None`: the session), `extension` the extension that said it (`None`:
+τ itself), filled in from the handle, never by the caller, and `level` how loud it is.
+
+## NoticeLevel
+
+```python
+NoticeLevel = Literal['info', 'warning', 'error']
+```
+
+How loud a `Notice` is (D32 section 2). `info`: for the record, nothing needs doing.
+`warning`: the session went on, but not quite as asked, or it costs (a fallback was taken,
+something was skipped, a limit is near). `error`: what a client asked for was not done (an input
+refused), or an extension's work failed.
 
 ## OpenQuestion
 

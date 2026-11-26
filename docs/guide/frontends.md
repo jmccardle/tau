@@ -88,9 +88,9 @@ What to know:
 
 ## Events
 
-A client is also an event stream: `async for event in client`. The first events are a snapshot (a
-`CursorView` for every open cursor, a `CursorGone` for every closed one, then `Labels`), and then
-changes as they happen. There are six kinds:
+A client is also an event stream: `async for event in client`. The first events are a snapshot
+(`Commands`, a `CursorView` for every open cursor, a `CursorGone` for every closed one, then
+`Labels`), and then changes as they happen. There are seven kinds:
 
 | event | meaning |
 |---|---|
@@ -99,7 +99,8 @@ changes as they happen. There are six kinds:
 | `Live` | a reply arriving: `delta` is a `TextDelta`, `ThinkingDelta`, `CallNamed`, `CallArgs` (a tool call being written) or `ToolProgress`. Only for cursors you `watch`. |
 | `Labels` | every label and its cursor, whenever one changes |
 | `CursorGone` | a cursor was closed; drop it. `at` is where it ended |
-| `Notice` | a message for this client: `cursor.tell` (which goes to every client unless it names one), or an input that a hook refused (which goes to its author) |
+| `Commands` | every command's `Form`, whole: first in the snapshot, then whenever the commands change (an extension started, a reload, a skill file added). Keep the last one; it also means the options forms you hold may be stale |
+| `Notice` | a message for this client: an extension's `tell` (which goes to every client unless it names one), a command's progress, or an input that a hook refused (which goes to its author). `extension` says who (`None`: τ itself), `cursor` which cursor it is about (`None`: the session), and `level` how loud: `info`, `warning` or `error` |
 
 `Live` is a preview: it is never in the tree and nothing is lost if you ignore it. The node that
 follows in `Appended` is the record. So a client draws the deltas as a layer over the cursor, and
@@ -137,8 +138,8 @@ async def listen(client, cursor, rested: asyncio.Event) -> None:
                 if working and not busy:
                     rested.set()
                 working = working or busy
-            case Notice(text=text):
-                print(f"\n[{text}]")
+            case Notice(text=text, extension=extension):
+                print(f"\n[{extension or 'tau'}] {text}")
 
 
 async def main() -> None:
@@ -216,9 +217,11 @@ refuses), `ConfigError`. [The reference](../reference/errors.md) lists them.
 
 A person types `/count` or `/model mock:echo`. The client reads the line for you:
 
-- `await client.commands()` lists every command as a `Form`: its `name`, `description`, and the
+- The `Commands` event carries every command as a `Form`: its `name`, `description`, and the
   `schema` of its arguments (JSON Schema, with `"format"` on the named types such as `"node"`
-  or `"path"`), and the `extension` that owns it.
+  or `"path"`), and the `extension` that owns it. It comes first on the stream and again whenever
+  the commands change, so a palette drawn from the last one is never stale.
+  `await client.commands()` returns the same forms, for a program with no stream.
 - `await client.parse_line(cursor, line)` reads a line that starts with `/` into a `Parsed`:
   the `command`, its `args`, and `missing`, the required arguments not yet given, in order. Ask
   the person for each one, add it to the line (`name=value`), and parse again.
@@ -226,6 +229,10 @@ A person types `/count` or `/model mock:echo`. The client reads the line for you
   or `None`. It raises `CommandFailed` if the command did.
 - `await client.complete_line(cursor, line)` returns what could finish the last word: command
   names after `/`, then the values of the argument, such as models or paths. This is for Tab.
+  Each is a `Completion`: insert its `value` (it replaces the word being typed), and in a list
+  show its `label` (or the `value` when it has none) with its `detail` dimmed beside it: a
+  command's description, a file's size, a model's provider and context window, a node's first
+  line. `client.complete(cursor, named, prefix)` answers the same items for one named type.
 
 `parse_line` raises `UnknownCommand` for a name nobody has. A frontend then sends the line as
 text, with a warning, so the model can read a `/word` that is not a command. A bare name that two
@@ -311,7 +318,7 @@ async def main() -> None:
     client, cursor = opened.client, opened.cursor
     answering = asyncio.create_task(answer_questions(client))
 
-    print(await client.complete_line(cursor, "/gr"))
+    print([c.value for c in await client.complete_line(cursor, "/gr")])
     parsed = await client.parse_line(cursor, "/greet")
     print(parsed.command.name, parsed.missing)  # nothing is missing: it takes no arguments
     print(await parsed.run(client, cursor))

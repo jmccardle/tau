@@ -264,6 +264,57 @@
         "tool"
       ]
     },
+    "Commands": {
+      "description": "Every command's form, and `config`'s when some extension has options: exactly what\n`Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an\nextension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a\nstream's snapshot, so a client keeps the last one and never polls. It also says that the\noptions forms a client holds may be stale: read them again from `options()` when next shown.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "Commands"
+        },
+        "forms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Form"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "forms"
+      ]
+    },
+    "Completion": {
+      "description": "One thing that could finish what is being typed (D32 section 1). `value` is what is\ninserted, or sent: it replaces the word being typed whole (quoted for a command line, unquoted\nfrom `Client.complete` and `values`). `label` is what a list shows instead of `value` (`None`:\nshow `value`), and `detail` one line beside it, dimmed (`None`: nothing). Neither holds a\nnewline (whitespace runs become one space), and `detail` is cut at `DETAIL_WIDTH` characters\nwith `…`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "value"
+      ]
+    },
     "Config": {
       "description": "A config snapshot. `data` is opaque to core and typed by the driver.",
       "properties": {
@@ -538,6 +589,9 @@
       "oneOf": [
         {
           "$ref": "#/$defs/Live"
+        },
+        {
+          "$ref": "#/$defs/Commands"
         },
         {
           "$ref": "#/$defs/CursorView"
@@ -889,7 +943,7 @@
       "type": "object"
     },
     "Notice": {
-      "description": "A message for one client, or for all of them: `cursor.tell` (to every client unless it\nnames one), or an input a hook refused (to its author).",
+      "description": "A message for one client, or for all of them: a handle's `tell` (to every client unless\nit names one), a command's progress, or an input a hook refused (to its author). `cursor` is\nthe cursor it is about (`None`: the session), `extension` the extension that said it (`None`:\nτ itself), filled in from the handle, never by the caller, and `level` how loud it is.",
       "type": "object",
       "properties": {
         "kind": {
@@ -897,6 +951,34 @@
         },
         "text": {
           "type": "string"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
         }
       },
       "required": [
@@ -1332,7 +1414,7 @@
       }
     },
     "commands": {
-      "description": "Each command's form: its name, description and argument schema (named types with\ntheir `\"format\"`, each default), fixed until the driver reloads. If some extension has\noptions there is one more, `config`, whose one argument is the extension; it is\nchanged with `configure`, not `run`.",
+      "description": "Each command's form: its name, description and argument schema (named types with\ntheir `\"format\"`, each default). If some extension has options there is one more,\n`config`, whose one argument is the extension; it is changed with `configure`, not `run`.\nA client with a stream need not call it: the stream opens with them in `Commands`, and\nsends them again whenever they change.",
       "type": "object",
       "properties": {},
       "additionalProperties": false,
@@ -1344,7 +1426,7 @@
       }
     },
     "complete": {
-      "description": "The values of a named type (`\"path\"`, `\"model\"`, `\"cursor\"`, `\"label\"`, `\"node\"`;\nthe `\"format\"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are\nthe driver's machine's, relative to its working directory.",
+      "description": "The values of a named type (`\"path\"`, `\"model\"`, `\"cursor\"`, `\"label\"`, `\"node\"`;\nthe `\"format\"` of a schema) that start with `prefix`, as `cursor` sees them, each a\n`Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).\nPaths are the driver's machine's, relative to its working directory.",
       "type": "object",
       "properties": {
         "cursor": {
@@ -1367,12 +1449,12 @@
       "x-result": {
         "type": "array",
         "items": {
-          "type": "string"
+          "$ref": "#/$defs/Completion"
         }
       }
     },
     "complete_line": {
-      "description": "`commandline.completions` of `line` on the driver: what could finish its last\nword, in one call.",
+      "description": "`commandline.completions` of `line` on the driver: what could finish its last\nword, in one call, as `Completion`s.",
       "type": "object",
       "properties": {
         "cursor": {
@@ -1391,7 +1473,7 @@
       "x-result": {
         "type": "array",
         "items": {
-          "type": "string"
+          "$ref": "#/$defs/Completion"
         }
       }
     },

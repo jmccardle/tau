@@ -208,7 +208,7 @@ async def main():
     driver = Driver(
         session, {"scripted": provider}, read_models(cli={"models": models}), extensions=[Screens()]
     )
-    driver.start()
+    await driver.start()
     cursor = session.cursors()[0]
     await driver.client("test").send(cursor, "show me the game")
     await driver.rest(cursor)
@@ -371,6 +371,65 @@ tau ext list --hooks
 holds `(extension, text)` pairs), and a frontend draws it somewhere. It is not written to the
 log, so a reloaded session has none. `/count` above shows how many nodes it counted.
 
+## Telling the clients
+
+`cursor.tell(text)` sends a `Notice` to every client (`to="john@laptop:tui"`: to one). τ fills in
+who said it, your extension, and which cursor it is about, so a client can show
+`[myext] text`; you never name yourself. `level` says how loud: `"info"` (the default; for the
+record), `"warning"` (the session went on, but not quite as asked, or it costs), `"error"` (what
+was asked was not done, or your extension's work failed). `node.tell` in a tool hook is about the
+batch's cursor; a tree handle's `tell` takes `cursor=` (or none: the whole session).
+
+## Starting and stopping
+
+An extension that holds something for the whole session (a server process, a timer, a
+connection) gives itself an `async def start(self, tree)` and an `async def stop(self)`. Both are
+optional, and both must be `async`.
+
+`start` runs once, in load order, before any hook of any extension, before a client connects.
+`tree` is a `TreeHandle` for your extension, and unlike a hook's handle it stays live until your
+`stop` returns: keep it, and use it from your own tasks (`send`, `add_item`, `open`, `tell`, the
+reads). Do not wait inside `start` (`tree.rest` there is a `ValueError`: nothing runs until every
+`start` has returned); start a task instead. A `start` that raises, or takes longer than 30
+seconds, stops τ from starting, naming your extension.
+
+`tree.spawn(coro)` starts such a task for you: τ cancels and awaits it before your `stop` runs,
+and an exception in it is told to every client as an `error` notice from your extension (the
+traceback goes to standard error). Your extension goes on. `stop` runs when τ shuts down, in
+reverse load order, and has 5 seconds. If your `tools` or `commands` change while it runs (a
+server listed new tools), set them and call `tree.reassemble()`: the next step offers the new
+tools, and clients are sent the new commands.
+
+```python
+import asyncio
+
+from tau import TreeHandle
+
+
+class Heartbeat:
+    """Says it is alive every minute, from start to stop."""
+
+    name = "heartbeat"
+
+    async def start(self, tree: TreeHandle) -> None:
+        tree.spawn(self.beat(tree))
+
+    async def beat(self, tree: TreeHandle) -> None:
+        while True:
+            await asyncio.sleep(60)
+            tree.tell("still here")
+
+    async def stop(self) -> None:
+        pass  # the beat task is already cancelled
+
+
+extensions = [Heartbeat()]
+```
+
+An administrator can give one extension more time in the config file (not a client: these are
+not options), `{"extensions": {"heartbeat": {"start_timeout": 120, "stop_timeout": 10}}}`
+([Configuration](configuration.md)).
+
 ## Asking a question
 
 `await cursor.ask(text, expect=str)` stops your hook or command until someone answers, then
@@ -497,7 +556,7 @@ async def main():
         read_models(cli={"models": models}),
         extensions=[*shouter.extensions, *tidy.extensions],
     )
-    driver.start()
+    await driver.start()
     client = driver.client("test")
     cursor = session.cursors()[0]
 

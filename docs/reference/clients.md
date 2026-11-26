@@ -4,7 +4,7 @@
 
 A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed.
 
-Names: `Client`, `CommandFailed`, `ImageInput`, `LocalClient`, `MAX_INPUT_BYTES`, `MAX_INPUT_IMAGES`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
+Names: `Client`, `CommandFailed`, `Completion`, `ImageInput`, `LocalClient`, `MAX_INPUT_BYTES`, `MAX_INPUT_IMAGES`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.Completion`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
 
 ## Client
 
@@ -13,11 +13,11 @@ class Client(AsyncIterator[Event], Protocol)
     id: str
 ```
 
-What a frontend holds. Iterating it yields the events: first a snapshot (a `CursorView` per
-open cursor, a `CursorGone` per closed one, then `Labels`), then changes as they happen,
-until the driver stops (the stream ends), or the driver fails or the client is `CutOff` for
-falling behind (it raises `ConnectionError`). Every call raises `ConnectionError` once the
-driver has failed or stopped, or the client has been closed or cut off.
+What a frontend holds. Iterating it yields the events: first a snapshot (`Commands`, a
+`CursorView` per open cursor, a `CursorGone` per closed one, then `Labels`), then changes as
+they happen, until the driver stops (the stream ends), or the driver fails or the client is
+`CutOff` for falling behind (it raises `ConnectionError`). Every call raises `ConnectionError`
+once the driver has failed or stopped, or the client has been closed or cut off.
 
 ### Client.input
 
@@ -207,9 +207,10 @@ async def commands(self) -> tuple[Form, ...]
 ```
 
 Each command's form: its name, description and argument schema (named types with
-their `"format"`, each default), fixed until the driver reloads. If some extension has
-options there is one more, `config`, whose one argument is the extension; it is
-changed with `configure`, not `run`.
+their `"format"`, each default). If some extension has options there is one more,
+`config`, whose one argument is the extension; it is changed with `configure`, not `run`.
+A client with a stream need not call it: the stream opens with them in `Commands`, and
+sends them again whenever they change.
 
 ### Client.run
 
@@ -265,12 +266,13 @@ then, neither node nor file.
 ### Client.complete
 
 ```python
-async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
+async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]
 ```
 
 The values of a named type (`"path"`, `"model"`, `"cursor"`, `"label"`, `"node"`;
-the `"format"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are
-the driver's machine's, relative to its working directory.
+the `"format"` of a schema) that start with `prefix`, as `cursor` sees them, each a
+`Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).
+Paths are the driver's machine's, relative to its working directory.
 
 ### Client.parse_line
 
@@ -286,11 +288,11 @@ line that cannot be read, plain `LookupError` for a bare name two extensions sha
 ### Client.complete_line
 
 ```python
-async def complete_line(self, cursor: int, line: str) -> list[str]
+async def complete_line(self, cursor: int, line: str) -> list[Completion]
 ```
 
 `commandline.completions` of `line` on the driver: what could finish its last
-word, in one call.
+word, in one call, as `Completion`s.
 
 ## CommandFailed
 
@@ -303,6 +305,23 @@ as `"Type: msg"`. `Client.run` raises it as soon as the command raises; an abort
 it too. A command raises it itself to refuse (its arguments, say), with a message for the
 person: the caller gets that message as written, with no traceback, and a command that takes
 a `Cursor` does not fail its step for it.
+
+## Completion
+
+```python
+@dataclass(frozen=True)
+class Completion
+    value: str
+    label: str | None = None
+    detail: str | None = None
+```
+
+One thing that could finish what is being typed (D32 section 1). `value` is what is
+inserted, or sent: it replaces the word being typed whole (quoted for a command line, unquoted
+from `Client.complete` and `values`). `label` is what a list shows instead of `value` (`None`:
+show `value`), and `detail` one line beside it, dimmed (`None`: nothing). Neither holds a
+newline (whitespace runs become one space), and `detail` is cut at `DETAIL_WIDTH` characters
+with `…`.
 
 ## ImageInput
 
@@ -515,6 +534,23 @@ The line names a command there is not. A frontend warns and sends the line as te
 def __init__(self, name: str) -> None
 ```
 
+## tau.commandline.Completion
+
+```python
+@dataclass(frozen=True)
+class Completion
+    value: str
+    label: str | None = None
+    detail: str | None = None
+```
+
+One thing that could finish what is being typed (D32 section 1). `value` is what is
+inserted, or sent: it replaces the word being typed whole (quoted for a command line, unquoted
+from `Client.complete` and `values`). `label` is what a list shows instead of `value` (`None`:
+show `value`), and `detail` one line beside it, dimmed (`None`: nothing). Neither holds a
+newline (whitespace runs become one space), and `detail` is cut at `DETAIL_WIDTH` characters
+with `…`.
+
 ## tau.commandline.STDIN
 
 ```python
@@ -533,14 +569,16 @@ async def completions(
     client: 'Client',
     cursor: int,
     options: Mapping[str, Form] = MappingProxyType({}),
-) -> list[str]
+) -> list[Completion]
 ```
 
-What could finish the word being typed at the end of `line`, each a whole word to
-replace it with (quoted if it needs to be): command names after `/`, then for each
-parameter its `values`; after `/config <extension>`, the extension's options (`--save` is
-typed, not completed). Nothing for a line that is not a command line, an unknown command, or
-a word past the last parameter.
+What could finish the word being typed at the end of `line`, each a `Completion` whose
+`value` is a whole word to replace it with (quoted if it needs to be, `name=` before it when
+typed so): command names after `/` (detailed with the first line of the description and the
+extension), then for each parameter its `values` (labelled with the item's label, else the
+unquoted value); after `/config <extension>`, the extension's options (`--save` is typed, not
+completed). Nothing for a line that is not a command line, an unknown command, or a word
+past the last parameter.
 
 ## tau.commandline.parse
 
@@ -571,9 +609,11 @@ to a question. `ValueError` if it stands for none.
 ## tau.commandline.values
 
 ```python
-async def values(schema: Json, prefix: str, client: 'Client', cursor: int) -> list[str]
+async def values(schema: Json, prefix: str, client: 'Client', cursor: int) -> list[Completion]
 ```
 
-What could finish `prefix` as a value of `schema`, each a whole value to replace it
-with (unquoted): a named type's through `client.complete` (paths on the driver's machine),
-the values of a `Literal`, `true` and `false`, the items of a list after its last comma.
+What could finish `prefix` as a value of `schema`, each a `Completion` whose `value` is a
+whole value to replace it with (unquoted): a named type's through `client.complete` (paths on
+the driver's machine), the values of a `Literal`, `true` and `false` (these three bare), the
+items of a list after its last comma (`value` the whole list text, `label` the item's own, so
+a list shows the items and not the growing text). Duplicates go by `value`, first kept.

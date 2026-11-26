@@ -45,9 +45,9 @@ too):
 ```python
 @dataclass(frozen=True)
 class Completion:
-    value: str                  # what is inserted, or sent: replaces the prefix whole
-    label: str | None = None    # what a list shows instead of `value`; None: show `value`
-    detail: str | None = None   # one line beside it, dimmed; None: nothing
+    value: str  # what is inserted, or sent: replaces the prefix whole
+    label: str | None = None  # what a list shows instead of `value`; None: show `value`
+    detail: str | None = None  # one line beside it, dimmed; None: nothing
 ```
 
 `value` keeps today's meaning exactly: the string that replaces the word being typed (quoted for
@@ -113,8 +113,8 @@ answer the same `Completion`).
 @dataclass(frozen=True)
 class Notice:
     text: str
-    cursor: int | None = None           # the cursor it is about; None: the session
-    extension: str | None = None        # the extension that said it; None: τ itself
+    cursor: int | None = None  # the cursor it is about; None: the session
+    extension: str | None = None  # the extension that said it; None: τ itself
     level: Literal["info", "warning", "error"] = "info"
 ```
 
@@ -137,9 +137,9 @@ cannot speak as another, or as τ. `cursor` is the handle's own where it has one
 
 | handle or path | `cursor` | `extension` | `level` |
 |---|---|---|---|
-| `Cursor.tell(text, *, to=None, level="info")` | the handle's cursor | the handle's | the argument |
-| `NodeHandle.tell(text, *, to=None, level="info")` | the batch's cursor | the handle's | the argument |
-| `TreeHandle.tell(text, *, to=None, cursor=None, level="info")` (new, §4) | the argument (`NoSuchCursor` if not open) | the handle's | the argument |
+| `Cursor.tell(text, *, to=None, cursor=None, level="info")` | the argument, else the handle's cursor | the handle's | the argument |
+| `NodeHandle.tell(text, *, to=None, cursor=None, level="info")` | the argument, else the batch's cursor | the handle's | the argument |
+| `TreeHandle.tell(text, *, to=None, cursor=None, level="info")` (new, §4) | the argument, else `None` (`NoSuchCursor` if not open) | the handle's | the argument |
 | a command's `progress(text)` | the cursor it was run on | the command's owner (`tau` for the built-in's) | `info` |
 | a `pre_input` hook halts a client's input (core's notice) | the input's cursor | the hook's extension | `error` |
 | a task started by `TreeHandle.spawn` raises (§4) | `None` | the handle's | `error` |
@@ -147,7 +147,8 @@ cannot speak as another, or as τ. `cursor` is the handle's own where it has one
 | the image rule halts an input after `pre_input` (D31 §5) | the input's cursor | `None` | `error` |
 
 A `level` outside the three is a `ValueError` at the `tell`. Old call sites keep compiling and
-send `info`.
+send `info`. (As built, the three `tell`s have one signature, `TreeHandle.tell`'s: `cursor` defaults to the
+handle's own, so a hook may also name another cursor; the reference documents one method.)
 
 **Core's notice.** Core pushes `(client, text)` when a `pre_input` hook halts an input. It becomes
 `(client, cursor, extension, text)`: `Answer.Hooks` gains `halted_by: str | None`, the extension

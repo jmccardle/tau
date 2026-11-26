@@ -160,9 +160,10 @@ Result: `null`
 ### `commands` method
 
 Each command's form: its name, description and argument schema (named types with
-their `"format"`, each default), fixed until the driver reloads. If some extension has
-options there is one more, `config`, whose one argument is the extension; it is
-changed with `configure`, not `run`.
+their `"format"`, each default). If some extension has options there is one more,
+`config`, whose one argument is the extension; it is changed with `configure`, not `run`.
+A client with a stream need not call it: the stream opens with them in `Commands`, and
+sends them again whenever they change.
 
 No parameters.
 
@@ -171,8 +172,9 @@ Result: array of [Form](#form)
 ### `complete` method
 
 The values of a named type (`"path"`, `"model"`, `"cursor"`, `"label"`, `"node"`;
-the `"format"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are
-the driver's machine's, relative to its working directory.
+the `"format"` of a schema) that start with `prefix`, as `cursor` sees them, each a
+`Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).
+Paths are the driver's machine's, relative to its working directory.
 
 Parameters:
 
@@ -182,12 +184,12 @@ Parameters:
 | `named` | `string` |  |
 | `prefix` | `string` |  |
 
-Result: array of `string`
+Result: array of [Completion](#completion)
 
 ### `complete_line` method
 
 `commandline.completions` of `line` on the driver: what could finish its last
-word, in one call.
+word, in one call, as `Completion`s.
 
 Parameters:
 
@@ -196,7 +198,7 @@ Parameters:
 | `cursor` | `integer` |  |
 | `line` | `string` |  |
 
-Result: array of `string`
+Result: array of [Completion](#completion)
 
 ### `configure` method
 
@@ -496,6 +498,19 @@ draws it as a layer over the cursor. Only a client watching the cursor hears it.
 | `cursor` | `integer` |  |
 | `delta` | [TextDelta](#textdelta) or [ThinkingDelta](#thinkingdelta) or [CallNamed](#callnamed) or [CallArgs](#callargs) or [Retrying](#retrying) or [ToolProgress](#toolprogress) |  |
 
+### Commands
+
+Every command's form, and `config`'s when some extension has options: exactly what
+`Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an
+extension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a
+stream's snapshot, so a client keeps the last one and never polls. It also says that the
+options forms a client holds may be stale: read them again from `options()` when next shown.
+
+| field | type | notes |
+|---|---|---|
+| `kind` | `"Commands"` |  |
+| `forms` | array of [Form](#form) |  |
+
 ### CursorView
 
 One cursor as a client sees it, whole: where it is (`at`), whether a step is running
@@ -554,13 +569,18 @@ Nodes added to the tree, in id order, bodies included.
 
 ### Notice
 
-A message for one client, or for all of them: `cursor.tell` (to every client unless it
-names one), or an input a hook refused (to its author).
+A message for one client, or for all of them: a handle's `tell` (to every client unless
+it names one), a command's progress, or an input a hook refused (to its author). `cursor` is
+the cursor it is about (`null`: the session), `extension` the extension that said it (`null`:
+τ itself), filled in from the handle, never by the caller, and `level` how loud it is.
 
 | field | type | notes |
 |---|---|---|
 | `kind` | `"Notice"` |  |
 | `text` | `string` |  |
+| `cursor` | `integer` or `null` | optional |
+| `extension` | `string` or `null` | optional |
+| `level` | `"info"` or `"warning"` or `"error"` | optional |
 
 ### Deltas
 
@@ -662,6 +682,21 @@ The params of the last message: the notification `end`. `error` is null when the
 - {`"Results"`: array of [`string`, [Outcome](#outcome), [Author](#author)]}: One `(call id, outcome, by)` per call, in call order. `by` is who produced that outcome: `Tools`, or the extension that answered or edited it.
 - {`"Config"`: [Config](#config)}
 - {`"Custom"`: {`"data"`: `string`, `"kind"`: `string`}}
+
+### Completion
+
+One thing that could finish what is being typed (D32 section 1). `value` is what is
+inserted, or sent: it replaces the word being typed whole (quoted for a command line, unquoted
+from `Client.complete` and `values`). `label` is what a list shows instead of `value` (`null`:
+show `value`), and `detail` one line beside it, dimmed (`null`: nothing). Neither holds a
+newline (whitespace runs become one space), and `detail` is cut at `DETAIL_WIDTH` characters
+with `…`.
+
+| field | type | notes |
+|---|---|---|
+| `value` | `string` |  |
+| `label` | `string` or `null` | optional |
+| `detail` | `string` or `null` | optional |
 
 ### Config
 

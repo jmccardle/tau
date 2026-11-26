@@ -109,7 +109,6 @@ class Cursor(TreeHandle)
     def set_model(self, model: Model) -> int
     def set_options(self, **changes: object) -> int
     def show(self, text: str | None) -> None
-    def tell(self, text: str, *, to: str | None = None) -> None
     def tools(self) -> tuple[str, ...]
     def walk(self) -> list[Node]
     def write(
@@ -150,7 +149,6 @@ class NodeHandle(TreeHandle)
     def options(self) -> Any
     def save_options(self, **changes: object) -> None
     def saved_options(self) -> Mapping[str, object]
-    def tell(self, text: str, *, to: str | None = None) -> None
     def walk(self) -> list[Node]
 NodeId = NewType('NodeId', int)
 @dataclass(frozen=True)
@@ -192,6 +190,8 @@ class RequestCount
     nodes: Mapping[int, Count]
     total: Count
     why: str | None = None
+START_TIMEOUT: Final = 30.0
+STOP_TIMEOUT: Final = 5.0
 class Skills
     name = 'skills'
     @classmethod
@@ -273,15 +273,25 @@ class TreeHandle
     def model(self, at: int | None = None) -> str
     def model_options(self, name: str | None = None) -> Any
     def open(self, at: int) -> int
+    def reassemble(self) -> None
     def remove_item(self, id: int) -> None
     def remove_label(self, label: str) -> None
     def reopen(self, cursor: int) -> int
     def resolved_model(self, name: str | None = None) -> ModelConfig
     async def rest(self, cursor: int) -> Ending | None
     def retire(self) -> None
-    def send(self, to: int, text: str) -> int
+    def send(self, to: int, text: str, images: Sequence[Image] = ()) -> int
     def set_label(self, label: str, cursor: int) -> None
     def spans(self, at: int | None = None) -> list[Span]
+    def spawn(self, coro: Coroutine[Any, Any, object]) -> 'asyncio.Task[None]'
+    def tell(
+        self,
+        text: str,
+        *,
+        to: str | None = None,
+        cursor: int | None = None,
+        level: NoticeLevel = 'info',
+    ) -> None
     property tree: Tree
 def calibration_features(body: Body) -> list[float]
 def counted(node: Node) -> bool
@@ -535,8 +545,8 @@ class Client(AsyncIterator[Event], Protocol)
     async def close(self) -> None
     async def close_cursor(self, cursor: int) -> None
     async def commands(self) -> tuple[Form, ...]
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]
-    async def complete_line(self, cursor: int, line: str) -> list[str]
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]
+    async def complete_line(self, cursor: int, line: str) -> list[Completion]
     async def configure(
         self,
         cursor: int,
@@ -565,6 +575,11 @@ class Client(AsyncIterator[Event], Protocol)
     async def walk(self, id: int) -> list[Node]
     async def watch(self, cursors: Collection[int]) -> None
 class CommandFailed(RuntimeError)
+@dataclass(frozen=True)
+class Completion
+    detail: str | None = None
+    label: str | None = None
+    value: str
 @dataclass(frozen=True)
 class ImageInput
     data: str | None = None
@@ -603,6 +618,12 @@ class RemoteClient(Client)
 class UnknownCommand(LookupError)
     def __init__(self, name: str) -> None
 # tau.commandline
+@dataclass(frozen=True)
+class Completion
+    detail: str | None = None
+    label: str | None = None
+    value: str
+# tau.commandline
 STDIN = 'stdin'
 # tau.commandline
 async def completions(
@@ -611,7 +632,7 @@ async def completions(
     client: 'Client',
     cursor: int,
     options: Mapping[str, Form] = MappingProxyType({}),
-) -> list[str]
+) -> list[Completion]
 # tau.commandline
 def parse(
     line: str,
@@ -621,7 +642,7 @@ def parse(
 # tau.commandline
 def value(text: str, schema: Json) -> object
 # tau.commandline
-async def values(schema: Json, prefix: str, client: 'Client', cursor: int) -> list[str]
+async def values(schema: Json, prefix: str, client: 'Client', cursor: int) -> list[Completion]
 
 == events: Events
 @dataclass(frozen=True)
@@ -636,6 +657,9 @@ class CallNamed
     id: str
     index: int
     tool: str
+@dataclass(frozen=True)
+class Commands
+    forms: tuple[Form, ...]
 @dataclass(frozen=True)
 class CursorGone
     at: int
@@ -654,7 +678,7 @@ class CursorView
     shown: tuple[tuple[str, str], ...]
 class CutOff(ConnectionError)
 Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | Retrying
-Event = Live | CursorView | CursorGone | Labels | Appended | Notice
+Event = Live | Commands | CursorView | CursorGone | Labels | Appended | Notice
 @dataclass(frozen=True)
 class HookFailure
     error: str
@@ -670,7 +694,11 @@ class Live
 LiveDelta = Delta | ToolProgress
 @dataclass(frozen=True)
 class Notice
+    cursor: int | None = None
+    extension: str | None = None
+    level: NoticeLevel = 'info'
     text: str
+NoticeLevel = Literal['info', 'warning', 'error']
 @dataclass(frozen=True)
 class OpenQuestion
     extension: str
@@ -880,9 +908,9 @@ class Driver
     ) -> None
     def add_item(self, to: int, data: ItemData) -> int
     def client(self, id: str, *, buffer: int = 256) -> LocalClient
-    def reload(self, extensions: Sequence[Extension]) -> None
+    async def reload(self, extensions: Sequence[Extension]) -> None
     async def rest(self, cursor: int, waiter: int | None = None) -> None
-    def start(self) -> None
+    async def start(self) -> None
     def state(self) -> DriverState
     async def stop(self) -> None
     def use_catalog(self, catalog: ModelCatalog) -> None
@@ -1029,8 +1057,14 @@ class Answer
         def __new__(cls, error: str) -> Answer.HookFailed
         property error: str
     class Hooks(Answer)
-        def __new__(cls, stop: str | None = None, draft: Draft | None = None) -> Answer.Hooks
+        def __new__(
+            cls,
+            stop: str | None = None,
+            draft: Draft | None = None,
+            halted_by: str | None = None,
+        ) -> Answer.Hooks
         property draft: Draft | None
+        property halted_by: str | None
         property stop: str | None
     class Sampled(Answer)
         def __new__(cls, parts: Sequence[Part], end: SampleEnd) -> Answer.Sampled
@@ -1159,7 +1193,7 @@ class Session
     def set_auto(self, cursor: int, on: bool) -> None
     def set_label(self, label: str, cursor: int) -> None
     def step(self, cursor: int) -> None
-    def take_notices(self) -> list[tuple[str, str]]
+    def take_notices(self) -> list[tuple[str, int, str | None, str]]
     property tree: Tree
 
 == config: Configuration and context
@@ -1216,6 +1250,7 @@ class ModelCatalog
     def resolve(self, qualified: str) -> ModelConfig
     system_prompt: str | None = None
     system_prompt_source: str | None = None
+    timeouts: Mapping[str, tuple[float | None, float | None]] = field(default_factory=lambda: {})
     tui: Mapping[str, str] = field(default_factory=lambda: {})
     warnings: tuple[ConfigProblem, ...]
 @dataclass(frozen=True)
@@ -1454,7 +1489,7 @@ class TauApp(App[None])
     def action_move(self, what: str) -> None
     async def action_quit(self) -> None
     def action_scroll(self, direction: str) -> None
-    async def complete_value(self, schema: Json, text: str) -> list[str]
+    async def complete_value(self, schema: Json, text: str) -> list[Completion]
     def compose(self) -> ComposeResult
     property draft: str
     def focus_editor(self) -> None

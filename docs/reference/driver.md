@@ -77,27 +77,34 @@ dispatched on. `ConfigError` (nothing changes) for a bad `extensions.NAME.order`
 ### Driver.reload
 
 ```python
-def reload(self, extensions: Sequence[Extension]) -> None
+async def reload(self, extensions: Sequence[Extension]) -> None
 ```
 
 Run `extensions` (listed in load order, as at construction) instead of the ones the
-driver has, with the same `tools`: rebuild the options, tools, tool owners and commands,
-and forget every folded `Config`. Only when nothing is in flight: no cursor busy (a
-command waiting for its step has none out yet, but its cursor is busy) and no effect
-out, since every job holds the set it was dispatched with (`Busy` naming the cursors);
-the next job dispatched uses the new one. `DefinitionError` (nothing changes) as at
-construction. The tree is not rewritten: a `Config` node that sets options of an
-extension no longer here (or no longer fitting its type) fails when it is read
-(`ConfigError`), not now. Clients are told nothing, as after `use_catalog`: they ask
-`commands()` and `options()` again.
+driver has, with the same `tools` (D32 section 4: stop first). Refused, with nothing
+changed: `Busy` unless every cursor is at rest with no effect out (it does not wait; retry)
+or while another reload runs; `DefinitionError` (or `ConfigError`) if the new set does not
+fit, checked before anything stops. Then, while the driver takes no job: the extensions
+that leave are stopped in reverse load order (their spawned tasks cancelled, then `stop`;
+a failure is reported, not raised), the new set is adopted (options, tools, tool owners,
+commands; every folded `Config` forgotten), and the new extensions are started in load
+order. An extension object in both lists is neither stopped nor started. Clients are sent
+`Commands` if the forms changed. A `start` that fails stops those this reload started, and
+the driver adopts the extensions both lists share alone; `ExtensionLoadError` names it.
+There is no way back to the old instances: restarting is the safer path. The tree is not
+rewritten: a `Config` node that sets options of an extension no longer here (or no longer
+fitting its type) fails when it is read (`ConfigError`), not now.
 
 ### Driver.start
 
 ```python
-def start(self) -> None
+async def start(self) -> None
 ```
 
-Start the pump. Call inside the running loop.
+Run each extension's `start`, in load order, then start the pump. Call inside the
+running loop, once. A `start` that raises or outlives its timeout stops the ones started
+before it (reverse order) and raises `ExtensionLoadError` naming it; the pump never runs,
+and the driver is stopped.
 
 ### Driver.stop
 
@@ -105,8 +112,10 @@ Start the pump. Call inside the running loop.
 async def stop(self) -> None
 ```
 
-Cancel everything without answering, as a crash would. `rest` and every frontend
-call raise from now on; client streams end, later ones at once.
+Cancel everything without answering, as a crash would; then stop every started
+extension in reverse load order (its spawned tasks cancelled, then its `stop`; a failure is
+written to stderr and the next one runs). `rest` and every frontend call raise from now
+on; client streams end, later ones at once.
 
 ### Driver.state
 

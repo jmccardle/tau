@@ -369,10 +369,19 @@ was added to the scratchpad.
 ### notice
 *spike* `Session::notices` · new
 
-A message to one client: `(client, text)`. Core adds one when `pre_input`
-refuses an input. The driver drains them after every change and sends each as a **Notice** to the
-client it names. (`cursor.tell` does not go through core: it sends its **Notice** through the
-driver, to one client or to all.)
+A message to one client: `(client, cursor, extension, text)` (D32 §2). Core adds one when a
+`pre_input` hook refuses an input: the input's `cursor`, and `extension` the extension whose hook
+returned the halt (`Answer.Hooks.halted_by`; `None` for the driver's image rule). The driver drains
+them after every change and sends each as an `error` **Notice** to the client it names.
+(`cursor.tell` does not go through core: it sends its **Notice** through the driver, to one client
+or to all.)
+
+### Answer.Hooks.halted_by
+*spike* `Answer::Hooks { halted_by }`; Python `Answer.Hooks(stop, draft, halted_by)` · D32 §2 · new
+
+The extension whose hook returned the halt `stop`, carried to core so the **notice** a halted
+input's author gets names it. `None` for a halt that is not a hook's (the image rule after
+`pre_input`, D31 §5).
 
 ## Position
 
@@ -669,7 +678,9 @@ run it too.
 Python `TreeHandle.retire` · new
 
 Python retires a handle when its hook coroutine returns, before the job is
-answered. A retired handle can still read (`walk`, `items`, `children`, ...); it
+answered; a **lifecycle handle** (the tree handle an extension's `start` is given, D32 §4) when
+the extension's `stop` returns, or when it is stopped without one (`NotInHook`: "extension X is
+stopped"). A retired handle can still read (`walk`, `items`, `children`, ...); it
 cannot write at all: every write, `ask`, and own-cursor call raises
 `NotInHook`. A node handle is retired when its tool hook returns. A handle
 from an earlier job, step, or cursor is retired by then. This is the only
@@ -2034,7 +2045,7 @@ aborts if busy, else clears the draft, else quits when pressed twice, Ctrl+R fol
 tool boxes, Ctrl+Q quits, and (8C-2) Alt+Left and Alt+Right view the previous or next cursor,
 Ctrl+Z edits the last message, Ctrl+G the tree, Ctrl+O the session picker, Ctrl+N a new session,
 Up on an empty editor takes back a pending line, and (8C-3) Ctrl+P the command palette and Ctrl+Up and Ctrl+Down a page of the transcript (at its edge, the render window slides). `screen_text()` is the screen as plain text (tests read it); `toasts` is
-every toast shown, notices included.
+every toast shown, notices included, and `notified` the same toasts whole (Textual `Notification`s: title, severity, timeout; a notice is toasted under its extension with its level's severity, D32 §2).
 
 ### SessionView
 `tau.tui.SessionView` (with `LiveLayer`, `FormingCall`, `LiveOutOfOrder`; `tau.tui._view`) · D23 §2 · new
@@ -2405,6 +2416,49 @@ hooks of the point. Every `pre_tool` hook runs, even after one has set an outcom
 hook sees it and may change it). An exception, a non-`str` return, a `call.outcome` that is
 not an `Outcome`, or a non-`str` `call.args_raw` makes the call `Err("Type: msg")`, blamed
 on that extension, the traceback on stderr (never the log); the driver lives.
+
+### start, stop (an extension's), lifecycle handle, START_TIMEOUT, STOP_TIMEOUT, extensions.NAME.start_timeout
+`async start(tree)`, `async stop()` on an extension; `tau.START_TIMEOUT`, `tau.STOP_TIMEOUT` (`_lifecycle.py`); `ModelCatalog.timeouts` · D32 §4 · new
+
+An extension's optional lifecycle, each a coroutine function (else `DefinitionError`). `start`
+runs once, in load order, before the driver takes its first job (`Driver.start()` is async), and
+is handed the **lifecycle handle**: a tree handle bound to the extension that stays live until its
+`stop` returns, used from the extension's own tasks. Inside `start` its `rest` and `close_cursor`
+are a `ValueError` (the driver takes no job until every start has returned). A `start` that
+raises or outlives its timeout stops the ones started before it (reverse order) and fails the
+start with `ExtensionLoadError` naming it (`extension 'mcp' did not start: …`), with its source's
+row as D19 has it. `stop` runs at `Driver.stop` (and when a reload removes the extension), in
+reverse load order, after its spawned tasks are cancelled; a failure is written to stderr (and, in
+a reload, told as an `error` Notice) and the next one runs. `START_TIMEOUT` (30 s) and
+`STOP_TIMEOUT` (5 s) are the defaults; the config files' `extensions.NAME.start_timeout` and
+`extensions.NAME.stop_timeout` (positive seconds, beside `order`; never options a client sets,
+refused on a branch and as an options field name) override them per extension, carried as
+`ModelCatalog.timeouts` (`(start, stop)`, `None` for the default). One set for an extension with no
+`start` (or `stop`) is a warning, ignored.
+
+### reload (stop first)
+`Driver.reload(extensions)` (async) · D32 §4 · amends C2
+
+Refused, with nothing changed, unless every cursor is at rest with no effect out (`Busy`; it does
+not wait) and no other reload runs, and if the new set does not fit (`DefinitionError`,
+`ConfigError`). Then, with dispatching held: the extensions that leave are stopped (spawned tasks,
+then `stop`, reverse order), the new set adopted, the new ones started in load order. An object in
+both lists is neither stopped nor started. A failed start stops those this reload started and
+leaves the kept extensions alone (`ExtensionLoadError`). Best effort for well-behaved extensions:
+restarting is the safer path.
+
+### TreeHandle.tell, TreeHandle.spawn, TreeHandle.reassemble, TreeHandle.send(images=)
+Python `TreeHandle` · D32 §2, §4 · new
+
+`tell(text, *, to=None, cursor=None, level="info")`: a `Notice` from the handle's extension about
+`cursor` (`NoSuchCursor` if it is not open); `Cursor.tell` and `NodeHandle.tell` take `level` and
+default `cursor` to their own. `spawn(coro)`: a task the driver owns for the extension; an exception in it
+is an `error` Notice (`task failed: Type: msg`) and a traceback on stderr; cancelled and awaited
+before the extension's `stop`; not an effect (a harness's quiet does not wait for it); on the loop
+only. `reassemble()`: tools and commands assembled again from every extension, from the next job
+dispatched; clients get `Commands` if the forms changed. `send(to, text, images=())` (TG-32): the
+images held to the image rule at the call, as a client's `send` is (`ValueError`, `MissingImage`,
+at most `MAX_INPUT_IMAGES`).
 
 ### cursor handle, node handle, tree handle
 Python `Cursor`, `NodeHandle`, `TreeHandle` · retires `ExtensionAPI`
@@ -3001,20 +3055,42 @@ that loads others can pass them.
 `tau._handles.Handles` · D16 · new
 
 What the driver wires into every handle it makes (session, question call, clock, `poke`,
-`changed`, options), with `cursor(id, extension, runner=None)` (`runner`: the client of the
+`changed`, options; and for D32's tree handle `spawn`, `reassemble`, the image rule of `send`,
+and `starting`, whether the running code is an extension's `start`), with `lifecycle(extension)`
+(a start's tree handle, live until stop), with `cursor(id, extension, runner=None)` (`runner`: the client of the
 command it runs), `node(cursor, id, extension)` and `tree(extension, client)`: one place that
 builds them, for hooks, tools and commands alike.
 
 ### complete, named type completion
 `Client.complete(cursor, named, prefix)` · D16 · new
 
-The values of a named type that start with `prefix`, as strings: `"path"` (the driver's
+The values of a named type that start with `prefix`, as **completion items** (`Completion`,
+D32 §1; their labels and details per kind below): `"path"` (the driver's
 machine, relative to its working directory, a leading `~` the home directory as typed; only
 directories and regular files, through links: no dangling link, no FIFO; a directory ends with `/`; a hidden name only if
 the prefix starts with `.`; a missing or unreadable directory has none), `"model"` (qualified
 names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
 first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or
-raise on an extension's account.
+raise on an extension's account. Labels and details: a path is labelled with its name alone and a
+regular file detailed with its size (`4.2 kB`); a model detailed with its provider, context
+window and `images` (`anthropic · 200k · images`); a cursor labelled with its labels after its
+id (`3 main, review`) and detailed with where it is (`node 42 · busy`), `"new"` with `a new cursor
+here`; a label detailed with its cursor (`cursor 3 · node 42`, `closed cursor 3 · node 42`); a
+node with its **node summary**.
+
+### Completion, completion item, DETAIL_WIDTH, node summary
+`tau.Completion`, `tau.commandline.Completion` (`_complete.py`), `node_summary` · D32 §1 · new
+
+One thing that could finish what is being typed: `value` (inserted or sent; it replaces the word
+whole, quoted on a command line), `label` (what a list shows instead; `None`: `value`), `detail`
+(one line beside it, dimmed; `None`: nothing). Neither holds a newline, and `detail` is cut at
+`DETAIL_WIDTH` (80) characters with `…`. What `complete`, `complete_line`, `values` and
+`completions` answer; on the wire `{value, label, detail}`, only `value` required. In `values`
+a list item's `value` is the whole list text and its `label` the item; on a command line an
+item's `label` is its own, else the unquoted value, and a command name is detailed with the first
+line of its description and its extension. The **node summary** is a node in one line, its kind
+and what it says first (`User · fix the parser…`, `Results · 2 calls`, `Config · model x`,
+`System`, `Custom · todo`): a `node` item's detail.
 
 ### commandline
 `tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
@@ -3329,7 +3405,8 @@ per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays t
 
 `PROTOCOL` is the wire's version, an integer (1 in 0.16; 2 from 0.17, for `Outcome.Ok`'s images,
 D30 §8; 3 from 0.18, for a user's images: the `User` and `Input` shapes, `images` on `input` and
-`send`, and the call `image`, D31). By D12 a version marks a *released*
+`send`, and the call `image`, D31; and D32's completion items, a `Notice`'s `cursor`, `extension`
+and `level`, and the event `Commands`). By D12 a version marks a *released*
 protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
 tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
 again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
@@ -3545,11 +3622,29 @@ layer when the `Results` node answering it arrives, and a cursor's reply layer (
 and call deltas) when its `CursorView` has a different `at` or is not busy. A call answered
 before its batch is whole adds no node, so nothing is sent.
 
-### Notice
-`tau.Notice(text)` (`_events.py`) · D16 · new
+### Notice, NoticeLevel
+`tau.Notice(text, cursor=None, extension=None, level="info")`, `tau.NoticeLevel` (`_events.py`) · D16, D32 §2 · new
 
-A message for one client, or for every client: `cursor.tell` (without `to`: all), an input a hook
-refused. Sent only to the clients with that id; dropped if there is none connected.
+A message for one client, or for every client: a handle's `tell` (without `to`: all), a
+command's progress, an input a hook refused, a spawned task's failure. Sent only to the clients
+with that id; dropped if there is none connected. `cursor` is the cursor it is about (`None`: the
+session), `extension` the extension that said it (`None`: τ itself), both filled in from the
+handle and never by the caller, so one extension cannot speak as another. `level`
+(`NoticeLevel`): `info` (for the record), `warning` (the session went on, but not quite as asked,
+or it costs), `error` (what a client asked for was not done, or an extension's work failed); any
+other is a `ValueError` at the `tell`.
+
+### Commands (the event)
+`tau.Commands(forms)` (`_events.py`) · D32 §3 · new
+
+Every command's form, and `config`'s when some extension has options: what `Client.commands()`
+returns at that moment, sent whole. A state event: first in a stream's snapshot (before the
+`CursorView`s), and in a sync after `Labels` and before the notices, whenever the forms or the
+options types change (an extension's start, a reload, a skill rescan, `TreeHandle.reassemble`);
+the hub compares only when the commands or options were assembled again (their `generation`). A
+`Feed` keeps only the latest unsent copy, and it never counts toward `CutOff`. It also tells a
+client that the options forms it holds may be stale. The private driver class that holds the
+commands is `CommandTable`.
 
 ### CutOff
 `tau.CutOff` (`_events.py`; a `ConnectionError`) · D16 · new

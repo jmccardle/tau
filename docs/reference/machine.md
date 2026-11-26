@@ -26,7 +26,12 @@ The hooks ran.
 #### Answer.Hooks.__new__
 
 ```python
-def __new__(cls, stop: str | None = None, draft: Draft | None = None) -> Answer.Hooks
+def __new__(
+    cls,
+    stop: str | None = None,
+    draft: Draft | None = None,
+    halted_by: str | None = None,
+) -> Answer.Hooks
 ```
 
 #### Answer.Hooks.stop
@@ -45,6 +50,15 @@ property draft: Draft | None
 
 The draft after the hooks edited it; `None` commits nothing. At `pre_sample`, a
 reply here stands in for the sample.
+
+#### Answer.Hooks.halted_by
+
+```python
+property halted_by: str | None
+```
+
+The extension whose hook returned `stop`, for the notice a halted input's author is
+sent; `None` for a halt that is not a hook's (the driver's image rule).
 
 ### Answer.HookFailed
 
@@ -819,7 +833,9 @@ The cursor `label` is on.
 ### Session.take_notices
 
 ```python
-def take_notices(self) -> list[tuple[str, str]]
+def take_notices(self) -> list[tuple[str, int, str | None, str]]
 ```
 
-Drain the `(client, text)` messages to clients, oldest first.
+Drain the `(client, cursor, extension, text)` messages to clients, oldest first: each a
+client's input that a `pre_input` hook of `extension` (`None`: not a hook's) halted on
+`cursor`.

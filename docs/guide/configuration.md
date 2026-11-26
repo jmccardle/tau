@@ -41,13 +41,20 @@ The top-level keys:
 |---|---|
 | `models` | your models, in groups (below) |
 | `default_model` | the qualified name used when a program is not told which |
-| `extensions` | per-extension options: `{"step_limit": {"limit": 30}}` |
+| `extensions` | per-extension options: `{"step_limit": {"limit": 30}}`, and three keys that are not options but how τ runs the extension: `order` (its hook order), `start_timeout` and `stop_timeout` (seconds its `start` and `stop` may take: 30 and 5 unless set) |
 | `load` | which extension sources are on: `{"shouter": false}` |
 | `system_prompt` | the base text of the system prompt |
 | `context_files` | `false` leaves the context files out of the system prompt (default `true`) |
 | `tui` | the terminal UI's own settings: `{"theme": "latte"}` (below) |
 
 An unknown key is an error that names the closest key you might have meant.
+
+`order`, `start_timeout` and `stop_timeout` sit beside an extension's options but are yours as the
+person running τ, not the extension's: a client cannot set them (`/config` and a `Config` node
+refuse them), and an extension cannot declare an option of those names. A timeout is a positive
+number of seconds; give an extension that starts a slow server more time with
+`{"extensions": {"mcp": {"start_timeout": 120}}}`, or for one run `--set mcp.start_timeout=120`.
+A timeout set for an extension that has no `start` (or `stop`) is a warning, and ignored.
 
 ## Models and groups
 
