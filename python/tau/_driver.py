@@ -65,7 +65,7 @@ from tau._hook_order import HookOrder
 from tau._hub import Hub
 from tau._lifecycle import Lifecycle, configured_timeouts
 from tau._meter import Counts
-from tau._model_list import PRICED_BY, listed_from, model_list
+from tau._model_list import PRICED_BY, listed_from, model_list, priced
 from tau._options import ExtensionOptions
 from tau._protocols import (
     Clock,
@@ -264,7 +264,7 @@ class Driver:
             session=session,
             catalog=lambda: self._catalog,
             models=lambda: model_list(
-                self._catalog, self._providers, partial(_priced, self._options)
+                self._catalog, self._providers, partial(priced, self._options)
             ),
             options=self._options,
             handles=self._handles,
@@ -783,14 +783,6 @@ def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
     if out is None:
         raise RuntimeError(f"cursor {cursor}: abort cancels an effect, but none is out")
     out.cancel()
-
-
-def _priced(options: ExtensionOptions, model: str) -> object | None:
-    """`usage`'s section of `model`, as its `model_options` type reads it; `None` if no loaded
-    extension of that name declares one (D32 section 8)."""
-    if options.section_type(PRICED_BY) is None:
-        return None
-    return options.model_options(PRICED_BY, model)
 
 
 def _rescan(extensions: Sequence[Extension], commands: CommandTable, hub: Hub) -> None:

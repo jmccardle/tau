@@ -18,12 +18,15 @@ this call would answer sends `Commands` (D32 section 3), on which a client calls
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from tau._config import ConfigError, ModelConfig
 from tau._config_layers import ModelCatalog
 from tau._images import ImageLimits
 from tau._protocols import Provider
+
+if TYPE_CHECKING:
+    from tau._options import ExtensionOptions
 
 PRICED_BY = "usage"
 """The extension whose model section holds a model's `price` (D28 section 7), read as that
@@ -90,6 +93,14 @@ def _price(name: str, section: object | None) -> ModelPrice | None:
         )
     i, o, r, w, h = (_exact(cast("Decimal", a)) for a in (*four, hour))
     return ModelPrice(i, o, r, w, h)
+
+
+def priced(options: "ExtensionOptions", model: str) -> object | None:
+    """`usage`'s section of `model`, as its `model_options` type reads it (what `model_list`'s
+    `priced` answers on a driver); `None` if no loaded extension of that name declares one."""
+    if options.section_type(PRICED_BY) is None:
+        return None
+    return options.model_options(PRICED_BY, model)
 
 
 def _images(config: ModelConfig, provider: Provider | None) -> ImageLimits | None:
