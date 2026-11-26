@@ -1496,7 +1496,8 @@ The built-in, default-on and removable, that walks back from the cursor's node t
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
 (**edit-last**, D23's Ctrl+Z as a command): it goes to the marker's `return_to` (after the
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
-parent, as a go-to does (auto-step off). A cursor command, so `Busy` unless at rest; `at` refuses
+parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
+mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
 unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
 user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
 
@@ -1510,15 +1511,6 @@ marks (a file checkpoint). A driver-level attribute like `commands`, not a hook 
 and returns whether one did (`False`: the owner is not loaded or has none); `ValueError` for a
 node that is not a marker an extension wrote. Not a coroutine function: `DefinitionError` at
 build.
-
-### Stays (a command's halt mid-turn)
-`tau._markers.Stays` (`leave`, `halt`, `forget`) · D33 §2 · new (0.18)
-
-What `undo` and `session` share: a cursor command whose step would go on from where it left the
-cursor (`next` is not `Wait`: a batch, a `User`, a `Results`) records it with `leave`, and the
-extension's own `pre_step` returns the stop `"<command> left the cursor at node N, mid-turn: step
-to carry on from there"`, so going back never starts the model. `post_step` forgets what an
-aborted step left.
 
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
@@ -3221,12 +3213,16 @@ session; `"new"` after the rest) and raises `LookupError` (unknown command), `Va
 ### Cursor command
 `Commands.before` (`_commands.py`) · D16 · new
 
-A command that takes a `Cursor`. It runs as a step of that cursor: `run` keeps it in memory and
-calls `Session.step`, so it is `Busy` unless the cursor is at rest (commands do not queue); the
-driver gives it to the step's `pre_step` job, where it runs with the cursor's handle (also its
-`TreeHandle`) before the extensions' `pre_step` hooks. The rest of the step follows the usual
-rules: a command that leaves the cursor on a `User` node gets a sample, one that leaves it on a
-reply gets none. `abort` and `go_to` cancel a running command (and drop one not yet started),
+A command that takes a `Cursor`. It runs as a **command's step** of that cursor: `run` keeps it in
+memory and calls `Session.step(cursor, command=True)`, so it is `Busy` unless the cursor is at
+rest (commands do not queue); the driver gives it to the step's `pre_step` job, where it runs with
+the cursor's handle (also its `TreeHandle`) before the extensions' `pre_step` hooks. The step ends
+when the command returns (D16 §2, 2026-11-26): auto-step is off while it runs (as for a go-to),
+and after `pre_step` only `post_step` runs, so it ends `Done` (unless a hook halts or fails it)
+and no `pre_input`, sample or tool runs in it, wherever the command left the cursor. A command
+that wants the model to run turns auto-step on (`cursor.set_auto(True)`; `cursor.send` does it
+too): the next step then starts at once from where the cursor stands, and samples or runs tools
+as `decide` says. `abort` and `go_to` cancel a running command (and drop one not yet started),
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the
