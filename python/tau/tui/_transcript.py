@@ -9,7 +9,8 @@ which reads them from `SessionView`.
 `User` is a box titled with its author when that is not this client, `Assistant` a box with its
 thinking in a folding region and a tool box per call, whose outcome is folded in from the
 `Results` node by call id. `System` is one folded line, `Config` one dim line, `Custom` a
-`sample_error` as an error box and any other kind one dim line; a stop other than `End` or `Tools`
+`sample_error` as an error box and any other kind one dim line (an undo marker by its label,
+`undo: /clear`); a stop other than `End` or `Tools`
 is a dim line under the reply.
 """
 
@@ -23,6 +24,7 @@ from tau._core import Author, Body, Node, Outcome, Part, Stop
 from tau._counts import tokens
 from tau._events import CallArgs, CallNamed, LiveDelta, TextDelta, ThinkingDelta
 from tau._images import labels, shown
+from tau._markers import UndoMarker
 from tau.tui._chat import MessageBox, QuietCollapsible
 from tau.tui._view import LiveLayer, LiveOutOfOrder
 from tau.tui._window import tail_start
@@ -75,6 +77,16 @@ def _outcome(outcome: Outcome) -> tuple[str, bool, bool]:
             return error, True, False
         case _:
             return "interrupted before it finished", False, True
+
+
+def _said(kind: str, data: str) -> str:
+    """What the `Custom` node of `kind` says on its line: an undo marker its label, any other
+    record (and a marker that cannot be read) its data."""
+    try:
+        marker = UndoMarker.of(Body.Custom(kind, data))
+    except ValueError:  # `/undo` names what is wrong with it, when it reaches it
+        return data
+    return data if marker is None else marker.label
 
 
 def config_line(data: str) -> str:
@@ -258,7 +270,7 @@ class ChatDisplay(WindowedWalk):
     def _custom(self, kind: str, data: str) -> tuple[Static | MessageBox, str]:
         if kind == "sample_error":
             return MessageBox("error", "Error", data, source="verbatim"), f"[Error] {data}"
-        shown = f"{kind}: {data}"
+        shown = f"{kind}: {_said(kind, data)}"
         shown = shown if len(shown) <= _NOTE_LIMIT else shown[: _NOTE_LIMIT - 1] + "…"
         return self._dim(shown), shown
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from fakes import FAKE_MODEL, FakeProvider, Gate, Recorder, Reply
+from fakes import FAKE_MODEL, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, build, say, scenario
 
 from tau import (
@@ -123,20 +123,83 @@ async def test_branch_from_to_a_reply_moves_there_and_samples_nothing(tmp_path: 
 
 
 @scenario
-async def test_a_command_that_leaves_the_cursor_on_a_user_node_gets_a_sample(
+async def test_a_command_that_leaves_the_cursor_on_a_user_node_rests_there(
     tmp_path: Path,
 ) -> None:
+    """A command's step ends when the command returns (D16 section 2, 2026-11-26): no sample."""
     h = await Harness.create(
         tmp_path, provider=FakeProvider([say("a"), say("b")]), extensions=[Navigation()]
     )
     await h.send("hi")
     await h.settle()
+    assert h.session.cursor(h.cursor).auto, "a send turns auto-step on"
     user = h.session.cursor(h.cursor).at - 1
     assert isinstance(h.session.tree.node(user).body, Body.User)
     await h.run("branch_from", {"node": user})
     await h.settle()
-    assert len(h.provider.requests) == 2
-    assert isinstance(h.session.tree.node(h.session.cursor(h.cursor).at).body, Body.Assistant)
+    assert len(h.provider.requests) == 1, "the model is not asked"
+    view = await h.view()
+    assert (view.at, view.busy, view.auto) == (user, False, False)
+    assert view.ending == Ending.Done(), "an ordinary ending, not a halt"
+
+
+@scenario
+async def test_a_command_that_leaves_the_cursor_on_results_runs_no_tools_and_asks_nothing(
+    tmp_path: Path,
+) -> None:
+    tool = FakeTool("work", "ok")
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply([Part.Call("c", "work", "{}")], Stop.Tools), say("done")]),
+        tools=[tool],
+        extensions=[Navigation()],
+    )
+    await h.send("go")
+    await h.settle()
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
+    batch = next(n.id for n in walk if isinstance(n.body, Body.Assistant))
+    results = next(n.id for n in walk if isinstance(n.body, Body.Results))
+    requests, calls, nodes = len(h.provider.requests), len(tool.calls), len(h.nodes())
+    for node in (results, batch):  # Results would sample; the batch would run its tools
+        await h.run("branch_from", {"node": node})
+        await h.settle()
+        assert (len(h.provider.requests), len(tool.calls), len(h.nodes())) == (
+            requests,
+            calls,
+            nodes,
+        ), "nothing ran"
+        view = await h.view()
+        assert (view.at, view.busy, view.ending) == (node, False, Ending.Done())
+
+
+async def regenerate(cursor: Cursor, node: NodeId) -> str:
+    """Go back to a node and have the model carry on from there."""
+    cursor.move(node)
+    cursor.set_auto(True)
+    return "again"
+
+
+class Again:
+    name = "again"
+    commands = (regenerate,)
+
+
+@scenario
+async def test_a_command_that_turns_auto_step_on_makes_the_model_run(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("a"), say("b")]), extensions=[Again()]
+    )
+    await h.send("hi")
+    await h.settle()
+    user = h.session.cursor(h.cursor).at - 1
+    assert await h.run("regenerate", {"node": user}) == "again"
+    await h.settle()
+    assert len(h.provider.requests) == 2, "the next step samples from where the command left it"
+    at = h.session.cursor(h.cursor).at
+    body = h.session.tree.node(at).body
+    assert isinstance(body, Body.Assistant)
+    assert body.parts == [Part.Text("b")]
+    assert h.session.tree.node(at).parent == user, "a sibling of the first reply"
 
 
 @scenario

@@ -183,7 +183,8 @@ async def test_a_frontend_counts_iterations_from_the_nodes_the_loop_wrote(tmp_pa
 
 @scenario
 async def test_step_limit_counts_steps_not_iterations(tmp_path: Path) -> None:
-    """One tool call per iteration is two steps, so a limit of 4 is two iterations."""
+    """One tool call per iteration is two steps, so a limit of 4 is two iterations. The `/ralph`
+    command's own step is attended (D16 section 2): `step_limit` does not count it."""
     prompt = prompt_file(tmp_path)
     call = Reply([Part.Call("c", "t", "{}")], Stop.Tools)
     h = await Harness.create(

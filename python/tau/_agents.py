@@ -148,7 +148,9 @@ class Agents:
         """The agent `label`: reopened if it is closed, as it is if it is open and at rest (a
         crash left it so)."""
         if not label.startswith(PREFIX) or not self._labelled(node, label):
-            raise ToolError(f"there is no agent {label!r}")
+            raise ToolError(
+                f"there is no agent {label!r} (agents are named {PREFIX}P:N, such as {PREFIX}0:1)"
+            )
         old = node.label(label)
         if old not in node.cursors():
             return node.reopen(old), label

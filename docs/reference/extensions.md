@@ -920,12 +920,21 @@ class Mcp
     name = NAME
 ```
 
-The `mcp` built-in: the configured MCP servers' tools, while it is started.
+The `mcp` built-in: the configured MCP servers' tools, while it is started. `warnings`
+are the files and servers its configuration skipped; `failed` the servers that did not
+start, each with why (both filled by `start`, and told to clients when they connect).
 
 ### Mcp.__init__
 
 ```python
-def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+def __init__(
+    self,
+    servers: Sequence[McpServer],
+    cwd: Path,
+    *,
+    warnings: Sequence[str] = (),
+    start_timeout: float | None = None,
+) -> None
 ```
 
 ### Mcp.of
@@ -935,9 +944,10 @@ def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
 def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
 ```
 
-The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
+The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, the trusted
 project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
-names (which must exist). `McpConfigError` naming every server that cannot be used.
+names. A file or server that cannot be used is skipped and named in `warnings`;
+`McpConfigError` only for a file `TAU_MCP_CONFIG` names that cannot be read.
 
 ### Mcp.tools
 
@@ -953,8 +963,10 @@ Every running server's tools, in server name order.
 async def start(self, tree: TreeHandle) -> None
 ```
 
-Start every server at once and list its tools; `McpStartError` naming each that
-failed, with the others stopped.
+Start every server at once and list its tools, each within the start's time. What
+the configuration skipped, a server that fails or is too slow, and a tool that cannot be
+named are reported (stderr, and an `error` notice each that every client gets when it
+connects); the rest start, and so does τ.
 
 ### Mcp.stop
 
@@ -1335,6 +1347,9 @@ The count is this object's own memory, per cursor, kept at hook points:
   is no `post_input` hook; `pre_input` fires once per input item offered.
 - `pre_step` adds one, when the cursor's auto-step is on. A step run with
   auto-step off (a frontend's `step`, a load) is attended and is not counted.
+  Nor is a command's step (`CursorState.command`, D16 §2), even when the
+  command turned auto-step on: a person ran it, so the count starts over,
+  and the steps that follow it get the whole `limit`.
 - `post_step` turns auto-step off when the count has reached `limit`, and
   starts the count over, so whoever resumes the cursor (`set_auto`) gets
   another `limit` steps. It also starts over whenever it sees auto-step off:
@@ -1808,8 +1823,10 @@ Send `text` as a `Notice` from this extension to client `to`, or to every connec
 client by default, about `cursor` at `level` (`"info"`, `"warning"` or `"error"`, D32
 section 2). `cursor` defaults to this handle's own: a `Cursor`'s, the batch's cursor of a
 `NodeHandle`, none (the session) for a tree handle. Dropped if `to` is not connected: a
-notice is for someone who is there. `NoSuchCursor` if `cursor` is not open, `ValueError`
-for another level.
+notice is for someone who is there. One to every client told by the extension's `start`
+(which runs before any client connects) **stands**: each client that connects later gets
+it after its snapshot, until the extension is stopped. `NoSuchCursor` if `cursor` is not
+open, `ValueError` for another level.
 
 ### TreeHandle.spawn
 

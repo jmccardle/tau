@@ -77,7 +77,7 @@ async def test_undo_again_goes_back_one_more_message(tmp_path: Path) -> None:
     h = await Harness.create(tmp_path, provider=replies("one", "two"), extensions=[shipped("undo")])
     await talk(h, "first", "second")
     await undo(h)
-    result = await undo(h, json=True)
+    result = await undo(h, format="json")
     assert result is not None
     answer = json.loads(result)
     assert answer["to"] == 1, "the System node: before the first message"
@@ -111,7 +111,7 @@ async def test_the_json_answer_gives_back_what_was_typed_not_what_a_hook_made_of
     user = h.session.tree.walk(at(h))[-2]
     assert isinstance(user.body, Body.User)
     assert user.body.text == "QUIET PLEASE"
-    result = await undo(h, json=True)
+    result = await undo(h, format="json")
     assert result is not None
     assert json.loads(result) == {
         "from": user.id + 1,
@@ -325,7 +325,7 @@ async def test_a_plain_undo_passes_over_a_file_marker_to_edit_last(tmp_path: Pat
 
 
 @scenario
-async def test_undo_file_has_the_owner_reverse_it_and_halts_mid_turn(tmp_path: Path) -> None:
+async def test_undo_file_has_the_owner_reverse_it_and_rests_mid_turn(tmp_path: Path) -> None:
     checkpoints = Checkpoints()
     h = await checkpointed(tmp_path, checkpoints)
     walk = h.session.tree.walk(at(h))
@@ -341,8 +341,8 @@ async def test_undo_file_has_the_owner_reverse_it_and_halts_mid_turn(tmp_path: P
     assert len(h.provider.requests) == requests, "going back mid-turn runs nothing"
     view = await h.view()
     assert not view.busy
-    assert isinstance(view.ending, Ending.Halted)
-    assert "/undo left the cursor at node" in view.ending.reason
+    assert isinstance(view.ending, Ending.Done), "the command's step ended, not halted"
+    assert not view.auto
     await h.close()
 
 
@@ -353,6 +353,23 @@ async def test_a_file_marker_whose_owner_cannot_reverse_it_is_not_undone(tmp_pat
     with pytest.raises(CommandFailed, match="which is not loaded or has no reverse"):
         await h.run("undo", {"priority": "file"})
     assert at(h) == here
+    await h.close()
+
+
+@scenario
+async def test_a_priority_with_no_marker_says_how_the_word_was_read(tmp_path: Path) -> None:
+    """`/undo json` reads `json` as a priority (extensions name their own, so any word may be
+    one): the refusal says so, and which priorities this branch does have markers of."""
+    h = await checkpointed(tmp_path, Checkpoints())
+    with pytest.raises(CommandFailed) as refused:
+        await h.run("undo", {"priority": "json"})
+    assert str(refused.value) == (
+        "no undo marker of priority 'json' on this branch, which has markers of priority file; "
+        "a plain /undo follows move markers and your last message"
+    )
+    await h.settle()
+    with pytest.raises(CommandFailed, match="'Fiel' is not a priority: one is lower-case letters"):
+        await h.run("undo", {"priority": "Fiel"})
     await h.close()
 
 

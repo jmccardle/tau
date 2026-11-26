@@ -105,17 +105,27 @@ impl Machine {
         Ok(id)
     }
 
-    /// `Session.step`: run the phases once with auto-step off.
+    /// `Session.step`: run the phases once with auto-step off. With `command`, the step is a
+    /// command's (D16 §2): auto-step goes off, as for a go-to, and only `pre_step` (where the
+    /// driver runs the command) and `post_step` run (`Step::command`, the field).
     ///
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open; `Busy` if a step is running.
-    pub fn step(&mut self, cursor: CursorId) -> Result<(), Error> {
+    pub fn step(&mut self, cursor: CursorId, command: bool) -> Result<(), Error> {
         self.session.at(cursor)?;
         if self.busy(cursor) {
             return Err(Error::Busy(cursor));
         }
-        self.wake(cursor, true);
+        if command {
+            self.session.auto.insert(cursor, false);
+            transitions::wake(true);
+            let mut step = Step::wake(&self.session, cursor, true);
+            step.command = true;
+            self.steps.insert(cursor, step);
+        } else {
+            self.wake(cursor, true);
+        }
         self.session.sync();
         Ok(())
     }
@@ -384,6 +394,12 @@ impl Machine {
         } else {
             Err(Error::NotInHook(cursor))
         }
+    }
+
+    /// Whether the cursor's running step is a command's (D16 §2, `Step.command`); false at rest.
+    #[must_use]
+    pub fn in_command(&self, cursor: CursorId) -> bool {
+        self.busy(cursor) && self.steps.get(&cursor).is_some_and(|s| s.command)
     }
 
     /// Where in `Session::moves` the cursor's current step began; the end of

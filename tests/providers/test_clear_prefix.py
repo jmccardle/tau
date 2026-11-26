@@ -1,7 +1,7 @@
 """`/clear` (D33) keeps the prompt cache warm: the request after it starts with the bytes the
 first request of the session did, through each hosted provider's real request builder.
 
-The new line hangs under the session's own `System` node, and what `/clear` writes there (an
+The new line hangs under the end of the session's system prefix, and what `/clear` writes there (an
 undo marker) is a `Custom` node, which no provider sends, so a first message after `/clear` is
 the same request, byte for byte, as the same first message in a new session."""
 
