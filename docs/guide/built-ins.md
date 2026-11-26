@@ -537,15 +537,20 @@ sending makes a new branch beside it.
 undid /compact: back to node 418
 ```
 
-In the terminal UI, Ctrl+Z on an empty editor is `/undo`: the message goes back into the editor
-as you typed it, `@file` words and all, and an undone `/compact` or `/clear` is a toast. On a cursor
+With nothing to go back over it says `nothing to undo on this branch`.
+
+In the terminal UI, Ctrl+Z on an empty editor is `/undo`, and so is typing `/undo`: the message
+goes back into the editor as you typed it, `@file` words and all, and an undone `/compact` or
+`/clear` is a toast. On a cursor
 that is working, `/undo` is refused (`Busy`), as every command that runs on the cursor is; Ctrl+Z
 there asks first and then aborts the step, going back before your last message.
 
 `/undo` only ever sees your own branch: a `/clear` on another cursor is not yours to undo. An
 extension that changes something outside the conversation (files, say) can mark its changes for a
 different `/undo`: `/undo file` takes back the last such change on the branch, if that extension is
-loaded to put the files back, and a plain `/undo` passes over them. How a change is marked is in
+loaded to put the files back, and a plain `/undo` passes over them. `/undo` reads any word after it
+as such a priority, so `/undo json` says there is no marker of priority `json` (the JSON answer
+for a program is `/undo format=json`). How a change is marked is in
 [Conventions](conventions.md). `tau ext disable undo` removes the command; the markers then stay
 in the tree as notes no model reads, and Ctrl+Z edits your last message as before.
 
@@ -560,23 +565,29 @@ The `session` built-in has four commands:
   `/clear` is the same request a new session would send, and a provider's prompt cache stays
   warm.
 - **`/branch [label]`** opens a second cursor where you are, to try something else from here
-  (Alt+Right views it in the terminal UI).
+  (Alt+Right views it in the terminal UI). A label another cursor already has is refused.
 - **`/tree`** draws the session's tree as text, for a client with no tree screen of its own:
 
   ```text
-  0 config: {"model": "local:qwen"}
-  1 system: You are τ, a coding agent…
-  ├─ 2 user: fix the parser
-  │  3 assistant: Done. [2 calls]
-  └─ 9 undo: /clear
-     10 user: now the lexer  ◀ 0
+  0 Config · model local:qwen
+  1 System
+  2 System
+  ├─ 3 User · fix the parser
+  │  4 Assistant · Done: the change is made and the tests pass.
+  └─ 5 Custom · undo /clear
+     6 User · now the lexer
+     7 Assistant · Done: the change is made and the tests pass.  ◀ 0
   ```
 
-  `/tree at=9` draws only what is below node 9.
-- **`/export [path]`** writes your conversation as Markdown, as `tau export` does: to a file
-  (`/export notes.md`, relative to the working directory; a file that exists is refused, not
-  overwritten) or as the command's answer;
-  `thinking=true` includes the model's thinking.
+  Each line is a node's id and the summary a `node` completion shows (the second `System` is the
+  skills list). `◀` marks each open cursor, with its labels; a closed cursor (a sub-agent that has
+  answered) is not marked. `/tree at=5` draws only what is below node 5.
+- **`/export [path]`** writes your conversation as Markdown, as `tau export` does but without its
+  header (the title, id, `cwd` and node lines): to a file (`/export notes.md`; a relative path is
+  read from the session's working directory, an absolute or `~` path is taken as given) or as the
+  command's answer. A file that exists is refused, not overwritten, and a file that cannot be
+  written says why (`cannot write notes/x.md: No such file or directory`). `thinking=true`
+  includes the model's thinking.
 
 There is no `/new`: starting a new session is your client's to do (Ctrl+N in the terminal UI).
 `tau ext disable session` removes all four:
