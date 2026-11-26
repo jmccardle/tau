@@ -93,8 +93,9 @@ class ExtensionSource:
     `session_name`; `on`; `off`; `shadowed`, by what; `failed`; `untrusted`), its `kind`
     (`built-in`, `package`, `user`, `project`, `explicit` for `-e`, or `load` for a `load` key
     that no source has), `origin` (where it is) and `detail` (why it is off, shadowed, untrusted
-    or failed). `extensions` are the names of the extensions it provides, `commands` their
-    commands' qualified names and `tools` their tools' names; all empty unless it is on."""
+    or failed; for one that is on, its extensions' `warnings`, such as a key that is not set).
+    `extensions` are the names of the extensions it provides, `commands` their commands' qualified
+    names and `tools` their tools' names; all empty unless it is on."""
 
     key: str
     state: SourceState
@@ -562,13 +563,14 @@ class _Run:
             return
         self.extensions += provided.extensions
         names = tuple(e.name for e in provided.extensions)
+        warned = [str(w) for e in provided.extensions for w in getattr(e, "warnings", ())]
         self.sources.append(
             ExtensionSource(
                 c.key,
                 "on",
                 c.kind,
                 c.origin,
-                None,
+                "; ".join(warned) or None,
                 names,
                 tuple(provided.commands),
                 tuple(provided.tools),

@@ -16,6 +16,7 @@ from tau._config import ConfigError
 from tau._config_keys import ORDER, TIMEOUTS
 from tau._config_layers import ModelCatalog, read_models
 from tau._config_tree import ConfigProblem
+from tau._constants import administrator_keys, key_schema
 from tau._hook_order import order_problem
 from tau._options import option_fields
 from tau._project_read import safe_text
@@ -80,16 +81,22 @@ def load_config(
 
 
 def option_changes(
-    extensions: Sequence[object], assignments: Sequence[tuple[str, str, str]]
+    extensions: Sequence[object],
+    assignments: Sequence[tuple[str, str, str]],
+    *,
+    file: bool = False,
 ) -> dict[str, tuple[type | None, tuple[Field, ...], Json]]:
     """`EXTENSION.FIELD=VALUE` assignments (as `(extension, field, text)`) read against the
     `extensions`' options: per extension, its options type (`None` for one without options), its
     fields and the JSON values set, each text read as `/config` reads it
     (`tau.commandline.value`). The field `order` (an integer: every hook) and `order.HOOK` (one
     hook) set the extension's hook order (D28), and `start_timeout` and `stop_timeout` (seconds)
-    its lifecycle's (D32), whatever options it has. `ConfigError` for an extension without
-    options, a field it does not have, a text its field refuses, an order that is not an integer
-    or names a hook the extension does not have, or a timeout that is not a positive number."""
+    its lifecycle's (D32), whatever options it has. With `file` (`tau config set`, which writes a
+    config file) a field may be one of the extension's administrator keys (`tau._constants`); for
+    one run (`--set`) it may not, since the extension was built from the files. `ConfigError` for
+    an extension without options, a field it does not have, a text its field refuses, an order
+    that is not an integer or names a hook the extension does not have, or a timeout that is not
+    a positive number."""
     known = {cast("str", getattr(e, "name")): e for e in extensions}  # noqa: B009
     changes: dict[str, tuple[type | None, tuple[Field, ...], Json]] = {}
     for extension, name, given in assignments:
@@ -105,6 +112,15 @@ def option_changes(
         if name in TIMEOUTS:
             _timeout_change(known, extension, name, given, changes)
             continue
+        keys = administrator_keys(known.get(extension))
+        if keys is not None and name in keys:
+            _key_change(extension, name, (keys[name], given, file), changes)
+            continue
+        if keys is not None:
+            raise ConfigError(
+                f"extension {extension!r} has no options and no administrator key {name!r}; its "
+                f"keys: {list(keys)}"
+            )
         options = getattr(known.get(extension), "options", None)
         if options is None:
             having = [n for n, e in known.items() if getattr(e, "options", None) is not None]
@@ -121,6 +137,28 @@ def option_changes(
             raise ConfigError(f"{extension}.{name}: {e}") from None
         changes.setdefault(extension, (options, fields, {}))[2][name] = decoded
     return changes
+
+
+def _key_change(
+    extension: str,
+    name: str,
+    written: tuple[type, str, bool],
+    changes: dict[str, tuple[type | None, tuple[Field, ...], Json]],
+) -> None:
+    """`EXTENSION.KEY=VALUE` for an administrator key into `changes`; `written` is the key's type,
+    the text, and whether it is written to a file (else it is refused)."""
+    kind, given, file = written
+    if not file:
+        raise ConfigError(
+            f"{extension}.{name} is an administrator key, read from the config files when "
+            f"{extension} is built, not for one run: `tau config set {extension}.{name}=VALUE` "
+            "writes it to your config file"
+        )
+    try:
+        decoded = value(given, key_schema(kind))
+    except ValueError as e:
+        raise ConfigError(f"{extension}.{name}: {e}") from None
+    changes.setdefault(extension, (None, (), {}))[2][name] = decoded
 
 
 def _timeout_change(

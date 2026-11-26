@@ -1911,12 +1911,12 @@ as a tool of that exact name. A rule naming any `mcp__` tool is never reported a
 no extension provides: a server's tools are listed only once it runs.
 
 ### Fetch (extension), fetch tool, readable, NoText
-`Fetch` (`_fetch.py`, private; not exported), key `fetch`, no options, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
+`Fetch` (the package `_fetch/`, private, with its settings file `settings.py`; not exported), key `fetch`, no options, administrator keys `allow_private` and `timeout`, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
 
 The built-in extension, **on by default**, that lets the model read the web. One GET with a
 `User-Agent` naming tau and an `Accept` that prefers Markdown, under fixed limits (10 s to connect, 60 s
-in all, 5 MiB of body, 20 MiB for an image, 5 redirects); `fetch.timeout` is the one the administrator
-may change. HTML becomes Markdown by `readable(html, base_url)` (standard library only: the page's `main`,
+in all, 5 MiB of body, 20 MiB for an image, 5 redirects: its settings file); `fetch.timeout` is the one
+an administrator sets in a config file. HTML becomes Markdown by `readable(html, base_url)` (standard library only: the page's `main`,
 its only `article`, else its body, without navigation, footers, sidebars, scripts, styles, forms'
 controls and hidden elements; `NoText` if nothing is left, as for a page built by script); text, JSON and
 XML come back as they are by their charset; an image comes back as the tool's image (D30) for a model
@@ -1936,23 +1936,44 @@ The built-in extension, **off by default** (`tau ext enable search`), that lets 
 through a **provider** the administrator chose: `brave` (the default; key in `BRAVE_API_KEY`),
 `marginalia` (`MARGINALIA_API_KEY`) or `searxng` (an instance at `base_url`, no key). The answer is a
 numbered list of title, address and snippet (markup removed) under the untrusted notice; at most
-`limit` results (1 to 20). It is built from the layers' constants and the environment, and fails the
-start naming the variable when its key is not set. A rejected key, a rate limit and any other failure are
-tool errors that never hold the key. The provider's table (`_Provider`: its address, its key variable and
+`limit` results (1 to 20). It is built from its administrator keys and the environment. When its key
+is not set it is built without its tool and with a `warnings` line naming the variable, which its `start`
+says on stderr and as a standing `warning` notice, and `tau ext list` shows; a wrong constant stops the
+start. A rejected key, a rate limit and any other failure are tool errors that never hold the key (a
+provider's text is quoted with the key's value replaced). The provider's table (`_Provider`: its address, its key variable and
 its way of asking) and `Hits` (a provider's answer: `(title, url, snippet)` for each result) are private.
 
-### administrator constants (an extension's), `constants`
-`tau._constants.constants(extensions, name, known)` · D32 section 4, akb #643 · new (0.18)
+### warnings (an extension's), warn and start
+an extension's optional `warnings` attribute; `extension_warnings` (`_protocols.py`, private) · D24 sections 6, 9 and 12 · new (0.18)
 
-An extension's settings that are the administrator's, not a client's (#643: "anything a client
-shouldn't configure is hard-coded or read from a config file of constants, never exposed as
-options"): the keys of `extensions.NAME` in the config layers for an extension that has no `options`,
-checked by `constants` against the keys and types it knows (`ConfigError` naming the key for another key
-or type) when the extension is built. With no `options` a client cannot set one (`/config`, a `Config`
-node, `set_options`) and none is in the `config` form. `fetch` has `allow_private` and `timeout`;
-`search` has `provider`, `api_key_env` and `base_url`. Like `order` and the start and stop timeouts they
-are the administrator's; unlike them they are the extension's own. A key never goes in a config
-file: `api_key_env` names the variable.
+One-line strings an extension sets when it is built, each saying what it loads without because
+something outside τ's files is missing or broken (a skill file it cannot use, an MCP configuration
+it skipped, `search`'s key not set): it **warns and starts**, where a mistake in a file raises and
+stops the start. Any extension may have them; `check_extensions` refuses one that is not a list or
+tuple of strings (`DefinitionError`). The start prints each (`tau: LINE`), `tau config check` lists
+them, and `tau ext list` shows them as the source's `detail`; `tau ext enable` prints them. They are
+read when the extensions are built, so what only `start` finds (an MCP server that does not start)
+is the extension's to report then, on stderr and with a standing notice (`tell` from `start`).
+
+### administrator keys (an extension's), `administrator_keys`, `tau.constants`
+`tau.constants(extensions, name, known)` (`_constants.py`); an extension's `administrator_keys` · D32 section 4, akb #643 · new (0.18)
+
+What an administrator sets for an extension per machine or project, and a client must not (#643:
+"anything a client shouldn't configure is hard-coded or read from a config file of constants, never
+exposed as options"): keys of `extensions.NAME` in a config file, for an extension that declares
+them as **`administrator_keys`**, a mapping of each key to its type (`bool`, `int`, `str`). The
+extension reads them when it is built, with `constants(loaded.catalog.extensions, NAME,
+administrator_keys)`, which raises `ConfigError` naming the key for another key or a value of
+another type. Declaring them is what makes the harness treat the object as no mistake: no "has no
+options" warning, and `tau config check` and a start report a key or type that `constants` refuses.
+`tau config set NAME.KEY=VALUE` writes one to the user's file (the command line is the
+administrator's); `--set` refuses one (the extension is built before it applies), and a client's
+`/config` cannot reach one: none is in the `config` form. An extension has options or administrator
+keys under `extensions.NAME`, not both (that object is its options when it has `options`); one that
+needs both keeps the administrator's values in its *settings file*. `fetch` has `allow_private` and
+`timeout`; `search` has `provider`, `api_key_env` and `base_url`. Like `order` and the start and stop
+timeouts they are the administrator's; unlike them they are the extension's own. A key never goes in a
+config file: `api_key_env` names the variable.
 
 ### agent label (`agent:P:N`), sub-agent parentage
 the label of a sub-agent's cursor · CV-04 (D32 section 5, docs/guide/conventions.md) · new (0.18)
@@ -1980,7 +2001,7 @@ The built-in extension, **on by default and inert until `/plan`**, for planning 
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
+`fetch` and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
 (order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
 of read-only commands, that chains, redirects or substitutes, that has an argument in
 `REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string
@@ -2101,8 +2122,10 @@ program adds `session_name` (D18) after `load_extensions` returns (see *session_
 same and returns one **`ExtensionSource`** per source in load order, `tau` and `session_name` (both `always`) first: `key`, `state`
 (a **`SourceState`**: `always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
 asked, and imported not at all), `kind` (a **`SourceKind`**: `built-in`, `package`, `user`, `project`, `explicit`, or
-`load` for a `load` key no source has), `origin`, `detail` (why not on), and for a source that is on
-the `extensions`, qualified `commands` and `tools` it provides. It is not served over the wire.
+`load` for a `load` key no source has), `origin`, `detail` (why not on; for a source that is on, its
+extensions' *warnings*), and for a source that is on the `extensions`, qualified `commands` and
+`tools` it provides. It is not served over the wire. `tau ext enable KEY` prints that detail, so a
+warning is heard when the source is turned on, not first at the next start.
 
 ### tau ext, -e, --no-extensions
 `tau.cli` · D19 · new

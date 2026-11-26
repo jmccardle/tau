@@ -52,7 +52,7 @@ from tau._extensions import (
 from tau._http_edge import HttpEdge
 from tau._lifecycle import StartFailed, start_failure
 from tau._options import make_layer_options
-from tau._protocols import Clock, Extension, Provider
+from tau._protocols import Clock, Extension, Provider, extension_warnings
 from tau._providers import builtin_providers
 from tau._retry import RetryProvider
 from tau._serve import Server, serve_session
@@ -68,7 +68,6 @@ from tau._sessions import (
     rename_session,
     session_info,
 )
-from tau._skills import Skills
 from tau._startup import (
     LoadedConfig,
     Prompts,
@@ -413,10 +412,11 @@ def start_warnings(
 ) -> tuple[str, ...]:
     """What the config names that this start does not have, one line each: a `load` key no
     source has, options of an extension that is not loaded or has none, a tool no loaded
-    extension provides, a prompt or skill file `skills` could not use. Each is ignored (the file
-    skipped); none stops the start."""
+    extension provides, and every extension's `warnings` (a prompt or skill file `skills` could not
+    use, an MCP configuration `mcp` skipped, `search`'s key that is not set). Each is ignored;
+    none stops the start."""
     found = load_key_warnings(loaded.catalog, sources)
-    skipped = [w for e in extensions if isinstance(e, Skills) for w in e.warnings]
+    skipped = extension_warnings(extensions)
     off = off_keys(sources)
     found += [
         p for p in option_problems(loaded.catalog, extensions, off) if p.severity == "warning"

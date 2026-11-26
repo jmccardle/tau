@@ -2,7 +2,8 @@
 only: a page is parsed into a small tree (`html.parser`), its main content is chosen, and the tree
 is written as Markdown: headings, paragraphs, lists, block quotes, fenced code, tables as rows,
 links as `[text](absolute-url)` and emphasis. Scripts, styles, navigation, footers, sidebars,
-forms' controls, hidden elements and anything that is not text are left out.
+forms' controls, hidden elements (the `hidden` attribute, `aria-hidden`, and an inline
+`display: none`) and anything that is not text are left out.
 
 It does not run JavaScript: a page that is an empty shell until a script fills it gives no text,
 and `readable` says so (`NoText`) rather than answering nothing.
@@ -38,6 +39,7 @@ _SEPARATING = (
 )  # inside a line of text these read as a space
 _EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~"}
 _SPACE = re.compile(r"\s+")
+_DISPLAY_NONE = re.compile(r"(^|;)\s*display\s*:\s*none\b", re.I)
 _LINK_SCHEMES = ("http", "https", "mailto")
 # A tag that starts closes the open one of these before it, in the nearest enclosing list or table.
 _CLOSES: dict[str, frozenset[str]] = {
@@ -118,7 +120,7 @@ def _walk(node: _Node) -> Iterable[_Node]:
 def _hidden(node: _Node) -> bool:
     if node.tag in _SKIPPED or "hidden" in node.attrs:
         return True
-    if node.attrs.get("aria-hidden") == "true":
+    if node.attrs.get("aria-hidden") == "true" or _DISPLAY_NONE.search(node.attrs.get("style", "")):
         return True
     if node.attrs.get("role") in ("navigation", "banner", "contentinfo", "complementary"):
         return True
@@ -382,6 +384,8 @@ def _table(node: _Node, out: _Writer, base: str) -> None:
         if not cells:
             continue
         texts = [_flat(c, base).replace("|", "\\|") for c in cells]
+        if not any(texts):  # a picture with no description, a spacer
+            continue
         out.put("| " + " | ".join(texts) + " |")
         if all(c.tag == "th" for c in cells):
             out.put("|" + " --- |" * len(cells))

@@ -214,13 +214,14 @@ class Mcp:
         return tuple(t for name in sorted(self._tools) for t in self._tools[name])
 
     async def start(self, tree: TreeHandle) -> None:
-        """Start every server at once and list its tools, each within the start's time. What
-        the configuration skipped, a server that fails or is too slow, and a tool that cannot be
-        named are reported (stderr, and an `error` notice each that every client gets when it
-        connects); the rest start, and so does τ."""
+        """Start every server at once and list its tools, each within the start's time. A server
+        that fails or is too slow, and a tool that cannot be named, are reported (stderr, and an
+        `error` notice each that every client gets when it connects); what the configuration
+        skipped is in `warnings`, which the start printed, and is told the same way. The rest
+        start, and so does τ."""
         self._tree = tree
-        for warning in self.warnings:
-            self._report(warning)
+        for warning in self.warnings:  # the start printed them; clients hear them from here
+            tree.tell(warning, level="error")
         tasks = {s.name: asyncio.ensure_future(self._start_one(s)) for s in self.servers}
         if tasks:
             _, slow = await asyncio.wait(tasks.values(), timeout=self._within)
