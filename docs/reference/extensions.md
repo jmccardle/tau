@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `constants`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -1863,6 +1863,21 @@ calls, results, thinking) its text's lowercase letters, uppercase letters, digit
 ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
 (1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
 or `Custom` body, which is never sent, is all zeros.
+
+## constants
+
+```python
+def constants(
+    extensions: Mapping[str, Mapping[str, object]],
+    name: str,
+    known: Mapping[str, type],
+) -> dict[str, object]
+```
+
+The administrator keys the config layers set for extension `name` (`extensions` is
+`LoadedConfig.catalog.extensions`): `known` maps each key it has to its type (`bool`, `int`,
+`str`). `ConfigError` for a key it has not, and for a value of another type (a `bool` is no
+`int`).
 
 ## counted
 

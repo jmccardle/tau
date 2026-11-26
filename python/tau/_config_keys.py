@@ -3,11 +3,14 @@ read from the merged tree into a plain value, with its problems added to the lay
 `tui` is the terminal UI's own (D23): an object whose only key is `theme`, and the user's alone
 (a project that sets it is an error, found as the layers are read)."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import cast
 
 from tau._config_tree import ConfigProblem, Leaf, Problems, Tree, plain, source_of, suggest
+from tau._constants import administrator_keys
 
+ALWAYS = ("tau", "session_name")
+"""The extensions every start has, outside the sources (D19): the driver's and the startup's."""
 ORDER = "order"
 """The key of `extensions.NAME` that is the extension's hook order, not an option (D28)."""
 TIMEOUTS = ("start_timeout", "stop_timeout")
@@ -188,3 +191,25 @@ def default_model(merged: Tree, declared: list[str], problems: Problems) -> str 
         msg = f"default_model {name!r} is ambiguous; use one of {list(found)}"
         problems.add("error", msg, source, "default_model")
     return name
+
+
+def unprovided(
+    given: Mapping[str, Mapping[str, object]],
+    extensions: Sequence[object],
+    off: Collection[str],
+    warn: Callable[[str, str], None],
+) -> None:
+    """Warn of what `given` (the layers' `extensions`) sets for an extension nothing provides, or
+    for one that has no options and declares no administrator keys (`tau._constants`)."""
+    loaded = {str(getattr(e, "name")) for e in extensions} | set(ALWAYS)  # noqa: B009
+    for key in sorted(given):
+        if key not in loaded and key not in off and key != "retry":
+            warn(
+                f"no loaded extension is named {key!r}; its options are ignored",
+                f"extensions.{key}",
+            )
+    keyless = [e for e in extensions if administrator_keys(e) is None]  # what it reads is no option
+    bare = [str(e.name) for e in keyless if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
+    for key in ("retry", *bare):
+        if given.get(key):
+            warn(f"extension {key!r} has no options; they are ignored", f"extensions.{key}")

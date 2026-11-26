@@ -28,6 +28,7 @@ from tau import _builtin
 from tau._complete import Completion, complete
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog
+from tau._constants import NOT_OPTIONS
 from tau._core import Answer, Author, Busy, Session
 from tau._effects import describe_failure
 from tau._events import Notice
@@ -311,7 +312,7 @@ class CommandTable:
             at = self._session.cursor(cursor).at
             self._need_rest(cursor, CONFIG)
             if extension not in self._options.names():
-                raise ConfigError(f"extension {extension!r} has no options")
+                raise ConfigError(f"extension {extension!r} has no options ({NOT_OPTIONS})")
             self._options.check_config(at, None, {extension: values})
             if save:
                 self._options.save_branch(extension, at, values)

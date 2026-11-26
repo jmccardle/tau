@@ -393,7 +393,7 @@ def _set(run: _Run, assignments: Sequence[tuple[str, str, str]]) -> int:
     extensions.raise_failures()
     save_options(
         UserConfig(loaded.home),
-        option_changes(extensions.extensions, assignments),
+        option_changes(extensions.extensions, assignments, file=True),
         tool_names(extensions.extensions),
     )
     shown = " ".join(f"{e}.{n}={g}" for e, n, g in assignments)

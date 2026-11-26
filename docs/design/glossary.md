@@ -1889,25 +1889,32 @@ The built-in extension, **off by default** (`tau ext enable search`), that lets 
 through a **provider** the administrator chose: `brave` (the default; key in `BRAVE_API_KEY`),
 `marginalia` (`MARGINALIA_API_KEY`) or `searxng` (an instance at `base_url`, no key). The answer is a
 numbered list of title, address and snippet (markup removed) under the untrusted notice; at most
-`limit` results (1 to 20). It is built from the layers' constants and the environment. When its key
+`limit` results (1 to 20). It is built from its administrator keys and the environment. When its key
 is not set it is built without its tool and with a `warnings` line naming the variable, which its `start`
 says on stderr and as a standing `warning` notice, and `tau ext list` shows; a wrong constant stops the
 start. A rejected key, a rate limit and any other failure are tool errors that never hold the key (a
 provider's text is quoted with the key's value replaced). The provider's table (`_Provider`: its address, its key variable and
 its way of asking) and `Hits` (a provider's answer: `(title, url, snippet)` for each result) are private.
 
-### administrator constants (an extension's), `constants`
-`tau._constants.constants(extensions, name, known)` · D32 section 4, akb #643 · new (0.18)
+### administrator keys (an extension's), `administrator_keys`, `tau.constants`
+`tau.constants(extensions, name, known)` (`_constants.py`); an extension's `administrator_keys` · D32 section 4, akb #643 · new (0.18)
 
-An extension's settings that are the administrator's, not a client's (#643: "anything a client
-shouldn't configure is hard-coded or read from a config file of constants, never exposed as
-options"): the keys of `extensions.NAME` in the config layers for an extension that has no `options`,
-checked by `constants` against the keys and types it knows (`ConfigError` naming the key for another key
-or type) when the extension is built. With no `options` a client cannot set one (`/config`, a `Config`
-node, `set_options`) and none is in the `config` form. `fetch` has `allow_private` and `timeout`;
-`search` has `provider`, `api_key_env` and `base_url`. Like `order` and the start and stop timeouts they
-are the administrator's; unlike them they are the extension's own. A key never goes in a config
-file: `api_key_env` names the variable.
+What an administrator sets for an extension per machine or project, and a client must not (#643:
+"anything a client shouldn't configure is hard-coded or read from a config file of constants, never
+exposed as options"): keys of `extensions.NAME` in a config file, for an extension that declares
+them as **`administrator_keys`**, a mapping of each key to its type (`bool`, `int`, `str`). The
+extension reads them when it is built, with `constants(loaded.catalog.extensions, NAME,
+administrator_keys)`, which raises `ConfigError` naming the key for another key or a value of
+another type. Declaring them is what makes the harness treat the object as no mistake: no "has no
+options" warning, and `tau config check` and a start report a key or type that `constants` refuses.
+`tau config set NAME.KEY=VALUE` writes one to the user's file (the command line is the
+administrator's); `--set` refuses one (the extension is built before it applies), and a client's
+`/config` cannot reach one: none is in the `config` form. An extension has options or administrator
+keys under `extensions.NAME`, not both (that object is its options when it has `options`); one that
+needs both keeps the administrator's values in its *settings file*. `fetch` has `allow_private` and
+`timeout`; `search` has `provider`, `api_key_env` and `base_url`. Like `order` and the start and stop
+timeouts they are the administrator's; unlike them they are the extension's own. A key never goes in a
+config file: `api_key_env` names the variable.
 
 ### agent label (`agent:P:N`), sub-agent parentage
 the label of a sub-agent's cursor · CV-04 (D32 section 5, docs/guide/conventions.md) · new (0.18)

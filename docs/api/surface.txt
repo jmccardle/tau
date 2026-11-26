@@ -326,6 +326,11 @@ class UndoMarker
     return_to: int
     reverses: str
 def calibration_features(body: Body) -> list[float]
+def constants(
+    extensions: Mapping[str, Mapping[str, object]],
+    name: str,
+    known: Mapping[str, type],
+) -> dict[str, object]
 def counted(node: Node) -> bool
 def image_rule(model: ModelConfig) -> ImageRule
 def reading(node: Node) -> Reading | None
