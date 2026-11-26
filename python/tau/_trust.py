@@ -32,6 +32,7 @@ from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, check_config, read_models
 from tau._dotenv import DotenvError, parse_dotenv
 from tau._project_read import (
+    FOREIGN_BASES,
     TrustError,
     read_prompt_files,
     read_regular,
@@ -74,7 +75,9 @@ class Trusted:
     such directory), which the extension loader imports from and never re-reads; `system_md` the
     bytes of `.tau/SYSTEM.md` as approved (`None`: no such file), which the prompt's assembly
     reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
-    relative to `.tau/`, with `/`, to bytes), which the skills extension reads. Use `layer()`,
+    relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
+    `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
+    reads. Use `layer()`,
     `read_models()` and `project_environment` rather than re-reading the files."""
 
     root: Path
@@ -621,6 +624,11 @@ def _code_changes(approval: _Approval, seen: _Seen) -> list[str]:
     return lines + _prompt_changes(approval, seen)
 
 
+def _shown(path: str) -> str:
+    """A key of `prompts` as the report names it: under `.tau/`, or `.agents/`, `.claude/`."""
+    return path if path.split("/", maxsplit=1)[0] in FOREIGN_BASES else f".tau/{path}"
+
+
 def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
     """Which prompt templates and skill files were added, removed or changed since approval."""
     now = _file_hashes(seen.prompts)
@@ -631,7 +639,7 @@ def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
         ("removed", [p for p in before if p not in now]),
         ("changed", [p for p in now if p in before and now[p] != before[p]]),
     ):
-        lines += [safe_text(f"  .tau/{p} {label}") for p in paths]
+        lines += [safe_text(f"  {_shown(p)} {label}") for p in paths]
     return lines
 
 

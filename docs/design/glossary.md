@@ -1324,7 +1324,8 @@ arguments (`attached_to`) attach an image file as a file, as before.
 The built-in extension for prompt files. A **template** is `NAME.md` and a **skill** is
 `NAME/SKILL.md`, in `$TAU_HOME/prompts/` and `$TAU_HOME/skills/` and the same under the trusted
 project's `.tau/` (pinned by trust like `.tau/SYSTEM.md`, read from the approved bytes; the project
-wins a name). Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
+wins a name); skills are also read from `.agents/skills/` and `.claude/skills/` in the home
+directory and the trusted project. Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
 whose help is the file's `description` and which sends the expanded text to its cursor as input
 authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argument text) and `$1`
 to `$N` (its words: whitespace splits, `"` groups, `'` is a character; a missing one is empty,

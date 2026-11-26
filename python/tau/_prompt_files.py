@@ -16,9 +16,11 @@ from typing import Literal
 
 from tau._attachments import quoted
 from tau._project_read import (
+    FOREIGN_BASES,
     PROMPTS_DIR,
     SKILL_FILE,
     SKILLS_DIR,
+    foreign_candidates,
     prompt_candidates,
     safe_text,
 )
@@ -365,7 +367,10 @@ def _read_file(kind: Literal["template", "skill"], name: str, raw: bytes, path: 
 def command_name(parts: tuple[str, ...]) -> str | None:
     """The command a file of a `prompt_candidates` path would be, if its name were right: the
     template's stem, the skill's directory (`None`: it is not a usable name)."""
-    name = parts[1] if parts[0] == SKILLS_DIR and len(parts) == 3 else Path(parts[-1]).stem  # noqa: PLR2004
+    if parts[0] in FOREIGN_BASES:
+        name = parts[2]
+    else:
+        name = parts[1] if parts[0] == SKILLS_DIR and len(parts) == 3 else Path(parts[-1]).stem  # noqa: PLR2004
     return name if EXTENSION_NAME.fullmatch(name) else None
 
 
@@ -389,18 +394,42 @@ def _misplaced(parts: tuple[str, ...], path: Path) -> Problem:
     return Problem(f"{path}: misplaced skill: {fix}", parts[1])
 
 
+def _parts(path: Path, base: Path, siblings: Path | None) -> tuple[str, ...]:
+    """`path` below `base`, or else below `siblings` (where `.agents` and `.claude` are)."""
+    if siblings is None or path.is_relative_to(base):
+        return path.relative_to(base).parts
+    return path.relative_to(siblings).parts
+
+
+def project_paths(files: Mapping[str, bytes], tau: Path) -> dict[Path, bytes]:
+    """The paths of `Trusted.prompt_files`: those starting with `.agents` or `.claude` are below
+    the project, the others below its `.tau/` (`tau`)."""
+    return {
+        (tau.parent if relative.split("/")[0] in FOREIGN_BASES else tau) / relative: raw
+        for relative, raw in files.items()
+    }
+
+
 def read_row(
-    files: Mapping[Path, bytes], base: Path
+    files: Mapping[Path, bytes], base: Path, siblings: Path | None = None
 ) -> tuple[dict[str, PromptFile], list[Problem]]:
     """The prompts among `files` (path to bytes; those under `base/prompts/` and `base/skills/`
-    that `prompt_candidates` finds), and every problem: a file that cannot be used, one in the
-    wrong place, and a name that is both a template and a skill (neither is then a prompt)."""
+    that `prompt_candidates` finds, and the skills under `siblings/.agents/skills/` and
+    `siblings/.claude/skills/`), and every problem: a file that cannot be used, one in the wrong
+    place, and a name that is both a template and a skill (neither is then a prompt). A skill of
+    `.agents` or `.claude` gives way to one of the same name in `base/skills/`, and `.claude`'s to
+    `.agents`'s, with no message: the same skill is often in both."""
     found: dict[str, PromptFile] = {}
+    others: dict[str, PromptFile] = {}
     problems: list[Problem] = []
     clashing: set[str] = set()
     for path, raw in sorted(files.items()):
-        parts = path.relative_to(base).parts
+        parts = _parts(path, base, siblings)
         try:
+            if parts[0] in FOREIGN_BASES:
+                skill = _read_file("skill", parts[2], raw, path)
+                others.setdefault(skill.name, skill)
+                continue
             if parts[0] == PROMPTS_DIR and len(parts) == 2 and parts[1].endswith(_TEMPLATE_SUFFIX):  # noqa: PLR2004
                 prompt = _read_file("template", path.stem, raw, path)
             elif parts[0] == SKILLS_DIR and len(parts) == 3 and parts[2] == SKILL_FILE:  # noqa: PLR2004
@@ -421,6 +450,8 @@ def read_row(
                     prompt.name,
                 )
             )
+    for name, skill in others.items():
+        found.setdefault(name, skill)
     return {n: p for n, p in found.items() if n not in clashing}, problems
 
 
@@ -436,22 +467,33 @@ def _lister(base: Path) -> tuple[Callable[[str], list[str]], Callable[[str], boo
     return names, lambda relative: (base / relative).is_dir()
 
 
-def user_files(home: Path) -> dict[Path, bytes]:
-    """The user's template and skill files, and those that look like one in the wrong place."""
-    found: dict[Path, bytes] = {}
-    for relative in prompt_candidates(*_lister(home)):
-        if (home / relative).is_file():
-            found[home / relative] = (home / relative).read_bytes()
+def _candidates(base: Path, siblings: Path | None) -> list[tuple[Path, str]]:
+    """Every file `prompt_candidates` finds under `base`, and `foreign_candidates` under
+    `siblings`, with the directory each path is relative to."""
+    found = [(base, r) for r in prompt_candidates(*_lister(base))]
+    if siblings is not None:
+        found += [(siblings, r) for r in foreign_candidates(*_lister(siblings))]
     return found
 
 
-def signature(base: Path) -> tuple[tuple[str, int, int], ...]:
-    """What a stat of every file `prompt_candidates` finds under `base` says (its path, modified
-    time and size): it differs when a file is added, removed or edited."""
+def user_files(home: Path, siblings: Path | None = None) -> dict[Path, bytes]:
+    """The user's template and skill files in `home` (`TAU_HOME`) and the skills in `siblings`
+    (their home directory), and the files that look like one in the wrong place."""
+    found: dict[Path, bytes] = {}
+    for base, relative in _candidates(home, siblings):
+        if (base / relative).is_file():
+            found[base / relative] = (base / relative).read_bytes()
+    return found
+
+
+def signature(base: Path, siblings: Path | None = None) -> tuple[tuple[str, int, int], ...]:
+    """What a stat of every file `prompt_candidates` finds under `base` (and `foreign_candidates`
+    under `siblings`) says (its path, modified time and size): it differs when a file is added,
+    removed or edited."""
     found: list[tuple[str, int, int]] = []
-    for relative in prompt_candidates(*_lister(base)):
+    for where, relative in _candidates(base, siblings):
         try:
-            info = (base / relative).stat()
+            info = (where / relative).stat()
         except OSError:
             found.append((relative, 0, -1))
         else:
@@ -462,5 +504,4 @@ def signature(base: Path) -> tuple[tuple[str, int, int], ...]:
 def problems_in(files: Mapping[str, bytes], tau: Path) -> list[str]:
     """Every problem with a project's prompt files (`Trusted.prompt_files`, relative to `tau`,
     the `.tau/` directory), as lines safe to print."""
-    row = {tau / relative: raw for relative, raw in files.items()}
-    return [safe_text(p.message) for p in read_row(row, tau)[1]]
+    return [safe_text(p.message) for p in read_row(project_paths(files, tau), tau, tau.parent)[1]]
