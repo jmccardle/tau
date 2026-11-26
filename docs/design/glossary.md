@@ -1783,17 +1783,28 @@ money: cost needs the price, so `/usage json` (or `/usage format=json`) answers
 string, or `null` for a model without a price. The row fields are in `docs/guide/conventions.md`.
 
 ### PlanMode (extension), plan mode, `/plan`
-built-in `plan_mode` (`_plan_mode.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
+built-in `plan_mode` (the package `_plan_mode/`, with its settings file `settings.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
 
 The built-in extension, **on by default and inert until `/plan`**, for planning before acting.
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-and `bash`); `pre_tool` refuses any other call and any `bash` command outside a fixed list of
-read-only commands or that chains, redirects or substitutes; the cursor shows `plan mode`; and a
-reply that ends in `Stop.End` asks `approve | revise | reject` (approve leaves the mode, writes the
-approval and turns auto-step on). What is read-only is fixed in the extension, not an option
-(a client's `/config` must not widen it). A guard, not a sandbox.
+and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
+(order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
+of read-only commands, that chains, redirects or substitutes, or whose arguments are not an object
+with a string `command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
+`approve | revise | reject` (approve leaves the mode, writes the approval and turns auto-step on).
+What is read-only is in its *settings file*, not an option (a client's `/config` must not widen
+it). A guard, not a sandbox.
+
+### settings file (an extension's)
+a module of constants in an extension's package, such as `tau/_plan_mode/settings.py` · 0.18 · new
+
+The convention for what an administrator may change and a client may not: a module of plain
+assignments, each with a docstring saying what it is and what a change does, that the extension
+reads where it uses them (`settings.READ_ONLY_TOOLS`). A client configures *options*, which are on
+the wire (`/config`); an administrator changes a settings file by editing it, in a copy of the
+package that shadows the original as a drop-in (D19). It is no new mechanism: just a module.
 
 ### BashGuard (extension), bash guard
 built-in `bash_guard` (`_bash_guard.py`; not exported), options `patterns`, `allow`, `unattended`, `wait`; off by default · 0.18 (from `examples/speculative/bash_guard.py`)
@@ -1803,7 +1814,9 @@ prints a lot (`pre_tool`, `reject | allow | always | truncate`). `always` append
 the user's file's own `allow` (`save_options`); `truncate` rewrites the call's `command` to pipe
 through `grep -e PATTERN | tail -n 200` and the result starts `[bash_guard ran: ...]` (the tree
 keeps the model's own arguments). A question nobody answers within `wait` seconds, or that is
-declined or aborted, is decided by `unattended`; an abort never runs the command.
+declined or aborted, is decided by `unattended`; an abort never runs the command. `tau -p` never
+waits: its `--answer` or `--decline` rules answer the question, or the run stops at it. `wait`
+must be more than 0.
 
 ### Router (extension), `!model`
 built-in `router` (`_router.py`; not exported), options `when`, `use`, `enabled`, `once`, command `/route`; off by default · 0.18 (from `examples/speculative/router.py`)
@@ -1812,7 +1825,7 @@ The built-in extension that picks the model for a turn at `pre_input`: a `!model
 configured model (`cursor.models()`) is stripped from the text and decides; else the first regex
 of `when` that matches picks the model at the same index of `use`. A change writes a `Config`
 node and a `Custom` node of kind `route` (`{"model", "why"}`) before the `User` node, and a
-`Notice` to the typist; nothing is written when `cursor.model()` is already it. `once` restores
+`Notice` to every client (`now on MODEL (WHY)`); nothing is written when `cursor.model()` is already it. `once` restores
 the model the branch had before the router's first `Config`, after the turn's last reply.
 
 ### tool not offered
