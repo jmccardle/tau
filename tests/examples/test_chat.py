@@ -58,9 +58,11 @@ BUILT_INS = [
     "permissions",
     "plan_mode",
     "prune",
+    "session",
     "skills",
     "step_limit",
     "tokens",
+    "undo",
     "usage",
 ]  # the built-in extensions
 
