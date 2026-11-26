@@ -53,7 +53,8 @@ release whose `docs/protocol.schema.json` differs from the last tag's, never per
 0.17's (D30): `Outcome.Ok` may carry images. 3 is 0.18's (D31): a `User` body and an `Input` item
 may carry images, `input` and `send` take them, and `image` reads one's bytes; and (D32)
 `complete` and `complete_line` answer `Completion`s, a `Notice` names its cursor, extension and
-level, and the event `Commands` carries the command forms."""
+level, the event `Commands` carries the command forms, and `models` answers the catalog's models
+as `ModelInfo`s."""
 
 # Errors
 
@@ -139,7 +140,12 @@ ERRORS: Final = (
     WireError(-32009, "Refused", ValueError, "a value the driver refuses; the message says why"),
     WireError(-32010, "NotYours", PermissionError, "a question for another connected client"),
     WireError(-32011, "CommandFailed", CommandFailed, "a command raised or was aborted"),
-    WireError(-32012, "ConfigError", ConfigError, "options that cannot be read or changed"),
+    WireError(
+        -32012,
+        "ConfigError",
+        ConfigError,
+        "options, or a model's price, that cannot be read or changed",
+    ),
     WireError(-32013, "Stopped", ConnectionError, "the driver has stopped or failed"),
     WireError(-32014, "CutOff", CutOff, "the client fell behind: only in `end`"),
 )

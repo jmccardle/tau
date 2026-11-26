@@ -46,9 +46,13 @@ class HookFailed(Exception):
     the command and why."""
 
     def __init__(self, handler: Handler, why: str) -> None:
-        shown = handler.shown()
-        shown = shown if len(shown) <= _SHOWN else shown[: _SHOWN - 1] + "…"
-        super().__init__(f"hook {shown!r} {why}")
+        super().__init__(f"{named(handler)} {why}")
+
+
+def named(handler: Handler) -> str:
+    """`hook '<command>'`, the command cut short if it is long: how a message names a hook."""
+    shown = handler.shown()
+    return f"hook {shown if len(shown) <= _SHOWN else shown[: _SHOWN - 1] + '…'!r}"
 
 
 @dataclass(frozen=True)
@@ -78,43 +82,101 @@ class Verdict:
     """Plain text it wrote where τ has no use for it, which the caller says."""
 
 
-def _kill(proc: "asyncio.subprocess.Process") -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
+GRACE = 2.0
+"""Seconds a command's process group has, after SIGTERM, before SIGKILL."""
+_DRAIN = 0.1
+"""Seconds to wait, once a command has exited, for the last of what it wrote to arrive."""
+_POLL = 0.05
+_STREAMS = {1: "standard output", 2: "standard error"}
 
 
-async def _read(stream: asyncio.StreamReader, what: str, handler: Handler) -> bytes:
-    out = bytearray()
-    while chunk := await stream.read(1 << 16):
-        out += chunk
-        if len(out) > MAX_OUTPUT:
-            raise HookFailed(handler, f"wrote over {MAX_OUTPUT} bytes to {what}")
-    return bytes(out)
+def _signal(group: int, number: signal.Signals | int) -> bool:
+    """Send `number` to a process group; whether any process of it was there to get it."""
+    try:
+        os.killpg(group, number)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
 
 
-async def _feed(proc: "asyncio.subprocess.Process", data: bytes) -> None:
-    """Write the event, and close: a command that never reads its input is allowed to."""
-    assert proc.stdin is not None
-    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-        proc.stdin.write(data)
-        await proc.stdin.drain()
-    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-        proc.stdin.close()
+async def terminate(group: int) -> None:
+    """End a command's process group: SIGTERM, then SIGKILL to what is left after `GRACE`. The
+    SIGKILL is sent even if this is cancelled while it waits."""
+    gone = not _signal(group, signal.SIGTERM)
+    try:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(GRACE):
+                while not gone:
+                    await asyncio.sleep(_POLL)
+                    gone = not _signal(group, 0)
+    finally:
+        if not gone:
+            _signal(group, signal.SIGKILL)
+
+
+class _Command(asyncio.SubprocessProtocol):
+    """One running command: what it writes to standard output (1) and standard error (2), and
+    `exited`, which resolves when the command itself exits. `Process.wait()` will not do: on
+    Python 3.12 it also waits for the pipes to close, which a child the command left running in
+    the background (`notify &`) holds open.
+
+    While it runs, its process group is in `running` (its pid: it leads a session of its own),
+    and only then, so that a group is never signalled once its number may name another."""
+
+    def __init__(self, running: set[int]) -> None:
+        loop = asyncio.get_running_loop()
+        self.written = {1: bytearray(), 2: bytearray()}
+        self.exited: asyncio.Future[None] = loop.create_future()
+        self.drained: asyncio.Future[None] = loop.create_future()
+        self.over: int | None = None  # the stream that went past `MAX_OUTPUT`
+        self.pid = 0
+        self._open = {1, 2}
+        self._running = running
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.pid = cast("asyncio.SubprocessTransport", transport).get_pid()
+        self._running.add(self.pid)
+
+    def pipe_data_received(self, fd: int, data: bytes) -> None:
+        self.written[fd] += data
+        if len(self.written[fd]) > MAX_OUTPUT and self.over is None:
+            self.over = fd
+            _signal(self.pid, signal.SIGKILL)
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        if fd in self._open:  # not standard input
+            self._open.remove(fd)
+            if not self._open:
+                self.drained.set_result(None)
+
+    def process_exited(self) -> None:
+        self._running.discard(self.pid)
+        self.exited.set_result(None)
+
+    def text(self, fd: int) -> str:
+        return self.written[fd].decode("utf-8", "replace")
 
 
 async def run_command(
-    handler: Handler, event: Mapping[str, object], cwd: Path, env: Mapping[str, str]
+    handler: Handler,
+    event: Mapping[str, object],
+    cwd: Path,
+    env: Mapping[str, str],
+    running: set[int],
 ) -> Ran:
-    """Run `handler`'s command in `cwd` with `event` as JSON on its standard input. `HookFailed`
-    if it does not start, passes its `timeout`, or writes over `MAX_OUTPUT`; a timed-out command's
-    whole process group is killed."""
+    """Run `handler`'s command in `cwd` with `event` as JSON on its standard input; its process
+    group is in `running` until it exits. `HookFailed` if it does not start, passes its
+    `timeout`, or writes over `MAX_OUTPUT`. Past its timeout, or when the hook running it is
+    cancelled, the command's whole process group is ended (`terminate`). Once the command has
+    exited, a child it left running in the background is left alone, as in Claude Code: τ takes
+    what was written and goes on, without waiting for that child."""
     if sys.platform == "win32":
         raise HookFailed(handler, "cannot run: hooks are not available on Windows")
     argv = handler.args or ("/bin/sh", "-c", cast("str", handler.command))
+    loop = asyncio.get_running_loop()
     try:
-        proc = await asyncio.create_subprocess_exec(
+        transport, command = await loop.subprocess_exec(
+            lambda: _Command(running),
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -125,23 +187,26 @@ async def run_command(
         )
     except OSError as e:
         raise HookFailed(handler, f"did not start: {e.strerror or e}") from e
-    assert proc.stdout is not None
-    assert proc.stderr is not None
-    data = json.dumps(event).encode("utf-8")
+    stdin = cast("asyncio.WriteTransport", transport.get_pipe_transport(0))
+    stdin.write(json.dumps(event).encode("utf-8"))
+    stdin.close()  # a command that never reads its input is allowed to
     try:
         async with asyncio.timeout(handler.timeout):
-            _, out, err, code = await asyncio.gather(
-                _feed(proc, data),
-                _read(proc.stdout, "standard output", handler),
-                _read(proc.stderr, "standard error", handler),
-                proc.wait(),
-            )
+            await asyncio.shield(command.exited)  # a timeout must not cancel what it waits for
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(_DRAIN):
+                await asyncio.shield(command.drained)
     except TimeoutError:
         raise HookFailed(handler, f"timed out after {handler.timeout:g} s and was killed") from None
     finally:
-        _kill(proc)  # a command's own children outlive it unless the group goes too
-        await proc.wait()
-    return Ran(code, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
+        if not command.exited.done():  # timed out, or the hook was cancelled
+            await terminate(command.pid)
+            await asyncio.shield(command.exited)
+        transport.close()
+    if command.over is not None:
+        raise HookFailed(handler, f"wrote over {MAX_OUTPUT} bytes to {_STREAMS[command.over]}")
+    code = cast("int", transport.get_returncode())
+    return Ran(code, command.text(1), command.text(2))
 
 
 # -- what a command answered
@@ -288,6 +353,8 @@ def interpret(handler: Handler, event: str, ran: Ran) -> Verdict:
         if event in _FEEDBACK:
             return Verdict(context=_cap(handler, reason))
         return Verdict(block=reason)
+    if ran.code < 0:
+        raise HookFailed(handler, f"was killed by signal {-ran.code}")
     if ran.code != 0:
         why = f"exited {ran.code}"
         raise HookFailed(handler, why + (f": {ran.err.strip()}" if ran.err.strip() else ""))

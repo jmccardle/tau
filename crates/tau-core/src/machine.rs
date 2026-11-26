@@ -396,6 +396,12 @@ impl Machine {
         }
     }
 
+    /// Whether the cursor's running step is a command's (D16 §2, `Step.command`); false at rest.
+    #[must_use]
+    pub fn in_command(&self, cursor: CursorId) -> bool {
+        self.busy(cursor) && self.steps.get(&cursor).is_some_and(|s| s.command)
+    }
+
     /// Where in `Session::moves` the cursor's current step began; the end of
     /// them when it has none.
     #[must_use]

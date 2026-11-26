@@ -9,10 +9,12 @@ A path is read on the driver's machine, relative to the process's working direct
 import asyncio
 import json
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from tau._config_layers import ModelCatalog
 from tau._core import Body, Node, Part, Session
+from tau._markers import UndoMarker
+from tau._model_list import ModelInfo, model_detail
 from tau._values import NEW
 
 NAMED = ("path", "model", "cursor", "label", "node")
@@ -25,6 +27,11 @@ DETAIL_WIDTH = 80
 def _line(text: str | None) -> str | None:
     """`text` on one line: its whitespace runs, newlines included, made one space."""
     return None if text is None else " ".join(text.split())
+
+
+def _cut(line: str) -> str:
+    """`line` cut at `DETAIL_WIDTH` characters, ending in `…` if it was longer."""
+    return line if len(line) <= DETAIL_WIDTH else line[: DETAIL_WIDTH - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -42,10 +49,8 @@ class Completion:
 
     def __post_init__(self) -> None:
         detail = _line(self.detail)
-        if detail is not None and len(detail) > DETAIL_WIDTH:
-            detail = detail[: DETAIL_WIDTH - 1] + "…"
         object.__setattr__(self, "label", _line(self.label))
-        object.__setattr__(self, "detail", detail)
+        object.__setattr__(self, "detail", None if detail is None else _cut(detail))
 
 
 def _size(size: int) -> str:
@@ -101,27 +106,9 @@ def _scan(directory: str) -> list[tuple[str, bool, int | None]]:
     return found
 
 
-def _window(tokens: int) -> str:
-    """A context window as a list shows it: `200k`, `1M`, `8192`."""
-    if tokens >= 1_000_000:  # noqa: PLR2004 - the unit
-        return f"{tokens / 1_000_000:.3g}M"
-    if tokens >= 1000:  # noqa: PLR2004 - the unit
-        return f"{round(tokens / 1000)}k"
-    return str(tokens)
-
-
-def _models(catalog: ModelCatalog) -> list[Completion]:
-    """Each model, with its provider, its context window and `images` if it takes them."""
-    found: list[Completion] = []
-    for name in catalog.names():
-        config = catalog.resolve(name)
-        detail = [config.provider]
-        if config.context_window is not None:
-            detail.append(_window(config.context_window))
-        if config.images:
-            detail.append("images")
-        found.append(Completion(name, None, " · ".join(detail)))
-    return found
+def _models(models: Sequence[ModelInfo]) -> list[Completion]:
+    """Each model, detailed as `model_detail` says it (D32 section 8)."""
+    return [Completion(m.name, None, model_detail(m)) for m in models]
 
 
 def _cursors(session: Session) -> list[Completion]:
@@ -162,9 +149,10 @@ def _config(data: str) -> str:
 
 
 def node_summary(node: Node) -> str:
-    """A node in one line: its kind, and what it says first. `User · fix the parser so that…`,
-    `Assistant · calls read, bash`, `Results · 2 calls`, `Config · model anthropic:sonnet`,
-    `System`, `Custom · todo`. What a `node` completion's detail is."""
+    """A node in one line of at most `DETAIL_WIDTH` characters: its kind, and what it says first.
+    `User · fix the parser so that…`, `Assistant · calls read, bash`, `Results · 2 calls`,
+    `Config · model anthropic:sonnet`, `System`, `Custom · todo`, and for an undo marker its label,
+    `Custom · undo /clear`. What a `node` completion's detail is, and each line of `/tree`."""
     match node.body:
         case Body.User(text=text):
             kind, said = "User", _first_line(text)
@@ -177,10 +165,21 @@ def node_summary(node: Node) -> str:
         case Body.System():
             kind, said = "System", ""
         case Body.Custom(kind=custom):
-            kind, said = "Custom", custom
+            label = _marker_label(node.body)
+            kind, said = "Custom", custom if label is None else f"{custom} {label}"
         case _:
             raise TypeError(f"node {node.id} holds a body completion does not know")
-    return f"{kind} · {said}" if said else kind
+    return _cut(" ".join(f"{kind} · {said}".split()) if said else kind)
+
+
+def _marker_label(body: Body) -> str | None:
+    """The label of the undo marker `body` holds; `None` for any other body, and for a malformed
+    marker, which its kind alone (`undo`) names in one line."""
+    try:
+        marker = UndoMarker.of(body)
+    except ValueError:  # what is wrong with it is `/undo`'s to say, when it reaches it
+        return None
+    return None if marker is None else marker.label
 
 
 def _first_line(text: str) -> str:
@@ -196,12 +195,16 @@ def _reply_line(parts: list[Part]) -> str:
 
 
 async def complete(
-    session: Session, catalog: ModelCatalog, cursor: int, named: str, prefix: str
+    session: Session,
+    models: Callable[[], Sequence[ModelInfo]],
+    cursor: int,
+    named: str,
+    prefix: str,
 ) -> list[Completion]:
     """The values of the named type `named` that start with `prefix`, for `cursor`, each a
     `Completion` with the label and detail D32 section 1 gives its kind: `path` (directories end
-    with `/`; labelled with the name, a file's detail its size), `model` (qualified names; the
-    provider, context window and `images`), `cursor` (open ids, labelled with their labels, then
+    with `/`; labelled with the name, a file's detail its size), `model` (qualified names, from
+    `models`; `model_detail`), `cursor` (open ids, labelled with their labels, then
     `"new"`), `label` (the cursor it is on), and `node` (the cursor's walk, newest first; its
     `node_summary`). `ValueError` for another name, `NoSuchCursor` for a cursor that is not
     open."""
@@ -210,7 +213,7 @@ async def complete(
         case "path":
             return await asyncio.to_thread(_paths, prefix)
         case "model":
-            found = _models(catalog)
+            found = _models(models())
         case "cursor":
             found = _cursors(session)
         case "label":

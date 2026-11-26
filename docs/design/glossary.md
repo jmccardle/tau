@@ -516,7 +516,8 @@ and `take_notices()` (drains the notices). There is no whole-scratchpad read
 Python `tau.CursorState` (`Session.cursor(c)`) · new
 
 A frozen snapshot of one cursor, all read under one lock: `at`, `auto`,
-`busy`, `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
+`busy`, `command` (the running step is a command's, D16 §2; false at rest;
+`Machine::in_command`), `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
 do not reach it, so `busy` and `at` cannot disagree. It replaces the separate
 per-cursor reads (`at`, `auto`, `busy`, `next`, `items`, `labels_of`,
 `moves_of`, `moves_since_step`). The lists are Python objects only when read.
@@ -787,7 +788,9 @@ D16 §6): `extensions.step_limit.limit` in the config files, or `/config step_li
 branch; a bad one fails the step at `pre_step`. It keeps its own count per cursor (core keeps none), read
 and changed at three hook points with `cursor.auto`: `pre_input` sets it to 1
 (the step that takes an input is the first; there is no `post_input`),
-`pre_step` adds one while auto-step is on, and `post_step` turns auto-step off
+`pre_step` adds one while auto-step is on (a command's step, `CursorState.command`, is attended:
+it is not counted, and the count starts over, so the steps after a command that turned auto-step
+on get the whole `limit`), and `post_step` turns auto-step off
 once the count reaches `limit`, then starts the count over, as it also does on
 seeing auto-step off. Whoever resumes the cursor gets another `limit`.
 
@@ -1411,9 +1414,11 @@ yield, so a template cannot take `/model` or `/name`.
 ### prefix (of a walk)
 D24 section 1 · new (8E-1)
 
-The root `Config` and the `System` nodes before the first other message. It holds the system
-prompt, the context files and the skills list, so it is also the prompt-cache prefix every
-cursor of a session shares.
+The root `Config` and the `System` nodes before the first other message, with any `Config` between
+them (a model chosen before the first message); it ends at the last of those `System` nodes. It
+holds the system prompt, the context files and the skills list, so it is also the prompt-cache
+prefix every cursor of a session shares. `/compact`, `/prune` and `/clear` hang their new line
+under its last node (`prefix_length`).
 
 ### line (a new line), new-line building
 `tau._lines` (private: `Planned`, `copy_of`, `prefix_length`, `write_line`, `characters`) · D24 sections 2, 9 · new (8E-3)
@@ -1477,20 +1482,21 @@ text. The first is the undo marker.
 
 ### undo marker, UndoMarker, return_to, reverses, priority (a marker's)
 `tau.UndoMarker` (`label`, `return_to`, `reverses`, `priority`, `extra`; `body()`, `of(body)`),
-`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`) · D33 §1 (CV-01) · new (0.18)
+`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`, `PRIORITY`) · D33 §1 (CV-01) · new (0.18)
 
 A `Custom` node of kind `undo` whose data is a JSON object: **`label`** (what was done, as a
 person names it), **`return_to`** (the node going back puts the cursor on), **`reverses`** (the
 kind of change, named by its owner: `compact`, `prune`, `clear`), **`priority`** (`move`, the
 default: a change to the tree that moving the cursor back reverses; any other name, by convention
-`file`, is the owner's to reverse), and the owner's own keys (`extra`). Written by the extension
+`file`, is the owner's to reverse; `PRIORITY` is its form: lower-case letters, digits, `_`, `-`),
+and the owner's own keys (`extra`). Written by the extension
 that made the change (its `by`). Never sent; decides nothing (core's `deciding` skips it), so a
 marker written mid-turn leaves the turn going on. `UndoMarker.of` is `None` for any other body
 and `ValueError` for malformed data. A copy on a new line marks the same change.
 
 ### Undo (extension), /undo, edit-last (the harness's)
 `tau._undo.Undo` (not exported; `shipped("undo")` in tests), key `undo`, command `/undo
-[priority] [at] [json]` · D33 §2 (EX-20) · new (0.18)
+[priority] [at] [format]` · D33 §2 (EX-20) · new (0.18)
 
 The built-in, default-on and removable, that walks back from the cursor's node to the nearest
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
@@ -1498,8 +1504,10 @@ undo marker of the priority asked (`move` unless given), or, for `move`, the las
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
 parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
 mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
-unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
-user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
+unless the cursor is on that node. Answers text, or with `format=json` `{from, to, marker, label,
+user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last. A priority
+with no marker on the walk is refused saying how the word was read (and which priorities the walk
+has markers of); a word that is not a priority, naming the form.
 
 ### reverse (an extension's undo hook), Cursor.reverse, REVERSE
 `Extension.reverse`, `Cursor.reverse(marker) -> bool`, `tau._protocols.REVERSE`, `reverser_of`,
@@ -1515,12 +1523,14 @@ build.
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
 
-The built-in, default-on and removable. **`/clear`**: under the last `System` node of the walk's
-prefix, a `Config` with the branch's folded settings (`folded`: model and options, each `Config`
-a delta) if they differ from the root's, then an undo marker (`/clear`); the cursor moves onto it
+The built-in, default-on and removable. **`/clear`**: under the last node of the walk's prefix,
+a `Config` with the branch's folded settings (`folded`: model and options, each `Config` a delta)
+if they differ from those folded along the prefix, then an undo marker (`/clear`); the cursor moves onto it
 and rests. One root, and the first request after it is byte for byte a new session's.
-**`/branch [label]`**: `open` a cursor at this one's node. **`/tree [at]`**: the tree as text
-(`tree_lines`, `describe_node`). **`/export [path] [thinking]`**: `to_markdown` of the walk. No
+**`/branch [label]`**: `open` a cursor at this one's node (a label a cursor has is refused).
+**`/tree [at]`**: the tree as text (`tree_lines`, a node summary per line). **`/export [path]
+[thinking]`**: `to_markdown` of the walk, without `tau export`'s header; an existing file is
+refused, a failed write is `CommandFailed`. No
 `/new`: a client's move.
 
 ### Count, Basis, ceiling
@@ -1964,17 +1974,29 @@ money: cost needs the price, so `/usage json` (or `/usage format=json`) answers
 string, or `null` for a model without a price. The row fields are in `docs/guide/conventions.md`.
 
 ### PlanMode (extension), plan mode, `/plan`
-built-in `plan_mode` (`_plan_mode.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
+built-in `plan_mode` (the package `_plan_mode/`, with its settings file `settings.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
 
 The built-in extension, **on by default and inert until `/plan`**, for planning before acting.
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-and `bash`); `pre_tool` refuses any other call and any `bash` command outside a fixed list of
-read-only commands or that chains, redirects or substitutes; the cursor shows `plan mode`; and a
-reply that ends in `Stop.End` asks `approve | revise | reject` (approve leaves the mode, writes the
-approval and turns auto-step on). What is read-only is fixed in the extension, not an option
-(a client's `/config` must not widen it). A guard, not a sandbox.
+and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
+(order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
+of read-only commands, that chains, redirects or substitutes, that has an argument in
+`REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string
+`command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
+`approve | revise | reject` (approve leaves the mode, writes the approval and turns auto-step on).
+What is read-only is in its *settings file*, not an option (a client's `/config` must not widen
+it). A guard, not a sandbox.
+
+### settings file (an extension's)
+a module of constants in an extension's package, such as `tau/_plan_mode/settings.py` · 0.18 · new
+
+The convention for what an administrator may change and a client may not: a module of plain
+assignments, each with a docstring saying what it is and what a change does, that the extension
+reads where it uses them (`settings.READ_ONLY_TOOLS`). A client configures *options*, which are on
+the wire (`/config`); an administrator changes a settings file by editing it, in a copy of the
+package that shadows the original as a drop-in (D19). It is no new mechanism: just a module.
 
 ### BashGuard (extension), bash guard
 built-in `bash_guard` (`_bash_guard.py`; not exported), options `patterns`, `allow`, `unattended`, `wait`; off by default · 0.18 (from `examples/speculative/bash_guard.py`)
@@ -1984,7 +2006,9 @@ prints a lot (`pre_tool`, `reject | allow | always | truncate`). `always` append
 the user's file's own `allow` (`save_options`); `truncate` rewrites the call's `command` to pipe
 through `grep -e PATTERN | tail -n 200` and the result starts `[bash_guard ran: ...]` (the tree
 keeps the model's own arguments). A question nobody answers within `wait` seconds, or that is
-declined or aborted, is decided by `unattended`; an abort never runs the command.
+declined or aborted, is decided by `unattended`; an abort never runs the command. `tau -p` never
+waits: its `--answer` or `--decline` rules answer the question, or the run stops at it. `wait`
+must be more than 0.
 
 ### Router (extension), `!model`
 built-in `router` (`_router.py`; not exported), options `when`, `use`, `enabled`, `once`, command `/route`; off by default · 0.18 (from `examples/speculative/router.py`)
@@ -1993,7 +2017,7 @@ The built-in extension that picks the model for a turn at `pre_input`: a `!model
 configured model (`cursor.models()`) is stripped from the text and decides; else the first regex
 of `when` that matches picks the model at the same index of `use`. A change writes a `Config`
 node and a `Custom` node of kind `route` (`{"model", "why"}`) before the `User` node, and a
-`Notice` to the typist; nothing is written when `cursor.model()` is already it. `once` restores
+`Notice` to every client (`now on MODEL (WHY)`); nothing is written when `cursor.model()` is already it. `once` restores
 the model the branch had before the router's first `Config`, after the turn's last reply.
 
 ### tool not offered
@@ -2395,8 +2419,8 @@ replaces 0.15's session sidebar and stream strip.
 Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
 message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
 busy cursor it asks first, because a go-to aborts the step. With `undo:undo` among the commands and
-the cursor at rest it runs the harness's `/undo` instead (D33 §5: `json=true`, `at` the viewed
-node), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
+the cursor at rest it runs the harness's `/undo` instead (D33 §5: `format=json`, `at` the viewed
+node; `run_undo`, which a typed `/undo` runs too), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
 an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
 editor.
 
@@ -3320,11 +3344,33 @@ the prefix starts with `.`; a missing or unreadable directory has none), `"model
 names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
 first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or
 raise on an extension's account. Labels and details: a path is labelled with its name alone and a
-regular file detailed with its size (`4.2 kB`); a model detailed with its provider, context
-window and `images` (`anthropic · 200k · images`); a cursor labelled with its labels after its
+regular file detailed with its size (`4.2 kB`); a model detailed with `model_detail` of its
+`ModelInfo` (`anthropic · 200k ctx · images · $3/$15`, see *models*); a cursor labelled with its labels after its
 id (`3 main, review`) and detailed with where it is (`node 42 · busy`), `"new"` with `a new cursor
 here`; a label detailed with its cursor (`cursor 3 · node 42`, `closed cursor 3 · node 42`); a
 node with its **node summary**.
+
+### models, ModelInfo, ModelPrice, model_detail
+`Client.models() -> tuple[ModelInfo, ...]`, `tau.ModelInfo`, `tau.ModelPrice` (`_model_list.py`: `model_list`, `listed_from`, `model_detail`, `PRICED_BY`) · D32 §8 · new
+
+What a client may know of the driver's models, since a `Config` node holds only a qualified name
+and a client reads no config file. **`models()`** answers one **`ModelInfo`** per model of the
+driver's catalog, in config order: `name` (the qualified name; what `CursorView.model` holds),
+`provider`, `context_window`, `max_tokens`, `images` (the `ImageLimits` one image is held to, when
+the image rule lets the model take images: `images: true` on a provider with `image_limits`;
+`None` otherwise), `price` and `default` (it is the catalog's `default_model`). The fields are an
+**allowlist** written out in `model_list`: no `base_url`, `api_key`, `api_key_env`, `options`,
+`image_tokens` or other section ever reaches a client. **`ModelPrice`** is a price as exact
+decimal text in USD per million tokens (`input`, `output`, `cache_read`, `cache_write`,
+`cache_write_1h`, the last `cache_write` when not given): the `price` of the loaded `usage`
+extension's (`PRICED_BY`) section of the model, built by its own `model_options` type
+(`ExtensionOptions.model_options`; `ExtensionOptions.section_type` says whether it declares one),
+so usage stays a leaf (D28 §6); without `usage` no model is priced, and a section it refuses, or a
+`price` of another shape, is a `ConfigError` naming the model. The catalog is the effective one
+(every layer, `--set` included). The answer changes at `Driver.use_catalog` and at a reload that
+changes `usage`; a change in what `models()` reads (**`listed_from`**, and usage's
+`model_options` type) sends `Commands`, on which a client calls `models()` again. **`model_detail(info)`** is a model on one
+line (`anthropic · 200k ctx · images · $3/$15`): the `model` completion's detail.
 
 ### Completion, completion item, DETAIL_WIDTH, node summary
 `tau.Completion`, `tau.commandline.Completion` (`_complete.py`), `node_summary` · D32 §1 · new
@@ -3338,7 +3384,8 @@ a list item's `value` is the whole list text and its `label` the item; on a comm
 item's `label` is its own, else the unquoted value, and a command name is detailed with the first
 line of its description and its extension. The **node summary** is a node in one line, its kind
 and what it says first (`User · fix the parser…`, `Results · 2 calls`, `Config · model x`,
-`System`, `Custom · todo`): a `node` item's detail.
+`System`, `Custom · todo`, an undo marker `Custom · undo /clear`), cut at `DETAIL_WIDTH`: a
+`node` item's detail, and each line of `/tree`.
 
 ### commandline
 `tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new
@@ -3610,11 +3657,11 @@ act as the client (`input` and `send`, each with optional `images` (D31, see *Im
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
 the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
-(extension)*, */config*, *complete*), `parse_line` and `complete_line` (the command line, read and
+(extension)*, */config*, *complete*), `models` (see *models*), `parse_line` and `complete_line` (the command line, read and
 completed on the driver; see *parse_line*), the reads `node`, `nodes`, `walk`, `children`,
 `image` (D31: an image's bytes as base64, see *ImageInput*), `close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
-`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`, `image`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
+`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`, `image`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `models`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
 Every argument and event is a plain frozen value; over the wire (D21) the core's `Node`, `Body`,
 `Author`, `Item`, `ItemData` and `Ending` travel in the log's own JSON encoding (see *wire
 coding*) and the rest as their type hints say. `LocalClient` is the
@@ -3654,7 +3701,7 @@ per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays t
 `PROTOCOL` is the wire's version, an integer (1 in 0.16; 2 from 0.17, for `Outcome.Ok`'s images,
 D30 §8; 3 from 0.18, for a user's images: the `User` and `Input` shapes, `images` on `input` and
 `send`, and the call `image`, D31; and D32's completion items, a `Notice`'s `cursor`, `extension`
-and `level`, and the event `Commands`). By D12 a version marks a *released*
+and `level`, the event `Commands`, and the call `models`). By D12 a version marks a *released*
 protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
 tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
 again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
@@ -3891,8 +3938,10 @@ returns at that moment, sent whole. A state event: first in a stream's snapshot 
 options types change (an extension's start, a reload, a skill rescan, `TreeHandle.reassemble`);
 the hub compares only when the commands or options were assembled again (their `generation`). A
 `Feed` keeps only the latest unsent copy, and it never counts toward `CutOff`. It also tells a
-client that the options forms it holds may be stale. The private driver class that holds the
-commands is `CommandTable`.
+client that the options forms it holds may be stale, and so may its `models()`: it is sent too
+when `Driver.use_catalog` changed what `models()` answers (D32 §8; the hub compares
+`listed_from(catalog, options)`, and the catalog itself is part of the generation). The private
+driver class that holds the commands is `CommandTable`.
 
 ### CutOff
 `tau.CutOff` (`_events.py`; a `ConnectionError`) · D16 · new

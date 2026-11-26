@@ -107,7 +107,8 @@ async def test_whereami_says_where_the_cursor_is_and_what_the_harness_offers(
     batch = h.session.cursor(h.cursor).at - 2
     assert f"cursor [0] at node {batch}, depth 3, labels ['main'], model fake" in answer
     assert "extension plan_mode (" in answer
-    assert "_plan_mode.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_step'" in answer
+    plan_mode = "_plan_mode/__init__.py): {'tools': [], 'commands': ['plan']}, hooks ['pre_step'"
+    assert plan_mode in answer
     assert "extension harness_sense (" in answer
     assert "harness_sense.py)" in answer
     assert "tools offered: read, whereami, tree, context_budget" in answer

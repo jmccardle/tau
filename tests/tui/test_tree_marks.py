@@ -104,7 +104,18 @@ async def test_the_detail_pane_says_where_a_node_came_from_and_p_goes_there(
         marker = h.session.cursor(h.cursor).at  # the pruned line ends in its undo marker (D33)
         await until(pilot, lambda: highlighted(app).node.id == marker)
         tip = h.session.tree.node(marker).parent
-        await pilot.press("up")
+
+        async def up_from_marker() -> bool:
+            # A late refresh of the tree may put the highlight back on the cursor's node (the
+            # marker) after a key press, under load: press again only while it is there.
+            if highlighted(app).node.id == marker:
+                await pilot.press("up")
+            return highlighted(app).node.id == tip
+
+        for _ in range(20):
+            if await up_from_marker():
+                break
+            await pilot.pause(0.2)
         await until(pilot, lambda: highlighted(app).node.id == tip)
         source = h.session.tree.node(tip or 0).derived_from
         assert source is not None

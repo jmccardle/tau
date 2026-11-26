@@ -537,15 +537,20 @@ sending makes a new branch beside it.
 undid /compact: back to node 418
 ```
 
-In the terminal UI, Ctrl+Z on an empty editor is `/undo`: the message goes back into the editor
-as you typed it, `@file` words and all, and an undone `/compact` or `/clear` is a toast. On a cursor
+With nothing to go back over it says `nothing to undo on this branch`.
+
+In the terminal UI, Ctrl+Z on an empty editor is `/undo`, and so is typing `/undo`: the message
+goes back into the editor as you typed it, `@file` words and all, and an undone `/compact` or
+`/clear` is a toast. On a cursor
 that is working, `/undo` is refused (`Busy`), as every command that runs on the cursor is; Ctrl+Z
 there asks first and then aborts the step, going back before your last message.
 
 `/undo` only ever sees your own branch: a `/clear` on another cursor is not yours to undo. An
 extension that changes something outside the conversation (files, say) can mark its changes for a
 different `/undo`: `/undo file` takes back the last such change on the branch, if that extension is
-loaded to put the files back, and a plain `/undo` passes over them. How a change is marked is in
+loaded to put the files back, and a plain `/undo` passes over them. `/undo` reads any word after it
+as such a priority, so `/undo json` says there is no marker of priority `json` (the JSON answer
+for a program is `/undo format=json`). How a change is marked is in
 [Conventions](conventions.md). `tau ext disable undo` removes the command; the markers then stay
 in the tree as notes no model reads, and Ctrl+Z edits your last message as before.
 
@@ -560,23 +565,29 @@ The `session` built-in has four commands:
   `/clear` is the same request a new session would send, and a provider's prompt cache stays
   warm.
 - **`/branch [label]`** opens a second cursor where you are, to try something else from here
-  (Alt+Right views it in the terminal UI).
+  (Alt+Right views it in the terminal UI). A label another cursor already has is refused.
 - **`/tree`** draws the session's tree as text, for a client with no tree screen of its own:
 
   ```text
-  0 config: {"model": "local:qwen"}
-  1 system: You are τ, a coding agent…
-  ├─ 2 user: fix the parser
-  │  3 assistant: Done. [2 calls]
-  └─ 9 undo: /clear
-     10 user: now the lexer  ◀ 0
+  0 Config · model local:qwen
+  1 System
+  2 System
+  ├─ 3 User · fix the parser
+  │  4 Assistant · Done: the change is made and the tests pass.
+  └─ 5 Custom · undo /clear
+     6 User · now the lexer
+     7 Assistant · Done: the change is made and the tests pass.  ◀ 0
   ```
 
-  `/tree at=9` draws only what is below node 9.
-- **`/export [path]`** writes your conversation as Markdown, as `tau export` does: to a file
-  (`/export notes.md`, relative to the working directory; a file that exists is refused, not
-  overwritten) or as the command's answer;
-  `thinking=true` includes the model's thinking.
+  Each line is a node's id and the summary a `node` completion shows (the second `System` is the
+  skills list). `◀` marks each open cursor, with its labels; a closed cursor (a sub-agent that has
+  answered) is not marked. `/tree at=5` draws only what is below node 5.
+- **`/export [path]`** writes your conversation as Markdown, as `tau export` does but without its
+  header (the title, id, `cwd` and node lines): to a file (`/export notes.md`; a relative path is
+  read from the session's working directory, an absolute or `~` path is taken as given) or as the
+  command's answer. A file that exists is refused, not overwritten, and a file that cannot be
+  written says why (`cannot write notes/x.md: No such file or directory`). `thinking=true`
+  includes the model's thinking.
 
 There is no `/new`: starting a new session is your client's to do (Ctrl+N in the terminal UI).
 `tau ext disable session` removes all four:
@@ -773,8 +784,11 @@ split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"
 mode the model is told to research and propose a plan, and is offered only tools that read:
 `read`, `grep`, `find`, and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
 `head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
-redirects or substitutes nothing. A call to anything else is refused, and the model is told to
-put the change in its plan. Every client shows the line `plan mode` for the cursor while it is on.
+redirects or substitutes nothing. A call to a tool it was not offered fails with `tool not
+offered: write`; any other `bash` command is refused with `plan mode: bash is refused. Put the
+change in your plan instead.` Plan mode refuses before [permissions](#ask-before-a-tool-runs) is
+asked, so you are never asked about a call it would refuse. Every client shows the line
+`plan mode` for the cursor while it is on.
 
 ```text
 > /plan add retry to the fetch tool
@@ -788,12 +802,26 @@ and leaves plan mode on. Under `tau -p` nobody is there to answer: without an `-
 the run prints the plan, says `question 0 from plan_mode ... has no rule` on standard error and
 exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
 
+`tau -p` answers the question only by a rule, as for [permissions](#ask-before-a-tool-runs): with
+none, it prints the plan and stops at the question (exit 3). `tau -p --answer plan_mode=reject "/plan add retry"` prints
+the plan and changes nothing; `--answer plan_mode=approve` carries it out in the same run.
+
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
-back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
-not a sandbox: `git diff --output=f` writes a file. The lists of tools and commands are not
-options, because a `/config` from any client could widen them; to change them, write a drop-in
-named `plan_mode` (it shadows the built-in) or turn the built-in off with
-`tau ext disable plan_mode`.
+back to a node from before `/plan` leaves it, and a second cursor is unaffected. A listed command
+with an argument that makes it write or run something (`git diff --output=f`, `git log
+--ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
+external diff or textconv program the repository's own config names. The lists of tools and commands are not
+options, because a `/config` from any client could widen them. They are in the extension's
+[settings file](extensions.md#options-or-settings), `settings.py`: to change them, copy the
+built-in's package to your extensions directory, where it shadows the built-in, and edit the
+copy's `settings.py` (the brief and the approval the model reads are there too):
+
+```bash skip
+cp -r "$(python -c 'import tau._plan_mode as p, os; print(os.path.dirname(p.__file__))')" \
+  "${TAU_HOME:-$HOME/.tau}/extensions/plan_mode"
+```
+
+Or turn plan mode off with `tau ext disable plan_mode`.
 
 ## Ask before a command prints a lot
 
@@ -813,10 +841,16 @@ asked about. The question has four answers:
 The options are what you may tune: `patterns` (the built-in ones are the default, so
 `/config bash_guard` shows them; a pattern with a comma is typed as a JSON array,
 `patterns='["a{1,2}"]'`), `allow`, `unattended` (`reject`, `allow` or `truncate`, what happens
-when nobody answers) and `wait` (seconds to wait for an answer, 600 by default). A question
-nobody answers within `wait` seconds is decided by `unattended`; an abort never runs the command.
-`tau -p` does not wait: a question it has no `--answer` or `--decline` rule for stops the run at
-once, exit 3.
+when nobody answers) and `wait` (seconds to wait for an answer, more than 0; 600 by default). In
+a served session, a question nobody answers within `wait` seconds, or that is declined, is decided
+by `unattended`, so a session with nobody attached does not stop for ever; an abort never runs the
+command. `tau -p` never waits: it answers by rule, so give it `--answer bash_guard=allow` (or
+another answer) or `--decline bash_guard` (decided by `unattended`); with neither it stops at the
+question, exit 3.
+
+The guard asks after [permissions](#ask-before-a-tool-runs) has allowed the call, so with an
+`ask` rule for `bash` you are asked twice: by permissions first, then by the guard. In plan mode,
+plan mode refuses a command before either asks.
 
 ## Choose the model by the prompt
 
@@ -837,8 +871,8 @@ that matches decides.
 ```
 
 A switch writes a `Config` node and a `Custom` node of kind `route` saying why (`prefix`, or the
-regex), both before your message, and says `router: local:coder (/```/)` to the client that typed
-it. Nothing is written when the branch is on that model already. `once` puts the branch back on
+regex), both before your message, and tells every client `now on local:coder (/```/)`, under the
+router's name: a model switch on a branch concerns everyone watching it. Nothing is written when the branch is on that model already. `once` puts the branch back on
 the model it was on before the router first switched it, after the turn's last reply. `/route off`
 (or `/config router enabled=false`) stops the table and leaves the prefix. A `!name` that is not a
 configured model is not a prefix: it goes to the model as typed.
@@ -1073,6 +1107,13 @@ command is given the event as JSON on its standard input, and answers with its e
 object on its standard output. An exit code of 2 blocks, and what the command wrote to standard
 error is the reason.
 
+The file format and that convention are borrowed from Claude Code, but τ is not Claude Code, and a
+script written for it may need changes. The event carries τ's own tool names (`bash`, `write`, not
+`Bash`, `Write`) and τ's arguments (the file tools take `path`, not `file_path`), so a script's
+`jq` paths may differ. Commands run under the POSIX `/bin/sh`, which is dash on Debian and Ubuntu:
+read the event with `printf '%s' "$INPUT" | jq ...`, or pipe standard input straight to `jq`, not
+with `echo "$INPUT"`, which turns each `\n` in the JSON into a real line break there and breaks it.
+
 A hooks file runs commands with your authority, so the extension is off until you turn it on:
 
 ```bash
@@ -1122,33 +1163,65 @@ branch: main
 `/hooks` lists the commands a session has. The files are read when τ starts, so edit one and start
 τ again; a file τ cannot use stops the start, naming each problem.
 
-A command that exits 2 refuses the message, and `tau -p` stops with its reason (a relative command runs in the session's directory):
+A command that exits 2 refuses the message, and `tau -p` stops with its reason (a relative
+command runs in the session's directory). This one reads the event, with `jq`, to look at the
+prompt:
 
 ```bash
-cat > friday.sh <<'SCRIPT'
+cat > secrets.sh <<'SCRIPT'
 #!/bin/sh
-cat > /dev/null
-echo "no prompts on Fridays" >&2
-exit 2
+# The event is JSON on standard input: jq reads it from there.
+if jq -e '.prompt | test("password"; "i")' > /dev/null; then
+  echo "no passwords in prompts" >&2
+  exit 2
+fi
 SCRIPT
-chmod +x friday.sh
-echo '{"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "./friday.sh"}]}]}}' \
+chmod +x secrets.sh
+echo '{"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "./secrets.sh"}]}]}}' \
   > "$TAU_HOME/hooks.json"
-tau -p "hello" 2>&1 || echo "exit $?"
+tau -p "my password is hunter2" 2>&1 || echo "exit $?"
 ```
 
 ```text expect
-tau: no prompts on Fridays
-tau: stopped before finishing: halted: no prompts on Fridays
+tau: no passwords in prompts
+tau: stopped before finishing: halted: no passwords in prompts
 exit 3
 ```
+
+A `Stop` command can keep the turn going until something is true. This one runs `make test` when
+the model finishes, and while the tests fail, sends their last lines back as the reason; the mock
+model cannot fix anything, so here τ ends the turn after 8 in a row and says so:
+
+```bash
+printf 'test:\n\t@test -e fixed || { echo "FAIL test_add: 2 + 2 is not 5"; exit 1; }\n' > Makefile
+cat > tests-pass.sh <<'SCRIPT'
+#!/bin/sh
+cat > /dev/null
+out=$(make test 2>&1) && exit 0
+printf '%s\n' "$out" | tail -n 20 >&2
+exit 2
+SCRIPT
+chmod +x tests-pass.sh
+echo '{"hooks": {"Stop": [{"hooks": [{"command": "./tests-pass.sh"}]}]}}' > "$TAU_HOME/hooks.json"
+tau -p "done?" 2>&1
+```
+
+```text expect
+tau: a Stop hook kept the turn going 8 times in a row; the turn ends. Its last reason: FAIL test_add: 2 + 2 is not 5
+make: *** [Makefile:2: test] Error 1
+mock: Stop hook feedback: FAIL test_add: 2 + 2 is not 5
+make: *** [Makefile:2: test] Error 1
+```
+
+The script exits 2 itself: `make` exits 2 when a target fails, which would block as well, but
+also when the Makefile is broken, and its reason would be `make`'s complaint, not the tests'.
 
 ### Events
 
 | event | when | a block (exit 2, or `decision`) | the command is also given |
 |---|---|---|---|
 | `PreToolUse` | before a tool runs (`pre_tool`) | refuses the call; the reason is the call's error, which the model reads | `tool_name`, `tool_input`, `tool_use_id` |
-| `PostToolUse` | after a tool succeeded (`pre_result`) | cannot undo it: the reason is added to the result, after its text, as `hook feedback: ...` | `tool_name`, `tool_input`, `tool_response` (the result's text), `tool_use_id` |
+| `PostToolUse` | after a tool succeeded (`pre_result`) | cannot undo it: the reason is added to the result, after its text, as `hook feedback: ...` | `tool_name`, `tool_input`, `tool_response` (the result's text: a string, where Claude Code sends an object), `tool_use_id` |
 | `PostToolUseFailure` | after a tool failed, or the call was refused | the same, added to the error | `tool_name`, `tool_input`, `error`, `tool_use_id` |
 | `UserPromptSubmit` | a person's message, before it is written (`pre_input`) | halts the input: the reason is a notice, and the message stays pending | `prompt` |
 | `Stop` | a person's turn ended: the model's reply asks for no tool (`post_step`) | the turn goes on: the reason is sent to the model as input | `stop_hook_active`, `last_assistant_message` |
@@ -1156,8 +1229,9 @@ exit 3
 | `SessionEnd` | τ shuts down | blocks nothing | `reason` (always `other`) |
 
 Every event is also given `hook_event_name`, `cwd` and, where there is one, `cursor` (the cursor's
-id). `tool_input` is the call's arguments as the tool takes them: τ's `bash` takes `command`, as
-Claude Code's does, but its file tools take `path`, not `file_path`. A call whose arguments are not
+id). `tool_name` is τ's own name for the tool, in lower case. `tool_input` is the call's arguments
+as the tool takes them: τ's `bash` takes `command`, as Claude Code's does, but its file tools take
+`path`, not `file_path`. A call whose arguments are not
 a JSON object has `tool_input: null` and the text in `tool_input_raw`. The command runs in the
 session's directory, with `TAU_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` set to the trusted project's
 root (or that directory), and `TAU_HOOK_EVENT` to the event.
@@ -1178,19 +1252,36 @@ so; it also says so, and ends the turn, when auto-step is off.
         "hooks": [{ "type": "command", "command": "~/hooks/no-push.sh", "timeout": 10 }]
       }
     ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "make test", "onFailure": "continue" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "./tests-pass.sh" }] }]
   }
 }
+```
+
+where `no-push.sh` reads the command the model wants to run:
+
+```sh
+#!/bin/sh
+INPUT=$(cat)
+command=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
+case $command in
+  *"git push"*) echo "no pushing from here" >&2; exit 2 ;;
+esac
 ```
 
 - **`matcher`** (the three tool events only): empty, `*` or none is every tool. Letters, digits,
   `_`, `-`, spaces, `,` and `|` only is a list of exact tool names (`bash|write`). Anything else
   is a regular expression searched in the name (Python's `re`, not JavaScript's: `^(read|grep)$`).
   Claude Code's names for τ's base tools match too: `Bash`, `Read`, `Write`, `Edit`, `Grep` and
-  `Glob` (τ's `find`). The `tool_name` a command is given is always τ's own, in lower case.
+  `Glob` (τ's `find`). A regular expression is tried on both names, so that a Claude Code
+  script's `^(Edit|Write)$` works; anchor it, since `b` also matches `find`, through `Glob`. The
+  `tool_name` a command is given is always τ's own, in lower case. A name that no tool of the
+  session has (Claude Code's `MultiEdit`, say), and a permission rule such as `Bash(git *)`, which
+  is not a tool's name, can never match: τ warns of each when the first message is sent. Names
+  that start `mcp__` are not warned of, since an MCP server may list its tools later.
 - **`command`** runs through `/bin/sh -c`. With **`args`** (a list of strings) it is the program,
   run with those arguments and no shell.
-- **`timeout`**, in seconds, default 60 (20 for `SessionStart`, 4 for `SessionEnd`).
+- **`timeout`**, in seconds, default 60 (20 for `SessionStart`, 4 for `SessionEnd`). Past it the
+  command's process group, the command and what it started, gets SIGTERM, and SIGKILL 2 s later.
 - **`onFailure`**: `block` (the default) or `continue`, below.
 
 The commands of one event run one after another, in file order, your file first and then the
@@ -1215,7 +1306,7 @@ A JSON object may hold these; its `hookSpecificOutput` must say `"hookEventName"
 | `hookSpecificOutput.permissionDecision`: `deny` | `PreToolUse` | blocks, with `permissionDecisionReason` |
 | `hookSpecificOutput.permissionDecision`: `ask` | `PreToolUse` | asks the person `yes` or `no` before the call runs, with the reason in the question; `tau -p` needs `--answer hooks=yes` |
 | `hookSpecificOutput.permissionDecision`: `allow` | `PreToolUse` | no objection, and nothing more: it does not skip the `permissions` rules |
-| `hookSpecificOutput.updatedInput` | `PreToolUse` | the arguments the tool runs with, whole; the `permissions` rules see these |
+| `hookSpecificOutput.updatedInput` | `PreToolUse` | the arguments the tool runs with, whole; the `permissions` rules see these. The conversation keeps the model's own arguments, so the result starts with `[hooks rewrote the arguments: {...}]`, telling the model, and you, what ran |
 | `decision`: `block`, with `reason` | `PreToolUse` (also `approve`), `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` | a block, as exit 2 |
 | `hookSpecificOutput.additionalContext` | `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` | text added after the result, the error or the message (at most 10000 characters) |
 | `hookSpecificOutput.updatedToolOutput` | `PostToolUse` | the text of the result the model reads instead |
@@ -1241,6 +1332,13 @@ there is nothing to refuse, and it only reports; a `SessionStart` or `SessionEnd
 written to standard error, since no client is connected yet, or any longer. Claude Code lets a call
 through when a command exits 1; τ does not, because a command that is broken has not approved.
 
+Once a command has exited, τ takes what it wrote and goes on. A child it left running in the
+background (`notify-send done &`) is left alone, as Claude Code leaves it, and holds nothing up;
+send its output elsewhere (`>/dev/null 2>&1`), since τ no longer reads it. When the session stops,
+a command still running gets SIGTERM, with what it started, and SIGKILL 2 s later. An abort (Esc,
+or Ctrl+C in `tau -p`) does not yet end a running command: the step ends when the command does,
+or at its `timeout`.
+
 ### The project's file, and order
 
 `.tau/hooks.json` in a project is pinned by `tau trust` like `.tau/extensions/`, because it runs
@@ -1249,7 +1347,10 @@ the bytes you approved. A file that is not a hooks file cannot be approved.
 
 At `pre_input` and `pre_tool` the `hooks` commands run before the other built-ins' hooks
 (`pre_input` at -100, `pre_tool` at -150), so a command can rewrite a call's arguments before
-`permissions` judges them. The ones that only see what happened (`PostToolUse`, `Stop`) run last.
+plan mode and `permissions` judge them. The cost: a command that answers `ask` questions you even
+when plan mode or a `permissions` rule then refuses the call, and with a `permissions` `ask` rule
+as well you are asked twice. The ones that only see what happened (`PostToolUse`, `Stop`) run
+last.
 `tau ext list --hooks` shows the order.
 
 ### What is not supported
@@ -1259,7 +1360,8 @@ At `pre_input` and `pre_tool` the `hooks` commands run before the other built-in
 rest. A hooks file that names one is refused when τ starts, naming it. So is a handler that is not
 `type: "command"` (`http`, `mcp_tool`, `prompt`, `agent`), a handler key `if`, `async`,
 `asyncRewake`, `shell`, `statusMessage` or `once`, and a matcher on an event that has no tool. The
-commands are not given `session_id`, `transcript_path`, `permission_mode` or `effort`, and a
+commands are not given `session_id`, `transcript_path`, `permission_mode`, `effort`, `agent_id`,
+`agent_type` or `prompt_id`; `source` is always `startup` and `reason` always `other`; and a
 `SessionStart` command cannot add context to the conversation.
 
 **Windows.** `hooks` is not available there: it runs commands through a POSIX shell, which τ does

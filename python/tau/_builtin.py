@@ -27,7 +27,8 @@ async def model(cursor: Cursor, model: Model) -> None:
 
 async def config(cursor: Cursor, extension: str, values: Mapping[str, object]) -> None:
     """Change an extension's options on this branch."""
-    cursor.write(Body.Config(model_config(extensions={extension: values})))
+    if values:  # no values change nothing, so no node says they did
+        cursor.write(Body.Config(model_config(extensions={extension: values})))
 
 
 class Tau:

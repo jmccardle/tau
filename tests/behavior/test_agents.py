@@ -145,9 +145,11 @@ async def test_to_continues_an_earlier_agent_which_remembers_its_work(tmp_path: 
         say("done"),
     ]
     h = await start(tmp_path, script)
+    first = h.session.label("agent:0:1")
     await h.send("more")
     await h.settle()
     assert texts(h, 4) == ["sys", "read the file", "and the next one?"]
+    assert h.session.label("agent:0:1") != first, "reopened as a new cursor: the label moved"
     nodes = {n.id: n.body for n in h.nodes()}
     walk = [nodes[i] for i in h.provider.requests[4].walk]
     assert Body.Assistant([Part.Text("it says hi")], Stop.End) in walk
@@ -198,18 +200,23 @@ async def test_to_an_agent_that_is_busy_is_an_error_the_model_reads(tmp_path: Pa
     await h.close()
 
 
+SHAPE = "(agents are named agent:P:N, such as agent:0:1)"
+"""What every `there is no agent` error ends with, so a model that guessed a label learns one."""
+
+
 @scenario
 async def test_to_an_agent_that_does_not_exist_is_an_error_the_model_reads(tmp_path: Path) -> None:
-    h = await start(
-        tmp_path,
-        [
-            delegating(agent("a", "t", to="agent:0:9"), agent("b", "t", to="compaction:1")),
-            say("ok"),
-        ],
+    """`agent:1` is 0.17's shape: the error says what a label looks like now."""
+    calls = (
+        agent("a", "t", to="agent:0:9"),
+        agent("b", "t", to="compaction:1"),
+        agent("c", "t", to="agent:1"),
     )
+    h = await start(tmp_path, [delegating(*calls), say("ok")])
     assert outcomes(h) == [
-        Outcome.Err("there is no agent 'agent:0:9'"),
-        Outcome.Err("there is no agent 'compaction:1'"),
+        Outcome.Err(f"there is no agent 'agent:0:9' {SHAPE}"),
+        Outcome.Err(f"there is no agent 'compaction:1' {SHAPE}"),
+        Outcome.Err(f"there is no agent 'agent:1' {SHAPE}"),
     ]
     assert h.session.cursors() == [h.cursor], "nothing was opened"
     await h.close()
@@ -218,7 +225,7 @@ async def test_to_an_agent_that_does_not_exist_is_an_error_the_model_reads(tmp_p
 @scenario
 async def test_to_nothing_is_an_error_not_a_new_agent(tmp_path: Path) -> None:
     h = await start(tmp_path, [delegating(agent("a", "t", to="")), say("ok")])
-    assert outcomes(h) == [Outcome.Err("there is no agent ''")]
+    assert outcomes(h) == [Outcome.Err(f"there is no agent '' {SHAPE}")]
     assert h.session.cursors() == [h.cursor], "nothing was opened"
     await h.close()
 

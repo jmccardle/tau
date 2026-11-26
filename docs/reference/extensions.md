@@ -333,7 +333,7 @@ The name of the tool being called. Read-only.
 ```python
 class CommandHooks
     name = NAME
-    order: Mapping[str, int] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
+    order: ClassVar[Mapping[str, int]] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
 ```
 
 The built-in extension `hooks`: shell commands at τ's hook points (the module docstring).
@@ -349,6 +349,14 @@ def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
 
 The extension for the hooks files `loaded` can read: the user's, then the trusted
 project's approved bytes. `HookFileError` names every problem if a file cannot be used.
+
+### CommandHooks.hooks
+
+```python
+def hooks(self) -> str
+```
+
+List the shell commands the `hooks` extension runs, by event.
 
 ### CommandHooks.pre_input
 
@@ -373,12 +381,14 @@ async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None
 ```
 
 `PostToolUse` and `PostToolUseFailure`: a command sees the result, may replace its
-text (`updatedToolOutput`), and may add feedback the model reads after it.
+text (`updatedToolOutput`), and may add feedback the model reads after it. The tree keeps
+the model's own arguments, so a result whose call a hook rewrote starts with a line
+saying what ran.
 
 ### CommandHooks.post_reply
 
 ```python
-async def post_reply(self, cursor: Cursor, subject: Subject) -> None
+async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
 Note which reply this step committed: a step that only came to rest on one (a cursor
@@ -387,7 +397,7 @@ moved there) is not a turn that ended.
 ### CommandHooks.post_step
 
 ```python
-async def post_step(self, cursor: Cursor, subject: Subject) -> None
+async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
 ```
 
 `Stop`: when a person's turn ends in a reply that asks for no tool, a command may keep
@@ -407,7 +417,8 @@ async def start(self, tree: TreeHandle) -> None
 async def stop(self) -> None
 ```
 
-`SessionEnd`: run the commands, each given `reason: "other"`.
+End the commands still running (with what they started), then `SessionEnd`: run
+its commands, each given `reason: "other"`.
 
 ## Compaction
 
@@ -1336,6 +1347,9 @@ The count is this object's own memory, per cursor, kept at hook points:
   is no `post_input` hook; `pre_input` fires once per input item offered.
 - `pre_step` adds one, when the cursor's auto-step is on. A step run with
   auto-step off (a frontend's `step`, a load) is attended and is not counted.
+  Nor is a command's step (`CursorState.command`, D16 §2), even when the
+  command turned auto-step on: a person ran it, so the count starts over,
+  and the steps that follow it get the whole `limit`.
 - `post_step` turns auto-step off when the count has reached `limit`, and
   starts the count over, so whoever resumes the cursor (`set_auto`) gets
   another `limit` steps. It also starts over whenever it sees auto-step off:
