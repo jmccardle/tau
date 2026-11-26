@@ -189,6 +189,30 @@ async def test_a_text_page_over_the_body_cap_is_cut_and_says_so(tmp_path: Path) 
 
 
 @scenario
+async def test_the_size_cap_follows_what_an_undeclared_body_turns_out_to_be(
+    tmp_path: Path,
+) -> None:
+    mib = 1024 * 1024
+    pictures = {  # a PNG is whole at its end chunk: what follows is ignored
+        "/octet": Page(PICTURE + b"\0" * (6 * mib), "application/octet-stream"),
+        "/untyped": Page(PICTURE + b"\0" * (6 * mib), None),
+        "/huge": Page(PICTURE + b"\0" * (21 * mib), "application/octet-stream"),
+        "/text": Page("x" * (6 * mib), "application/octet-stream"),
+    }
+    with serving(pictures) as site:
+        octet, untyped, huge, long = await run(
+            tmp_path, site.url, *({"url": u} for u in ("/octet", "/untyped", "/huge", "/text"))
+        )
+    for out, name in ((octet, "octet"), (untyped, "untyped")):
+        assert text(out) == (
+            f"[image {site.url}/{name}: image/png 40x30, {len(PICTURE) + 6 * mib} bytes] "
+            "This model does not take images, so it is not shown."
+        )
+    assert error(huge) == f"{site.url}/huge is an image over 20 MiB"
+    assert "only the first 5 MiB was read" in text(long).split("\n")[0]
+
+
+@scenario
 async def test_an_image_is_shown_to_a_model_that_takes_images(tmp_path: Path) -> None:
     with serving({"/p.png": Page(PICTURE, "image/png")}) as site:
         (out,) = await run(tmp_path, site.url, {"url": "/p.png"}, images=True)
@@ -243,6 +267,27 @@ async def test_what_cannot_be_read_is_an_error_naming_why(tmp_path: Path) -> Non
     )
     assert got[4] == f"{site.url}/missing-here: HTTP 404 Not Found"
     assert got[5] == f"{site.url}/boom: HTTP 503 Service Unavailable"
+
+
+@scenario
+async def test_binary_served_as_text_is_not_read_as_text(tmp_path: Path) -> None:
+    pages = {
+        "/png-text": Page(PICTURE, "text/plain"),
+        "/nul-html": Page(b"<p>hi</p>\x00\x01\x02", "text/html"),
+        "/pdf-text": Page(b"%PDF-1.7 body", "text/plain"),
+        "/pdf-octet": Page(b"%PDF-1.7 body", "application/octet-stream"),
+        "/pdf-untyped": Page(b"%PDF-1.7 body", None),
+    }
+    with serving(pages) as site:
+        outs = await run(tmp_path, site.url, *({"url": u} for u in pages))
+    pdf = "this is a PDF, which fetch cannot read (it reads text and images)"
+    assert [error(o) for o in outs] == [
+        "fetch cannot read this: it says it is text/plain, but it is binary data",
+        "fetch cannot read this: it says it is text/html, but it is binary data",
+        pdf,
+        pdf,
+        pdf,
+    ]
 
 
 @scenario

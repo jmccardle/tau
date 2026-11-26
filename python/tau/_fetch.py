@@ -148,27 +148,39 @@ def _decoded(body: bytes, header: str | None) -> str:
 
 
 def _kind(media: str, body: bytes) -> str:
-    """What to do with a body: `html`, `text`, `image`; `ToolError` for what cannot be read."""
+    """What to do with a body: `html`, `text`, `image`; `ToolError` for what cannot be read. The
+    declared type decides, except that a body that is plainly binary is not text, and a PDF is a
+    PDF, whatever it was served as."""
     if media in _IMAGES:
         return "image"
-    if media in ("text/html", "application/xhtml+xml"):
-        return "html"
-    if media.startswith("text/") or media in _TEXT_APPLICATIONS:
-        return "text"
-    if media.startswith("image/svg") or media.endswith(("+json", "+xml")):
-        return "text"
-    if media == "application/pdf":
+    if media == "application/pdf" or body.startswith(b"%PDF"):
         raise ToolError("this is a PDF, which fetch cannot read (it reads text and images)")
     if media in ("", "application/octet-stream"):
         return _sniffed(body)
-    raise ToolError(f"fetch cannot read {media}: it reads web pages, text and images")
+    if media in ("text/html", "application/xhtml+xml"):
+        kind = "html"
+    elif (
+        media.startswith(("text/", "image/svg"))
+        or media in _TEXT_APPLICATIONS
+        or media.endswith(("+json", "+xml"))
+    ):
+        kind = "text"
+    else:
+        raise ToolError(f"fetch cannot read {media}: it reads web pages, text and images")
+    if _is_image(body) or b"\x00" in body[:_SNIFF]:
+        raise ToolError(f"fetch cannot read this: it says it is {media}, but it is binary data")
+    return kind
+
+
+def _is_image(body: bytes) -> bool:
+    return body.startswith((b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"RIFF"))
 
 
 def _sniffed(body: bytes) -> str:
+    """What a body with no declared type is, by its first bytes."""
     head = body[:_SNIFF]
-    for magic in (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"RIFF"):
-        if head.startswith(magic):
-            return "image"
+    if _is_image(head):
+        return "image"
     if re.search(rb"<(!doctype html|html)", head[:1024], re.I):
         return "html"
     if b"\x00" in head:
@@ -263,11 +275,13 @@ class Fetch:
         if response.status_code >= httpx.codes.BAD_REQUEST:
             raise ToolError(f"{url}: HTTP {response.status_code} {response.reason_phrase}")
         media = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        cap = MAX_IMAGE if media in _IMAGES else MAX_BODY
-        body, cut = await _body(response, cap)
+        undeclared = media in ("", "application/octet-stream")
+        body, cut = await _body(response, MAX_IMAGE if media in _IMAGES or undeclared else MAX_BODY)
         kind = _kind(media, body)
         if kind == "image":
             return self._image(node, url, media, body, cut)
+        if len(body) > MAX_BODY:  # read as far as an image goes, in case it was one
+            body, cut = body[:MAX_BODY], True
         text = _decoded(body, response.charset_encoding)
         title = ""
         if kind == "html":
