@@ -120,6 +120,26 @@ def round_trips(values: list[object]) -> None:
         check(wire.decode_event(data) == event, f"{event!r} came back unequal")
 
 
+def sent_in_full(values: list[object]) -> None:
+    """What the schema requires of a record the server sends is what the encoding writes: every
+    field, `null` for none (a Python default is for building a value, never for leaving a key
+    out)."""
+    defs = wire.schema()["$defs"]
+    sent = [(e.__class__.__name__, wire.encode_event(e)) for e in events(values)]
+    sent += [
+        ("Completion", wire.encode(c)) for c in (tau.Completion("v"), tau.Completion("v", "l", "d"))
+    ]
+    for name, data in sent:
+        missing = set(defs[name]["required"]) - set(data)
+        check(not missing, f"{name} is sent without {sorted(missing)}, which the schema requires")
+    notice = wire.encode_event(Notice("n"))
+    check(
+        notice
+        == {"kind": "Notice", "text": "n", "cursor": None, "extension": None, "level": "info"},
+        f"a bare notice is {notice}",
+    )
+
+
 def errors() -> None:
     made: list[BaseException] = [
         tau.Busy("b"),
@@ -192,6 +212,7 @@ def params() -> None:
 def main() -> int:
     values = core_values()
     round_trips(values)
+    sent_in_full(values)
     errors()
     params()
     for problem in problems:
