@@ -76,23 +76,38 @@ def test_every_event_is_one_of_the_event_definition_and_is_tagged_by_kind() -> N
 
 
 def test_d32s_shapes_are_in_the_schema() -> None:
-    """Completion items (only `value` required), a notice's attribution and level, and the event
-    `Commands` (D32 sections 1 to 3)."""
+    """Completion items, a notice's attribution and level, and the event `Commands` (D32 sections
+    1 to 3): the server sends every field, so every field is required (`null` where there is
+    none)."""
     defs = schema()["$defs"]
     items = {"type": "array", "items": {"$ref": "#/$defs/Completion"}}
     assert defs["complete"]["x-result"] == items
     assert defs["complete_line"]["x-result"] == items
     assert list(defs["Completion"]["properties"]) == ["value", "label", "detail"]
-    assert defs["Completion"]["required"] == ["value"]
+    assert defs["Completion"]["required"] == ["value", "label", "detail"]
+    for field in ("label", "detail"):
+        assert {"type": "null"} in defs["Completion"]["properties"][field]["anyOf"]
     notice = defs["Notice"]
     assert list(notice["properties"]) == ["kind", "text", "cursor", "extension", "level"]
     assert notice["properties"]["level"] == {"enum": ["info", "warning", "error"]}
-    assert notice["required"] == ["kind", "text"]
+    assert notice["required"] == ["kind", "text", "cursor", "extension", "level"]
+    for field in ("cursor", "extension"):
+        assert {"type": "null"} in notice["properties"][field]["anyOf"]
     assert {"$ref": "#/$defs/Commands"} in defs["Event"]["oneOf"]
     assert defs["Commands"]["properties"]["forms"] == {
         "type": "array",
         "items": {"$ref": "#/$defs/Form"},
     }
+
+
+def test_a_record_the_server_sends_has_every_field_required() -> None:
+    """A record the server sends has every field required, whatever its Python default is (the
+    encoding writes them all: `scripts/check_wire.py`); one a call's params hold (`ImageInput`)
+    keeps its fields optional."""
+    defs = schema()["$defs"]
+    for name in ("Completion", "Notice", "Form", "Parsed"):
+        assert set(defs[name]["required"]) == set(defs[name]["properties"]), name
+    assert "required" not in defs["ImageInput"]
 
 
 def test_the_core_values_are_defined_by_the_logs_own_encoding() -> None:

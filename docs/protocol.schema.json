@@ -312,7 +312,9 @@
         }
       },
       "required": [
-        "value"
+        "value",
+        "label",
+        "detail"
       ]
     },
     "Config": {
@@ -640,7 +642,9 @@
       "required": [
         "name",
         "description",
-        "schema"
+        "schema",
+        "extension",
+        "yields"
       ]
     },
     "HookFailure": {
@@ -1097,7 +1101,10 @@
       },
       "required": [
         "kind",
-        "text"
+        "text",
+        "cursor",
+        "extension",
+        "level"
       ]
     },
     "OpenQuestion": {
@@ -1227,7 +1234,9 @@
       "required": [
         "command",
         "args",
-        "missing"
+        "missing",
+        "extension",
+        "save"
       ]
     },
     "Part": {

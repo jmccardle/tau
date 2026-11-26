@@ -18,10 +18,6 @@ The marker is written by the extension that made the change, so its `by` names t
 `Custom` node, so it is never sent to a model, and decides nothing: where a cursor rests is
 decided by the node before it. It is a convention over what the tree already holds, not a protocol
 change; a session without the `undo` extension keeps its markers as inert records.
-
-`Stays` is what the `undo` and `session` commands share: a command that runs as a step of its
-cursor and leaves it on a node where the step would carry on (a mid-turn node) halts that step in
-its own `pre_step`, so going back never starts the model.
 """
 
 import json
@@ -29,12 +25,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
-from tau._core import Body, Next
-
-if TYPE_CHECKING:
-    from tau._handles import Cursor
+from tau._core import Body
 
 UNDO_KIND = "undo"
 """The `kind` of every undo marker's `Custom` node."""
@@ -114,29 +107,3 @@ class UndoMarker:
             cast("str", fields.get("priority", MOVE)),
             {k: v for k, v in fields.items() if k not in _KEYS},
         )
-
-
-class Stays:
-    """The cursors a command of this extension left on a node where its step would carry on:
-    `leave` records one, the extension's `pre_step` halts the step with `halt`, and its
-    `post_step` drops what an aborted step left (`forget`)."""
-
-    def __init__(self) -> None:
-        self._left: dict[int, str] = {}
-
-    def leave(self, cursor: "Cursor", what: str) -> None:
-        """`what` (`/undo`) has put `cursor` where it now is: if a step from there would sample
-        or run tools, the step that runs the command halts before it does."""
-        state = cursor.cursor(cursor.id)
-        if state.next != Next.Wait:
-            self._left[cursor.id] = (
-                f"{what} left the cursor at node {state.at}, mid-turn: step to carry on from there"
-            )
-
-    def halt(self, cursor: int) -> str | None:
-        """The reason the step of `cursor` stops now, if a command left it mid-turn."""
-        return self._left.pop(cursor, None)
-
-    def forget(self, cursor: int) -> None:
-        """The step of `cursor` ended: nothing it left applies to the next one."""
-        self._left.pop(cursor, None)

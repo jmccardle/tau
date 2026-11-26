@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `CommandHooks`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -327,6 +327,87 @@ property tool: str
 ```
 
 The name of the tool being called. Read-only.
+
+## CommandHooks
+
+```python
+class CommandHooks
+    name = NAME
+    order: Mapping[str, int] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
+```
+
+The built-in extension `hooks`: shell commands at τ's hook points (the module docstring).
+`CommandHooks.of(loaded)` reads the user's `hooks.json` and the trusted project's; `rules` are
+what it found.
+
+### CommandHooks.of
+
+```python
+@classmethod
+def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
+```
+
+The extension for the hooks files `loaded` can read: the user's, then the trusted
+project's approved bytes. `HookFileError` names every problem if a file cannot be used.
+
+### CommandHooks.pre_input
+
+```python
+async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
+```
+
+`UserPromptSubmit`: a command may refuse what a person typed, or add context to it.
+
+### CommandHooks.pre_tool
+
+```python
+async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
+```
+
+`PreToolUse`: a command may refuse the call, rewrite its arguments, or ask the person.
+
+### CommandHooks.pre_result
+
+```python
+async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None
+```
+
+`PostToolUse` and `PostToolUseFailure`: a command sees the result, may replace its
+text (`updatedToolOutput`), and may add feedback the model reads after it.
+
+### CommandHooks.post_reply
+
+```python
+async def post_reply(self, cursor: Cursor, subject: Subject) -> None
+```
+
+Note which reply this step committed: a step that only came to rest on one (a cursor
+moved there) is not a turn that ended.
+
+### CommandHooks.post_step
+
+```python
+async def post_step(self, cursor: Cursor, subject: Subject) -> None
+```
+
+`Stop`: when a person's turn ends in a reply that asks for no tool, a command may keep
+it going: its reason is sent as input. After `MAX_STOP_BLOCKS` in a row the turn ends.
+
+### CommandHooks.start
+
+```python
+async def start(self, tree: TreeHandle) -> None
+```
+
+`SessionStart`: run the commands, each given `source: "startup"`.
+
+### CommandHooks.stop
+
+```python
+async def stop(self) -> None
+```
+
+`SessionEnd`: run the commands, each given `reason: "other"`.
 
 ## Compaction
 
@@ -828,12 +909,21 @@ class Mcp
     name = NAME
 ```
 
-The `mcp` built-in: the configured MCP servers' tools, while it is started.
+The `mcp` built-in: the configured MCP servers' tools, while it is started. `warnings`
+are the files and servers its configuration skipped; `failed` the servers that did not
+start, each with why (both filled by `start`, and told to clients when they connect).
 
 ### Mcp.__init__
 
 ```python
-def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+def __init__(
+    self,
+    servers: Sequence[McpServer],
+    cwd: Path,
+    *,
+    warnings: Sequence[str] = (),
+    start_timeout: float | None = None,
+) -> None
 ```
 
 ### Mcp.of
@@ -843,9 +933,10 @@ def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
 def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
 ```
 
-The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
+The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, the trusted
 project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
-names (which must exist). `McpConfigError` naming every server that cannot be used.
+names. A file or server that cannot be used is skipped and named in `warnings`;
+`McpConfigError` only for a file `TAU_MCP_CONFIG` names that cannot be read.
 
 ### Mcp.tools
 
@@ -861,8 +952,10 @@ Every running server's tools, in server name order.
 async def start(self, tree: TreeHandle) -> None
 ```
 
-Start every server at once and list its tools; `McpStartError` naming each that
-failed, with the others stopped.
+Start every server at once and list its tools, each within the start's time. What
+the configuration skipped, a server that fails or is too slow, and a tool that cannot be
+named are reported (stderr, and an `error` notice each that every client gets when it
+connects); the rest start, and so does τ.
 
 ### Mcp.stop
 
@@ -1161,7 +1254,8 @@ class Skills
 
 The built-in extension `skills`: a command for each template and skill, and the skills list
 for the model (the module docstring). `prompts` are what `Skills.of` found; an extension made
-of `prompts` alone reads no files again.
+of `prompts` alone reads no files again. `warnings` say, one line each, which file `Skills.of`
+skipped and why.
 
 ### Skills.of
 
@@ -1170,8 +1264,8 @@ of `prompts` alone reads no files again.
 def of(cls, loaded: LoadedConfig) -> 'Skills'
 ```
 
-The extension for the files `loaded` can read. `SkillFileError`, naming every problem
-with a file, if any cannot be used.
+The extension for the files `loaded` can read. A file that cannot be used is skipped
+and named in `warnings`; `SkillFileError` if two files claim one name.
 
 ### Skills.rescan
 
@@ -1715,8 +1809,10 @@ Send `text` as a `Notice` from this extension to client `to`, or to every connec
 client by default, about `cursor` at `level` (`"info"`, `"warning"` or `"error"`, D32
 section 2). `cursor` defaults to this handle's own: a `Cursor`'s, the batch's cursor of a
 `NodeHandle`, none (the session) for a tree handle. Dropped if `to` is not connected: a
-notice is for someone who is there. `NoSuchCursor` if `cursor` is not open, `ValueError`
-for another level.
+notice is for someone who is there. One to every client told by the extension's `start`
+(which runs before any client connects) **stands**: each client that connects later gets
+it after its snapshot, until the extension is stopped. `NoSuchCursor` if `cursor` is not
+open, `ValueError` for another level.
 
 ### TreeHandle.spawn
 

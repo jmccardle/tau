@@ -4,7 +4,7 @@
 
 One page per group of the public surface (`docs/api/README.md` says who each is for).
 
-- [Writing an extension](extensions.md): 51 names
+- [Writing an extension](extensions.md): 52 names
 - [Tools](tools.md): 12 names
 - [The session's records](records.md): 14 names
 - [Writing a frontend](clients.md): 18 names

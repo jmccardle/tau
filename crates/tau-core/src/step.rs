@@ -154,6 +154,10 @@ pub struct Step {
     pub cursor: CursorId,
     pos: Pos,
     asked: bool,
+    /// A command's step (D16 §2, 2026-11-26): it ends when the command returns. Only `pre_step`
+    /// (the command, then the hooks) and `post_step` run, and it ends `Done` unless a hook says
+    /// otherwise; it is never idle (`after`). Set by `Machine::step` on a step just woken.
+    pub command: bool,
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
@@ -191,6 +195,7 @@ impl Step {
             cursor,
             pos: Pos::PreStep,
             asked,
+            command: false,
             seen,
             first_move: s.moves.len(),
             out: false,
@@ -421,6 +426,9 @@ impl Step {
                 self.after(s);
             }
             (_, Some(reason)) => self.on_hook_stop(s, reason, halted_by),
+            (Pos::PreStep, None) if self.command => {
+                self.hop("a command's step ends", Pos::PostStep);
+            }
             (Pos::PreStep, None) => self.go(Pos::Input),
             (Pos::Input | Pos::PreReply, None) => {
                 self.draft = None;
@@ -642,7 +650,9 @@ impl Step {
     /// again: auto-step goes off and it rests. An item added since the step woke
     /// is news from outside and wakes a step regardless, auto-step as it is (a
     /// send that landed after the input position is answered); that step answers
-    /// to the same rule.
+    /// to the same rule. A command's step tried nothing, so it is never idle: with
+    /// auto-step on (the command turned it on) and work, the next step starts
+    /// whether or not the cursor moved.
     fn after(&mut self, s: &mut Session) {
         s.sync();
         let work = s.next(self.cursor) != Next::Wait
@@ -650,13 +660,17 @@ impl Step {
                 .any(|i| matches!(i.data, ItemData::Input { .. }));
         let changed = s.changes.get(&self.cursor).copied().unwrap_or(0) != self.seen;
         let moved = self.moves(s).next().is_some();
-        let idle =
-            self.ending == Ending::Done && s.auto[&self.cursor] && work && !moved && !changed;
+        let idle = self.ending == Ending::Done
+            && s.auto[&self.cursor]
+            && work
+            && !moved
+            && !changed
+            && !self.command;
         if idle {
             s.auto.insert(self.cursor, false);
         }
-        let again =
-            self.ending == Ending::Done && (changed || (s.auto[&self.cursor] && work && moved));
+        let again = self.ending == Ending::Done
+            && (changed || (s.auto[&self.cursor] && work && (moved || self.command)));
         transitions::ending(&self.ending);
         if again {
             self.go(Pos::PreStep);

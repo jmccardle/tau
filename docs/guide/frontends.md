@@ -249,7 +249,9 @@ extensions share is a plain `LookupError` ("/note is two commands: /a:note, /b:n
 frontend shows without sending; the qualified `/a:note` always works.
 
 A command that takes a `Cursor` runs as a step of that cursor, so it needs the cursor at rest and
-**takes as long as it takes**: `run` returns when the command finishes. A frontend therefore runs
+**takes as long as it takes**: `run` returns when the command finishes. The step ends with the
+command: the cursor rests wherever the command left it, unless the command turned auto-step on
+to have the model answer (a skill or prompt template does), and then the next step follows at once. A frontend therefore runs
 it as a task, so that it can still answer a question the command asks. `/config EXTENSION name=value`
 is read as an extension's options (`client.options(cursor, extension)` is the form, and
 `--save` in the line sets `parsed.save`), and `parsed.run` makes the call to `client.configure`.

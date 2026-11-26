@@ -197,10 +197,10 @@ fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
 fn a_frontend_step_is_refused_on_a_busy_cursor_and_runs_once_at_rest() {
     let (mut m, c) = machine();
     m.input(c, Author::Frontend(term()), "hi", vec![]).unwrap(); // input, auto-step off
-    assert_eq!(m.step(c), Err(Error::Busy(c)));
+    assert_eq!(m.step(c, false), Err(Error::Busy(c)));
     let jobs = run(&mut m, c, plain);
     assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
-    m.step(c).unwrap();
+    m.step(c, false).unwrap();
     let jobs = run(&mut m, c, plain);
     assert!(jobs.contains(&Job::Sample), "asked: the phases ran");
     assert_eq!(
@@ -521,7 +521,7 @@ fn a_hook_acts_on_its_cursor_only_while_a_hook_job_is_out() {
         Err(Error::NotInHook(c))
     );
     assert_eq!(m.hook_set_auto(c, true), Err(Error::NotInHook(c)));
-    m.step(c).unwrap();
+    m.step(c, false).unwrap();
     let Job::Hooks { .. } = m.next_job(c).unwrap() else {
         panic!("a hook job");
     };
@@ -557,7 +557,7 @@ fn only_the_hooks_own_calls_skip_the_sync() {
     let sys = m.session.at(c).unwrap();
     let other = m.open(sys, Author::Core, 0, None).unwrap();
     run(&mut m, other, plain);
-    m.step(c).unwrap();
+    m.step(c, false).unwrap();
     let Job::Hooks { .. } = m.next_job(c).unwrap() else {
         panic!("a hook job");
     };
@@ -811,7 +811,7 @@ fn a_cursor_is_busy_while_a_go_to_waits_on_its_aborted_step() {
     m.answer(c, ok(), 0).unwrap();
     assert!(m.busy(c), "the go-to still waits for next_job");
     assert_ne!(m.session.at(c), Ok(0));
-    assert_eq!(m.step(c), Err(Error::Busy(c)));
+    assert_eq!(m.step(c, false), Err(Error::Busy(c)));
     run(&mut m, c, plain);
     assert!(!m.busy(c));
     assert_eq!(m.session.at(c), Ok(0));
@@ -913,7 +913,7 @@ fn every_call_on_a_closed_cursor_is_refused_as_closed() {
         data: "y".into(),
     };
     assert_eq!(m.close(d).unwrap_err(), closed);
-    assert_eq!(m.step(d).unwrap_err(), closed);
+    assert_eq!(m.step(d, false).unwrap_err(), closed);
     assert_eq!(m.set_auto(d, true).unwrap_err(), closed);
     assert_eq!(m.abort(d).unwrap_err(), closed);
     assert_eq!(m.input(d, Author::Core, "x", vec![]).unwrap_err(), closed);
@@ -965,4 +965,119 @@ fn a_hook_call_on_a_closed_cursor_is_refused_as_closed() {
         closed
     );
     assert_eq!(m.session, before, "nothing was recorded");
+}
+
+/// A command's step (D16 §2) whose `pre_step` job runs `command` on the machine first.
+fn command_step(m: &mut Machine, c: u64, command: impl FnOnce(&mut Machine)) -> Vec<Job> {
+    m.step(c, true).unwrap();
+    let first = m.next_job(c).unwrap();
+    assert!(matches!(
+        first,
+        Job::Hooks {
+            point: Hook::PreStep,
+            ..
+        }
+    ));
+    command(m);
+    m.answer(c, ok(), 0).unwrap();
+    let mut jobs = vec![first];
+    jobs.extend(run(m, c, plain));
+    jobs
+}
+
+fn user(text: &str) -> Body {
+    Body::User {
+        text: text.into(),
+        images: vec![],
+    }
+}
+
+#[test]
+fn a_commands_step_ends_when_the_command_returns() {
+    let (mut m, c) = machine();
+    m.session.auto.insert(c, true);
+    let by = Author::Extension("x".into());
+    let jobs = command_step(&mut m, c, |m| {
+        m.hook_write(c, user("hi"), vec![], by, 0, Provenance::default())
+            .unwrap();
+    });
+    // Left on a `User` node, it neither samples nor carries on: it rests, `Done`.
+    assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
+    assert_eq!(ending(&jobs), Ending::Done);
+    assert!(!jobs.contains(&Job::Sample));
+    assert!(!m.busy(c));
+    assert!(
+        !m.session.auto[&c],
+        "a command's step turns auto-step off, as a go-to does"
+    );
+    assert_eq!(m.step(c, true), Ok(()), "at rest again");
+    run(&mut m, c, plain);
+}
+
+#[test]
+fn a_command_that_turns_auto_step_on_makes_the_next_step_run() {
+    let (mut m, c) = machine();
+    let by = Author::Extension("x".into());
+    let jobs = command_step(&mut m, c, |m| {
+        m.hook_write(c, user("hi"), vec![], by, 0, Provenance::default())
+            .unwrap();
+        m.hook_set_auto(c, true).unwrap();
+    });
+    assert_eq!(
+        points(&jobs),
+        [
+            Hook::PreStep,
+            Hook::PostStep,
+            Hook::PreStep,
+            Hook::PreSample,
+            Hook::PreReply,
+            Hook::PostReply,
+            Hook::PostStep
+        ]
+    );
+    assert!(matches!(
+        m.session.tree.node(m.session.at(c).unwrap()).unwrap().body,
+        Body::Assistant { .. }
+    ));
+}
+
+#[test]
+fn a_command_that_turns_auto_step_on_where_it_stands_runs_the_next_step() {
+    let (mut m, c) = machine();
+    let by = Author::Extension("x".into());
+    // A cursor at rest on a `User` node (its step was aborted): no move, auto-step on.
+    m.step(c, false).unwrap();
+    m.next_job(c).unwrap();
+    m.hook_write(c, user("hi"), vec![], by, 0, Provenance::default())
+        .unwrap();
+    m.abort(c).unwrap();
+    m.answer(c, ok(), 0).unwrap();
+    run(&mut m, c, plain);
+    let jobs = command_step(&mut m, c, |m| m.hook_set_auto(c, true).unwrap());
+    assert!(
+        jobs.contains(&Job::Sample),
+        "a command's step is never idle: {jobs:?}"
+    );
+}
+
+#[test]
+fn a_commands_send_is_answered_by_the_next_step() {
+    let (mut m, c) = machine();
+    let jobs = command_step(&mut m, c, |m| {
+        send(m, c, Author::Extension("x".into()), "hi");
+    });
+    assert_eq!(
+        &points(&jobs)[..3],
+        [Hook::PreStep, Hook::PostStep, Hook::PreStep]
+    );
+    assert!(jobs.contains(&Job::Sample));
+    assert_eq!(users(&m, c), 1);
+}
+
+#[test]
+fn a_commands_step_is_refused_on_a_busy_cursor() {
+    let (mut m, c) = machine();
+    send(&mut m, c, Author::Frontend(term()), "hi");
+    assert_eq!(m.step(c, true), Err(Error::Busy(c)));
+    run(&mut m, c, plain);
 }

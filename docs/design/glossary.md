@@ -1346,7 +1346,8 @@ authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argumen
 to `$N` (its words: whitespace splits, `"` groups, `'` is a character; a missing one is empty,
 `$$` is `$`) and appends the arguments after a blank line if it has no placeholder; a skill sends `<skill name="NAME" path="/abs/SKILL.md">`, the body, a line
 saying a relative path in it starts from the skill's directory (nothing in it is attached), then
-the arguments. The **skills list** is one `System` node, written at a session's
+the arguments. A file that cannot be used is skipped and named in `Skills.warnings` (one line each: the
+start prints them; D24 section 6); only a name two files claim stops the start. The **skills list** is one `System` node, written at a session's
 first step when a `read` tool is offered and `advertise` is on, naming each skill that is not
 `disable-model-invocation: true` with its description and path; it is then part of the prefix of
 the walk. Frontmatter is the YAML block mapping between `---` lines (quoted, folded and block
@@ -1360,12 +1361,35 @@ A **`PromptFile`** is one template or skill read: `kind`, `name`, `description`,
 **`Trusted.prompt_files`** maps `prompts/NAME.md` and `skills/NAME/SKILL.md` (paths under `.tau/`)
 to the bytes trust approved; they are what the project's `PromptFile`s are read from.
 **`_project_read`** holds what every read inside a project goes through: `TrustError`,
-`read_regular` (refuses symlinks and non-regular files), `read_prompt_files`, and `safe_text`
+`read_regular` (refuses symlinks and non-regular files, unless `follow=True`, which only
+`read_prompt_files` passes: prompt and skill files may be symlinks, and `prompt_links` says where
+each leads, for the trust report), `read_prompt_files`, and `safe_text`
 (moved out of `_trust.py`). **`_prompt_files`** holds `PromptFile`, how a file's bytes become one and
 `read_row`, which returns the prompts and every **`Problem`** (a message, and the command name the
-file would have had) at once, so the start, `tau trust` and a reload list everything wrong together.
+file would have had, and whether it is `fatal`: two files claim one name; any other is a warning and the
+file is skipped) at once, so the start, `tau trust` and a reload list everything wrong together.
 `Trusted.prompt_files` also holds the files that look like a template or skill in the wrong place
 (`prompt_candidates`), so they are pinned and are problems.
+
+### hooks (extension), command hook, hooks file
+`tau.CommandHooks` (`_command_hooks.py`; `_command_hooks_file.py` and `_command_hooks_run.py`), key `hooks`, no options, off by default · D34 · new
+
+The built-in extension that runs shell commands at τ's hook points, by the convention Claude Code,
+Codex and Gemini CLI share. A **command hook** is one such command: it is given an event as JSON on
+its standard input, and answers with its exit code (2 blocks, standard error is the reason) or a
+JSON object on its standard output. The **events** are Claude Code's names, mapped onto τ:
+`PreToolUse` is `pre_tool`, `PostToolUse` and `PostToolUseFailure` are `pre_result` (an `Ok` and an
+`Err` outcome), `UserPromptSubmit` is `pre_input` (a `Frontend`'s), `Stop` is `post_step` at the end
+of a person's turn, and `SessionStart` and `SessionEnd` are the extension's `start` and `stop`. The
+**hooks file** is `hooks.json` in `$TAU_HOME` and `.tau/hooks.json` of a trusted project (the
+`hooks` key of a Claude Code `settings.json`: matcher groups of `command` handlers with `timeout`
+and `onFailure`); the project's is pinned by trust (`Trusted.hooks_file`, the approved bytes) and is
+admin configuration, not an option a client can set (akb #643). A **failure** (it did not start,
+timed out, exited other than 0 and 2, or answered with what τ cannot honor) is an `error` notice
+naming the command, and at a gate (`pre_tool`, `pre_input`) also a block unless the handler's
+`onFailure` is `continue`. Anything Claude Code has that τ does not (events, handler types and
+keys, output fields) is refused or a failure naming it; nothing is dropped silently. Not available
+on Windows (`CommandHooksUnavailable`). `_trust_report` holds the text the trust report shows of the hooks file.
 
 ### rescan (an extension), stdin (a command parameter)
 `Skills.rescan`, `tau.commandline.STDIN` · D24 section 6 · new (8E-5)
@@ -1472,7 +1496,8 @@ The built-in, default-on and removable, that walks back from the cursor's node t
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
 (**edit-last**, D23's Ctrl+Z as a command): it goes to the marker's `return_to` (after the
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
-parent, as a go-to does (auto-step off). A cursor command, so `Busy` unless at rest; `at` refuses
+parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
+mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
 unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
 user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
 
@@ -1486,15 +1511,6 @@ marks (a file checkpoint). A driver-level attribute like `commands`, not a hook 
 and returns whether one did (`False`: the owner is not loaded or has none); `ValueError` for a
 node that is not a marker an extension wrote. Not a coroutine function: `DefinitionError` at
 build.
-
-### Stays (a command's halt mid-turn)
-`tau._markers.Stays` (`leave`, `halt`, `forget`) · D33 §2 · new (0.18)
-
-What `undo` and `session` share: a cursor command whose step would go on from where it left the
-cursor (`next` is not `Wait`: a batch, a `User`, a `Results`) records it with `leave`, and the
-extension's own `pre_step` returns the stop `"<command> left the cursor at node N, mid-turn: step
-to carry on from there"`, so going back never starts the model. `post_step` forgets what an
-aborted step left.
 
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
@@ -1848,13 +1864,24 @@ all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are
 from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
 (`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
 are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
-used. `start` starts every server at once and returns when each has listed its tools; one that
-fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+used now only for a file `TAU_MCP_CONFIG` names that is not there; a file or server the
+configuration cannot use is skipped and named in `Mcp.warnings`. `start` starts every server at
+once and returns when each has listed its tools, within the start timeout less 1.5 s; one that
+fails or is too slow is skipped (`Mcp.failed`, its reason), said on stderr, and told as a
+*standing notice*: τ starts without it. Each
 tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
 `[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
 `list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
 answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
 process and its group, signalled through a pidfd where there is one.
+
+### standing notice
+`Hub.stand`, `Hub.forget_standing` (private); `TreeHandle.tell` from a `start` · D24 section 12 (amends D32 §2, §4) · new (0.18)
+
+A notice to every client that an extension's `start` tells. A start runs before any client is
+connected, so the hub keeps it and sends it to each client that connects, after its snapshot
+(`Commands`, the views, `Labels`), until that extension is stopped (a reload forgets it). It is
+an ordinary `Notice`: no wire change. `mcp` reports a server that did not start this way.
 
 ### mcp__SERVER (a permission rule)
 `tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)
@@ -3197,12 +3224,16 @@ session; `"new"` after the rest) and raises `LookupError` (unknown command), `Va
 ### Cursor command
 `Commands.before` (`_commands.py`) · D16 · new
 
-A command that takes a `Cursor`. It runs as a step of that cursor: `run` keeps it in memory and
-calls `Session.step`, so it is `Busy` unless the cursor is at rest (commands do not queue); the
-driver gives it to the step's `pre_step` job, where it runs with the cursor's handle (also its
-`TreeHandle`) before the extensions' `pre_step` hooks. The rest of the step follows the usual
-rules: a command that leaves the cursor on a `User` node gets a sample, one that leaves it on a
-reply gets none. `abort` and `go_to` cancel a running command (and drop one not yet started),
+A command that takes a `Cursor`. It runs as a **command's step** of that cursor: `run` keeps it in
+memory and calls `Session.step(cursor, command=True)`, so it is `Busy` unless the cursor is at
+rest (commands do not queue); the driver gives it to the step's `pre_step` job, where it runs with
+the cursor's handle (also its `TreeHandle`) before the extensions' `pre_step` hooks. The step ends
+when the command returns (D16 §2, 2026-11-26): auto-step is off while it runs (as for a go-to),
+and after `pre_step` only `post_step` runs, so it ends `Done` (unless a hook halts or fails it)
+and no `pre_input`, sample or tool runs in it, wherever the command left the cursor. A command
+that wants the model to run turns auto-step on (`cursor.set_auto(True)`; `cursor.send` does it
+too): the next step then starts at once from where the cursor stands, and samples or runs tools
+as `decide` says. `abort` and `go_to` cancel a running command (and drop one not yet started),
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the

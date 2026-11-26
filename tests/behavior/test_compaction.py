@@ -24,6 +24,7 @@ from tau import (
     Compaction,
     Ending,
     ModelCatalog,
+    Next,
     Node,
     Outcome,
     Part,
@@ -306,6 +307,10 @@ async def test_compact_recovers_from_a_provider_that_said_the_prompt_was_too_lon
     await h.settle()
     assert result is not None
     assert result.startswith("compacted")
+    assert len(h.provider.requests) == 4, "the summary only: /compact's step ends with it (D16)"
+    view = await h.view()
+    assert (view.busy, view.auto, view.ending) == (False, False, Ending.Done())
+    assert h.session.cursor(h.cursor).next != Next.Wait, "mid-turn, the message kept to answer"
     await h.step()
     await h.settle()
     last = h.session.tree.node(h.session.cursor(h.cursor).at)

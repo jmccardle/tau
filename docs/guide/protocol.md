@@ -597,9 +597,9 @@ the cursor it is about (`null`: the session), `extension` the extension that sai
 |---|---|---|
 | `kind` | `"Notice"` |  |
 | `text` | `string` |  |
-| `cursor` | `integer` or `null` | optional |
-| `extension` | `string` or `null` | optional |
-| `level` | `"info"` or `"warning"` or `"error"` | optional |
+| `cursor` | `integer` or `null` |  |
+| `extension` | `string` or `null` |  |
+| `level` | `"info"` or `"warning"` or `"error"` |  |
 
 ### Deltas
 
@@ -714,8 +714,8 @@ with `…`.
 | field | type | notes |
 |---|---|---|
 | `value` | `string` |  |
-| `label` | `string` or `null` | optional |
-| `detail` | `string` or `null` | optional |
+| `label` | `string` or `null` |  |
+| `detail` | `string` or `null` |  |
 
 ### Config
 
@@ -760,8 +760,8 @@ the schema is a dict.
 | `name` | `string` |  |
 | `description` | `string` |  |
 | `schema` | `object` |  |
-| `extension` | `string` or `null` | optional |
-| `yields` | `boolean` | optional |
+| `extension` | `string` or `null` |  |
+| `yields` | `boolean` |  |
 
 ### HookFailure
 
@@ -911,8 +911,8 @@ its name; with no `args` the line asks for the form, which a frontend shows from
 | `command` | [Form](#form) |  |
 | `args` | `object` |  |
 | `missing` | array of `string` |  |
-| `extension` | `string` or `null` | optional |
-| `save` | `boolean` | optional |
+| `extension` | `string` or `null` |  |
+| `save` | `boolean` |  |
 
 ### Part
 
