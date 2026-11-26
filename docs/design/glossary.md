@@ -516,7 +516,8 @@ and `take_notices()` (drains the notices). There is no whole-scratchpad read
 Python `tau.CursorState` (`Session.cursor(c)`) · new
 
 A frozen snapshot of one cursor, all read under one lock: `at`, `auto`,
-`busy`, `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
+`busy`, `command` (the running step is a command's, D16 §2; false at rest;
+`Machine::in_command`), `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
 do not reach it, so `busy` and `at` cannot disagree. It replaces the separate
 per-cursor reads (`at`, `auto`, `busy`, `next`, `items`, `labels_of`,
 `moves_of`, `moves_since_step`). The lists are Python objects only when read.
@@ -787,7 +788,9 @@ D16 §6): `extensions.step_limit.limit` in the config files, or `/config step_li
 branch; a bad one fails the step at `pre_step`. It keeps its own count per cursor (core keeps none), read
 and changed at three hook points with `cursor.auto`: `pre_input` sets it to 1
 (the step that takes an input is the first; there is no `post_input`),
-`pre_step` adds one while auto-step is on, and `post_step` turns auto-step off
+`pre_step` adds one while auto-step is on (a command's step, `CursorState.command`, is attended:
+it is not counted, and the count starts over, so the steps after a command that turned auto-step
+on get the whole `limit`), and `post_step` turns auto-step off
 once the count reaches `limit`, then starts the count over, as it also does on
 seeing auto-step off. Whoever resumes the cursor gets another `limit`.
 

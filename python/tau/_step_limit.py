@@ -33,6 +33,9 @@ class StepLimit:
       is no `post_input` hook; `pre_input` fires once per input item offered.
     - `pre_step` adds one, when the cursor's auto-step is on. A step run with
       auto-step off (a frontend's `step`, a load) is attended and is not counted.
+      Nor is a command's step (`CursorState.command`, D16 §2), even when the
+      command turned auto-step on: a person ran it, so the count starts over,
+      and the steps that follow it get the whole `limit`.
     - `post_step` turns auto-step off when the count has reached `limit`, and
       starts the count over, so whoever resumes the cursor (`set_auto`) gets
       another `limit` steps. It also starts over whenever it sees auto-step off:
@@ -64,7 +67,10 @@ class StepLimit:
     async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
         """Count this step if auto-step is on. A bad `limit` option fails the step here."""
         cursor.options()  # a bad limit fails the step before it samples
-        if cursor.cursor(cursor.id).auto:
+        state = cursor.cursor(cursor.id)
+        if state.command:  # attended: a person ran the command
+            self._counts[cursor.id] = 0
+        elif state.auto:
             self._counts[cursor.id] = self._counts.get(cursor.id, 0) + 1
         return None
 

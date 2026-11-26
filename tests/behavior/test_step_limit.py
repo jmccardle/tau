@@ -136,3 +136,65 @@ async def test_a_run_that_ends_by_itself_is_left_alone(tmp_path: Path) -> None:
     await h.settle()
     assert len(h.provider.requests) == 1
     assert not h.session.cursor(h.cursor).busy
+
+
+async def ask(cursor: Cursor, text: str) -> str:
+    """Write a message and have the model answer it (a command that turns auto-step on)."""
+    cursor.write(Body.User(text))
+    cursor.set_auto(True)
+    return "asked"
+
+
+async def look(cursor: Cursor) -> str:
+    """A command that changes nothing."""
+    return f"at {cursor.cursor(cursor.id).at}"
+
+
+class Asking:
+    name = "asking"
+    commands = (ask, look)
+
+    def __init__(self) -> None:
+        self.seen: list[bool] = []
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        self.seen.append(cursor.cursor(cursor.id).command)
+        return None
+
+
+@scenario
+async def test_a_commands_step_is_not_counted_and_the_model_gets_the_whole_limit(
+    tmp_path: Path,
+) -> None:
+    """A command's step is attended (D16 section 2): after a command that turns auto-step on,
+    exactly `limit` model steps run."""
+    asking = Asking()
+    h = await Harness.create(
+        tmp_path,
+        provider=replies(10),
+        extensions=[KeepGoing(), StepLimit(), asking],
+        config=limit(3),
+    )
+    assert await h.run("ask", {"text": "go"}) == "asked"
+    await h.settle()
+    assert len(h.provider.requests) == 3, "the command's step took none of the three"
+    assert asking.seen == [True, False, False, False], "one command's step, then three"
+    assert not h.session.cursor(h.cursor).command, "false at rest"
+    assert not h.session.cursor(h.cursor).auto
+
+
+@scenario
+async def test_a_command_run_between_steps_does_not_spend_the_budget(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path,
+        provider=replies(10),
+        extensions=[KeepGoing(), StepLimit(), Asking()],
+        config=limit(2),
+    )
+    for _ in range(3):  # three commands' steps, none counted, none sampling
+        await h.run("look")
+        await h.settle()
+    assert h.provider.requests == []
+    await h.run("ask", {"text": "go"})
+    await h.settle()
+    assert len(h.provider.requests) == 2
