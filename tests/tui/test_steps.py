@@ -6,7 +6,7 @@ from fakes import Fail, FakeProvider, FakeTool, Gate, Reply, edits
 from harness import Harness, scenario
 from tuikit import Greeter, Showy, running, say, shows, type_line, until
 
-from tau import CallArgs, Ending, Live, Part, RetryProvider, Stop, TextDelta
+from tau import CallArgs, Ending, Live, Part, RetryProvider, Stop, TextDelta, TreeHandle
 
 
 @scenario
@@ -104,8 +104,45 @@ async def test_a_notice_is_a_toast_and_kept(tmp_path: Path) -> None:
         await type_line(pilot, "/count")
         await pilot.press("enter")
         await until(pilot, lambda: "/count: counted" in app.toasts)
-        assert "at 0" in app.toasts, "the command's progress is a notice"
-        assert app.session.notices == ["at 0"]
+        assert "greeter: at 0" in app.toasts, "the command's progress is its extension's notice"
+        assert [n.text for n in app.session.notices] == ["at 0"]
+    await h.close()
+
+
+class Teller:
+    """An extension that keeps its tree handle, to say things from."""
+
+    name = "teller"
+
+    def __init__(self) -> None:
+        self.tree: TreeHandle | None = None
+
+    async def start(self, tree: TreeHandle) -> None:
+        self.tree = tree
+
+
+@scenario
+async def test_a_notice_toast_has_its_extension_as_title_and_its_level_as_severity(
+    tmp_path: Path,
+) -> None:
+    teller = Teller()
+    h = await Harness.create(tmp_path, extensions=[teller])
+    async with running(h, tmp_path) as (app, pilot):
+        assert teller.tree is not None
+        teller.tree.tell("fine")
+        teller.tree.tell("careful", level="warning")
+        teller.tree.tell("broken", level="error")
+        await until(pilot, lambda: len(app.notified) == 3)
+        info, warning, error = app.notified
+        assert (info.title, info.message, info.severity, info.timeout) == (
+            "teller",
+            "fine",
+            "information",
+            5,
+        )
+        assert (warning.title, warning.severity, warning.timeout) == ("teller", "warning", 5)
+        assert (error.title, error.severity, error.timeout) == ("teller", "error", 10)
+        assert app.toasts == ["teller: fine", "teller: careful", "teller: broken"]
     await h.close()
 
 

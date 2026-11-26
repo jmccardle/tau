@@ -23,10 +23,11 @@ from textual.content import Content
 from textual.message import Message
 from textual.widgets import Input, RadioButton, RadioSet, SelectionList, Static, Switch
 
+from tau._complete import Completion
 from tau._values import Json
 from tau.commandline import value as read_value
 
-Completer = Callable[[Json, str], Awaitable[list[str]]]
+Completer = Callable[[Json, str], Awaitable[list[Completion]]]
 """What finishes the text of a field: the field's schema and the text so far, to the candidates."""
 
 
@@ -70,7 +71,7 @@ class CompletingInput(Input):
         super().__init__(placeholder=placeholder, classes="form-input")
         self._schema = schema
         self._completer = completer
-        self._cycle: list[str] = []
+        self._cycle: list[Completion] = []
         self._shown: str | None = None
 
     def action_complete(self) -> None:
@@ -88,9 +89,9 @@ class CompletingInput(Input):
             return
         pick = self._cycle.pop()
         self._cycle.insert(0, pick)
-        self._shown = pick
-        self.value = pick
-        self.cursor_position = len(pick)
+        self._shown = pick.value
+        self.value = pick.value
+        self.cursor_position = len(pick.value)
 
 
 class SchemaField(Vertical):

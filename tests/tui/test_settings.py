@@ -151,7 +151,7 @@ async def test_model_alone_opens_a_picker_of_the_models_and_switches_to_the_one_
             str(app.screen.query_one("#pick-list", OptionList).get_option_at_index(i).prompt)
             for i in range(2)
         ]
-        assert rows == ["fake  (current)", "spare"]
+        assert rows == ["fake  (current)  fake", "spare  fake"], "each row says its provider"
         await pilot.press("down")
         await pilot.press("enter")
         await shows(pilot, app, "model: spare")

@@ -22,6 +22,7 @@ from tau._events import (
     Appended,
     CallArgs,
     CallNamed,
+    Commands,
     CursorGone,
     CursorView,
     Event,
@@ -34,6 +35,7 @@ from tau._events import (
     ThinkingDelta,
     ToolProgress,
 )
+from tau._values import Form
 
 
 class LiveOutOfOrder(ValueError):
@@ -85,8 +87,8 @@ class LiveLayer:
 
 class SessionView:
     """What the session's stream has told one client. Feed it every event, in order, with `hear`;
-    read `views`, `gone`, `labels`, `nodes`, `live` and `notices`. It makes no call and keeps no
-    widget: `tau.tui.TauApp` renders from it."""
+    read `views`, `gone`, `labels`, `nodes`, `live`, `notices` and `commands`. It makes no call and
+    keeps no widget: `tau.tui.TauApp` renders from it."""
 
     def __init__(self) -> None:
         self.views: dict[int, CursorView] = {}
@@ -99,8 +101,10 @@ class SessionView:
         """The nodes the stream has carried, by id."""
         self.live: dict[int, LiveLayer] = {}
         """The live layer of each cursor whose `Live` was heard."""
-        self.notices: list[str] = []
+        self.notices: list[Notice] = []
         """Every `Notice`, oldest first."""
+        self.commands: tuple[Form, ...] = ()
+        """The command forms as the last `Commands` said them."""
 
     def hear(self, event: Event) -> None:
         """Take one event into the picture. `LiveOutOfOrder` for a `Live` the stream could not
@@ -116,8 +120,10 @@ class SessionView:
                 self.labels = labels
             case Appended(nodes=nodes):
                 self._appended(nodes)
-            case Notice(text=text):
-                self.notices.append(text)
+            case Notice():
+                self.notices.append(event)
+            case Commands(forms=forms):
+                self.commands = forms
             case Live(cursor=cursor, delta=delta):
                 self._live(cursor, delta)
 

@@ -55,7 +55,7 @@ def test_it_holds_what_the_stream_said(tmp_path: Path) -> None:
     assert sorted(seen.views) == [0, 1]
     assert seen.labels_of(1) == ("side",)
     assert seen.nodes[user].body == Body.User("hi")
-    assert seen.notices == ["careful"]
+    assert seen.notices == [Notice("careful")]
     seen.hear(CursorGone(1, root))
     assert sorted(seen.views) == [0]
     assert seen.gone == {1: root}

@@ -16,10 +16,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.command import Provider
 from textual.css.query import NoMatches
-from textual.notifications import SeverityLevel
+from textual.notifications import Notification, SeverityLevel
 from textual.screen import Screen
 
 from tau._client import Client
+from tau._complete import Completion
 from tau._core import Author, ItemData
 from tau._events import (
     Appended,
@@ -30,6 +31,7 @@ from tau._events import (
     Live,
     LiveDelta,
     Notice,
+    NoticeLevel,
     Retrying,
     ToolProgress,
 )
@@ -78,6 +80,24 @@ async def _broken(app: "TauApp", transcript: ChatDisplay, error: LiveOutOfOrder)
     and let its node draw it when it lands."""
     await transcript.end_live()
     app.toast(f"{error}; the reply is shown when it is saved", title="live reply", severity="error")
+
+
+_SEVERITY: dict[NoticeLevel, SeverityLevel] = {
+    "info": "information",
+    "warning": "warning",
+    "error": "error",
+}
+
+
+def _notify(app: "TauApp", notice: Notice) -> None:
+    """A `Notice` as a toast: its extension the title, its level the severity; an error stays up
+    as long as the switch toast does."""
+    app.toast(
+        notice.text,
+        title=notice.extension or "",
+        severity=_SEVERITY[notice.level],
+        timeout=10 if notice.level == "error" else 5,
+    )
 
 
 class TauApp(App[None]):
@@ -143,6 +163,8 @@ class TauApp(App[None]):
         self.session = SessionView()
         self.toasts: list[str] = []
         """Every toast shown, oldest first: notices, command results, refusals."""
+        self.notified: list[Notification] = []
+        """The same toasts whole (title, severity, timeout), oldest first."""
         self._line = CommandLine(self)
         self._moves = Moves(self)
         self._drawing = asyncio.Lock()  # one event, or one switch of cursor, draws at a time
@@ -168,7 +190,6 @@ class TauApp(App[None]):
             self._line.rows,
             self._line.submit,
             self.action_move,
-            self._line.renew,
         )
         yield StatusBar()
 
@@ -193,7 +214,7 @@ class TauApp(App[None]):
         """Put the keyboard in the editor."""
         self._editor.focus()
 
-    async def complete_value(self, schema: Json, text: str) -> list[str]:
+    async def complete_value(self, schema: Json, text: str) -> list[Completion]:
         """What could finish `text` as a value of `schema` (a question's answer)."""
         return await self._line.complete_value(schema, text)
 
@@ -213,6 +234,7 @@ class TauApp(App[None]):
     ) -> None:
         """Show a toast, and keep it in `toasts`."""
         self.toasts.append(f"{title}: {text}" if title else text)
+        self.notified.append(Notification(text, title, severity, timeout))
         self.notify(text, title=title, severity=severity, timeout=timeout, markup=False)
 
     def screen_text(self) -> str:
@@ -238,7 +260,6 @@ class TauApp(App[None]):
         while True:
             try:
                 await self.client.watch([self.cursor])
-                await self._line.refresh()
                 snapshot, self._snapshot = self._snapshot, ()
                 for event in snapshot:
                     await self._hear(event)
@@ -305,8 +326,8 @@ class TauApp(App[None]):
                     for node in nodes:
                         if self._transcript.is_failed_sample_here(node):
                             await self._transcript.add_side(node)
-                case Notice(text=text):
-                    self.toast(text)
+                case Notice():
+                    _notify(self, event)
                 case _:
                     pass
             if isinstance(event, CursorView | CursorGone | Labels):
@@ -333,7 +354,6 @@ class TauApp(App[None]):
         self.cursor = cursor
         view = self.session.views[cursor]
         await self._transcript.rebuild(await self.client.walk(view.at), self.client.walk)
-        await self._line.refresh()
         await self._follow(view)
         self._refresh_bar()
 

@@ -17,6 +17,7 @@ from textual.screen import Screen
 from textual.theme import Theme
 
 from tau._client import Client
+from tau._complete import Completion
 from tau._core import Author, Body, Busy, ItemData, NoSuchCursor
 from tau._events import CursorView
 from tau._protocol import Welcome
@@ -177,7 +178,7 @@ class Moves:
         stays as it was."""
         app = self.app
         picked = await app.push_screen_wait(
-            PickDialog("Theme", sorted(app.available_themes), app.theme)
+            PickDialog("Theme", [Completion(t) for t in sorted(app.available_themes)], app.theme)
         )
         if picked is None:
             return

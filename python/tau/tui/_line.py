@@ -20,12 +20,13 @@ from textual.screen import Screen
 
 from tau._client import Client
 from tau._commands import CommandFailed
+from tau._complete import Completion
 from tau._core import Busy
 from tau._values import Form, Json
 from tau.commandline import STDIN, Parsed, UnknownCommand, values
 from tau.commandline import value as read_value
 from tau.tui._choose import PickDialog
-from tau.tui._editor import Completion
+from tau.tui._editor import Completions
 from tau.tui._fields import shape_of
 from tau.tui._forms import FormDialog, OptionsDialog
 from tau.tui._view import SessionView
@@ -100,16 +101,19 @@ class CommandLine:
 
     def __init__(self, app: Owner) -> None:
         self.app = app
-        self.commands: tuple[Form, ...] = ()
-        self.extensions: list[str] = []
 
-    async def refresh(self) -> None:
-        """Ask the session for its commands, and which extensions `/config` takes."""
-        self.commands = await self.app.client.commands()
+    @property
+    def commands(self) -> tuple[Form, ...]:
+        """The command forms as the last `Commands` event said them."""
+        return self.app.session.commands
+
+    @property
+    def extensions(self) -> list[str]:
+        """The extensions `/config` takes."""
         config = next((c for c in self.commands if c.name == "config"), None)
-        self.extensions = [] if config is None else extensions_with_options(config)
+        return [] if config is None else extensions_with_options(config)
 
-    def rows(self, typed: str) -> list[tuple[str, str]]:
+    def rows(self, typed: str) -> list[Completion]:
         """The popup's rows for a first word `typed`: each command whose name starts with it, with
         its argument hint (what its parameters are described as) and the first line of its
         description; the qualified name where two extensions share one. For the word and one
@@ -122,21 +126,14 @@ class CommandLine:
         elif typed:
             named = [(c, name) for c, name in named if name.startswith(typed)]
         return [
-            (f"{name} {_hint(c)}".rstrip(), c.description.splitlines()[0])
+            Completion(f"{name} {_hint(c)}".rstrip(), detail=c.description.splitlines()[0])
             for c, name in named
             if _hint(c) or not typed.endswith(" ")
         ]
 
-    async def renew(self) -> bool:
-        """Ask the session for its commands again (it may have new ones: they are files); whether
-        they are not the ones the popup showed."""
-        before = self.commands
-        await self.refresh()
-        return self.commands != before
-
     # Completion
 
-    async def complete_text(self, before: str) -> Completion:
+    async def complete_text(self, before: str) -> Completions:
         """What could finish the last word of `before`."""
         start = word_start(before)
         client, cursor = self.app.client, self.app.cursor
@@ -147,20 +144,22 @@ class CommandLine:
             return start, await self._complete_path(word[1:])
         return start, []
 
-    async def _complete_path(self, typed: str) -> list[str]:
+    async def _complete_path(self, typed: str) -> list[Completion]:
         """The `@` words that finish `typed` (the word after the `@`): a path with a space is
         written `@"a b.txt"`, its quote left open on a directory so the name can go on."""
         quoted = typed.startswith('"')
         found = await self.app.client.complete(self.app.cursor, "path", typed.removeprefix('"'))
-        words: list[str] = []
-        for path in found:
+        words: list[Completion] = []
+        for item in found:
+            path = item.value
             if quoted or " " in path:
-                words.append(f'{_PATH_MARK}"{path}' + ("" if path.endswith(("/", os.sep)) else '"'))
+                tail = "" if path.endswith(("/", os.sep)) else '"'
+                words.append(replace(item, value=f'{_PATH_MARK}"{path}{tail}'))
             else:
-                words.append(_PATH_MARK + path)
+                words.append(replace(item, value=_PATH_MARK + path))
         return words
 
-    async def complete_value(self, schema: Json, text: str) -> list[str]:
+    async def complete_value(self, schema: Json, text: str) -> list[Completion]:
         """What could finish `text` as a value of `schema` (a form's field, a question's answer)."""
         return await values(schema, text, self.app.client, self.app.cursor)
 
@@ -212,7 +211,7 @@ class CommandLine:
     async def _configure_which(self) -> bool:
         """`/config` alone: pick the extension, then edit its options."""
         picked = await self.app.push_screen_wait(
-            PickDialog("Configure which extension?", self.extensions)
+            PickDialog("Configure which extension?", [Completion(e) for e in self.extensions])
         )
         return picked is not None and await self._configure(picked, False)
 
@@ -230,7 +229,6 @@ class CommandLine:
             app.toast("nothing changed", title=f"/config {extension}")
             return True
         await app.client.configure(app.cursor, extension, changed, save=dialog.save)
-        await self.refresh()  # the options now are the new branch's
         where = "for every session" if dialog.save else "on this branch"
         shown = ", ".join(f"{k}={v}" for k, v in changed.items()) or "the branch's options"
         app.toast(f"{shown} ({where})", title=f"/config {extension}")

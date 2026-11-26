@@ -277,7 +277,7 @@ async def test_a_toast_shows_square_brackets_as_they_are(tmp_path: Path) -> None
 
 
 @scenario
-async def test_a_template_added_while_the_app_runs_is_in_the_list(
+async def test_a_template_the_session_announces_is_in_the_list(
     tmp_path: Path, world: World
 ) -> None:
     h = await Harness.create(
@@ -286,6 +286,53 @@ async def test_a_template_added_while_the_app_runs_is_in_the_list(
     async with running(h, tmp_path) as (app, pilot):
         (world.tau / "prompts").mkdir(parents=True)
         (world.tau / "prompts" / "late.md").write_text("Late $1", encoding="utf-8")
+        await h.client.commands()  # a line call rescans, and the session announces what it found
+        await until(pilot, lambda: any(c.name == "late" for c in app.session.commands))
         await pilot.press("slash")
         await shows(pilot, app, "/late")
+    await h.close()
+
+
+@scenario
+async def test_the_popup_shows_each_candidates_label_and_detail_and_inserts_its_value(
+    tmp_path: Path,
+) -> None:
+    where = tmp_path / "files"
+    where.mkdir()
+    (where / "one.txt").write_bytes(b"abc")
+    (where / "two.txt").write_bytes(b"x" * 2000)
+    h = await harness(tmp_path)
+    async with running(h, tmp_path) as (app, pilot):
+        await type_line(pilot, f"see @{where}/")
+        await pilot.press("tab")
+        await shows(pilot, app, "▸ one.txt  3 B")
+        assert "  two.txt  2.0 kB" in app.screen_text(), "the label is the name, not the path"
+        assert str(where) not in app.screen_text()
+        assert app.draft == f"see @{where}/one.txt", "the value, the whole path, is inserted"
+        await pilot.press("tab")
+        await until(pilot, lambda: app.draft == f"see @{where}/two.txt")
+        await shows(pilot, app, "▸ two.txt  2.0 kB")
+    await h.close()
+
+
+@scenario
+async def test_the_palette_follows_a_reload_without_asking(tmp_path: Path) -> None:
+    class Later:
+        name = "later"
+        commands = (tuikit_greet,)
+
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("ok")]))
+    async with running(h, tmp_path) as (app, pilot):
+        await pilot.press("slash")
+        await shows(pilot, app, "/model")
+        assert "/greet" not in app.screen_text()
+        await pilot.press("backspace")
+        await h.driver.reload([Later()])  # pyright: ignore[reportArgumentType]
+        await until(pilot, lambda: any(c.name == "greet" for c in app.session.commands))
+        await pilot.press("slash")
+        await shows(pilot, app, "/greet")
+        await h.driver.reload([])
+        await until(pilot, lambda: all(c.name != "greet" for c in app.session.commands))
+        await pilot.press("backspace", "slash")
+        await until(pilot, lambda: "/greet" not in app.screen_text())
     await h.close()
