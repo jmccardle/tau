@@ -36,7 +36,7 @@ import os
 import signal
 import sys
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, TextIO, cast
@@ -56,18 +56,14 @@ from tau._events import (
 from tau._launch import AnswerRule, UsageError, message_of
 from tau._open import Opened, client_id, open_client
 from tau._print_questions import RuleRefused, Unanswered, questions, unanswered
+from tau._print_signals import LEAVE_SECONDS, Signals, Stopping
 from tau._project_read import safe_block
 from tau._protocol import encode, encode_event
 from tau._session_start import start_report
-from tau._signals import name, off_ending, on_ending, status
+from tau._signals import name, status
 from tau._values import Json
 from tau.commandline import STDIN, Parsed, UnknownCommand
 
-LEAVE_SECONDS = 2.0
-"""After a second signal, the time the session has to close (the driver stopped, each extension's
-`stop` run, hook commands and MCP servers ended) before the process exits without waiting more;
-also the bound on the abort a SIGTERM or SIGHUP waits for."""
-STOP_NOTICE = 2.0  # seconds a stop takes before it is said why
 SIGPIPE_STATUS = 141  # 128 + SIGPIPE: the reader of standard output went away
 _SHOWN = 60  # characters of a message shown in a `--verbose` line
 
@@ -89,17 +85,6 @@ class Process(Protocol):
 
 class _Gone(Exception):
     """Standard output has no reader any more (`tau -p --json ... | head -1`)."""
-
-
-@dataclass
-class _Stopping:
-    """How the run is being stopped: the first signal it got, whether a second one asked it to
-    leave, and whether the session is closing already (which no signal may cut short)."""
-
-    signal: int | None = None
-    leaving: bool = False
-    closing: bool = False
-    deadline: list[threading.Timer] = field(default_factory=lambda: [])
 
 
 @dataclass
@@ -605,7 +590,7 @@ async def _take_back(run: Run) -> None:
 
 
 async def _main(
-    process: Process, args: object, message: str, piped: str, stopping: _Stopping
+    process: Process, args: object, message: str, piped: str, stopping: Stopping
 ) -> int:
     opened = await open_client(
         args,
@@ -653,94 +638,6 @@ async def _interrupted(run: Run, number: int) -> int:
     with contextlib.suppress(OSError):
         run.note("interrupted" if number == signal.SIGINT else f"stopped by {name(number)}")
     return status(number)
-
-
-def _on_sigint(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> None:
-    """Run `then` in `loop` on the next SIGINT (Ctrl+C), in place of any handler before it.
-    Windows' event loop has no `add_signal_handler`: there the handler is the interpreter's,
-    which runs in the main thread and hands `then` to the loop."""
-    if sys.platform == "win32":
-        signal.signal(signal.SIGINT, lambda *_: loop.call_soon_threadsafe(then))
-    else:
-        loop.add_signal_handler(signal.SIGINT, then)
-
-
-def _off_sigint(loop: asyncio.AbstractEventLoop) -> None:
-    """SIGINT back to the interpreter's default."""
-    if sys.platform == "win32":
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-    else:
-        loop.remove_signal_handler(signal.SIGINT)
-
-
-class _Signals:
-    """`tau -p`'s handlers while it runs: the first SIGINT, SIGTERM or SIGHUP cancels the run
-    (`_main` aborts and closes); a second of any of them leaves (`again`)."""
-
-    def __init__(
-        self,
-        process: Process,
-        stopping: _Stopping,
-        loop: asyncio.AbstractEventLoop,
-        task: "asyncio.Task[int]",
-    ) -> None:
-        self.process, self.stopping, self.loop, self.task = process, stopping, loop, task
-        self.hint: list[asyncio.TimerHandle] = []
-        _on_sigint(loop, lambda: self.first(signal.SIGINT))
-        on_ending(loop, self.first)
-
-    def off(self) -> None:
-        _off_sigint(self.loop)
-        off_ending(self.loop)
-        for timer in self.hint:
-            timer.cancel()
-
-    def first(self, number: int) -> None:
-        self.stopping.signal = number
-        _on_sigint(self.loop, lambda: self.again(signal.SIGINT))
-        on_ending(self.loop, self.again)
-        if number == signal.SIGINT:  # a person is there to read it
-            self.hint.append(self.loop.call_later(STOP_NOTICE, self.waiting))
-        self.task.cancel()
-
-    def again(self, _number: int) -> None:
-        """A second signal: close the session at once (no more waiting for the abort), and exit
-        after `LEAVE_SECONDS` whether or not the close has finished."""
-        stopping = self.stopping
-        if stopping.leaving:
-            return
-        stopping.leaving = True
-        self.say("tau: interrupted\n")
-        code = status(stopping.signal or signal.SIGINT)
-        timer = threading.Timer(LEAVE_SECONDS, _leave, (self.process, code))
-        timer.daemon = True  # a thread: it fires though a hook holds the loop
-        timer.start()
-        stopping.deadline.append(timer)
-        if not stopping.closing:
-            self.task.cancel()
-
-    def waiting(self) -> None:
-        self.say(
-            "tau: still stopping (a hook is running); Ctrl+C again leaves at once, "
-            "and then the message stays in the session\n"
-        )
-
-    def say(self, text: str) -> None:
-        """A line on stderr, unless the terminal it was is gone."""
-        with contextlib.suppress(OSError, ValueError):
-            self.process.stderr.write(text)
-            self.process.stderr.flush()
-
-
-def _leave(process: Process, code: int) -> None:
-    """The last resort after a second signal: exit now with `code`, though the session has not
-    finished closing (a hook that never returns, an extension slow to stop)."""
-    try:
-        with contextlib.suppress(OSError, ValueError):
-            process.stderr.flush()
-            process.stdout.flush()
-    finally:
-        os._exit(code)
 
 
 def detach(stream: TextIO) -> None:
@@ -800,13 +697,15 @@ def print_mode(process: Process, args: object) -> int:
         raise UsageError("-r chooses a session on a terminal; -p names it: --session REF, or -c")
     message = message_of(getattr(args, "message"), process.stdin, process.stderr)  # noqa: B009
 
-    stopping = _Stopping()
+    stopping = Stopping()
 
     async def main() -> int:
         task = asyncio.current_task()
         if task is None or threading.current_thread() is not threading.main_thread():
             return await _main(process, args, *message, stopping)  # signals are the main thread's
-        signals = _Signals(process, stopping, asyncio.get_running_loop(), task)
+        signals = Signals(
+            process.stdout, process.stderr, stopping, asyncio.get_running_loop(), task
+        )
         try:
             return await _main(process, args, *message, stopping)
         finally:
