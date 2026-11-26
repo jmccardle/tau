@@ -3,12 +3,15 @@
 
 Messages are JSON-RPC 2.0. We offer no client capabilities: a request from the server is answered
 `-32601`, except `ping`, which is answered whatever else we offer. A server's
-`notifications/tools/list_changed` calls `on_change`. A line or a body that is not JSON-RPC fails
-the requests waiting for an answer (with `McpMalformed`); the server is still used.
+`notifications/tools/list_changed` calls `on_change`. A message that is not JSON-RPC (an HTTP body
+that is not JSON, a JSON line that is not an object) fails the requests waiting for an answer (with
+`McpMalformed`); the server is still used.
 
-**stdio**: newline-delimited JSON on the server's stdin and stdout; its stderr is read and its
-last lines kept (`stderr_tail`) for the message when it fails, never shown otherwise (it would
-draw over a terminal UI). **HTTP**: each message is a POST to the server's URL, answered with
+**stdio**: newline-delimited JSON on the server's stdin and stdout, in an environment of its own
+(`_mcp_process.environment`). Its stderr, and any stdout line that is not JSON (a banner, a stray
+log line: skipped, not a message), are never shown as they come (they would draw over a terminal
+UI): their last lines are kept (`tail`), and the last of them ends the message when it exits.
+**HTTP**: each message is a POST to the server's URL, answered with
 `202`, a JSON body, or an event stream that carries the answer (and what the server sends
 before it). The session id the server gives at `initialize` goes with every later POST, and a
 `DELETE` ends it at stop. We open no `GET` stream, so an HTTP server's unprompted messages
@@ -22,7 +25,6 @@ import collections
 import contextlib
 import importlib.metadata
 import json
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +33,7 @@ from typing import Any, Protocol, cast
 import httpx
 
 from tau._mcp_config import McpServer
-from tau._mcp_process import Child, spawn, stop
+from tau._mcp_process import Child, environment, spawn, stop
 
 PROTOCOL_VERSION = "2025-11-25"
 READ_LIMIT = 1 << 26
@@ -53,7 +55,7 @@ class McpMalformed(McpError):
 
 
 class McpExited(Exception):
-    """The server process exited; the message says so, with its last line of stderr."""
+    """The server process exited; the message says so, with its last line of output (`tail`)."""
 
 
 class McpStartError(Exception):
@@ -62,11 +64,12 @@ class McpStartError(Exception):
 
 @dataclass(frozen=True)
 class McpTool:
-    """A tool a server lists: its MCP name, description and input schema."""
+    """A tool a server lists: its MCP name, description and input schema (`None` if it lists
+    none that is a JSON object: such a tool cannot be offered)."""
 
     name: str
     description: str
-    schema: dict[str, Any]
+    schema: dict[str, Any] | None
 
 
 class _Transport(Protocol):
@@ -139,9 +142,12 @@ class McpClient:
             try:
                 result = await self.request("tools/list", {"cursor": cursor} if cursor else {})
                 for tool in result.get("tools", []):
-                    schema = tool.get("inputSchema") or {"type": "object"}
                     description = str(tool.get("description") or "")
-                    listed.append(McpTool(str(tool["name"]), description, schema))
+                    schema: object = tool.get("inputSchema")
+                    if not isinstance(schema, dict):
+                        schema = None
+                    usable = cast("dict[str, Any] | None", schema)
+                    listed.append(McpTool(str(tool["name"]), description, usable))
             except (KeyError, TypeError, AttributeError) as e:
                 raise McpMalformed(f"tools/list answered a malformed list ({e!r:.80})") from None
             cursor = result.get("nextCursor")
@@ -214,6 +220,10 @@ class McpClient:
         except (ValueError, RecursionError):
             self.fail_pending(McpMalformed("sent a message that is not JSON"))
             return
+        self.deliver(message)
+
+    def deliver(self, message: object) -> None:
+        """One decoded message (or a batch)."""
         for one in cast("list[object]", message) if isinstance(message, list) else [message]:
             if isinstance(one, dict):
                 self._dispatch(cast("Message", one))
@@ -282,7 +292,7 @@ class _Stdio:
         server = client.server
         try:
             process = await spawn(
-                server.command, server.args, {**os.environ, **server.env}, cwd, READ_LIMIT
+                server.command, server.args, environment(server.env), cwd, READ_LIMIT
             )
         except OSError as e:
             why = e.strerror or str(e)
@@ -308,7 +318,7 @@ class _Stdio:
                     line = await stdout.readuntil(b"\n")
                 except _END as end:
                     if end.partial.strip():
-                        self._client.receive(end.partial)
+                        self._line(end.partial)
                     break
                 except asyncio.LimitOverrunError as over:
                     await stdout.readexactly(over.consumed)  # discard it, then the rest of it
@@ -318,7 +328,7 @@ class _Stdio:
                     )
                     continue
                 if line.strip():
-                    self._client.receive(line)
+                    self._line(line)
         except (ConnectionError, _END, asyncio.LimitOverrunError):
             pass
         code = await self._process.wait()
@@ -326,14 +336,24 @@ class _Stdio:
         last = f": {self.tail[-1]}" if self.tail else ""
         self._client.ended(f"MCP server {self._client.name} exited (status {code}){last}")
 
+    def _line(self, line: bytes) -> None:
+        try:
+            message: object = json.loads(line)
+        except (ValueError, RecursionError):  # a banner or a stray log line, not a message
+            self._keep("[stdout] " + line.decode("utf-8", errors="replace"))
+            return
+        self._client.deliver(message)
+
+    def _keep(self, text: str) -> None:
+        if text := text.strip():
+            self.tail.append(text[:300])
+
     async def _read_stderr(self) -> None:
         stderr = self._process.stderr
         assert stderr is not None
         with contextlib.suppress(ConnectionError, ValueError):
             while line := await stderr.readline():
-                text = line.decode("utf-8", errors="replace").strip()
-                if text:
-                    self.tail.append(text[:300])
+                self._keep(line.decode("utf-8", errors="replace"))
 
     async def close(self, grace: float) -> None:
         await stop(self._child, grace)

@@ -1,11 +1,15 @@
 """A small stdio MCP server for the tests (standard library only), from tau-acp's.
 
 Environment: MCP_LOG, a file it appends one JSON line to for each message it receives and for
-its start (`{"started": pid}`); PAGE_SIZE, to page `tools/list` over extra tools `tool_0` ..
-`tool_4`; TEST_SECRET, which the `env` tool returns; NO_TOOLS, to declare no `tools`
-capability; SPAWN_CHILD, to start a `sleep` child and log its pid; FAIL_START, to write it to
-stderr and exit 2 before reading anything; HANG_START, to never answer `initialize`. It always
-writes a line to stderr when it starts, which τ must not show.
+its start (`{"started": pid, "environ": {...}}`, its whole environment); PAGE_SIZE, to page
+`tools/list` over extra tools `tool_0` .. `tool_4`; TEST_SECRET, which the `env` tool returns;
+NO_TOOLS, to declare no `tools` capability; SPAWN_CHILD, to start a `sleep` child and log its
+pid; FAIL_START, to write it to stderr and exit 2 before reading anything; STDOUT_EXIT, to write
+it to stdout (not JSON) and exit 2 before anything else; BANNER, to write it to stdout (not JSON)
+as it starts; BAD_TOOLS, to list tools τ must leave out (no input schema, one that is not an
+object, a name too long). It always
+writes a line to stderr when it starts, which τ must not show. The `garbage` tool writes a line
+that is not JSON on stdout before it answers.
 """
 
 import json
@@ -55,6 +59,12 @@ TOOLS = [
     tool("garbage"),
     *([tool(f"tool_{n}") for n in range(5)] if PAGE else []),
 ]
+if os.environ.get("BAD_TOOLS"):
+    TOOLS += [
+        {"name": "no_schema", "description": "it has no inputSchema"},
+        {"name": "odd_schema", "description": "", "inputSchema": "object"},
+        tool("x" * 60),
+    ]
 
 
 def text(value, error=False):
@@ -76,10 +86,10 @@ def call(ident, name, args):
     if name == "ping":  # a server may ping its client; the answer is in the log
         send({"jsonrpc": "2.0", "id": "ping-1", "method": "ping"})
         return text("pinged")
-    if name == "garbage":  # a line that is not JSON, and no result
+    if name == "garbage":  # a line that is not JSON (a stray log line), then the answer
         sys.stdout.write("this is not json\n")
         sys.stdout.flush()
-        return None
+        return text("answered after the noise")
     if name == "grow":  # a new tool, and the notification that says the list changed
         TOOLS.append(tool("grown"))
         send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
@@ -140,12 +150,18 @@ def handle(message):
     send({"jsonrpc": "2.0", "id": ident, "result": result})
 
 
+if os.environ.get("STDOUT_EXIT"):
+    sys.stdout.write(os.environ["STDOUT_EXIT"] + "\n")
+    sys.exit(2)
 sys.stderr.write("test server: starting up\n")
 sys.stderr.flush()
 if os.environ.get("FAIL_START"):
     sys.stderr.write(os.environ["FAIL_START"] + "\n")
     sys.exit(2)
-log({"started": os.getpid(), "cwd": os.getcwd()})
+if os.environ.get("BANNER"):
+    sys.stdout.write(os.environ["BANNER"] + "\n")
+    sys.stdout.flush()
+log({"started": os.getpid(), "cwd": os.getcwd(), "environ": dict(os.environ)})
 if os.environ.get("SPAWN_CHILD"):  # a grandchild, in our process group
     log({"child": subprocess.Popen(["sleep", "300"]).pid})
 for line in sys.stdin:

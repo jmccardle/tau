@@ -913,6 +913,19 @@ A server with a `command` runs on your machine and speaks over its stdin and std
 out of the file; `${NAME:-default}` gives a default. A server whose name is not set and has no
 default is skipped, with a warning that says which (see below).
 
+**A server that runs on your machine does not get your whole environment**, so a key τ can see
+reaches only the servers you give it. It gets `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`
+(on Windows `APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`,
+`PROCESSOR_ARCHITECTURE`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`), the set
+the official MCP SDK's clients pass, and what its `env` names. Pass a key by naming it:
+
+```json
+{ "mcpServers": { "github": { "command": "github-mcp", "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } } } }
+```
+
+A server that needs any other variable (a proxy's `HTTPS_PROXY`, `NODE_OPTIONS`, a virtualenv's
+`VIRTUAL_ENV`, `LANG`) must name it in its `env` the same way.
+
 A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
 Code reads), so a project set up for Claude Code works as it is. Both are pinned by
 [trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
@@ -958,7 +971,11 @@ While τ runs, `/mcp` lists the servers, whether each is running and their tools
 lists new tools has them offered from the model's next request. A server that exits is reported
 (an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
 server. A tool's text and images reach the model; other kinds of content are named and left out.
-Prompts and resources that a server offers are not used.
+A tool τ cannot offer (it lists no input schema that is a JSON object, or its `mcp__SERVER__TOOL`
+name is over 64 characters) is left out with a warning naming it; the server's other tools are
+offered. A line a server prints on its output that is not a message (a banner, a stray log line)
+is skipped; if the server then exits, the report shows it. Prompts and resources that a server
+offers are not used.
 
 ## Reading the web and searching it
 
