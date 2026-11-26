@@ -216,6 +216,8 @@ as `tau -p "review main.rs"` would.
 | `$TAU_HOME/prompts/NAME.md` | a template |
 | `$TAU_HOME/skills/NAME/SKILL.md` | a skill |
 | `.tau/prompts/NAME.md`, `.tau/skills/NAME/SKILL.md` in a trusted project | the same, for the project; for one name the project's wins |
+| `~/.agents/skills/NAME/SKILL.md`, `~/.claude/skills/NAME/SKILL.md` | a skill, so a skill written for Claude Code or another agent loads as it is |
+| `.agents/skills/NAME/SKILL.md`, `.claude/skills/NAME/SKILL.md` in a trusted project | the same, for the project, pinned by trust like `.tau/skills`; a symlink there is refused. For one name `.tau/skills` wins over `.agents/skills`, which wins over `.claude/skills` |
 
 For one name, **a project's file hides the user's**: if `.tau/prompts/review.md` and
 `$TAU_HOME/prompts/review.md` both exist in a trusted project, `/review` is the project's, and

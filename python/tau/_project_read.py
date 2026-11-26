@@ -142,6 +142,9 @@ def read_regular(path: Path) -> bytes | None:
 PROMPTS_DIR = "prompts"
 SKILLS_DIR = "skills"
 SKILL_FILE = "SKILL.md"
+FOREIGN_BASES = (".agents", ".claude")
+"""The directories, beside `.tau/` in a project and in the home directory, whose
+`skills/NAME/SKILL.md` are read as skills too (D24 section 6), in order of precedence."""
 
 
 def _children(directory: Path) -> list[Path]:
@@ -195,25 +198,52 @@ def prompt_candidates(
     return sorted(found)
 
 
+def foreign_candidates(
+    names: Callable[[str], list[str]], is_dir: Callable[[str], bool]
+) -> list[str]:
+    """The `.agents/skills/NAME/SKILL.md` and `.claude/skills/NAME/SKILL.md` under a base: only a
+    file with exactly that path (other files in those directories belong to other tools, so none
+    is a misplaced skill). `names(relative)` and `is_dir(relative)` are as for
+    `prompt_candidates`."""
+    return [
+        f"{base}/{SKILLS_DIR}/{name}/{SKILL_FILE}"
+        for base in FOREIGN_BASES
+        for name in names(f"{base}/{SKILLS_DIR}")
+        if is_dir(f"{base}/{SKILLS_DIR}/{name}")
+        and SKILL_FILE in names(f"{base}/{SKILLS_DIR}/{name}")
+    ]
+
+
 def read_prompt_files(tau: Path) -> dict[str, bytes]:
     """The prompt templates and skills of a project's `.tau` directory, as bytes, and the files
     that look like one in the wrong place (`prompt_candidates`): path relative to `tau`, with
     `/`. Other files are not read. A symlink among them, or any file `read_regular` refuses, is a
-    `TrustError`. Nothing is returned for a directory that is absent."""
+    `TrustError`. Nothing is returned for a directory that is absent. The project's
+    `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` (`foreign_candidates`), beside
+    `.tau/`, are read too, and their paths start with `.agents` or `.claude`."""
+    root = tau.parent
 
-    def names(relative: str) -> list[str]:
-        return [p.name for p in _children(tau / relative)]
+    def lister(base: Path) -> tuple[Callable[[str], list[str]], Callable[[str], bool]]:
+        def names(relative: str) -> list[str]:
+            return [p.name for p in _children(base / relative)]
 
-    def is_dir(relative: str) -> bool:
-        path = tau / relative
-        if path.is_symlink():
-            raise refusal(path, "is a symlink; tau refuses symlinks inside a project")
-        return path.is_dir()
+        def is_dir(relative: str) -> bool:
+            path = base / relative
+            if path.is_symlink():
+                raise refusal(path, "is a symlink; tau refuses symlinks inside a project")
+            return path.is_dir()
 
+        return names, is_dir
+
+    for base in FOREIGN_BASES:
+        if (root / base).is_symlink():
+            raise refusal(root / base, "is a symlink; tau refuses symlinks inside a project")
+    found = [(tau, r) for r in prompt_candidates(*lister(tau))]
+    found += [(root, r) for r in foreign_candidates(*lister(root))]
     files: dict[str, bytes] = {}
-    for relative in prompt_candidates(names, is_dir):
-        raw = read_regular(tau / relative)
+    for base, relative in found:
+        raw = read_regular(base / relative)
         if raw is None:
-            raise refusal(tau / relative, "vanished while the project was read")
+            raise refusal(base / relative, "vanished while the project was read")
         files[relative] = raw
     return files

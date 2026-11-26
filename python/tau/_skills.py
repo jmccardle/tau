@@ -16,7 +16,11 @@ whole text, once each, as the extension does for a line; a command's `stdin`, wh
 `/skills:NAME` is always the file.
 
 Where they are read: `$TAU_HOME/prompts/*.md` and `$TAU_HOME/skills/*/SKILL.md`, and the same
-under the trusted project's `.tau/`, from the bytes trust approved (`Trusted.prompt_files`). They
+under the trusted project's `.tau/`, from the bytes trust approved (`Trusted.prompt_files`); skills
+are also read from `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` in the user's home
+directory and in the trusted project (pinned by trust like the rest; nothing else in those
+directories is read, and a symlink in the project's is refused). For one name `.tau/skills` hides
+`.agents/skills`, which hides `.claude/skills`, and a project's hides the user's. They
 are read when the extensions load and again, by `rescan`, when a stat says a file was added,
 removed or edited: a running `tau` or `tau serve` sees them before it runs or lists a command.
 A project file that is no longer what trust approved is not used; its command says to run
@@ -41,6 +45,7 @@ added later reaches new sessions only (though `/name` runs it at once). The opti
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 from xml.sax.saxutils import escape
 
@@ -55,6 +60,7 @@ from tau._prompt_files import (
     PromptFile,
     SkillFileError,
     command_name,
+    project_paths,
     read_row,
     signature,
     user_files,
@@ -78,6 +84,13 @@ class Options:
     )
 
 
+def _home_dir(loaded: LoadedConfig) -> Path | None:
+    """The user's home directory, where `.agents/skills` and `.claude/skills` are read (`None`:
+    `HOME` is not set, as for a service that gives `TAU_HOME` alone, and there is none)."""
+    home = loaded.environ.get("HOME")
+    return Path(home).resolve() if home else None
+
+
 def _read(
     loaded: LoadedConfig, *, recheck: bool
 ) -> tuple[dict[str, PromptFile | str], list[Problem], bool]:
@@ -87,7 +100,8 @@ def _read(
     names are all the message that says to run `tau trust` (the last item says so: it is not
     cached, since running `tau trust` changes nothing in the project's files)."""
     by_name: dict[str, PromptFile | str] = {}
-    user, problems = read_row(user_files(loaded.home), loaded.home)
+    home = _home_dir(loaded)
+    user, problems = read_row(user_files(loaded.home, home), loaded.home, home)
     by_name.update(user)
     by_name.update({p.name: p.message for p in problems if p.name})
     project = loaded.project
@@ -102,12 +116,11 @@ def _read(
         )
     except TrustError as e:
         stale = str(e)
-        approved = {base / relative: raw for relative, raw in project.prompt_files.items()}
-        names = {command_name(p.relative_to(base).parts) for p in approved}
-        names |= {command_name(tuple(r.split("/"))) for r, _, _ in signature(base)}
+        names = {command_name(tuple(r.split("/"))) for r in project.prompt_files}
+        names |= {command_name(tuple(r.split("/"))) for r, _, _ in signature(base, project.root)}
         by_name.update({n: stale for n in names if n})
         return by_name, [*problems, Problem(stale, None)], True
-    row, found = read_row({base / relative: raw for relative, raw in files.items()}, base)
+    row, found = read_row(project_paths(files, base), base, project.root)
     by_name.update(row)
     by_name.update({p.name: p.message for p in found if p.name})
     return by_name, [*problems, *found], False
@@ -195,13 +208,17 @@ class Skills:
         loaded = self._loaded
         if loaded is None:
             return ()
-        project = () if loaded.project is None else signature(loaded.project.root / TAU_DIR)
+        project = (
+            ()
+            if loaded.project is None
+            else signature(loaded.project.root / TAU_DIR, loaded.project.root)
+        )
         try:  # `tau trust` rewrites it: a file that was stale may be approved now
             info = (loaded.home / "trusted.json").stat()
             approvals = (info.st_mtime_ns, info.st_size)
         except OSError:
             approvals = ()
-        return (signature(loaded.home), project, approvals)
+        return (signature(loaded.home, _home_dir(loaded)), project, approvals)
 
     def _make_commands(self) -> None:
         self.commands = tuple(_command(n, item) for n, item in sorted(self._by_name.items()))
