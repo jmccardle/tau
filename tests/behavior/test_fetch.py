@@ -6,6 +6,7 @@ here reaches the network."""
 import gzip
 import json
 import re
+import socket
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -320,7 +321,30 @@ async def test_a_redirect_to_another_host_is_told_not_followed(tmp_path: Path) -
 async def test_a_redirect_to_something_that_is_not_http_is_an_error(tmp_path: Path) -> None:
     with serving({"/ftp": Page(status=302, headers={"Location": "ftp://127.0.0.1/x"})}) as site:
         (out,) = await run(tmp_path, site.url, {"url": "/ftp"})
-    assert error(out) == f"{site.url}/ftp redirects to ftp://127.0.0.1/x, not an http URL"
+    assert error(out) == f"{site.url}/ftp redirects to 'ftp://127.0.0.1/x', not an http URL"
+
+
+@scenario
+async def test_a_redirect_that_names_nowhere_readable_is_an_error(tmp_path: Path) -> None:
+    pages = {
+        "/script": Page(status=302, headers={"Location": "javascript:alert(1)"}),
+        "/nowhere": Page(status=302),
+    }
+    with serving(pages) as site:
+        script, nowhere = await run(tmp_path, site.url, {"url": "/script"}, {"url": "/nowhere"})
+    assert error(script) == f"{site.url}/script redirects to 'javascript:alert(1)', not an http URL"
+    assert error(nowhere) == f"{site.url}/nowhere: HTTP 302 with no Location to redirect to"
+
+
+@scenario
+async def test_a_host_that_never_answers_the_connection_is_named(tmp_path: Path) -> None:
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(0)  # never accepted: once its queue is full, a new connection waits
+        address = busy.getsockname()
+        with socket.create_connection(address):  # takes the one place there is
+            (out,) = await run(tmp_path, f"http://127.0.0.1:{address[1]}", {"url": "/"})
+    assert error(out) == "connecting to 127.0.0.1 took over 10 s"
 
 
 @scenario

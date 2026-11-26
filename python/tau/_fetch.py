@@ -57,6 +57,7 @@ MAX_CHARS: Final = 200_000
 MAX_BODY: Final = 5 * 1024 * 1024
 MAX_IMAGE: Final = 20 * 1024 * 1024
 MAX_REDIRECTS: Final = 5
+_REDIRECTS: Final = frozenset({301, 302, 303, 307, 308})
 MAX_TIMEOUT: Final = 600
 CONNECT_TIMEOUT: Final = 10.0
 TOTAL_TIMEOUT: Final = 60
@@ -233,6 +234,10 @@ class Fetch:
                 return await self._read(node, url, max_chars, start)
         except TimeoutError:
             raise ToolError(f"fetching {url} took over {self._timeout} s") from None
+        except httpx.ConnectTimeout:
+            raise ToolError(
+                f"connecting to {host_of(url)} took over {CONNECT_TIMEOUT:g} s"
+            ) from None
         except httpx.HTTPError as e:
             raise ToolError(f"fetching {url} failed: {_why(e)}") from e
 
@@ -245,7 +250,8 @@ class Fetch:
             "Accept-Language": "en-US,en;q=0.9",
         }
         timeout = httpx.Timeout(self._timeout, connect=CONNECT_TIMEOUT)
-        async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
+        hooks = {"response": [_checked_redirect]}
+        async with httpx.AsyncClient(headers=headers, timeout=timeout, event_hooks=hooks) as client:
             current = url
             for _ in range(MAX_REDIRECTS + 1):
                 host = host_of(current)
@@ -254,10 +260,8 @@ class Fetch:
                 if not self._allow_private and (why := await _refused(host)) is not None:
                     raise ToolError(f"fetch refused {current}: {why}")
                 async with client.stream("GET", current) as response:
-                    if response.is_redirect:
-                        target = str(response.url.join(response.headers.get("location", "")))
-                        if host_of(target) is None:
-                            raise ToolError(f"{current} redirects to {target}, not an http URL")
+                    if response.status_code in _REDIRECTS:
+                        target = _target(response, current)
                         if host_of(target) != host:
                             return (
                                 f"{current} redirects to {target}, another host: "
@@ -309,6 +313,28 @@ class Fetch:
         if not node.resolved_model().images:
             return f"{line} This model does not take images, so it is not shown."
         return [line, image]
+
+
+def _target(response: httpx.Response, current: str) -> str:
+    """The URL a redirect `response` to `current` sends to; `ToolError` if it names none, or
+    names something that is not an http or https URL."""
+    location = response.headers.get("location")
+    if location is None:
+        raise ToolError(f"{current}: HTTP {response.status_code} with no Location to redirect to")
+    try:
+        target = str(response.url.join(location))
+    except httpx.InvalidURL:
+        target = ""
+    if host_of(target) is None:
+        raise ToolError(f"{current} redirects to {location!r}, not an http URL")
+    return target
+
+
+async def _checked_redirect(response: httpx.Response) -> None:
+    """Refuse a bad redirect as soon as it answers: httpx builds the next request itself, and
+    fails with an error that does not say what the `Location` was."""
+    if response.status_code in _REDIRECTS:
+        _target(response, str(response.request.url))
 
 
 async def _body(response: httpx.Response, cap: int) -> tuple[bytes, bool]:
