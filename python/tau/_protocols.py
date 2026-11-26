@@ -3,7 +3,7 @@
 import inspect
 import json
 import re
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast, runtime_checkable
 
@@ -358,7 +358,10 @@ class Extension(Protocol):
     `spawn`ed are cancelled. A `start` or `stop` that is not a coroutine function is refused when
     the driver is built (`DefinitionError`). A `start` that raises or outlives its timeout
     (`START_TIMEOUT`, or `extensions.NAME.start_timeout`) stops the driver's start with
-    `ExtensionLoadError`; a `stop` that does is reported and the next one runs.
+    `ExtensionLoadError`; a `stop` that does is reported and the next one runs. And the undo
+    hook (D33): `async def reverse(self, cursor: Cursor, marker: UndoMarker) -> None`, which
+    reverses what an undo marker the extension wrote marks (a file checkpoint), called only
+    through `Cursor.reverse`; one that is not a coroutine function is refused the same way.
     """
 
     @property
@@ -388,16 +391,32 @@ LIFECYCLE: tuple[str, ...] = ("start", "stop")
 """An extension's lifecycle methods (D32 section 4): each optional, each a coroutine function."""
 
 
+REVERSE = "reverse"
+"""The name of an extension's undo hook (D33): `async def reverse(self, cursor, marker)`, which
+reverses what an undo marker it wrote marks. A driver-level attribute, as `commands` is: only
+`Cursor.reverse` calls it."""
+
+
+def reverser_of(extensions: Sequence[object], name: str) -> Callable[..., Awaitable[object]] | None:
+    """The `reverse` of the extension `name` among `extensions`; `None` if it is not there or
+    defines none."""
+    for ext in extensions:
+        if getattr(ext, "name", None) == name:
+            return cast("Callable[..., Awaitable[object]] | None", getattr(ext, REVERSE, None))
+    return None
+
+
 def _check_hooks(name: str, candidate: object) -> None:
     """`DefinitionError` if the extension `name` has a `pre_`/`post_` attribute that is not a
-    hook point, a hook that is not callable, or a `start` or `stop` that is not a coroutine
-    function."""
-    for attr in LIFECYCLE:
+    hook point, a hook that is not callable, or a `start`, `stop` or `reverse` that is not a
+    coroutine function."""
+    for attr in (*LIFECYCLE, REVERSE):
         method = getattr(candidate, attr, None)
         if method is not None and not inspect.iscoroutinefunction(method):
+            what = "undo hook (D33)" if attr == REVERSE else "lifecycle"
             raise DefinitionError(
                 f"extension {name!r}: `{attr}` must be an async method (`async def {attr}`), "
-                f"the extension's lifecycle, not {method!r}"
+                f"the extension's {what}, not {method!r}"
             )
     for attr in dir(candidate):
         if not attr.startswith(("pre_", "post_")):

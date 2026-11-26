@@ -28,7 +28,7 @@ follow its text, empty for most; it encodes as before (`{"User": "text"}`) when 
 `User`'s, then a `Results`' `Ok` outcomes' in call order; the store, a fork, the counts and the
 image check read images only through it.
 Known `Custom` kinds: `sample_error` (core, a sample that failed with no
-output).
+output); `undo` (an undo marker, D33).
 
 ### part
 *spike* `Part` · retires content block
@@ -1413,7 +1413,8 @@ turn N-1, all in one derived `User` node. Turn N-1 keeps its replies and calls w
 reduced to `ok` or `error` and no reasoning; turn N keeps its calls and results, without
 reasoning; in both, a string argument over 200 characters becomes `[pruned: N chars]`. `Config`
 and `Custom` nodes are copied. A conversation with nothing to prune writes nothing. `auto` must
-be `false` (automatic pruning is not built).
+be `false` (automatic pruning is not built). The pruned line ends in an undo marker (D33: `/prune`, returning to where
+the cursor was).
 
 ### Compaction (extension), head, tail, cut, summarizer cursor
 `tau.Compaction` (`_compaction.py`), key `compaction`, options `auto`, `reserve`, `hard`, `soft`, `keep` (unset: 20000 or half the soft limit), `model`, command `/compact [focus]` · D24 section 2 · new (8E-3)
@@ -1434,11 +1435,77 @@ summary prompt (and the focus), waited for with `rest`, and closed. It is offere
 tools but refused any call, and compaction's own `pre_sample` skips it. The new line is the head's
 `Config` copies, the summary as a `User` node by `Extension("compaction")` with `derived_from` the
 summarizer's reply (whose reported `output` is the summary's count), a copy of the user message the turn in progress began with if the head held
-it, then a copy of every tail node. Every figure is a **count** (below): the bill's own where a
+it, then a copy of every tail node, then an undo marker (D33: `/compact`, or `automatic
+compaction (soft limit)` / `(hard limit)`, returning to where the cursor was). Every figure is a
+**count** (below): the bill's own where a
 report covers it, a **ceiling** where none does. A summarizer that fails, is halted, replies
 without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing;
 stopping or closing `compaction:N` fails the hard limit's step. The trigger never reacts to a
 provider's "prompt too long"; `/compact`, then a step, recovers.
+
+### convention (clients and extensions may rely on)
+`docs/guide/conventions.md` · D33, akb #641 §1 · new (0.18)
+
+A shape τ's built-ins keep stable over what the wire and the extension API already carry (a
+`Custom` node, a command's answer), promised to clients and extensions without a protocol change.
+A client that does not know one still works: it shows a `Custom` node by its kind, an answer as
+text. The first is the undo marker.
+
+### undo marker, UndoMarker, return_to, reverses, priority (a marker's)
+`tau.UndoMarker` (`label`, `return_to`, `reverses`, `priority`, `extra`; `body()`, `of(body)`),
+`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`) · D33 §1 (CV-01) · new (0.18)
+
+A `Custom` node of kind `undo` whose data is a JSON object: **`label`** (what was done, as a
+person names it), **`return_to`** (the node going back puts the cursor on), **`reverses`** (the
+kind of change, named by its owner: `compact`, `prune`, `clear`), **`priority`** (`move`, the
+default: a change to the tree that moving the cursor back reverses; any other name, by convention
+`file`, is the owner's to reverse), and the owner's own keys (`extra`). Written by the extension
+that made the change (its `by`). Never sent; decides nothing (core's `deciding` skips it), so a
+marker written mid-turn leaves the turn going on. `UndoMarker.of` is `None` for any other body
+and `ValueError` for malformed data. A copy on a new line marks the same change.
+
+### Undo (extension), /undo, edit-last (the harness's)
+`tau._undo.Undo` (not exported; `shipped("undo")` in tests), key `undo`, command `/undo
+[priority] [at] [json]` · D33 §2 (EX-20) · new (0.18)
+
+The built-in, default-on and removable, that walks back from the cursor's node to the nearest
+undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
+(**edit-last**, D23's Ctrl+Z as a command): it goes to the marker's `return_to` (after the
+owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
+parent, as a go-to does (auto-step off). A cursor command, so `Busy` unless at rest; `at` refuses
+unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
+user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
+
+### reverse (an extension's undo hook), Cursor.reverse, REVERSE
+`Extension.reverse`, `Cursor.reverse(marker) -> bool`, `tau._protocols.REVERSE`, `reverser_of`,
+`Handles.reverser` · D33 §3 · new (0.18)
+
+`async def reverse(self, cursor, marker)`: an extension's reversal of what an undo marker it wrote
+marks (a file checkpoint). A driver-level attribute like `commands`, not a hook point: only
+`Cursor.reverse(node)` calls it, with a cursor handle bound to the owner and the `UndoMarker`,
+and returns whether one did (`False`: the owner is not loaded or has none); `ValueError` for a
+node that is not a marker an extension wrote. Not a coroutine function: `DefinitionError` at
+build.
+
+### Stays (a command's halt mid-turn)
+`tau._markers.Stays` (`leave`, `halt`, `forget`) · D33 §2 · new (0.18)
+
+What `undo` and `session` share: a cursor command whose step would go on from where it left the
+cursor (`next` is not `Wait`: a batch, a `User`, a `Results`) records it with `leave`, and the
+extension's own `pre_step` returns the stop `"<command> left the cursor at node N, mid-turn: step
+to carry on from there"`, so going back never starts the model. `post_step` forgets what an
+aborted step left.
+
+### SessionCommands (extension), session, /clear, /branch, /tree, /export
+`tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
+
+The built-in, default-on and removable. **`/clear`**: under the last `System` node of the walk's
+prefix, a `Config` with the branch's folded settings (`folded`: model and options, each `Config`
+a delta) if they differ from the root's, then an undo marker (`/clear`); the cursor moves onto it
+and rests. One root, and the first request after it is byte for byte a new session's.
+**`/branch [label]`**: `open` a cursor at this one's node. **`/tree [at]`**: the tree as text
+(`tree_lines`, `describe_node`). **`/export [path] [thinking]`**: `to_markdown` of the walk. No
+`/new`: a client's move.
 
 ### Count, Basis, ceiling
 `tau.Count` (`tokens`, `basis`, `bound`; `upper` is their sum), `tau.Basis` (`reported`,
@@ -2241,7 +2308,9 @@ replaces 0.15's session sidebar and stream strip.
 
 Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
 message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
-busy cursor it asks first, because a go-to aborts the step. **Reclaim** is its small sibling: Up on
+busy cursor it asks first, because a go-to aborts the step. With `undo:undo` among the commands and
+the cursor at rest it runs the harness's `/undo` instead (D33 §5: `json=true`, `at` the viewed
+node), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
 an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
 editor.
 
