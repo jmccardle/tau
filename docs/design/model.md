@@ -174,6 +174,13 @@ A move is the only way `at` changes, and it checks only that `to` is a node
   effect is cancelled, a hook (cursor or tool) finishes (Q34), and an open
   question is declined (§7). It is refused only for an unknown cursor or
   node.
+- **A command's step** (`Session.step(cursor, command=True)`, D16 §2) is a
+  go-to's too: auto-step off, then a step that runs only `pre_step` (where the
+  driver runs the command, before the hooks) and `post_step`, ending `Done`
+  unless a hook halts or fails it. It ends when the command returns, wherever
+  the command left the cursor. A command that wants the model to run turns
+  auto-step on; `after` (§6) then starts the next step, which samples or runs
+  tools as `decide` says.
 - **Re-run** is go-to the batch's `Assistant` node, then step. **Branching**
   is moving off `walk(at)` and not below it; the branch forms at the next
   commit. Going to an ancestor is going back.
@@ -290,7 +297,9 @@ or throws every reply away, gets one step: the cursor does not move, auto-step
 goes off, and the input stays pending. Auto-step turned off this way is the
 same state as any other turn-off (`Session::auto`, read by a frontend, or by
 an extension through `cursor.auto`); `post_step` itself runs before core
-decides, so it still sees auto-step on.
+decides, so it still sees auto-step on. A command's step (§3) tried nothing,
+so it is never idle: with auto-step on (the command turned it on) and work,
+the next step starts whether or not the cursor moved.
 
 An item added to the cursor's scratchpad since this step woke
 (`Session::changes`; removing or delivering an item is not a change) is news
@@ -311,7 +320,7 @@ commits each time moves the cursor every step, so only an extension such as
 `StepLimit` bounds it.
 
 **Wakes:** an item added to its scratchpad, opening, load (lease holder
-only), a go-to, `Session.step`, auto-step turned on. Busy means a step exists
+only), a go-to, `Session.step` (a command's step among them), auto-step turned on. Busy means a step exists
 and is not resting. `machine::Machine` holds every cursor's step and starts
 one on a wake; a wake while busy joins the step already there.
 `Session.step` on a busy cursor is refused (`Error::Busy`).

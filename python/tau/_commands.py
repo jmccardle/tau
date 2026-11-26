@@ -1,10 +1,14 @@
 """Commands (D16 section 2): plain functions an extension lists in `commands`, run as `/name`.
 
 `CommandTable` holds the driver's commands and runs them for clients. A command that takes a
-`Cursor` runs as a step of that cursor: `run` keeps it in memory and asks for the step
-(`Session.step`), the driver gives it to `before` when the step's `pre_step` job is
-dispatched, and it runs ahead of the extensions' `pre_step` hooks. Any other command runs at
-once, as a task on the loop. `run` answers a future: the command's result (a `str` or `None`),
+`Cursor` runs as a step of that cursor: `run` keeps it in memory and asks for a command's step
+(`Session.step(cursor, command=True)`), the driver gives it to `before` when the step's `pre_step`
+job is dispatched, and it runs ahead of the extensions' `pre_step` hooks. The step ends when the
+command returns: auto-step is off while it runs, and after it only `post_step` runs, so a command
+that leaves the cursor on a `User` or `Results` node starts no model and runs no tools. A command
+that wants the model to run turns auto-step on (`cursor.set_auto(True)`, or `cursor.send`): the
+next step then starts at once from where the cursor stands. Any other command runs at once, as a
+task on the loop. `run` answers a future: the command's result (a `str` or `None`),
 or `CommandFailed`, which carries the failure as `"Type: msg"`; a failed `Cursor` command also
 ends its step `Failed`, as a failing hook does (the cursor's `hook_error` names `pre_step` and
 the extension that lists the command). A command may raise `CommandFailed` itself to refuse (its
@@ -332,7 +336,7 @@ class CommandTable:
             return future
         self._pending[cursor] = _Pending(command, bound, client, future)
         try:
-            self._session.step(cursor)
+            self._session.step(cursor, command=True)
         except BaseException:
             del self._pending[cursor]
             raise

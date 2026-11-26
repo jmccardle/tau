@@ -325,7 +325,7 @@ async def test_a_plain_undo_passes_over_a_file_marker_to_edit_last(tmp_path: Pat
 
 
 @scenario
-async def test_undo_file_has_the_owner_reverse_it_and_halts_mid_turn(tmp_path: Path) -> None:
+async def test_undo_file_has_the_owner_reverse_it_and_rests_mid_turn(tmp_path: Path) -> None:
     checkpoints = Checkpoints()
     h = await checkpointed(tmp_path, checkpoints)
     walk = h.session.tree.walk(at(h))
@@ -341,8 +341,8 @@ async def test_undo_file_has_the_owner_reverse_it_and_halts_mid_turn(tmp_path: P
     assert len(h.provider.requests) == requests, "going back mid-turn runs nothing"
     view = await h.view()
     assert not view.busy
-    assert isinstance(view.ending, Ending.Halted)
-    assert "/undo left the cursor at node" in view.ending.reason
+    assert isinstance(view.ending, Ending.Done), "the command's step ended, not halted"
+    assert not view.auto
     await h.close()
 
 

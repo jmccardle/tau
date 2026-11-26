@@ -450,11 +450,16 @@ impl Session {
             })
     }
 
-    /// Run one step of `cursor` whether or not auto-step is on, and leave auto-step as it is.
-    /// `Busy` if a step is already running.
-    fn step(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.shared
-            .write(py, tracing::info_span!("py.step"), |m| Ok(m.step(cursor)?))
+    /// Run one step of `cursor` whether or not auto-step is on, leaving auto-step as it is.
+    /// With `command`, it is a command's step instead (D16 §2): auto-step goes off, as for a
+    /// go-to, and only `pre_step` (where the driver runs the command) and `post_step` run; it ends
+    /// `Done` unless a hook says otherwise, and the next step starts at once if the command
+    /// turned auto-step on and there is work, or if an item came. `Busy` if a step is already running.
+    #[pyo3(signature = (cursor, command = false))]
+    fn step(&self, py: Python<'_>, cursor: u64, command: bool) -> PyResult<()> {
+        self.shared.write(py, tracing::info_span!("py.step"), |m| {
+            Ok(m.step(cursor, command)?)
+        })
     }
 
     /// Move `cursor` to node `to` for the frontend named `client`, turn auto-step off and wake

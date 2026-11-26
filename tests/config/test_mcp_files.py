@@ -17,6 +17,7 @@ PROJECTS = pytest.mark.skipif(
     reason="Windows: projects (D13 trust) are not ported; finding one is an error",
 )
 SECRET = "ghp_not-a-real-token-41"
+MOCK = {"default_model": "m", "models": {"m": {"model": "m", "provider": "mock"}}}
 
 
 def write(path: Path, servers: dict[str, object]) -> None:
@@ -25,7 +26,11 @@ def write(path: Path, servers: dict[str, object]) -> None:
 
 
 def servers(world: World, cwd: Path | None = None) -> list[McpServer]:
-    return list(Mcp.of(loaded(world, cwd), cwd or world.home).servers)
+    return list(built(world, cwd).servers)
+
+
+def built(world: World, cwd: Path | None = None) -> Mcp:
+    return Mcp.of(loaded(world, cwd), cwd or world.home)
 
 
 def test_no_file_is_no_server(world: World) -> None:
@@ -73,15 +78,15 @@ def test_variables_are_replaced_and_a_missing_one_names_itself_not_a_value(world
     assert dict(gh.env) == {"GITHUB_TOKEN": SECRET}
     assert SECRET not in repr(gh)
     del world.environ["GH_TOKEN"]
-    with pytest.raises(McpConfigError) as caught:
-        servers(world)
-    assert str(caught.value) == (
-        f"{world.tau / 'mcp.json'}: MCP server 'gh': ${{GH_TOKEN}} is not set (set it in the "
-        "environment or the project's .env, or write ${GH_TOKEN:-default})"
+    skipped = built(world)
+    assert skipped.servers == ()
+    assert skipped.warnings == (
+        f"warning: {world.tau / 'mcp.json'}: MCP server 'gh': ${{GH_TOKEN}} is not set (set it in "
+        "the environment or the project's .env, or write ${GH_TOKEN:-default}) (skipped)",
     )
 
 
-def test_every_bad_server_is_named_at_once(world: World) -> None:
+def test_each_bad_server_is_skipped_with_a_warning_and_the_rest_are_used(world: World) -> None:
     write(
         world.tau / "mcp.json",
         {
@@ -89,11 +94,12 @@ def test_every_bad_server_is_named_at_once(world: World) -> None:
             "none": {"args": ["x"]},
             "args": {"command": "x", "args": "x"},
             "off": {"disabled": True},
+            "fine": {"command": "fine"},
         },
     )
-    with pytest.raises(McpConfigError) as caught:
-        servers(world)
-    lines = str(caught.value).splitlines()
+    found = built(world)
+    assert [s.name for s in found.servers] == ["fine"]
+    lines = [w.removeprefix("warning: ").removesuffix(" (skipped)") for w in found.warnings]
     assert [line.split(": ", 1)[1] for line in lines] == [
         "MCP server 'args': 'args' must be a list of strings",
         "MCP server 'none': needs 'command', a non-empty string",
@@ -111,12 +117,16 @@ def test_every_bad_server_is_named_at_once(world: World) -> None:
         ('{"mcpServers": {"a__b": {"command": "x"}}}', "without `__`"),
     ],
 )
-def test_a_file_that_cannot_be_read_says_why(world: World, text: str, why: str) -> None:
+def test_a_file_that_cannot_be_read_is_skipped_saying_why(
+    world: World, text: str, why: str
+) -> None:
     (world.tau).mkdir(parents=True, exist_ok=True)
     (world.tau / "mcp.json").write_text(text, encoding="utf-8")
-    with pytest.raises(McpConfigError, match=r"mcp\.json: ") as caught:
-        servers(world)
-    assert why in str(caught.value)
+    found = built(world)
+    assert found.servers == ()
+    (warning,) = found.warnings
+    assert warning.startswith(f"warning: {world.tau / 'mcp.json'}: ")
+    assert why in warning
 
 
 @PROJECTS
@@ -165,16 +175,19 @@ def test_a_project_values_come_from_its_env_file(world: World) -> None:
     assert dict(gh.headers) == {"Authorization": f"Bearer {SECRET}"}
 
 
-def test_it_is_off_until_enabled_and_a_bad_file_then_stops_the_start(world: World) -> None:
+def test_it_is_off_until_enabled_and_a_bad_file_is_a_warning_at_the_start(world: World) -> None:
     listed = tau(world, "ext", "list")
     assert "mcp           off        built-in" in listed.out
     assert "off (default); to turn it on: tau ext enable mcp" in listed.out
     (world.tau / "mcp.json").parent.mkdir(parents=True, exist_ok=True)
     (world.tau / "mcp.json").write_text("{", encoding="utf-8")
     assert tau(world, "ext", "enable", "mcp").code == 0
-    listed = tau(world, "ext", "list")
-    assert "mcp           failed" in listed.out
-    assert "mcp.json: not a JSON file" in listed.out
+    assert "mcp           on         built-in" in tau(world, "ext", "list").out
+    world.user_config({**MOCK, "load": {"mcp": True}})
+    run = tau(world, "-p", "hi")
+    assert run.code == 0, run.err
+    said = f"warning: {world.tau / 'mcp.json'}: not a JSON file"
+    assert f"tau: {said}" in run.err  # the standing notice: tau -p prints notices on stderr
 
 
 def test_a_permission_rule_for_an_mcp_tool_is_no_misspelling(world: World) -> None:
@@ -230,3 +243,20 @@ def test_tau_p_runs_with_the_servers_a_program_names(world: World, tmp_path: Pat
     assert result.code == 0, result.err
     assert result.out.startswith(f"ed (stdio: {sys.executable} {server}): running\n  mcp__ed__echo")
     assert '{"stdin": "closed"}' in log.read_text()  # stopped when the run ended
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test server's signals")
+def test_tau_p_goes_on_when_a_server_does_not_start_and_says_so(
+    world: World, tmp_path: Path
+) -> None:
+    world.user_config({**MOCK, "load": {"mcp": True}})
+    server = Path(__file__).parents[1] / "mcp_server.py"
+    env = {"MCP_LOG": str(tmp_path / "log"), "FAIL_START": "no database"}
+    write(
+        world.tau / "mcp.json",
+        {"down": {"command": sys.executable, "args": [str(server)], "env": env}},
+    )
+    result = tau(world, "-p", "hi")
+    assert result.code == 0, result.err
+    assert result.out == "mock: hi\n"
+    assert "tau: MCP server down exited (status 2): no database; τ starts without it" in result.err

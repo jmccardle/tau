@@ -1496,7 +1496,8 @@ The built-in, default-on and removable, that walks back from the cursor's node t
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
 (**edit-last**, D23's Ctrl+Z as a command): it goes to the marker's `return_to` (after the
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
-parent, as a go-to does (auto-step off). A cursor command, so `Busy` unless at rest; `at` refuses
+parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
+mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
 unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
 user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
 
@@ -1510,15 +1511,6 @@ marks (a file checkpoint). A driver-level attribute like `commands`, not a hook 
 and returns whether one did (`False`: the owner is not loaded or has none); `ValueError` for a
 node that is not a marker an extension wrote. Not a coroutine function: `DefinitionError` at
 build.
-
-### Stays (a command's halt mid-turn)
-`tau._markers.Stays` (`leave`, `halt`, `forget`) · D33 §2 · new (0.18)
-
-What `undo` and `session` share: a cursor command whose step would go on from where it left the
-cursor (`next` is not `Wait`: a batch, a `User`, a `Results`) records it with `leave`, and the
-extension's own `pre_step` returns the stop `"<command> left the cursor at node N, mid-turn: step
-to carry on from there"`, so going back never starts the model. `post_step` forgets what an
-aborted step left.
 
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
@@ -1872,13 +1864,24 @@ all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are
 from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
 (`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
 are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
-used. `start` starts every server at once and returns when each has listed its tools; one that
-fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+used now only for a file `TAU_MCP_CONFIG` names that is not there; a file or server the
+configuration cannot use is skipped and named in `Mcp.warnings`. `start` starts every server at
+once and returns when each has listed its tools, within the start timeout less 1.5 s; one that
+fails or is too slow is skipped (`Mcp.failed`, its reason), said on stderr, and told as a
+*standing notice*: τ starts without it. Each
 tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
 `[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
 `list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
 answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
 process and its group, signalled through a pidfd where there is one.
+
+### standing notice
+`Hub.stand`, `Hub.forget_standing` (private); `TreeHandle.tell` from a `start` · D24 section 12 (amends D32 §2, §4) · new (0.18)
+
+A notice to every client that an extension's `start` tells. A start runs before any client is
+connected, so the hub keeps it and sends it to each client that connects, after its snapshot
+(`Commands`, the views, `Labels`), until that extension is stopped (a reload forgets it). It is
+an ordinary `Notice`: no wire change. `mcp` reports a server that did not start this way.
 
 ### mcp__SERVER (a permission rule)
 `tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)
@@ -3233,12 +3236,16 @@ session; `"new"` after the rest) and raises `LookupError` (unknown command), `Va
 ### Cursor command
 `Commands.before` (`_commands.py`) · D16 · new
 
-A command that takes a `Cursor`. It runs as a step of that cursor: `run` keeps it in memory and
-calls `Session.step`, so it is `Busy` unless the cursor is at rest (commands do not queue); the
-driver gives it to the step's `pre_step` job, where it runs with the cursor's handle (also its
-`TreeHandle`) before the extensions' `pre_step` hooks. The rest of the step follows the usual
-rules: a command that leaves the cursor on a `User` node gets a sample, one that leaves it on a
-reply gets none. `abort` and `go_to` cancel a running command (and drop one not yet started),
+A command that takes a `Cursor`. It runs as a **command's step** of that cursor: `run` keeps it in
+memory and calls `Session.step(cursor, command=True)`, so it is `Busy` unless the cursor is at
+rest (commands do not queue); the driver gives it to the step's `pre_step` job, where it runs with
+the cursor's handle (also its `TreeHandle`) before the extensions' `pre_step` hooks. The step ends
+when the command returns (D16 §2, 2026-11-26): auto-step is off while it runs (as for a go-to),
+and after `pre_step` only `post_step` runs, so it ends `Done` (unless a hook halts or fails it)
+and no `pre_input`, sample or tool runs in it, wherever the command left the cursor. A command
+that wants the model to run turns auto-step on (`cursor.set_auto(True)`; `cursor.send` does it
+too): the next step then starts at once from where the cursor stands, and samples or runs tools
+as `decide` says. `abort` and `go_to` cancel a running command (and drop one not yet started),
 whose job then answers without running the hooks (their `run` raises `CommandFailed`); a crash
 loses a command that has not finished, and it is never re-run. A command that raises ends the step
 `Failed` exactly as a failing hook does: the cursor's `hook_error` names `pre_step` and the

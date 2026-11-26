@@ -8,13 +8,13 @@ as `mcp__SERVER__TOOL` (characters outside `[A-Za-z0-9_-]` in the tool's name be
 64 characters), described and typed as the server lists it, and goes through `permissions` like
 any other (`mcp__SERVER` in a rule names every tool of that server).
 
-**A server that fails to start stops τ** (Fail Early): the start fails with every failing server
-named and why (with the last line its process wrote to stderr), and the others are stopped. A
-start runs before any client is connected, so a notice would reach no one, and a session that
-quietly lacks a server's tools misleads the model and the person alike. To start without it, fix
-it, write `"disabled": true` on it (a nearer file may do so by name), or `tau ext disable mcp`. A
-slow first start (`npx` downloading its package) is given `extensions.mcp.start_timeout` (D32);
-when the start is cancelled for taking too long, the servers still starting are named on stderr.
+**A server that fails to start is a warning** (as an unloadable skill is): a spawn error, a
+failed handshake or tool list, or a server still starting when the start's time is up (the D32
+start timeout less `_MARGIN`) is skipped, and τ starts without it. Each, and each file or server
+the configuration skipped, is said on stderr at the start, listed by `/mcp` (`failed: why`), and
+told as an `error` notice, which stands: a client that connects later still gets it (a start runs
+before any client is connected). A slow first start (`npx` downloading its package) is given
+`extensions.mcp.start_timeout`.
 
 **While it runs**: a server that lists its tools again (`notifications/tools/list_changed`) is
 listed again and the tools reassembled (clients get `Commands`); one that exits is told to
@@ -34,7 +34,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -135,29 +135,49 @@ def _block(block: Mapping[str, Any], lines: list[str], images: list[Image]) -> N
         lines.append(f"[{kind} content left out: τ tool results are text and images]")
 
 
-def _read(path: Path, *, missing_ok: bool) -> bytes | None:
+def _read(path: Path, *, named: bool, problems: list[str]) -> bytes | None:
+    """A file's bytes; `None` for none. One that cannot be read is a problem (it is skipped), but
+    a file `TAU_MCP_CONFIG` names must be there and readable: the program that named it made a
+    mistake, so `McpConfigError`."""
     try:
         return path.read_bytes()
     except FileNotFoundError:
-        if missing_ok:
-            return None
-        raise McpConfigError(f"{path}: no such file ({CONFIG_VARIABLE} names it)") from None
+        if named:
+            raise McpConfigError(f"{path}: no such file ({CONFIG_VARIABLE} names it)") from None
+        return None
     except OSError as e:
-        raise McpConfigError(f"{path}: cannot be read ({e.strerror})") from None
+        if named:
+            raise McpConfigError(f"{path}: cannot be read ({e.strerror})") from None
+        problems.append(f"{path}: cannot be read ({e.strerror})")
+        return None
 
 
 _Started = tuple[McpClient, list[McpTool]]
 """A server started, and the tools it listed."""
+_KILL_GRACE = 0.2  # a server stopped before its handshake ended has nothing to save
+_MARGIN = 1.5  # what the extension's own start timeout leaves for stopping the slow servers
 
 
 class Mcp:
-    """The `mcp` built-in: the configured MCP servers' tools, while it is started."""
+    """The `mcp` built-in: the configured MCP servers' tools, while it is started. `warnings`
+    are the files and servers its configuration skipped; `failed` the servers that did not
+    start, each with why (both filled by `start`, and told to clients when they connect)."""
 
     name = NAME
 
-    def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None:
+    def __init__(
+        self,
+        servers: Sequence[McpServer],
+        cwd: Path,
+        *,
+        warnings: Sequence[str] = (),
+        start_timeout: float | None = None,
+    ) -> None:
         self.servers = tuple(servers)
+        self.warnings = tuple(warnings)
+        self.failed: dict[str, str] = {}
         self._cwd = cwd
+        self._within = _deadline(start_timeout)
         self._clients: dict[str, McpClient] = {}
         self._listed: dict[str, list[McpTool]] = {}  # by server, as each lists them
         self._tools: dict[str, list[_ServerTool]] = {}
@@ -166,18 +186,25 @@ class Mcp:
 
     @classmethod
     def of(cls, loaded: LoadedConfig, cwd: Path) -> "Mcp":
-        """The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
+        """The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, the trusted
         project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
-        names (which must exist). `McpConfigError` naming every server that cannot be used."""
+        names. A file or server that cannot be used is skipped and named in `warnings`;
+        `McpConfigError` only for a file `TAU_MCP_CONFIG` names that cannot be read."""
+        problems: list[str] = []
         user = loaded.home / USER_FILE
-        files: list[tuple[str, bytes | None]] = [(str(user), _read(user, missing_ok=True))]
+        files: list[tuple[str, bytes | None]] = [
+            (str(user), _read(user, named=False, problems=problems))
+        ]
         project = loaded.project
         if project is not None:
             files += [(str(project.root / p), project.mcp_files.get(p)) for p in PROJECT_FILES]
         named = loaded.environ.get(CONFIG_VARIABLE, "")
         for path in (cwd / p for p in named.split(os.pathsep) if p):
-            files.append((str(path), _read(path, missing_ok=False)))
-        return cls(servers(files, loaded.environ), cwd)
+            files.append((str(path), _read(path, named=True, problems=problems)))
+        found, skipped = servers(files, loaded.environ)
+        warnings = [f"warning: {p} (skipped)" for p in [*problems, *skipped]]
+        start = loaded.catalog.timeouts.get(NAME, (None, None))[0]
+        return cls(found, cwd, warnings=warnings, start_timeout=start)
 
     @property
     def tools(self) -> tuple[Tool, ...]:
@@ -185,57 +212,51 @@ class Mcp:
         return tuple(t for name in sorted(self._tools) for t in self._tools[name])
 
     async def start(self, tree: TreeHandle) -> None:
-        """Start every server at once and list its tools; `McpStartError` naming each that
-        failed, with the others stopped."""
+        """Start every server at once and list its tools, each within the start's time. What
+        the configuration skipped, a server that fails or is too slow, and a tool that cannot be
+        named are reported (stderr, and an `error` notice each that every client gets when it
+        connects); the rest start, and so does τ."""
         self._tree = tree
+        for warning in self.warnings:
+            self._report(warning)
         tasks = {s.name: asyncio.ensure_future(self._start_one(s)) for s in self.servers}
-        try:
-            if tasks:
-                await asyncio.wait(tasks.values())
-        except asyncio.CancelledError:
-            await self._cancelled(tasks)
-            raise
-        started = [t.result() for t in tasks.values() if t.exception() is None]
+        if tasks:
+            _, slow = await asyncio.wait(tasks.values(), timeout=self._within)
+            for task in slow:
+                task.cancel()
+            await asyncio.gather(*slow, return_exceptions=True)
+        started: list[_Started] = []
+        for server in self.servers:
+            task = tasks[server.name]
+            why = _why_not(task, server, self._within)
+            if why is None:
+                started.append(task.result())
+            else:
+                self.failed[server.name] = why
+                self._report(f"{why}; τ starts without it")
         self._clients = {client.name: client for client, _ in started}
-        try:
-            failures = [str(t.exception()) for t in tasks.values() if t.exception() is not None]
-            if failures:
-                raise McpStartError("\n".join(failures))
-            self._tools = _named(started)
-        except BaseException:
-            await self._stop_all()
-            raise
+        self._tools = _named(started, self._report)
         self._listed = {c.name: tools for c, tools in started}
         for client, _ in started:
-            self._clients[client.name] = client
             client.on_change = lambda c=client: self._changed(c)
             client.on_exit = self._exited
 
-    async def _cancelled(self, tasks: Mapping[str, "asyncio.Future[_Started]"]) -> None:
-        """The start was cancelled (it took too long): say which servers were still starting,
-        and stop every one."""
-        slow = [s for s in self.servers if not tasks[s.name].done()]
-        print(
-            "tau: mcp: the start was cancelled with these servers still starting: "
-            + "; ".join(f"{s.name} ({s.shown()})" for s in slow)
-            + " (a first `npx` run downloads its package: raise extensions.mcp.start_timeout)",
-            file=sys.stderr,
-        )
-        for task in tasks.values():
-            task.cancel()
-        done = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        clients = [d[0] for d in done if not isinstance(d, BaseException)]
-        await asyncio.gather(*(c.stop() for c in clients), return_exceptions=True)
+    def _report(self, text: str) -> None:
+        """Say `text` on stderr now, and as an `error` notice to every client (one told during
+        `start` reaches each client when it connects)."""
+        print(f"tau: mcp: {text}", file=sys.stderr)
+        if self._tree is not None:
+            self._tree.tell(text, level="error")
 
     async def _start_one(self, server: McpServer) -> "_Started":
-        client = await McpClient.start(server, self._cwd)
+        client = await McpClient.start(server, self._cwd, cancel_grace=_KILL_GRACE)
         try:
             return client, await client.tools()
         except McpError as e:
             await client.stop()
             raise McpStartError(f"MCP server {server.name}: {e}") from None
         except BaseException:
-            await client.stop()
+            await client.stop(grace=_KILL_GRACE)
             raise
 
     def _changed(self, client: McpClient) -> None:
@@ -250,7 +271,9 @@ class Mcp:
         finally:
             client.relisting = None
         listed = {**self._listed, client.name: tools}
-        self._tools = _named([(self._clients[n], ts) for n, ts in sorted(listed.items())])
+        self._tools = _named(
+            [(self._clients[n], ts) for n, ts in sorted(listed.items())], self._report
+        )
         self._listed = listed
         assert self._tree is not None
         self._tree.reassemble()
@@ -279,20 +302,53 @@ class Mcp:
 
     def mcp(self) -> str:
         """List the MCP servers, whether each runs, and their tools."""
-        if not self.servers:
+        if not self.servers and not self.warnings:
             return "no MCP servers are configured (mcp.json in TAU_HOME, .mcp.json in a project)"
         lines: list[str] = []
         for server in self.servers:
             client = self._clients.get(server.name)
-            state = "not started" if client is None else (client.exited or "running")
+            if server.name in self.failed:
+                state = f"failed: {self.failed[server.name]}"
+            else:
+                state = "not started" if client is None else (client.exited or "running")
             lines.append(f"{server.name} ({server.transport}: {server.shown()}): {state}")
             lines += [f"  {t.name}" for t in self._tools.get(server.name, [])]
-        return "\n".join(lines)
+        return "\n".join([*lines, *self.warnings])
 
 
-def _named(listed: Sequence[tuple[McpClient, list[McpTool]]]) -> dict[str, list[_ServerTool]]:
-    """Each server's tools under their τ names; `McpStartError` for a name over 64 characters
-    or two tools of one name."""
+def _deadline(start_timeout: float | None) -> float:
+    """How long the servers may take to start: the extension's start timeout (D32) less what
+    stopping the slow ones takes, so a slow server is mcp's to report, not a failed start."""
+    whole = start_timeout or _default_start()
+    return whole - _MARGIN if whole > 2 * _MARGIN else whole / 2
+
+
+def _default_start() -> float:
+    from tau._lifecycle import START_TIMEOUT  # noqa: PLC0415 - it imports the built-ins
+
+    return START_TIMEOUT
+
+
+def _why_not(task: "asyncio.Future[_Started]", server: McpServer, within: float) -> str | None:
+    """Why `server` did not start (`None`: it did)."""
+    if task.cancelled():
+        return (
+            f"MCP server {server.name} did not start within {within:g} s ({server.shown()}; a "
+            "first `npx` or `uvx` run downloads its package: raise extensions.mcp.start_timeout)"
+        )
+    error = task.exception()
+    if error is None:
+        return None
+    if isinstance(error, McpStartError):
+        return str(error)
+    return f"MCP server {server.name}: {type(error).__name__}: {error}"
+
+
+def _named(
+    listed: Sequence[tuple[McpClient, list[McpTool]]], report: Callable[[str], None]
+) -> dict[str, list[_ServerTool]]:
+    """Each server's tools under their τ names. A name over 64 characters, or a second tool of
+    one name, is left out, and `report`ed."""
     seen: dict[str, str] = {}
     by_server: dict[str, list[_ServerTool]] = {}
     for client, tools in listed:
@@ -300,16 +356,17 @@ def _named(listed: Sequence[tuple[McpClient, list[McpTool]]]) -> dict[str, list[
         for tool in tools:
             name = tau_name(client.name, tool.name)
             if len(name) > NAME_LIMIT:
-                raise McpStartError(
+                report(
                     f"MCP server {client.name}: its tool {tool.name!r} would be named {name!r}, "
-                    f"{len(name)} characters (the limit is {NAME_LIMIT}); give the server a "
-                    "shorter name"
+                    f"{len(name)} characters (the limit is {NAME_LIMIT}), so it is left out; "
+                    "give the server a shorter name"
                 )
-            if name in seen:
-                raise McpStartError(
+            elif name in seen:
+                report(
                     f"MCP server {client.name}: its tools {seen[name]!r} and {tool.name!r} are "
-                    f"both {name!r}"
+                    f"both {name!r}, so the second is left out"
                 )
-            seen[name] = tool.name
-            made.append(_ServerTool(client, tool, name))
+            else:
+                seen[name] = tool.name
+                made.append(_ServerTool(client, tool, name))
     return by_server
