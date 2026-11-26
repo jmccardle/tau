@@ -5,11 +5,10 @@ again, `@file` in a message attaches the file, files you write become commands (
 and skills), what the session has used and spent is shown, a long conversation can be shortened
 (`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
 change, `/clear`, `/branch`, `/tree` and `/export` work on the session, and the model can read a
-web page (`fetch`). Five more wait for you to ask: rules that ask before a tool runs (permissions),
-`/plan` (plan mode, which does nothing until you type it), and the five that are off until you turn
-them on: the bash guard, the router, tools from MCP servers, web search and shell commands at hook
-points (hooks). Each can be switched
-off, and each is a few lines to use. The examples run with the mock model, which needs no server
+web page (`fetch`). Seven more wait for you to ask: two that are on but do nothing until you use
+them, rules that ask before a tool runs (permissions) and `/plan` (plan mode), and five that are
+off until you turn them on: the bash guard, the router, tools from MCP servers, web search and shell
+commands at hook points (hooks). Each can be switched off, and each is a few lines to use. The examples run with the mock model, which needs no server
 and no key.
 
 ```json file=$TAU_HOME/config.json
