@@ -237,7 +237,7 @@ Three new `Client` calls, so local and remote stay one contract (amends D16 §5)
   session flags, D19's `-e` and `--no-extensions`, D20's prompt flags). It opens the session
   with the shared startup (D18 §5), binds the socket, and writes the **serve record**
   `$TAU_HOME/serve/<session id>.json`: `{socket, pid, session, cwd, protocol, version,
-  started, log}`. On SIGTERM or SIGINT it first aborts every cursor and waits for each to rest (bounded
+  started, log}`. On SIGTERM, SIGHUP (amended 2026-11-26: before, it died of it and left the extensions' processes running) or SIGINT it first aborts every cursor and waits for each to rest (bounded
   by 3 seconds, `WIND_DOWN_SECONDS`), so a running tool is cancelled and an agent's tool closes the
   agent's cursor (D24 §8), as `-p`'s SIGINT does (8E-5; before, a stop was crash-like and left the
   agent open and "still working"), then it stops the driver (each stream gets `end` with

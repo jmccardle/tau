@@ -5,10 +5,10 @@
   shared start (`tau.start_session`) opens, binds a Unix socket and an HTTP edge (D29; `--no-unix`
   and `--no-http` turn one off; on Windows only the edge), writes the serve record, prints where
   it listens (and, to a terminal, the paste URL with the token), and serves until
-  SIGTERM or SIGINT (what is running is aborted and the agents it started are closed, as an
-  interrupted `-p` does; then the driver stops, each stream gets `end`, the socket and record
-  are removed, exit 0) or until the driver fails (exit 1). With `--json` it prints the record as
-  one line.
+  SIGTERM, SIGHUP or SIGINT (what is running is aborted and the agents it started are closed, as
+  an interrupted `-p` does; then the driver stops, and with it each extension's `stop`, each
+  stream gets `end`, the socket and record are removed, exit 0) or until the driver fails
+  (exit 1). With `--json` it prints the record as one line.
 - `tau serve -d [--json]` starts the same server detached and prints its record once a `hello`
   answers: the record of a server already serving the session with `"started": false` (a record
   whose socket does not answer is stale and replaced); a failure before the record appears, with
@@ -67,6 +67,7 @@ from tau._serve_record import (
 )
 from tau._session_start import Started, start_report, start_session
 from tau._sessions import SessionFlags, is_leased, read_name
+from tau._signals import ENDING
 from tau._startup import load_config, prompts
 from tau._trust import tau_home
 from tau._web_client import MISSING, installed, web_client
@@ -333,10 +334,11 @@ async def _serving(run: Process, args: argparse.Namespace, started: Started, pla
 
 
 _STOPPING: Final = (
-    (signal.SIGINT, signal.SIGBREAK) if sys.platform == "win32" else (signal.SIGTERM, signal.SIGINT)
+    (signal.SIGINT, signal.SIGBREAK) if sys.platform == "win32" else (*ENDING, signal.SIGINT)
 )
-"""The signals that stop a server cleanly. Windows has no SIGTERM to catch: there they are the
-console's Ctrl+C and Ctrl+Break, and `--stop` goes over HTTP."""
+"""The signals that stop a server cleanly: SIGTERM, SIGHUP (the terminal of a foreground server
+closed) and SIGINT. Windows has no SIGTERM to catch and no SIGHUP: there they are the console's
+Ctrl+C and Ctrl+Break, and `--stop` goes over HTTP."""
 
 
 def _on_signals(loop: asyncio.AbstractEventLoop, then: Callable[[], None]) -> None:

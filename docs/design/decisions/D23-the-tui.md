@@ -89,6 +89,11 @@ Its tests used a real `TauBackend` with `session._run_one_turn` replaced, `monke
 - **Input.** Enter sends (`send`), busy or not: input is a scratchpad item (D2), and the pending
   items of the cursor (`CursorView.items`) are shown above the editor with their authors. There
   is no client-side queue (0.15's steering buffer): the scratchpad is the queue.
+- **Signals** (amended 2026-11-26). SIGTERM and SIGHUP (the terminal closed) end the app as a
+  quit does, then the session closes as on any exit: the driver stops and each extension's `stop`
+  ends the processes it started. The status is 128 + the signal. A signal before the app runs,
+  or a second one, cancels the launch, which closes the session the same way. Ctrl+C is a key,
+  not a signal, on the app's raw terminal.
 - **Keys**, kept from 0.15 where the meaning carries: Esc aborts the viewed cursor; Ctrl+C
   aborts if busy, else clears the draft, else quits on a second press; Ctrl+R folds thinking,
   Ctrl+T tool boxes; Ctrl+G the tree (§6); Ctrl+P the command palette; Ctrl+Z **edits the last
