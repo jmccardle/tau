@@ -135,7 +135,7 @@ What changed against the old order (built-ins by key, then user extensions), poi
   private. The meter, compaction, prune and the TUI import them from there.
 - `tau.Usage` is no longer exported: a program reaches `usage` as a built-in, through
   `load_extensions` (the tests do, through `tests/shipped.py`).
-- **Leaf:** nothing in `python/tau` imports `tau._usage` but `_extensions.py`'s `_BUILTINS`.
+- **Leaf:** nothing in `python/tau` imports `tau._usage` but `_builtin_factories.py`'s `FACTORIES` (the table of built-ins, which `_extensions.py` reads).
   `scripts/check_rules.py` fails otherwise, so deleting `_usage.py` and its one row there leaves
   a working τ.
 
