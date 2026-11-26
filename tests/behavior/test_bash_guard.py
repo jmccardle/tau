@@ -1,26 +1,16 @@
-"""examples/speculative/bash_guard.py, driven through the Harness and a chat line client."""
-
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: the example imports readline, which Python on Windows does not have",
-        allow_module_level=True,
-    )
+"""`bash_guard` (the built-in, off by default), driven through the Harness and a line client."""
 
 import asyncio
 import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
+from shipped import shipped
 
 from tau import (
     BashTool,
@@ -36,13 +26,14 @@ from tau import (
 )
 from tau.commandline import parse
 
-EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 
-def load(path: Path, name: str) -> ModuleType:
+def load_chat() -> Any:
+    """The line client of examples/chat.py (it imports readline, which Windows lacks)."""
     sys.path.insert(0, str(EXAMPLES))  # chat.py imports `common`
     try:
-        spec = importlib.util.spec_from_file_location(f"speculative_{name}", path)
+        spec = importlib.util.spec_from_file_location("speculative_chat", EXAMPLES / "chat.py")
         assert spec is not None
         assert spec.loader is not None
         module = importlib.util.module_from_spec(spec)
@@ -52,8 +43,16 @@ def load(path: Path, name: str) -> ModuleType:
         sys.path.remove(str(EXAMPLES))
 
 
-guard = load(EXAMPLES / "speculative" / "bash_guard.py", "bash_guard")
-chat = load(EXAMPLES / "chat.py", "chat")
+BUILT_IN = [
+    r"\bfind\s+/(?:\s|$)",
+    r"\bcat\s+\S+\.(?:bin|iso|log|gz|zip|tar|db|sqlite|so|o)\b",
+    r"\bnpm\s+(?:install|ci)\b",
+    r"\bcargo\s+(?:build|test)\b",
+    r"(?s)\bgit\s+log\b(?!.*(?:\s-n\s*\d|\s-\d|--max-count))",
+    r"(?s)\bgrep\b(?=.*\s-\w*[rR])(?!.*\s-\w*l)",
+    r"(?s)\bjournalctl\b(?!.*\s-n\s*\d)",
+    r"(?s)\bdocker\s+logs\b(?!.*--tail)",
+]
 
 
 def layers(**options: object) -> dict[str, object]:
@@ -82,7 +81,7 @@ async def start(
         tmp_path,
         provider=FakeProvider(script),
         tools=[tool or fake],  # pyright: ignore[reportArgumentType]
-        extensions=[guard.BashGuard()],
+        extensions=[shipped("bash_guard")],
         catalog=configured(**options),  # pyright: ignore[reportArgumentType]
         user_config=UserConfig(tmp_path / "tau-home", cli=layers(**options)),
     )
@@ -240,6 +239,19 @@ async def test_an_abort_declines_every_open_question(tmp_path: Path) -> None:
     await h.close()
 
 
+@scenario
+async def test_an_abort_never_runs_the_command_whatever_unattended_says(tmp_path: Path) -> None:
+    """The abort declines the question, which `unattended` would answer `allow`: the person said
+    stop, so the command must not run."""
+    h, tool = await start(tmp_path, [run("find /")], wait=60.0, unattended="allow")
+    assert len((await h.view()).questions) == 1
+    await h.abort()
+    await h.settle()
+    assert (await h.view()).ending == Ending.Aborted()
+    assert tool.calls == []
+    await h.close()
+
+
 # Nobody to ask: the question waits, and `wait` seconds pass
 
 
@@ -252,7 +264,7 @@ async def test_with_no_client_connected_the_question_waits_then_unattended_decid
         tmp_path,
         provider=FakeProvider([run("find /"), say("ok")]),
         tools=[fake],
-        extensions=[guard.BashGuard()],
+        extensions=[shipped("bash_guard")],
         catalog=configured(wait=0.1),  # pyright: ignore[reportArgumentType]
     )
     await h.send_unattended("go")  # overnight: auto-step, nobody attached
@@ -263,7 +275,7 @@ async def test_with_no_client_connected_the_question_waits_then_unattended_decid
     assert fake.calls == []
     ((_, outcome),) = results(h)
     assert isinstance(outcome, Outcome.Err)
-    assert "nobody was there to approve it" in outcome.error
+    assert "nobody answered" in outcome.error
     await h.close()
 
 
@@ -274,7 +286,7 @@ async def test_unattended_truncate_runs_the_tail_when_nobody_answers(tmp_path: P
         tmp_path,
         provider=FakeProvider([run("find /"), say("ok")]),
         tools=[fake],
-        extensions=[guard.BashGuard()],
+        extensions=[shipped("bash_guard")],
         catalog=configured(unattended="truncate", wait=0.1),  # pyright: ignore[reportArgumentType]
     )
     await h.send_unattended("go")
@@ -294,7 +306,7 @@ async def test_a_client_that_never_answers_is_given_up_on(tmp_path: Path) -> Non
     assert tool.calls == []
     ((_, outcome),) = results(h)
     assert isinstance(outcome, Outcome.Err)
-    assert "nobody was there" in outcome.error
+    assert "nobody answered" in outcome.error
     await h.close()
 
 
@@ -326,7 +338,7 @@ async def test_always_is_saved_to_the_users_file_for_every_session(tmp_path: Pat
         tmp_path,
         provider=FakeProvider([run("find / -name y"), say("ok")]),
         tools=[again],
-        extensions=[guard.BashGuard()],
+        extensions=[shipped("bash_guard")],
         catalog=read_models(saved, cli=layers()),
     )
     await h.send("and now?")
@@ -351,7 +363,7 @@ async def test_always_adds_to_the_files_own_allow_not_to_the_layers_and_nodes(
         tmp_path,
         provider=FakeProvider([run("find /"), say("ok")]),
         tools=[FakeTool("bash", "output")],
-        extensions=[guard.BashGuard()],
+        extensions=[shipped("bash_guard")],
         catalog=configured(allow=["cli"]),  # pyright: ignore[reportArgumentType]
         user_config=UserConfig(home, cli=layers(allow=["cli"])),
     )
@@ -390,10 +402,10 @@ async def test_always_in_a_batch_is_not_applied_to_the_questions_already_open(
 async def test_the_built_in_patterns_are_the_default_and_show_in_the_form(
     tmp_path: Path,
 ) -> None:
-    h = await Harness.create(tmp_path, extensions=[guard.BashGuard()])
+    h = await Harness.create(tmp_path, extensions=[shipped("bash_guard")])
     form = await h.client.options(h.cursor, "bash_guard")
     properties: Any = form.schema["properties"]
-    assert properties["patterns"]["default"] == list(guard.BUILT_IN), "the person sees them"
+    assert properties["patterns"]["default"] == BUILT_IN, "the person sees them"
     assert properties["allow"]["default"] == []
     assert properties["unattended"]["enum"] == ["reject", "allow", "truncate"]
     with pytest.raises(ConfigError, match=r"pattern '\(': "):
@@ -405,7 +417,7 @@ async def test_the_built_in_patterns_are_the_default_and_show_in_the_form(
 
 @scenario
 async def test_a_regex_with_a_comma_is_typed_to_config_as_a_json_array(tmp_path: Path) -> None:
-    h = await Harness.create(tmp_path, extensions=[guard.BashGuard()])
+    h = await Harness.create(tmp_path, extensions=[shipped("bash_guard")])
     commands = await h.client.commands()
     form = await h.client.options(h.cursor, "bash_guard")
     line = r"""/config bash_guard patterns='["a{1,2}", "b"]'"""
@@ -422,7 +434,12 @@ async def test_a_regex_with_a_comma_is_typed_to_config_as_a_json_array(tmp_path:
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: the example imports readline, which Python on Windows does not have",
+)
 async def test_a_chat_line_client_asks_inline(tmp_path: Path) -> None:
+    chat = load_chat()
     h, tool = await start(tmp_path, [run("find /", "npm install"), say("ok")], wait=60.0)
     client = await h.connect("chat:line", watching=[h.cursor])
     screen: list[str] = []

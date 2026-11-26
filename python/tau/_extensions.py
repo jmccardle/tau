@@ -29,8 +29,7 @@ from types import ModuleType
 from typing import Literal, cast
 
 from tau._builtin import SESSION_NAME, Tau
-from tau._builtin_table import BUILTINS as _BUILTINS
-from tau._builtin_table import FILE_ERRORS, OFF_BY_DEFAULT
+from tau._builtins import BUILTINS, FILE_ERRORS, OFF_BY_DEFAULT
 from tau._commands import assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
@@ -73,7 +72,7 @@ it is switched on and off, and listed, like one."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
-BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
+BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*BUILTINS, RETRY]))
 """The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
 
@@ -247,11 +246,11 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
     return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
-def _built(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> object:
-    """A built-in made; a file it cannot use (a skill's, an MCP file) is an
-    `ExtensionLoadError` saying why."""
+def _made(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> list[object]:
+    """The built-in `make` builds from `loaded`; a file it cannot use (a skill's, an MCP file)
+    stops the start."""
     try:
-        return make(loaded)
+        return [make(loaded)]
     except FILE_ERRORS as e:
         raise ExtensionLoadError(str(e)) from None
 
@@ -264,9 +263,9 @@ def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
             "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            lambda m=make: [_built(m, loaded)],
+            lambda m=make: _made(m, loaded),
         )
-        for key, make in _BUILTINS.items()
+        for key, make in BUILTINS.items()
     ]
     wrapper = _Candidate(
         RETRY,

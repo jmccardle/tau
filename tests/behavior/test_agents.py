@@ -2,18 +2,20 @@
 final reply, and closes it."""
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 from fakes import FAKE_MODEL, FAKE_PROVIDER, Fail, FakeProvider, FakeTool, Gate, Reply
-from harness import Harness, say, scenario
+from harness import Harness, say, scenario, snapshot
 from shipped import shipped
 
 from tau import (
     Agents,
     Body,
     Ending,
+    Labels,
     ModelCatalog,
     NoSuchLabel,
     Outcome,
@@ -82,7 +84,7 @@ async def test_the_model_is_offered_the_tool_and_the_agent_answers_in_a_fresh_co
     assert texts(h, 1) == ["sys", "find the bug"], (
         "the agent sees neither `go` nor the parent's work"
     )
-    assert outcomes(h) == [Outcome.Ok("agent:1 answered:\nfound it")]
+    assert outcomes(h) == [Outcome.Ok("agent:0:1 answered:\nfound it")]
     assert (await h.view()).ending == Ending.Done()
     await h.close()
 
@@ -101,7 +103,7 @@ async def test_a_finished_agent_is_closed_and_stays_in_the_tree_with_its_label(
     tmp_path: Path,
 ) -> None:
     h = await start(tmp_path, [delegating(agent("a", "t")), say("r"), say("done")])
-    child = h.session.label("agent:1")
+    child = h.session.label("agent:0:1")
     assert child not in h.session.cursors(), "the cursor is closed"
     assert child in [c for c, _ in h.session.closed()]
     last = dict(h.session.closed())[child]
@@ -122,12 +124,12 @@ async def test_two_calls_in_one_reply_run_at_once_with_their_own_labels(tmp_path
     h = await start(tmp_path, script, gates=[gate])
     assert gate.held == 2, "both agents are sampling together"
     assert sorted(c for c in h.session.cursors() if c != h.cursor) == [1, 2]
-    assert {h.session.label("agent:1"), h.session.label("agent:2")} == {1, 2}
+    assert {h.session.label("agent:0:1"), h.session.label("agent:0:2")} == {1, 2}
     gate.release()
     await h.settle()
     assert outcomes(h) == [
-        Outcome.Ok("agent:1 answered:\none"),
-        Outcome.Ok("agent:2 answered:\ntwo"),
+        Outcome.Ok("agent:0:1 answered:\none"),
+        Outcome.Ok("agent:0:2 answered:\ntwo"),
     ]
     await h.close()
 
@@ -138,7 +140,7 @@ async def test_to_continues_an_earlier_agent_which_remembers_its_work(tmp_path: 
         delegating(agent("a", "read the file")),
         say("it says hi"),
         say("first is done"),
-        delegating(agent("b", "and the next one?", to="agent:1")),
+        delegating(agent("b", "and the next one?", to="agent:0:1")),
         say("it says bye"),
         say("done"),
     ]
@@ -149,10 +151,10 @@ async def test_to_continues_an_earlier_agent_which_remembers_its_work(tmp_path: 
     nodes = {n.id: n.body for n in h.nodes()}
     walk = [nodes[i] for i in h.provider.requests[4].walk]
     assert Body.Assistant([Part.Text("it says hi")], Stop.End) in walk
-    assert outcomes(h) == [Outcome.Ok("agent:1 answered:\nit says bye")]
-    assert h.session.label("agent:1") not in h.session.cursors(), "closed again"
+    assert outcomes(h) == [Outcome.Ok("agent:0:1 answered:\nit says bye")]
+    assert h.session.label("agent:0:1") not in h.session.cursors(), "closed again"
     with pytest.raises(NoSuchLabel):
-        h.session.label("agent:2")  # the follow-up reused the agent, it made no new one
+        h.session.label("agent:0:2")  # the follow-up reused the agent, it made no new one
     await h.close()
 
 
@@ -162,17 +164,17 @@ async def test_to_continues_an_agent_a_crash_left_open_at_rest(tmp_path: Path) -
         delegating(agent("a", "read the file")),
         say("it says hi"),
         say("first is done"),
-        delegating(agent("b", "and the next one?", to="agent:1")),
+        delegating(agent("b", "and the next one?", to="agent:0:1")),
         say("it says bye"),
         say("done"),
     ]
     h = await start(tmp_path, script)
-    closed = h.session.label("agent:1")
+    closed = h.session.label("agent:0:1")
     left = await h.client.reopen(closed)  # as a kill -9 left it: open, at rest, labelled
     await h.settle()
     await h.send("more")
     await h.settle()
-    assert outcomes(h) == [Outcome.Ok("agent:1 answered:\nit says bye")]
+    assert outcomes(h) == [Outcome.Ok("agent:0:1 answered:\nit says bye")]
     assert texts(h, 4) == ["sys", "read the file", "and the next one?"]
     assert left not in h.session.cursors(), "closed again"
     await h.close()
@@ -182,7 +184,7 @@ async def test_to_continues_an_agent_a_crash_left_open_at_rest(tmp_path: Path) -
 async def test_to_an_agent_that_is_busy_is_an_error_the_model_reads(tmp_path: Path) -> None:
     gate = Gate()
     script = [
-        delegating(agent("a", "x"), agent("b", "y", to="agent:1")),
+        delegating(agent("a", "x"), agent("b", "y", to="agent:0:1")),
         Reply([Part.Text("one")], gate=gate),
         say("both done"),
     ]
@@ -190,8 +192,8 @@ async def test_to_an_agent_that_is_busy_is_an_error_the_model_reads(tmp_path: Pa
     gate.release()
     await h.settle()
     assert outcomes(h) == [
-        Outcome.Ok("agent:1 answered:\none"),
-        Outcome.Err("agent:1 is still working: wait for its answer"),
+        Outcome.Ok("agent:0:1 answered:\none"),
+        Outcome.Err("agent:0:1 is still working: wait for its answer"),
     ]
     await h.close()
 
@@ -201,12 +203,12 @@ async def test_to_an_agent_that_does_not_exist_is_an_error_the_model_reads(tmp_p
     h = await start(
         tmp_path,
         [
-            delegating(agent("a", "t", to="agent:9"), agent("b", "t", to="compaction:1")),
+            delegating(agent("a", "t", to="agent:0:9"), agent("b", "t", to="compaction:1")),
             say("ok"),
         ],
     )
     assert outcomes(h) == [
-        Outcome.Err("there is no agent 'agent:9'"),
+        Outcome.Err("there is no agent 'agent:0:9'"),
         Outcome.Err("there is no agent 'compaction:1'"),
     ]
     assert h.session.cursors() == [h.cursor], "nothing was opened"
@@ -224,7 +226,7 @@ async def test_to_nothing_is_an_error_not_a_new_agent(tmp_path: Path) -> None:
 @scenario
 async def test_an_empty_final_reply_is_said_so_not_blamed_on_a_step_limit(tmp_path: Path) -> None:
     h = await start(tmp_path, [delegating(agent("a", "t")), Reply([], Stop.End), say("ok")])
-    assert outcomes(h) == [Outcome.Err("agent:1 gave an empty reply")]
+    assert outcomes(h) == [Outcome.Err("agent:0:1 gave an empty reply")]
     await h.close()
 
 
@@ -235,7 +237,7 @@ async def test_an_agent_that_fails_is_a_tool_error_naming_why_and_is_closed(
     h = await start(tmp_path, [delegating(agent("a", "t")), Fail("overloaded"), say("it failed")])
     ((error,),) = [outcomes(h)]
     assert isinstance(error, Outcome.Err)
-    assert error.error.startswith("agent:1 failed: ")
+    assert error.error.startswith("agent:0:1 failed: ")
     assert "overloaded" in error.error
     assert h.session.cursors() == [h.cursor]
     await h.close()
@@ -254,7 +256,7 @@ async def test_an_agent_the_step_limit_stopped_is_not_a_final_reply(tmp_path: Pa
     )
     (error,) = outcomes(h)
     assert isinstance(error, Outcome.Err)
-    assert error.error == "agent:1 stopped without a final reply (a step limit?)"
+    assert error.error == "agent:0:1 stopped without a final reply (a step limit?)"
     await h.close()
 
 
@@ -342,7 +344,7 @@ async def test_aborting_the_parent_aborts_and_closes_the_agent(tmp_path: Path) -
         [delegating(agent("a", "t")), Reply([Part.Text("r")], gate=gate)],
         gates=[gate],
     )
-    child = h.session.label("agent:1")
+    child = h.session.label("agent:0:1")
     assert child in h.session.cursors()
     await h.abort()
     await h.settle()
@@ -386,7 +388,7 @@ async def test_a_permission_question_is_asked_on_the_agents_own_cursor(tmp_path:
         tools=[bash],
         config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
     )
-    child = h.session.label("agent:1")
+    child = h.session.label("agent:0:1")
     assert (await h.view()).questions == (), "not the parent's"
     (question,) = (await h.view(child)).questions
     assert question.text.startswith("bash: ls")
@@ -394,7 +396,7 @@ async def test_a_permission_question_is_asked_on_the_agents_own_cursor(tmp_path:
     await h.respond("yes", child)
     await h.settle()
     assert bash.calls == [{"command": "ls"}]
-    assert outcomes(h) == [Outcome.Ok("agent:1 answered:\nsaw it")]
+    assert outcomes(h) == [Outcome.Ok("agent:0:1 answered:\nsaw it")]
     await h.close()
 
 
@@ -418,7 +420,7 @@ async def test_an_agent_that_calls_a_tool_it_was_not_offered_gets_an_error(tmp_p
     )
     assert h.provider.requests[1].tool_names == ["read"]
     assert bash.calls == [], "the tool was registered but not offered to the agent"
-    child = h.session.label("agent:1")
+    child = h.session.label("agent:0:1")
     nodes = {n.id: n.body for n in h.nodes()}
     results = [
         b for n, b in nodes.items() if isinstance(b, Body.Results) and h.session.tree.node(n).parent
@@ -440,8 +442,51 @@ async def test_agents_do_not_nest_because_an_agent_is_never_offered_agent(tmp_pa
         say("done"),
     ]
     h = await start(tmp_path, script)
-    for label in ("agent:2",):
+    for label in ("agent:0:2",):
         with pytest.raises(NoSuchLabel):
             h.session.label(label)
     assert [r.tool_names for r in h.provider.requests][1] == []
+    await h.close()
+
+
+# -- CV-04: the label names the parent (docs/guide/conventions.md)
+
+LABEL = re.compile(r"^agent:(\d+):(\d+)$")
+
+
+@scenario
+async def test_every_agent_label_names_the_cursor_that_started_it_and_counts_from_one(
+    tmp_path: Path,
+) -> None:
+    """The main cursor starts two, a second cursor one: `agent:P:N`, with N per parent."""
+    script = [
+        delegating(agent("a", "x"), agent("b", "y")),
+        say("one"),
+        say("two"),
+        say("main done"),
+        delegating(agent("c", "z")),
+        say("three"),
+        say("other done"),
+    ]
+    h = await start(tmp_path, script)
+    other = await h.client.open(h.session.cursor(h.cursor).at)
+    await h.client.send(other, "go again")
+    await h.settle()
+    found = [label for label, _ in h.session.labels() if LABEL.match(label)]
+    assert sorted(found) == ["agent:0:1", "agent:0:2", f"agent:{other}:1"]
+    for label in found:
+        assert h.session.label(label) not in h.session.cursors(), "a finished agent is closed"
+    await h.close()
+
+
+@scenario
+async def test_the_labels_are_in_the_snapshot_a_late_client_attaches_with(tmp_path: Path) -> None:
+    h = await start(tmp_path, [delegating(agent("a", "t")), say("r"), say("done")])
+    late = await h.connect("late")
+    events = await snapshot(late, cursors=2)  # the cursor, the closed agent
+    labelled = {
+        label: cursor for e in events if isinstance(e, Labels) for label, cursor in e.labels
+    }
+    assert "agent:0:1" in labelled, events
+    assert labelled["agent:0:1"] == h.session.label("agent:0:1")
     await h.close()

@@ -40,7 +40,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Annotated, ClassVar, cast
+from typing import Annotated, ClassVar, Literal, cast
 
 from tau._config import ConfigError, ModelConfig
 from tau._core import Body, Node, Stop
@@ -259,9 +259,18 @@ class Usage:
         self._windows: dict[str, int] = {}  # model -> the window its server last reported
         self.commands = (self.usage,)
 
-    async def usage(self, tree: TreeHandle) -> str:
-        """What this session has spent: one row per model, and a total."""
+    async def usage(
+        self,
+        tree: TreeHandle,
+        format: Annotated[
+            Literal["text", "json"], "json: the same numbers, for a program"
+        ] = "text",
+    ) -> str:
+        """What this session has spent: one row per model, and a total. `/usage json` answers
+        a JSON object instead (`as_json`), for a client that wants the figures, not the table."""
         rows = await self._rows(tree)
+        if format == "json":
+            return as_json(rows)
         notes = "".join(f"\n{note}" for note in self._window_notes(tree))
         return f"{table(rows)}{notes}\n{how_counted(tree.counter)}"
 
@@ -541,6 +550,59 @@ def table(every: dict[str, _Row]) -> str:
     text = _aligned([list(_HEAD), *lines]) + silent
     unpriced = [name for name, row in rows.items() if not row.priced]
     return text + ("\nno price, so no cost: " + ", ".join(unpriced) if unpriced else "")
+
+
+def _decimal(amount: Decimal) -> str:
+    """`amount` as an exact decimal string, never in scientific notation."""
+    return format(amount, "f")
+
+
+def _json_row(row: _Row, *, model: str | None = None) -> dict[str, object]:
+    """One row of `as_json`: `model` (a total row has none), the counts, and `cost` (`None`
+    when the model has no price, so it cannot be told from free)."""
+    found: dict[str, object] = {} if model is None else {"model": model}
+    found |= {
+        "configured": row.configured,
+        "priced": row.priced,
+        "samples": row.samples,
+        "input": row.input,
+        "output": row.output,
+        "cached": row.cached,
+        "cached_input": row.cached_of,
+        "written": row.written,
+        "cost": _decimal(row.spent) if row.priced else None,
+        "silent": row.silent,
+        "aborted": row.aborted,
+        "estimates": row.estimates,
+        "estimated_cost": _decimal(row.guessed) if row.estimates else None,
+    }
+    return found
+
+
+def as_json(every: dict[str, _Row]) -> str:
+    """`/usage json`: `{"models": [row, ...], "total": row, "cost_complete": bool}` as JSON
+    text. A row is `{"model", "configured", "priced", "samples", "input", "output", "cached",
+    "cached_input", "written", "cost", "silent", "aborted", "estimates", "estimated_cost"}`:
+    `samples` counts replies that reported usage, `cached` the tokens read from the prompt cache
+    among those that said (`cached_input` is their input, so `cached / cached_input` is the hit
+    rate), `cost` and `estimated_cost` decimal strings in dollars (`null`: no price, or nothing
+    estimated), and `silent`, `aborted` and `estimates` the replies that reported none. The
+    `total` row has no `model`; its `cost` adds the priced models, and `cost_complete` is false
+    when a model that replied has no price (the text ends that total in `+`). Every model that
+    has replied is a row, in the order each first replied."""
+    total = _total(every.values())
+    total.silent = sum(r.silent for r in every.values())
+    total.aborted = sum(r.aborted for r in every.values())
+    total.estimates = sum(r.estimates for r in every.values())
+    total.guessed = sum((r.guessed for r in every.values()), Decimal(0))
+    total.priced = any(r.priced for r in every.values())
+    complete = all(r.priced for r in every.values() if r.samples)
+    document = {
+        "models": [_json_row(row, model=name) for name, row in every.items()],
+        "total": _json_row(total),
+        "cost_complete": complete,
+    }
+    return json.dumps(document)
 
 
 def _aligned(grid: list[list[str]]) -> str:

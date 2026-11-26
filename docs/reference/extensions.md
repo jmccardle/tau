@@ -37,7 +37,7 @@ async def agent(
     self,
     node: NodeHandle,
     task: Annotated[str, 'everything the agent needs: it sees none of this conversation'],
-    to: Annotated[str | None, 'an earlier agent to continue, such as agent:1'] = None,
+    to: Annotated[str | None, 'an earlier agent to continue, such as agent:0:1'] = None,
 ) -> str
 ```
 

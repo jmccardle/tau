@@ -165,10 +165,10 @@ async def test_a_str_or_none_parameter_takes_the_rest_too_and_may_be_left_out(
 
 @scenario
 async def test_a_command_with_no_parameters_says_it_takes_no_arguments(tmp_path: Path) -> None:
-    infos = await commands(await Harness.create(tmp_path, extensions=[shipped("usage")]))
-    assert parse("/usage", infos).args == {}
-    with pytest.raises(ValueError, match="/usage takes no arguments, but was given 'foo'"):
-        parse("/usage foo", infos)
+    infos = await commands(await Harness.create(tmp_path, extensions=[shipped("prune")]))
+    assert parse("/prune", infos).args == {}
+    with pytest.raises(ValueError, match="/prune takes no arguments, but was given 'foo'"):
+        parse("/prune foo", infos)
 
 
 @scenario
@@ -563,3 +563,13 @@ def test_a_completion_holds_no_newline_and_a_long_detail_is_cut() -> None:
     made = Completion("v", "two\nlines", "x" * 100)
     assert made.label == "two lines"
     assert made.detail == "x" * 79 + "…"
+
+
+@scenario
+async def test_usage_json_is_typed_as_a_word_or_as_format_json(tmp_path: Path) -> None:
+    infos = await commands(await Harness.create(tmp_path, extensions=[shipped("usage")]))
+    assert parse("/usage", infos).args == {}
+    assert parse("/usage json", infos).args == {"format": "json"}
+    assert parse("/usage format=text", infos).args == {"format": "text"}
+    with pytest.raises(ValueError, match="format"):
+        parse("/usage yaml", infos)

@@ -1,4 +1,5 @@
-"""examples/speculative/plan_mode.py, driven the way a frontend would drive it.
+"""`plan_mode` (the built-in, on by default and inert until `/plan`), driven the way a frontend
+would drive it.
 
 Each test is one flow: what the person does (`/plan`, answers), what the model is offered and
 told, what the tree records, and what the client is sent. The mode is the option `shown` reads,
@@ -15,8 +16,10 @@ from typing import Any, cast
 import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
+from shipped import shipped
 
 from tau import (
+    Agents,
     Author,
     Body,
     Client,
@@ -28,21 +31,14 @@ from tau import (
     Stop,
 )
 
-
-def load(name: str) -> Any:
-    path = Path(__file__).resolve().parents[3] / "examples" / "speculative" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"speculative_{name}", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-plan_mode = load("plan_mode")
 PLAN = "1. read x\n2. edit y"
-APPROVED = Body.User(plan_mode.APPROVED)
-BRIEF = Body.User(plan_mode.BRIEF)
+APPROVED_TEXT = "The plan is approved. Carry it out."
+BRIEF_TEXT = (
+    "PLAN MODE. Research with the read-only tools, then reply with a step-by-step plan and "
+    "make no changes: write, edit and shell commands are refused until the person approves."
+)
+APPROVED = Body.User(APPROVED_TEXT)
+BRIEF = Body.User(BRIEF_TEXT)
 
 
 def base_tools() -> list[FakeTool]:
@@ -57,7 +53,7 @@ async def started(
         tmp_path,
         provider=FakeProvider(script),
         tools=base_tools() if tools is None else tools,
-        extensions=[plan_mode],
+        extensions=[shipped("plan_mode")],
     )
 
 
@@ -138,7 +134,7 @@ async def test_revise_sends_the_feedback_as_the_next_input_and_stays_in_plan_mod
     # the task and the feedback are sent by the extension, and the model was briefed once
     assert users(h) == [
         (Author.Extension("plan_mode"), "add retry"),
-        (Author.Extension("plan_mode"), plan_mode.BRIEF),
+        (Author.Extension("plan_mode"), BRIEF_TEXT),
         (Author.Extension("plan_mode"), "use z, not y"),
     ]
     assert len(h.provider.requests) == 2
@@ -312,7 +308,7 @@ async def _snapshot(client: Client) -> AsyncIterator[Event]:
 
 
 def load_chat() -> Any:
-    examples = Path(__file__).resolve().parents[3] / "examples"
+    examples = Path(__file__).resolve().parents[2] / "examples"
     sys.path.insert(0, str(examples))
     try:
         return load_from(examples / "chat.py", "speculative_chat")
@@ -378,4 +374,65 @@ async def test_a_line_client_lists_plan_asks_inline_and_says_it_is_in_plan_mode(
     assert "[plan_mode] add retry" in "".join(screen), "an extension's message is shown by name"
     listener.cancel()
     await client.close()
+    await h.close()
+
+
+@scenario
+async def test_it_is_inert_until_plan_the_model_is_offered_every_tool_and_nothing_is_shown(
+    tmp_path: Path,
+) -> None:
+    h = await started(tmp_path, [say("hello")])
+    await h.send("hi")
+    await h.settle()
+    assert h.provider.requests[0].tool_names == ["read", "write", "grep", "bash"]
+    assert dict((await h.view()).shown) == {}, "no badge, not even a cleared one"
+    assert await shown(h) == "act"
+    assert [b for b in h.bodies() if isinstance(b, Body.User)] == [Body.User("hi")], "no brief"
+    await h.close()
+
+
+@scenario
+async def test_what_is_read_only_is_not_an_option_a_client_can_change(tmp_path: Path) -> None:
+    """Client-facing options are for what a client may configure; the lists are fixed."""
+    h = await started(tmp_path, [say("hello")])
+    form = await h.client.options(h.cursor, "plan_mode")
+    assert sorted(cast("dict[str, object]", form.schema["properties"])) == ["mode"]
+    with pytest.raises(ValueError, match="allow_bash"):
+        await h.client.configure(h.cursor, "plan_mode", {"allow_bash": ["rm"]})
+    await h.close()
+
+
+@scenario
+async def test_find_is_read_only_and_offered_in_plan_mode(tmp_path: Path) -> None:
+    tools = [FakeTool(n, "ran") for n in ("read", "find", "edit")]
+    h = await started(tmp_path, [say(PLAN)], tools)
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    assert h.provider.requests[0].tool_names == ["read", "find"]
+    await h.close()
+
+
+@scenario
+async def test_plan_mode_does_not_let_the_model_hand_the_work_to_a_sub_agent(
+    tmp_path: Path,
+) -> None:
+    """A sub-agent is offered every tool, so `agent` is not offered, and refused, in plan mode."""
+    call = Part.Call("a", "agent", '{"task": "edit everything"}')
+    script = [Reply([call], Stop.Tools), say(PLAN)]
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider(script),
+        tools=base_tools(),
+        extensions=[shipped("plan_mode"), Agents()],
+    )
+    await h.run("plan")
+    await h.send("go")
+    await h.settle()
+    assert "agent" not in h.provider.requests[0].tool_names
+    results = h.bodies()[-2]
+    assert isinstance(results, Body.Results)
+    ((_, outcome, _),) = results.outcomes
+    assert outcome == Outcome.Err("tool not offered: agent")
+    assert h.session.cursors() == [h.cursor], "no sub-agent was opened"
     await h.close()
