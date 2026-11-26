@@ -55,6 +55,7 @@ BUILT_INS = [
     "attachments",
     "base_tools",
     "compaction",
+    "fetch",
     "permissions",
     "plan_mode",
     "prune",
