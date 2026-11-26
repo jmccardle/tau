@@ -811,7 +811,7 @@ with an argument that makes it write or run something (`git diff --output=f`, `g
 --ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
 external diff or textconv program the repository's own config names. The lists of tools and commands are not
 options, because a `/config` from any client could widen them. They are in the extension's
-[settings file](extensions.md#options-or-settings), `settings.py`: to change them, copy the
+[settings file](extensions.md#options-settings-or-administrator-keys), `settings.py`: to change them, copy the
 built-in's package to your extensions directory, where it shadows the built-in, and edit the
 copy's `settings.py` (the brief and the approval the model reads are there too):
 

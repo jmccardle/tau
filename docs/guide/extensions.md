@@ -299,17 +299,23 @@ the cursor's branch, so an option can be set in these ways:
 
 `tau config check` checks the values against the type for every extension it can load.
 
-## Options or settings
+## Options, settings or administrator keys
 
-An option is for what a client may configure: every client can read and set it (`/config` is on
-the wire), on any branch. What a client must not change is not an option. Either fix it in the
-code, or, when an administrator should be able to change it, put it in a **settings file**: a
-module of plain assignments in the extension's package, which the extension reads where it uses
-them and an administrator changes by editing the file.
+A value an extension reads lives in one of three places, by who may change it.
 
-The built-in `plan_mode` is the example. Its one option is `mode`, because entering and leaving
-plan mode is the client's choice. What counts as read-only is not, or a `/config` could widen it,
-so the lists are in `tau/_plan_mode/settings.py`:
+- **Options**: what a client may configure. Every client can read and set them (`/config` is on
+  the wire), on any branch.
+- **A settings file**: constants of the code, which no client may change and an administrator
+  may, by editing the file. It is a module of plain assignments in the extension's package,
+  `settings.py`, which the extension reads where it uses them.
+- **Administrator keys**: what differs per machine or project and no client may change. They are
+  keys of `extensions.NAME` in a config file (`tau config set NAME.KEY=VALUE` writes one), which
+  the extension declares as `administrator_keys` and reads with `tau.constants` when it is built.
+  `tau config check` checks them, and no client can read or set them.
+
+The built-in `plan_mode` shows the first two. Its one option is `mode`, because entering and
+leaving plan mode is the client's choice. What counts as read-only is not, or a `/config` could
+widen it, so the lists are in `tau/_plan_mode/settings.py`:
 
 ```python skip
 READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")
@@ -320,6 +326,31 @@ and `__init__.py` reads them where it needs them (`from . import settings`, then
 `settings.READ_ONLY_TOOLS`). To use other lists, copy the package into your extensions directory
 as `plan_mode/` (a drop-in shadows the built-in of the same key: see [How τ finds an
 extension](#how-τ-finds-an-extension)) and edit only the copy's `settings.py`.
+
+The built-in `fetch` shows the third. Its limits (5 MiB of body, 5 redirects) are in its settings
+file, but whether it may read from private addresses and how long a call may take differ per
+machine, so they are administrator keys:
+
+```json
+{ "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
+```
+
+```python skip
+class Fetch:
+    name = "fetch"
+    administrator_keys = {"allow_private": bool, "timeout": int}
+
+    @classmethod
+    def configured(cls, extensions: Mapping[str, Mapping[str, object]]) -> "Fetch":
+        given = tau.constants(extensions, "fetch", cls.administrator_keys)  # ConfigError if wrong
+        ...
+```
+
+`extensions.NAME` holds an extension's options or its administrator keys, not both: when it has
+`options`, that object is its options. One that needs both keeps the administrator's values in its
+settings file. A built-in is handed the config layers when it is built (`_builtins.py`); a drop-in
+or package extension is imported, not built from them, so it has no way yet to reach its
+administrator keys.
 
 ## Hooks
 

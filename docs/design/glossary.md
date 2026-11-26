@@ -1901,12 +1901,12 @@ as a tool of that exact name. A rule naming any `mcp__` tool is never reported a
 no extension provides: a server's tools are listed only once it runs.
 
 ### Fetch (extension), fetch tool, readable, NoText
-`Fetch` (`_fetch.py`, private; not exported), key `fetch`, no options, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
+`Fetch` (the package `_fetch/`, private, with its settings file `settings.py`; not exported), key `fetch`, no options, administrator keys `allow_private` and `timeout`, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
 
 The built-in extension, **on by default**, that lets the model read the web. One GET with a
 `User-Agent` naming tau and an `Accept` that prefers Markdown, under fixed limits (10 s to connect, 60 s
-in all, 5 MiB of body, 20 MiB for an image, 5 redirects); `fetch.timeout` is the one the administrator
-may change. HTML becomes Markdown by `readable(html, base_url)` (standard library only: the page's `main`,
+in all, 5 MiB of body, 20 MiB for an image, 5 redirects: its settings file); `fetch.timeout` is the one
+an administrator sets in a config file. HTML becomes Markdown by `readable(html, base_url)` (standard library only: the page's `main`,
 its only `article`, else its body, without navigation, footers, sidebars, scripts, styles, forms'
 controls and hidden elements; `NoText` if nothing is left, as for a page built by script); text, JSON and
 XML come back as they are by their charset; an image comes back as the tool's image (D30) for a model
