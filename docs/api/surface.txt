@@ -1224,7 +1224,7 @@ class Session
     def send(self, cursor: int, by: Author, text: str, images: Sequence[Image] = ...) -> int
     def set_auto(self, cursor: int, on: bool) -> None
     def set_label(self, label: str, cursor: int) -> None
-    def step(self, cursor: int) -> None
+    def step(self, cursor: int, command: bool = False) -> None
     def take_notices(self) -> list[tuple[str, int, str | None, str]]
     property tree: Tree
 
