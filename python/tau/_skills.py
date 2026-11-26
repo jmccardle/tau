@@ -19,14 +19,18 @@ Where they are read: `$TAU_HOME/prompts/*.md` and `$TAU_HOME/skills/*/SKILL.md`,
 under the trusted project's `.tau/`, from the bytes trust approved (`Trusted.prompt_files`); skills
 are also read from `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` in the user's home
 directory and in the trusted project (pinned by trust like the rest; nothing else in those
-directories is read, and a symlink in the project's is refused). For one name `.tau/skills` hides
+directories is read). A symlink, as a file or a directory, anywhere in them is followed (the
+project's too, to a target outside the project as well: trust pins the bytes it read and its
+report names the resolved path). For one name `.tau/skills` hides
 `.agents/skills`, which hides `.claude/skills`, and a project's hides the user's. They
 are read when the extensions load and again, by `rescan`, when a stat says a file was added,
 removed or edited: a running `tau` or `tau serve` sees them before it runs or lists a command.
 A project file that is no longer what trust approved is not used; its command says to run
-`tau trust`. For one name the project wins over the user. Every problem (a template and a skill
-with one name in one directory, a name that is not ASCII letters, digits, `_` and `-`, a file in
-the wrong place) is listed at once, and stops the start.
+`tau trust`. For one name the project wins over the user. A file that cannot be used (a name
+that is not ASCII letters, digits, `_` and `-`, no description, frontmatter that does not parse, a
+file that cannot be read, a file in the wrong place) is skipped, in every directory: `warnings`
+names each file and why, and the start prints them on stderr. Only a template and a skill with one
+name in one directory stop the start (neither is used: `SkillFileError`).
 
 A file may start with frontmatter between two `---` lines, read as the YAML block mapping a Claude
 Code skill writes (plain, quoted, folded `>` and literal `|` values, comments): `name` (if given,
@@ -101,7 +105,9 @@ def _read(
     cached, since running `tau trust` changes nothing in the project's files)."""
     by_name: dict[str, PromptFile | str] = {}
     home = _home_dir(loaded)
-    user, problems = read_row(user_files(loaded.home, home), loaded.home, home)
+    files, unreadable = user_files(loaded.home, home)
+    user, problems = read_row(files, loaded.home, home)
+    problems = [*unreadable, *problems]
     by_name.update(user)
     by_name.update({p.name: p.message for p in problems if p.name})
     project = loaded.project
@@ -173,16 +179,22 @@ def listing(skills: Sequence[PromptFile]) -> str:
 class Skills:
     """The built-in extension `skills`: a command for each template and skill, and the skills list
     for the model (the module docstring). `prompts` are what `Skills.of` found; an extension made
-    of `prompts` alone reads no files again."""
+    of `prompts` alone reads no files again. `warnings` say, one line each, which file `Skills.of`
+    skipped and why."""
 
     name = "skills"
     options = Options
     yields_names = True
 
     def __init__(
-        self, prompts: Sequence[PromptFile], *, loaded: LoadedConfig | None = None
+        self,
+        prompts: Sequence[PromptFile],
+        *,
+        loaded: LoadedConfig | None = None,
+        warnings: Sequence[str] = (),
     ) -> None:
         self.prompts = tuple(prompts)
+        self.warnings = tuple(warnings)
         self.commands: tuple[Callable[..., object], ...] = ()
         self._by_name: Mapping[str, PromptFile | str] = {e.name: e for e in prompts}
         self._text = (
@@ -194,13 +206,15 @@ class Skills:
 
     @classmethod
     def of(cls, loaded: LoadedConfig) -> "Skills":
-        """The extension for the files `loaded` can read. `SkillFileError`, naming every problem
-        with a file, if any cannot be used."""
+        """The extension for the files `loaded` can read. A file that cannot be used is skipped
+        and named in `warnings`; `SkillFileError` if two files claim one name."""
         by_name, problems, _ = _read(loaded, recheck=False)
-        if problems:
-            raise SkillFileError("\n".join(p.message for p in problems))
+        if fatal := [p.message for p in problems if p.fatal]:
+            raise SkillFileError("\n".join(fatal))
         found = cls(
-            [p for _, p in sorted(by_name.items()) if isinstance(p, PromptFile)], loaded=loaded
+            [p for _, p in sorted(by_name.items()) if isinstance(p, PromptFile)],
+            loaded=loaded,
+            warnings=[f"warning: {p.message} (skipped)" for p in problems],
         )
         return found
 

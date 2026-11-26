@@ -99,6 +99,7 @@ from tau._sessions import (
     rename_session,
     sessions_directory,
 )
+from tau._skills import Skills
 from tau._startup import (
     LoadedConfig,
     load_config,
@@ -362,6 +363,7 @@ def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | 
     the loaded extensions are checked against their types."""
     result = inspect_extensions(loaded)
     found.lines += [str(p) for p in load_key_warnings(loaded.catalog, result.sources)]
+    found.lines += [w for e in result.extensions if isinstance(e, Skills) for w in e.warnings]
     if result.errors:
         found.lines += result.errors
         found.failed = True
