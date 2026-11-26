@@ -46,6 +46,7 @@ def test_it_loads_before_step_limit(world: World) -> None:
         "attachments",
         "base_tools",
         "compaction",
+        "fetch",
         "permissions",
         "prune",
         "skills",
@@ -60,6 +61,7 @@ def test_load_false_turns_it_off_and_the_row_says_which_file_did(world: World) -
     assert [e.name for e in load_extensions(loaded(world))] == [
         "attachments",
         "compaction",
+        "fetch",
         "permissions",
         "prune",
         "skills",
@@ -79,6 +81,7 @@ def test_no_extensions_leaves_it_on_and_load_false_still_turns_it_off(world: Wor
         "attachments",
         "base_tools",
         "compaction",
+        "fetch",
         "permissions",
         "prune",
         "skills",

@@ -19,6 +19,8 @@ BASH_GAP = pytest.mark.skipif(
 )
 # The tools the model is offered: `bash` is not one of them on Windows.
 OFFERED = ["read", "write", "edit", "grep", "find", *([] if sys.platform == "win32" else ["bash"])]
+# What a default start offers: those, then the tools of the other built-ins that are on (`fetch`).
+STARTED = [*OFFERED, "fetch"]
 
 
 @scenario
@@ -119,7 +121,7 @@ async def test_the_base_tools_extension_gives_a_session_the_model_can_edit_and_f
     h = await Harness.create(world.home, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == OFFERED
+    assert provider.requests[0].tool_names == STARTED
     diff = "Replaced 1 occurrence in a.txt\n--- a.txt\n+++ a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2"
     assert h.bodies()[-2] == Body.Results(
         [
@@ -141,7 +143,7 @@ async def test_with_load_false_the_model_is_offered_none_of_them(
     h = await Harness.create(world.home, provider=provider, extensions=extensions)
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == []
+    assert provider.requests[0].tool_names == ["fetch"], "none of the base tools, only the web read"
     await h.close()
 
 
@@ -156,5 +158,5 @@ async def test_with_no_extensions_the_model_is_still_offered_them(
     )
     await h.send("go")
     await h.settle()
-    assert provider.requests[0].tool_names == OFFERED
+    assert provider.requests[0].tool_names == STARTED
     await h.close()
