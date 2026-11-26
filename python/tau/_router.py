@@ -1,12 +1,17 @@
-"""router: choose the model for a turn from the text of the input.
+"""`Router`: the built-in extension, off by default, that chooses the model for a turn from the
+text of the input (`tau ext enable router`).
 
 `Options.when` is a list of regexes and `Options.use` the model for each; the first regex that
-matches the input (re.search) decides. The router writes a `Config` node (`cursor.set_model`)
+matches the input (`re.search`) decides. The router writes a `Config` node (`cursor.set_model`)
 and a `Custom` node of kind `route` saying why, both before the `User` node, only when the
-branch is not on that model already. `!model text` forces a model and is stripped from the text
-the model sees. `/route off` (or `/config router enabled=false`) stops the table, not the prefix.
-With `once`, the router puts the branch back on the model it was on before it ever routed, after
-the turn's last reply.
+branch is not on that model already (`cursor.model()`), and tells the typist. `!model text`
+forces a model and is stripped from the text the model sees: `model` must be a configured model
+(`cursor.models()`), else the text goes to the model as typed. `/route off` (or `/config router
+enabled=false`) stops the table, not the prefix. With `once`, the router puts the branch back on
+the model it was on before it ever routed, after the turn's last reply.
+
+The table is two lists because the type language has no mapping or pair; their lengths and every
+regex are checked when the options are set. With no table it routes nothing but the prefix.
 """
 
 import json
@@ -14,16 +19,21 @@ import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from tau import Author, Body, Cursor, Draft, Model, Node, Stop, Subject
+from tau._core import Author, Body, Draft, Node, Stop
+from tau._handles import Cursor, Subject
+from tau._values import Model
 
 PREFIX = re.compile(r"!(\S+)\s+")
 ROUTER = Author.Extension("router")
+KIND = "route"
+"""The `kind` of the `Custom` node that says why the router switched: its `data` is
+`{"model": ..., "why": ...}`."""
 
 
 @dataclass(frozen=True)
 class Options:
-    """router's options. `when[i]` selects `use[i]`: a table of (regex, Model) as two lists,
-    because the type language has no mapping and no pair."""
+    """`Router`'s options (`/config router`). `when[i]` selects `use[i]`: a table of
+    (regex, Model) as two lists, because the type language has no mapping and no pair."""
 
     # A list option's default is a tuple (a dataclass refuses a list); the value is a list.
     when: Annotated[list[str], "regexes, tried in order against the input"] = ()  # pyright: ignore[reportAssignmentType]
@@ -60,40 +70,45 @@ def model_on(walk: list[Node], skip: Author | None = None) -> str | None:
     return next((m for m in models if m), None)
 
 
-async def route(cursor: Cursor, mode: Literal["on", "off"]) -> str:
-    """Turn the router's table on or off on this branch."""
-    cursor.set_options(enabled=mode == "on")
-    return f"routing {mode}"
-
-
 class Router:
+    """The built-in extension `router` (the module docstring)."""
+
     name = "router"
     options = Options
-    commands = (route,)
 
-    def switch(self, cursor: Cursor, model: str, why: str) -> bool:
+    def __init__(self) -> None:
+        self.commands = (self.route,)
+
+    async def route(self, cursor: Cursor, mode: Literal["on", "off"]) -> str:
+        """Turn the router's table on or off on this branch."""
+        cursor.set_options(enabled=mode == "on")
+        return f"routing {mode}"
+
+    def _switch(self, cursor: Cursor, model: str, why: str) -> bool:
         """Put the branch on `model` (writes nothing if it is on it); False if it is not a
         configured model."""
         if model not in cursor.models():
             return False
         if cursor.model() != model:
             cursor.set_model(Model(model))
-            cursor.write(Body.Custom("route", json.dumps({"model": model, "why": why})))
+            cursor.write(Body.Custom(KIND, json.dumps({"model": model, "why": why})))
             cursor.tell(f"router: {model} ({why})")
         return True
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
+        """Strip a `!model` prefix and switch to it, else switch by the table."""
         draft = subject.draft
         assert draft is not None
         assert isinstance(draft.body, Body.User)
         text = draft.body.text
-        if (prefix := PREFIX.match(text)) and self.switch(cursor, prefix[1], "prefix"):
+        if (prefix := PREFIX.match(text)) and self._switch(cursor, prefix[1], "prefix"):
             subject.draft = Draft(Body.User(text[prefix.end() :]), draft.delivers, draft.by)
         elif (options := cursor.options()).enabled and (hit := options.route(text)):
-            self.switch(cursor, hit[1], f"/{hit[0]}/")
+            self._switch(cursor, hit[1], f"/{hit[0]}/")
         return None
 
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None:
+        """With `once`, put the branch back on its own model when the turn's last reply is in."""
         reply = subject.node
         assert reply is not None
         if not cursor.options().once or not isinstance(reply.body, Body.Assistant):
@@ -103,6 +118,3 @@ class Router:
             if home and home != cursor.model():
                 cursor.set_model(Model(home))
         return None
-
-
-extensions = [Router()]  # what `chat.py --extension` adds
