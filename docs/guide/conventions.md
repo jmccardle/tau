@@ -163,7 +163,9 @@ cursor's agents from 1, so the first agent the main cursor (id 0) starts is `age
 - **Depth is one.** An agent is not offered the `agent` tool, so a sub-agent has no sub-agents of
   its own and no label has two parents.
 - **Continuing.** The model continues an agent with `to="agent:P:N"`. The label does not change, and
-  neither does `P`: the parent is the cursor that first started the agent.
+  neither does `P`: the parent is the cursor that first started the agent. The cursor id does: a
+  closed agent is reopened (D17), which opens a new cursor at its last node and moves the label
+  onto it, so a client groups an agent's cursors by the label, never by a cursor id.
 - **The name the model reads.** The result of a call starts `agent:P:N answered:`, so the same label
   appears in the tree's `Results` node, and a client can match a result to its cursor.
 - **Other labels.** Other extensions label their cursors for their own use (`compaction:1`, a
