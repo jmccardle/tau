@@ -154,7 +154,7 @@ def test_a_hooks_file_is_never_partly_used_each_problem_is_named(
 def test_every_problem_in_a_file_is_listed_not_the_first(world: World) -> None:
     user_hooks(
         world,
-        hooks(Notification=[grouped()], PreToolUse=[grouped(**{"if": "x"}), grouped(timeout=-1)]),
+        hooks(Notification=[grouped()], PreToolUse=[grouped(raw={"if": "x"}), grouped(timeout=-1)]),
     )
     with pytest.raises(ConfigError) as caught:
         CommandHooks.of(loaded(world))
