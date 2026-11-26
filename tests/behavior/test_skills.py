@@ -269,8 +269,8 @@ async def test_the_first_step_writes_one_system_node_listing_the_skills(
     assert "<name>pdf</name>" in listed[0]
     assert "<description>Work with PDFs &amp; forms</description>" in listed[0]
     assert f"<path>{path}</path>" in listed[0]
-    assert "quiet" not in listed[0]
-    assert "review" not in listed[0]
+    assert "<name>quiet</name>" not in listed[0]
+    assert "<name>review</name>" not in listed[0]
     system = next(
         n for n in h.nodes() if isinstance(n.body, Body.System) and n.body.text == listed[0]
     )

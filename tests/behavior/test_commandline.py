@@ -8,7 +8,7 @@ from fakes import FakeProvider
 from harness import Harness, say, scenario
 from shipped import shipped
 
-from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
+from tau import Body, Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle, UndoMarker
 from tau.commandline import Completion, UnknownCommand, completions, parse, value, values
 
 
@@ -513,6 +513,21 @@ async def test_a_node_is_detailed_with_its_kind_and_first_line(tmp_path: Path) -
     ]
     assert [c.value for c in found] == ["3", "2", "1", "0"]
     assert {c.label for c in found} == {None}
+    await h.close()
+
+
+@scenario
+async def test_an_undo_marker_is_detailed_with_its_label(tmp_path: Path) -> None:
+    """What `/undo` would go back over, by the name a person gave it; a marker that cannot be
+    read is named by its kind alone."""
+    h = await Harness.create(tmp_path, provider=FakeProvider([]))
+    by = h.session.tree.node(0).by
+    marker = h.session.append(1, UndoMarker("/clear", 1, "clear").body(), by, 0)
+    h.session.append(marker, Body.Custom("undo", "not json"), by, 0)
+    await h.go_to(marker + 1)
+    await h.settle()
+    found = await h.client.complete(h.cursor, "node", "")
+    assert [c.detail for c in found][:2] == ["Custom · undo", "Custom · undo /clear"]
     await h.close()
 
 

@@ -1414,9 +1414,11 @@ yield, so a template cannot take `/model` or `/name`.
 ### prefix (of a walk)
 D24 section 1 · new (8E-1)
 
-The root `Config` and the `System` nodes before the first other message. It holds the system
-prompt, the context files and the skills list, so it is also the prompt-cache prefix every
-cursor of a session shares.
+The root `Config` and the `System` nodes before the first other message, with any `Config` between
+them (a model chosen before the first message); it ends at the last of those `System` nodes. It
+holds the system prompt, the context files and the skills list, so it is also the prompt-cache
+prefix every cursor of a session shares. `/compact`, `/prune` and `/clear` hang their new line
+under its last node (`prefix_length`).
 
 ### line (a new line), new-line building
 `tau._lines` (private: `Planned`, `copy_of`, `prefix_length`, `write_line`, `characters`) · D24 sections 2, 9 · new (8E-3)
@@ -1480,20 +1482,21 @@ text. The first is the undo marker.
 
 ### undo marker, UndoMarker, return_to, reverses, priority (a marker's)
 `tau.UndoMarker` (`label`, `return_to`, `reverses`, `priority`, `extra`; `body()`, `of(body)`),
-`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`) · D33 §1 (CV-01) · new (0.18)
+`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`, `PRIORITY`) · D33 §1 (CV-01) · new (0.18)
 
 A `Custom` node of kind `undo` whose data is a JSON object: **`label`** (what was done, as a
 person names it), **`return_to`** (the node going back puts the cursor on), **`reverses`** (the
 kind of change, named by its owner: `compact`, `prune`, `clear`), **`priority`** (`move`, the
 default: a change to the tree that moving the cursor back reverses; any other name, by convention
-`file`, is the owner's to reverse), and the owner's own keys (`extra`). Written by the extension
+`file`, is the owner's to reverse; `PRIORITY` is its form: lower-case letters, digits, `_`, `-`),
+and the owner's own keys (`extra`). Written by the extension
 that made the change (its `by`). Never sent; decides nothing (core's `deciding` skips it), so a
 marker written mid-turn leaves the turn going on. `UndoMarker.of` is `None` for any other body
 and `ValueError` for malformed data. A copy on a new line marks the same change.
 
 ### Undo (extension), /undo, edit-last (the harness's)
 `tau._undo.Undo` (not exported; `shipped("undo")` in tests), key `undo`, command `/undo
-[priority] [at] [json]` · D33 §2 (EX-20) · new (0.18)
+[priority] [at] [format]` · D33 §2 (EX-20) · new (0.18)
 
 The built-in, default-on and removable, that walks back from the cursor's node to the nearest
 undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
@@ -1501,8 +1504,10 @@ undo marker of the priority asked (`move` unless given), or, for `move`, the las
 owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
 parent, as a go-to does (auto-step off; its step ends when it returns, so a cursor put back
 mid-turn rests there). A cursor command, so `Busy` unless at rest; `at` refuses
-unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
-user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
+unless the cursor is on that node. Answers text, or with `format=json` `{from, to, marker, label,
+user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last. A priority
+with no marker on the walk is refused saying how the word was read (and which priorities the walk
+has markers of); a word that is not a priority, naming the form.
 
 ### reverse (an extension's undo hook), Cursor.reverse, REVERSE
 `Extension.reverse`, `Cursor.reverse(marker) -> bool`, `tau._protocols.REVERSE`, `reverser_of`,
@@ -1518,12 +1523,14 @@ build.
 ### SessionCommands (extension), session, /clear, /branch, /tree, /export
 `tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
 
-The built-in, default-on and removable. **`/clear`**: under the last `System` node of the walk's
-prefix, a `Config` with the branch's folded settings (`folded`: model and options, each `Config`
-a delta) if they differ from the root's, then an undo marker (`/clear`); the cursor moves onto it
+The built-in, default-on and removable. **`/clear`**: under the last node of the walk's prefix,
+a `Config` with the branch's folded settings (`folded`: model and options, each `Config` a delta)
+if they differ from those folded along the prefix, then an undo marker (`/clear`); the cursor moves onto it
 and rests. One root, and the first request after it is byte for byte a new session's.
-**`/branch [label]`**: `open` a cursor at this one's node. **`/tree [at]`**: the tree as text
-(`tree_lines`, `describe_node`). **`/export [path] [thinking]`**: `to_markdown` of the walk. No
+**`/branch [label]`**: `open` a cursor at this one's node (a label a cursor has is refused).
+**`/tree [at]`**: the tree as text (`tree_lines`, a node summary per line). **`/export [path]
+[thinking]`**: `to_markdown` of the walk, without `tau export`'s header; an existing file is
+refused, a failed write is `CommandFailed`. No
 `/new`: a client's move.
 
 ### Count, Basis, ceiling
@@ -1867,13 +1874,24 @@ all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are
 from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
 (`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
 are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
-used. `start` starts every server at once and returns when each has listed its tools; one that
-fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+used now only for a file `TAU_MCP_CONFIG` names that is not there; a file or server the
+configuration cannot use is skipped and named in `Mcp.warnings`. `start` starts every server at
+once and returns when each has listed its tools, within the start timeout less 1.5 s; one that
+fails or is too slow is skipped (`Mcp.failed`, its reason), said on stderr, and told as a
+*standing notice*: τ starts without it. Each
 tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
 `[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
 `list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
 answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
 process and its group, signalled through a pidfd where there is one.
+
+### standing notice
+`Hub.stand`, `Hub.forget_standing` (private); `TreeHandle.tell` from a `start` · D24 section 12 (amends D32 §2, §4) · new (0.18)
+
+A notice to every client that an extension's `start` tells. A start runs before any client is
+connected, so the hub keeps it and sends it to each client that connects, after its snapshot
+(`Commands`, the views, `Labels`), until that extension is stopped (a reload forgets it). It is
+an ordinary `Notice`: no wire change. `mcp` reports a server that did not start this way.
 
 ### mcp__SERVER (a permission rule)
 `tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)
@@ -1946,17 +1964,29 @@ money: cost needs the price, so `/usage json` (or `/usage format=json`) answers
 string, or `null` for a model without a price. The row fields are in `docs/guide/conventions.md`.
 
 ### PlanMode (extension), plan mode, `/plan`
-built-in `plan_mode` (`_plan_mode.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
+built-in `plan_mode` (the package `_plan_mode/`, with its settings file `settings.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
 
 The built-in extension, **on by default and inert until `/plan`**, for planning before acting.
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-and `bash`); `pre_tool` refuses any other call and any `bash` command outside a fixed list of
-read-only commands or that chains, redirects or substitutes; the cursor shows `plan mode`; and a
-reply that ends in `Stop.End` asks `approve | revise | reject` (approve leaves the mode, writes the
-approval and turns auto-step on). What is read-only is fixed in the extension, not an option
-(a client's `/config` must not widen it). A guard, not a sandbox.
+and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
+(order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
+of read-only commands, that chains, redirects or substitutes, that has an argument in
+`REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string
+`command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
+`approve | revise | reject` (approve leaves the mode, writes the approval and turns auto-step on).
+What is read-only is in its *settings file*, not an option (a client's `/config` must not widen
+it). A guard, not a sandbox.
+
+### settings file (an extension's)
+a module of constants in an extension's package, such as `tau/_plan_mode/settings.py` · 0.18 · new
+
+The convention for what an administrator may change and a client may not: a module of plain
+assignments, each with a docstring saying what it is and what a change does, that the extension
+reads where it uses them (`settings.READ_ONLY_TOOLS`). A client configures *options*, which are on
+the wire (`/config`); an administrator changes a settings file by editing it, in a copy of the
+package that shadows the original as a drop-in (D19). It is no new mechanism: just a module.
 
 ### BashGuard (extension), bash guard
 built-in `bash_guard` (`_bash_guard.py`; not exported), options `patterns`, `allow`, `unattended`, `wait`; off by default · 0.18 (from `examples/speculative/bash_guard.py`)
@@ -1966,7 +1996,9 @@ prints a lot (`pre_tool`, `reject | allow | always | truncate`). `always` append
 the user's file's own `allow` (`save_options`); `truncate` rewrites the call's `command` to pipe
 through `grep -e PATTERN | tail -n 200` and the result starts `[bash_guard ran: ...]` (the tree
 keeps the model's own arguments). A question nobody answers within `wait` seconds, or that is
-declined or aborted, is decided by `unattended`; an abort never runs the command.
+declined or aborted, is decided by `unattended`; an abort never runs the command. `tau -p` never
+waits: its `--answer` or `--decline` rules answer the question, or the run stops at it. `wait`
+must be more than 0.
 
 ### Router (extension), `!model`
 built-in `router` (`_router.py`; not exported), options `when`, `use`, `enabled`, `once`, command `/route`; off by default · 0.18 (from `examples/speculative/router.py`)
@@ -1975,7 +2007,7 @@ The built-in extension that picks the model for a turn at `pre_input`: a `!model
 configured model (`cursor.models()`) is stripped from the text and decides; else the first regex
 of `when` that matches picks the model at the same index of `use`. A change writes a `Config`
 node and a `Custom` node of kind `route` (`{"model", "why"}`) before the `User` node, and a
-`Notice` to the typist; nothing is written when `cursor.model()` is already it. `once` restores
+`Notice` to every client (`now on MODEL (WHY)`); nothing is written when `cursor.model()` is already it. `once` restores
 the model the branch had before the router's first `Config`, after the turn's last reply.
 
 ### tool not offered
@@ -2377,8 +2409,8 @@ replaces 0.15's session sidebar and stream strip.
 Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
 message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
 busy cursor it asks first, because a go-to aborts the step. With `undo:undo` among the commands and
-the cursor at rest it runs the harness's `/undo` instead (D33 §5: `json=true`, `at` the viewed
-node), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
+the cursor at rest it runs the harness's `/undo` instead (D33 §5: `format=json`, `at` the viewed
+node; `run_undo`, which a typed `/undo` runs too), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
 an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
 editor.
 
@@ -3320,7 +3352,8 @@ a list item's `value` is the whole list text and its `label` the item; on a comm
 item's `label` is its own, else the unquoted value, and a command name is detailed with the first
 line of its description and its extension. The **node summary** is a node in one line, its kind
 and what it says first (`User · fix the parser…`, `Results · 2 calls`, `Config · model x`,
-`System`, `Custom · todo`): a `node` item's detail.
+`System`, `Custom · todo`, an undo marker `Custom · undo /clear`), cut at `DETAIL_WIDTH`: a
+`node` item's detail, and each line of `/tree`.
 
 ### commandline
 `tau.commandline`: `parse`, `completions`, `value`, `values`, `Parsed`, `UnknownCommand` · D16 · new

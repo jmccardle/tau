@@ -20,8 +20,10 @@ from tau import (
     Ending,
     Outcome,
     Part,
+    Permissions,
     Stop,
     UserConfig,
+    model_config,
     read_models,
 )
 from tau.commandline import parse
@@ -190,6 +192,53 @@ async def test_a_real_bash_runs_the_truncated_command(tmp_path: Path) -> None:
     assert lines[-1] == "1000"
     assert "801" in lines
     assert "800" not in lines
+    await h.close()
+
+
+@scenario
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
+async def test_a_command_that_is_not_a_string_is_left_to_the_tool_to_refuse(
+    tmp_path: Path,
+) -> None:
+    """The guard reads only a string `command`; anything else is the tool's to explain."""
+    calls = [Part.Call("a", "bash", '{"command": 5}'), Part.Call("b", "bash", '{"command": null}')]
+    h, _ = await start(
+        tmp_path, [Reply(calls, Stop.Tools), say("ok")], tool=BashTool(tmp_path), patterns=["."]
+    )
+    assert (await h.view()).questions == (), "nothing to ask about"
+    outcomes = results(h)
+    assert [call for call, _ in outcomes] == ["a", "b"]
+    for _, outcome in outcomes:
+        assert isinstance(outcome, Outcome.Err)
+        assert outcome.error.startswith("invalid arguments"), outcome.error
+    await h.close()
+
+
+@scenario
+async def test_with_a_permissions_ask_rule_permissions_asks_first_then_the_guard(
+    tmp_path: Path,
+) -> None:
+    """Permissions is a guard (it runs first); the bash guard asks only about a call it may run."""
+    fake = FakeTool("bash", "output")
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([run("find / -name x"), say("ok")]),
+        tools=[fake],
+        extensions=[shipped("bash_guard"), Permissions(tmp_path)],  # the guard loads first
+        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
+        catalog=configured(),  # pyright: ignore[reportArgumentType]
+    )
+    await h.send("go")
+    await h.settle()
+    (first,) = (await h.view()).questions
+    assert first.extension == "permissions"
+    await h.respond("yes")
+    await h.settle()
+    (second,) = (await h.view()).questions
+    assert second.extension == "bash_guard"
+    await h.respond("allow")
+    await h.settle()
+    assert fake.calls == [{"command": "find / -name x"}]
     await h.close()
 
 
@@ -411,6 +460,19 @@ async def test_the_built_in_patterns_are_the_default_and_show_in_the_form(
     with pytest.raises(ConfigError, match=r"pattern '\(': "):
         await h.configure("bash_guard", {"patterns": ["("]})
     await h.configure("bash_guard", {"patterns": [r"\bmake\b"]})
+    await h.settle()
+    await h.close()
+
+
+@scenario
+async def test_wait_must_be_more_than_zero_or_every_question_would_time_out_at_once(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[shipped("bash_guard")])
+    for wait in (0, -1):
+        with pytest.raises(ConfigError, match=f"wait must be more than 0 seconds, not {wait}"):
+            await h.configure("bash_guard", {"wait": wait})
+    await h.configure("bash_guard", {"wait": 0.5})
     await h.settle()
     await h.close()
 

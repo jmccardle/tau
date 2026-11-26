@@ -39,7 +39,7 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Compaction.name: lambda loaded: Compaction(),
     Fetch.name: lambda loaded: Fetch.configured(loaded.catalog.extensions),
     CommandHooks.name: CommandHooks.of,  # a file it cannot use raises `HookFileError`
-    Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # `McpConfigError`: the start stops
+    Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # a TAU_MCP_CONFIG file must exist
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     PlanMode.name: lambda loaded: PlanMode(),
     Prune.name: lambda loaded: Prune(),
