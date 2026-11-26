@@ -249,7 +249,23 @@ read from what the person types (`/count`, `/ralph PROMPT.md 4`) and checked by 
 
 A command that takes a `Cursor` runs *as a step of that cursor*: it gets the cursor's handle and
 runs before the `pre_step` hooks. It is refused with `Busy` unless the cursor is at rest, and
-aborting the cursor stops it. A command without a `Cursor` runs at once, whatever the cursor is
+aborting the cursor stops it. **The step ends when the command returns**: auto-step is off while
+it runs, and after it the cursor rests wherever the command left it, even on a `User` or `Results`
+node. No model is asked and no tool runs in a command's step.
+
+To make the model run, turn auto-step on: the next step then starts at once from where the cursor
+stands, and samples (or runs the tools of a batch) as usual.
+
+```python
+async def again(cursor: Cursor, text: str) -> str:
+    """Ask the model again, from here, with `text`."""
+    cursor.write(Body.User(text))
+    cursor.set_auto(True)  # without this the cursor rests on the new message
+    return "asked"
+```
+
+`cursor.send(cursor.id, text)` does both in one call (the text goes through `pre_input` like a
+person's message); that is how the built-in skills and prompt templates make the model answer. A command without a `Cursor` runs at once, whatever the cursor is
 doing. Return a string to show a result; raise to fail (the caller gets `CommandFailed`). To refuse (bad arguments, say) raise `CommandFailed(message)` yourself: the caller gets your message as written, with no traceback, and a `Cursor` command's step does not fail.
 
 An extension whose commands come from files (the built-in `skills`) lists a method `rescan(self)

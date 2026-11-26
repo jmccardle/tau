@@ -97,8 +97,8 @@ class Checkpoints:
 ```
 
 `/undo file` then restores the files and puts the cursor back on the batch's node, before its
-results. A step that would carry the turn on from there (run the tools again) is halted instead,
-and the status bar says so: step to carry on.
+results, and rests there: a command's step ends when the command returns, so the tools do not run
+again until you step (or send).
 
 ### What `/undo` answers
 
