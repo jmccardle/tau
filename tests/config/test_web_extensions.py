@@ -84,3 +84,12 @@ def test_the_constants_are_not_options_a_client_could_set(world: World) -> None:
     result = tau(world, "-p", "-m", "mock:echo", "--set", "fetch.allow_private=false", "hi")
     assert result.code != 0
     assert "fetch" in result.both
+
+
+def test_a_fetch_rule_with_a_scheme_or_port_is_a_config_error(world: World) -> None:
+    """Such a rule could never match: a deny that cannot match must not pass quietly."""
+    rules = {"deny": ["fetch:http://127.0.0.1:8300"]}
+    world.user_config({"extensions": {"permissions": rules}})
+    result = tau(world, "config", "check")
+    assert result.code != 0
+    assert "rule 'fetch:http://127.0.0.1:8300': a fetch pattern is a host only" in result.both

@@ -964,10 +964,12 @@ request, and the request looks it up again, so a name that answers differently t
 gets through: this guards against the model and the pages it reads, and is not a sandbox. `tau ext
 disable fetch` takes the tool away.
 
-**Permissions** know it as `fetch`, and `fetch:GLOB` matches the URL's host, ignoring case (not the
-scheme, port or path), with the same glob as for paths: `*` crosses dots, so `*.python.org` is every
+**Permissions** know it as `fetch`, and `fetch:GLOB` matches the URL's host, ignoring case, with
+the same glob as for paths: `*` crosses dots, so `*.python.org` is every
 host under `python.org` and not `python.org` itself. The host is read as the request reads it:
-`https://docs.python.org@evil.com/` is a visit to `evil.com`.
+`https://docs.python.org@evil.com/` is a visit to `evil.com`. The pattern is the host alone: a rule
+with a scheme, a port or a path (`fetch:http://127.0.0.1:8300`, `fetch:example.com/*`) could never
+match, so it is refused where it is configured, and `tau config check` names it.
 
 ```json
 {

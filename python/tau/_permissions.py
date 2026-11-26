@@ -28,9 +28,10 @@ server (`mcp__SERVER__TOOL`).
   symlink) and says how many. A `deny` for `read:GLOB` guards `grep` too.
 - **Fetches** (`fetch`) are matched by the URL's host: `fetch:GLOB` matches the `url`'s host
   (`fnmatch`'s glob, ignoring case; `*` crosses dots, so `*.python.org` is every host under it and
-  not `python.org` itself; the port, the path and the scheme are not part of it). The host is read
-  as the tool reads it, so a rule is about the host that is fetched. `fetch` answers a redirect to
-  another host instead of following it, so each host the model reads from is a call the rules see.
+  not `python.org` itself; the port, the path and the scheme are not part of it, and a rule that
+  writes one is refused). The host is read as the tool reads it, so a rule is about the host that
+  is fetched. `fetch` answers a redirect to another host instead of following it, so each host the
+  model reads from is a call the rules see.
   `always` saves `fetch:HOST`. The `search` tool has the bare name only.
 - **Commands** are matched by the tool's name only: a pattern over a command's text is easy to
   step around (a shell says one thing many ways), so it would promise a guard it is not. `deny`
@@ -77,6 +78,7 @@ SEARCH_TOOLS = ("grep", "find")
 """The path tools that read every file under their root."""
 HOST_TOOLS = ("fetch",)
 """The tools whose rule's glob is over the host of the URL they read."""
+_NOT_A_HOST = re.compile(r"/|^[^:]*:[^:]*$")  # a scheme's or a path's slash, or one colon: a port
 PATTERN_TOOLS = (BASH, *PATH_TOOLS, *HOST_TOOLS)
 """The tools a rule may give an argument for (`bash`: one exact command, in `allow` only)."""
 REFUSED = "the user refused this call"
@@ -196,6 +198,11 @@ class Rule:
         if tool == BASH:
             _check_command(text, glob, mode)
         elif tool in HOST_TOOLS:
+            if _NOT_A_HOST.search(glob):
+                raise ValueError(
+                    f"rule {text!r}: a {tool} pattern is a host only, such as "
+                    f"'{tool}:docs.python.org' or '{tool}:*.python.org': no scheme, port or path"
+                )
             try:
                 _compiled(glob, True)
             except re.error as e:
