@@ -30,6 +30,15 @@ class Halt:
 
 extensions = [Halt()]
 """
+REFUSE = """
+class Refuse:
+    name = "refuse"
+
+    async def pre_input(self, cursor, subject):
+        return "no input today"
+
+extensions = [Refuse()]
+"""
 BOOM = """
 class Boom:
     name = "boom"
@@ -169,9 +178,11 @@ def test_json_a_failure_adds_the_text_to_the_error(model: World) -> None:
 
 def test_json_a_stop_before_the_model_spoke_has_no_partial(model: World) -> None:
     Script.replies = [(PLAN, [])]
-    result = p(model, "--json", "--set", "step_limit.limit=0", "go")
-    stop = last(result).get("stopped")
-    assert stop is None or "partial" not in stop
+    result = p(model, "--json", "-e", ext(model, REFUSE), "go")
+    assert result.code == 3, result.err
+    stop = last(result)["stopped"]
+    assert isinstance(stop, dict)
+    assert "partial" not in stop
 
 
 def test_a_clean_run_prints_only_the_last_reply(model: World) -> None:
