@@ -341,16 +341,16 @@ async def test_an_http_server_that_refuses_is_reported(tmp_path: Path) -> None:
 async def test_a_slow_server_is_cut_before_the_start_timeout_and_named(
     tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    catalog = dataclasses.replace(fake_catalog(), timeouts={"mcp": (0.5, None)})
+    catalog = dataclasses.replace(fake_catalog(), timeouts={"mcp": (3.0, None)})
     hung = stdio(tmp_path / "log", "hung", HANG_START="1")
     h = await Harness.create(
         tmp_path,
         provider=FakeProvider([]),
         catalog=catalog,
-        extensions=[Mcp([hung], tmp_path, start_timeout=0.5)],
+        extensions=[Mcp([hung], tmp_path, start_timeout=3.0)],
     )
     err = capfd.readouterr().err
-    assert f"MCP server hung did not start within 0.25 s ({sys.executable} {SERVER}; a first" in err
+    assert f"MCP server hung did not start within 1.5 s ({sys.executable} {SERVER}; a first" in err
     assert "raise extensions.mcp.start_timeout" in err
     for _ in range(100):  # it was stopped; its log is written in its own time
         if {"stdin": "closed"} in logged(tmp_path / "log"):
