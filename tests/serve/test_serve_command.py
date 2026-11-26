@@ -325,8 +325,8 @@ class Hanging(BaseHTTPRequestHandler):
 
 def test_stop_aborts_what_is_running_and_closes_the_agents_first(home: World) -> None:
     """The server is stopped while an agent works: the agent's cursor is closed in the session,
-    as an interrupted `-p` leaves it, so a later `to="agent:1"` resumes it instead of being told it
-    is still working."""
+    as an interrupted `-p` leaves it, so a later `to="agent:0:1"` resumes it instead of being told
+    it is still working."""
     Hanging.reached.clear()
     Hanging.release.clear()
     model = ThreadingHTTPServer(("127.0.0.1", 0), Hanging)
@@ -356,7 +356,7 @@ def test_stop_aborts_what_is_running_and_closes_the_agents_first(home: World) ->
         model.server_close()
     session = Session.load(home.tau / "sessions" / OLD)
     try:
-        child = session.label("agent:1")
+        child = session.label("agent:0:1")
         assert child not in session.cursors(), "the agent's cursor is closed"
         assert dict(session.closed()).keys() == {child}
     finally:

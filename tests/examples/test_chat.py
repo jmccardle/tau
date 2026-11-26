@@ -51,10 +51,12 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 
 BUILT_INS = [
+    "agents",
     "attachments",
     "base_tools",
     "compaction",
     "permissions",
+    "plan_mode",
     "prune",
     "skills",
     "step_limit",
