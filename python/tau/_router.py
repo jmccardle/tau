@@ -4,11 +4,12 @@ text of the input (`tau ext enable router`).
 `Options.when` is a list of regexes and `Options.use` the model for each; the first regex that
 matches the input (`re.search`) decides. The router writes a `Config` node (`cursor.set_model`)
 and a `Custom` node of kind `route` saying why, both before the `User` node, only when the
-branch is not on that model already (`cursor.model()`), and tells the typist. `!model text`
-forces a model and is stripped from the text the model sees: `model` must be a configured model
-(`cursor.models()`), else the text goes to the model as typed. `/route off` (or `/config router
-enabled=false`) stops the table, not the prefix. With `once`, the router puts the branch back on
-the model it was on before it ever routed, after the turn's last reply.
+branch is not on that model already (`cursor.model()`), and tells every client (a model switch
+on a branch concerns all of them). `!model text` forces a model and is stripped from the text the
+model sees: `model` must be a configured model (`cursor.models()`), else the text goes to the
+model as typed. `/route off` (or `/config router enabled=false`) stops the table, not the prefix.
+With `once`, the router puts the branch back on the model it was on before it ever routed, after
+the turn's last reply.
 
 The table is two lists because the type language has no mapping or pair; their lengths and every
 regex are checked when the options are set. With no table it routes nothing but the prefix.
@@ -24,7 +25,6 @@ from tau._handles import Cursor, Subject
 from tau._values import Model
 
 PREFIX = re.compile(r"!(\S+)\s+")
-ROUTER = Author.Extension("router")
 KIND = "route"
 """The `kind` of the `Custom` node that says why the router switched: its `data` is
 `{"model": ..., "why": ...}`."""
@@ -92,7 +92,7 @@ class Router:
         if cursor.model() != model:
             cursor.set_model(Model(model))
             cursor.write(Body.Custom(KIND, json.dumps({"model": model, "why": why})))
-            cursor.tell(f"router: {model} ({why})")
+            cursor.tell(f"now on {model} ({why})")  # the notice names the extension
         return True
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
@@ -114,7 +114,7 @@ class Router:
         if not cursor.options().once or not isinstance(reply.body, Body.Assistant):
             return None
         if reply.body.stop != Stop.Tools:  # a tool batch is still the same turn
-            home = model_on(cursor.walk(), skip=ROUTER)
+            home = model_on(cursor.walk(), skip=cursor.by)
             if home and home != cursor.model():
                 cursor.set_model(Model(home))
         return None

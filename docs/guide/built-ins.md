@@ -784,8 +784,11 @@ split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"
 mode the model is told to research and propose a plan, and is offered only tools that read:
 `read`, `grep`, `find`, and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
 `head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
-redirects or substitutes nothing. A call to anything else is refused, and the model is told to
-put the change in its plan. Every client shows the line `plan mode` for the cursor while it is on.
+redirects or substitutes nothing. A call to a tool it was not offered fails with `tool not
+offered: write`; any other `bash` command is refused with `plan mode: bash is refused. Put the
+change in your plan instead.` Plan mode refuses before [permissions](#ask-before-a-tool-runs) is
+asked, so you are never asked about a call it would refuse. Every client shows the line
+`plan mode` for the cursor while it is on.
 
 ```text
 > /plan add retry to the fetch tool
@@ -799,12 +802,26 @@ and leaves plan mode on. Under `tau -p` nobody is there to answer: without an `-
 the run prints the plan, says `question 0 from plan_mode ... has no rule` on standard error and
 exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
 
+`tau -p` answers the question only by a rule, as for [permissions](#ask-before-a-tool-runs): with
+none, it prints the plan and stops at the question (exit 3). `tau -p --answer plan_mode=reject "/plan add retry"` prints
+the plan and changes nothing; `--answer plan_mode=approve` carries it out in the same run.
+
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
-back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
-not a sandbox: `git diff --output=f` writes a file. The lists of tools and commands are not
-options, because a `/config` from any client could widen them; to change them, write a drop-in
-named `plan_mode` (it shadows the built-in) or turn the built-in off with
-`tau ext disable plan_mode`.
+back to a node from before `/plan` leaves it, and a second cursor is unaffected. A listed command
+with an argument that makes it write or run something (`git diff --output=f`, `git log
+--ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
+external diff or textconv program the repository's own config names. The lists of tools and commands are not
+options, because a `/config` from any client could widen them. They are in the extension's
+[settings file](extensions.md#options-or-settings), `settings.py`: to change them, copy the
+built-in's package to your extensions directory, where it shadows the built-in, and edit the
+copy's `settings.py` (the brief and the approval the model reads are there too):
+
+```bash skip
+cp -r "$(python -c 'import tau._plan_mode as p, os; print(os.path.dirname(p.__file__))')" \
+  "${TAU_HOME:-$HOME/.tau}/extensions/plan_mode"
+```
+
+Or turn plan mode off with `tau ext disable plan_mode`.
 
 ## Ask before a command prints a lot
 
@@ -824,10 +841,16 @@ asked about. The question has four answers:
 The options are what you may tune: `patterns` (the built-in ones are the default, so
 `/config bash_guard` shows them; a pattern with a comma is typed as a JSON array,
 `patterns='["a{1,2}"]'`), `allow`, `unattended` (`reject`, `allow` or `truncate`, what happens
-when nobody answers) and `wait` (seconds to wait for an answer, 600 by default). A question
-nobody answers within `wait` seconds is decided by `unattended`; an abort never runs the command.
-`tau -p` does not wait: a question it has no `--answer` or `--decline` rule for stops the run at
-once, exit 3.
+when nobody answers) and `wait` (seconds to wait for an answer, more than 0; 600 by default). In
+a served session, a question nobody answers within `wait` seconds, or that is declined, is decided
+by `unattended`, so a session with nobody attached does not stop for ever; an abort never runs the
+command. `tau -p` never waits: it answers by rule, so give it `--answer bash_guard=allow` (or
+another answer) or `--decline bash_guard` (decided by `unattended`); with neither it stops at the
+question, exit 3.
+
+The guard asks after [permissions](#ask-before-a-tool-runs) has allowed the call, so with an
+`ask` rule for `bash` you are asked twice: by permissions first, then by the guard. In plan mode,
+plan mode refuses a command before either asks.
 
 ## Choose the model by the prompt
 
@@ -848,8 +871,8 @@ that matches decides.
 ```
 
 A switch writes a `Config` node and a `Custom` node of kind `route` saying why (`prefix`, or the
-regex), both before your message, and says `router: local:coder (/```/)` to the client that typed
-it. Nothing is written when the branch is on that model already. `once` puts the branch back on
+regex), both before your message, and tells every client `now on local:coder (/```/)`, under the
+router's name: a model switch on a branch concerns everyone watching it. Nothing is written when the branch is on that model already. `once` puts the branch back on
 the model it was on before the router first switched it, after the turn's last reply. `/route off`
 (or `/config router enabled=false`) stops the table and leaves the prefix. A `!name` that is not a
 configured model is not a prefix: it goes to the model as typed.
