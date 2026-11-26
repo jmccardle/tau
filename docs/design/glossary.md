@@ -3334,11 +3334,33 @@ the prefix starts with `.`; a missing or unreadable directory has none), `"model
 names), `"cursor"` (open ids, then `"new"`), `"label"`, `"node"` (the cursor's walk, newest
 first). Any other name is a `ValueError`. No extension code runs, so completion cannot hang or
 raise on an extension's account. Labels and details: a path is labelled with its name alone and a
-regular file detailed with its size (`4.2 kB`); a model detailed with its provider, context
-window and `images` (`anthropic · 200k · images`); a cursor labelled with its labels after its
+regular file detailed with its size (`4.2 kB`); a model detailed with `model_detail` of its
+`ModelInfo` (`anthropic · 200k ctx · images · $3/$15`, see *models*); a cursor labelled with its labels after its
 id (`3 main, review`) and detailed with where it is (`node 42 · busy`), `"new"` with `a new cursor
 here`; a label detailed with its cursor (`cursor 3 · node 42`, `closed cursor 3 · node 42`); a
 node with its **node summary**.
+
+### models, ModelInfo, ModelPrice, model_detail
+`Client.models() -> tuple[ModelInfo, ...]`, `tau.ModelInfo`, `tau.ModelPrice` (`_model_list.py`: `model_list`, `listed_from`, `model_detail`, `PRICED_BY`) · D32 §8 · new
+
+What a client may know of the driver's models, since a `Config` node holds only a qualified name
+and a client reads no config file. **`models()`** answers one **`ModelInfo`** per model of the
+driver's catalog, in config order: `name` (the qualified name; what `CursorView.model` holds),
+`provider`, `context_window`, `max_tokens`, `images` (the `ImageLimits` one image is held to, when
+the image rule lets the model take images: `images: true` on a provider with `image_limits`;
+`None` otherwise), `price` and `default` (it is the catalog's `default_model`). The fields are an
+**allowlist** written out in `model_list`: no `base_url`, `api_key`, `api_key_env`, `options`,
+`image_tokens` or other section ever reaches a client. **`ModelPrice`** is a price as exact
+decimal text in USD per million tokens (`input`, `output`, `cache_read`, `cache_write`,
+`cache_write_1h`, the last `cache_write` when not given): the `price` of the loaded `usage`
+extension's (`PRICED_BY`) section of the model, built by its own `model_options` type
+(`ExtensionOptions.model_options`; `ExtensionOptions.section_type` says whether it declares one),
+so usage stays a leaf (D28 §6); without `usage` no model is priced, and a section it refuses, or a
+`price` of another shape, is a `ConfigError` naming the model. The catalog is the effective one
+(every layer, `--set` included). The answer changes at `Driver.use_catalog` and at a reload that
+changes `usage`; a change in what `models()` reads (**`listed_from`**, and usage's
+`model_options` type) sends `Commands`, on which a client calls `models()` again. **`model_detail(info)`** is a model on one
+line (`anthropic · 200k ctx · images · $3/$15`): the `model` completion's detail.
 
 ### Completion, completion item, DETAIL_WIDTH, node summary
 `tau.Completion`, `tau.commandline.Completion` (`_complete.py`), `node_summary` · D32 §1 · new
@@ -3625,11 +3647,11 @@ act as the client (`input` and `send`, each with optional `images` (D31, see *Im
 `set_label(cursor, label)`, `remove_label`, `close_cursor`, `reopen`, each with the client's id as `by: Frontend(id)` where
 the driver takes one; `go_to`, `abort` and `close_cursor` return nothing), `watch`, `answer`, `commands`, `run`
 (returns the command's result), `options`, `configure`, `complete` (see *command*, *options
-(extension)*, */config*, *complete*), `parse_line` and `complete_line` (the command line, read and
+(extension)*, */config*, *complete*), `models` (see *models*), `parse_line` and `complete_line` (the command line, read and
 completed on the driver; see *parse_line*), the reads `node`, `nodes`, `walk`, `children`,
 `image` (D31: an image's bytes as base64, see *ImageInput*), `close`, and one event
 stream: the client itself is an async iterator of `Event`. Each call is documented once, on
-`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`, `image`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
+`Client`, which is made of two private protocol parts so that no type passes 25 methods and the wire (read from `Client`'s MRO, `_protocol._methods`) is unchanged: `_TreeReads` (`node`, `nodes`, `walk`, `children`, `image`) and `_CommandCalls` (`commands`, `run`, `options`, `configure`, `complete`, `models`, `parse_line`, `complete_line`); `LocalClient` follows with `_LocalTreeReads` and `_LocalCommandCalls`, and `Calls` keeps no command-line call: they go to `Commands` (`Calls.commands`). `id` is stable across reconnects (`john@laptop:tui`); a connection is not a client.
 Every argument and event is a plain frozen value; over the wire (D21) the core's `Node`, `Body`,
 `Author`, `Item`, `ItemData` and `Ending` travel in the log's own JSON encoding (see *wire
 coding*) and the rest as their type hints say. `LocalClient` is the
@@ -3669,7 +3691,7 @@ per node; a negative `start` or `limit` is a `ValueError`. `commandline` stays t
 `PROTOCOL` is the wire's version, an integer (1 in 0.16; 2 from 0.17, for `Outcome.Ok`'s images,
 D30 §8; 3 from 0.18, for a user's images: the `User` and `Input` shapes, `images` on `input` and
 `send`, and the call `image`, D31; and D32's completion items, a `Notice`'s `cursor`, `extension`
-and `level`, and the event `Commands`). By D12 a version marks a *released*
+and `level`, the event `Commands`, and the call `models`). By D12 a version marks a *released*
 protocol: it goes up by one at a release whose `docs/protocol.schema.json` differs from the last
 tag's, never per commit. `ProtocolError` (a `RuntimeError`, not a `ConnectionError`: connecting
 again would not help) is the other end breaking the protocol: a message that is not JSON-RPC, a
@@ -3906,8 +3928,10 @@ returns at that moment, sent whole. A state event: first in a stream's snapshot 
 options types change (an extension's start, a reload, a skill rescan, `TreeHandle.reassemble`);
 the hub compares only when the commands or options were assembled again (their `generation`). A
 `Feed` keeps only the latest unsent copy, and it never counts toward `CutOff`. It also tells a
-client that the options forms it holds may be stale. The private driver class that holds the
-commands is `CommandTable`.
+client that the options forms it holds may be stale, and so may its `models()`: it is sent too
+when `Driver.use_catalog` changed what `models()` answers (D32 §8; the hub compares
+`listed_from(catalog, options)`, and the catalog itself is part of the generation). The private
+driver class that holds the commands is `CommandTable`.
 
 ### CutOff
 `tau.CutOff` (`_events.py`; a `ConnectionError`) · D16 · new

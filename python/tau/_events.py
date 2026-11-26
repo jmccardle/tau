@@ -199,7 +199,9 @@ class Commands:
     `Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an
     extension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a
     stream's snapshot, so a client keeps the last one and never polls. It also says that the
-    options forms a client holds may be stale: read them again from `options()` when next shown."""
+    options forms a client holds may be stale: read them again from `options()` when next shown;
+    and so may its `models()`: it is sent too when the driver's catalog changed what `models()`
+    answers (D32 section 8), with the forms as they are."""
 
     forms: tuple[Form, ...]
 

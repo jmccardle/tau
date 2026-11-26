@@ -200,6 +200,11 @@ class ExtensionOptions:
         changes."""
         return tuple(self._types.items())
 
+    def section_type(self, extension: str) -> type | None:
+        """The `model_options` type `extension` declares (D28 section 7), or `None` if it declares
+        none or is not loaded."""
+        return self._sections.get(extension)
+
     def names(self) -> tuple[str, ...]:
         """The extensions that have options."""
         return tuple(self._types)

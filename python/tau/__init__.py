@@ -139,6 +139,7 @@ from tau._lifecycle import START_TIMEOUT, STOP_TIMEOUT
 from tau._markdown import to_markdown
 from tau._markers import UndoMarker
 from tau._mcp import Mcp, McpConfigError, McpServer
+from tau._model_list import ModelInfo, ModelPrice
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
 from tau._project_read import TrustError
@@ -301,6 +302,8 @@ __all__ = [
     "Model",
     "ModelCatalog",
     "ModelConfig",
+    "ModelInfo",
+    "ModelPrice",
     "Move",
     "Next",
     "NoSuchCursor",
