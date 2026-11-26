@@ -224,7 +224,7 @@ class Driver:
         self._handles = Handles(
             session,
             self._ask,
-            lambda client, notice: safe(partial(self._hub.notify, client, notice))(),
+            lambda client, notice: safe(partial(_tell, self._life, self._hub, client, notice))(),
             self.clock.now,
             safe(self._poke),
             safe(self._hub.sync),
@@ -370,11 +370,13 @@ class Driver:
         self._life.held = True
         try:
             await self._life.stop([o for o in old if not any(o is e for e in fitted.every)])
+            self._hub.forget_standing(_names_not_in(old, kept))
             self._apply(fitted)
             try:
                 await self._life.start(fitted.every)
             except BaseException:
                 self._apply(_fitted(self._given, self._catalog, kept))
+                self._hub.forget_standing(_names_not_in(fitted.every, kept))
                 raise
         finally:
             self._life.held = False
@@ -777,3 +779,17 @@ def _rescan(extensions: Sequence[Extension], commands: CommandTable, hub: Hub) -
     if any(changed):
         commands.use(assemble_commands(extensions))
         hub.sync()
+
+
+def _tell(life: Lifecycle, hub: Hub, client: str | None, notice: Notice) -> None:
+    """A handle's notice: one to everyone told by an extension's `start` stands (the hub sends it
+    to each client that connects later too); any other goes to who is there."""
+    if client is None and life.starting():
+        hub.stand(notice)
+    else:
+        hub.notify(client, notice)
+
+
+def _names_not_in(extensions: Sequence[Extension], kept: Sequence[Extension]) -> set[str]:
+    """The names of `extensions` that are not (the same objects as) any of `kept`."""
+    return {e.name for e in extensions if not any(e is k for k in kept)}

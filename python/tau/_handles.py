@@ -394,8 +394,10 @@ class TreeHandle:
         client by default, about `cursor` at `level` (`"info"`, `"warning"` or `"error"`, D32
         section 2). `cursor` defaults to this handle's own: a `Cursor`'s, the batch's cursor of a
         `NodeHandle`, none (the session) for a tree handle. Dropped if `to` is not connected: a
-        notice is for someone who is there. `NoSuchCursor` if `cursor` is not open, `ValueError`
-        for another level."""
+        notice is for someone who is there. One to every client told by the extension's `start`
+        (which runs before any client connects) **stands**: each client that connects later gets
+        it after its snapshot, until the extension is stopped. `NoSuchCursor` if `cursor` is not
+        open, `ValueError` for another level."""
         about = self._own if cursor is None else cursor
         if about is not None and about not in self._session.cursors():
             raise NoSuchCursor(f"no open cursor {about}")

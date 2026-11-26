@@ -278,6 +278,7 @@ class Hub:
         self._lost = lost
         self._model = model
         self._shown: dict[int, dict[str, str]] = {}  # cursor -> extension -> its text
+        self._standing: list[Notice] = []  # told by an extension's start: for every client
         self._feeds: weakref.WeakSet[Feed] = weakref.WeakSet()
         self._clients: set[str] = set()  # who had a stream open at the last sync
         self._syncing = False
@@ -303,11 +304,11 @@ class Hub:
     def connect(self, client: str, capacity: int) -> Feed:
         """A new stream for `client`, opening with the snapshot: `Commands`, a `CursorView` per open
         cursor and a `CursorGone` per closed one, then `Labels` (which name cursors the client has
-        by then been sent, closed ones included), as they stand. Publishing
-        what is pending first and taking the snapshot from what was published make it one act:
-        nothing falls between the snapshot and what follows. The nodes are not in it: a node
-        never changes, so a client reads the ones it needs by id, and ignores an `Appended` one
-        it has already read."""
+        by then been sent, closed ones included), as they stand, then the standing notices.
+        Publishing what is pending first and taking the snapshot from what was published make it
+        one act: nothing falls between the snapshot and what follows. The nodes are not in it: a
+        node never changes, so a client reads the ones it needs by id, and ignores an `Appended`
+        one it has already read."""
         feed = Feed(client, capacity, self._release)
         if self._ended is not None:  # too late for anything: it ends as the others did
             feed.end(self._ended[0])
@@ -315,7 +316,7 @@ class Hub:
         self.sync()
         assert self._forms is not None  # `sync` read them
         snapshot = (Commands(self._forms[0]), *self._views.values(), *self._gone.values())
-        for event in (*snapshot, Labels(self._labels)):
+        for event in (*snapshot, Labels(self._labels), *self._standing):
             feed.offer(event)
         self._feeds.add(feed)
         self._clients.add(client)
@@ -436,6 +437,18 @@ class Hub:
             self._forms = forms
             if known:
                 self._send(Commands(forms[0]))
+
+    def stand(self, notice: Notice) -> None:
+        """A **standing notice**: one an extension's `start` told to everyone. It is sent to every
+        client now (at a driver's start there is none) and to each that connects later, after its
+        snapshot, until `forget_standing` names its extension: a start runs before anyone can
+        hear it, and what it says (a server that did not start) stays true."""
+        self._standing.append(notice)
+        self.notify(None, notice)
+
+    def forget_standing(self, extensions: Collection[str]) -> None:
+        """Drop the standing notices of `extensions` (they were stopped)."""
+        self._standing = [n for n in self._standing if n.extension not in extensions]
 
     def notify(self, client: str | None, notice: Notice) -> None:
         """Send `notice` to `client`, or to every client if `None`; dropped if `client` is not

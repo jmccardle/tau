@@ -899,8 +899,8 @@ so a server's README snippet goes in as it is:
 A server with a `command` runs on your machine and speaks over its stdin and stdout; one with a
 `url` is reached over streamable HTTP (the older SSE transport, `"type": "sse"`, is not supported).
 `${NAME}` is replaced from your environment, or from a trusted project's `.env`, so the token stays
-out of the file; `${NAME:-default}` gives a default. A name that is not set and has no default
-stops the start and says which.
+out of the file; `${NAME:-default}` gives a default. A server whose name is not set and has no
+default is skipped, with a warning that says which (see below).
 
 A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
 Code reads), so a project set up for Claude Code works as it is. Both are pinned by
@@ -924,17 +924,24 @@ about like any other tool, and a rule that names the server names every tool it 
 ```
 
 When τ starts it starts every server at once and waits until each has listed its tools, so the
-first message already has them. **A server that does not start stops τ**, naming every server
-that failed and why (with the last line it wrote to its error output):
+first message already has them. **A server that does not start is skipped, and τ starts without
+it**: the others work. It is said on the terminal as τ starts, with why and the last line the
+server wrote to its error output:
 
 ```text
-extension 'mcp' did not start: McpStartError: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set
+tau: mcp: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set; τ starts without it
 ```
 
-Fix it, add `"disabled": true` to it, or `tau ext disable mcp`. τ waits 30 seconds for the
-servers; the first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
-more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the
-command once by hand first.
+Every client also gets it as an error notice (the TUI shows it; a client that connects later still
+gets it), and `/mcp` lists the server as `failed:` with the reason. A configuration τ cannot use
+(a file that is not JSON, a server with no `command`, an unset `${NAME}`) is skipped and reported
+the same way, as a `warning:` line. To stop hearing about a server, fix it, or add
+`"disabled": true` to it.
+
+τ gives the servers 30 seconds, less a moment to stop the slow ones; a server still starting then
+is skipped. The first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
+more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the command
+once by hand first.
 
 While τ runs, `/mcp` lists the servers, whether each is running and their tools. A server that
 lists new tools has them offered from the model's next request. A server that exits is reported
