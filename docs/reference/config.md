@@ -96,8 +96,9 @@ One row of `tau ext list`: the source's `key`, its `state` (`always`: `tau` and
 `session_name`; `on`; `off`; `shadowed`, by what; `failed`; `untrusted`), its `kind`
 (`built-in`, `package`, `user`, `project`, `explicit` for `-e`, or `load` for a `load` key
 that no source has), `origin` (where it is) and `detail` (why it is off, shadowed, untrusted
-or failed). `extensions` are the names of the extensions it provides, `commands` their
-commands' qualified names and `tools` their tools' names; all empty unless it is on.
+or failed; for one that is on, its extensions' `warnings`, such as a key that is not set).
+`extensions` are the names of the extensions it provides, `commands` their commands' qualified
+names and `tools` their tools' names; all empty unless it is on.
 
 ## Layer
 

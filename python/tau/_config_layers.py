@@ -10,13 +10,14 @@ import json
 import math
 import re
 import unicodedata
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from tau._config import ConfigError, ModelConfig, key_problem, url_problem
 from tau._config_keys import (
+    ALWAYS,
     ORDER,
     context_files,
     default_model,
@@ -27,6 +28,7 @@ from tau._config_keys import (
     timeout_problems,
     timeouts,
     tui_settings,
+    unprovided,
 )
 from tau._config_tree import (
     ConfigProblem,
@@ -38,6 +40,7 @@ from tau._config_tree import (
     source_of,
     suggest,
 )
+from tau._constants import key_problems
 from tau._hook_order import EVERY_HOOK, order_problem
 from tau._model_sections import section_problems
 from tau._options import make_layer_options, option_fields, unknown_options
@@ -46,8 +49,6 @@ from tau._tools import tool_names
 from tau._values import Context, DefinitionError
 
 CLI = "session"
-ALWAYS = ("tau", "session_name")
-"""The extensions every start has, outside the sources (D19): the driver's and the startup's."""
 _INT_KEYS = ("max_tokens", "context_window", "image_tokens")
 _BOOL_KEYS = ("images",)  # D30: whether the model takes images
 _OBJECT_KEYS = ("options",)  # settings that are objects, merged by key; so is a section
@@ -682,26 +683,6 @@ def _build(
     return catalog, found
 
 
-def _unprovided(
-    catalog: ModelCatalog,
-    extensions: Sequence[object],
-    off: Collection[str],
-    warn: Callable[[str, str], None],
-) -> None:
-    """Warn of options set for an extension nothing provides, or that takes none."""
-    loaded = {str(getattr(e, "name")) for e in extensions} | set(ALWAYS)  # noqa: B009
-    for key in sorted(catalog.extensions):
-        if key not in loaded and key not in off and key != "retry":
-            warn(
-                f"no loaded extension is named {key!r}; its options are ignored",
-                f"extensions.{key}",
-            )
-    bare = [str(e.name) for e in extensions if getattr(e, "options", None) is None]  # type: ignore[attr-defined]
-    for key in ("retry", *bare):
-        if catalog.extensions.get(key):
-            warn(f"extension {key!r} has no options; they are ignored", f"extensions.{key}")
-
-
 def option_problems(
     catalog: ModelCatalog, extensions: Sequence[object], off: Collection[str] = ()
 ) -> tuple[ConfigProblem, ...]:
@@ -710,11 +691,12 @@ def option_problems(
     a `warning`, and is ignored: an option that names a tool no loaded extension provides
     (`Options.tool_problems`), an option the extension does not have, options of an extension that
     has none (and of `retry`, D24 section 4: the provider wrapper, which `load` switches and
-    nothing tunes), and options of an extension nothing provides. Each model's sections are
-    held to the same rule (`section_problems`, D28 section 7). An extension may be a file that
-    was deleted, so a config cannot rely on its cleaning up after itself. The `off` keys are
-    sources that exist and are switched off: their options are kept quietly, for when they are on
-    again. Each problem names the layer that set it."""
+    nothing tunes), and options of an extension nothing provides. Administrator keys that the
+    extension's `administrator_keys` refuse are `error`s (`tau._constants`). Each model's
+    sections are held to the same rule (`section_problems`, D28 section 7). An extension may be a
+    file that was deleted, so a config cannot rely on its cleaning up after itself. The `off`
+    keys are sources that exist and are switched off: their options are kept quietly, for when
+    they are on again. Each problem names the layer that set it."""
     problems: list[ConfigProblem] = []
     where = catalog.extension_sources
 
@@ -727,7 +709,7 @@ def option_problems(
         if name in catalog.orders:
             message = f"extension {name!r} has no hooks to order"
             problems.append(ConfigProblem("error", message, where.get(name), f"extensions.{name}"))
-    _unprovided(catalog, extensions, off, warn)
+    unprovided(catalog.extensions, extensions, off, warn)
     tools = tool_names(extensions)
     for ext in extensions:
         name = cast("str", getattr(ext, "name"))  # noqa: B009
@@ -756,6 +738,7 @@ def option_problems(
             for message in check(tools):
                 warn(message, f"extensions.{name}")
     problems += timeout_problems(catalog.timeouts, extensions, where)
+    problems += key_problems(catalog.extensions, extensions, where)
     return (*problems, *section_problems(catalog, extensions, off))
 
 

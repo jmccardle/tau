@@ -20,6 +20,7 @@ import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 from shipped import shipped
+from web import Page, built, serving
 
 import tau
 from tau import (
@@ -514,7 +515,7 @@ async def test_a_copy_of_the_package_with_its_settings_edited_shadows_the_built_
     home = tmp_path / "tau-home"
     settings = copy_plan_mode(home / "extensions") / "settings.py"
     text = settings.read_text(encoding="utf-8")
-    listed = 'READ_ONLY_TOOLS = ("read", "grep", "find")'
+    listed = 'READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")'
     edited = text.replace(listed, 'READ_ONLY_TOOLS = ("read",)')
     assert edited != text
     settings.write_text(edited, encoding="utf-8")
@@ -575,4 +576,32 @@ async def test_an_argument_that_makes_a_read_only_command_write_is_refused(tmp_p
     assert outcomes[: len(refused)] == [Outcome.Err(REFUSED)] * len(refused)
     assert all(isinstance(o, Outcome.Ok) for o in outcomes[len(refused) :]), outcomes
     assert not (repo / "zz").exists(), "nothing was written"
+    await h.close()
+
+
+@scenario
+async def test_fetch_is_offered_in_plan_mode_and_runs_there_and_search_is_not(
+    tmp_path: Path,
+) -> None:
+    """Reading a page changes nothing, and still goes through permissions; `search` is not on
+    the list."""
+    with serving({"/doc": Page("<main><p>the docs</p></main>")}) as site:
+        call = Part.Call("f", "fetch", json.dumps({"url": f"{site.url}/doc"}))
+        h = await Harness.create(
+            tmp_path,
+            provider=FakeProvider([Reply([call], Stop.Tools), say(PLAN)]),
+            tools=[FakeTool("read", "ran"), FakeTool("search", "ran")],
+            extensions=[
+                shipped("plan_mode"),
+                built(tmp_path, "fetch", {"allow_private": True}),
+            ],
+        )
+        await h.run("plan")
+        await h.send("look it up")
+        await h.settle()
+    assert h.provider.requests[0].tool_names == ["read", "fetch"]
+    results = next(b for b in h.bodies() if isinstance(b, Body.Results))
+    outcome = results.outcomes[0][1]
+    assert isinstance(outcome, Outcome.Ok), outcome
+    assert outcome.value.endswith("the docs")
     await h.close()

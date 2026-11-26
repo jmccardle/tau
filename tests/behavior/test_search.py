@@ -3,6 +3,7 @@ the administrator's constants and the environment, results answered as numbered 
 untrusted notice, and every failure a tool error that names it without the key. Against a server of
 the test's own: nothing here reaches the network."""
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -13,7 +14,7 @@ from fakes import FAKE_MODEL, FakeProvider, Reply
 from harness import Harness, say, scenario
 from web import Page, Site, built, serving
 
-from tau import ExtensionLoadError, Outcome, Part, Stop, model_config
+from tau import ExtensionLoadError, Notice, Outcome, Part, Stop, model_config
 
 KEY = "sk-test-0123456789abcdef"
 UNTRUSTED = (
@@ -213,28 +214,41 @@ async def test_a_bad_query_or_limit_is_refused_before_anything_is_sent(tmp_path:
     assert site.seen == []
 
 
-def test_it_is_built_only_with_its_key_and_the_error_names_the_variable(tmp_path: Path) -> None:
-    with pytest.raises(ExtensionLoadError) as caught:
-        built(tmp_path, "search")
-    said = str(caught.value)
-    assert (
-        "the brave provider needs an API key, but the environment variable BRAVE_API_KEY is not set"
-        in said
+def test_without_its_key_it_offers_no_tool_and_says_which_variable(tmp_path: Path) -> None:
+    unset = built(tmp_path, "search")
+    assert getattr(unset, "tools") == ()  # noqa: B009
+    assert getattr(unset, "warnings") == (  # noqa: B009 - not on the Extension protocol
+        "warning: search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; "
+        "τ starts without the search tool. Set it in the environment, or in a trusted project's "
+        ".env file",
     )
-    assert "tau ext disable search" in said
-    with pytest.raises(ExtensionLoadError, match="MARGINALIA_API_KEY is not set"):
-        built(tmp_path, "search", {"provider": "marginalia"}, {"BRAVE_API_KEY": KEY})
-    with pytest.raises(ExtensionLoadError, match="BRAVE_API_KEY is not set") as blank:
-        built(tmp_path, "search", None, {"BRAVE_API_KEY": "  "})
-    assert "  " not in str(blank.value).split("environment variable")[1][:30]
+    other = built(tmp_path, "search", {"provider": "marginalia"}, {"BRAVE_API_KEY": KEY})
+    assert "MARGINALIA_API_KEY, which is not set" in str(getattr(other, "warnings"))  # noqa: B009
+    blank = built(tmp_path, "search", None, {"BRAVE_API_KEY": "  "})
+    assert getattr(blank, "tools") == ()  # noqa: B009
+
+
+@scenario
+async def test_a_model_is_not_offered_search_without_its_key(tmp_path: Path) -> None:
+    provider = FakeProvider([say("done")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[built(tmp_path, "search")],
+        config=model_config(FAKE_MODEL),
+    )
+    await h.send("go")
+    await h.settle()
+    await h.close()
+    assert "search" not in [t.name for t in provider.requests[0].tools]
 
 
 def test_the_key_may_be_in_another_variable_and_is_never_shown(tmp_path: Path) -> None:
     found = built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"WORK_SEARCH": KEY})
     assert found.name == "search"
     assert KEY not in repr(found)
-    with pytest.raises(ExtensionLoadError, match="WORK_SEARCH is not set"):
-        built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"BRAVE_API_KEY": KEY})
+    unset = built(tmp_path, "search", {"api_key_env": "WORK_SEARCH"}, {"BRAVE_API_KEY": KEY})
+    assert "WORK_SEARCH, which is not set" in str(getattr(unset, "warnings"))  # noqa: B009
 
 
 @pytest.mark.parametrize(
@@ -250,6 +264,11 @@ def test_the_key_may_be_in_another_variable_and_is_never_shown(tmp_path: Path) -
         ),
         ({"api_key": KEY}, "extensions.search.api_key: 'search' has no such setting"),
         ({"base_url": 3}, "extensions.search.base_url must be a string, not 3"),
+        ({"base_url": ""}, "extensions.search.base_url is ''; it is an http or https URL"),
+        (
+            {"provider": "searxng", "base_url": "127.0.0.1:8400"},
+            "extensions.search.base_url is '127.0.0.1:8400'; it is an http or https URL",
+        ),
     ],
 )
 def test_the_administrators_constants_are_checked(
@@ -268,3 +287,85 @@ def test_a_key_in_a_config_file_is_refused_by_name_of_the_setting(tmp_path: Path
         built(tmp_path, "search", {"api_key": KEY}, {"BRAVE_API_KEY": KEY})
     assert re.search(r"extensions\.search\.api_key", str(caught.value))
     assert KEY not in str(caught.value)
+
+
+@scenario
+async def test_a_key_the_provider_echoes_is_hidden_in_the_error(tmp_path: Path) -> None:
+    """The key is replaced before the provider's text is cut, so not even a part of it is shown."""
+    echo = "x" * 190 + f"token {KEY} is unknown"
+    with serving({"/res/v1/web/search": Page(echo, "text/plain", 500)}) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert KEY[:6] not in error(out)
+    assert error(out).startswith("the search provider answered HTTP 500: 'xxx")
+
+
+@scenario
+async def test_braves_422_for_an_unknown_key_is_a_rejected_key(tmp_path: Path) -> None:
+    invalid = {"error": {"code": "SUBSCRIPTION_TOKEN_INVALID", "status": 422}}
+    other = {"error": {"code": "VALIDATION", "detail": "count is too large"}}
+    with serving({"/res/v1/web/search": Page(json.dumps(invalid), JSON, 422)}) as site:
+        (rejected,) = await asked(tmp_path, site, {}, {"query": "a"})
+    with serving({"/res/v1/web/search": Page(json.dumps(other), JSON, 422)}) as site:
+        (general,) = await asked(tmp_path / "o", site, {}, {"query": "a"})
+    assert error(rejected) == "the search provider rejected the API key (HTTP 422)"
+    assert error(general).startswith("the search provider answered HTTP 422: ")
+
+
+@scenario
+async def test_a_searxng_without_json_says_how_to_enable_it(tmp_path: Path) -> None:
+    """SearXNG has no key: its 403 is the JSON format turned off, and so is an HTML answer."""
+    hint = "enable `json` under `search.formats` in its settings.yml"
+    with serving({"/search": Page("Forbidden", "text/plain", 403)}) as site:
+        (refused,) = await asked(tmp_path, site, {"provider": "searxng"}, {"query": "a"})
+    with serving({"/search": Page("<html>results</html>", "text/html")}) as site:
+        (html,) = await asked(tmp_path / "h", site, {"provider": "searxng"}, {"query": "a"})
+    assert error(refused).startswith("the search provider refused the search (HTTP 403); ")
+    assert "API key" not in error(refused)
+    assert error(refused).endswith(hint)
+    assert error(html).endswith(hint)
+
+
+@scenario
+async def test_a_snippet_keeps_text_that_was_escaped_markup(tmp_path: Path) -> None:
+    body = {
+        "web": {
+            "results": [
+                {
+                    "title": "A <b>div</b>",
+                    "url": "https://a.example/",
+                    "description": "use &lt;div&gt;",
+                }
+            ]
+        }
+    }
+    with serving(answering("/res/v1/web/search", body)) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert text(out).endswith("1. A div\n   https://a.example/\n   use <div>")
+
+
+@scenario
+async def test_rows_without_an_address_are_not_no_results(tmp_path: Path) -> None:
+    body = {"web": {"results": [{"title": "a"}, {"title": "b", "link": "https://b.example/"}]}}
+    with serving(answering("/res/v1/web/search", body)) as site:
+        (out,) = await asked(tmp_path, site, {}, {"query": "a"})
+    assert error(out) == "the search provider answered 2 results, none with a url"
+
+
+@scenario
+async def test_a_client_that_connects_later_hears_the_key_is_not_set(tmp_path: Path) -> None:
+    """The notice `start` tells stands: a client that connects after the start still gets it."""
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("done")]),
+        extensions=[built(tmp_path, "search")],
+        config=model_config(FAKE_MODEL),
+    )
+    later = await h.connect("later")
+    heard: list[object] = []
+    while not any(isinstance(e, Notice) for e in heard):  # after its snapshot
+        heard.append(await asyncio.wait_for(anext(later), 5))
+    (notice,) = [e for e in heard if isinstance(e, Notice)]
+    assert (notice.extension, notice.level, notice.cursor) == ("search", "warning", None)
+    assert "needs an API key in BRAVE_API_KEY, which is not set" in notice.text
+    await later.close()
+    await h.close()

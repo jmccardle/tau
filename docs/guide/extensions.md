@@ -299,20 +299,26 @@ the cursor's branch, so an option can be set in these ways:
 
 `tau config check` checks the values against the type for every extension it can load.
 
-## Options or settings
+## Options, settings or administrator keys
 
-An option is for what a client may configure: every client can read and set it (`/config` is on
-the wire), on any branch. What a client must not change is not an option. Either fix it in the
-code, or, when an administrator should be able to change it, put it in a **settings file**: a
-module of plain assignments in the extension's package, which the extension reads where it uses
-them and an administrator changes by editing the file.
+A value an extension reads lives in one of three places, by who may change it.
 
-The built-in `plan_mode` is the example. Its one option is `mode`, because entering and leaving
-plan mode is the client's choice. What counts as read-only is not, or a `/config` could widen it,
-so the lists are in `tau/_plan_mode/settings.py`:
+- **Options**: what a client may configure. Every client can read and set them (`/config` is on
+  the wire), on any branch.
+- **A settings file**: constants of the code, which no client may change and an administrator
+  may, by editing the file. It is a module of plain assignments in the extension's package,
+  `settings.py`, which the extension reads where it uses them.
+- **Administrator keys**: what differs per machine or project and no client may change. They are
+  keys of `extensions.NAME` in a config file (`tau config set NAME.KEY=VALUE` writes one), which
+  the extension declares as `administrator_keys` and reads with `tau.constants` when it is built.
+  `tau config check` checks them, and no client can read or set them.
+
+The built-in `plan_mode` shows the first two. Its one option is `mode`, because entering and
+leaving plan mode is the client's choice. What counts as read-only is not, or a `/config` could
+widen it, so the lists are in `tau/_plan_mode/settings.py`:
 
 ```python skip
-READ_ONLY_TOOLS = ("read", "grep", "find")
+READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")
 """The tools plan mode offers and lets run, as far as the driver has them. ..."""
 ```
 
@@ -320,6 +326,31 @@ and `__init__.py` reads them where it needs them (`from . import settings`, then
 `settings.READ_ONLY_TOOLS`). To use other lists, copy the package into your extensions directory
 as `plan_mode/` (a drop-in shadows the built-in of the same key: see [How τ finds an
 extension](#how-τ-finds-an-extension)) and edit only the copy's `settings.py`.
+
+The built-in `fetch` shows the third. Its limits (5 MiB of body, 5 redirects) are in its settings
+file, but whether it may read from private addresses and how long a call may take differ per
+machine, so they are administrator keys:
+
+```json
+{ "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
+```
+
+```python skip
+class Fetch:
+    name = "fetch"
+    administrator_keys = {"allow_private": bool, "timeout": int}
+
+    @classmethod
+    def configured(cls, extensions: Mapping[str, Mapping[str, object]]) -> "Fetch":
+        given = tau.constants(extensions, "fetch", cls.administrator_keys)  # ConfigError if wrong
+        ...
+```
+
+`extensions.NAME` holds an extension's options or its administrator keys, not both: when it has
+`options`, that object is its options. One that needs both keeps the administrator's values in its
+settings file. A built-in is handed the config layers when it is built (`_builtins.py`); a drop-in
+or package extension is imported, not built from them, so it has no way yet to reach its
+administrator keys.
 
 ## Hooks
 
@@ -467,6 +498,44 @@ extensions = [Heartbeat()]
 An administrator can give one extension more time in the config file (not a client: these are
 not options), `{"extensions": {"heartbeat": {"start_timeout": 120, "stop_timeout": 10}}}`
 ([Configuration](configuration.md)).
+
+## When something is wrong: stop, or warn and start
+
+There are three ways for an extension to say something is wrong, by whose mistake it is.
+
+- **Stop the start: raise.** A mistake in a file (an unknown key, a value of the wrong type, a
+  setting that cannot work) raises when the extension is built or in `start`, and τ does not
+  start: it says what is wrong and how to start without your extension.
+- **Warn and start: list `warnings`.** Something outside τ's files is missing or broken (a key not
+  set in the environment, a server that is not there): the extension loads without that part, and
+  says so in `warnings`, a list or tuple of one-line strings set when it is built. τ prints each
+  as it starts, and `tau config check` and `tau ext list` show them. A `warnings` that is not a
+  sequence of strings is a `DefinitionError`. The built-ins do this: `skills` for a file it cannot
+  use, `mcp` for a server it skipped, `search` for its key.
+- **Tell the clients: `tree.tell(text, level="warning")` from `start`.** A notice told to everyone
+  during `start` stands: every client gets it after its snapshot, those that connect later too,
+  until your extension stops. Use it for what a person at a client should see, such as each of
+  your `warnings`; what goes wrong later is told as it happens.
+
+```python
+from tau import TreeHandle
+
+
+class Mirror:
+    name = "mirror"
+
+    def __init__(self, url: str | None) -> None:
+        self.tools = (self.mirror,) if url else ()  # never offer a tool that can only fail
+        self.warnings = () if url else ("warning: mirror: MIRROR_URL is not set",)
+
+    async def start(self, tree: TreeHandle) -> None:
+        for warning in self.warnings:
+            tree.tell(warning, level="warning")
+
+    async def mirror(self, path: str) -> str:
+        """Copy `path` to the mirror."""
+        return f"copied {path}"
+```
 
 ## Making a change undoable
 

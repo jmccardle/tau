@@ -5,12 +5,11 @@ again, `@file` in a message attaches the file, files you write become commands (
 and skills), what the session has used and spent is shown, a long conversation can be shortened
 (`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
 change, `/clear`, `/branch`, `/tree` and `/export` work on the session, and the model can read a
-web page (`fetch`). Five more wait for you to ask: rules that ask before a tool runs (permissions),
-`/plan` (plan mode, which does nothing until you type it), and the five that are off until you turn
-them on: the bash guard, the router, tools from MCP servers, web search and shell commands at hook
-points (hooks). Each can be switched
-off, and each is a few lines to use. The examples run with the mock model, which needs no server
-and no key.
+web page (`fetch`). Seven more wait for you to ask: two that are on but do nothing until you use
+them, rules that ask before a tool runs (permissions) and `/plan` (plan mode), and five that are
+off until you turn them on: the bash guard, the router, tools from MCP servers, web search and shell
+commands at hook points (hooks). Each can be switched off, and each is a few lines to use. The
+examples run with the mock model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
 {
@@ -782,7 +781,7 @@ split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"
 
 `/plan` puts the branch in plan mode, and nothing in a session changes until you type it. In plan
 mode the model is told to research and propose a plan, and is offered only tools that read:
-`read`, `grep`, `find`, and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
+`read`, `grep`, `find`, `fetch` (a web page; it still goes through permissions), and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
 `head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
 redirects or substitutes nothing. A call to a tool it was not offered fails with `tool not
 offered: write`; any other `bash` command is refused with `plan mode: bash is refused. Put the
@@ -812,7 +811,7 @@ with an argument that makes it write or run something (`git diff --output=f`, `g
 --ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
 external diff or textconv program the repository's own config names. The lists of tools and commands are not
 options, because a `/config` from any client could widen them. They are in the extension's
-[settings file](extensions.md#options-or-settings), `settings.py`: to change them, copy the
+[settings file](extensions.md#options-settings-or-administrator-keys), `settings.py`: to change them, copy the
 built-in's package to your extensions directory, where it shadows the built-in, and edit the
 copy's `settings.py` (the brief and the approval the model reads are there too):
 
@@ -913,6 +912,19 @@ A server with a `command` runs on your machine and speaks over its stdin and std
 out of the file; `${NAME:-default}` gives a default. A server whose name is not set and has no
 default is skipped, with a warning that says which (see below).
 
+**A server that runs on your machine does not get your whole environment**, so a key τ can see
+reaches only the servers you give it. It gets `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`
+(on Windows `APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`,
+`PROCESSOR_ARCHITECTURE`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`), the set
+the official MCP SDK's clients pass, and what its `env` names. Pass a key by naming it:
+
+```json
+{ "mcpServers": { "github": { "command": "github-mcp", "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } } } }
+```
+
+A server that needs any other variable (a proxy's `HTTPS_PROXY`, `NODE_OPTIONS`, a virtualenv's
+`VIRTUAL_ENV`, `LANG`) must name it in its `env` the same way.
+
 A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
 Code reads), so a project set up for Claude Code works as it is. Both are pinned by
 [trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
@@ -958,7 +970,11 @@ While τ runs, `/mcp` lists the servers, whether each is running and their tools
 lists new tools has them offered from the model's next request. A server that exits is reported
 (an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
 server. A tool's text and images reach the model; other kinds of content are named and left out.
-Prompts and resources that a server offers are not used.
+A tool τ cannot offer (it lists no input schema that is a JSON object, or its `mcp__SERVER__TOOL`
+name is over 64 characters) is left out with a warning naming it; the server's other tools are
+offered. A line a server prints on its output that is not a message (a banner, a stray log line)
+is skipped; if the server then exits, the report shows it. Prompts and resources that a server
+offers are not used.
 
 ## Reading the web and searching it
 
@@ -985,20 +1001,29 @@ redirects.
 
 - **A web page** comes back as Markdown: its main content (the `main` element, or the one
   `article`, else the body) with headings, lists, quotes, code, tables as rows, and links made
-  absolute. Navigation, footers, sidebars, scripts, styles and hidden elements are left out. A page
+  absolute. Navigation, footers, sidebars, scripts, styles and hidden elements (the `hidden`
+  attribute, `aria-hidden="true"`, an inline `display: none`) are left out, and so are table rows
+  with no text. A page
   that is empty until a script fills it has no text for tau to read, and the call says so; τ runs no
   JavaScript.
 - **Text**, JSON, XML and the like come back as they are, decoded by their charset. A PDF or another
-  binary type is an error naming the type; tau reads text and images only.
+  binary type is an error naming the type; tau reads text and images only. The bytes are looked at
+  too: a body served as text that is plainly binary is refused, a PDF is a PDF whatever type it is
+  served as, and a body served with no type may be an image.
 - **An image** (PNG, JPEG, GIF, WebP) comes back as an image if the model takes images (`images:
   true` in its config, within its provider's limits, as for `read`); otherwise as one line saying
   what it is.
 - **A long page** is cut at `max_chars` (at most 200000), and the first line says which characters
-  are there and `call again with start=N for more`. Each call fetches the page again.
+  are there and `call again with start=N for more`. Each call fetches the page again. A page that
+  puts its own menus inside its main content without marking them as navigation (Wikipedia's list
+  of the article's other languages, for one) spends its first characters on them; the article
+  follows, and `start` reads on to it.
 - **A redirect** to the same host is followed. One to another host is not: the answer is the URL it
   names, and the model calls `fetch` again. That is what makes the permission rules below mean
   something: every host the model reads from is a call they see.
-- An error status, a timeout and a failed connection are errors naming what happened.
+- An error status, a timeout and a failed connection are errors naming what happened (`connecting
+  to example.com took over 10 s`), and so is a redirect with no `Location` or to something that is
+  not an http URL.
 
 A URL whose host is, or resolves to, a loopback, private, link-local or other non-public address
 (`localhost`, `192.168.1.5`, `169.254.169.254`) is refused, a redirect's too: a page's link, or a
@@ -1010,15 +1035,18 @@ so no client can turn it on:
 { "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
 ```
 
-(`timeout` is the whole call, in seconds, 1 to 600.) The check looks the name up before the
+(`timeout` is the whole call, in seconds, 1 to 600; `tau config set fetch.timeout=30` writes it to
+your config file. `--set` cannot set it for one run, and no client's `/config` can set either.) The check looks the name up before the
 request, and the request looks it up again, so a name that answers differently the second time
 gets through: this guards against the model and the pages it reads, and is not a sandbox. `tau ext
 disable fetch` takes the tool away.
 
-**Permissions** know it as `fetch`, and `fetch:GLOB` matches the URL's host, ignoring case (not the
-scheme, port or path), with the same glob as for paths: `*` crosses dots, so `*.python.org` is every
+**Permissions** know it as `fetch`, and `fetch:GLOB` matches the URL's host, ignoring case, with
+the same glob as for paths: `*` crosses dots, so `*.python.org` is every
 host under `python.org` and not `python.org` itself. The host is read as the request reads it:
-`https://docs.python.org@evil.com/` is a visit to `evil.com`.
+`https://docs.python.org@evil.com/` is a visit to `evil.com`. The pattern is the host alone: a rule
+with a scheme, a port or a path (`fetch:http://127.0.0.1:8300`, `fetch:example.com/*`) could never
+match, so it is refused where it is configured, and `tau config check` names it.
 
 ```json
 {
@@ -1050,15 +1078,15 @@ search        off        built-in
 
 The provider, its key and its address are the administrator's, in the config file and the
 environment, and no client can read or change them. The key is never in a config file: the setting
-`api_key_env` names the variable that holds it. Turning the tool on without the key stops the start
-and says which variable is missing:
+`api_key_env` names the variable that holds it. Turning the tool on without the key is a warning,
+not a failure: τ starts without the `search` tool (the model is not offered a tool that could only
+fail), and says which variable to set when you turn it on, on the terminal as τ starts, to every
+client as a warning, and in `tau ext list`:
 
 ```text
-extension "search" failed to load; tau did not start.
-  source: built-in search
-  ConfigError: the search tool is on and the brave provider needs an API key, but the environment
-  variable BRAVE_API_KEY is not set. Set it in the environment, or in a trusted project's .env file
-  to start without it: tau ext disable search
+$ tau ext enable search
+set load.search = true in /home/you/.tau/config.json
+search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; τ starts without the search tool. Set it in the environment, or in a trusted project's .env file
 ```
 
 | `provider` | service | key | `base_url` |
@@ -1077,9 +1105,16 @@ extension "search" failed to load; tau did not start.
 ```
 
 The settings are `provider`, `api_key_env` (the variable that holds the key, if it is not the one in
-the table) and `base_url` (a proxy, or your instance). A setting that is not one of these, `api_key`
-included, stops the start and names itself. A rejected key and a rate limit come back as tool errors
-that say so, and never contain the key. Permissions know the tool as `search`, by its bare name.
+the table) and `base_url` (a proxy, or your instance: an `http` or `https` URL). These are mistakes in
+a file, so they stop the start and name themselves: a setting that is not one of these (`api_key`
+included), an unknown `provider`, a `base_url` that is not a URL, a `searxng` without one.
+
+A rejected key (HTTP 401 or 403, and Brave's 422 `SUBSCRIPTION_TOKEN_INVALID`) and a rate limit (429,
+with the wait the provider asks for) come back as tool errors that say so; any other error status is
+quoted, with the key replaced if the provider echoed it. SearXNG has no key: a 403 from it, or an
+answer in HTML, almost always means the instance does not allow `format=json`, and the error says
+to enable `json` under `search.formats` in its `settings.yml`. Permissions know the tool as
+`search`, by its bare name.
 
 ## Run your own commands at hook points
 

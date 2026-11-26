@@ -21,7 +21,7 @@ names = [
     "Mcp", "McpServer", "McpConfigError",
     "Count", "Basis", "ImageRule", "image_rule", "RequestCount", "Reading", "reading", "counted", "Counter", "CountJob", "CounterAnswer", "Span", "SpanProof",
     "Observation", "Tokens", "TokenCalls", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
-    "CalibrationNewer", "calibration_features", "START_TIMEOUT", "STOP_TIMEOUT",
+    "CalibrationNewer", "calibration_features", "START_TIMEOUT", "STOP_TIMEOUT", "constants",
 ]
 
 [[group]]

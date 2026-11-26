@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, cast
 
 from tau._commands import CONFIG, ambiguous, meant
 from tau._complete import Completion
+from tau._constants import NOT_OPTIONS
 from tau._values import Form, Json
 
 __all__ = [
@@ -225,7 +226,10 @@ def parse(
     extension = _extension(words[0])
     form = options.get(extension)
     if form is None:
-        raise ValueError(f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)}")
+        raise ValueError(
+            f"/{CONFIG}: {extension!r} has no options; those that do: {list(options)} "
+            f"({NOT_OPTIONS})"
+        )
     save = _SAVE in words[1:]
     parsed = _read(form, [w for w in words[1:] if w != _SAVE])
     if save and not parsed.args:

@@ -471,9 +471,29 @@ def check_extensions(extensions: Sequence[object], *, whole: bool = True) -> tup
                     f"two extensions offer a counter: {counters[0]!r} and {name!r}"
                 )
         _check_hooks(name, candidate)
+        _check_warnings(name, candidate)
     if whole and (needing := counter_needed(extensions, counters or None)):
         raise DefinitionError(needing[0])
     return tuple(cast("Extension", e) for e in extensions)
+
+
+def _check_warnings(name: str, extension: object) -> None:
+    """An extension's `warnings`, if it has them, are a list or tuple of strings."""
+    warnings: object = getattr(extension, "warnings", ())
+    if not isinstance(warnings, list | tuple) or not all(
+        isinstance(w, str) for w in cast("Sequence[object]", warnings)
+    ):
+        raise DefinitionError(
+            f"extension {name!r}: `warnings` must be a list or tuple of one-line strings, not "
+            f"{warnings!r}"
+        )
+
+
+def extension_warnings(extensions: Sequence[object]) -> list[str]:
+    """Every line of the `extensions`' `warnings`, in load order: what each could not do when it
+    was built (a file it skipped, a key that is not set), so it loads without that part. A start
+    prints them, and `tau config check` and `tau ext list` show them."""
+    return [w for e in extensions for w in cast("Sequence[str]", getattr(e, "warnings", ()))]
 
 
 def counter_needed(extensions: Sequence[object], counter: object) -> list[str]:

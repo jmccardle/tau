@@ -160,11 +160,22 @@ async def test_rules_for_fetch_and_search_name_tools_that_are_not_loaded(tmp_pat
     await h.close()
 
 
+@scenario
+async def test_an_address_pattern_of_ipv6_is_a_host(tmp_path: Path) -> None:
+    """An IPv6 address has colons too, but more than one: it is a host, not a host and a port."""
+    h = await idle(tmp_path)
+    await h.configure("permissions", {"deny": ["fetch:::1", "fetch:fe80::*"]})
+    await h.close()
+
+
 @pytest.mark.parametrize(
     ("rule", "said"),
     [
         ("fetch:", "has an empty pattern after the colon"),
         ("fetch:[z-a]", "has an invalid pattern"),
+        ("fetch:http://127.0.0.1:8300", "a fetch pattern is a host only"),
+        ("fetch:127.0.0.1:8300", "no scheme, port or path"),
+        ("fetch:127.0.0.1/*", "a fetch pattern is a host only"),
     ],
 )
 @scenario

@@ -64,12 +64,14 @@ def tau_name(server: str, tool: str) -> str:
 class _ServerTool:
     """One MCP tool as a τ tool."""
 
-    def __init__(self, client: McpClient, tool: McpTool, name: str) -> None:
+    def __init__(
+        self, client: McpClient, tool: McpTool, name: str, schema: Mapping[str, object]
+    ) -> None:
         self._client = client
         self._tool = tool.name
         self.name = name
         self.description = tool.description
-        self.parameters: Mapping[str, object] = tool.schema
+        self.parameters = schema
 
     async def call(self, args_raw: str) -> Outcome:
         try:
@@ -212,13 +214,14 @@ class Mcp:
         return tuple(t for name in sorted(self._tools) for t in self._tools[name])
 
     async def start(self, tree: TreeHandle) -> None:
-        """Start every server at once and list its tools, each within the start's time. What
-        the configuration skipped, a server that fails or is too slow, and a tool that cannot be
-        named are reported (stderr, and an `error` notice each that every client gets when it
-        connects); the rest start, and so does τ."""
+        """Start every server at once and list its tools, each within the start's time. A server
+        that fails or is too slow, and a tool that cannot be named, are reported (stderr, and an
+        `error` notice each that every client gets when it connects); what the configuration
+        skipped is in `warnings`, which the start printed, and is told the same way. The rest
+        start, and so does τ."""
         self._tree = tree
-        for warning in self.warnings:
-            self._report(warning)
+        for warning in self.warnings:  # the start printed them; clients hear them from here
+            tree.tell(warning, level="error")
         tasks = {s.name: asyncio.ensure_future(self._start_one(s)) for s in self.servers}
         if tasks:
             _, slow = await asyncio.wait(tasks.values(), timeout=self._within)
@@ -347,15 +350,21 @@ def _why_not(task: "asyncio.Future[_Started]", server: McpServer, within: float)
 def _named(
     listed: Sequence[tuple[McpClient, list[McpTool]]], report: Callable[[str], None]
 ) -> dict[str, list[_ServerTool]]:
-    """Each server's tools under their τ names. A name over 64 characters, or a second tool of
-    one name, is left out, and `report`ed."""
+    """Each server's tools under their τ names. A tool whose input schema is missing or not a
+    JSON object, a name over 64 characters, or a second tool of one name, is left out, and
+    `report`ed; the server's other tools are offered."""
     seen: dict[str, str] = {}
     by_server: dict[str, list[_ServerTool]] = {}
     for client, tools in listed:
         made = by_server.setdefault(client.name, [])
         for tool in tools:
             name = tau_name(client.name, tool.name)
-            if len(name) > NAME_LIMIT:
+            if tool.schema is None:
+                report(
+                    f"MCP server {client.name}: its tool {tool.name!r} has no input schema that "
+                    "is a JSON object (inputSchema), so it is left out"
+                )
+            elif len(name) > NAME_LIMIT:
                 report(
                     f"MCP server {client.name}: its tool {tool.name!r} would be named {name!r}, "
                     f"{len(name)} characters (the limit is {NAME_LIMIT}), so it is left out; "
@@ -368,5 +377,5 @@ def _named(
                 )
             else:
                 seen[name] = tool.name
-                made.append(_ServerTool(client, tool, name))
+                made.append(_ServerTool(client, tool, name, tool.schema))
     return by_server

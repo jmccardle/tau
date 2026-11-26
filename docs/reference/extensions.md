@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `CommandHooks`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `CommandHooks`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `constants`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -963,10 +963,11 @@ Every running server's tools, in server name order.
 async def start(self, tree: TreeHandle) -> None
 ```
 
-Start every server at once and list its tools, each within the start's time. What
-the configuration skipped, a server that fails or is too slow, and a tool that cannot be
-named are reported (stderr, and an `error` notice each that every client gets when it
-connects); the rest start, and so does τ.
+Start every server at once and list its tools, each within the start's time. A server
+that fails or is too slow, and a tool that cannot be named, are reported (stderr, and an
+`error` notice each that every client gets when it connects); what the configuration
+skipped is in `warnings`, which the start printed, and is told the same way. The rest
+start, and so does τ.
 
 ### Mcp.stop
 
@@ -1009,9 +1010,9 @@ class McpServer
 ```
 
 One server to start: its `name` (the `mcp__NAME__` of its tools), the file it is from
-(`origin`), its `transport`, and for stdio the `command`, `args` and `env` (added to τ's
-environment), for HTTP the `url` and `headers`. `${VAR}`s are replaced. `env` and `headers`
-are left out of its repr: they may hold a token.
+(`origin`), its `transport`, and for stdio the `command`, `args` and `env` (its environment,
+over the few variables it inherits from τ's), for HTTP the `url` and `headers`. `${VAR}`s
+are replaced. `env` and `headers` are left out of its repr: they may hold a token.
 
 ### McpServer.shown
 
@@ -1973,6 +1974,21 @@ calls, results, thinking) its text's lowercase letters, uppercase letters, digit
 ASCII, whitespace, bytes of non-ASCII characters and words, then how many nodes of each role
 (1 for the body's own). 48 numbers; a span's features are the sum of its nodes'. A `Config`
 or `Custom` body, which is never sent, is all zeros.
+
+## constants
+
+```python
+def constants(
+    extensions: Mapping[str, Mapping[str, object]],
+    name: str,
+    known: Mapping[str, type],
+) -> dict[str, object]
+```
+
+The administrator keys the config layers set for extension `name` (`extensions` is
+`LoadedConfig.catalog.extensions`): `known` maps each key it has to its type (`bool`, `int`,
+`str`). `ConfigError` for a key it has not, and for a value of another type (a `bool` is no
+`int`).
 
 ## counted
 
