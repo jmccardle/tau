@@ -1006,7 +1006,10 @@ fn a_commands_step_ends_when_the_command_returns() {
     assert_eq!(ending(&jobs), Ending::Done);
     assert!(!jobs.contains(&Job::Sample));
     assert!(!m.busy(c));
-    assert!(!m.session.auto[&c], "a command's step turns auto-step off, as a go-to does");
+    assert!(
+        !m.session.auto[&c],
+        "a command's step turns auto-step off, as a go-to does"
+    );
     assert_eq!(m.step(c, true), Ok(()), "at rest again");
     run(&mut m, c, plain);
 }
@@ -1051,7 +1054,10 @@ fn a_command_that_turns_auto_step_on_where_it_stands_runs_the_next_step() {
     m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
     let jobs = command_step(&mut m, c, |m| m.hook_set_auto(c, true).unwrap());
-    assert!(jobs.contains(&Job::Sample), "a command's step is never idle: {jobs:?}");
+    assert!(
+        jobs.contains(&Job::Sample),
+        "a command's step is never idle: {jobs:?}"
+    );
 }
 
 #[test]
@@ -1060,7 +1066,10 @@ fn a_commands_send_is_answered_by_the_next_step() {
     let jobs = command_step(&mut m, c, |m| {
         send(m, c, Author::Extension("x".into()), "hi");
     });
-    assert_eq!(&points(&jobs)[..3], [Hook::PreStep, Hook::PostStep, Hook::PreStep]);
+    assert_eq!(
+        &points(&jobs)[..3],
+        [Hook::PreStep, Hook::PostStep, Hook::PreStep]
+    );
     assert!(jobs.contains(&Job::Sample));
     assert_eq!(users(&m, c), 1);
 }

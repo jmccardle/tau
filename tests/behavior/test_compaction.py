@@ -310,7 +310,7 @@ async def test_compact_recovers_from_a_provider_that_said_the_prompt_was_too_lon
     assert len(h.provider.requests) == 4, "the summary only: /compact's step ends with it (D16)"
     view = await h.view()
     assert (view.busy, view.auto, view.ending) == (False, False, Ending.Done())
-    assert view.next != Next.Wait, "mid-turn, the message kept to answer"
+    assert h.session.cursor(h.cursor).next != Next.Wait, "mid-turn, the message kept to answer"
     await h.step()
     await h.settle()
     last = h.session.tree.node(h.session.cursor(h.cursor).at)

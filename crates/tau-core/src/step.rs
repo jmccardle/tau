@@ -154,8 +154,10 @@ pub struct Step {
     pub cursor: CursorId,
     pos: Pos,
     asked: bool,
-    /// A command's step (D16 §2): `pre_step`, where the command runs, then `post_step`.
-    command: bool,
+    /// A command's step (D16 §2, 2026-11-26): it ends when the command returns. Only `pre_step`
+    /// (the command, then the hooks) and `post_step` run, and it ends `Done` unless a hook says
+    /// otherwise; it is never idle (`after`). Set by `Machine::step` on a step just woken.
+    pub command: bool,
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
@@ -202,18 +204,6 @@ impl Step {
             error: None,
             ending: Ending::Done,
             batch: vec![],
-        }
-    }
-
-    /// A command's step (D16 §2, 2026-11-26): it ends when the command returns. Only `pre_step`
-    /// (the command, then the hooks) and `post_step` run, and it ends `Done` unless a hook
-    /// says otherwise. The next step starts at once if the command turned auto-step on and
-    /// there is work, or if an item came (`after`).
-    #[must_use]
-    pub fn command(s: &Session, cursor: CursorId) -> Self {
-        Self {
-            command: true,
-            ..Self::wake(s, cursor, true)
         }
     }
 
@@ -436,7 +426,9 @@ impl Step {
                 self.after(s);
             }
             (_, Some(reason)) => self.on_hook_stop(s, reason, halted_by),
-            (Pos::PreStep, None) if self.command => self.hop("a command's step ends", Pos::PostStep),
+            (Pos::PreStep, None) if self.command => {
+                self.hop("a command's step ends", Pos::PostStep);
+            }
             (Pos::PreStep, None) => self.go(Pos::Input),
             (Pos::Input | Pos::PreReply, None) => {
                 self.draft = None;

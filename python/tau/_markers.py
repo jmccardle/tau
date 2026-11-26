@@ -107,4 +107,3 @@ class UndoMarker:
             cast("str", fields.get("priority", MOVE)),
             {k: v for k, v in fields.items() if k not in _KEYS},
         )
-

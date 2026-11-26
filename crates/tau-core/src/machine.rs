@@ -107,7 +107,7 @@ impl Machine {
 
     /// `Session.step`: run the phases once with auto-step off. With `command`, the step is a
     /// command's (D16 §2): auto-step goes off, as for a go-to, and only `pre_step` (where the
-    /// driver runs the command) and `post_step` run (`Step::command`).
+    /// driver runs the command) and `post_step` run (`Step::command`, the field).
     ///
     /// # Errors
     ///
@@ -120,7 +120,9 @@ impl Machine {
         if command {
             self.session.auto.insert(cursor, false);
             transitions::wake(true);
-            self.steps.insert(cursor, Step::command(&self.session, cursor));
+            let mut step = Step::wake(&self.session, cursor, true);
+            step.command = true;
+            self.steps.insert(cursor, step);
         } else {
             self.wake(cursor, true);
         }
