@@ -744,7 +744,8 @@
         }
       },
       "required": [
-        "max_bytes"
+        "max_bytes",
+        "max_side"
       ]
     },
     "Item": {

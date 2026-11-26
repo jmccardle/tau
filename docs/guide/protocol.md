@@ -812,7 +812,7 @@ images. `Refused` for a limit that is not a positive integer.
 | field | type | notes |
 |---|---|---|
 | `max_bytes` | `integer` |  |
-| `max_side` | `integer` or `null` | optional |
+| `max_side` | `integer` or `null` |  |
 
 ### Item
 

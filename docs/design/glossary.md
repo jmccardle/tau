@@ -3905,7 +3905,7 @@ the hub compares only when the commands or options were assembled again (their `
 `Feed` keeps only the latest unsent copy, and it never counts toward `CutOff`. It also tells a
 client that the options forms it holds may be stale, and so may its `models()`: it is sent too
 when `Driver.use_catalog` changed what `models()` answers (D32 §8; the hub compares
-`listed_from(catalog)`, and the driver's catalog count is part of the generation). The private
+`listed_from(catalog, options)`, and the catalog itself is part of the generation). The private
 driver class that holds the commands is `CommandTable`.
 
 ### CutOff

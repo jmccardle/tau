@@ -15,7 +15,7 @@ a `configure(..., save=True)` reads the files again) or a reload changes `usage`
 this call would answer sends `Commands` (D32 section 3), on which a client calls `models()` again.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, cast
@@ -95,9 +95,9 @@ def _price(name: str, section: object | None) -> ModelPrice | None:
     return ModelPrice(i, o, r, w, h)
 
 
-def priced(options: "ExtensionOptions", model: str) -> object | None:
-    """`usage`'s section of `model`, as its `model_options` type reads it (what `model_list`'s
-    `priced` answers on a driver); `None` if no loaded extension of that name declares one."""
+def _priced(options: "ExtensionOptions", model: str) -> object | None:
+    """`usage`'s section of `model`, as its `model_options` type reads it; `None` if no loaded
+    extension of that name declares one (no price is then listed: nothing prices a reply)."""
     if options.section_type(PRICED_BY) is None:
         return None
     return options.model_options(PRICED_BY, model)
@@ -115,13 +115,11 @@ def _images(config: ModelConfig, provider: Provider | None) -> ImageLimits | Non
 def model_list(
     catalog: ModelCatalog,
     providers: Mapping[str, Provider],
-    priced: Callable[[str], object | None],
+    options: "ExtensionOptions",
 ) -> tuple[ModelInfo, ...]:
-    """Every model of `catalog`, in file order, as a client may know it (the module docstring).
-    `priced(name)` is the `usage` extension's section of the model `name` as its `model_options`
-    type builds it, or `None` when no loaded extension of that name declares one (no price is then
-    listed: nothing in this session prices a reply). `ConfigError` from it, or for a `price` of
-    another shape."""
+    """Every model of `catalog`, in file order, as a client may know it (the module docstring),
+    priced by the `usage` extension that `options` holds, if any (`_priced`). `ConfigError` for
+    a section usage refuses, or a `price` of another shape."""
     found: list[ModelInfo] = []
     for name in catalog.names():
         config = catalog.resolve(name)
@@ -132,19 +130,22 @@ def model_list(
                 config.context_window,
                 config.max_tokens,
                 _images(config, providers.get(config.provider)),
-                _price(name, priced(name)),
+                _price(name, _priced(options, name)),
                 name == catalog.default_model,
             )
         )
     return tuple(found)
 
 
-def listed_from(catalog: ModelCatalog) -> object:
-    """What `model_list` reads of `catalog`, comparable: two catalogs equal in it list the same
-    models, given the same extensions (the providers are the driver's for its life). The hub
-    compares it, so a `Commands` is sent when the models change, and not when only a key, a URL or
-    an option did."""
+def listed_from(catalog: ModelCatalog, options: "ExtensionOptions") -> object:
+    """What a `Commands` announces besides the forms, comparable: the options types (a reload
+    that changes only one is a change too, D32 section 3), and what `model_list` reads of `catalog`
+    and `options` (D32 section 8; the providers are the driver's for its life). Equal values list
+    the same models, so a `Commands` is sent when the models change, and not when only a key, a
+    URL or an option did."""
     return (
+        options.types(),
+        options.section_type(PRICED_BY),
         catalog.default_model,
         tuple(
             (

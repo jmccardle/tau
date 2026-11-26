@@ -65,7 +65,7 @@ from tau._hook_order import HookOrder
 from tau._hub import Hub
 from tau._lifecycle import Lifecycle, configured_timeouts
 from tau._meter import Counts
-from tau._model_list import PRICED_BY, listed_from, model_list, priced
+from tau._model_list import listed_from, model_list
 from tau._options import ExtensionOptions
 from tau._protocols import (
     Clock,
@@ -178,7 +178,6 @@ class Driver:
                 raise ValueError(f"provider {provider.name!r} is given as {name!r}")
         self._providers = dict(providers)
         self._catalog = catalog
-        self._catalogs = 0  # up by one at each `use_catalog`: the hub compares the models then
         self._given = tuple(tools)
         # cursor -> the offer of its last pre_sample that a sample follows (None: every tool)
         self._offered: dict[int, tuple[str, ...] | None] = {}
@@ -205,15 +204,8 @@ class Driver:
             self._questions.open,
             self._questions.pool,
             self._model_at,
-            lambda: (self._commands.generation, self._options.generation, self._catalogs),
-            lambda: (
-                self._commands.forms_now(),
-                (
-                    self._options.types(),
-                    self._options.section_type(PRICED_BY),
-                    listed_from(self._catalog),
-                ),
-            ),
+            lambda: (self._commands.generation, self._options.generation, self._catalog),
+            lambda: (self._commands.forms_now(), listed_from(self._catalog, self._options)),
         )
         self._tasks = Tasks()
         self._poke = partial(self._queue.put_nowait, None)  # wake the pump
@@ -263,9 +255,7 @@ class Driver:
             {},
             session=session,
             catalog=lambda: self._catalog,
-            models=lambda: model_list(
-                self._catalog, self._providers, partial(priced, self._options)
-            ),
+            models=lambda: model_list(self._catalog, self._providers, self._options),
             options=self._options,
             handles=self._handles,
             hub=self._hub,
@@ -347,12 +337,11 @@ class Driver:
 
     def use_catalog(self, catalog: ModelCatalog) -> None:
         """Resolve model names in `catalog`, and order hooks by it, from the next job
-        dispatched on. `ConfigError` (nothing changes) for a bad `extensions.NAME.order`. Clients
-        are sent `Commands` if what `Client.models()` answers changed (D32 section 8)."""
+        dispatched on (clients get `Commands` if `models()` changed, D32 section 8). `ConfigError`
+        (nothing changes) for a bad `extensions.NAME.order`."""
         self._order = HookOrder.of(self._extensions, catalog.orders)
         self._catalog = catalog
-        self._catalogs += 1
-        self._hub.sync()
+        self._hub.sync()  # a new catalog is a new generation (D32 section 8)
 
     async def reload(self, extensions: Sequence[Extension]) -> None:
         """Run `extensions` (listed in load order, as at construction) instead of the ones the
