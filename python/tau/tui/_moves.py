@@ -1,6 +1,7 @@
 """Moving around the session (D23 sections 2, 5, 6): what the cursor keys do.
 
-Alt+Left and Alt+Right view the previous or next open cursor; Ctrl+Z edits the last message;
+Alt+Left and Alt+Right view the previous or next open cursor; Ctrl+Z edits the last message (or,
+with the `undo` extension loaded, runs its `/undo`, D33);
 Ctrl+G opens the tree screen; Ctrl+O the session picker; the palette's Theme picks a theme and saves
 it (`tui.theme` of the user's config file); Ctrl+N asks for a new session; Up on an
 empty editor takes back a line this client has waiting. Each is a call or two on the `Client` and
@@ -8,6 +9,7 @@ a dialog; none changes the screen itself, `TauApp.view` does. A refusal (the ses
 the call, a connection lost) is a toast, never a crash.
 """
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -17,6 +19,7 @@ from textual.screen import Screen
 from textual.theme import Theme
 
 from tau._client import Client
+from tau._commands import CommandFailed
 from tau._complete import Completion
 from tau._core import Author, Body, Busy, ItemData, NoSuchCursor
 from tau._events import CursorView
@@ -29,6 +32,10 @@ from tau.tui._picker import SessionPicker
 from tau.tui._switch import Switch, session_holders
 from tau.tui._tree import TreeIntent, TreeScreen, read_nodes
 from tau.tui._view import SessionView
+
+UNDO = "undo:undo"
+"""The qualified name of the `undo` extension's `/undo` (D33), which Ctrl+Z calls when it is
+loaded."""
 
 
 class Mover(Protocol):
@@ -114,8 +121,13 @@ class Moves:
         """Ctrl+Z on an empty editor: go to the node before the last `User` node of the walk and
         put what the person typed in the editor (the node's `typed`, else its text; 0.15's
         rollback, as a branch: the old turn stays in the tree). The expanded text would attach
-        each `@file` a second time on resending."""
+        each `@file` a second time on resending. With the `undo` extension loaded and the cursor
+        at rest, it is the harness's `/undo` instead (D33), which also goes back over `/compact`,
+        `/prune` and `/clear`; on a busy cursor, which `/undo` refuses, it stays this move."""
         app = self.app
+        if UNDO in (f.qualified for f in app.session.commands) and not self._view(cursor).busy:
+            await self._undo(cursor)
+            return
         walk = await app.client.walk(self._view(cursor).at)
         last = next((n for n in reversed(walk) if isinstance(n.body, Body.User)), None)
         if last is None or last.parent is None or not isinstance(last.body, Body.User):
@@ -125,6 +137,23 @@ class Moves:
             return
         await app.client.go_to(cursor, last.parent)
         app.restore_draft(last.body.text if last.typed is None else last.typed)
+
+    async def _undo(self, cursor: int) -> None:
+        """The harness's `/undo` on `cursor`, refused if the cursor moved since it was viewed:
+        the message it gives back goes into the editor; a change it undid is a toast."""
+        app = self.app
+        args = {"json": True, "at": self._view(cursor).at}
+        try:
+            result = await app.client.run(cursor, UNDO, args)
+        except CommandFailed as e:
+            app.toast(str(e), severity="warning")
+            return
+        assert result is not None
+        answer = json.loads(result)
+        if answer["user"] is not None:
+            app.restore_draft(answer["user"]["text"])
+        else:
+            app.toast(f"undid {answer['label']}", title="undo")
 
     async def _tree(self, cursor: int) -> None:
         """Ctrl+G: the tree screen, and the call it came back with, made on the cursor that was

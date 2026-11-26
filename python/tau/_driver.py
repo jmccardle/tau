@@ -75,6 +75,7 @@ from tau._protocols import (
     check_extensions,
     check_tools,
     counter_of,
+    reverser_of,
 )
 from tau._questions import Questions
 from tau._tools import assemble_tools
@@ -240,6 +241,7 @@ class Driver:
             lambda: on_loop_wait(lambda: self._home, self._reassemble),
             lambda cursor, images: self._calls.checked_images(cursor, images),  # noqa: PLW0108
             lambda: self._life.starting(),  # noqa: PLW0108 - made later
+            lambda name: reverser_of(self._extensions, name),
         )
         self._life = Lifecycle(
             self._handles.lifecycle,

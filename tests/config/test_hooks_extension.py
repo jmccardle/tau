@@ -1,4 +1,4 @@
-"""`hooks`, the built-in extension that is off by default (D33): the files it reads, what it
+"""`hooks`, the built-in extension that is off by default (D34): the files it reads, what it
 refuses in them, and the project's file under trust. Through `tau ext`, `tau trust`,
 `tau.load_config` and `tau -p` on real files."""
 
@@ -16,7 +16,7 @@ from tau import CommandHooks, ConfigError, UntrustedProject, load_config, load_e
 
 POSIX = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="Windows: hooks run through a POSIX shell, which τ does not have there (D33)",
+    reason="Windows: hooks run through a POSIX shell, which τ does not have there (D34)",
 )
 
 

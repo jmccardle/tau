@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `CommandHooks`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `CommandHooks`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -720,6 +720,19 @@ Append `body` under `at` and move onto it, as one record; the
 `delivers` items are removed. Returns the new node's id. `copied_from` and
 `derived_from` as for `TreeHandle.append`.
 
+### Cursor.reverse
+
+```python
+async def reverse(self, marker: int) -> bool
+```
+
+Have the extension that wrote the undo marker `marker` (D33) reverse what it marks:
+its `async def reverse(self, cursor, marker)` is called with this cursor's handle, bound
+to that extension, and the `UndoMarker`. Returns whether one did: `False` when that
+extension is not loaded or has no `reverse`. The cursor does not move; what `reverse`
+raises is the caller's. `ValueError` if the node is not an undo marker or no extension
+wrote it, `NoSuchNode` if there is no such node.
+
 ### Cursor.set_auto
 
 ```python
@@ -800,7 +813,10 @@ stop(self) -> None`, run at shutdown (and when a reload removes it), after the t
 `spawn`ed are cancelled. A `start` or `stop` that is not a coroutine function is refused when
 the driver is built (`DefinitionError`). A `start` that raises or outlives its timeout
 (`START_TIMEOUT`, or `extensions.NAME.start_timeout`) stops the driver's start with
-`ExtensionLoadError`; a `stop` that does is reported and the next one runs.
+`ExtensionLoadError`; a `stop` that does is reported and the next one runs. And the undo
+hook (D33): `async def reverse(self, cursor: Cursor, marker: UndoMarker) -> None`, which
+reverses what an undo marker the extension wrote marks (a file checkpoint), called only
+through `Cursor.reverse`; one that is not a coroutine function is refused the same way.
 
 ### Extension.name
 
@@ -1784,6 +1800,42 @@ def remove_label(self, label: str) -> None
 ```
 
 Remove `label`; raises `NoSuchLabel`.
+
+## UndoMarker
+
+```python
+@dataclass(frozen=True)
+class UndoMarker
+    label: str
+    return_to: int
+    reverses: str
+    priority: str = 'move'
+    extra: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+```
+
+One undo marker (the module docstring): `label`, `return_to`, `reverses`, `priority`
+(`MOVE` unless given) and `extra`, the owner's own keys. `ValueError` for an empty `label` or
+`reverses`, a `return_to` that is not a node id, a `priority` other than lower-case letters,
+digits, `_` and `-`, or an `extra` key that is one of the four.
+
+### UndoMarker.body
+
+```python
+def body(self) -> Body
+```
+
+The marker as the `Custom` node body to write (`cursor.write(marker.body())`).
+
+### UndoMarker.of
+
+```python
+@classmethod
+def of(cls, body: Body) -> 'UndoMarker | None'
+```
+
+The marker `body` holds; `None` if it is not a `Custom` of kind `undo`. `ValueError`
+naming the problem for one whose data is not a marker's (not a JSON object, a key
+missing, a value of the wrong kind).
 
 ## calibration_features
 

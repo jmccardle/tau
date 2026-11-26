@@ -1,4 +1,4 @@
-"""`hooks` (D33): shell commands run at τ's hook points, by the convention Claude Code, Codex and
+"""`hooks` (D34): shell commands run at τ's hook points, by the convention Claude Code, Codex and
 Gemini CLI share. Every test runs real small `sh` scripts that read the event on standard input
 and answer with an exit code or JSON, through a session and the files a person writes."""
 
@@ -17,7 +17,7 @@ from tau import Author, Body, CommandHooks, Outcome, Part, Stop
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="Windows: hooks run through a POSIX shell, which τ does not have there (D33)",
+    reason="Windows: hooks run through a POSIX shell, which τ does not have there (D34)",
 )
 
 

@@ -1,4 +1,4 @@
-# D33: Command hooks (the `hooks` built-in)
+# D34: Command hooks (the `hooks` built-in)
 
 **Status:** accepted 2026-11-25, built for 0.18.0 (unreleased). Amends D19 §4 (a fifth pinned file,
 `.tau/hooks.json`) and D24 §1 (a built-in that is off by default, `hooks`). Companion: the guide,

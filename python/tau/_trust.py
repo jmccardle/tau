@@ -5,7 +5,7 @@ directory owned by the user. Its config and `.env` are read only while it is
 trusted. Trust is pinned to the bytes of `.tau/config.json`, of `.env`, of every file under
 `.tau/extensions/`, of `.tau/SYSTEM.md` (D19 section 4), of `.tau/prompts/*.md` and of
 `.tau/skills/*/SKILL.md` (D24 section 6) and `.tau/hooks.json`, whose commands run with your
-authority (D33): `trusted.json` holds their sha256,
+authority (D34): `trusted.json` holds their sha256,
 which decides, and a redacted copy of the config for showing diffs. Content decides: there is
 no owner check on any file. What is used afterwards is the bytes that were approved.
 

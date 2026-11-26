@@ -47,7 +47,7 @@ Notices (`cursor.tell`, a command's progress) are toasts.
 | Ctrl+R, Ctrl+T | fold the thinking, fold the tool boxes |
 | Ctrl+Up, Ctrl+Down | a page of the transcript; at its top or bottom, slide the window along a long walk (below) |
 | Alt+Left, Alt+Right | view the previous or next open cursor |
-| Ctrl+Z | on an empty editor, edit your last message (with text typed, undo) |
+| Ctrl+Z | on an empty editor, `/undo`: take back a `/compact`, `/prune` or `/clear`, else edit your last message (with text typed, the editor's undo) |
 | Ctrl+G | the tree |
 | Ctrl+O, Ctrl+N | choose another session; start a new one |
 | Ctrl+P | the command palette: Theme, Tree, Sessions, New session, Quit |
@@ -100,7 +100,10 @@ client's name and no buttons.
 - **Ctrl+Z on an empty editor edits your last message**: the cursor goes to the node before it and
   the message is in the editor as you typed it (`@file` words, not the files they attached), so
   sending it makes a branch (the old turn stays in the tree) and attaches each file once. On
-  a busy cursor it asks before aborting the step.
+  a busy cursor it asks before aborting the step. With the `undo` built-in on (the default),
+  Ctrl+Z on a cursor at rest is `/undo`: right after `/compact`, `/prune` or `/clear` it goes back
+  to the conversation as it was and says so in a toast, and otherwise it edits your last message
+  as above ([What τ does for you](built-ins.md)).
 - **Ctrl+G is the tree**: the walk of the cursor you view runs straight down from the first node.
   Each turn (your message and what followed) is one row that folds (`user: fix it  +14 · 6 calls`).
   Every other branch hangs off the walk as one folded line, a *stub*: `├┄ 3 nodes, 1 turn ◀ 1 scout …`
