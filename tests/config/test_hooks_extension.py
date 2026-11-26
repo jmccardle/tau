@@ -24,8 +24,16 @@ def hooks(**events: object) -> str:
     return json.dumps({"hooks": events})
 
 
-def grouped(command: str = "true", matcher: str | None = None, **handler: Any) -> dict[str, object]:
-    found: dict[str, object] = {"hooks": [{"type": "command", "command": command, **handler}]}
+def grouped(
+    command: str = "true",
+    matcher: str | None = None,
+    raw: dict[str, object] | None = None,
+    **handler: Any,
+) -> dict[str, object]:
+    """A matcher group of one command handler; `raw` is keys to put in it as they are."""
+    found: dict[str, object] = {
+        "hooks": [{"type": "command", "command": command, **handler, **(raw or {})}]
+    }
     if matcher is not None:
         found["matcher"] = matcher
     return found
