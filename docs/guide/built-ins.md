@@ -8,8 +8,8 @@ change, `/clear`, `/branch`, `/tree` and `/export` work on the session, and the 
 web page (`fetch`). Seven more wait for you to ask: two that are on but do nothing until you use
 them, rules that ask before a tool runs (permissions) and `/plan` (plan mode), and five that are
 off until you turn them on: the bash guard, the router, tools from MCP servers, web search and shell
-commands at hook points (hooks). Each can be switched off, and each is a few lines to use. The examples run with the mock model, which needs no server
-and no key.
+commands at hook points (hooks). Each can be switched off, and each is a few lines to use. The
+examples run with the mock model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
 {
