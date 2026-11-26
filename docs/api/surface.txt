@@ -141,6 +141,27 @@ class ImageRule
     provider: str
     def tokens(self, width: int, height: int) -> int
 LabelName = NewType('LabelName', str)
+class Mcp
+    def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+    def mcp(self) -> str
+    name = NAME
+    @classmethod
+    def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
+    async def start(self, tree: TreeHandle) -> None
+    async def stop(self) -> None
+    property tools: tuple[Tool, ...]
+class McpConfigError(ValueError)
+@dataclass(frozen=True)
+class McpServer
+    args: tuple[str, ...] = ()
+    command: str = ''
+    env: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    headers: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    name: str
+    origin: str
+    def shown(self) -> str
+    transport: Literal['stdio', 'http']
+    url: str = ''
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
@@ -1329,6 +1350,7 @@ class Trusted
     env_text: str | None
     extension_files: Mapping[str, bytes] | None
     def layer(self) -> LayerText | None
+    mcp_files: Mapping[str, bytes]
     prompt_files: Mapping[str, bytes]
     def read_models(
         self,

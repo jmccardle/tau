@@ -1,0 +1,330 @@
+"""The `mcp` built-in (D24 section 12): its servers' tools offered to the model, called, listed
+again, and what happens when a server fails to start or exits; over stdio (tests/mcp_server.py)
+and streamable HTTP (tests/mcp_http.py)."""
+
+import asyncio
+import dataclasses
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fakes import FakeProvider, Reply, fake_catalog
+from harness import Harness, scenario
+from mcp_http import HttpMcp
+
+from tau import (
+    Body,
+    ExtensionLoadError,
+    ImageLimits,
+    Mcp,
+    McpServer,
+    Outcome,
+    Part,
+    Permissions,
+    Stop,
+)
+
+SERVER = str(Path(__file__).parents[1] / "mcp_server.py")
+DONE = Reply([Part.Text("done")])
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the test server's signals")
+
+
+def stdio(log: Path, name: str = "test", **env: str) -> McpServer:
+    return McpServer(
+        name,
+        "test",
+        "stdio",
+        command=sys.executable,
+        args=(SERVER,),
+        env={"MCP_LOG": str(log), **env},
+    )
+
+
+def running(pid: int) -> bool:
+    """Whether `pid` runs (a zombie does not)."""
+    try:
+        return not Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].startswith("Z")
+    except (FileNotFoundError, ProcessLookupError):  # gone, or going as it is read
+        return False
+
+
+def logged(log: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def calling(tool: str, args: object = None) -> Reply:
+    return Reply([Part.Call("c1", tool, json.dumps(args or {}))], Stop.Tools)
+
+
+def outcome_of(h: Harness) -> Outcome:
+    results = next(b for b in reversed(h.bodies()) if isinstance(b, Body.Results))
+    return results.outcomes[0][1]
+
+
+async def run(tmp_path: Path, servers: list[McpServer], *replies: Reply) -> Harness:
+    provider = FakeProvider([*replies, DONE], image_limits=ImageLimits(1_000_000, 4000))
+    return await Harness.create(
+        tmp_path,
+        provider=provider,
+        catalog=fake_catalog(images=True),
+        extensions=[Mcp(servers, tmp_path)],
+    )
+
+
+@scenario
+async def test_with_no_servers_it_offers_nothing_and_starts_nothing(tmp_path: Path) -> None:
+    h = await run(tmp_path, [])
+    await h.send("hi")
+    await h.settle()
+    assert h.provider.requests[0].tools == ()
+    assert (
+        await h.run("mcp")
+        == "no MCP servers are configured (mcp.json in TAU_HOME, .mcp.json in a project)"
+    )
+    await h.close()
+
+
+@scenario
+async def test_its_tools_are_offered_namespaced_and_called(tmp_path: Path) -> None:
+    log = tmp_path / "log"
+    h = await run(tmp_path, [stdio(log)], calling("mcp__test__echo", {"text": "hello"}))
+    await h.send("go")
+    await h.settle()
+    names = h.provider.requests[0].tool_names
+    assert "mcp__test__echo" in names
+    assert "mcp__test__dotted_name" in names  # a character outside [A-Za-z0-9_-] becomes _
+    echo = next(t for t in h.provider.requests[0].tools if t.name == "mcp__test__echo")
+    assert echo.description == "the echo tool"
+    assert echo.parameters["properties"] == {"text": {"type": "string"}}
+    assert outcome_of(h) == Outcome.Ok("hello")
+    calls = [e for e in logged(log) if e.get("method") == "tools/call"]
+    assert calls[0]["params"] == {"name": "echo", "arguments": {"text": "hello"}}
+    listing = await h.run("mcp")
+    assert listing is not None
+    assert listing.startswith(
+        f"test (stdio: {sys.executable} {SERVER}): running\n  mcp__test__echo"
+    )
+    await h.close()
+
+
+@scenario
+async def test_a_paged_list_is_followed(tmp_path: Path) -> None:
+    h = await run(tmp_path, [stdio(tmp_path / "log", PAGE_SIZE="3")])
+    await h.send("go")
+    await h.settle()
+    assert "mcp__test__tool_4" in h.provider.requests[0].tool_names
+    await h.close()
+
+
+@scenario
+async def test_results_carry_errors_images_structure_and_say_what_was_left_out(
+    tmp_path: Path,
+) -> None:
+    h = await run(
+        tmp_path,
+        [stdio(tmp_path / "log")],
+        calling("mcp__test__fail"),
+        calling("mcp__test__image"),
+        calling("mcp__test__structured"),
+    )
+    await h.send("go")
+    await h.settle()
+    results = [b.outcomes[0][1] for b in h.bodies() if isinstance(b, Body.Results)]
+    assert results[0] == Outcome.Err("it failed")
+    image = results[1]
+    assert isinstance(image, Outcome.Ok)
+    assert image.value == "before\n[audio content left out: τ tool results are text and images]"
+    assert [(i.mime, i.width) for i in image.images] == [("image/png", 1)]
+    assert results[2] == Outcome.Ok('{"answer": 42}')
+    await h.close()
+
+
+@scenario
+async def test_env_reaches_the_server_and_stderr_is_not_shown(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    h = await run(
+        tmp_path, [stdio(tmp_path / "log", TEST_SECRET="s3cret")], calling("mcp__test__env")
+    )
+    await h.send("go")
+    await h.settle()
+    assert outcome_of(h) == Outcome.Ok("s3cret")
+    await h.close()
+    assert "test server: starting up" not in capfd.readouterr().err
+
+
+@scenario
+async def test_a_server_that_fails_to_start_stops_the_start_naming_every_failure(
+    tmp_path: Path,
+) -> None:
+    good, log = tmp_path / "good", tmp_path / "bad"
+    servers = [
+        stdio(log, "broken", FAIL_START="cannot open the database"),
+        McpServer("missing", "test", "stdio", command=str(tmp_path / "no-such-program")),
+        stdio(good, "good"),
+    ]
+    with pytest.raises(ExtensionLoadError) as caught:
+        await Harness.create(
+            tmp_path, provider=FakeProvider([]), extensions=[Mcp(servers, tmp_path)]
+        )
+    message = str(caught.value)
+    assert "extension 'mcp' did not start: McpStartError: " in message
+    assert "MCP server broken exited (status 2): cannot open the database" in message
+    assert (
+        f"MCP server missing: cannot start {tmp_path / 'no-such-program'}: No such file" in message
+    )
+    assert "good" not in message
+    assert {"stdin": "closed"} in logged(good)  # the one that started was stopped
+
+
+@scenario
+async def test_a_server_that_exits_is_told_and_its_tools_answer_an_error(tmp_path: Path) -> None:
+    h = await run(
+        tmp_path, [stdio(tmp_path / "log")], calling("mcp__test__die"), calling("mcp__test__echo")
+    )
+    await h.send("go")
+    await h.settle()
+    results = [b.outcomes[0][1] for b in h.bodies() if isinstance(b, Body.Results)]
+    gone = "MCP server test exited (status 3): dying as asked"
+    assert results == [Outcome.Err(f"{gone}; its tools answer this until τ restarts")] * 2
+    notice = next(n for n in h.notice_events() if n.extension == "mcp")
+    assert (notice.text, notice.level) == (
+        f"{gone}; its tools answer an error until τ restarts",
+        "error",
+    )
+    assert str(await h.run("mcp")).splitlines()[0].endswith(f": {gone}")
+    await h.close()
+
+
+@scenario
+async def test_a_changed_list_is_listed_again_and_offered_from_the_next_sample(
+    tmp_path: Path,
+) -> None:
+    h = await run(
+        tmp_path, [stdio(tmp_path / "log")], calling("mcp__test__grow"), calling("mcp__test__grown")
+    )
+    await h.send("go")
+    await h.settle()
+    first, second, _ = h.provider.requests
+    assert "mcp__test__grown" not in first.tool_names
+    assert "mcp__test__grown" in second.tool_names
+    assert outcome_of(h) == Outcome.Ok("called grown")
+    assert "MCP server test listed its tools again: 12 tools" in h.notices()
+    await h.close()
+
+
+@scenario
+async def test_an_abort_cancels_the_call_at_the_server(tmp_path: Path) -> None:
+    log = tmp_path / "log"
+    h = await run(tmp_path, [stdio(log)], calling("mcp__test__slow", {"seconds": 30}))
+    await h.send("go")
+    for _ in range(200):
+        if any(e.get("method") == "tools/call" for e in logged(log)):
+            break
+        await asyncio.sleep(0.02)
+    await h.abort()
+    await h.settle()
+    cancelled: list[dict[str, Any]] = []
+    for _ in range(200):  # the server writes its log in its own time
+        cancelled = [e for e in logged(log) if e.get("method") == "notifications/cancelled"]
+        if cancelled:
+            break
+        await asyncio.sleep(0.02)
+    assert cancelled
+    assert cancelled[0]["params"]["reason"] == "cancelled by τ"
+    await h.close()
+
+
+@scenario
+async def test_a_ping_from_the_server_is_answered(tmp_path: Path) -> None:
+    log = tmp_path / "log"
+    h = await run(tmp_path, [stdio(log)], calling("mcp__test__ping"))
+    await h.send("go")
+    await h.settle()
+    assert outcome_of(h) == Outcome.Ok("pinged")
+    await h.close()
+
+
+@scenario
+async def test_stop_ends_each_server_and_what_it_started(tmp_path: Path) -> None:
+    log = tmp_path / "log"
+    h = await run(tmp_path, [stdio(log, SPAWN_CHILD="1")])
+    child = next(int(e["child"]) for e in logged(log) if "child" in e)  # type: ignore[arg-type]
+    server = next(int(e["started"]) for e in logged(log) if "started" in e)  # type: ignore[arg-type]
+    await h.close()
+    assert not running(server)  # it was waited for
+    for _ in range(100):  # what it started was signalled; its new parent reaps it
+        if not running(child):
+            break
+        await asyncio.sleep(0.02)
+    assert not running(child)
+
+
+@scenario
+async def test_a_server_rule_asks_about_every_tool_of_that_server(tmp_path: Path) -> None:
+    guard = Permissions(tmp_path)
+    provider = FakeProvider([calling("mcp__test__echo", {"text": "x"}), DONE])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        extensions=[Mcp([stdio(tmp_path / "log")], tmp_path), guard],
+    )
+    await h.configure("permissions", {"ask": ["mcp__test"]})
+    await h.send("go")
+    await h.settle()
+    (question,) = (await h.view()).questions
+    assert question.text == 'mcp__test__echo: {"text": "x"}\n(ask rule: mcp__test)'
+    await h.close()
+
+
+@scenario
+async def test_over_http_with_a_session_and_headers(tmp_path: Path) -> None:
+    for sse in (False, True):
+        server = HttpMcp(sse=sse, token="t0k")
+        spec = McpServer(
+            "web", "test", "http", url=server.url, headers={"Authorization": "Bearer t0k"}
+        )
+        h = await run(tmp_path / str(sse), [spec], calling("mcp__web__echo", {"text": "hi"}))
+        await h.send("go")
+        await h.settle()
+        assert outcome_of(h) == Outcome.Ok("http: hi")
+        await h.close()
+        server.close()
+        methods = [(e.get("method"), e.get("session")) for e in server.log if "method" in e]
+        assert methods[0] == ("initialize", None)
+        assert ("tools/call", "s-1") in methods
+        assert {"delete": "s-1"} in server.log
+        assert server.log[-2]["version"] == "2025-11-25"
+
+
+@scenario
+async def test_an_http_server_that_refuses_stops_the_start(tmp_path: Path) -> None:
+    server = HttpMcp(token="right")
+    spec = McpServer(
+        "web", "test", "http", url=server.url, headers={"Authorization": "Bearer wrong"}
+    )
+    with pytest.raises(ExtensionLoadError) as caught:
+        await Harness.create(
+            tmp_path, provider=FakeProvider([]), extensions=[Mcp([spec], tmp_path)]
+        )
+    server.close()
+    assert f"MCP server web: {server.url} refused the request (HTTP 401)" in str(caught.value)
+    assert "wrong" not in str(caught.value)
+
+
+@scenario
+async def test_a_slow_start_is_cut_at_its_timeout_and_the_slow_servers_named(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    catalog = dataclasses.replace(fake_catalog(), timeouts={"mcp": (0.5, None)})
+    hung = stdio(tmp_path / "log", "hung", HANG_START="1")
+    with pytest.raises(ExtensionLoadError, match=r"it did not return within 0\.5 s"):
+        await Harness.create(
+            tmp_path, provider=FakeProvider([]), catalog=catalog, extensions=[Mcp([hung], tmp_path)]
+        )
+    err = capfd.readouterr().err
+    assert f"still starting: hung ({sys.executable} {SERVER})" in err
+    assert "raise extensions.mcp.start_timeout" in err
+    assert {"stdin": "closed"} in logged(tmp_path / "log")

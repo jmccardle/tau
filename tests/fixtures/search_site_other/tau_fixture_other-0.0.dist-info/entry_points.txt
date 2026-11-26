@@ -1,2 +1,2 @@
 [tau.extensions]
-search = tau_fixture_other.ext
+websearch = tau_fixture_other.ext

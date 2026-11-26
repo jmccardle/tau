@@ -1134,6 +1134,10 @@ report), and `tau config check`. Tests do the same.
   `extensions_sha256` (the digest of the (path, sha256) list of every regular file under
   `.tau/extensions/` except `__pycache__/` and names starting with `.`, with the marker for a missing directory), `extensions`
   (the per-file map, for diffs) and `system_sha256` (`.tau/SYSTEM.md`, with the marker).
+  D24 section 12 adds `mcp_sha256` and `mcp` (the project's `.mcp.json` and `.tau/mcp.json`, as
+  `prompts_sha256` and `prompts` hold the prompt files; a record without them approved a project
+  with neither). The record's reading and writing is `tau._trust_record` (`Approval`, `approved`,
+  `record`, `redacted`, `write_atomically`), moved out of `_trust.py`.
 - `ensure_trusted(root, home, *, ask)` returns a frozen **`Trusted`** (`root`,
   `config_text`, `env_text`, `extension_files` (the approved files under `.tau/extensions/`,
   relative path to bytes; `None`: no such directory), `system_md` (the approved bytes of
@@ -1788,7 +1792,8 @@ test_fixture_secrets.py` holds every committed file to its own list of shapes.
 `tau.Permissions` (`_permissions.py`), key `permissions`, options `ask`, `allow`, `deny` · D24 section 7 · new (8E-4)
 
 The built-in extension that asks before, or refuses, a tool call. A **rule** is `TOOL` (every call
-of the tool) or `TOOL:GLOB` (`bash`: the command; `read`, `write`, `edit`, `grep`, `find`: the
+of the tool) or `TOOL:GLOB` (`bash`: the command; `fetch`: the host of the `url`, ignoring case, as the tool reads it, so
+`docs.python.org@evil.com` is `evil.com`, and `always` saves `fetch:HOST`; `read`, `write`, `edit`, `grep`, `find`: the
 `path`, and `grep`'s `files`; a tool from an extension takes only the bare form), the glob being `fnmatch`'s, case
 sensitive, over the whole `bash` command, or over a path as written and as resolved (against the
 session's working directory, symlinks followed; `deny` and `ask` fire if any named path matches,
@@ -1829,6 +1834,78 @@ and its final reply text. `to="agent:P:N"` reopens that closed agent and sends i
 ending other than `Done`, or a reply that asks for tools, is a `ToolError` naming the agent. Its
 cursor is offered the `tools` option's tools, or all but `agent`. Aborting the calling cursor
 cancels the call, whose `finally` closes (and so aborts) the agent.
+
+### Mcp (extension), MCP server, MCP tool name, McpServer, McpConfigError, mcp files
+`tau.Mcp` (`_mcp.py`), key `mcp`, command `/mcp`; `tau.McpServer`, `tau.McpConfigError` (`_mcp_config.py`); `_mcp_client.py`, `_mcp_process.py` (private) · D24 section 12 · new (0.18)
+
+The built-in extension, **off by default**, that offers the model the tools of the user's **MCP
+servers** (Model Context Protocol), and with none configured does nothing. The **mcp files** are
+`$TAU_HOME/mcp.json`, the trusted project's `.mcp.json` (Claude Code's) and `.tau/mcp.json`
+(both pinned by trust, `Trusted.mcp_files`), in the `mcpServers` shape other clients write; for
+one name the nearest wins whole (`.tau/mcp.json`, `.mcp.json`, the user's), and `"disabled": true`
+turns a server off; **`TAU_MCP_CONFIG`** (`tau._mcp.CONFIG_VARIABLE`) names more files, nearest of
+all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are replaced from the environment τ reads keys
+from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
+(`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
+are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
+used. `start` starts every server at once and returns when each has listed its tools; one that
+fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
+`[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
+`list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
+answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
+process and its group, signalled through a pidfd where there is one.
+
+### mcp__SERVER (a permission rule)
+`tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)
+
+A rule whose tool is `mcp__SERVER` (no further `__`) matches every tool of that MCP server as well
+as a tool of that exact name. A rule naming any `mcp__` tool is never reported as naming a tool
+no extension provides: a server's tools are listed only once it runs.
+
+### Fetch (extension), fetch tool, readable, NoText
+`Fetch` (`_fetch.py`, private; not exported), key `fetch`, no options, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
+
+The built-in extension, **on by default**, that lets the model read the web. One GET with a
+`User-Agent` naming tau and an `Accept` that prefers Markdown, under fixed limits (10 s to connect, 60 s
+in all, 5 MiB of body, 20 MiB for an image, 5 redirects); `fetch.timeout` is the one the administrator
+may change. HTML becomes Markdown by `readable(html, base_url)` (standard library only: the page's `main`,
+its only `article`, else its body, without navigation, footers, sidebars, scripts, styles, forms'
+controls and hidden elements; `NoText` if nothing is left, as for a page built by script); text, JSON and
+XML come back as they are by their charset; an image comes back as the tool's image (D30) for a model
+that takes images and as one line for one that does not; a PDF or other binary is an error naming the
+type. A long answer is cut at `max_chars` (at most 200000) and says `call again with start=N for more`;
+a text body over 5 MiB is cut and says so. A redirect to the same host is followed, one to another host is
+answered, not followed, so each host is a call the permission rules see. A host that is, or resolves to,
+a non-public address is refused (each hop too) unless `extensions.fetch.allow_private` is `true`;
+the name is looked up before the request and again by it, so it is a guard and not a sandbox. The text is
+marked untrusted once, ahead of it. `host_of(url)` is the host as the request reads it, shared with
+`Permissions`.
+
+### Search (extension), search tool, provider
+`Search` (`_search.py`, private; not exported), key `search`, no options, tool `search(query, limit=5)` · D24 section 9 · new (0.18)
+
+The built-in extension, **off by default** (`tau ext enable search`), that lets the model search the web
+through a **provider** the administrator chose: `brave` (the default; key in `BRAVE_API_KEY`),
+`marginalia` (`MARGINALIA_API_KEY`) or `searxng` (an instance at `base_url`, no key). The answer is a
+numbered list of title, address and snippet (markup removed) under the untrusted notice; at most
+`limit` results (1 to 20). It is built from the layers' constants and the environment, and fails the
+start naming the variable when its key is not set. A rejected key, a rate limit and any other failure are
+tool errors that never hold the key. The provider's table (`_Provider`: its address, its key variable and
+its way of asking) and `Hits` (a provider's answer: `(title, url, snippet)` for each result) are private.
+
+### administrator constants (an extension's), `constants`
+`tau._constants.constants(extensions, name, known)` · D32 section 4, akb #643 · new (0.18)
+
+An extension's settings that are the administrator's, not a client's (#643: "anything a client
+shouldn't configure is hard-coded or read from a config file of constants, never exposed as
+options"): the keys of `extensions.NAME` in the config layers for an extension that has no `options`,
+checked by `constants` against the keys and types it knows (`ConfigError` naming the key for another key
+or type) when the extension is built. With no `options` a client cannot set one (`/config`, a `Config`
+node, `set_options`) and none is in the `config` form. `fetch` has `allow_private` and `timeout`;
+`search` has `provider`, `api_key_env` and `base_url`. Like `order` and the start and stop timeouts they
+are the administrator's; unlike them they are the extension's own. A key never goes in a config
+file: `api_key_env` names the variable.
 
 ### agent label (`agent:P:N`), sub-agent parentage
 the label of a sub-agent's cursor · CV-04 (D32 section 5, docs/guide/conventions.md) · new (0.18)
@@ -1894,7 +1971,11 @@ driver did not sample (loaded with a batch pending, or gone back to) is not chec
 
 A built-in that `load` must turn on: its row in `tau ext list` is `off` with `off (default); to turn
 it on: tau ext enable KEY`. `load: {KEY: true}`, `tau ext enable KEY` and `-e KEY` turn it on;
-`--no-extensions` does not. They are `bash_guard`, `router` and `token_calls`.
+`--no-extensions` does not. They are `bash_guard`, `mcp`, `router` and `token_calls`. **`FILE_ERRORS`** in `tau._builtins` is what a built-in raises for a user's or project's file it
+cannot use (`SkillFileError`, `McpConfigError`): the start stops with the message alone, as an
+`ExtensionLoadError`.
+
+`--no-extensions` does not. They are `bash_guard`, `router`, `search` and `token_calls`.
 
 ### rest (a handle's) and an abort of the waiter
 `TreeHandle.rest` · D24 M7 · amended (8E-3)
@@ -1916,7 +1997,9 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
 **load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents`, `attachments`,
-`bash_guard` (off by default), `base_tools`, `compaction`, `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+`bash_guard` (off by default), `base_tools`, `compaction`, `mcp` (off by default), `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+
+`bash_guard` (off by default), `base_tools`, `compaction`, `fetch`, `permissions`, `plan_mode`, `prune`, `router` (off by default), `search` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that

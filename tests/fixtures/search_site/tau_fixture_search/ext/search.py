@@ -1,6 +1,6 @@
-"""The module the `search` registration names: an extension by C3's rule (it has a `name`)."""
+"""The module the `websearch` registration names: an extension by C3's rule (it has a `name`)."""
 
-name = "search"
+name = "websearch"
 
 
 def web_fetch(url: str) -> str:

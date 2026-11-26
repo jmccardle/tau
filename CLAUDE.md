@@ -20,7 +20,8 @@ what 0.16 does with each 0.15 capability.
 Sibling projects are clients of τ and sync with it after 0.16.0:
 - `~/Development/tau-code`: TypeScript web and VS Code clients of `tau serve`,
   with a protocol package generated from the schema.
-- `~/Development/tau-search`: web search tools shipped as a τ extension.
+- `~/Development/tau-search`: web search tools shipped as a τ extension (a 0.15-era package;
+  0.18 builds `fetch` and `search` in, and the package is to be deprecated).
 
 ## Rules
 
