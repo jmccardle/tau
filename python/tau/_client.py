@@ -24,7 +24,7 @@ from tau._events import Event
 from tau._hub import Feed
 from tau._images import ImageInput
 from tau._values import Form
-from tau.commandline import Parsed, completions, parse
+from tau.commandline import Completion, Parsed, completions, parse
 
 
 class _TreeReads(Protocol):
@@ -60,9 +60,10 @@ class _CommandCalls(Protocol):
 
     async def commands(self) -> tuple[Form, ...]:
         """Each command's form: its name, description and argument schema (named types with
-        their `"format"`, each default), fixed until the driver reloads. If some extension has
-        options there is one more, `config`, whose one argument is the extension; it is
-        changed with `configure`, not `run`."""
+        their `"format"`, each default). If some extension has options there is one more,
+        `config`, whose one argument is the extension; it is changed with `configure`, not `run`.
+        A client with a stream need not call it: the stream opens with them in `Commands`, and
+        sends them again whenever they change."""
         ...
 
     async def run(self, cursor: int, command: str, args: Mapping[str, object]) -> str | None:
@@ -99,10 +100,11 @@ class _CommandCalls(Protocol):
         then, neither node nor file."""
         ...
 
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         """The values of a named type (`"path"`, `"model"`, `"cursor"`, `"label"`, `"node"`;
-        the `"format"` of a schema) that start with `prefix`, as `cursor` sees them. Paths are
-        the driver's machine's, relative to its working directory."""
+        the `"format"` of a schema) that start with `prefix`, as `cursor` sees them, each a
+        `Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).
+        Paths are the driver's machine's, relative to its working directory."""
         ...
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
@@ -112,18 +114,18 @@ class _CommandCalls(Protocol):
         line that cannot be read, plain `LookupError` for a bare name two extensions share."""
         ...
 
-    async def complete_line(self, cursor: int, line: str) -> list[str]:
+    async def complete_line(self, cursor: int, line: str) -> list[Completion]:
         """`commandline.completions` of `line` on the driver: what could finish its last
-        word, in one call."""
+        word, in one call, as `Completion`s."""
         ...
 
 
 class Client(_TreeReads, _CommandCalls, AsyncIterator[Event], Protocol):
-    """What a frontend holds. Iterating it yields the events: first a snapshot (a `CursorView` per
-    open cursor, a `CursorGone` per closed one, then `Labels`), then changes as they happen,
-    until the driver stops (the stream ends), or the driver fails or the client is `CutOff` for
-    falling behind (it raises `ConnectionError`). Every call raises `ConnectionError` once the
-    driver has failed or stopped, or the client has been closed or cut off."""
+    """What a frontend holds. Iterating it yields the events: first a snapshot (`Commands`, a
+    `CursorView` per open cursor, a `CursorGone` per closed one, then `Labels`), then changes as
+    they happen, until the driver stops (the stream ends), or the driver fails or the client is
+    `CutOff` for falling behind (it raises `ConnectionError`). Every call raises `ConnectionError`
+    once the driver has failed or stopped, or the client has been closed or cut off."""
 
     id: str
     """The client's id: stable across reconnects (`john@laptop:tui`)."""
@@ -301,14 +303,14 @@ class _LocalCommandCalls(_Connected):
         calls = self._up()
         await _finished(calls, calls.commands.configure(self.id, cursor, extension, values, save))
 
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         return await self._up().commands.complete(cursor, named, prefix)
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
         commands = self._up().commands
         return parse(line, commands.forms(), commands.option_forms(cursor))
 
-    async def complete_line(self, cursor: int, line: str) -> list[str]:
+    async def complete_line(self, cursor: int, line: str) -> list[Completion]:
         commands = self._up().commands
         return await completions(
             line, commands.forms(), cast("Client", self), cursor, commands.option_forms(cursor)

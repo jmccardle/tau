@@ -42,7 +42,7 @@ from tau._protocol import (
 )
 from tau._remote_http import HttpLine
 from tau._values import Form, Json
-from tau.commandline import Parsed
+from tau.commandline import Completion, Parsed
 
 LOST_SECONDS: Final = 5.0
 """How long a call that found the connection closed waits for the stream to say why."""
@@ -345,13 +345,14 @@ class RemoteClient(_RemoteTreeReads, Client):
     ) -> None:
         await self.call("configure", cursor=cursor, extension=extension, values=values, save=save)
 
-    async def complete(self, cursor: int, named: str, prefix: str) -> list[str]:
+    async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         return cast(
-            "list[str]", await self.call("complete", cursor=cursor, named=named, prefix=prefix)
+            "list[Completion]",
+            await self.call("complete", cursor=cursor, named=named, prefix=prefix),
         )
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
         return cast("Parsed", await self.call("parse_line", cursor=cursor, line=line))
 
-    async def complete_line(self, cursor: int, line: str) -> list[str]:
-        return cast("list[str]", await self.call("complete_line", cursor=cursor, line=line))
+    async def complete_line(self, cursor: int, line: str) -> list[Completion]:
+        return cast("list[Completion]", await self.call("complete_line", cursor=cursor, line=line))

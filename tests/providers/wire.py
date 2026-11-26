@@ -565,7 +565,7 @@ async def running(
     driver = Driver(
         session, {provider.name: provider}, models or DIALECTS[provider.name].catalog(), tools=tools
     )
-    driver.start()
+    await driver.start()
     try:
         yield session, driver, session.cursors()[0]
     finally:

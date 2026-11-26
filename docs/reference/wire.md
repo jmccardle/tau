@@ -47,7 +47,9 @@ PROTOCOL: Final = 3
 The wire protocol's version. D12: a version marks a released protocol. It goes up by one at a
 release whose `docs/protocol.schema.json` differs from the last tag's, never per commit. 2 is
 0.17's (D30): `Outcome.Ok` may carry images. 3 is 0.18's (D31): a `User` body and an `Input` item
-may carry images, `input` and `send` take them, and `image` reads one's bytes.
+may carry images, `input` and `send` take them, and `image` reads one's bytes; and (D32)
+`complete` and `complete_line` answer `Completion`s, a `Notice` names its cursor, extension and
+level, and the event `Commands` carries the command forms.
 
 ## ProtocolError
 

@@ -79,7 +79,7 @@ async def spans_of(case_dir: Path) -> list[Span]:
             extensions=[probe],
             clock=clock,
         )
-        driver.start()
+        await driver.start()
         cursor = session.cursors()[0]
         try:
             for text in case["turns"]:

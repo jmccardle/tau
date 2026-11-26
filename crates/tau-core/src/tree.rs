@@ -130,7 +130,9 @@ pub struct Session {
     unsynced: bool,
     /// The scratchpad changed since the last `Sync`.
     pad_changed: bool,
-    pub notices: Vec<(String, String)>,
+    /// What core tells a client: `(client, cursor, extension, text)` when a `pre_input` hook
+    /// (of `extension`; `None` for the driver's own halt) halts that client's input on `cursor`.
+    pub notices: Vec<(String, CursorId, Option<String>, String)>,
 }
 
 impl Session {

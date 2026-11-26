@@ -37,7 +37,7 @@ async def mock_session(**settings: object) -> AsyncIterator[tuple[Session, Drive
     providers = builtin_providers({})
     session = Session.create(model_config("m"), "sys", SystemClock().now())
     driver = Driver(session, providers, models)
-    driver.start()
+    await driver.start()
     try:
         yield session, driver, session.cursors()[0]
     finally:

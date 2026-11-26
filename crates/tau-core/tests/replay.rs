@@ -292,6 +292,7 @@ fn echo(job: &Job) -> Answer {
     match job {
         Job::Hooks { draft, .. } => Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: draft.clone(),
         },
         _ => ok(),
@@ -301,6 +302,7 @@ fn echo(job: &Job) -> Answer {
 fn ok() -> Answer {
     Answer::Hooks {
         stop: None,
+        halted_by: None,
         draft: None,
     }
 }

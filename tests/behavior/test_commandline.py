@@ -9,7 +9,7 @@ from harness import Harness, say, scenario
 from shipped import shipped
 
 from tau import Cursor, CursorId, Form, LabelName, Model, NodeId, TreeHandle
-from tau.commandline import UnknownCommand, completions, parse, value, values
+from tau.commandline import Completion, UnknownCommand, completions, parse, value, values
 
 
 def configure(cursor: Cursor, mode: Literal["fast", "slow"], size: int, ratio: float = 1.0) -> None:
@@ -224,7 +224,17 @@ async def test_a_line_that_cannot_be_read_is_refused_with_why(tmp_path: Path) ->
 
 
 async def complete(h: Harness, line: str) -> list[str]:
+    """The values that could finish `line`: what is inserted."""
+    return vals(await items(h, line))
+
+
+async def items(h: Harness, line: str) -> list[Completion]:
+    """The completion items of `line`, whole."""
     return await completions(line, await commands(h), h.client, h.cursor)
+
+
+def vals(found: list[Completion]) -> list[str]:
+    return [c.value for c in found]
 
 
 @scenario
@@ -287,14 +297,14 @@ async def test_paths_complete_on_the_drivers_machine_with_directories_marked(
     (tmp_path / ".hidden").write_text("")
     h = await Harness.create(tmp_path / "s", extensions=[Lines()])
     base = f"{tmp_path}/"
-    assert await h.client.complete(h.cursor, "path", base + "d") == [
+    assert vals(await h.client.complete(h.cursor, "path", base + "d")) == [
         base + "docs/",
         base + "docs sub/",
     ]
-    assert await h.client.complete(h.cursor, "path", base + "docs/") == [base + "docs/a.md"]
-    assert await h.client.complete(h.cursor, "path", base + "n") == [base + "notes.txt"]
-    assert await h.client.complete(h.cursor, "path", base + ".") == [base + ".hidden"]
-    assert await h.client.complete(h.cursor, "path", base + "missing/") == []
+    assert vals(await h.client.complete(h.cursor, "path", base + "docs/")) == [base + "docs/a.md"]
+    assert vals(await h.client.complete(h.cursor, "path", base + "n")) == [base + "notes.txt"]
+    assert vals(await h.client.complete(h.cursor, "path", base + ".")) == [base + ".hidden"]
+    assert vals(await h.client.complete(h.cursor, "path", base + "missing/")) == []
     # Words with a space are quoted, so the line still reads back as the same value.
     quoted = await complete(h, f"/load {base}docs")
     assert quoted == [base + "docs/", f"'{base}docs sub/'"]
@@ -317,8 +327,8 @@ async def test_a_leading_tilde_is_the_home_directory_in_a_path_and_its_completio
     home = Path.home()
     visible = sorted(p.name for p in home.iterdir() if not p.name.startswith("."))
     h = await Harness.create(tmp_path, extensions=[Lines()])
-    assert await h.client.complete(h.cursor, "path", "~") == ["~/"]
-    found = await h.client.complete(h.cursor, "path", "~/")
+    assert vals(await h.client.complete(h.cursor, "path", "~")) == ["~/"]
+    found = vals(await h.client.complete(h.cursor, "path", "~/"))
     assert [f.removeprefix("~/").removesuffix("/") for f in found] == visible
 
 
@@ -353,13 +363,13 @@ async def test_value_reads_text_and_values_completes_it_as_a_commands_argument_i
     assert value("4", cursor_schema) == 4
     with pytest.raises(ValueError, match="is not an integer"):
         value("four", cursor_schema)
-    assert await values(cursor_schema, "n", h.client, h.cursor) == ["new"]
-    assert await values(cursor_schema, "", h.client, h.cursor) == [str(h.cursor), "new"]
+    assert vals(await values(cursor_schema, "n", h.client, h.cursor)) == ["new"]
+    assert vals(await values(cursor_schema, "", h.client, h.cursor)) == [str(h.cursor), "new"]
     mode_schema = forms["configure"].schema["properties"]["mode"]  # type: ignore[index]
     assert value("slow", mode_schema) == "slow"
     names = {"type": "array", "items": {"type": "string"}}
     assert value("read, grep ,find", names) == ["read", "grep", "find"]
-    assert await values(mode_schema, "f", h.client, h.cursor) == ["fast"]
+    assert await values(mode_schema, "f", h.client, h.cursor) == [Completion("fast")]
     await h.close()
 
 
@@ -424,3 +434,132 @@ async def test_completion_offers_bare_names_of_unique_commands_and_qualified_sha
     assert await complete(h, "/b:") == ["/b:note"]
     assert await complete(h, "/a:n") == ["/a:note"]
     await h.close()
+
+
+# Completion items (D32 section 1): a label a list shows, and a detail beside it.
+
+
+@scenario
+async def test_a_path_is_labelled_with_its_name_and_a_file_detailed_with_its_size(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "docs sub").mkdir()
+    (tmp_path / "notes.txt").write_text("hello")
+    (tmp_path / "big.bin").write_bytes(b"x" * 4200)
+    h = await Harness.create(tmp_path / "s", extensions=[Lines()])
+    base = f"{tmp_path}/"
+    assert await h.client.complete(h.cursor, "path", base) == [
+        Completion(base + "big.bin", "big.bin", "4.2 kB"),
+        Completion(base + "docs sub/", "docs sub/", None),
+        Completion(base + "notes.txt", "notes.txt", "5 B"),
+        Completion(base + "s/", "s/", None),
+    ]
+    quoted = await items(h, f"/load {base}docs")
+    assert quoted == [Completion(f"'{base}docs sub/'", "docs sub/", None)], "quoted value only"
+    await h.close()
+
+
+@scenario
+async def test_a_model_is_detailed_with_its_provider_window_and_images(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    (model,) = await h.client.complete(h.cursor, "model", "")
+    assert model.value == "fake"
+    assert model.label is None
+    assert model.detail is not None
+    assert model.detail.startswith("fake")
+    await h.close()
+
+
+@scenario
+async def test_cursors_are_labelled_with_their_labels_and_detailed_with_where_they_are(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("a")]), extensions=[Lines()])
+    await h.send("hi")
+    await h.settle()
+    await h.client.set_label(h.cursor, "main")
+    await h.client.set_label(h.cursor, "review")
+    at = h.session.cursor(h.cursor).at
+    other = await h.client.open(at)
+    await h.settle()
+    assert await h.client.complete(h.cursor, "cursor", "") == [
+        Completion(str(h.cursor), f"{h.cursor} main, review", f"node {at}"),
+        Completion(str(other), None, f"node {at}"),
+        Completion("new", None, "a new cursor here"),
+    ]
+    await h.client.set_label(other, "old")
+    await h.client.close_cursor(other)
+    assert await h.client.complete(h.cursor, "label", "") == [
+        Completion("main", None, f"cursor {h.cursor} · node {at}"),
+        Completion("old", None, f"closed cursor {other} · node {at}"),
+        Completion("review", None, f"cursor {h.cursor} · node {at}"),
+    ]
+    await h.close()
+
+
+@scenario
+async def test_a_node_is_detailed_with_its_kind_and_first_line(tmp_path: Path) -> None:
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say("sure\nthen more")]), extensions=[Lines()]
+    )
+    await h.send("fix the parser\nso that it reads")
+    await h.settle()
+    found = await h.client.complete(h.cursor, "node", "")
+    assert [c.detail for c in found] == [
+        "Assistant · sure",
+        "User · fix the parser",
+        "System",
+        "Config · model fake",
+    ]
+    assert [c.value for c in found] == ["3", "2", "1", "0"]
+    assert {c.label for c in found} == {None}
+    await h.close()
+
+
+@scenario
+async def test_command_names_are_detailed_with_their_description_and_extension(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    assert await items(h, "/con") == [Completion("/configure", None, "Configure. · lines")]
+    await h.close()
+
+
+@scenario
+async def test_a_list_item_is_labelled_alone_and_its_value_is_the_whole_text(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([say("a")]), extensions=[Lines()])
+    await h.send("hi")
+    await h.settle()
+    found = await items(h, "/tag keep new 4,")
+    assert [(c.value, c.label) for c in found] == [
+        ("4,3", "3"),
+        ("4,2", "2"),
+        ("4,1", "1"),
+        ("4,0", "0"),
+    ]
+    assert found[0].detail == "Assistant · a"
+    await h.close()
+
+
+@scenario
+async def test_enum_and_bool_items_are_bare_and_a_named_value_keeps_its_name(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, extensions=[Lines()])
+    assert await items(h, "/configure ") == [
+        Completion("fast", "fast"),
+        Completion("slow", "slow"),
+    ]
+    assert await items(h, "/load x force=") == [
+        Completion("force=true", "true"),
+        Completion("force=false", "false"),
+    ]
+    await h.close()
+
+
+def test_a_completion_holds_no_newline_and_a_long_detail_is_cut() -> None:
+    made = Completion("v", "two\nlines", "x" * 100)
+    assert made.label == "two lines"
+    assert made.detail == "x" * 79 + "…"

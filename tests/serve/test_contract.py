@@ -75,6 +75,26 @@ def test_every_event_is_one_of_the_event_definition_and_is_tagged_by_kind() -> N
     assert isinstance(tau.Event, types.UnionType)
 
 
+def test_d32s_shapes_are_in_the_schema() -> None:
+    """Completion items (only `value` required), a notice's attribution and level, and the event
+    `Commands` (D32 sections 1 to 3)."""
+    defs = schema()["$defs"]
+    items = {"type": "array", "items": {"$ref": "#/$defs/Completion"}}
+    assert defs["complete"]["x-result"] == items
+    assert defs["complete_line"]["x-result"] == items
+    assert list(defs["Completion"]["properties"]) == ["value", "label", "detail"]
+    assert defs["Completion"]["required"] == ["value"]
+    notice = defs["Notice"]
+    assert list(notice["properties"]) == ["kind", "text", "cursor", "extension", "level"]
+    assert notice["properties"]["level"] == {"enum": ["info", "warning", "error"]}
+    assert notice["required"] == ["kind", "text"]
+    assert {"$ref": "#/$defs/Commands"} in defs["Event"]["oneOf"]
+    assert defs["Commands"]["properties"]["forms"] == {
+        "type": "array",
+        "items": {"$ref": "#/$defs/Form"},
+    }
+
+
 def test_the_core_values_are_defined_by_the_logs_own_encoding() -> None:
     defs = schema()["$defs"]
     for name in ("Node", "Body", "Author", "Item", "ItemData", "Ending"):

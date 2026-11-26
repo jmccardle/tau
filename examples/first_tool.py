@@ -65,7 +65,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 extensions=[StepLimit()],
                 clock=clock,
             )
-            driver.start()
+            await driver.start()
             cursor = session.cursors()[0]
             await driver.client("example").send(
                 cursor, f"Read the file {secret} and tell me the secret phrase."

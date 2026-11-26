@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from fakes import FakeProvider, Gate, Reply
-from harness import Harness, say, scenario
+from harness import Harness, say, scenario, snapshot
 
 from tau import (
     Body,
@@ -257,7 +257,7 @@ async def test_a_client_connecting_after_a_close_is_told_the_cursor_is_gone_befo
     at = h.session.cursor(other).at
     await h.client.close_cursor(other)
     late = await h.connect("late")
-    events = [await asyncio.wait_for(anext(late), 1) for _ in range(3)]
+    events = await snapshot(late, 2)
     assert isinstance(events[0], CursorView)
     assert events[0].cursor == h.cursor, "the open cursor's view"
     assert events[1:] == [CursorGone(other, at), Labels((("scout", other),))]
@@ -277,7 +277,7 @@ async def test_a_gone_event_replaces_the_cursors_view_in_a_buffer_nobody_reads(
     at = h.session.cursor(other).at
     slow = await h.connect("slow")  # its snapshot holds the view of `other`
     await h.client.close_cursor(other)
-    events = [await asyncio.wait_for(anext(slow), 1) for _ in range(3)]
+    events = await snapshot(slow, 2)
     assert [type(e) for e in events] == [CursorView, CursorGone, Labels], "in its view's place"
     assert events[1] == CursorGone(other, at)
     assert all(not (isinstance(e, CursorView) and e.cursor == other) for e in events)

@@ -21,9 +21,11 @@ from world import Result, World, tau
 from tau import (
     PROTOCOL,
     Author,
+    Commands,
     ConfigError,
     CursorView,
     Ending,
+    Event,
     Labels,
     RemoteClient,
     Session,
@@ -235,7 +237,7 @@ def test_a_question_on_another_cursor_is_left_to_the_servers_other_clients(home:
 
     async def scenario() -> None:
         async with await dial(record, "test:person") as person:
-            snapshot = [await anext(person) for _ in range(2)]
+            snapshot = await opening(person)
             assert isinstance(snapshot[0], CursorView)
             other = await person.open(snapshot[0].at)
             asking = asyncio.create_task(person.run(other, "ask", {}))
@@ -272,7 +274,7 @@ def test_a_cursor_another_client_opens_after_p_attached_is_still_left_to_it(home
 
     async def scenario() -> None:
         async with await dial(record, "test:person") as person:
-            snapshot = [await anext(person) for _ in range(2)]
+            snapshot = await opening(person)
             assert isinstance(snapshot[0], CursorView)
             running = asyncio.create_task(
                 asyncio.to_thread(p, home, "--session", OLD, "--answer", "*=yes", "--verbose", "go")
@@ -304,7 +306,7 @@ def test_p_prints_the_reply_to_its_own_message_not_another_clients(home: World) 
 
     async def scenario() -> None:
         async with await dial(record, "test:person") as person:
-            snapshot = [await anext(person) for _ in range(2)]
+            snapshot = await opening(person)
             assert isinstance(snapshot[0], CursorView)
             running = asyncio.create_task(asyncio.to_thread(p, home, "--session", OLD, "mine"))
             await asyncio.sleep(3)  # -p has attached and sent; the model is answering it
@@ -337,12 +339,20 @@ def test_open_client_attaches_to_the_server_that_holds_the_session(home: World) 
             assert found.welcome is not None
             assert (found.welcome.pid, found.welcome.session) == (record["pid"], OLD)
             assert found.cursor == 0
-            assert isinstance(found.snapshot[0], CursorView)
+            assert isinstance(found.snapshot[0], Commands)
+            assert isinstance(found.snapshot[1], CursorView)
             assert isinstance(found.snapshot[-1], Labels), "every event up to the first Labels"
         finally:
             await found.close()
 
     asyncio.run(opened())
+
+
+async def opening(client: RemoteClient) -> list[Event]:
+    """The snapshot after its `Commands`: a view of the first cursor, then `Labels`."""
+    events = [await anext(client) for _ in range(3)]
+    assert isinstance(events[0], Commands)
+    return events[1:]
 
 
 class Person:
@@ -355,7 +365,7 @@ class Person:
         self.question = -1
 
     async def ask(self, *, shared: bool) -> None:
-        first = [await anext(self.client) for _ in range(2)]
+        first = await opening(self.client)
         assert isinstance(first[0], CursorView)
         self.cursor = 0 if shared else await self.client.open(first[0].at)
         await self.client.send(self.cursor, "person says")

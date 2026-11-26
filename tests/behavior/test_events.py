@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply, edits
-from harness import Harness, say, scenario
+from harness import Harness, say, scenario, snapshot
 
 from tau import (
     Appended,
@@ -70,11 +70,6 @@ async def drain(h: Harness, *clients: Client) -> list[list[Event]]:
 
 async def read_all(client: Client) -> list[Event]:
     return [event async for event in client]
-
-
-async def snapshot(client: Client, cursors: int = 1) -> list[Event]:
-    """The snapshot a client opens with: a state per cursor, then `Labels`."""
-    return [await asyncio.wait_for(anext(client), 1) for _ in range(1 + cursors)]
 
 
 async def next_view(client: Client, cursor: int) -> CursorView:

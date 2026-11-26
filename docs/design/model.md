@@ -375,7 +375,9 @@ hook coroutine: once the hook returns (or its job is answered), the handle is
 **retired**. A retired handle still reads the tree; every write, `ask`, and
 own-cursor call raises `NotInHook`. Core has no handle identity: it allows
 own-cursor calls while a cursor hook job is out for that cursor, and the
-retired handle is the driver's. The exact surface is Phase 4's.
+retired handle is the driver's. The exact surface is Phase 4's. One handle outlives a hook (D32
+§4): the tree handle an extension's `start` is given lives as long as the extension is started,
+and is retired after its `stop`.
 
 ### Input
 
@@ -507,9 +509,10 @@ every cursor, so a frontend can show "cursor 3 is waiting on you" while it watch
 | `Labels` | all clients | every label and its cursor |
 | `Appended` | all clients | the new nodes, bodies included |
 | `Live` | clients watching the cursor | text, thinking, call and tool-progress deltas (D15) |
-| `Notice` | one client, or all | `cursor.tell`, an input a hook refused |
+| `Commands` | all clients | every command's form (and `config`'s), whole, when they change (D32 §3) |
+| `Notice` | one client, or all | a handle's `tell`, a command's progress, an input a hook refused, a spawned task's failure; its `cursor`, `extension` and `level` (D32 §2) |
 
-- **On connect** the stream opens with a `CursorView` per open cursor, a `CursorGone` per closed one, and `Labels`, taken in the same
+- **On connect** the stream opens with `Commands`, a `CursorView` per open cursor, a `CursorGone` per closed one, and `Labels`, taken in the same
   synchronous act as subscribing, so nothing falls between them. Nodes a client reads with calls
   (a node never changes, so one it meets again in an `Appended` is ignored); later ones arrive
   as `Appended`. Nothing else is replayed, and a failed hook is in the `CursorView` of the cursor it

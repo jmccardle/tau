@@ -20,7 +20,7 @@ names = [
     "StepLimit", "Attachments", "Skills", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
     "Count", "Basis", "ImageRule", "image_rule", "RequestCount", "Reading", "reading", "counted", "Counter", "CountJob", "CounterAnswer", "Span", "SpanProof",
     "Observation", "Tokens", "TokenCalls", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
-    "CalibrationNewer", "calibration_features",
+    "CalibrationNewer", "calibration_features", "START_TIMEOUT", "STOP_TIMEOUT",
 ]
 
 [[group]]
@@ -47,7 +47,7 @@ title = "Writing a frontend"
 reader = "A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed."
 names = [
     "Client", "LocalClient", "RemoteClient", "ImageInput", "MAX_INPUT_IMAGES", "MAX_INPUT_BYTES",
-    "CommandFailed", "Parsed", "UnknownCommand",
+    "CommandFailed", "Parsed", "UnknownCommand", "Completion", "commandline.Completion",
     "commandline.parse", "commandline.completions", "commandline.value", "commandline.values",
     "commandline.STDIN",
 ]
@@ -58,7 +58,8 @@ title = "Events"
 reader = "What a client's stream yields."
 names = [
     "Event", "Live", "LiveDelta", "Delta", "TextDelta", "ThinkingDelta", "CallNamed", "CallArgs", "Retrying",
-    "ToolProgress", "CursorView", "CursorGone", "Labels", "Appended", "Notice", "CutOff",
+    "ToolProgress", "CursorView", "CursorGone", "Labels", "Commands", "Appended", "Notice",
+    "NoticeLevel", "CutOff",
     "HookFailure", "OpenQuestion",
 ]
 

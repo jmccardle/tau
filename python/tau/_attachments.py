@@ -273,7 +273,8 @@ class Attachments:
             subject.draft = Draft(Body.User(found.text, images), draft.delivers, draft.by)
         for word in found.missed:
             cursor.tell(
-                f"attachments: @{word} names no regular file in {self._cwd}, so it is sent as text",
+                f"@{word} names no regular file in {self._cwd}, so it is sent as text",
                 to=draft.by.client,
+                level="warning",
             )
         return None

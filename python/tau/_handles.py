@@ -1,6 +1,8 @@
-"""What a hook is handed: a cursor or node handle, and the thing it works on."""
+"""What a hook is handed: a cursor or node handle, and the thing it works on; and the tree
+handle an extension's `start` is handed, which lives until its `stop` (D32 section 4)."""
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
@@ -14,6 +16,7 @@ from tau._core import (
     Draft,
     Ending,
     HandleWrites,
+    Image,
     ItemData,
     Node,
     NoSuchCursor,
@@ -22,6 +25,7 @@ from tau._core import (
     Tree,
 )
 from tau._counts import Counting, RequestCount, Span
+from tau._events import Notice, NoticeLevel, notice_level
 from tau._values import DefinitionError, Kind, Model, kind_of
 
 Poke = Callable[[], None]
@@ -33,9 +37,16 @@ Changed = Callable[[], None]
 Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
-Notify = Callable[[str | None, str], None]
+Notify = Callable[[str | None, Notice], None]
 """Sends a `Notice` to a client, or to every client when `None`; dropped if that client is not
 connected."""
+
+Spawn = Callable[[str, Coroutine[Any, Any, object]], "asyncio.Task[None]"]
+"""The driver's `spawn` for an extension: a task it watches and cancels at the extension's stop."""
+
+Images = Callable[[int, Sequence[Image]], list[Image]]
+"""The image rule for an input to a cursor: the images with their bytes, or `ValueError` saying
+why they cannot go (`MissingImage` for one the session does not keep)."""
 
 Rest = Callable[[int, int | None], Awaitable[Ending | None]]
 """The driver's wait for a cursor to come to rest, for the cursor (or `None`) that waits:
@@ -168,36 +179,28 @@ class TreeHandle:
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
 
-    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
-        self,
-        session: Session,
-        extension: str,
-        now: Now,
-        poke: Poke,
-        changed: Changed,
-        rest: Rest,
-        abort: Abort,
-        close: Close,
-        options: OptionsReader,
-        counts: Counting,
-        own: int | None = None,
+    def __init__(
+        self, wiring: "Handles", extension: str, own: int | None = None, *, gone: str | None = None
     ) -> None:
-        self._session = session
-        self._read = options
-        self._counts = counts
+        self._wiring = wiring
+        self._session = wiring.session
+        self._read = wiring.options
+        self._counts = wiring.counts
         # The node `model` and `resolved_model` mean by default: a cursor's, a batch's.
         self._here: Callable[[], int | None] = lambda: None
-        self._now = now
-        self._poke = poke
-        self._changed = changed
-        self._rest = rest
-        self._abort = abort
-        self._close = close
+        self._now = wiring.now
+        self._poke = wiring.poke
+        self._changed = wiring.changed
+        self._rest = wiring.rest
+        self._abort = wiring.abort
+        self._close = wiring.close
+        self._notify = wiring.notify
         self._own = own  # the cursor this handle works for, if it has one
         # A tree handle's writes sync at once. Only `Cursor` rebinds them to a hook: nothing
         # public takes a hook id, and `HandleWrites` is in the private `_core`.
-        self._writes = HandleWrites(session, None)
+        self._writes = HandleWrites(wiring.session, None)
         self._live = True
+        self._gone = gone or f"the hook of extension {extension!r} has returned"
         self.extension = extension
 
     @property
@@ -206,13 +209,14 @@ class TreeHandle:
         return Author.Extension(self.extension)
 
     def retire(self) -> None:
-        """Called by the driver when the hook coroutine returns: the handle is dead.
-        Its reads still work; everything else raises `NotInHook`."""
+        """Called by the driver when the hook coroutine returns, or for the handle an extension's
+        `start` was given, when its `stop` has returned: the handle is dead. Its reads still work;
+        everything else raises `NotInHook`."""
         self._live = False
 
     def _check(self) -> None:
         if not self._live:
-            raise NotInHook(f"the hook of extension {self.extension!r} has returned")
+            raise NotInHook(self._gone)
 
     # Reads
 
@@ -356,15 +360,71 @@ class TreeHandle:
         self._writes.remove_item(id)
         self._changed()
 
-    def send(self, to: int, text: str) -> int:
-        """Send `text` to cursor `to` as a `User` message authored by this extension, and turn
-        its auto-step on: `to` takes the text at its next step (through its `pre_input` hooks)
-        and answers. Needs no client. Returns the item."""
+    def send(self, to: int, text: str, images: Sequence[Image] = ()) -> int:
+        """Send `text` to cursor `to` as a `User` message authored by this extension, with
+        `images` after it (D31), and turn its auto-step on: `to` takes the text at its next step
+        (through its `pre_input` hooks) and answers. Needs no client. Returns the item. At most
+        `MAX_INPUT_IMAGES` images, each an `Image` with its bytes or one the session keeps (only
+        its `sha256` is read then). They are held to the model of `to`'s branch by the image rule
+        a client's `send` meets: `ValueError` saying why they cannot go, `MissingImage` for one
+        the session does not keep, and nothing is sent then. The rule runs again after
+        `pre_input`; an input that fails there halts its step with why, which `rest` returns as
+        `Ending.Halted`."""
         self._check()
-        item = self._session.send(to, self.by, text)
+        found = self._wiring.images(to, images) if images else []
+        item = self._session.send(to, self.by, text, found)
         self._changed()
         self._poke()
         return item
+
+    def tell(
+        self,
+        text: str,
+        *,
+        to: str | None = None,
+        cursor: int | None = None,
+        level: NoticeLevel = "info",
+    ) -> None:
+        """Send `text` as a `Notice` from this extension to client `to`, or to every connected
+        client by default, about `cursor` at `level` (`"info"`, `"warning"` or `"error"`, D32
+        section 2). `cursor` defaults to this handle's own: a `Cursor`'s, the batch's cursor of a
+        `NodeHandle`, none (the session) for a tree handle. Dropped if `to` is not connected: a
+        notice is for someone who is there. `NoSuchCursor` if `cursor` is not open, `ValueError`
+        for another level."""
+        about = self._own if cursor is None else cursor
+        if about is not None and about not in self._session.cursors():
+            raise NoSuchCursor(f"no open cursor {about}")
+        notice = Notice(text, about, self.extension, notice_level(level))
+        self._check()
+        self._changed()  # what was queued first goes first
+        self._notify(to, notice)
+
+    def spawn(self, coro: Coroutine[Any, Any, object]) -> "asyncio.Task[None]":
+        """Run `coro` as a task the driver owns for this extension, and return it. An exception
+        in it (not its cancelling) is reported: an `error` `Notice` from this extension to every
+        client, `"task failed: Type: msg"`, and its traceback on stderr. The extension goes on.
+        The task is the extension's, whichever of its handles spawned it, so a hook may start one
+        that outlives it; the driver cancels and awaits it when the extension is stopped, before
+        its `stop` runs (at shutdown, and when a reload stops it). Not one of the driver's
+        effects: a harness's quiet does not wait for it. On the event loop only (`RuntimeError`
+        off it), `ConnectionError` once the driver has stopped or failed; `coro` is closed when
+        it is refused."""
+        try:
+            self._check()
+        except BaseException:
+            coro.close()
+            raise
+        return self._wiring.spawn(self.extension, coro)
+
+    def reassemble(self) -> None:
+        """This extension's `tools` or `commands` changed (an MCP server listed its tools): the
+        driver assembles the tools and commands again from every extension, used from the next
+        job it dispatches (a job out keeps the tools it was dispatched with; a call to a tool
+        that has gone is `Err("unknown tool: ...")`). Hooks, options and hook order are not
+        touched. Clients get `Commands` if the forms changed. `DefinitionError`, with nothing
+        changed, if the new set does not fit (two tools of one name)."""
+        self._check()
+        self._wiring.reassemble()
 
     async def rest(self, cursor: int) -> Ending | None:
         """Wait until `cursor` is at rest with no effect out, and return how its last step
@@ -382,6 +442,7 @@ class TreeHandle:
         cursor waited on is left as it is."""
         self._check()
         self._refuse_own(cursor, "rest", "waiting for itself would never end")
+        self._refuse_starting("rest")
         return await self._rest(cursor, self._own)
 
     def abort(self, cursor: int) -> None:
@@ -401,6 +462,7 @@ class TreeHandle:
         `rest`. `ValueError` for this handle's own cursor: closing it would wait on itself."""
         self._check()
         self._refuse_own(cursor, "close_cursor", "closing it would wait on itself")
+        self._refuse_starting("close_cursor")
         await self._close(cursor)
 
     def reopen(self, cursor: int) -> int:
@@ -413,6 +475,15 @@ class TreeHandle:
     def _refuse_own(self, cursor: int, call: str, why: str) -> None:
         if cursor == self._own:
             raise ValueError(f"{call}: cursor {cursor} is this handle's own; {why}")
+
+    def _refuse_starting(self, call: str) -> None:
+        """A wait inside an extension's `start` would never end: the driver takes no job until
+        every `start` has returned."""
+        if self._wiring.starting():
+            raise ValueError(
+                f"{call}: the driver has not started (it is running the extensions' start); "
+                "wait from a task instead (spawn)"
+            )
 
     def set_label(self, label: str, cursor: int) -> None:
         """Set `label` on `cursor`; a label set elsewhere moves."""
@@ -439,29 +510,12 @@ class NodeHandle(TreeHandle):
     cursor_id: int
     """The cursor whose batch it is."""
 
-    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
-        self,
-        session: Session,
-        id: int,
-        cursor: int,
-        extension: str,
-        asker: Asker,
-        notify: Notify,
-        now: Now,
-        poke: Poke,
-        changed: Changed,
-        rest: Rest,
-        abort: Abort,
-        close: Close,
-        options: OptionsReader,
-        counts: Counting,
+    def __init__(
+        self, wiring: "Handles", id: int, cursor: int, extension: str, asker: Asker
     ) -> None:
-        super().__init__(
-            session, extension, now, poke, changed, rest, abort, close, options, counts, cursor
-        )
+        super().__init__(wiring, extension, cursor)
         self._asker = asker
-        self._notify = notify
-        self._options = options
+        self._options = wiring.options
         self._here = lambda: self.id
         self.id = id
         self.cursor_id = cursor
@@ -490,13 +544,6 @@ class NodeHandle(TreeHandle):
         """The nodes from the root to the batch's node."""
         return self.tree.walk(self.id)
 
-    def tell(self, text: str, *, to: str | None = None) -> None:
-        """`Cursor.tell`, from a tool hook: send `text` as a `Notice` to client `to`, or to every
-        connected client by default."""
-        self._check()
-        self._changed()
-        self._notify(to, text)
-
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the batch's cursor's clients `text`, and wait for an answer of type `expect`
         (any hint of the type language; `str` by default). Returns the checked, converted
@@ -521,33 +568,13 @@ class Cursor(TreeHandle):
     id: int
     """This cursor's id: what `TreeHandle.cursor` and the client calls take."""
 
-    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
-        self,
-        session: Session,
-        id: int,
-        extension: str,
-        asker: Asker,
-        notify: Notify,
-        now: Now,
-        poke: Poke,
-        changed: Changed,
-        rest: Rest,
-        abort: Abort,
-        close: Close,
-        options: OptionsReader,
-        counts: Counting,
-        show: Show,
-        tools: Tools,
-    ) -> None:
-        super().__init__(
-            session, extension, now, poke, changed, rest, abort, close, options, counts, id
-        )
-        self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
+    def __init__(self, wiring: "Handles", id: int, extension: str, asker: Asker) -> None:
+        super().__init__(wiring, extension, id)
+        self._writes = HandleWrites(wiring.session, id)  # the writes ride this hook's phase
         self._asker = asker
-        self._notify = notify
-        self._show = show
-        self._tools = tools
-        self._options = options
+        self._show = wiring.show
+        self._tools = wiring.tools
+        self._options = wiring.options
         self._here = lambda: self.cursor(self.id).at
         self.id = id
 
@@ -668,13 +695,6 @@ class Cursor(TreeHandle):
         self._session.hook_set_auto(self.id, on)
         self._changed()
 
-    def tell(self, text: str, *, to: str | None = None) -> None:
-        """Send `text` as a `Notice` to client `to`, or to every connected client by default.
-        Dropped if `to` is not connected: a notice is for someone who is there."""
-        self._check()
-        self._changed()  # what was queued first goes first
-        self._notify(to, text)
-
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any:
         """Ask the cursor's clients `text`, and wait for an answer of type `expect` (any hint
         of the type language; `str` by default). Returns the checked, converted answer, or
@@ -696,8 +716,10 @@ class Cursor(TreeHandle):
 @dataclass(frozen=True)
 class Handles:
     """What the driver wires into every handle it makes: the session, the question call (by
-    cursor), the `Notice` call, the clock, `poke` and `changed`, the options, `show`, and the tools'
-    names. One place that builds them."""
+    cursor), the `Notice` call, the clock, `poke` and `changed`, the options, `show`, the tools'
+    names, the counts, and what the tree handle adds for an extension's own work (D32 section 4):
+    `spawn`, `reassemble` (by extension), the image rule of `send`, and `starting`, whether the
+    running code is an extension's `start`. One place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -712,57 +734,23 @@ class Handles:
     show: Show
     tools: Tools
     counts: Counting
+    spawn: Spawn
+    reassemble: Callable[[], None]
+    images: Images
+    starting: Callable[[], bool]
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
-        return Cursor(
-            self.session,
-            id,
-            extension,
-            partial(self.ask, id),
-            self.notify,
-            self.now,
-            self.poke,
-            self.changed,
-            self.rest,
-            self.abort,
-            self.close,
-            self.options,
-            self.counts,
-            self.show,
-            self.tools,
-        )
+        return Cursor(self, id, extension, partial(self.ask, id))
 
     def node(self, cursor: int, id: int, extension: str) -> NodeHandle:
         """The handle of node `id`, the batch of `cursor`, for `extension`."""
-        return NodeHandle(
-            self.session,
-            id,
-            cursor,
-            extension,
-            partial(self.ask, cursor),
-            self.notify,
-            self.now,
-            self.poke,
-            self.changed,
-            self.rest,
-            self.abort,
-            self.close,
-            self.options,
-            self.counts,
-        )
+        return NodeHandle(self, id, cursor, extension, partial(self.ask, cursor))
 
     def tree(self, extension: str) -> TreeHandle:
         """A handle on no cursor or node, for `extension`."""
-        return TreeHandle(
-            self.session,
-            extension,
-            self.now,
-            self.poke,
-            self.changed,
-            self.rest,
-            self.abort,
-            self.close,
-            self.options,
-            self.counts,
-        )
+        return TreeHandle(self, extension)
+
+    def lifecycle(self, extension: str) -> TreeHandle:
+        """The tree handle an extension's `start` is handed: live until its `stop` returns."""
+        return TreeHandle(self, extension, gone=f"extension {extension!r} is stopped")

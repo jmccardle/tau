@@ -218,8 +218,8 @@ class SessionView
 ```
 
 What the session's stream has told one client. Feed it every event, in order, with `hear`;
-read `views`, `gone`, `labels`, `nodes`, `live` and `notices`. It makes no call and keeps no
-widget: `tau.tui.TauApp` renders from it.
+read `views`, `gone`, `labels`, `nodes`, `live`, `notices` and `commands`. It makes no call and
+keeps no widget: `tau.tui.TauApp` renders from it.
 
 ### tau.tui.SessionView.__init__
 
@@ -356,7 +356,7 @@ Put the keyboard in the editor.
 ### tau.tui.TauApp.complete_value
 
 ```python
-async def complete_value(self, schema: Json, text: str) -> list[str]
+async def complete_value(self, schema: Json, text: str) -> list[Completion]
 ```
 
 What could finish `text` as a value of `schema` (a question's answer).

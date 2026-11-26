@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from fakes import Fail, FakeProvider, Gate, Reply
-from harness import Harness, scenario
+from harness import Harness, scenario, snapshot
 
 from tau import (
     Body,
@@ -179,7 +179,7 @@ async def test_a_client_that_starts_watching_during_the_wait_is_told_why_and_how
     gate = Gate()
     h = await failed_after(tmp_path, [OVERLOADED, DONE], Waits(gate))
     late = await h.connect("late")
-    await first(late, 2)
+    await snapshot(late)
     await late.watch([h.cursor])
     (caught,) = await first(late, 1)
     assert isinstance(caught, Live)

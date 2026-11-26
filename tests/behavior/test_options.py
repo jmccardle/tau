@@ -527,11 +527,10 @@ async def test_config_on_a_command_line_reads_the_extensions_options_form(tmp_pa
         parse("/config nope", forms, options)
     with pytest.raises(ValueError, match="limit: 'many' is not an integer"):
         parse("/config step_limit limit=many", forms, options)
-    assert await completions("/config ", forms, h.client, h.cursor, options) == [
-        "tuner",
-        "step_limit",
-    ]
-    assert await completions("/config tuner 5 s", forms, h.client, h.cursor, options) == ["slow"]
-    assert await completions("/config tuner mode=s", forms, h.client, h.cursor, options) == [
-        "mode=slow"
-    ]
+
+    async def values(line: str) -> list[str]:
+        return [c.value for c in await completions(line, forms, h.client, h.cursor, options)]
+
+    assert await values("/config ") == ["tuner", "step_limit"]
+    assert await values("/config tuner 5 s") == ["slow"]
+    assert await values("/config tuner mode=s") == ["mode=slow"]

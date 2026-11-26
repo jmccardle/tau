@@ -84,7 +84,7 @@ async def run_hooks(  # noqa: PLR0913, PLR0917 - a hook job and all it is run wi
         finally:
             cursor.retire()
         if stop is not None:
-            return Answer.Hooks(stop, None)
+            return Answer.Hooks(stop, None, ext.name)
     return Answer.Hooks(None, subject.draft)
 
 

@@ -29,6 +29,8 @@ from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, Reply, f
 from tau import (
     Author,
     Body,
+    Client,
+    Commands,
     Config,
     CursorView,
     Driver,
@@ -139,7 +141,7 @@ class Harness:
             clock=self.clock,
             user_config=self.user_config,
         )
-        self.driver.start()
+        await self.driver.start()
         if self.mode == "http":
             self._server = await Server.start(
                 self.driver, session=self.directory.name, cwd=self.directory, http=HttpEdge(port=0)
@@ -430,8 +432,12 @@ class Harness:
         return [n.body for n in self.session.tree.walk(self.session.cursor(c).at)]
 
     def notices(self) -> list[str]:
-        """Every notice the client was sent so far, oldest first."""
-        return [event.text for event in self.heard if isinstance(event, Notice)]
+        """The text of every notice the client was sent so far, oldest first."""
+        return [event.text for event in self.notice_events()]
+
+    def notice_events(self) -> list[Notice]:
+        """Every notice the client was sent so far, whole (its cursor, extension and level)."""
+        return [event for event in self.heard if isinstance(event, Notice)]
 
     def _seen(self, cursor: int) -> CursorSeen:
         state = self.session.cursor(cursor)
@@ -450,6 +456,15 @@ class Harness:
             cursors={c: self._seen(c) for c in self.session.cursors()},
             notices=tuple(self.notices()),
         )
+
+
+async def snapshot(client: Client, cursors: int = 1) -> list[Event]:
+    """What a client opens with, after its `Commands` (asserted first, and equal to `commands()`):
+    a state per cursor, then `Labels`."""
+    commands = await asyncio.wait_for(anext(client), 1)
+    assert isinstance(commands, Commands), "the command forms come first"
+    assert commands.forms == tuple(await client.commands())
+    return [await asyncio.wait_for(anext(client), 1) for _ in range(1 + cursors)]
 
 
 def say(text: str) -> Reply:

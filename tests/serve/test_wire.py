@@ -31,6 +31,7 @@ from websockets.exceptions import ConnectionClosed
 from tau import (
     PROTOCOL,
     Client,
+    Commands,
     ConfigError,
     Cursor,
     CursorClosed,
@@ -113,7 +114,11 @@ async def test_hello_is_answered_with_the_session_after_the_snapshot(tmp_path: P
     h = await Harness.create(tmp_path)
     ws = await dial(h)
     heard = await hello(ws, "john@laptop:vscode")
-    assert [m.get("params", {}).get("kind") for m in heard[:-1]] == ["CursorView", "Labels"]
+    assert [m.get("params", {}).get("kind") for m in heard[:-1]] == [
+        "Commands",
+        "CursorView",
+        "Labels",
+    ]
     assert all(m["method"] == "event" for m in heard[:-1])
     welcome = heard[-1]["result"]
     assert isinstance(welcome, dict)
@@ -532,10 +537,13 @@ async def test_a_remote_client_is_a_client_and_its_stream_opens_with_the_snapsho
     h = await Harness.create(tmp_path)
     client = await connected(h)
     assert client.id == "test:typed"
-    view, labels = (
+    commands, view, labels = (
+        await asyncio.wait_for(anext(client), 5),
         await asyncio.wait_for(anext(client), 5),
         await asyncio.wait_for(anext(client), 5),
     )
+    assert isinstance(commands, Commands)
+    assert commands.forms == await client.commands()
     assert isinstance(view, CursorView)
     assert isinstance(labels, Labels)
     await client.close()

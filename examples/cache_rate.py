@@ -52,7 +52,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 model_config(name), system_prompt(), clock.now(), Path(tmp) / "session"
             )
             driver = Driver(session, providers, loaded.catalog, clock=clock)
-            driver.start()
+            await driver.start()
             cursor = session.cursors()[0]
             print(f"{'turn':<5} {'input':>7} {'cached':>7} {'hit':>5}  reply")
             for turn, question in enumerate(QUESTIONS, 1):

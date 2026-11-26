@@ -676,8 +676,11 @@ impl Session {
         })
     }
 
-    /// Drain the `(client, text)` messages to clients, oldest first.
-    fn take_notices(&self, py: Python<'_>) -> PyResult<Vec<(String, String)>> {
+    /// Drain the `(client, cursor, extension, text)` messages to clients, oldest first: each a
+    /// client's input that a `pre_input` hook of `extension` (`None`: not a hook's) halted on
+    /// `cursor`.
+    #[allow(clippy::type_complexity)]
+    fn take_notices(&self, py: Python<'_>) -> PyResult<Vec<(String, u64, Option<String>, String)>> {
         self.shared
             .write(py, tracing::info_span!("py.take_notices"), |m| {
                 Ok(std::mem::take(&mut m.session.notices))

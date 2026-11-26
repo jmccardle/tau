@@ -50,6 +50,7 @@ from tau._extensions import (
     inspect_extensions,
 )
 from tau._http_edge import HttpEdge
+from tau._lifecycle import StartFailed, start_failure
 from tau._options import make_layer_options
 from tau._protocols import Clock, Extension, Provider
 from tau._providers import builtin_providers
@@ -303,13 +304,16 @@ def _fork(choice: SessionChoice, now: int) -> tuple[Session, Path, str]:
         copy.close()
 
 
-def _driver(
+async def _driver(  # noqa: PLR0913, PLR0917 - the pieces of one start
     session: Session,
     loaded: LoadedConfig,
     extensions: Sequence[Extension],
     providers: Mapping[str, Provider],
     clock: Clock,
+    sources: Sequence[ExtensionSource],
 ) -> Driver:
+    """The driver, started: each extension's `start` has run (D32). One that failed stops the
+    start as a load failure does, with its source's row (D19)."""
     driver = Driver(
         session,
         providers,
@@ -318,7 +322,10 @@ def _driver(
         user_config=loaded.user,
         clock=clock,
     )
-    driver.start()
+    try:
+        await driver.start()
+    except StartFailed as e:
+        raise start_failure(e.extension, str(e), sources) from e
     return driver
 
 
@@ -495,7 +502,7 @@ async def start_session(  # noqa: PLR0913 - one start, every input it has
     providers: Mapping[str, Provider] = {}
     try:
         providers = _providers(loaded, found.sources)
-        driver = _driver(session, loaded, extensions, providers, clock)
+        driver = await _driver(session, loaded, extensions, providers, clock, found.sources)
     except BaseException:
         session.close()
         if created and directory is not None:

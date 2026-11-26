@@ -14,6 +14,7 @@ from tau import (
     Author,
     Body,
     CommandFailed,
+    Commands,
     Cursor,
     Part,
     Skills,
@@ -239,8 +240,10 @@ async def test_a_template_named_like_a_built_in_command_does_not_take_its_name(
     assert users(h) == []
     parsed = await h.client.parse_line(h.cursor, "/model fake")
     assert parsed.command.qualified == "tau:model"
-    assert "/model" in await h.client.complete_line(h.cursor, "/mod")
-    assert "/skills:model" in await h.client.complete_line(h.cursor, "/skills:mo")
+    assert "/model" in [c.value for c in await h.client.complete_line(h.cursor, "/mod")]
+    assert "/skills:model" in [
+        c.value for c in await h.client.complete_line(h.cursor, "/skills:mo")
+    ]
     await h.run("skills:model", {"args": "chat"})
     await h.settle()
     assert users(h) == ["Pick a model for chat"]
@@ -474,6 +477,9 @@ async def test_edited_added_and_deleted_templates_are_noticed_before_a_command_r
     names = [f.name for f in await h.client.commands()]
     assert "fresh" in names
     assert "gone" not in names
+    await h.settle()
+    announced = [e for e in h.heard if isinstance(e, Commands)][-1]
+    assert [f.name for f in announced.forms] == names, "the rescan is sent as `Commands`"
     await h.run("old", {"args": "a"})
     await h.settle()
     await h.run("fresh", {"args": "b"})
@@ -492,7 +498,7 @@ async def test_a_new_name_is_known_to_the_line_before_it_is_called_unknown(
     template(world, "late", "LATE")
     parsed = await h.client.parse_line(h.cursor, "/late")
     assert parsed.command.qualified == "skills:late"
-    assert "/late" in await h.client.complete_line(h.cursor, "/la")
+    assert "/late" in [c.value for c in await h.client.complete_line(h.cursor, "/la")]
     await h.close()
 
 

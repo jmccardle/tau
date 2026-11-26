@@ -346,7 +346,6 @@ async def test_the_command_line_is_a_path_and_an_optional_node(tmp_path: Path) -
     commands = await h.client.commands()
     assert parse("/ralph PROMPT.md", commands, {}).args == {"prompt": "PROMPT.md"}
     assert parse("/ralph PROMPT.md 1", commands, {}).args == {"prompt": "PROMPT.md", "root": 1}
-    assert await h.client.complete(h.cursor, "node", "") == ["1", "0"], (
-        "newest first, then the root"
-    )
+    found = await h.client.complete(h.cursor, "node", "")
+    assert [c.value for c in found] == ["1", "0"], "newest first, then the root"
     await h.close()

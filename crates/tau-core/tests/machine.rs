@@ -15,6 +15,7 @@ fn echo(job: &Job) -> Answer {
     match job {
         Job::Hooks { draft, .. } => Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: draft.clone(),
         },
         _ => ok(),
@@ -24,6 +25,7 @@ fn echo(job: &Job) -> Answer {
 fn ok() -> Answer {
     Answer::Hooks {
         stop: None,
+        halted_by: None,
         draft: None,
     }
 }
@@ -379,6 +381,7 @@ fn undelivering(job: &Job, m: &mut Machine) -> Vec<Answer> {
             ..
         } => vec![Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: Some(Draft {
                 body: Body::user("edited"),
                 delivers: vec![],
@@ -662,6 +665,7 @@ fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
                 .unwrap();
             vec![Answer::Hooks {
                 stop: None,
+                halted_by: None,
                 draft: draft.clone(),
             }]
         }

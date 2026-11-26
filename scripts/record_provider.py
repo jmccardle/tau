@@ -1049,7 +1049,7 @@ async def run_turns(
         extensions=_extensions(case, directory.parent / "home"),
         clock=clock,
     )
-    driver.start()
+    await driver.start()
     cursor = session.cursors()[0]
     try:
         for i, (text, gap, images) in enumerate(zip(turns, gaps, attached, strict=True), start=1):

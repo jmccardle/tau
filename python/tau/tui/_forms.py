@@ -19,6 +19,7 @@ from textual.message import Message
 from textual.widgets import Button, Static, Switch
 
 from tau._client import Client
+from tau._complete import Completion
 from tau._events import CursorView, OpenQuestion
 from tau._values import Json
 from tau.commandline import STDIN
@@ -256,7 +257,7 @@ class Owner(Protocol):
     @property
     def client(self) -> Client: ...
 
-    async def complete_value(self, schema: Json, text: str) -> list[str]: ...
+    async def complete_value(self, schema: Json, text: str) -> list[Completion]: ...
 
     def focus_editor(self) -> None: ...
 

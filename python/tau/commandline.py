@@ -2,7 +2,8 @@
 
 `parse(line, commands, options)` turns `/name arg arg name=value` into the command, its
 arguments as decoded JSON, and the required parameters still missing; `completions(...)` says
-what could finish the word being typed. `value` and `values` do the same for one value of any
+what could finish the word being typed, as `Completion` items (the value inserted, a label a list
+shows, a detail beside it). `value` and `values` do the same for one value of any
 schema: a question's answer typed as text is read and completed as a command's argument is.
 A command is typed `/name`, or `/extension:name`, the qualified name nothing can take: a bare
 name that two extensions share is ambiguous (`LookupError`) and is completed qualified.
@@ -35,7 +36,19 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from tau._commands import CONFIG, ambiguous, meant
+from tau._complete import Completion
 from tau._values import Form, Json
+
+__all__ = [
+    "STDIN",
+    "Completion",
+    "Parsed",
+    "UnknownCommand",
+    "completions",
+    "parse",
+    "value",
+    "values",
+]
 
 if TYPE_CHECKING:  # client imports us: it returns a `Parsed`
     from tau._client import Client
@@ -320,10 +333,12 @@ def _typing(line: str) -> tuple[list[str], str]:
     return [], ""
 
 
-async def values(schema: Json, prefix: str, client: "Client", cursor: int) -> list[str]:
-    """What could finish `prefix` as a value of `schema`, each a whole value to replace it
-    with (unquoted): a named type's through `client.complete` (paths on the driver's machine),
-    the values of a `Literal`, `true` and `false`, the items of a list after its last comma."""
+async def values(schema: Json, prefix: str, client: "Client", cursor: int) -> list[Completion]:
+    """What could finish `prefix` as a value of `schema`, each a `Completion` whose `value` is a
+    whole value to replace it with (unquoted): a named type's through `client.complete` (paths on
+    the driver's machine), the values of a `Literal`, `true` and `false` (these three bare), the
+    items of a list after its last comma (`value` the whole list text, `label` the item's own, so
+    a list shows the items and not the growing text). Duplicates go by `value`, first kept."""
     named = schema.get("format")
     if isinstance(named, str):
         return await client.complete(cursor, named, prefix)
@@ -332,17 +347,20 @@ async def values(schema: Json, prefix: str, client: "Client", cursor: int) -> li
             return []
         head, comma, tail = prefix.rpartition(",")
         items = await values(cast("Json", schema["items"]), tail, client, cursor)
-        return [head + comma + item for item in items]
+        return [
+            Completion(head + comma + item.value, item.label or item.value, item.detail)
+            for item in items
+        ]
     allowed = cast("list[object] | None", schema.get("enum"))
     if allowed is not None:
-        return [str(v) for v in allowed if str(v).startswith(prefix)]
+        return [Completion(str(v)) for v in allowed if str(v).startswith(prefix)]
     if schema.get("type") == "boolean":
-        return [v for v in ("true", "false") if v.startswith(prefix)]
-    found: dict[str, None] = {}
+        return [Completion(v) for v in ("true", "false") if v.startswith(prefix)]
+    found: dict[str, Completion] = {}
     for alternative in cast("list[Json]", schema.get("anyOf", [])):
         for finish in await values(alternative, prefix, client, cursor):
-            found[finish] = None
-    return list(found)
+            found.setdefault(finish.value, finish)
+    return list(found.values())
 
 
 async def completions(
@@ -351,12 +369,14 @@ async def completions(
     client: "Client",
     cursor: int,
     options: Mapping[str, Form] = MappingProxyType({}),
-) -> list[str]:
-    """What could finish the word being typed at the end of `line`, each a whole word to
-    replace it with (quoted if it needs to be): command names after `/`, then for each
-    parameter its `values`; after `/config <extension>`, the extension's options (`--save` is
-    typed, not completed). Nothing for a line that is not a command line, an unknown command, or
-    a word past the last parameter."""
+) -> list[Completion]:
+    """What could finish the word being typed at the end of `line`, each a `Completion` whose
+    `value` is a whole word to replace it with (quoted if it needs to be, `name=` before it when
+    typed so): command names after `/` (detailed with the first line of the description and the
+    extension), then for each parameter its `values` (labelled with the item's label, else the
+    unquoted value); after `/config <extension>`, the extension's options (`--save` is typed, not
+    completed). Nothing for a line that is not a command line, an unknown command, or a word
+    past the last parameter."""
     if not line.startswith("/"):
         return []
     words, current = _typing(line)
@@ -377,22 +397,37 @@ async def completions(
         return []
     name, prefix, lead = wanted
     found = await values(cast("Json", _properties(form)[name]), prefix, client, cursor)
-    return [lead + _quote(v) for v in found]
+    return [Completion(lead + _quote(v.value), v.label or v.value, v.detail) for v in found]
 
 
-def _command_names(prefix: str, commands: Sequence[Form]) -> list[str]:
+def _command_detail(form: Form) -> str | None:
+    """A command name's detail: the first line of its description, then its extension."""
+    first = next((line.strip() for line in form.description.splitlines() if line.strip()), "")
+    said = [part for part in (first, form.extension) if part]
+    return " · ".join(said) or None
+
+
+def _command_names(prefix: str, commands: Sequence[Form]) -> list[Completion]:
     """The names that could finish `/prefix`: the bare name of each command only one extension
     has and the qualified name of each that several share; after `extension:`, that extension's
-    commands."""
+    commands. Each is detailed by `_command_detail`."""
     if ":" in prefix:
-        return [f"/{c.qualified}" for c in commands if c.qualified.startswith(prefix)]
+        return [
+            Completion(f"/{c.qualified}", None, _command_detail(c))
+            for c in commands
+            if c.qualified.startswith(prefix)
+        ]
     unique: set[int] = set()
     for name in {c.name for c in commands}:
         found = meant([c for c in commands if c.name == name], lambda c: c.yields)
         if len(found) == 1:
             unique.add(id(found[0]))
-    shown = [c.name if id(c) in unique else c.qualified for c in commands]
-    return [f"/{name}" for name in shown if name.startswith(prefix)]
+    shown = [(c.name if id(c) in unique else c.qualified, c) for c in commands]
+    return [
+        Completion(f"/{name}", None, _command_detail(c))
+        for name, c in shown
+        if name.startswith(prefix)
+    ]
 
 
 def _extension(word: str) -> str:

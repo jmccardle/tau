@@ -240,7 +240,7 @@ async def test_a_reload_whose_configured_order_does_not_fit_changes_nothing(
         catalog=catalog(a={"pre_input": 5}),
     )
     with pytest.raises(ConfigError, match="no hook 'pre_input'"):
-        h.driver.reload([Edited()])  # pyright: ignore[reportArgumentType]
+        await h.driver.reload([Edited()])  # pyright: ignore[reportArgumentType]
     with pytest.raises(ConfigError):
         await h.client.options(h.cursor, "a")
     await h.send("go")

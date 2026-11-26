@@ -21,12 +21,13 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
+from tau._complete import Completion
 from tau.tui._fields import Refused
 
-Completion = tuple[int, list[str]]
-"""Where in the text the word to replace starts, and the words that could replace it."""
+Completions = tuple[int, list[Completion]]
+"""Where in the text the word to replace starts, and the items that could replace it."""
 
-Completer = Callable[[str], Awaitable[Completion]]
+Completer = Callable[[str], Awaitable[Completions]]
 """What the editor asks on Tab: the text before the cursor, to what could finish its last word."""
 
 
@@ -57,7 +58,7 @@ class ChatInput(TextArea):
     class Candidates(Message):
         """A Tab found `items`; the one the text now holds is `selected`."""
 
-        def __init__(self, items: list[str], selected: int) -> None:
+        def __init__(self, items: list[Completion], selected: int) -> None:
             super().__init__()
             self.items = items
             self.selected = selected
@@ -68,7 +69,7 @@ class ChatInput(TextArea):
         self.sent: list[str] = []
         self._at = -1  # which history line the draft shows; -1: the draft itself
         self._draft = ""
-        self._cycle: list[str] = []
+        self._cycle: list[Completion] = []
         self._start = 0
         self._chosen = 0
         self._cycle_text = ""
@@ -168,7 +169,7 @@ class ChatInput(TextArea):
             self._chosen = 0
         if not self._cycle:
             return
-        self._replace(self._cycle[self._chosen])
+        self._replace(self._cycle[self._chosen].value)
         self.post_message(self.Candidates(self._cycle, self._chosen))
 
     @property
@@ -197,13 +198,11 @@ class Composer(Vertical):
     def __init__(
         self,
         completer: Completer,
-        rows: Callable[[str], list[tuple[str, str]]],
+        rows: Callable[[str], list[Completion]],
         submit: Callable[[str], Awaitable[None]],
         move: Callable[[str], None],
-        renew: Callable[[], Awaitable[bool]],
     ) -> None:
         super().__init__(id="composer")
-        self._renew = renew
         self._move = move
         self._completer = completer
         self._rows = rows
@@ -225,15 +224,13 @@ class Composer(Vertical):
             popup.show(self._rows(text) if text.count(" ") == 1 and text[-1] == " " else [])
         elif rows := self._rows(text):
             popup.show(rows)
-            if text == "/":
-                self._renewed()
         else:
             sent = "" if ":" in text else ": this line goes to the model as text"
             popup.warn(f"{text} is not a command{sent}")
 
     def on_chat_input_candidates(self, event: ChatInput.Candidates) -> None:
         event.stop()
-        self.query_one(CommandPopup).show([(item, "") for item in event.items], event.selected)
+        self.query_one(CommandPopup).show(event.items, event.selected)
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         event.stop()
@@ -248,17 +245,6 @@ class Composer(Vertical):
         event.stop()
         self._move("edit")
 
-    @work(group="commands", exclusive=True)
-    async def _renewed(self) -> None:
-        """A `/` was typed: the session may have commands the list lacks (a new file). Show the
-        list again if it did."""
-        try:
-            renewed = await self._renew()
-        except ConnectionError:  # the lost session is the app's to say; the list stays as it was
-            return
-        if renewed and self.query_one(ChatInput).text == "/":
-            self.query_one(CommandPopup).show(self._rows("/"))
-
     @work(group="submit")
     async def _send(self, text: str) -> None:
         await self._submit(text)
@@ -266,9 +252,9 @@ class Composer(Vertical):
 
 class CommandPopup(Static):
     """The rows a half-typed line could become: the commands while the first word is typed, the
-    candidates while Tab cycles. One row is `(label, detail)`. A line that starts with `/` and
-    names no command says so before Enter: it goes to the model as text. Hidden with nothing to
-    say."""
+    candidates while Tab cycles. One row is a `Completion`: its `label or value`, then its `detail`
+    dimmed. A line that starts with `/` and names no command says so before Enter: it goes to the
+    model as text. Hidden with nothing to say."""
 
     MAX_ROWS = 8
 
@@ -295,7 +281,7 @@ class CommandPopup(Static):
         self._text = text
         self.update(escape(text))
 
-    def show(self, rows: list[tuple[str, str]], selected: int | None = None) -> None:
+    def show(self, rows: list[Completion], selected: int | None = None) -> None:
         """Show `rows`, windowed around the `selected` one; none hides the popup."""
         if not rows:
             self.hide()
@@ -304,15 +290,23 @@ class CommandPopup(Static):
         self.remove_class("command-popup-unknown")
         start = 0 if selected is None or selected < self.MAX_ROWS else selected - self.MAX_ROWS + 1
         window = rows[start : start + self.MAX_ROWS]
-        lines: list[str] = []
-        for offset, (label, detail) in enumerate(window):
+        plain: list[str] = []
+        markup: list[str] = []
+        for offset, row in enumerate(window):
             marker = "▸" if selected == start + offset else " "
-            lines.append(f"{marker} {label}" + (f"  {detail}" if detail else ""))
+            shown = f"{marker} {row.label or row.value}"
+            if row.detail:
+                plain.append(f"{shown}  {row.detail}")
+                markup.append(f"{escape(shown)}  [dim]{escape(row.detail)}[/dim]")
+            else:
+                plain.append(shown)
+                markup.append(escape(shown))
         hidden = len(rows) - start - len(window)
         if hidden:
-            lines.append(f"  … {hidden} more")
-        self._text = "\n".join(lines)
-        self.update("\n".join(escape(line) for line in lines))
+            plain.append(f"  … {hidden} more")
+            markup.append(f"  … {hidden} more")
+        self._text = "\n".join(plain)
+        self.update("\n".join(markup))
 
 
 class PendingInput(Static):

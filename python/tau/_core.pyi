@@ -979,7 +979,9 @@ class Answer:
         """The hooks ran."""
 
         __match_args__: ClassVar[tuple[str, ...]]
-        def __new__(cls, stop: str | None = None, draft: Draft | None = None) -> Answer.Hooks: ...
+        def __new__(
+            cls, stop: str | None = None, draft: Draft | None = None, halted_by: str | None = None
+        ) -> Answer.Hooks: ...
         @property
         def stop(self) -> str | None:
             """A halt reason if a hook halted the step, else `None`."""
@@ -987,6 +989,11 @@ class Answer:
         def draft(self) -> Draft | None:
             """The draft after the hooks edited it; `None` commits nothing. At `pre_sample`, a
             reply here stands in for the sample.
+            """
+        @property
+        def halted_by(self) -> str | None:
+            """The extension whose hook returned `stop`, for the notice a halted input's author is
+            sent; `None` for a halt that is not a hook's (the driver's image rule).
             """
 
     @final
@@ -1260,8 +1267,11 @@ class Session:
         """Every label with its cursor, in string order."""
     def label(self, label: str) -> int:
         """The cursor `label` is on."""
-    def take_notices(self) -> list[tuple[str, str]]:
-        """Drain the `(client, text)` messages to clients, oldest first."""
+    def take_notices(self) -> list[tuple[str, int, str | None, str]]:
+        """Drain the `(client, cursor, extension, text)` messages to clients, oldest first: each a
+        client's input that a `pre_input` hook of `extension` (`None`: not a hook's) halted on
+        `cursor`.
+        """
 
 # The base tools (crates/tau-tools). `run` and `wait` release the GIL.
 # `tau._base_tools` wraps these as `Tool`s.

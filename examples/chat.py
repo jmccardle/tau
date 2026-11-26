@@ -310,7 +310,7 @@ def tab_completion(chat: Chat, loop: asyncio.AbstractEventLoop) -> None:
             line = readline.get_line_buffer()
             wanted = completions(line, chat.commands, client, cursor, chat.options)
         found = asyncio.run_coroutine_threadsafe(wanted, loop).result()
-        matches = [c for c in found if c.startswith(text)]
+        matches = [c.value for c in found if c.value.startswith(text)]
         return matches[state] if state < len(matches) else None
 
     readline.set_completer(complete)

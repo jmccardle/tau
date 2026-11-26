@@ -144,7 +144,7 @@ async def start(
     )
     extensions = [chat.Demo(), StepLimit(), *extras]
     driver = Driver(session, {"scripted": provider}, models, extensions=extensions)  # type: ignore[arg-type]
-    driver.start()
+    await driver.start()
     client = driver.client("chat:test")
     screen = Screen()
     window = chat.Chat(client, session.cursors()[0], screen, typed)

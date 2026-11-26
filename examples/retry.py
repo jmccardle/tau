@@ -57,7 +57,7 @@ async def main(name: str, loaded: LoadedConfig) -> None:
                 model_config(name), "You are terse.", clock.now(), Path(tmp) / "s"
             )
             driver = Driver(session, providers, loaded.catalog, clock=clock)
-            driver.start()
+            await driver.start()
             cursor = session.cursors()[0]
             await driver.client("example").send(cursor, "What is 17 times 3? Answer briefly.")
             await rest(driver, session, cursor)

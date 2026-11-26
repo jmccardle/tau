@@ -263,7 +263,7 @@ fn the_viewed_cursor_closing_moves_the_view_to_the_lowest_open_one() {
     assert_eq!(model.cursor(), Some(1));
     assert!(needs.contains(&Need::Watch(1)));
     assert_eq!(model.lost(), None);
-    assert!(model.notices().any(|n| n.contains("showing cursor 1")));
+    assert!(model.notices().any(|(_, n)| n.contains("showing cursor 1")));
     assert_eq!(
         model.gone().get(&0),
         Some(&6),
@@ -365,4 +365,40 @@ fn a_toggle_folds_when_any_row_is_unfolded_and_unfolds_when_all_are_folded() {
     assert!(model.folded(Group::Tools), "some unfolded: fold all");
     model.toggle_fold(Group::Tools);
     assert!(!model.folded(Group::Tools), "all folded: unfold all");
+}
+
+#[test]
+fn a_notice_is_shown_under_its_extension_and_coloured_by_its_level() {
+    let mut model = Model::new(ME);
+    model.hear(event(&serde_json::json!({
+        "kind": "Notice", "text": "plain", "cursor": null, "extension": null, "level": "info"
+    })));
+    model.hear(event(&serde_json::json!({
+        "kind": "Notice", "text": "disk low", "cursor": 0, "extension": "disk", "level": "warning"
+    })));
+    let shown: Vec<_> = model.notices().collect();
+    assert_eq!(
+        shown,
+        vec![
+            (NoticeLevel::Info, "plain"),
+            (NoticeLevel::Warning, "[disk] disk low")
+        ]
+    );
+}
+
+#[test]
+fn commands_are_replaced_whole_each_time_they_are_sent() {
+    let mut model = Model::new(ME);
+    assert!(model.commands().is_empty());
+    let form = |name: &str| serde_json::json!({"name": name, "description": "d", "extension": null, "schema": {}});
+    let sent = |names: &[&str]| {
+        event(&serde_json::json!({
+            "kind": "Commands", "forms": names.iter().map(|n| form(n)).collect::<Vec<_>>()
+        }))
+    };
+    assert!(model.hear(sent(&["a", "b"])).is_empty());
+    assert_eq!(model.commands().len(), 2);
+    model.hear(sent(&["c"]));
+    assert_eq!(model.commands().len(), 1);
+    assert_eq!(model.commands()[0].name, "c");
 }

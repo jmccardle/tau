@@ -366,7 +366,8 @@ class Usage:
         self._told.add(model)
         cursor.tell(
             f"{model} read nothing from the prompt cache "
-            f"({tokens(usage.input)} tokens sent at full price)."
+            f"({tokens(usage.input)} tokens sent at full price).",
+            level="warning",
         )
 
     async def _scan(self, tree: TreeHandle) -> None:

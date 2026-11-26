@@ -1028,9 +1028,9 @@ async def test_always_holds_for_the_run_when_a_node_hides_the_files_list_and_say
     await h.settle()
     assert (await h.view()).questions == (), "the second identical call is not asked again"
     assert tool.calls == [{"command": "git push"}] * 2
-    (notice,) = [n for n in h.notices() if n.startswith("permissions:")]
-    assert "'bash:git push'" in notice
-    assert "hides it" in notice
+    (heard,) = [n for n in h.notice_events() if "'bash:git push'" in n.text]
+    assert "hides it" in heard.text
+    assert heard.level == "warning"
     await h.close()
 
 
@@ -1039,10 +1039,12 @@ async def test_always_says_it_was_written_when_nothing_hides_it(tmp_path: Path) 
     h, _ = await start(tmp_path, [bash("git push"), say("ok")], {"ask": ["bash"]})
     await h.respond("always")
     await h.settle()
-    (notice,) = [n for n in h.notices() if n.startswith("permissions:")]
-    assert notice == (
-        "permissions: 'bash:git push' is allowed from now on (written to allow in your config file)"
+    (heard,) = [n for n in h.notice_events() if "'bash:git push'" in n.text]
+    assert (
+        heard.text
+        == "'bash:git push' is allowed from now on (written to allow in your config file)"
     )
+    assert heard.level == "info"
     await h.close()
 
 

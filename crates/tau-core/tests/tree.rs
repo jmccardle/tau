@@ -93,6 +93,7 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
         &mut s,
         Answer::Hooks {
             stop: None,
+            halted_by: None,
             draft: None,
         },
         0,

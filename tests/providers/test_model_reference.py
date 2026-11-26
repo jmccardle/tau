@@ -134,7 +134,7 @@ async def test_the_same_bare_name_in_two_groups_is_told_apart_by_the_node(tmp_pa
             model_config(f"{group}:gpt"), "sys", SystemClock().now(), tmp_path / group
         )
         driver = Driver(session, {"openai": OPENAI.make(server.transport, environ)}, models)
-        driver.start()
+        await driver.start()
         c = session.cursors()[0]
         try:
             await driver.client("test").send(c, "hello")
@@ -160,7 +160,7 @@ async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path:
         server = sse("plain")
         session = Session.create(Config(data), "sys", SystemClock().now(), tmp_path / str(i))
         driver = Driver(session, {"openai": OPENAI.over(server)}, OPENAI.catalog())
-        driver.start()
+        await driver.start()
         c = session.cursors()[0]
         try:
             await driver.client("test").send(c, "hello")

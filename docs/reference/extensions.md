@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -648,15 +648,6 @@ def set_auto(self, on: bool) -> None
 Turn this cursor's auto-step on or off. Wakes nothing: the step is running.
 Turning it on inside a step that is aborted leaves the cursor at rest.
 
-### Cursor.tell
-
-```python
-def tell(self, text: str, *, to: str | None = None) -> None
-```
-
-Send `text` as a `Notice` to client `to`, or to every connected client by default.
-Dropped if `to` is not connected: a notice is for someone who is there.
-
 ### Cursor.ask
 
 ```python
@@ -720,8 +711,15 @@ refused when the driver is built (`DefinitionError`), so a misspelt hook cannot
 sit silent. That covers data too: a dataclass field `pre_prompt` is refused. Name such a
 field for what it holds (`prompt_prefix`, `before_prompt`), never with those two prefixes.
 
-Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`, and
-`rescan` (`Rescanning`).
+Optional attributes besides the hooks: `tools`, `commands`, `options`, `yields_names`,
+`rescan` (`Rescanning`), and the lifecycle (D32 section 4): `async def start(self, tree:
+TreeHandle) -> None`, run once before the driver takes its first job (and when a reload adds
+the extension), handed a tree handle that stays live until `stop` returns; and `async def
+stop(self) -> None`, run at shutdown (and when a reload removes it), after the tasks it
+`spawn`ed are cancelled. A `start` or `stop` that is not a coroutine function is refused when
+the driver is built (`DefinitionError`). A `start` that raises or outlives its timeout
+(`START_TIMEOUT`, or `extensions.NAME.start_timeout`) stops the driver's start with
+`ExtensionLoadError`; a `stop` that does is reported and the next one runs.
 
 ### Extension.name
 
@@ -868,15 +866,6 @@ def walk(self) -> list[Node]
 ```
 
 The nodes from the root to the batch's node.
-
-### NodeHandle.tell
-
-```python
-def tell(self, text: str, *, to: str | None = None) -> None
-```
-
-`Cursor.tell`, from a tool hook: send `text` as a `Notice` to client `to`, or to every
-connected client by default.
 
 ### NodeHandle.ask
 
@@ -1030,6 +1019,24 @@ count for each node that is sent, by node id, except a node inside a **lump**: w
 requests prove that the nodes between them cost a known sum, the first node holds the sum and
 the others have no count of their own, so a cut never lands inside one. `why` says why the
 total is weaker than it could be, or is `None`.
+
+## START_TIMEOUT
+
+```python
+START_TIMEOUT: Final = 30.0
+```
+
+Seconds an extension's `start` may take before the start fails, unless the config files set
+`extensions.NAME.start_timeout`.
+
+## STOP_TIMEOUT
+
+```python
+STOP_TIMEOUT: Final = 5.0
+```
+
+Seconds an extension's `stop`, with the cancelling of its spawned tasks, may take before it is
+reported and the next one runs, unless the config files set `extensions.NAME.stop_timeout`.
 
 ## Skills
 
@@ -1389,8 +1396,9 @@ The `Author` this handle's writes carry: `Author.Extension` with the extension's
 def retire(self) -> None
 ```
 
-Called by the driver when the hook coroutine returns: the handle is dead.
-Its reads still work; everything else raises `NotInHook`.
+Called by the driver when the hook coroutine returns, or for the handle an extension's
+`start` was given, when its `stop` has returned: the handle is dead. Its reads still work;
+everything else raises `NotInHook`.
 
 ### TreeHandle.tree
 
@@ -1565,12 +1573,67 @@ Remove any item; raises `NoSuchItem`. Wakes nothing.
 ### TreeHandle.send
 
 ```python
-def send(self, to: int, text: str) -> int
+def send(self, to: int, text: str, images: Sequence[Image] = ()) -> int
 ```
 
-Send `text` to cursor `to` as a `User` message authored by this extension, and turn
-its auto-step on: `to` takes the text at its next step (through its `pre_input` hooks)
-and answers. Needs no client. Returns the item.
+Send `text` to cursor `to` as a `User` message authored by this extension, with
+`images` after it (D31), and turn its auto-step on: `to` takes the text at its next step
+(through its `pre_input` hooks) and answers. Needs no client. Returns the item. At most
+`MAX_INPUT_IMAGES` images, each an `Image` with its bytes or one the session keeps (only
+its `sha256` is read then). They are held to the model of `to`'s branch by the image rule
+a client's `send` meets: `ValueError` saying why they cannot go, `MissingImage` for one
+the session does not keep, and nothing is sent then. The rule runs again after
+`pre_input`; an input that fails there halts its step with why, which `rest` returns as
+`Ending.Halted`.
+
+### TreeHandle.tell
+
+```python
+def tell(
+    self,
+    text: str,
+    *,
+    to: str | None = None,
+    cursor: int | None = None,
+    level: NoticeLevel = 'info',
+) -> None
+```
+
+Send `text` as a `Notice` from this extension to client `to`, or to every connected
+client by default, about `cursor` at `level` (`"info"`, `"warning"` or `"error"`, D32
+section 2). `cursor` defaults to this handle's own: a `Cursor`'s, the batch's cursor of a
+`NodeHandle`, none (the session) for a tree handle. Dropped if `to` is not connected: a
+notice is for someone who is there. `NoSuchCursor` if `cursor` is not open, `ValueError`
+for another level.
+
+### TreeHandle.spawn
+
+```python
+def spawn(self, coro: Coroutine[Any, Any, object]) -> 'asyncio.Task[None]'
+```
+
+Run `coro` as a task the driver owns for this extension, and return it. An exception
+in it (not its cancelling) is reported: an `error` `Notice` from this extension to every
+client, `"task failed: Type: msg"`, and its traceback on stderr. The extension goes on.
+The task is the extension's, whichever of its handles spawned it, so a hook may start one
+that outlives it; the driver cancels and awaits it when the extension is stopped, before
+its `stop` runs (at shutdown, and when a reload stops it). Not one of the driver's
+effects: a harness's quiet does not wait for it. On the event loop only (`RuntimeError`
+off it), `ConnectionError` once the driver has stopped or failed; `coro` is closed when
+it is refused.
+
+### TreeHandle.reassemble
+
+```python
+def reassemble(self) -> None
+```
+
+This extension's `tools` or `commands` changed (an MCP server listed its tools): the
+driver assembles the tools and commands again from every extension, used from the next
+job it dispatches (a job out keeps the tools it was dispatched with; a call to a tool
+that has gone is `Err("unknown tool: ...")`). Hooks, options and hook order are not
+touched. Clients get `Commands` if the forms changed. `DefinitionError`, with nothing
+changed, if the new set does not fit (two tools of one name).
 
 ### TreeHandle.rest
 

@@ -105,6 +105,7 @@ from tau._events import (
     Appended,
     CallArgs,
     CallNamed,
+    Commands,
     CursorGone,
     CursorView,
     CutOff,
@@ -115,6 +116,7 @@ from tau._events import (
     Live,
     LiveDelta,
     Notice,
+    NoticeLevel,
     OpenQuestion,
     Retrying,
     TextDelta,
@@ -132,6 +134,7 @@ from tau._extensions import (
 from tau._handles import Cursor, NodeHandle, Subject, TreeHandle
 from tau._http_edge import HttpEdge
 from tau._images import MAX_INPUT_BYTES, MAX_INPUT_IMAGES, ImageInput, ImageLimits
+from tau._lifecycle import START_TIMEOUT, STOP_TIMEOUT
 from tau._markdown import to_markdown
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
@@ -190,7 +193,7 @@ from tau._tools import ToolError
 from tau._trust import Trusted, UntrustedProject
 from tau._user_config import UserConfig
 from tau._values import CursorId, DefinitionError, Form, Json, LabelName, Model, NodeId
-from tau.commandline import Parsed, UnknownCommand
+from tau.commandline import Completion, Parsed, UnknownCommand
 
 __version__ = version("ffwf-tau")
 
@@ -199,6 +202,8 @@ __all__ = [
     "MAX_INPUT_BYTES",
     "MAX_INPUT_IMAGES",
     "PROTOCOL",
+    "START_TIMEOUT",
+    "STOP_TIMEOUT",
     "TOOL_POINTS",
     "Agents",
     "Answer",
@@ -225,7 +230,9 @@ __all__ = [
     "Clock",
     "Closed",
     "CommandFailed",
+    "Commands",
     "Compaction",
+    "Completion",
     "Config",
     "ConfigError",
     "ConfigProblem",
@@ -300,6 +307,7 @@ __all__ = [
     "NotInHook",
     "NotPending",
     "Notice",
+    "NoticeLevel",
     "Observation",
     "OpenAIProvider",
     "OpenQuestion",

@@ -370,7 +370,11 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                 delivers: vec![],
                 by: Author::Provider,
             }),
-            Job::Hooks { draft, .. } => Answer::Hooks { stop: None, draft },
+            Job::Hooks { draft, .. } => Answer::Hooks {
+                stop: None,
+                draft,
+                halted_by: None,
+            },
             other => panic!("a plain turn has no {other:?}"),
         };
         m.answer(c, answer, 0).unwrap();
@@ -460,6 +464,7 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
             c,
             Answer::Hooks {
                 stop: None,
+                halted_by: None,
                 draft: None,
             },
             1,

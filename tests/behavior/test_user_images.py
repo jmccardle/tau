@@ -20,8 +20,10 @@ from tau import (
     ImageInput,
     ImageLimits,
     ItemData,
+    MissingImage,
     Part,
     Prune,
+    TreeHandle,
     read_models,
 )
 
@@ -198,7 +200,8 @@ async def test_at_path_on_a_model_without_images_halts_with_a_notice(tmp_path: P
     assert view.items == ()
     assert isinstance(view.ending, Ending.Halted)
     assert "1 image not sent: the model" in view.ending.reason
-    assert any("does not take images" in n for n in h.notices())
+    (notice,) = [n for n in h.notice_events() if "does not take images" in n.text]
+    assert (notice.cursor, notice.extension, notice.level) == (h.cursor, None, "error")
     await h.close()
 
 
@@ -260,3 +263,73 @@ async def test_compaction_copies_the_tails_user_images(tmp_path: Path) -> None:
     await h.settle()
     assert [i.width for i in provider.requests[-1].images] == [20]
     await h.close()
+
+
+class Sender:
+    """An extension that keeps the tree handle its `start` is given (D32 section 4)."""
+
+    name = "sender"
+    tree: TreeHandle | None = None
+
+    async def start(self, tree: TreeHandle) -> None:
+        self.tree = tree
+
+
+async def _sender(tmp_path: Path, *, images: bool) -> tuple[Harness, TreeHandle, FakeProvider]:
+    provider = FakeProvider([say("seen")], image_limits=LIMITS)
+    ext = Sender()
+    h = await Harness.create(
+        tmp_path, provider=provider, catalog=fake_catalog(images=images), extensions=[ext]
+    )
+    assert ext.tree is not None
+    return h, ext.tree, provider
+
+
+@scenario
+async def test_a_tree_handles_send_with_images_delivers_a_user_node_that_holds_them(
+    tmp_path: Path,
+) -> None:
+    h, tree, provider = await _sender(tmp_path, images=True)
+    tree.send(h.cursor, "from the bot", [Image(PICTURE)])
+    await h.settle()
+    assert _users(h) == [Body.User("from the bot", [Image(PICTURE)])]
+    assert [i.data for i in provider.requests[-1].images] == [PICTURE]
+    await h.close()
+
+
+@scenario
+async def test_a_tree_handles_send_is_held_to_the_image_rule_at_the_call(tmp_path: Path) -> None:
+    h, tree, provider = await _sender(tmp_path, images=False)
+    before = h.snapshot()
+    with pytest.raises(ValueError, match=r"1 image not sent: the model .* does not take images"):
+        tree.send(h.cursor, "look", [Image(PICTURE)])
+    await h.settle()
+    assert h.snapshot() == before, "nothing is queued"
+    assert provider.requests == []
+    await h.close()
+
+
+@scenario
+async def test_a_tree_handles_send_refuses_too_many_and_an_unkept_image(tmp_path: Path) -> None:
+    elsewhere = await _reference_from_another_session(tmp_path / "other")
+    h, tree, _ = await _sender(tmp_path / "this", images=True)
+    with pytest.raises(ValueError, match="at most 20 images, not 21"):
+        tree.send(h.cursor, "many", [Image(png(1, 1 + i)) for i in range(21)])
+    assert elsewhere.data is None
+    with pytest.raises(MissingImage):
+        tree.send(h.cursor, "look", [elsewhere])
+    await h.close()
+
+
+async def _reference_from_another_session(tmp_path: Path) -> Image:
+    """An image as a node read from disk holds it (its `sha256`, no bytes), from a session that
+    is not the one it is sent to."""
+    provider = FakeProvider([say("seen")], image_limits=LIMITS)
+    h = await Harness.create(tmp_path, provider=provider, catalog=fake_catalog(images=True))
+    await h.send("look", images=[ImageInput.of(png(5, 5))])
+    await h.settle()
+    await h.close()
+    h = await Harness.load(tmp_path, catalog=fake_catalog(images=True))
+    image = _users(h)[0].images[0]
+    await h.close()
+    return image

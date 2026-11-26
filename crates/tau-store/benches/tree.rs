@@ -191,7 +191,11 @@ impl Agent {
                 rig.stats.core += start.elapsed();
                 vec![]
             }
-            Job::Hooks { draft, .. } => vec![Answer::Hooks { stop: None, draft }],
+            Job::Hooks { draft, .. } => vec![Answer::Hooks {
+                stop: None,
+                draft,
+                halted_by: None,
+            }],
             Job::Sample => {
                 rig.sample(c);
                 vec![self.reply(&rig.payloads)]
