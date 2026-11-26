@@ -19,7 +19,8 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from typing import Any, Final, cast
 
 from tau._events import Notice
-from tau._extensions import ExtensionLoadError, ExtensionSource
+from tau._extension_error import ExtensionLoadError
+from tau._extensions import ExtensionSource
 from tau._handles import TreeHandle
 from tau._protocols import Extension
 

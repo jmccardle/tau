@@ -15,6 +15,7 @@ from tau._base_tools import (
 )
 from tau._client import Client, LocalClient
 from tau._clock import SystemClock
+from tau._command_hooks import CommandHooks
 from tau._commands import CommandFailed
 from tau._compaction import Compaction
 from tau._config import ConfigError, ModelConfig, model_config
@@ -123,8 +124,8 @@ from tau._events import (
     ThinkingDelta,
     ToolProgress,
 )
+from tau._extension_error import ExtensionLoadError
 from tau._extensions import (
-    ExtensionLoadError,
     ExtensionSource,
     SourceKind,
     SourceState,
@@ -230,6 +231,7 @@ __all__ = [
     "Clock",
     "Closed",
     "CommandFailed",
+    "CommandHooks",
     "Commands",
     "Compaction",
     "Completion",

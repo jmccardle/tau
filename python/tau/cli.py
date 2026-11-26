@@ -59,8 +59,8 @@ from tau._core import (
 )
 from tau._dotenv import DotenvError
 from tau._ext_rows import ext_rows
+from tau._extension_error import ExtensionLoadError
 from tau._extensions import (
-    ExtensionLoadError,
     Inspection,
     absolute_explicit,
     inspect_extensions,

@@ -1363,6 +1363,28 @@ file would have had) at once, so the start, `tau trust` and a reload list everyt
 `Trusted.prompt_files` also holds the files that look like a template or skill in the wrong place
 (`prompt_candidates`), so they are pinned and are problems.
 
+### hooks (extension), command hook, hooks file
+`tau.CommandHooks` (`_command_hooks.py`; `_command_hooks_file.py` and `_command_hooks_run.py`), key `hooks`, no options, off by default · D33 · new
+
+The built-in extension that runs shell commands at τ's hook points, by the convention Claude Code,
+Codex and Gemini CLI share. A **command hook** is one such command: it is given an event as JSON on
+its standard input, and answers with its exit code (2 blocks, standard error is the reason) or a
+JSON object on its standard output. The **events** are Claude Code's names, mapped onto τ:
+`PreToolUse` is `pre_tool`, `PostToolUse` and `PostToolUseFailure` are `pre_result` (an `Ok` and an
+`Err` outcome), `UserPromptSubmit` is `pre_input` (a `Frontend`'s), `Stop` is `post_step` at the end
+of a person's turn, and `SessionStart` and `SessionEnd` are the extension's `start` and `stop`. The
+**hooks file** is `hooks.json` in `$TAU_HOME` and `.tau/hooks.json` of a trusted project (the
+`hooks` key of a Claude Code `settings.json`: matcher groups of `command` handlers with `timeout`
+and `onFailure`); the project's is pinned by trust (`Trusted.hooks_file`, the approved bytes) and is
+admin configuration, not an option a client can set (akb #643). A **failure** (it did not start,
+timed out, exited other than 0 and 2, or answered with what τ cannot honor) is an `error` notice
+naming the command, and at a gate (`pre_tool`, `pre_input`) also a block unless the handler's
+`onFailure` is `continue`. Anything Claude Code has that τ does not (events, handler types and
+keys, output fields) is refused or a failure naming it; nothing is dropped silently. Not available
+on Windows (`CommandHooksUnavailable`). `_extension_error` holds `ExtensionLoadError` (moved out of
+`_extensions.py`, so a built-in's loader can raise it) and `_trust_report` the text the trust report
+shows of the prompt, skill and hooks files (moved out of `_trust.py`).
+
 ### rescan (an extension), stdin (a command parameter)
 `Skills.rescan`, `tau.commandline.STDIN` · D24 section 6 · new (8E-5)
 

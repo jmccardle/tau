@@ -32,10 +32,12 @@ from tau._agents import Agents
 from tau._attachments import Attachments
 from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
+from tau._command_hooks import CommandHooks
 from tau._commands import assemble_commands
 from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
+from tau._extension_error import ExtensionLoadError
 from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
@@ -91,6 +93,7 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Attachments.name: lambda loaded: Attachments(Path.cwd()),
     BaseTools.name: lambda loaded: BaseTools(),
     Compaction.name: lambda loaded: Compaction(),
+    CommandHooks.name: CommandHooks.load,
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     Prune.name: lambda loaded: Prune(),
     Skills.name: _skills,
@@ -99,7 +102,7 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     TokenCalls.name: lambda loaded: TokenCalls(),
     Usage.name: lambda loaded: Usage(),
 }
-OFF_BY_DEFAULT = frozenset({Agents.name, TokenCalls.name})
+OFF_BY_DEFAULT = frozenset({Agents.name, CommandHooks.name, TokenCalls.name})
 """The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
@@ -107,16 +110,6 @@ _BEYOND = "(or: tau --no-extensions)"
 BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
 """The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
-
-
-class ExtensionLoadError(ImportError):
-    """One or more extension sources did not load: the message is every failure (what failed,
-    its source, the underlying error, and the command that gets past it), and `sources` their
-    `ExtensionSource` records. The first underlying exception is `__cause__`."""
-
-    def __init__(self, message: str, sources: Sequence["ExtensionSource"] = ()) -> None:
-        super().__init__(message)
-        self.sources = tuple(sources)
 
 
 @dataclass(frozen=True)

@@ -3,8 +3,9 @@
 Five things happen in a session without any extension of yours: a failed request is tried again,
 `@file` in a message attaches the file, files you write become commands (prompt templates and
 skills), what the session has used and spent is shown, and a long conversation can be shortened
-(`/compact`, `/prune`). Two more wait for you to ask: rules that ask before a tool runs
-(permissions), and sub-agents, which are off until you turn them on. Each can be switched off, and
+(`/compact`, `/prune`). Three more wait for you to ask: rules that ask before a tool runs
+(permissions), sub-agents, and shell commands run at hook points (hooks), which are off until you
+turn them on. Each can be switched off, and
 each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
@@ -676,3 +677,205 @@ tools they are offered (default: all but `agent`). A name in `tools` that no loa
 provides is refused by `/config` and `tau config set`, and is a warning (a name that matches
 nothing) when a file already holds it. A list typed on a command line is
 split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.
+
+## Run your own commands at hook points
+
+`hooks` runs shell commands when something happens in a session: before a tool runs, after it
+ran, when you send a prompt, when the model finishes its turn. It follows the convention Claude
+Code, Codex and Gemini CLI share, so a hook script written for one of them can run here: the
+command is given the event as JSON on its standard input, and answers with its exit code or a JSON
+object on its standard output. An exit code of 2 blocks, and what the command wrote to standard
+error is the reason.
+
+A hooks file runs commands with your authority, so the extension is off until you turn it on:
+
+```bash
+tau ext enable hooks
+tau ext list | grep -A1 '^hooks'
+```
+
+```text expect
+set load.hooks = true in <*>
+hooks         on         built-in
+              commands: /hooks; tools: none
+```
+
+The commands are in `hooks.json` in your `$TAU_HOME`, and in `.tau/hooks.json` of a project you
+have trusted. The file is the `hooks` key of a Claude Code `settings.json`, so a block written for
+it can be pasted in. This one adds a line of context to every prompt you type:
+
+```bash
+cat > context.sh <<'SCRIPT'
+#!/bin/sh
+cat > /dev/null                 # the event; this command has no use for it
+echo "branch: main"             # standard output is added to the prompt
+SCRIPT
+chmod +x context.sh
+```
+
+```json file=$TAU_HOME/hooks.json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "./context.sh" }] }
+    ]
+  }
+}
+```
+
+```bash
+tau -p "what is the plan?"
+```
+
+```text expect
+mock: what is the plan?
+
+branch: main
+```
+
+`/hooks` lists the commands a session has. The files are read when τ starts, so edit one and start
+τ again; a file τ cannot use stops the start, naming each problem.
+
+A command that exits 2 refuses the message, and `tau -p` stops with its reason (a relative command runs in the session's directory):
+
+```bash
+cat > friday.sh <<'SCRIPT'
+#!/bin/sh
+cat > /dev/null
+echo "no prompts on Fridays" >&2
+exit 2
+SCRIPT
+chmod +x friday.sh
+echo '{"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "./friday.sh"}]}]}}' \
+  > "$TAU_HOME/hooks.json"
+tau -p "hello" 2>&1 || echo "exit $?"
+```
+
+```text expect
+tau: no prompts on Fridays
+tau: stopped before finishing: halted: no prompts on Fridays
+exit 3
+```
+
+### Events
+
+| event | when | a block (exit 2, or `decision`) | the command is also given |
+|---|---|---|---|
+| `PreToolUse` | before a tool runs (`pre_tool`) | refuses the call; the reason is the call's error, which the model reads | `tool_name`, `tool_input`, `tool_use_id` |
+| `PostToolUse` | after a tool succeeded (`pre_result`) | cannot undo it: the reason is added to the result, after its text, as `hook feedback: ...` | `tool_name`, `tool_input`, `tool_response` (the result's text), `tool_use_id` |
+| `PostToolUseFailure` | after a tool failed, or the call was refused | the same, added to the error | `tool_name`, `tool_input`, `error`, `tool_use_id` |
+| `UserPromptSubmit` | a person's message, before it is written (`pre_input`) | halts the input: the reason is a notice, and the message stays pending | `prompt` |
+| `Stop` | a person's turn ended: the model's reply asks for no tool (`post_step`) | the turn goes on: the reason is sent to the model as input | `stop_hook_active`, `last_assistant_message` |
+| `SessionStart` | τ starts the session | blocks nothing | `source` (always `startup`) |
+| `SessionEnd` | τ shuts down | blocks nothing | `reason` (always `other`) |
+
+Every event is also given `hook_event_name`, `cwd` and, where there is one, `cursor` (the cursor's
+id). `tool_input` is the call's arguments as the tool takes them: τ's `bash` takes `command`, as
+Claude Code's does, but its file tools take `path`, not `file_path`. A call whose arguments are not
+a JSON object has `tool_input: null` and the text in `tool_input_raw`. The command runs in the
+session's directory, with `TAU_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` set to the trusted project's
+root (or that directory), and `TAU_HOOK_EVENT` to the event.
+
+`UserPromptSubmit` runs for what a person typed, not for what an extension sent (a sub-agent's
+task, a summary's prompt), and `Stop` only ends a person's turn, so a sub-agent finishing never
+runs it. After a `Stop` command has kept one turn going 8 times in a row, τ ends the turn and says
+so; it also says so, and ends the turn, when auto-step is off.
+
+### The file
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "~/hooks/no-push.sh", "timeout": 10 }]
+      }
+    ],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "make test", "onFailure": "continue" }] }]
+  }
+}
+```
+
+- **`matcher`** (the three tool events only): empty, `*` or none is every tool. Letters, digits,
+  `_`, `-`, spaces, `,` and `|` only is a list of exact tool names (`bash|write`). Anything else
+  is a regular expression searched in the name (Python's `re`, not JavaScript's: `^(read|grep)$`).
+  Claude Code's names for τ's base tools match too: `Bash`, `Read`, `Write`, `Edit`, `Grep` and
+  `Glob` (τ's `find`). The `tool_name` a command is given is always τ's own, in lower case.
+- **`command`** runs through `/bin/sh -c`. With **`args`** (a list of strings) it is the program,
+  run with those arguments and no shell.
+- **`timeout`**, in seconds, default 60 (20 for `SessionStart`, 4 for `SessionEnd`).
+- **`onFailure`**: `block` (the default) or `continue`, below.
+
+The commands of one event run one after another, in file order, your file first and then the
+project's (a repeat of one runs once). The first one that blocks stops the rest, and a command
+sees the arguments an earlier one rewrote. Claude Code runs them at once; τ does not, so that what
+one rewrites is the same on every run.
+
+### What a command answers
+
+- **Exit 0** with nothing, or with text that is not JSON: go on. The text is added to the message
+  at `UserPromptSubmit`; at `SessionStart` τ says on standard error that it was dropped; at the
+  other events it is not used.
+- **Exit 0** with a JSON object: the fields below.
+- **Exit 2**: a block. Standard error is the reason (`exited 2 with nothing on standard error`
+  when there is none). At `SessionStart` and `SessionEnd`, which cannot be blocked, it is a failure.
+- **Any other exit code**, 1 included: a failure.
+
+A JSON object may hold these; its `hookSpecificOutput` must say `"hookEventName"`, the event.
+
+| field | at | does |
+|---|---|---|
+| `hookSpecificOutput.permissionDecision`: `deny` | `PreToolUse` | blocks, with `permissionDecisionReason` |
+| `hookSpecificOutput.permissionDecision`: `ask` | `PreToolUse` | asks the person `yes` or `no` before the call runs, with the reason in the question; `tau -p` needs `--answer hooks=yes` |
+| `hookSpecificOutput.permissionDecision`: `allow` | `PreToolUse` | no objection, and nothing more: it does not skip the `permissions` rules |
+| `hookSpecificOutput.updatedInput` | `PreToolUse` | the arguments the tool runs with, whole; the `permissions` rules see these |
+| `decision`: `block`, with `reason` | `PreToolUse` (also `approve`), `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` | a block, as exit 2 |
+| `hookSpecificOutput.additionalContext` | `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` | text added after the result, the error or the message (at most 10000 characters) |
+| `hookSpecificOutput.updatedToolOutput` | `PostToolUse` | the text of the result the model reads instead |
+| `systemMessage` | any | a warning notice, for the person |
+| `suppressOutput` | any | accepted; it means nothing here, as in Claude Code |
+
+**Anything else is a failure that names the command and the field**: τ does not drop a decision it
+cannot honor. That is `continue: false` (and `stopReason`), `defer`, `updatedMCPToolOutput`,
+`sessionTitle`, `suppressOriginalPrompt`, `initialUserMessage`, any other key, and
+`additionalContext` where the table does not list it (`PreToolUse`, `Stop`, the session events).
+
+### When a command fails
+
+A command that does not start, runs past its `timeout` (it is killed, and what it started with
+it), writes more than 1 MiB to a stream, exits other than 0 and 2, or answers with JSON τ cannot
+use has **failed**. It is always told to you, as an `error` notice from `hooks` that names the
+command and why: `hook './guard.sh' timed out after 10 s and was killed`.
+
+What else it does is `onFailure`. With `block`, the default, a failure at a gate (`PreToolUse`,
+`UserPromptSubmit`) also refuses the call or the message, with that text as the reason: a guard
+that cannot run does not let things through. With `continue`, it only reports. At the other events
+there is nothing to refuse, and it only reports; a `SessionStart` or `SessionEnd` failure is
+written to standard error, since no client is connected yet, or any longer. Claude Code lets a call
+through when a command exits 1; τ does not, because a command that is broken has not approved.
+
+### The project's file, and order
+
+`.tau/hooks.json` in a project is pinned by `tau trust` like `.tau/extensions/`, because it runs
+commands: the report shows the whole file, never part of it, and a change to it asks again. τ uses
+the bytes you approved. A file that is not a hooks file cannot be approved.
+
+At `pre_input` and `pre_tool` the `hooks` commands run before the other built-ins' hooks
+(`pre_input` at -100, `pre_tool` at -150), so a command can rewrite a call's arguments before
+`permissions` judges them. The ones that only see what happened (`PostToolUse`, `Stop`) run last.
+`tau ext list --hooks` shows the order.
+
+### What is not supported
+
+τ has no hook point for most of Claude Code's other events: `Notification`, `PermissionRequest`,
+`SubagentStart` and `SubagentStop`, `PreCompact` and `PostCompact`, the `Task*` events, and the
+rest. A hooks file that names one is refused when τ starts, naming it. So is a handler that is not
+`type: "command"` (`http`, `mcp_tool`, `prompt`, `agent`), a handler key `if`, `async`,
+`asyncRewake`, `shell`, `statusMessage` or `once`, and a matcher on an event that has no tool. The
+commands are not given `session_id`, `transcript_path`, `permission_mode` or `effort`, and a
+`SessionStart` command cannot add context to the conversation.
+
+**Windows.** `hooks` is not available there: it runs commands through a POSIX shell, which τ does
+not have on Windows (the `bash` tool is unavailable for the same reason). Turning it on stops the
+start with that said.

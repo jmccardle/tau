@@ -4,7 +4,8 @@ A project is the nearest directory upward holding a `.tau/` that is a real
 directory owned by the user. Its config and `.env` are read only while it is
 trusted. Trust is pinned to the bytes of `.tau/config.json`, of `.env`, of every file under
 `.tau/extensions/`, of `.tau/SYSTEM.md` (D19 section 4), of `.tau/prompts/*.md` and of
-`.tau/skills/*/SKILL.md` (D24 section 6): `trusted.json` holds their sha256,
+`.tau/skills/*/SKILL.md` (D24 section 6) and `.tau/hooks.json`, whose commands run with your
+authority (D33): `trusted.json` holds their sha256,
 which decides, and a redacted copy of the config for showing diffs. Content decides: there is
 no owner check on any file. What is used afterwards is the bytes that were approved.
 
@@ -32,7 +33,6 @@ from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, check_config, read_models
 from tau._dotenv import DotenvError, parse_dotenv
 from tau._project_read import (
-    FOREIGN_BASES,
     TrustError,
     read_prompt_files,
     read_regular,
@@ -44,6 +44,7 @@ from tau._project_read import (
 )
 from tau._prompt_files import problems_in
 from tau._providers import builtin_providers
+from tau._trust_report import hooks_listing, hooks_problems, prompt_text, shown_path
 
 TAU_DIR = ".tau"
 _ENV = ".env"
@@ -54,6 +55,7 @@ _PUBLIC_FILE = 0o644
 _SECRET = "(secret)"
 EXTENSIONS_DIR = "extensions"
 SYSTEM_MD = "SYSTEM.md"
+HOOKS_FILE = "hooks.json"
 
 
 class UntrustedProject(TrustError):
@@ -77,7 +79,8 @@ class Trusted:
     reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
     relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
     `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
-    reads. Use `layer()`,
+    reads; `hooks_file` the bytes of `.tau/hooks.json` as approved (`None`: no such file), which
+    the `hooks` extension runs. Use `layer()`,
     `read_models()` and `project_environment` rather than re-reading the files."""
 
     root: Path
@@ -86,6 +89,7 @@ class Trusted:
     extension_files: Mapping[str, bytes] | None
     system_md: bytes | None
     prompt_files: Mapping[str, bytes]
+    hooks_file: bytes | None = None
 
     def layer(self) -> LayerText | None:
         """The project config layer for `read_models`, or `None` if there is no file."""
@@ -111,6 +115,7 @@ class _Approval:
     redacted: str
     extensions: Mapping[str, str]  # path under .tau/extensions/ -> sha256, for showing diffs
     prompts: Mapping[str, str]  # path under .tau/ -> sha256 of each prompt and skill file
+    hooks_sha256: str
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,8 @@ class _Seen:
     system_sha: str
     prompts: dict[str, bytes]
     prompts_sha: str
+    hooks: bytes | None
+    hooks_sha: str
     tau_mode: int
 
 
@@ -351,14 +358,16 @@ class _Read(NamedTuple):
     extensions: dict[str, bytes] | None
     system: bytes | None
     prompts: dict[str, bytes]
+    hooks: bytes | None
 
-    def digests(self) -> tuple[str, str, str, str, str]:
+    def digests(self) -> tuple[str, str, str, str, str, str]:
         return (
             _digest(self.config),
             _digest(self.env),
             _extensions_digest(self.extensions),
             _digest(self.system),
             _extensions_digest(self.prompts),
+            _digest(self.hooks),
         )
 
 
@@ -369,13 +378,14 @@ def _read_all(root: Path) -> _Read:
         _read_extensions(root),
         read_regular(root / TAU_DIR / SYSTEM_MD),
         read_prompt_files(root / TAU_DIR),
+        read_regular(root / TAU_DIR / HOOKS_FILE),
     )
 
 
 def _see(root: Path) -> _Seen:
     with _tau_dir(root) as (_, info):
         read = _read_all(root)
-    sha, env_sha, extensions_sha, system_sha, prompts_sha = read.digests()
+    sha, env_sha, extensions_sha, system_sha, prompts_sha, hooks_sha = read.digests()
     return _Seen(
         root,
         _decode(read.config, project_config_path(root)),
@@ -388,6 +398,8 @@ def _see(root: Path) -> _Seen:
         system_sha,
         read.prompts,
         prompts_sha,
+        read.hooks,
+        hooks_sha,
         stat.S_IMODE(info.st_mode),
     )
 
@@ -429,6 +441,7 @@ def _approved(home: Path) -> dict[str, _Approval]:
                 str(r["config"]),
                 dict(cast("dict[str, str]", r["extensions"])),
                 dict(cast("dict[str, str]", r.get("prompts", {}))),
+                str(r.get("hooks_sha256", _digest(None))),
             )
             for root, r in current.items()
         }
@@ -464,6 +477,7 @@ def _record(home: Path, seen: _Seen) -> None:
         _redacted(seen.config),
         _file_hashes(seen.extensions or {}),
         _file_hashes(seen.prompts),
+        seen.hooks_sha,
     )
     body = json.dumps(
         {
@@ -477,6 +491,7 @@ def _record(home: Path, seen: _Seen) -> None:
                     "config": a.redacted,
                     "extensions": a.extensions,
                     "prompts": a.prompts,
+                    "hooks_sha256": a.hooks_sha256,
                 }
                 for r, a in projects.items()
             }
@@ -513,6 +528,7 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
         and approval.extensions_sha256 == seen.extensions_sha
         and approval.system_sha256 == seen.system_sha
         and approval.prompts_sha256 == seen.prompts_sha
+        and approval.hooks_sha256 == seen.hooks_sha
     )
 
 
@@ -548,6 +564,7 @@ def _errors(seen: _Seen, home: Path) -> list[str]:
             parse_dotenv(seen.env, shown(seen.root / _ENV))
         except DotenvError as e:
             errors.append(safe_text(str(e)))
+    errors += hooks_problems(seen.hooks, seen.root / TAU_DIR / HOOKS_FILE)
     return [*errors, *problems_in(seen.prompts, seen.root / TAU_DIR)]
 
 
@@ -621,12 +638,9 @@ def _code_changes(approval: _Approval, seen: _Seen) -> list[str]:
         lines.append("  .tau/extensions/ appeared or went away")
     if approval.system_sha256 != seen.system_sha:
         lines.append("  .tau/SYSTEM.md changed since you approved it")
+    if approval.hooks_sha256 != seen.hooks_sha:
+        lines.append("  .tau/hooks.json changed since you approved it")
     return lines + _prompt_changes(approval, seen)
-
-
-def _shown(path: str) -> str:
-    """A key of `prompts` as the report names it: under `.tau/`, or `.agents/`, `.claude/`."""
-    return path if path.split("/", maxsplit=1)[0] in FOREIGN_BASES else f".tau/{path}"
 
 
 def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
@@ -639,21 +653,7 @@ def _prompt_changes(approval: _Approval, seen: _Seen) -> list[str]:
         ("removed", [p for p in before if p not in now]),
         ("changed", [p for p in now if p in before and now[p] != before[p]]),
     ):
-        lines += [safe_text(f"  {_shown(p)} {label}") for p in paths]
-    return lines
-
-
-_SHOWN_CHARS = 2000
-"""How much of one prompt or skill file the report shows."""
-
-
-def _prompt_text(raw: bytes) -> list[str]:
-    """The text of a prompt or skill file as report lines, cut at `_SHOWN_CHARS` characters, which
-    the last line says."""
-    text = raw.decode("utf-8", errors="replace")
-    lines = [f"    {line}" for line in safe_block(text[:_SHOWN_CHARS].rstrip()).split("\n")]
-    if len(text) > _SHOWN_CHARS:
-        lines.append(f"    ... cut: {len(text) - _SHOWN_CHARS} more characters not shown")
+        lines += [safe_text(f"  {shown_path(p)} {label}") for p in paths]
     return lines
 
 
@@ -666,6 +666,10 @@ def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
         lines += [safe_text(f"  {p}  {len(raw)} bytes") for p, raw in seen.extensions.items()]
     if seen.system is not None:
         lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
+    if seen.hooks is not None:
+        lines += hooks_listing(
+            seen.hooks, changed=approval is None or approval.hooks_sha256 != seen.hooks_sha
+        )
     if seen.prompts:
         before: Mapping[str, str] = {} if approval is None else approval.prompts
         hashes = _file_hashes(seen.prompts)
@@ -673,7 +677,7 @@ def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
         for path, raw in seen.prompts.items():
             lines.append(safe_text(f"  {path}  {len(raw)} bytes"))
             if before.get(path) != hashes[path]:
-                lines += _prompt_text(raw)
+                lines += prompt_text(raw)
     return lines
 
 
@@ -724,6 +728,7 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
             seen.extensions_sha,
             seen.system_sha,
             seen.prompts_sha,
+            seen.hooks_sha,
         ):
             raise TrustError(
                 f"{shown(root)}: a file under .tau/ changed while you were reading; run again", root
@@ -732,7 +737,9 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
         _write_gitignore(fd)
         read_regular(root / TAU_DIR / ".gitignore")  # refuses a symlink that was already there
     _record(home, seen)
-    return Trusted(root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts)
+    return Trusted(
+        root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts, seen.hooks
+    )
 
 
 def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None) -> Trusted:
@@ -746,7 +753,9 @@ def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None)
     seen = _see(root)
     approval = _approved(home).get(str(root.resolve()))
     if _pinned(approval, seen):
-        return Trusted(root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts)
+        return Trusted(
+            root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts, seen.hooks
+        )
     assessment = _assess(seen, home, approval)
     hint = "" if assessment.errors else f"\nTrust it with: tau trust {shlex.quote(shown(root))}"
     refusal = UntrustedProject(root, assessment.report + hint, _layer(seen))

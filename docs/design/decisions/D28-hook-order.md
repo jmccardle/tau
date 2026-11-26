@@ -83,10 +83,11 @@ hooks; the rest keep the declared value). It is laid over the declared value hoo
 
 | value | for | built-ins at it |
 |---|---|---|
-| −100 | **guards**: hooks that halt (a budget, a permission) | `usage` `pre_input`, `pre_sample`; `permissions` `pre_tool`; `compaction` `pre_tool` (a summarizer's calls) |
+| −150 | a hook that may rewrite a call, before the guards judge it | `hooks` `pre_tool` (D33: `updatedInput`, so `permissions` rules see the arguments the call runs with) |
+| −100 | **guards**: hooks that halt (a budget, a permission) | `usage` `pre_input`, `pre_sample`; `permissions` `pre_tool`; `compaction` `pre_tool` (a summarizer's calls); `hooks` `pre_input` (D33) |
 | −50 | an edit that the other edits must see | `attachments` `pre_input` |
 | 0 | **edits**: hooks that change the draft, the call or the line (and the default) | `compaction` `pre_sample`, `pre_step`, `post_reply`, `post_step`; `agents` `pre_sample`; `skills` `pre_step`; `step_limit`, every hook |
-| +100 | **observers**: hooks that record or show what happened | `usage` `post_reply`; `tokens` `post_reply` |
+| +100 | **observers**: hooks that record or show what happened | `usage` `post_reply`; `tokens` `post_reply`; `hooks` `pre_result`, `post_reply`, `post_step` (D33: they see the final result, and after `step_limit` has turned auto-step off) |
 
 Built-ins have no place beyond their numbers: a drop-in or package at the same number runs after
 them only because built-ins load first. The reasoning per built-in:

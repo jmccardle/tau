@@ -381,6 +381,7 @@ class Trusted
     extension_files: Mapping[str, bytes] | None
     system_md: bytes | None
     prompt_files: Mapping[str, bytes]
+    hooks_file: bytes | None = None
 ```
 
 A trusted project: its `root`, and the exact `.tau/config.json` and `.env` text that
@@ -391,7 +392,8 @@ bytes of `.tau/SYSTEM.md` as approved (`None`: no such file), which the prompt's
 reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
 relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
 `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
-reads. Use `layer()`,
+reads; `hooks_file` the bytes of `.tau/hooks.json` as approved (`None`: no such file), which
+the `hooks` extension runs. Use `layer()`,
 `read_models()` and `project_environment` rather than re-reading the files.
 
 ### Trusted.layer
