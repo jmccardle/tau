@@ -271,6 +271,23 @@ Parameters:
 
 Result: `integer`
 
+### `models` method
+
+Every model of the driver's catalog, in config order, as a client may know it (D32
+section 8): its qualified name (what `CursorView.model` holds), provider, context window,
+`max_tokens`, image limits, price (the `usage` extension's; none without it), and whether
+it is the `default_model`; never a URL,
+a key, the name of a key's variable or provider options. The catalog is the effective one,
+every layer folded (user, project, `--set`), the one samples resolve in. It changes only
+when the driver's catalog is replaced (a `configure` with `save` reads the files again)
+or a reload changes `usage`; `Commands` is sent then if this answer changed, so call it
+again on each `Commands`.
+`ConfigError` naming the model for a price that does not read.
+
+No parameters.
+
+Result: array of [ModelInfo](#modelinfo)
+
 ### `node` method
 
 The node with this id; `NoSuchNode` if there is none.
@@ -504,7 +521,9 @@ Every command's form, and `config`'s when some extension has options: exactly wh
 `Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an
 extension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a
 stream's snapshot, so a client keeps the last one and never polls. It also says that the
-options forms a client holds may be stale: read them again from `options()` when next shown.
+options forms a client holds may be stale: read them again from `options()` when next shown;
+and so may its `models()`: it is sent too when the driver's catalog changed what `models()`
+answers (D32 section 8), with the forms as they are.
 
 | field | type | notes |
 |---|---|---|
@@ -783,6 +802,18 @@ lowercase hex digits. Its `repr` never shows the bytes.
 | `data` | `string` or `null` | optional |
 | `sha256` | `string` or `null` | optional |
 
+### ImageLimits
+
+What one image may be for a provider's API: at most `max_bytes` bytes (the file, not its
+base64) and `max_side` pixels on its longer side (`null`: no limit on the side). A provider
+declares its own as the optional attribute `image_limits`; a provider without one sends no
+images. `Refused` for a limit that is not a positive integer.
+
+| field | type | notes |
+|---|---|---|
+| `max_bytes` | `integer` |  |
+| `max_side` | `integer` or `null` | optional |
+
 ### Item
 
 | field | type | notes |
@@ -795,6 +826,40 @@ lowercase hex digits. Its `repr` never shows the bytes.
 
 - {`"Input"`: {`"by"`: [Author](#author), `"images"`?: array of [Image](#image), `"text"`: `string`}}: A client's input: its text, then its images (D31; none in a pad written before them).
 - {`"Extension"`: {`"data"`: `string`, `"name"`: `string`}}
+
+### ModelInfo
+
+What a client may know of one model in the driver's catalog (D32 section 8): its qualified
+`name` (what a `Config` node and `CursorView.model` hold), its `provider`, `context_window`
+and `max_tokens` (the most output tokens a reply asks for; `null`: the provider's default),
+`images` (what one image may be, when the model takes images and its provider sends them;
+`null`: an image for it is refused), `price` (`null`: the model has none), and whether it is
+the catalog's `default_model` (`default`). Nothing else of the config is in it.
+
+| field | type | notes |
+|---|---|---|
+| `name` | `string` |  |
+| `provider` | `string` |  |
+| `context_window` | `integer` or `null` |  |
+| `max_tokens` | `integer` or `null` |  |
+| `images` | [ImageLimits](#imagelimits) or `null` |  |
+| `price` | [ModelPrice](#modelprice) or `null` |  |
+| `default` | `boolean` |  |
+
+### ModelPrice
+
+A model's price in USD per million tokens, each an exact decimal number as text (`"3"`,
+`"0.3"`, `"3.75"`; never a float, never an exponent): `input` (prompt tokens neither read from
+nor written to the cache), `output`, `cache_read`, `cache_write`, and `cache_write_1h` (a
+cache write kept for an hour; `cache_write` when the config gives none).
+
+| field | type | notes |
+|---|---|---|
+| `input` | `string` |  |
+| `output` | `string` |  |
+| `cache_read` | `string` |  |
+| `cache_write` | `string` |  |
+| `cache_write_1h` | `string` |  |
 
 ### Node
 

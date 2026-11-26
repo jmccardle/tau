@@ -1,4 +1,4 @@
-# D32: Completion items, attributed notices, the `Commands` event, and extension start/stop
+# D32: Completion items, attributed notices, the `Commands` event, extension start/stop, and `models()`
 
 **Status:** accepted 2026-11-25 with John's rulings on the four open questions (Rulings, below),
 for 0.18.0 (unreleased). **Amends**
@@ -75,7 +75,7 @@ are removed by `value`, first kept.
 | kind | `value` | `label` | `detail` |
 |---|---|---|---|
 | `path` | as today: the directory as typed plus the name, `/` after a directory | the name alone (`parser.py`, `src/`) | a regular file's size (`4.2 kB`); a directory's `None` |
-| `model` | the qualified name (`anthropic:sonnet`) | `None` | the provider, the context window, and `images` if it takes them: `anthropic · 200k · images` |
+| `model` | the qualified name (`anthropic:sonnet`) | `None` | the provider, the context window, `images` if it takes them, and the price (§8): `anthropic · 200k ctx · images · $3/$15` |
 | `cursor` | the id (`"3"`), then `"new"` | the cursor's labels after the id when it has some (`3 main, review`); `None` otherwise | where it is: `node 42 · busy`, from its `CursorView`; for `"new"`, `a new cursor here` |
 | `label` | the label | `None` | the cursor it is on: `cursor 3 · node 42`, or `closed cursor 3 · node 42` |
 | `node` | the id (`"42"`), newest first as today | `None` | the node's kind and its first line: `User · fix the parser so that…`; `Results · 2 calls`; `Config · model anthropic:sonnet`; `System`; `Custom · todo` |
@@ -444,6 +444,108 @@ Each item also regenerates `docs/protocol.schema.json`, `docs/guide/protocol.md`
 and PC-01 first (the widest diffs), then PC-03, then P18-04 with TG-32, then tau-code and trusty
 against the frozen schema.
 
+### 8. `models()`: the catalog a client may know (added 2026-11-25)
+
+**Context.** A client cannot learn the context window or the price of the model a cursor is on.
+A `Config` node holds the model's qualified name and nothing resolved (D13: `model_config` writes
+`{"model": "<qualified name>"}`; `ModelConfig` is built from the `ModelCatalog` at each sample and
+no node holds it), and `CursorView.model` is that name. The facts live in the driver's catalog:
+`ModelConfig.context_window`, `max_tokens`, `images`, and the price in `usage`'s model section
+(`models.X.usage.price`, D28 §7; `Usage` prices replies "from the config the session started
+with"). So tau-acp reads τ's config files itself (`tau.load_config`) to fill ACP's
+`usage_update`, and misses `--set` and `TAU_SETTINGS`, and a remote client cannot read them at
+all. That is the lens of #641 exactly: what a client cannot derive goes on the wire.
+
+**The call.** `Client.models() -> tuple[ModelInfo, ...]`, no parameters, one `ModelInfo` per model
+of the driver's catalog, in config order:
+
+```python
+@dataclass(frozen=True)
+class ModelInfo:
+    name: str  # the qualified name: what a Config node and CursorView.model hold
+    provider: str  # the provider's name in the driver's provider map
+    context_window: int | None
+    max_tokens: int | None  # the most output tokens a reply asks for; None: the provider's
+    images: ImageLimits | None  # what one image may be; None: an image for it is refused
+    price: ModelPrice | None  # None: the model has no price
+    default: bool  # it is the catalog's default_model
+
+
+@dataclass(frozen=True)
+class ModelPrice:  # USD per million tokens, exact decimal text: "3", "0.3", "3.75"
+    input: str
+    output: str
+    cache_read: str
+    cache_write: str
+    cache_write_1h: str  # cache_write when the config gives none
+```
+
+- **An allowlist.** These fields are written out in `tau._model_list`, each read from the
+  `ModelConfig` by name; nothing is a filtered dump. `base_url`, `api_key`, `api_key_env` (a
+  variable's name says where the key is), `options` (provider options, where headers live),
+  `image_tokens` and every other model section never leave the driver, and a key added to the
+  config later stays off the wire until a field is added here, with a glossary entry. A test
+  configures each of those and checks that none appears.
+- **No display name.** The config has no display-name key, and none is invented here; a client
+  shows `name`. Should one be added to the config, it is a field here then.
+- **`images`** is the image rule's answer (D30 §6), not the config key alone: `images: true` on a
+  provider that declares `image_limits`. A model that says `images: true` on a provider that sends
+  none lists `None`, because an image for it would be refused.
+- **Price as text.** A price is a `Decimal` in τ (`0.3` is 0.3); JSON numbers are floats to most
+  decoders, so each amount travels as a plain decimal string (no exponent, no trailing zeros). A
+  client that sums costs parses it as a decimal.
+- **The price is usage's.** D28 made `usage` a leaf built-in that owns `models.X.usage.price`;
+  nothing else in τ imports it or reads its section. So the driver asks the loaded extension
+  named `usage` for its section of each model, built by that extension's own `model_options` type
+  (`ExtensionOptions.model_options`, as `TreeHandle.model_options` does), and lists its `price`
+  (four `Decimal` amounts and an optional `cache_write_1h`). With no `usage` loaded, no model is
+  priced: nothing in the session prices a reply, and τ does not read a section whose extension is
+  absent. A section `usage` refuses is a `ConfigError` naming the model (a start refuses it
+  first, D28 §7), and so is a `price` of another shape from an extension in `usage`'s place.
+
+**Which config.** The effective one: every layer folded (user, trusted project, `--set` and
+`TAU_SETTINGS`), the very catalog a sample resolves its model in. Nothing is re-read for the call.
+
+**When it changes.** The providers are the driver's for its life; the catalog is replaced only by
+`Driver.use_catalog`, which a `configure(..., save=True)` calls after writing the user's file (the
+layers are read again then, so an edit made to the file meanwhile is seen too); and the prices
+change with a `Driver.reload` that loads, drops or replaces `usage`. **No new event**: when
+either changes what `models()` would answer, the hub sends `Commands` (§3), as it does for an options type that changed with forms
+equal, and the rule for clients grows by one line: *on each `Commands`, call `models()` again*.
+The hub compares only what `models()` reads (the default; per model its provider, window,
+`max_tokens`, `images` and `usage` section; and `usage`'s `model_options` type), so a new key or
+URL sends nothing. A separate
+`Models` event was considered: it would carry a list most clients read once, sent on a change
+that happens about once a session, and it would be a third state event with its own place in the
+snapshot and the sync. `Commands` already means "what you read from the driver's configuration
+may be stale"; models join it. Models are not in the snapshot: a client that wants them makes
+one call.
+
+**Completion reuses it.** `complete(cursor, "model", …)` details each item from the same
+`ModelInfo` (`model_detail`): the provider, the window with `ctx`, `images` when it takes them,
+and the input and output price: `anthropic · 200k ctx · images · $3/$15`. (§1's table said
+`anthropic · 200k · images`; `ctx` makes the number readable beside a price, and `images` now
+follows the image rule.)
+
+**Errors.** `ConfigError` (`-32012`, its `when` now names a model's price) for a price that does
+not read (above); `ConnectionError` as every call. Nothing else.
+
+**Who follows.** Protocol 3 gains the method `models` and the definitions `ModelInfo` and
+`ModelPrice` (`ImageLimits` too, as their field). trusty's generated `wire.rs` gains the types and
+needs no handling (it never calls `models`). **tau-acp** drops its config parsing: `models()` once
+at connect and on each `Commands`, and `CursorView.model` to pick the entry, gives the context
+window for `usage_update` and the price for its cost. **tau-code** may show a context meter
+(`context_window` against the counts it already sums from `Assistant.meta.usage`, CV-02) and
+model details in its picker; neither is required for 0.18.0.
+
+**Tests.** Behavior, in every harness mode: the list and each field (window, cap, limits, price,
+default), the image rule's `None`, the layers (a `cli` layer over a file), exact decimal text, a
+price `usage` refuses, no prices without `usage` and a reload that loads it, a `Commands` on a catalog whose models changed and none on one where
+only a key and a URL changed, and the completion detail; the secret test (a model with
+`api_key`, `base_url` and header options, another with `api_key_env`: none of their values or
+keys in the JSON). Schema contract: `models`' `x-result` is an array of `ModelInfo`, and
+`ModelInfo`'s properties are exactly the seven.
+
 ## Alternatives
 
 - **PC-01 as a parallel call** (`complete_items` beside `complete`): two calls that say the same
@@ -495,6 +597,6 @@ against the frozen schema.
 *complete*; `Notice.cursor`, `Notice.extension`, `Notice.level`, `NoticeLevel`; the event
 `Commands`; *start* and *stop* (an extension's), *lifecycle handle* (amending *retired handle*),
 `START_TIMEOUT`, `STOP_TIMEOUT`, `extensions.NAME.start_timeout` and `stop_timeout`,
-`ModelCatalog.timeouts`, `TreeHandle.tell`, `TreeHandle.spawn`, `TreeHandle.reassemble`,
+`ModelCatalog.timeouts`, `Client.models`, `ModelInfo`, `ModelPrice` (§8), `TreeHandle.tell`, `TreeHandle.spawn`, `TreeHandle.reassemble`,
 `TreeHandle.send(images=)`; `Answer.Hooks.halted_by`; *notice* (core's) gains its cursor and
 extension; `PROTOCOL` 3's contents; `CommandTable` (the renamed private class needs none).

@@ -265,7 +265,7 @@
       ]
     },
     "Commands": {
-      "description": "Every command's form, and `config`'s when some extension has options: exactly what\n`Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an\nextension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a\nstream's snapshot, so a client keeps the last one and never polls. It also says that the\noptions forms a client holds may be stale: read them again from `options()` when next shown.",
+      "description": "Every command's form, and `config`'s when some extension has options: exactly what\n`Client.commands()` returns now (D32 section 3). Sent whole whenever that changes (an\nextension's start, a reload, a skill file rescanned, `TreeHandle.reassemble`), and first in a\nstream's snapshot, so a client keeps the last one and never polls. It also says that the\noptions forms a client holds may be stale: read them again from `options()` when next shown;\nand so may its `models()`: it is sent too when the driver's catalog changed what `models()`\nanswers (D32 section 8), with the forms as they are.",
       "type": "object",
       "properties": {
         "kind": {
@@ -721,6 +721,28 @@
         }
       }
     },
+    "ImageLimits": {
+      "description": "What one image may be for a provider's API: at most `max_bytes` bytes (the file, not its\nbase64) and `max_side` pixels on its longer side (`None`: no limit on the side). A provider\ndeclares its own as the optional attribute `image_limits`; a provider without one sends no\nimages. `ValueError` for a limit that is not a positive integer.",
+      "type": "object",
+      "properties": {
+        "max_bytes": {
+          "type": "integer"
+        },
+        "max_side": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "max_bytes"
+      ]
+    },
     "Item": {
       "properties": {
         "data": {
@@ -871,6 +893,98 @@
         "kind",
         "cursor",
         "delta"
+      ]
+    },
+    "ModelInfo": {
+      "description": "What a client may know of one model in the driver's catalog (D32 section 8): its qualified\n`name` (what a `Config` node and `CursorView.model` hold), its `provider`, `context_window`\nand `max_tokens` (the most output tokens a reply asks for; `None`: the provider's default),\n`images` (what one image may be, when the model takes images and its provider sends them;\n`None`: an image for it is refused), `price` (`None`: the model has none), and whether it is\nthe catalog's `default_model` (`default`). Nothing else of the config is in it.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "images": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "provider",
+        "context_window",
+        "max_tokens",
+        "images",
+        "price",
+        "default"
+      ]
+    },
+    "ModelPrice": {
+      "description": "A model's price in USD per million tokens, each an exact decimal number as text (`\"3\"`,\n`\"0.3\"`, `\"3.75\"`; never a float, never an exponent): `input` (prompt tokens neither read from\nnor written to the cache), `output`, `cache_read`, `cache_write`, and `cache_write_1h` (a\ncache write kept for an hour; `cache_write` when the config gives none).",
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "cache_read": {
+          "type": "string"
+        },
+        "cache_write": {
+          "type": "string"
+        },
+        "cache_write_1h": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "cache_write_1h"
       ]
     },
     "Node": {
@@ -1600,6 +1714,18 @@
       "x-result": {
         "type": "integer",
         "minimum": 0
+      }
+    },
+    "models": {
+      "description": "Every model of the driver's catalog, in config order, as a client may know it (D32\nsection 8): its qualified name (what `CursorView.model` holds), provider, context window,\n`max_tokens`, image limits, price (the `usage` extension's; none without it), and whether\nit is the `default_model`; never a URL,\na key, the name of a key's variable or provider options. The catalog is the effective one,\nevery layer folded (user, project, `--set`), the one samples resolve in. It changes only\nwhen the driver's catalog is replaced (a `configure` with `save` reads the files again)\nor a reload changes `usage`; `Commands` is sent then if this answer changed, so call it\nagain on each `Commands`.\n`ConfigError` naming the model for a price that does not read.",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false,
+      "x-result": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ModelInfo"
+        }
       }
     },
     "node": {

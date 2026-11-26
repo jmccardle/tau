@@ -48,6 +48,7 @@ reader = "A frontend holds a `Client`, in this process or over the wire, and rea
 names = [
     "Client", "LocalClient", "RemoteClient", "ImageInput", "MAX_INPUT_IMAGES", "MAX_INPUT_BYTES",
     "CommandFailed", "Parsed", "UnknownCommand", "Completion", "commandline.Completion",
+    "ModelInfo", "ModelPrice",
     "commandline.parse", "commandline.completions", "commandline.value", "commandline.values",
     "commandline.STDIN",
 ]

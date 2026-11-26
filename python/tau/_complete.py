@@ -9,10 +9,11 @@ A path is read on the driver's machine, relative to the process's working direct
 import asyncio
 import json
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from tau._config_layers import ModelCatalog
 from tau._core import Body, Node, Part, Session
+from tau._model_list import ModelInfo, model_detail
 from tau._values import NEW
 
 NAMED = ("path", "model", "cursor", "label", "node")
@@ -101,27 +102,9 @@ def _scan(directory: str) -> list[tuple[str, bool, int | None]]:
     return found
 
 
-def _window(tokens: int) -> str:
-    """A context window as a list shows it: `200k`, `1M`, `8192`."""
-    if tokens >= 1_000_000:  # noqa: PLR2004 - the unit
-        return f"{tokens / 1_000_000:.3g}M"
-    if tokens >= 1000:  # noqa: PLR2004 - the unit
-        return f"{round(tokens / 1000)}k"
-    return str(tokens)
-
-
-def _models(catalog: ModelCatalog) -> list[Completion]:
-    """Each model, with its provider, its context window and `images` if it takes them."""
-    found: list[Completion] = []
-    for name in catalog.names():
-        config = catalog.resolve(name)
-        detail = [config.provider]
-        if config.context_window is not None:
-            detail.append(_window(config.context_window))
-        if config.images:
-            detail.append("images")
-        found.append(Completion(name, None, " · ".join(detail)))
-    return found
+def _models(models: Sequence[ModelInfo]) -> list[Completion]:
+    """Each model, detailed as `model_detail` says it (D32 section 8)."""
+    return [Completion(m.name, None, model_detail(m)) for m in models]
 
 
 def _cursors(session: Session) -> list[Completion]:
@@ -196,12 +179,16 @@ def _reply_line(parts: list[Part]) -> str:
 
 
 async def complete(
-    session: Session, catalog: ModelCatalog, cursor: int, named: str, prefix: str
+    session: Session,
+    models: Callable[[], Sequence[ModelInfo]],
+    cursor: int,
+    named: str,
+    prefix: str,
 ) -> list[Completion]:
     """The values of the named type `named` that start with `prefix`, for `cursor`, each a
     `Completion` with the label and detail D32 section 1 gives its kind: `path` (directories end
-    with `/`; labelled with the name, a file's detail its size), `model` (qualified names; the
-    provider, context window and `images`), `cursor` (open ids, labelled with their labels, then
+    with `/`; labelled with the name, a file's detail its size), `model` (qualified names, from
+    `models`; `model_detail`), `cursor` (open ids, labelled with their labels, then
     `"new"`), `label` (the cursor it is on), and `node` (the cursor's walk, newest first; its
     `node_summary`). `ValueError` for another name, `NoSuchCursor` for a cursor that is not
     open."""
@@ -210,7 +197,7 @@ async def complete(
         case "path":
             return await asyncio.to_thread(_paths, prefix)
         case "model":
-            found = _models(catalog)
+            found = _models(models())
         case "cursor":
             found = _cursors(session)
         case "label":

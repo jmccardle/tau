@@ -99,7 +99,7 @@ A client is also an event stream: `async for event in client`. The first events 
 | `Live` | a reply arriving: `delta` is a `TextDelta`, `ThinkingDelta`, `CallNamed`, `CallArgs` (a tool call being written) or `ToolProgress`. Only for cursors you `watch`. |
 | `Labels` | every label and its cursor, whenever one changes |
 | `CursorGone` | a cursor was closed; drop it. `at` is where it ended |
-| `Commands` | every command's `Form`, whole: first in the snapshot, then whenever the commands change (an extension started, a reload, a skill file added). Keep the last one; it also means the options forms you hold may be stale |
+| `Commands` | every command's `Form`, whole: first in the snapshot, then whenever the commands change (an extension started, a reload, a skill file added) or the models do. Keep the last one; it also means the options forms and the `models()` you hold may be stale |
 | `Notice` | a message for this client: an extension's `tell` (which goes to every client unless it names one), a command's progress, or an input that a hook refused (which goes to its author). `extension` says who (`None`: τ itself), `cursor` which cursor it is about (`None`: the session), and `level` how loud: `info`, `warning` or `error` |
 
 `Live` is a preview: it is never in the tree and nothing is lost if you ignore it. The node that
@@ -206,6 +206,15 @@ All calls are `async` and act for the client's id. In groups:
 - **Reading**: `node(id)`, `walk(id)` (root to the node), `children(id)`, and `nodes(start,
   limit)` for reading the whole tree in ranges. Node ids are dense and a node never changes, so
   cache them.
+- **Models**: `models()` answers every model of the driver's config as a `tau.ModelInfo`: its
+  qualified `name` (what `CursorView.model` holds), `provider`, `context_window`, `max_tokens`,
+  `images` (the `ImageLimits` one image is held to, or `None` when the model takes none), `price`
+  (a `ModelPrice` of exact decimal strings in USD per million tokens, or `None`) and `default`.
+  It is the config the samples use, every layer folded (the user's file, the project's, `--set`),
+  so a context meter or a cost reads the model a cursor is on with `CursorView.model` and looks it
+  up here; never parse τ's config files. It never holds a URL, a key or a provider option. It
+  changes only when the driver reads its config again; a `Commands` event is sent then, so call
+  `models()` again on each `Commands`.
 - **Commands and options**: below.
 - **Questions**: below.
 
@@ -231,7 +240,7 @@ A person types `/count` or `/model mock:echo`. The client reads the line for you
   names after `/`, then the values of the argument, such as models or paths. This is for Tab.
   Each is a `Completion`: insert its `value` (it replaces the word being typed), and in a list
   show its `label` (or the `value` when it has none) with its `detail` dimmed beside it: a
-  command's description, a file's size, a model's provider and context window, a node's first
+  command's description, a file's size, a model's provider, context window and price, a node's first
   line. `client.complete(cursor, named, prefix)` answers the same items for one named type.
 
 `parse_line` raises `UnknownCommand` for a name nobody has. A frontend then sends the line as

@@ -28,8 +28,9 @@ from tau._events import (
 from tau._values import Form
 
 Forms = Callable[[], tuple[tuple[Form, ...], object]]
-"""The command forms as `Client.commands()` would return them now, without rescanning, and the
-identities of the options types (a reload that changes only one is a change too)."""
+"""The command forms as `Client.commands()` would return them now, without rescanning, and what
+else a `Commands` announces: the identities of the options types (a reload that changes only one
+is a change too) and what `Client.models()` reads of the catalog (D32 section 8)."""
 
 
 class Feed:
@@ -256,9 +257,10 @@ class Hub:
     `questions` says a cursor's open questions, and `lost(client)` is told, once, that a client
     that had a stream open has none now (closed, cut off, or abandoned and collected). `model`
     says the model a node's branch is on, or `None`. `generation` changes whenever the commands or
-    the options were assembled again, and only then are `forms` read and compared (D32 section
-    3). A step's ending, a hook's failure and the text an extension shows are told to the hub
-    (`began`, `ended`, `hook_failed`, `show`) because core keeps none of them."""
+    the options were assembled again, or the catalog replaced, and only then are `forms` read and
+    compared (D32 sections 3 and 8). A step's ending, a hook's failure and the text an extension
+    shows are told to the hub (`began`, `ended`, `hook_failed`, `show`) because core keeps none
+    of them."""
 
     def __init__(  # noqa: PLR0913, PLR0917 - what the hub publishes, each read from the driver
         self,
