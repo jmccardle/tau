@@ -12,7 +12,7 @@ import os
 import stat
 import sys
 import unicodedata
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from pathlib import Path
 
 MAX_BYTES = 1 << 20
@@ -83,29 +83,30 @@ def unless_io_fails(path: Path, doing: str) -> Generator[None]:
 _SYMLINK = "is a symlink; tau refuses symlinks inside a project"
 
 
-def _open_unix(path: Path) -> int | None:
+def _open_unix(path: Path, *, follow: bool) -> int | None:
     try:
-        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        return os.open(path, os.O_RDONLY | (0 if follow else os.O_NOFOLLOW) | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as e:
         if e.errno == errno.ELOOP:
-            raise refusal(path, _SYMLINK) from e
+            raise refusal(path, "is a symlink that loops" if follow else _SYMLINK) from e
         raise refusal(path, f"cannot be read: {e.strerror}") from e
 
 
-def _open_windows(path: Path) -> int | None:
+def _open_windows(path: Path, *, follow: bool) -> int | None:
     """Windows has no `O_NOFOLLOW`: the path is judged by `lstat` (a symlink or junction is a
     reparse point), then opened, and the open file must be the one judged (same volume and file
-    index), so a swap between the two is refused rather than followed."""
+    index), so a swap between the two is refused rather than followed. With `follow` a link is
+    judged by what it leads to."""
     try:
-        before = path.lstat()
+        before = path.stat() if follow else path.lstat()
     except FileNotFoundError:
         return None
     except OSError as e:
         raise refusal(path, f"cannot be read: {e.strerror}") from e
     reparse = getattr(before, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-    if stat.S_ISLNK(before.st_mode) or reparse:
+    if not follow and (stat.S_ISLNK(before.st_mode) or reparse):
         raise refusal(path, _SYMLINK)
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
@@ -120,11 +121,18 @@ def _open_windows(path: Path) -> int | None:
     return fd
 
 
-def read_regular(path: Path) -> bytes | None:
+def read_regular(path: Path, *, follow: bool = False) -> bytes | None:
     """The bytes of a regular file, or `None` if absent. A symlink or other kind of file is a
     `TrustError` naming the path, and so is one over the size limit or one that cannot be
-    read. Opened non-blocking, so a FIFO swapped in cannot hang us."""
-    fd = _open_windows(path) if sys.platform == "win32" else _open_unix(path)
+    read. Opened non-blocking, so a FIFO swapped in cannot hang us. With `follow`, a symlink is
+    read through (what it leads to must be a regular file, as any other must; one that leads
+    nowhere is `None`, like an absent file): only for the prompt and skill files, which trust
+    pins by the bytes it read."""
+    fd = (
+        _open_windows(path, follow=follow)
+        if sys.platform == "win32"
+        else _open_unix(path, follow=follow)
+    )
     if fd is None:
         return None
     with unless_io_fails(path, "read"), os.fdopen(fd, "rb") as f:
@@ -149,15 +157,17 @@ FOREIGN_BASES = (".agents", ".claude")
 
 def _children(directory: Path) -> list[Path]:
     """The paths in `directory` sorted by name, without those starting with `.`; none if there is
-    no such directory. A symlink or a non-directory in its place is a `TrustError`."""
+    no such directory (a symlink that leads nowhere is none). A non-directory in its place is a
+    `TrustError`. A symlink to a directory is followed: only the prompt and skill directories
+    are listed here."""
     try:
-        info = directory.lstat()
+        info = directory.stat()
     except FileNotFoundError:
         return []
+    except OSError as e:
+        raise refusal(directory, f"cannot be listed: {e.strerror}") from e
     if not stat.S_ISDIR(info.st_mode):
-        raise refusal(
-            directory, "is a symlink or not a directory; tau refuses those inside a project"
-        )
+        raise refusal(directory, "is not a directory")
     with unless_io_fails(directory, "listed"):
         names = sorted(os.listdir(directory))
     return [directory / name for name in names if not name.startswith(".")]
@@ -227,23 +237,33 @@ def read_prompt_files(tau: Path) -> dict[str, bytes]:
         def names(relative: str) -> list[str]:
             return [p.name for p in _children(base / relative)]
 
-        def is_dir(relative: str) -> bool:
-            path = base / relative
-            if path.is_symlink():
-                raise refusal(path, "is a symlink; tau refuses symlinks inside a project")
-            return path.is_dir()
+        return names, lambda relative: (base / relative).is_dir()
 
-        return names, is_dir
-
-    for base in FOREIGN_BASES:
-        if (root / base).is_symlink():
-            raise refusal(root / base, "is a symlink; tau refuses symlinks inside a project")
     found = [(tau, r) for r in prompt_candidates(*lister(tau))]
     found += [(root, r) for r in foreign_candidates(*lister(root))]
     files: dict[str, bytes] = {}
     for base, relative in found:
-        raw = read_regular(base / relative)
+        raw = read_regular(base / relative, follow=True)
         if raw is None:
-            raise refusal(base / relative, "vanished while the project was read")
+            path = base / relative
+            raise refusal(
+                path,
+                "is a symlink to nothing"
+                if path.is_symlink()
+                else "vanished while the project was read",
+            )
         files[relative] = raw
     return files
+
+
+def prompt_links(tau: Path, files: Mapping[str, bytes]) -> dict[str, Path]:
+    """For each key of `read_prompt_files`' result that is reached through a symlink (the file,
+    or any directory above it below the project), the path it resolves to: where its bytes were
+    read from, for a report to show. A key reached by no symlink is not in it."""
+    links: dict[str, Path] = {}
+    for relative in files:
+        base = tau.parent if relative.split("/", maxsplit=1)[0] in FOREIGN_BASES else tau
+        target = (base / relative).resolve()
+        if target != base.resolve() / relative:
+            links[relative] = target
+    return links
