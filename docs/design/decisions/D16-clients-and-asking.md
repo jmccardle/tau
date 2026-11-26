@@ -93,12 +93,16 @@ that moves a cursor is a command. Writes are by `Extension(<the extension's name
 **Running a command.** `run(cursor, command, args)` checks `args` (§1).
 - A command that takes `Cursor` runs as a step of that cursor. It is refused (`Busy`)
   unless the cursor is at rest: commands do not queue. The driver keeps the command in
-  memory and asks for a step (`Session.step`); at that step's `pre_step` it runs the
-  command first, with the cursor's handle, then the extensions' `pre_step` hooks. The rest
-  of the step follows the usual rules (model.md §6): a command that leaves the cursor on a
-  `User` node gets a sample, one that leaves it where a reply already is gets none. Abort
-  cancels a running command (unlike a hook, which abort lets finish). A crash loses a
-  command that has not finished: it is never re-run.
+  memory and asks for a command's step (`Session.step(cursor, command=True)`); at that
+  step's `pre_step` it runs the command first, with the cursor's handle, then the extensions'
+  `pre_step` hooks. **The step ends when the command returns** (amended 2026-11-26, below):
+  auto-step is off while it runs, as for a go-to, and after `pre_step` only `post_step` runs,
+  so the step ends `Done` (unless a hook halts or fails it) with no `pre_input`, sample or
+  tool, wherever the command left the cursor. A command that wants the model to run turns
+  auto-step on (`cursor.set_auto(True)`; `cursor.send` does too): the next step starts at once
+  from where the cursor stands and samples or runs tools as `decide` says. Abort cancels a
+  running command (unlike a hook, which abort lets finish). A crash loses a command that has
+  not finished: it is never re-run.
 - Any other command runs at once, on the driver's loop, whatever the cursor is doing.
 
 `Client.run` returns the command's result (`str | None`) when the command has finished and
@@ -315,10 +319,7 @@ nothing for them; a second extension that needs the same one imports it.
 
 ## Open
 
-- **A command that should not sample.** A command that leaves the cursor on a `User` node
-  gets a sample (§2). If `/compact` finds that surprising in practice, the rule to add is
-  "a command's step does not sample unless the command turns auto-step on"; nothing is
-  added before a real command shows the need.
+- ~~**A command that should not sample.**~~ Settled 2026-11-26 (amendment below).
 
 Settled while drafting (from review): edited options land as a `Config` node (§4);
 `CursorState` carries pending items whole, revisited only if measured; an extension may
@@ -461,3 +462,34 @@ Where the text above was silent, as built:
   are `pre_input` hooks" becomes "gates are"; D15's frontend rules 1–5 are replaced by §5.
 - Phase 5's permissions extension is the first typed question; compaction and prune are the
   first commands that generate.
+
+## Amendment (2026-11-26): a command's step ends when the command returns
+
+John's ruling: "A command's step should end when the command returns: hold the cursor busy, run
+the command, rest. A command that does want the model to run uses what already exists:
+set_auto(True)."
+
+As first built (§2 above, before the amendment), a command's step went on after the command, so
+one that left the cursor on a `User` or `Results` node sampled or ran tools, and a client's
+`go_to` to the same node did not. Undo and the session commands (D33 §2) worked around it by
+halting their own steps (`Stays`), which reported a `Halted` ending for what was an ordinary
+command. The Open item's rule is now the rule, for every command:
+
+- **Core** has a command's step: `Session.step(cursor, command=True)` (`Machine::step`,
+  `Step::command`). It turns auto-step off, as a go-to does, and wakes a step whose `pre_step`
+  is followed by `post_step` alone; the ending is `Done` unless a hook halts or fails it.
+  Ordinary steps are unchanged.
+- **After it** (`Step::after`) the usual rule decides whether the next step starts, with one
+  difference: a command's step tried nothing, so it is never *idle*. With auto-step on (the
+  command turned it on) and work (`next` is not `Wait`, or an input is pending), the next step
+  starts whether or not the cursor moved; an item added during the step (a command's `send`)
+  starts it as any news does.
+- **The driver** asks for the command's step (`CommandTable._start`); `Busy`, abort, a command's
+  failure and its refusal are as before.
+- **Commands that meant the turn to go on** turn auto-step on: the skills and prompt templates
+  `send` (which does), `/plan TASK` sends its task, and an extension that writes a `User` node
+  itself calls `cursor.set_auto(True)` (`examples/speculative/ralph.py`). `/compact`, `/prune`,
+  `/model`, `/config`, `/undo` and the session commands rest, which is what they meant.
+- `Stays` (`tau._markers`) is removed, and with it the `halted: /undo left the cursor at node N,
+  mid-turn` and `/export`, `/branch` halts.
+

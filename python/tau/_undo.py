@@ -14,8 +14,9 @@ Everything it follows is on the walk, so an undo never reaches a change made on 
 and the walk is the undo stack: the marker of a change, once undone, is off the walk. The cursor
 moves as a go-to does (auto-step off). The command runs as a step of the cursor, so a busy cursor
 refuses it with `Busy`, as every cursor command does; `at` refuses it when the cursor is not on
-the node the caller saw, so two clients cannot both undo one change. A cursor left mid-turn (a
-marker's `return_to` that would sample) halts that step before the model is asked (`Stays`).
+the node the caller saw, so two clients cannot both undo one change. Its step ends when it returns
+(D16 §2), so a cursor put back mid-turn (a marker's `return_to` that would sample) rests there:
+going back never starts the model.
 
 Without this extension, markers are inert `Custom` nodes and nothing else changes.
 """
@@ -25,8 +26,8 @@ from typing import Annotated
 
 from tau._commands import CommandFailed
 from tau._core import Author, Body, Node, NoSuchNode
-from tau._handles import Cursor, Subject
-from tau._markers import MOVE, Stays, UndoMarker
+from tau._handles import Cursor
+from tau._markers import MOVE, UndoMarker
 from tau._values import NodeId
 
 
@@ -57,15 +58,7 @@ class Undo:
     name = "undo"
 
     def __init__(self) -> None:
-        self._stays = Stays()
         self.commands = (self.undo,)
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        """Halt the step of a `/undo` that left the cursor mid-turn."""
-        return self._stays.halt(cursor.id)
-
-    async def post_step(self, cursor: Cursor, subject: Subject) -> None:
-        self._stays.forget(cursor.id)
 
     async def undo(
         self,
@@ -92,8 +85,6 @@ class Undo:
         else:
             to, label, user = await self._reverse(cursor, node, marker), marker.label, None
         cursor.move(to)
-        cursor.set_auto(False)
-        self._stays.leave(cursor, "/undo")
         if json:
             return dumps(
                 {

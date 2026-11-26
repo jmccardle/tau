@@ -400,7 +400,7 @@ Rejected for protocol 3:
 | PC-09 | capability exchange at `hello` | the server does not care how a client presents (ruling 4) |
 | PC-10 | a client-directed result for `/new`, `/resume`, `/fork` | ruling 3: those are client moves; a gateway is another design |
 | PC-11 | a background task entity | no design yet; the lifecycle (§4) comes first |
-| PC-12 | a "leaves resting" field on `Form` | a command cannot promise it; clients read `CursorView` after `run` (#640) |
+| PC-12 | a "leaves resting" field on `Form` | a command cannot promise it; clients read `CursorView` after `run` (#640). Since 2026-11-26 a command's step rests unless the command turns auto-step on (D16 amendment) |
 | PC-13 | extension completers on the wire | needs none: `format` and `named` are open strings (SC-02, its own ADR) |
 | PC-14 | the extension list in `Welcome` | Q-e: no |
 | PC-15 | a separate author on a refused input's notice | covered by PC-02's `extension` and `cursor` |
