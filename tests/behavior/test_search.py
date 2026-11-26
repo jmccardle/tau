@@ -3,6 +3,7 @@ the administrator's constants and the environment, results answered as numbered 
 untrusted notice, and every failure a tool error that names it without the key. Against a server of
 the test's own: nothing here reaches the network."""
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -13,7 +14,7 @@ from fakes import FAKE_MODEL, FakeProvider, Reply
 from harness import Harness, say, scenario
 from web import Page, Site, built, serving
 
-from tau import ExtensionLoadError, Outcome, Part, Stop, model_config
+from tau import ExtensionLoadError, Notice, Outcome, Part, Stop, model_config
 
 KEY = "sk-test-0123456789abcdef"
 UNTRUSTED = (
@@ -217,8 +218,9 @@ def test_without_its_key_it_offers_no_tool_and_says_which_variable(tmp_path: Pat
     unset = built(tmp_path, "search")
     assert getattr(unset, "tools") == ()  # noqa: B009
     assert getattr(unset, "warnings") == (  # noqa: B009 - not on the Extension protocol
-        "the brave provider needs an API key in BRAVE_API_KEY, which is not set; τ starts without "
-        "the search tool. Set it in the environment, or in a trusted project's .env file",
+        "warning: search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; "
+        "τ starts without the search tool. Set it in the environment, or in a trusted project's "
+        ".env file",
     )
     other = built(tmp_path, "search", {"provider": "marginalia"}, {"BRAVE_API_KEY": KEY})
     assert "MARGINALIA_API_KEY, which is not set" in str(getattr(other, "warnings"))  # noqa: B009
@@ -347,3 +349,23 @@ async def test_rows_without_an_address_are_not_no_results(tmp_path: Path) -> Non
     with serving(answering("/res/v1/web/search", body)) as site:
         (out,) = await asked(tmp_path, site, {}, {"query": "a"})
     assert error(out) == "the search provider answered 2 results, none with a url"
+
+
+@scenario
+async def test_a_client_that_connects_later_hears_the_key_is_not_set(tmp_path: Path) -> None:
+    """The notice `start` tells stands: a client that connects after the start still gets it."""
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([say("done")]),
+        extensions=[built(tmp_path, "search")],
+        config=model_config(FAKE_MODEL),
+    )
+    later = await h.connect("later")
+    heard: list[object] = []
+    while not any(isinstance(e, Notice) for e in heard):  # after its snapshot
+        heard.append(await asyncio.wait_for(anext(later), 5))
+    (notice,) = [e for e in heard if isinstance(e, Notice)]
+    assert (notice.extension, notice.level, notice.cursor) == ("search", "warning", None)
+    assert "needs an API key in BRAVE_API_KEY, which is not set" in notice.text
+    await later.close()
+    await h.close()

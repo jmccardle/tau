@@ -84,7 +84,7 @@ from tau._options import save_options
 from tau._print_mode import SIGPIPE_STATUS, detach, pipe_gone, print_mode, reader_gone, utf8
 from tau._project_read import TrustError, safe_block, safe_text
 from tau._protocol import PROTOCOL, ProtocolError
-from tau._protocols import Provider
+from tau._protocols import Provider, extension_warnings
 from tau._providers import builtin_providers
 from tau._refs import absolute_ref, parse_ref
 from tau._serve_cli import error_line, serve, transport_flags
@@ -99,7 +99,6 @@ from tau._sessions import (
     rename_session,
     sessions_directory,
 )
-from tau._skills import Skills
 from tau._startup import (
     LoadedConfig,
     load_config,
@@ -363,7 +362,7 @@ def _extension_findings(loaded: LoadedConfig, found: _Findings) -> Inspection | 
     the loaded extensions are checked against their types."""
     result = inspect_extensions(loaded)
     found.lines += [str(p) for p in load_key_warnings(loaded.catalog, result.sources)]
-    found.lines += [w for e in result.extensions if isinstance(e, Skills) for w in e.warnings]
+    found.lines += extension_warnings(result.extensions)
     if result.errors:
         found.lines += result.errors
         found.failed = True
@@ -437,7 +436,7 @@ def _ext_switch(run: _Run, key: str, on: bool) -> int:
         rows = list_extensions(run.cwd, run.environ)
         for row in rows:
             if row.key == key and row.state in ("on", "failed") and row.detail:
-                run.stdout.write(safe_text(f"{key}: {row.detail}") + "\n")
+                run.stdout.write(safe_text(row.detail) + "\n")
     return 0
 
 

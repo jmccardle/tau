@@ -19,8 +19,9 @@ proxy; required for `searxng`; an `http` or `https` URL with a host).
 
 **A missing key is a warning, and τ starts** (as an MCP server that does not start is): the
 extension offers no tool, so the model is never offered one that could only fail, and its `start`
-says which variable to set, on stderr and as a `warning` notice that every client gets, those that
-connect later too. A constant that is wrong (an unknown provider or key, a value of another type, a
+says which variable to set: its `warnings` (printed as τ starts, shown by `tau config check` and
+`tau ext list`), and a `warning` notice from its `start` that stands for clients that connect
+later. A constant that is wrong (an unknown provider or key, a value of another type, a
 `base_url` that is no URL) is a mistake in a file, and stops the start (`ConfigError`).
 
 A rate limit, a rejected key and any other error answer are tool errors naming the status. The key
@@ -30,7 +31,6 @@ value replaced (`_hidden`).
 
 import html
 import re
-import sys
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Annotated, Final, cast
 
@@ -228,9 +228,9 @@ class Search:
         key = environ.get(env, "").strip() if env else None
         if env is not None and not key:
             unset = (
-                f"the {provider} provider needs an API key in {env}, which is not set; τ starts "
-                "without the search tool. Set it in the environment, or in a trusted project's "
-                ".env file"
+                f"warning: search: the {provider} provider needs an API key in {env}, which is not "
+                "set; τ starts without the search tool. Set it in the environment, or in a trusted "
+                "project's .env file"
             )
             return cls(provider, None, base, warnings=(unset,))
         return cls(provider, key, base)
@@ -247,10 +247,9 @@ class Search:
         return f"Search(provider={self.provider!r}, base_url={self.base_url!r})"  # never the key
 
     async def start(self, tree: TreeHandle) -> None:
-        """Say each warning on stderr and, as a `warning` notice, to every client (one told
-        during `start` reaches each client when it connects)."""
+        """Tell every client each warning (the start printed them): a notice told during `start`
+        stands, so a client that connects later gets it too."""
         for warning in self.warnings:
-            print(f"tau: search: {warning}", file=sys.stderr)
             tree.tell(warning, level="warning")
 
     async def search(

@@ -446,6 +446,44 @@ An administrator can give one extension more time in the config file (not a clie
 not options), `{"extensions": {"heartbeat": {"start_timeout": 120, "stop_timeout": 10}}}`
 ([Configuration](configuration.md)).
 
+## When something is wrong: stop, or warn and start
+
+There are three ways for an extension to say something is wrong, by whose mistake it is.
+
+- **Stop the start: raise.** A mistake in a file (an unknown key, a value of the wrong type, a
+  setting that cannot work) raises when the extension is built or in `start`, and τ does not
+  start: it says what is wrong and how to start without your extension.
+- **Warn and start: list `warnings`.** Something outside τ's files is missing or broken (a key not
+  set in the environment, a server that is not there): the extension loads without that part, and
+  says so in `warnings`, a list or tuple of one-line strings set when it is built. τ prints each
+  as it starts, and `tau config check` and `tau ext list` show them. A `warnings` that is not a
+  sequence of strings is a `DefinitionError`. The built-ins do this: `skills` for a file it cannot
+  use, `mcp` for a server it skipped, `search` for its key.
+- **Tell the clients: `tree.tell(text, level="warning")` from `start`.** A notice told to everyone
+  during `start` stands: every client gets it after its snapshot, those that connect later too,
+  until your extension stops. Use it for what a person at a client should see, such as each of
+  your `warnings`; what goes wrong later is told as it happens.
+
+```python
+from tau import TreeHandle
+
+
+class Mirror:
+    name = "mirror"
+
+    def __init__(self, url: str | None) -> None:
+        self.tools = (self.mirror,) if url else ()  # never offer a tool that can only fail
+        self.warnings = () if url else ("warning: mirror: MIRROR_URL is not set",)
+
+    async def start(self, tree: TreeHandle) -> None:
+        for warning in self.warnings:
+            tree.tell(warning, level="warning")
+
+    async def mirror(self, path: str) -> str:
+        """Copy `path` to the mirror."""
+        return f"copied {path}"
+```
+
 ## Making a change undoable
 
 A change your extension makes that a person may want to take back (a new line it moves the cursor

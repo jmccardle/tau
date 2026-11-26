@@ -952,10 +952,11 @@ Every running server's tools, in server name order.
 async def start(self, tree: TreeHandle) -> None
 ```
 
-Start every server at once and list its tools, each within the start's time. What
-the configuration skipped, a server that fails or is too slow, and a tool that cannot be
-named are reported (stderr, and an `error` notice each that every client gets when it
-connects); the rest start, and so does τ.
+Start every server at once and list its tools, each within the start's time. A server
+that fails or is too slow, and a tool that cannot be named, are reported (stderr, and an
+`error` notice each that every client gets when it connects); what the configuration
+skipped is in `warnings`, which the start printed, and is told the same way. The rest
+start, and so does τ.
 
 ### Mcp.stop
 

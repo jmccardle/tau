@@ -39,16 +39,21 @@ def test_enabling_search_without_its_key_warns_and_starts_without_the_tool(world
     enabled = tau(world, "ext", "enable", "search")
     assert enabled.code == 0
     assert enabled.out.splitlines()[-1] == (
-        "search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; τ starts "
-        "without the search tool. Set it in the environment, or in a trusted project's .env file"
+        "warning: search: the brave provider needs an API key in BRAVE_API_KEY, which is not set; "
+        "τ starts without the search tool. Set it in the environment, or in a trusted project's "
+        ".env file"
     )
     found = row(world, "search")
     assert (found["state"], found["tools"]) == ("on", [])
     assert "BRAVE_API_KEY, which is not set" in str(found["detail"])
-    assert tau(world, "config", "check").code == 0
-    started = tau(world, "-p", "--verbose", "hi")  # `tau -p` shows stderr with --verbose
+    checked = tau(world, "config", "check")
+    assert checked.code == 0
+    assert "warning: search: the brave provider needs an API key in BRAVE_API_KEY" in checked.out
+    started = tau(world, "-p", "hi")
     assert started.code == 0, started.err
-    assert "tau: search: the brave provider needs an API key in BRAVE_API_KEY" in started.err
+    assert started.err.startswith(
+        "tau: warning: search: the brave provider needs an API key in BRAVE_API_KEY"
+    )
 
 
 def test_a_wrong_provider_or_address_still_stops_the_start(world: World) -> None:

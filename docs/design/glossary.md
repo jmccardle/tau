@@ -1923,6 +1923,18 @@ start. A rejected key, a rate limit and any other failure are tool errors that n
 provider's text is quoted with the key's value replaced). The provider's table (`_Provider`: its address, its key variable and
 its way of asking) and `Hits` (a provider's answer: `(title, url, snippet)` for each result) are private.
 
+### warnings (an extension's), warn and start
+an extension's optional `warnings` attribute; `extension_warnings` (`_protocols.py`, private) · D24 sections 6, 9 and 12 · new (0.18)
+
+One-line strings an extension sets when it is built, each saying what it loads without because
+something outside τ's files is missing or broken (a skill file it cannot use, an MCP configuration
+it skipped, `search`'s key not set): it **warns and starts**, where a mistake in a file raises and
+stops the start. Any extension may have them; `check_extensions` refuses one that is not a list or
+tuple of strings (`DefinitionError`). The start prints each (`tau: LINE`), `tau config check` lists
+them, and `tau ext list` shows them as the source's `detail`; `tau ext enable` prints them. They are
+read when the extensions are built, so what only `start` finds (an MCP server that does not start)
+is the extension's to report then, on stderr and with a standing notice (`tell` from `start`).
+
 ### administrator keys (an extension's), `administrator_keys`, `tau.constants`
 `tau.constants(extensions, name, known)` (`_constants.py`); an extension's `administrator_keys` · D32 section 4, akb #643 · new (0.18)
 
@@ -2077,8 +2089,7 @@ same and returns one **`ExtensionSource`** per source in load order, `tau` and `
 (a **`SourceState`**: `always`, `on`, `off`, `shadowed`, `failed`, `untrusted`: a project that is not trusted is never
 asked, and imported not at all), `kind` (a **`SourceKind`**: `built-in`, `package`, `user`, `project`, `explicit`, or
 `load` for a `load` key no source has), `origin`, `detail` (why not on; for a source that is on, its
-extensions' **`warnings`**, the lines an extension may carry to say what it could not do, such as
-`search` without its key), and for a source that is on the `extensions`, qualified `commands` and
+extensions' *warnings*), and for a source that is on the `extensions`, qualified `commands` and
 `tools` it provides. It is not served over the wire. `tau ext enable KEY` prints that detail, so a
 warning is heard when the source is turned on, not first at the next start.
 

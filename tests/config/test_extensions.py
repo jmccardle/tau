@@ -967,3 +967,38 @@ def test_two_packages_registering_one_key_are_an_error_naming_both(world: World)
         f"package {PACKAGE} (tau_fixture_search.ext.search)",
         "package ffwf-tau-other 2.0 (tau_fixture_other.ext)",
     }
+
+
+WARNS = """
+name = "mirror"
+warnings = ("warning: mirror: MIRROR_URL is not set; it starts without its tool",)
+"""
+MOCK_ONLY = {
+    "default_model": "mock:echo",
+    "models": {"mock": {"provider": "mock", "models": {"echo": {"model": "echo"}}}},
+}
+
+
+def test_a_drop_ins_warnings_are_said_at_start_by_config_check_and_by_ext_list(
+    world: World,
+) -> None:
+    """`warnings`: something outside τ's files is missing, and the extension loads without that
+    part. Every extension's are read the same way, a drop-in's as a built-in's."""
+    world.user_config(MOCK_ONLY)
+    user_file(world, "mirror", WARNS)
+    line = "warning: mirror: MIRROR_URL is not set; it starts without its tool"
+    checked = tau(world, "config", "check")
+    assert (checked.code, checked.out.splitlines()) == (0, [line])
+    assert rows(world)["mirror"]["detail"] == line
+    started = tau(world, "-p", "hi")
+    assert started.code == 0, started.err
+    assert started.err == f"tau: {line}\n"
+
+
+def test_warnings_that_are_not_strings_are_a_definition_error(world: World) -> None:
+    user_file(world, "mirror", 'name = "mirror"\nwarnings = "MIRROR_URL is not set"\n')
+    result = tau(world, "ext", "list")
+    assert result.code != 0
+    assert "extension 'mirror': `warnings` must be a list or tuple of one-line strings" in (
+        result.both
+    )
