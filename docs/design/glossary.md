@@ -910,8 +910,8 @@ extension named like a model key cannot declare one. usage's is `ModelOptions(pr
 ### leaf built-in
 checked by `scripts/check_rules.py` (`LEAVES`) · D28 section 6 · new
 
-A built-in nothing in `python/tau` imports but the table of built-ins (`_extensions.py`'s
-`_BUILTINS`), so deleting its module and that one row leaves a working τ. `usage` is one; what it
+A built-in nothing in `python/tau` imports but the table of built-ins (`_builtins.py`'s
+`BUILTINS`), so deleting its module and that one row leaves a working τ. `usage` is one; what it
 shares with the core (the counting rules) is public in `tau._counts`.
 
 ### resolved_model, model(at=)
@@ -934,7 +934,7 @@ the cursor, one line: `12.3k in · 96% cached · 812 out · $0.017 · ctx 7% · 
 `models.X.usage.price`, read through `model_options`;
 `ctx` only for one with a `context_window`; a session total that left out replies of an unpriced
 model ends in `+`). `/usage` prints a row per model (samples, input, cached share, cache
-writes, output, cost) and a total. Cost is computed when shown from the price in the config
+writes, output, cost) and a total; `/usage json` (the command's `format`) answers the same rows as JSON (see *usage contract*). Cost is computed when shown from the price in the config
 now, never stored, and a reply is priced by `model(at=its node)`. Every reply in the tree counts
 (summaries and sub-agents too), except a copy, a reply rewritten from another, or a reply that was
 not sampled by a provider (an extension's answer to a sample is not billed): `counted` is the
@@ -1754,16 +1754,70 @@ match gives it an `Err` naming the rule. Not a sandbox: a later extension's `pre
 outcome.
 
 ### Agents (extension), sub-agent, agent tool
-`tau.Agents` (`_agents.py`), key `agents`, options `model`, `tools`, tool `agent(task, to=None)` · D24 section 8 · new (8E-4)
+`tau.Agents` (`_agents.py`), key `agents`, options `model`, `tools`, tool `agent(task, to=None)` · D24 section 8 · new (8E-4); on by default and labelled `agent:P:N` (0.18)
 
-The built-in extension, **off by default**, that gives the model one tool. A call opens a
+The built-in extension, **on by default** since 0.18 (`load: {agents: false}` or `tau ext disable
+agents` removes the tool), that gives the model one tool. A call opens a
 **sub-agent**: a cursor at the end of the session's prefix (a fresh context sharing the cache
-prefix; a `Config` naming the model first when it differs), labelled `agent:N`, sent the task as
-input, waited on with `rest`, and closed when it has answered; the result is `agent:N answered:`
-and its final reply text. `to="agent:N"` reopens that closed agent and sends it a follow-up. An
+prefix; a `Config` naming the model first when it differs), labelled by the **agent label**
+`agent:P:N`, sent the task as
+input, waited on with `rest`, and closed when it has answered; the result is `agent:P:N answered:`
+and its final reply text. `to="agent:P:N"` reopens that closed agent and sends it a follow-up. An
 ending other than `Done`, or a reply that asks for tools, is a `ToolError` naming the agent. Its
 cursor is offered the `tools` option's tools, or all but `agent`. Aborting the calling cursor
 cancels the call, whose `finally` closes (and so aborts) the agent.
+
+### agent label (`agent:P:N`), sub-agent parentage
+the label of a sub-agent's cursor · CV-04 (D32 section 5, docs/guide/conventions.md) · new (0.18)
+
+`P` is the id of the cursor whose `agent` call opened it and `N` counts that cursor's agents from
+1 (the first `N` no label has, for that `P`). A client groups a cursor under its parent by reading
+the label, `^agent:(\d+):(\d+)$`: the parent is on neither `CursorView` nor the wire as a field
+(PC-06 was rejected for this). Agents do not nest, so `P` is never itself an agent. `to=` continues
+an agent under its first label; the parent never changes.
+
+### usage contract (`Assistant.meta.usage`), `/usage json`
+`Body.Assistant.meta`'s `usage` object; the command `usage` with `format=json` · CV-02 (D32 section 5, docs/guide/conventions.md) · new (0.18)
+
+What a client may read from each reply it holds: the normalized `usage` object of D26 section 2
+(`input`, `output`, and `cached`, `written`, `written_1h`, `reasoning`, `tool_prompt` when the
+server reported them), summed over the replies `counted` says count. It carries tokens, never
+money: cost needs the price, so `/usage json` (or `/usage format=json`) answers
+`{"models": [row, ...], "total": row, "cost_complete": bool}` with each cost an exact decimal
+string, or `null` for a model without a price. The row fields are in `docs/guide/conventions.md`.
+
+### PlanMode (extension), plan mode, `/plan`
+built-in `plan_mode` (`_plan_mode.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
+
+The built-in extension, **on by default and inert until `/plan`**, for planning before acting.
+**Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
+the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
+extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
+and `bash`); `pre_tool` refuses any other call and any `bash` command outside a fixed list of
+read-only commands or that chains, redirects or substitutes; the cursor shows `plan mode`; and a
+reply that ends in `Stop.End` asks `approve | revise | reject` (approve leaves the mode, writes the
+approval and turns auto-step on). What is read-only is fixed in the extension, not an option
+(a client's `/config` must not widen it). A guard, not a sandbox.
+
+### BashGuard (extension), bash guard
+built-in `bash_guard` (`_bash_guard.py`; not exported), options `patterns`, `allow`, `unattended`, `wait`; off by default · 0.18 (from `examples/speculative/bash_guard.py`)
+
+The built-in extension that asks before a `bash` call that matches a pattern for a command that
+prints a lot (`pre_tool`, `reject | allow | always | truncate`). `always` appends the pattern to
+the user's file's own `allow` (`save_options`); `truncate` rewrites the call's `command` to pipe
+through `grep -e PATTERN | tail -n 200` and the result starts `[bash_guard ran: ...]` (the tree
+keeps the model's own arguments). A question nobody answers within `wait` seconds, or that is
+declined or aborted, is decided by `unattended`; an abort never runs the command.
+
+### Router (extension), `!model`
+built-in `router` (`_router.py`; not exported), options `when`, `use`, `enabled`, `once`, command `/route`; off by default · 0.18 (from `examples/speculative/router.py`)
+
+The built-in extension that picks the model for a turn at `pre_input`: a `!model ` prefix naming a
+configured model (`cursor.models()`) is stripped from the text and decides; else the first regex
+of `when` that matches picks the model at the same index of `use`. A change writes a `Config`
+node and a `Custom` node of kind `route` (`{"model", "why"}`) before the `User` node, and a
+`Notice` to the typist; nothing is written when `cursor.model()` is already it. `once` restores
+the model the branch had before the router's first `Config`, after the turn's last reply.
 
 ### tool not offered
 `Err("tool not offered: X")` · D24 section 8, driver · new (8E-4)
@@ -1773,11 +1827,11 @@ A call to a registered tool that the sample which made it was not offered (`subj
 driver did not sample (loaded with a batch pending, or gone back to) is not checked.
 
 ### off by default (a built-in)
-`OFF_BY_DEFAULT` in `tau._extensions` · D24 M10, D19 · new (8E-4)
+`OFF_BY_DEFAULT` in `tau._builtins` · D24 M10, D19 · new (8E-4); `agents` left it in 0.18
 
 A built-in that `load` must turn on: its row in `tau ext list` is `off` with `off (default); to turn
 it on: tau ext enable KEY`. `load: {KEY: true}`, `tau ext enable KEY` and `-e KEY` turn it on;
-`--no-extensions` does not. Only `agents` is.
+`--no-extensions` does not. They are `bash_guard`, `router` and `token_calls`.
 
 ### rest (a handle's) and an abort of the waiter
 `TreeHandle.rest` · D24 M7 · amended (8E-3)
@@ -1798,8 +1852,8 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
-**load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents` (off by default), `attachments`,
-`base_tools`, `compaction`, `permissions`, `prune`, `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+**load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents`, `attachments`,
+`bash_guard` (off by default), `base_tools`, `compaction`, `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that

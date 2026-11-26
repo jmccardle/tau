@@ -1,14 +1,4 @@
-"""examples/speculative/router.py: four fake models, chosen by the text of the input."""
-
-import sys
-
-import pytest
-
-if sys.platform == "win32":
-    pytest.skip(
-        "Windows: the example imports readline, which Python on Windows does not have",
-        allow_module_level=True,
-    )
+"""`router` (the built-in, off by default): four fake models, chosen by the text of the input."""
 
 import asyncio
 import importlib.util
@@ -19,6 +9,7 @@ from typing import Any
 import pytest
 from fakes import FakeProvider, FakeTool, Gate, Reply
 from harness import Harness, say, scenario
+from shipped import shipped
 
 from tau import (
     Appended,
@@ -33,22 +24,22 @@ from tau import (
     read_models,
 )
 
-EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
-spec = importlib.util.spec_from_file_location(
-    "speculative_router", EXAMPLES / "speculative/router.py"
-)
-assert spec is not None
-assert spec.loader is not None
-router = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(router)
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
-sys.path.insert(0, str(EXAMPLES))  # chat.py imports `common`
-spec = importlib.util.spec_from_file_location("speculative_chat", EXAMPLES / "chat.py")
-assert spec is not None
-assert spec.loader is not None
-chat = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(chat)
-sys.path.remove(str(EXAMPLES))
+
+def load_chat() -> Any:
+    """The line client of examples/chat.py (it imports readline, which Windows lacks)."""
+    sys.path.insert(0, str(EXAMPLES))  # chat.py imports `common`
+    try:
+        spec = importlib.util.spec_from_file_location("speculative_chat", EXAMPLES / "chat.py")
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(EXAMPLES))
+
 
 IDS = {"main": "main-1", "cheap": "tiny-1", "think": "reason-1", "coder": "code-1"}
 TABLE = {
@@ -68,7 +59,7 @@ async def start(tmp_path: Path, replies: int, **options: object) -> tuple[Harnes
         tmp_path,
         config=model_config("main"),
         provider=provider,
-        extensions=[router.Router()],
+        extensions=[shipped("router")],
         catalog=catalog(**options),
     )
     return h, provider
@@ -233,7 +224,7 @@ async def test_a_later_gate_that_refuses_the_input_leaves_the_routers_nodes_behi
         tmp_path,
         config=model_config("main"),
         provider=FakeProvider([]),
-        extensions=[router.Router(), Refuses()],
+        extensions=[shipped("router"), Refuses()],
         catalog=catalog(),
     )
     await say_to(h, "prove it")
@@ -256,7 +247,7 @@ async def test_once_puts_the_branch_back_after_the_turns_last_reply(tmp_path: Pa
         config=model_config("main"),
         provider=provider,
         tools=[FakeTool("t", "result")],
-        extensions=[router.Router()],
+        extensions=[shipped("router")],
         catalog=catalog(once=True),
     )
     await say_to(h, "prove it")
@@ -278,7 +269,7 @@ async def test_an_abort_in_the_tool_phase_leaves_the_branch_on_the_routed_model(
         config=model_config("main"),
         provider=provider,
         tools=[FakeTool("t", "result", gate=Gate())],
-        extensions=[router.Router()],
+        extensions=[shipped("router")],
         catalog=catalog(once=True),
     )
     await h.send("prove it")
@@ -299,7 +290,7 @@ async def test_routing_survives_a_reload_because_it_is_in_the_tree(tmp_path: Pat
     await h.close()
     provider = FakeProvider([say("again")])
     h = await Harness.load(
-        tmp_path, provider=provider, extensions=[router.Router()], catalog=catalog()
+        tmp_path, provider=provider, extensions=[shipped("router")], catalog=catalog()
     )
     before = len(h.nodes())
     await say_to(h, "hi")
@@ -328,7 +319,12 @@ async def test_the_table_is_checked_when_it_is_configured(tmp_path: Path) -> Non
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows: the example imports readline, which Python on Windows does not have",
+)
 async def test_a_chat_line_client_shows_the_notice_and_takes_the_command(tmp_path: Path) -> None:
+    chat = load_chat()
     h, provider = await start(tmp_path, 2)
     client = await h.connect("chat:line", watching=[h.cursor])
     screen: list[str] = []

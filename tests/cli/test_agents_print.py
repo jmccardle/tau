@@ -72,15 +72,19 @@ def test_the_model_delegates_and_reads_the_agents_answer(model: World) -> None:
     result = tau(model, "-p", "--no-context-files", "go")
     assert result.code == 0, result.err
     assert result.out == "done\n"
-    assert Model.told == ["agent:1 answered:\nchild says hi"]
+    assert Model.told == ["agent:0:1 answered:\nchild says hi"]
     assert "agent" in Model.offered[0]
     assert "agent" not in Model.offered[1], "the agent is not offered `agent`"
 
 
-def test_without_load_the_model_is_never_offered_the_tool(model: World) -> None:
+def test_it_is_on_by_default_and_load_false_removes_the_tool(model: World) -> None:
     config = json.loads((model.tau / "config.json").read_text())
     config.pop("load")
     model.user_config(config)
+    assert tau(model, "-p", "--no-context-files", "go").code == 0
+    assert "agent" in Model.offered[0], "no `load`: the tool is offered"
+    Model.told, Model.offered = [], []
+    model.user_config({**config, "load": {"agents": False}})
     result = tau(model, "-p", "--no-context-files", "go")
     assert result.code == 0, result.err
     assert all("agent" not in names for names in Model.offered)
@@ -91,7 +95,7 @@ def test_the_session_keeps_the_agent_as_a_closed_cursor_with_its_label(model: Wo
     (found,) = list_sessions(model.tau / "sessions")
     session = Session.load(model.tau / "sessions" / found.id)
     try:
-        child = session.label("agent:1")
+        child = session.label("agent:0:1")
         assert child not in session.cursors()
         last = dict(session.closed())[child]
         reply = session.tree.node(last).body

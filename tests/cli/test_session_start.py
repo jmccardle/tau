@@ -691,21 +691,21 @@ def offered(world: World, *argv: str) -> str:
 
 
 def test_a_started_session_offers_the_base_tools(configured: World) -> None:
-    assert offered(configured) == BASE_TOOLS
+    assert offered(configured) == f"agent, {BASE_TOOLS}", "and `agent`, which is on by default"
 
 
 def test_load_false_in_the_config_starts_a_session_without_them(configured: World) -> None:
     configured.user_config({**MOCK, "load": {"base_tools": False}})
-    assert offered(configured) == ""
+    assert offered(configured) == "agent"
 
 
 def test_no_extensions_leaves_them_offered(configured: World) -> None:
-    assert offered(configured, "--no-extensions") == BASE_TOOLS
+    assert offered(configured, "--no-extensions") == f"agent, {BASE_TOOLS}"
 
 
 def test_load_false_beats_no_extensions_for_them(configured: World) -> None:
     configured.user_config({**MOCK, "load": {"base_tools": False}})
-    assert offered(configured, "--no-extensions") == ""
+    assert offered(configured, "--no-extensions") == "agent"
 
 
 # -- the first cursor
