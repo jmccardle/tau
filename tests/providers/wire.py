@@ -25,6 +25,7 @@ from tau import (
     Body,
     Delta,
     Driver,
+    Extension,
     Finish,
     GeminiProvider,
     ModelCatalog,
@@ -558,12 +559,17 @@ async def running(
     provider: Provider,
     models: ModelCatalog | None = None,
     tools: Sequence[Tool | Callable[..., object]] = (),
+    extensions: Sequence[Extension] = (),
 ) -> AsyncIterator[tuple[Session, Driver, int]]:
     """A session on disk in `directory` naming `ALIAS`, and a started driver over `provider`
-    and `models` (the provider's dialect's catalog by default)."""
+    and `models` (the provider's dialect's catalog by default), with `extensions`."""
     session = Session.create(model_config(ALIAS), "sys", SystemClock().now(), directory)
     driver = Driver(
-        session, {provider.name: provider}, models or DIALECTS[provider.name].catalog(), tools=tools
+        session,
+        {provider.name: provider},
+        models or DIALECTS[provider.name].catalog(),
+        tools=tools,
+        extensions=extensions,
     )
     await driver.start()
     try:

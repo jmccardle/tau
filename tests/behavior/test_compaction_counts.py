@@ -24,6 +24,7 @@ from tau import (
     Node,
     Part,
     Stop,
+    UndoMarker,
     model_config,
     read_models,
 )
@@ -173,7 +174,8 @@ async def test_the_tail_is_cut_after_the_summary_so_the_line_fits(tmp_path: Path
     users = [n.id for n in before if isinstance(n.body, Body.User) and n.body.text == K]
     replies = [n.id for n in before if isinstance(n.body, Body.Assistant)][:6]
     line = walk(h)
-    assert [n.copied_from for n in line[3:]] == [replies[4], users[5], replies[5]]
+    assert [n.copied_from for n in line[3:-1]] == [replies[4], users[5], replies[5]]
+    assert UndoMarker.of(line[-1].body) is not None, "the line ends in its undo marker"
     source = h.session.tree.node(line[2].derived_from or 0)
     assert isinstance(source.body, Body.Assistant), "the summarizer's reply"
     assert source.body.parts == [Part.Text("S" * 20_000)]
@@ -222,7 +224,8 @@ async def test_the_hard_limit_counts_a_big_tool_result_by_its_bytes_and_keeps_th
     line = walk(h)
     question = next(n for n in h.nodes() if getattr(n.body, "text", "") == "the current question")
     old = {n.id: n for n in h.nodes()}
-    summary, asked, called, result, done = line[-5:]
+    summary, asked, called, result, marker, done = line[-6:]
+    assert UndoMarker.of(marker.body) is not None, "the turn goes on under the undo marker"
     assert asked.copied_from == question.id
     assert asked.body == question.body, "the question the turn answers is kept verbatim"
     assert isinstance(old[called.copied_from or 0].body, Body.Assistant)

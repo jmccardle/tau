@@ -28,6 +28,7 @@ from tau import (
     Outcome,
     Part,
     Stop,
+    UndoMarker,
     model_config,
     read_models,
 )
@@ -129,10 +130,13 @@ async def test_a_branch_that_would_not_fit_is_summarized_before_the_sample(tmp_p
     before = walk(h)
     await say(h, BIG)
     new = walk(h)
-    assert texts(new[2:]) == ["U:" + WRAPPED, "U:" + BIG, "A:four"]
+    assert texts(new[2:]) == ["U:" + WRAPPED, "U:" + BIG, "Custom", "A:four"]
     assert new[:2] == before[:2], "the prefix is shared, not copied"
     assert new[2].parent == 1
-    summary, kept_user, answer = new[2:]
+    summary, kept_user, marker, answer = new[2:]
+    assert UndoMarker.of(marker.body) == UndoMarker(
+        "automatic compaction (hard limit)", kept_user.copied_from or 0, "compact"
+    ), "the line ends in an undo marker back to where the cursor was, and the turn goes on"
     assert summary.by == Author.Extension("compaction")
     assert kept_user.copied_from == before[-1].id + 1
     assert answer.copied_from is None
@@ -334,7 +338,7 @@ async def test_a_remote_client_reads_the_fields(tmp_path: Path) -> None:
     await say(h, BIG)
     seen = await h.client.walk(h.session.cursor(h.cursor).at)
     assert seen == walk(h)
-    assert [n.copied_from is not None for n in seen[2:]] == [False, True, False]
+    assert [n.copied_from is not None for n in seen[2:]] == [False, True, False, False]
     assert h.session.tree.node(seen[2].derived_from or 0).by.__class__ is not None
     assert seen[2].derived_from == 10, "the summarizer's reply"
     await h.close()
@@ -387,7 +391,7 @@ async def test_a_call_the_summarizer_makes_is_refused(tmp_path: Path) -> None:
         and n.body.outcomes[0][1] == Outcome.Err("summarizing: no tools")
     ]
     assert len(refused) == 1
-    assert [n.copied_from is not None for n in walk(h)[2:]] == [False, True, False]
+    assert [n.copied_from is not None for n in walk(h)[2:]] == [False, True, False, False]
     await h.close()
 
 
@@ -656,12 +660,17 @@ async def test_a_turn_that_crosses_the_soft_limit_runs_to_its_end_then_compacts_
         "the summary was built from a walk ending in the reply"
     )
     tip = walk(h)
-    assert tip[-1].copied_from == reply_node.id, "the cursor rests on the compacted line"
+    assert UndoMarker.of(tip[-1].body) is not None, "the cursor rests on the line's undo marker"
+    assert tip[-2].copied_from == reply_node.id, "the cursor rests on the compacted line"
     assert [n for n in h.notices() if n.startswith("compacted")]
     await say(h, "next")
     assert len(summaries(h)) == 1, "the next message does not compact again"
     sent = h.provider.requests[3].walk
-    assert [h.session.tree.node(i).copied_from is not None for i in sent[2:-1]] == [False, True]
+    assert [h.session.tree.node(i).copied_from is not None for i in sent[2:-1]] == [
+        False,
+        True,
+        False,
+    ], "the summary, the copied reply, its undo marker (never sent)"
     await h.close()
 
 
