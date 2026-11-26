@@ -705,7 +705,9 @@ plan mode on: read-only tools; you will be asked to approve the plan
 When the model's reply ends the plan, τ asks `Approve this plan?`: `approve` leaves plan mode,
 tells the model to carry the plan out and lets it run on by itself, `revise` asks what should
 change and sends it, and `reject` leaves plan mode. An empty answer, or nobody connected, stops
-and leaves plan mode on. `/plan` takes the rest of the line as the task, with no quotes.
+and leaves plan mode on. Under `tau -p` nobody is there to answer: without an `--answer` rule
+the run prints the plan, says `question 0 from plan_mode ... has no rule` on standard error and
+exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
 
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
 back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
@@ -733,8 +735,9 @@ The options are what you may tune: `patterns` (the built-in ones are the default
 `/config bash_guard` shows them; a pattern with a comma is typed as a JSON array,
 `patterns='["a{1,2}"]'`), `allow`, `unattended` (`reject`, `allow` or `truncate`, what happens
 when nobody answers) and `wait` (seconds to wait for an answer, 600 by default). A question
-nobody answers within `wait` seconds is decided by `unattended`, so a run with nobody attached
-(`tau -p`) does not stop for ever; an abort never runs the command.
+nobody answers within `wait` seconds is decided by `unattended`; an abort never runs the command.
+`tau -p` does not wait: a question it has no `--answer` or `--decline` rule for stops the run at
+once, exit 3.
 
 ## Choose the model by the prompt
 
