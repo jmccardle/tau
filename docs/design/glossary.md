@@ -1911,7 +1911,7 @@ as a tool of that exact name. A rule naming any `mcp__` tool is never reported a
 no extension provides: a server's tools are listed only once it runs.
 
 ### Fetch (extension), fetch tool, readable, NoText
-`Fetch` (the package `_fetch/`, private, with its settings file `settings.py`; not exported), key `fetch`, no options, administrator keys `allow_private` and `timeout`, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · D24 section 9 · new (0.18)
+`Fetch` (the package `_fetch/`, private, with its settings file `settings.py`; not exported), key `fetch`, no options, administrator keys `allow_private` and `timeout`, tool `fetch(url, max_chars=20000, start=0)`, `readable` and `NoText` (`_html_text.py`, private) · new (0.18); guide: "Reading the web and searching it" in `docs/guide/built-ins.md`
 
 The built-in extension, **on by default**, that lets the model read the web. One GET with a
 `User-Agent` naming tau and an `Accept` that prefers Markdown, under fixed limits (10 s to connect, 60 s
@@ -1930,7 +1930,7 @@ marked untrusted once, ahead of it. `host_of(url)` is the host as the request re
 `Permissions`.
 
 ### Search (extension), search tool, provider
-`Search` (`_search.py`, private; not exported), key `search`, no options, tool `search(query, limit=5)` · D24 section 9 · new (0.18)
+`Search` (`_search.py`, private; not exported), key `search`, no options, tool `search(query, limit=5)` · new (0.18); guide: "Reading the web and searching it" in `docs/guide/built-ins.md`
 
 The built-in extension, **off by default** (`tau ext enable search`), that lets the model search the web
 through a **provider** the administrator chose: `brave` (the default; key in `BRAVE_API_KEY`),

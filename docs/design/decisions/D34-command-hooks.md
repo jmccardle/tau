@@ -103,5 +103,6 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
 - **An abort does not end a running command.** Abort never cancels a hook (model.md §8, Q34), and
   a hook has no way to learn its cursor was aborted, so the step waits for the command or its
   `timeout`. Ending it needs the driver: a handle that tells a hook of the abort, or abort
-  cancelling a hook that opts in. Likewise `tau -p`'s second Ctrl+C (`os._exit`) and a SIGTERM or
-  SIGHUP of `tau -p` or the TUI end τ without `stop`, leaving a running command's group behind.
+  cancelling a hook that opts in. (The second Ctrl+C in `tau -p` and SIGTERM or SIGHUP of `tau -p`,
+  the TUI and `serve` no longer leave a running command's group behind: they run the normal
+  shutdown, bounded at 2 s for the Ctrl+C, D22 §5.)

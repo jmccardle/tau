@@ -530,7 +530,8 @@ line in an undo marker, so `/undo` (next section) takes you back to the conversa
 returns you to the conversation as it was before; otherwise it goes back to just before your last
 message and gives the message back, so you can change it and send it again. Run it again to go
 back one more step. Nothing is deleted: what you went back over stays in the tree (`Ctrl+G`), and
-sending makes a new branch beside it.
+sending makes a new branch beside it. `/undo` moves the conversation only: files a tool changed are
+not restored.
 
 ```text
 undid /compact: back to node 418
@@ -1353,8 +1354,10 @@ through when a command exits 1; τ does not, because a command that is broken ha
 Once a command has exited, τ takes what it wrote and goes on. A child it left running in the
 background (`notify-send done &`) is left alone, as Claude Code leaves it, and holds nothing up;
 send its output elsewhere (`>/dev/null 2>&1`), since τ no longer reads it. When the session stops,
-a command still running gets SIGTERM, with what it started, and SIGKILL 2 s later. An abort (Esc,
-or Ctrl+C in `tau -p`) does not yet end a running command: the step ends when the command does,
+a command still running gets SIGTERM, with what it started, and SIGKILL 2 s later. That includes a
+SIGTERM or SIGHUP of `tau -p`, the terminal UI or `tau serve`, which run the normal shutdown, and a
+second Ctrl+C in `tau -p`, which closes with a 2 s bound. An abort (Esc, a client's abort, or the
+first Ctrl+C in `tau -p`) does not yet end a running command: the step ends when the command does,
 or at its `timeout`.
 
 ### The project's file, and order

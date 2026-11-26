@@ -257,6 +257,9 @@ To make the model run, turn auto-step on: the next step then starts at once from
 stands, and samples (or runs the tools of a batch) as usual.
 
 ```python
+from tau import Body, Cursor
+
+
 async def again(cursor: Cursor, text: str) -> str:
     """Ask the model again, from here, with `text`."""
     cursor.write(Body.User(text))

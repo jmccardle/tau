@@ -1,6 +1,8 @@
-"""A local web server, and the built-in web extensions built as a start builds them (D24 section 9):
+"""A local web server, and the built-in web extensions built as a start builds them:
 from config files and an environment, never by importing a class. No test here reaches the
-network: every address is the server's own (127.0.0.1)."""
+network: every address is the server's own (127.0.0.1).
+
+See the guide: built-ins, "Reading the web"."""
 
 import threading
 from collections.abc import Iterator, Mapping

@@ -1,7 +1,9 @@
-"""`fetch` (D24 section 9), the built-in web read: a page becomes Markdown, text stays text, an
+"""`fetch`, the built-in web read: a page becomes Markdown, text stays text, an
 image is shown to a model that sees, and the limits, the redirect rule, the private-address guard
 and the administrator's constants hold. Against a server of the test's own on 127.0.0.1; nothing
-here reaches the network."""
+here reaches the network.
+
+See the guide: built-ins, "Reading the web"."""
 
 import gzip
 import json
