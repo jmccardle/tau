@@ -13,6 +13,7 @@ for whom, is [`docs/api/`](../api/README.md)).
 | [What τ does for you](built-ins.md) | know what a session does without an extension of yours: retrying, `@file`, prompt templates and skills |
 | [Writing an extension](extensions.md) | add tools, commands, options and hooks, test them, and load them |
 | [Writing a frontend](frontends.md) | drive a session with a `Client`, locally or over `tau serve` |
+| [Conventions](conventions.md) | rely on the shapes τ's built-ins keep stable without a protocol change: undo markers and what `/undo` answers |
 | [Configuration](configuration.md) | set up models, layers, project trust, `.env`, context files and the system prompt |
 | [The wire protocol](protocol.md) | write a client in another language (generated from the schema) |
 

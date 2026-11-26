@@ -1,9 +1,10 @@
 # What τ does for you
 
-Five things happen in a session without any extension of yours: a failed request is tried again,
+Seven things happen in a session without any extension of yours: a failed request is tried again,
 `@file` in a message attaches the file, files you write become commands (prompt templates and
-skills), what the session has used and spent is shown, and a long conversation can be shortened
-(`/compact`, `/prune`). Two more wait for you to ask: rules that ask before a tool runs
+skills), what the session has used and spent is shown, a long conversation can be shortened
+(`/compact`, `/prune`), `/undo` takes back the last change, and `/clear`, `/branch`, `/tree` and
+`/export` work on the session. Two more wait for you to ask: rules that ask before a tool runs
 (permissions), and sub-agents, which are off until you turn them on. Each can be switched off, and
 each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
@@ -504,7 +505,76 @@ stay `false`.
 
 In `Ctrl+G` a node τ computed shows `⧉` and a copy shows `≡ (copy of 12)`; the detail pane says
 where it came from and how long the conversation was before and after, and `p` jumps to the
-source. `tau ext disable compaction` or `tau ext disable prune` removes either.
+source. `tau ext disable compaction` or `tau ext disable prune` removes either. Both end the new
+line in an undo marker, so `/undo` (next section) takes you back to the conversation as it was.
+
+## Going back: `/undo`
+
+`/undo` takes back the last change on your branch. Right after `/compact`, `/prune` or `/clear` it
+returns you to the conversation as it was before; otherwise it goes back to just before your last
+message and gives the message back, so you can change it and send it again. Run it again to go
+back one more step. Nothing is deleted: what you went back over stays in the tree (`Ctrl+G`), and
+sending makes a new branch beside it.
+
+```text
+undid /compact: back to node 418
+```
+
+In the terminal UI, Ctrl+Z on an empty editor is `/undo`: the message goes back into the editor
+as you typed it, `@file` words and all, and an undone `/compact` or `/clear` is a toast. On a cursor
+that is working, `/undo` is refused (`Busy`), as every command that runs on the cursor is; Ctrl+Z
+there asks first and then aborts the step, going back before your last message.
+
+`/undo` only ever sees your own branch: a `/clear` on another cursor is not yours to undo. An
+extension that changes something outside the conversation (files, say) can mark its changes for a
+different `/undo`: `/undo file` takes back the last such change on the branch, if that extension is
+loaded to put the files back, and a plain `/undo` passes over them. How a change is marked is in
+[Conventions](conventions.md). `tau ext disable undo` removes the command; the markers then stay
+in the tree as notes no model reads, and Ctrl+Z edits your last message as before.
+
+## Starting again, branching, the tree as text, and export
+
+The `session` built-in has four commands:
+
+- **`/clear`** starts the conversation again in the same session: the model sees your system
+  prompt and context files and nothing else, as in a new session, and keeps the model and options
+  this branch was using. The old conversation stays in the tree, and `/undo` goes back to it. The
+  new conversation starts from the session's own system prompt, so the first request after
+  `/clear` is the same request a new session would send, and a provider's prompt cache stays
+  warm.
+- **`/branch [label]`** opens a second cursor where you are, to try something else from here
+  (Alt+Right views it in the terminal UI).
+- **`/tree`** draws the session's tree as text, for a client with no tree screen of its own:
+
+  ```text
+  0 config: {"model": "local:qwen"}
+  1 system: You are τ, a coding agent…
+  ├─ 2 user: fix the parser
+  │  3 assistant: Done. [2 calls]
+  └─ 9 undo: /clear
+     10 user: now the lexer  ◀ 0
+  ```
+
+  `/tree at=9` draws only what is below node 9.
+- **`/export [path]`** writes your conversation as Markdown, as `tau export` does: to a file
+  (`/export notes.md`, relative to the working directory; a file that exists is refused, not
+  overwritten) or as the command's answer;
+  `thinking=true` includes the model's thinking.
+
+There is no `/new`: starting a new session is your client's to do (Ctrl+N in the terminal UI).
+`tau ext disable session` removes all four:
+
+```bash
+tau ext list | grep -A1 -E '^(session|undo) '
+```
+
+```text expect
+session       on         built-in
+              commands: /clear, /branch, /tree, /export; tools: none
+--
+undo          on         built-in
+              commands: /undo; tools: none
+```
 
 ## Ask before a tool runs
 
