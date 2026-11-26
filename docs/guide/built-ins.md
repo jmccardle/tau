@@ -1,14 +1,15 @@
 # What τ does for you
 
-Eight things happen in a session without any extension of yours: a failed request is tried
+Nine things happen in a session without any extension of yours: a failed request is tried
 again, `@file` in a message attaches the file, files you write become commands (prompt templates
 and skills), what the session has used and spent is shown, a long conversation can be shortened
 (`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
-change, and `/clear`, `/branch`, `/tree` and `/export` work on the session. Three more wait for
-you to ask: rules that ask before a tool runs (permissions), `/plan` (plan mode, which does nothing
-until you type it), and the three that are off until you turn them on: the bash guard, the router and tools from
-MCP servers. Each can be switched off, and each is a few lines to use. The examples run with the mock
-model, which needs no server and no key.
+change, `/clear`, `/branch`, `/tree` and `/export` work on the session, and the model can read a
+web page (`fetch`). Four more wait for you to ask: rules that ask before a tool runs (permissions),
+`/plan` (plan mode, which does nothing until you type it), and the four that are off until you turn
+them on: the bash guard, the router, tools from MCP servers and web search. Each can be switched
+off, and each is a few lines to use. The examples run with the mock model, which needs no server
+and no key.
 
 ```json file=$TAU_HOME/config.json
 {
@@ -616,7 +617,8 @@ That asks about every `bash`, `write` and `edit` call except the exact commands 
 
 The pattern is a shell-style glob over the `path` argument (for `read`, `write`, `edit`, `grep` and
 `find`): `*` matches anything, including `/` and line breaks,
-`?` one character, `[ab]` a set, and capitals are not lowercase. A tool an extension gives the model
+`?` one character, `[ab]` a set, and capitals are not lowercase. `fetch:GLOB` is the same kind of rule over
+the host of the URL ([below](#reading-the-web-and-searching-it)). A tool an extension gives the model
 takes only its bare name (and a name may hold a colon: `srv:tool`). A rule that names a tool nobody
 provides (`Bash`, `wirte`) is refused when you set it: `/config permissions ...` and `tau config
 set` check the names, and a bad rule is never written, `--save` or not. A file that already holds
@@ -772,7 +774,9 @@ plan mode on: read-only tools; you will be asked to approve the plan
 When the model's reply ends the plan, τ asks `Approve this plan?`: `approve` leaves plan mode,
 tells the model to carry the plan out and lets it run on by itself, `revise` asks what should
 change and sends it, and `reject` leaves plan mode. An empty answer, or nobody connected, stops
-and leaves plan mode on. `/plan` takes the rest of the line as the task, with no quotes.
+and leaves plan mode on. Under `tau -p` nobody is there to answer: without an `--answer` rule
+the run prints the plan, says `question 0 from plan_mode ... has no rule` on standard error and
+exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
 
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
 back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
@@ -800,8 +804,9 @@ The options are what you may tune: `patterns` (the built-in ones are the default
 `/config bash_guard` shows them; a pattern with a comma is typed as a JSON array,
 `patterns='["a{1,2}"]'`), `allow`, `unattended` (`reject`, `allow` or `truncate`, what happens
 when nobody answers) and `wait` (seconds to wait for an answer, 600 by default). A question
-nobody answers within `wait` seconds is decided by `unattended`, so a run with nobody attached
-(`tau -p`) does not stop for ever; an abort never runs the command.
+nobody answers within `wait` seconds is decided by `unattended`; an abort never runs the command.
+`tau -p` does not wait: a question it has no `--answer` or `--decline` rule for stops the run at
+once, exit 3.
 
 ## Choose the model by the prompt
 
@@ -903,3 +908,124 @@ lists new tools has them offered from the model's next request. A server that ex
 (an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
 server. A tool's text and images reach the model; other kinds of content are named and left out.
 Prompts and resources that a server offers are not used.
+
+## Reading the web and searching it
+
+`fetch` is on from the start and needs nothing: the model gives it a URL and gets the page as
+text. `search` is off, because it needs an account with a search service and its key. Both tools
+mark what they bring back as untrusted web content, once, ahead of it: a page is data, and a
+page that says "ignore your instructions" is still only text.
+
+```bash
+tau ext list | grep -A1 '^fetch'
+```
+
+```text expect
+fetch         on         built-in
+              commands: none; tools: fetch
+```
+
+### `fetch`
+
+`fetch(url, max_chars=20000, start=0)` makes one GET, with a `User-Agent` that says what tau is, an
+`Accept` that asks for Markdown first, and these limits (they are fixed: a model's client could
+not change them): 10 s to connect, 60 s in all, 5 MiB of body, 20 MiB for an image, and 5
+redirects.
+
+- **A web page** comes back as Markdown: its main content (the `main` element, or the one
+  `article`, else the body) with headings, lists, quotes, code, tables as rows, and links made
+  absolute. Navigation, footers, sidebars, scripts, styles and hidden elements are left out. A page
+  that is empty until a script fills it has no text for tau to read, and the call says so; τ runs no
+  JavaScript.
+- **Text**, JSON, XML and the like come back as they are, decoded by their charset. A PDF or another
+  binary type is an error naming the type; tau reads text and images only.
+- **An image** (PNG, JPEG, GIF, WebP) comes back as an image if the model takes images (`images:
+  true` in its config, within its provider's limits, as for `read`); otherwise as one line saying
+  what it is.
+- **A long page** is cut at `max_chars` (at most 200000), and the first line says which characters
+  are there and `call again with start=N for more`. Each call fetches the page again.
+- **A redirect** to the same host is followed. One to another host is not: the answer is the URL it
+  names, and the model calls `fetch` again. That is what makes the permission rules below mean
+  something: every host the model reads from is a call they see.
+- An error status, a timeout and a failed connection are errors naming what happened.
+
+A URL whose host is, or resolves to, a loopback, private, link-local or other non-public address
+(`localhost`, `192.168.1.5`, `169.254.169.254`) is refused, a redirect's too: a page's link, or a
+model led by one, cannot reach a service on your own network. If you want that, for documentation
+you serve yourself, say so in the config file. This is the administrator's setting, not an option,
+so no client can turn it on:
+
+```json
+{ "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
+```
+
+(`timeout` is the whole call, in seconds, 1 to 600.) The check looks the name up before the
+request, and the request looks it up again, so a name that answers differently the second time
+gets through: this guards against the model and the pages it reads, and is not a sandbox. `tau ext
+disable fetch` takes the tool away.
+
+**Permissions** know it as `fetch`, and `fetch:GLOB` matches the URL's host, ignoring case (not the
+scheme, port or path), with the same glob as for paths: `*` crosses dots, so `*.python.org` is every
+host under `python.org` and not `python.org` itself. The host is read as the request reads it:
+`https://docs.python.org@evil.com/` is a visit to `evil.com`.
+
+```json
+{
+  "extensions": {
+    "permissions": {
+      "allow": ["fetch:docs.python.org", "fetch:*.wikipedia.org"],
+      "ask": ["fetch"]
+    }
+  }
+}
+```
+
+That reads two documentation sites freely and asks about any other host; answering `always` writes
+`fetch:HOST` for that host. A `deny` rule works the same way.
+
+### `search`
+
+`search(query, limit=5)` asks a search service for up to `limit` (1 to 20) results and gives the
+model a numbered list: title, address and a snippet. The model reads a result with `fetch`.
+
+```bash
+tau ext list | grep -A1 '^search'
+```
+
+```text expect
+search        off        built-in
+              off (default); to turn it on: tau ext enable search
+```
+
+The provider, its key and its address are the administrator's, in the config file and the
+environment, and no client can read or change them. The key is never in a config file: the setting
+`api_key_env` names the variable that holds it. Turning the tool on without the key stops the start
+and says which variable is missing:
+
+```text
+extension "search" failed to load; tau did not start.
+  source: built-in search
+  ConfigError: the search tool is on and the brave provider needs an API key, but the environment
+  variable BRAVE_API_KEY is not set. Set it in the environment, or in a trusted project's .env file
+  to start without it: tau ext disable search
+```
+
+| `provider` | service | key | `base_url` |
+|---|---|---|---|
+| `brave` (the default) | [Brave Search API](https://brave.com/search/api/) | `BRAVE_API_KEY` | optional |
+| `marginalia` | [Marginalia](https://about.marginalia-search.com/article/api/), an index of the non-commercial web | `MARGINALIA_API_KEY` (the shared key `public` works but is often rate limited) | optional |
+| `searxng` | a [SearXNG](https://docs.searxng.org/) instance you run, with its JSON format enabled | none | required |
+
+```json
+{
+  "load": { "search": true },
+  "extensions": {
+    "search": { "provider": "searxng", "base_url": "http://127.0.0.1:8080" }
+  }
+}
+```
+
+The settings are `provider`, `api_key_env` (the variable that holds the key, if it is not the one in
+the table) and `base_url` (a proxy, or your instance). A setting that is not one of these, `api_key`
+included, stops the start and names itself. A rejected key and a rate limit come back as tool errors
+that say so, and never contain the key. Permissions know the tool as `search`, by its bare name.
