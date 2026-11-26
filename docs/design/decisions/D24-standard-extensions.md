@@ -460,6 +460,98 @@ point or a node kind.
 runs long, agents is the first cut: 0.15 had only an example, and gamemaster and forest already
 show the pattern. The other six cover regressions 0.15 users would notice.
 
+### 12. MCP servers (0.18, EX-28)
+
+Added for 0.18 on D32's lifecycle (akb #641 EX-28, P18-09). `mcp` is a built-in, **off by
+default** (`tau ext enable mcp`), that offers the model the tools of the MCP servers the user
+configured; with none configured it starts nothing and offers nothing. It is tau-acp's relay
+(`_extension.py`, `relay.py`, `mcp.py`, `child.py`) moved into τ: the same client, the same
+process handling, now in the harness's process instead of behind a socket.
+
+**The files.** `$TAU_HOME/mcp.json` (the user's), and in a trusted project `.mcp.json` (Claude
+Code's project file, at its root) and `.tau/mcp.json`, all in the de-facto shape
+`{"mcpServers": {NAME: {command, args, env} | {type: "http", url, headers}}}`. For one name the
+nearest file wins whole (`.tau/mcp.json` over `.mcp.json` over the user's); `"disabled": true`
+turns a server off and, written in a nearer file, turns off a farther file's server of that name
+(the way to keep a project's `.mcp.json` server from starting without editing it). Keys this
+reader does not know (other clients' `timeout`, `alwaysAllow`) are ignored, so a file written for
+another client loads as it is. `${VAR}` and `${VAR:-default}` in `command`, `args`, `env`, `url`
+and `headers` are replaced from the environment τ reads keys from (the shell's over the project's
+`.env`): a token stays out of the file. An unset `${VAR}` with no default is an error naming the
+server and the variable. Why:
+
+- **Its own file, not an option.** A server is a command τ runs with the user's authority;
+  options are what a client may set (`/config`, `set_options`, akb #643), so the servers are no
+  option. Nor are they `config.json` keys: the shape is the one every MCP client writes, so a
+  user copies a server's README snippet in unchanged.
+- **`.mcp.json` too**, as `skills` reads `.claude/skills` (P18-05): a project set up for Claude
+  Code works with no copy. Its servers run only once the person has trusted the project and
+  turned `mcp` on.
+- **Pinned by trust** (D19 §4): both project files are approved with the project. The report
+  lists each server and what it runs (`gh: npx -y @modelcontextprotocol/server-github`) with the
+  names of its `env` or `headers`, never their values; a change to either file makes the project
+  untrusted until `tau trust`. The user's file is the user's, as `config.json` is.
+- Claude Code's user-level servers (in `~/.claude.json`, its own state file) are not read.
+- **`TAU_MCP_CONFIG`** names more files (separated by `os.pathsep`), nearest of all, each of which
+  must exist: how a program that starts τ hands it servers of its own without editing the user's
+  or the project's files (tau-acp, with an editor's `mcpServers`, together with
+  `--set load.mcp=true`). It is administrator configuration, like `--set` and `TAU_SETTINGS`
+  (akb #643): set by whoever starts the process, never by a client. An environment variable, not
+  a flag: it reaches `tau`, `tau -p` and `tau serve` alike with no plumbing per command, as
+  `TAU_SETTINGS` does. (It is read from the environment τ reads keys from, so a trusted project's
+  `.env` could set it too; that grants nothing `.tau/mcp.json` does not.)
+
+**Transports.** stdio (newline-delimited JSON-RPC over the server's stdin and stdout; its stderr
+is read and its last lines kept for the error, never shown: it would draw over the TUI) and
+streamable HTTP (a POST per message, answered in JSON or an event stream; the session id it gives
+goes with every later request, and a `DELETE` ends it). The legacy SSE transport (`type: "sse"`)
+is refused with what to use instead. No `GET` stream is opened, so an HTTP server's unprompted
+messages reach us only in the answer to a request of ours. No OAuth: `headers` carry a token.
+
+**The client is τ's own**, not the official `mcp` SDK: what τ uses (the handshake, `tools/list`
+with paging, `tools/call` with cancellation, `ping`, `list_changed`) is about 400 lines over
+`httpx`, which τ already depends on; the SDK would add pydantic, anyio, starlette and more to every
+install for an off-by-default built-in, and tau-acp's client is already tested against the
+failure cases (a dying server, a malformed line, a grandchild left in the process group).
+
+**Tools.** Each is `mcp__SERVER__TOOL` (the tool's name reduced to `[A-Za-z0-9_-]`; at most 64
+characters, the providers' limit; a server's name may not hold `__`), with the server's
+description and input schema. They go through `permissions` like any tool; `mcp__SERVER` in a
+rule names every tool of that server, and a rule naming an `mcp__` tool is never a "no extension
+provides it" warning (the tools are listed only once the server runs). A result's `text` blocks
+are its text, `image` blocks its images (D30), a text `resource` its text; anything else is a line
+saying it was left out; `structuredContent` stands in for no text; `isError` is `Err`. An abort
+cancels the call (`notifications/cancelled`).
+
+**Start, and a server that fails (Fail Early).** `start` starts every server at once and returns
+when each has shaken hands and listed its tools, so the first step has them all (`tau -p "use the
+github tool"` must not race the server). **A server that fails to start stops τ**: the start
+raises naming every server that failed and why (`MCP server gh exited (status 1): <its last stderr
+line>`, `MCP server db: cannot start uvx: No such file or directory`), and the ones that started
+are stopped. The alternative, an `error` notice and the server marked failed while the others
+work, is what some clients do, but in τ a `start` runs before any client is connected (D32 §4),
+so the notice would reach no one: the session would quietly lack the tools, the model would say
+it has none, and the person would not know why. With several servers every failure is named at
+once, so one edit fixes them; `"disabled": true` on the server (or `tau ext disable mcp`) starts
+without it. The start's timeout is D32's, `extensions.mcp.start_timeout` (30 s by default); a
+first `npx` or `uvx` run downloads its package and can take longer, so when the start is cancelled
+the servers still starting are named on stderr with that key. There is no per-server timeout.
+
+**While it runs.** A server's `notifications/tools/list_changed` lists it again and calls
+`reassemble` (clients get `Commands` if the forms changed; the tools change from the next sample,
+and a call during which the server announced the change returns only once the new list is in, so
+the model's next sample has it). A server that exits is an `error` notice from `mcp` naming it
+with its last stderr line, and its tools answer `Err` saying so until τ restarts: no restart is
+tried. `/mcp` lists the servers, their state and their tools. `stop` stops them all at once: stdin
+closed, then SIGTERM and SIGKILL to the server's process group (each after 1.5 s), and what was in
+its group then gets SIGTERM once it has exited, through pidfds where Linux has them (tau-acp's
+rule: never signal a pid that may have been reused). If τ is killed outright a server sees its
+stdin close, which the specification makes its signal to exit.
+
+**Not in 0.18.** Prompts (`prompts/list` as commands) and resources: tools are what models use,
+and a prompt's arguments would need commands built at run time from a schema. Sampling,
+elicitation and roots (we offer no client capabilities: such a request is `-32601`). OAuth.
+
 ## Alternatives
 
 | option | why not |

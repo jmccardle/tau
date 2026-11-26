@@ -42,6 +42,7 @@ BUILT_INS = [
     "attachments",
     "base_tools",
     "compaction",
+    "fetch",
     "permissions",
     "plan_mode",
     "prune",
@@ -52,9 +53,9 @@ BUILT_INS = [
     "undo",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "bash_guard", "retry", "router", "token_calls"])
-"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `router` and `token_calls`
-are off by default."""
+KEYS = sorted([*BUILT_INS, "bash_guard", "mcp", "retry", "router", "search", "token_calls"])
+"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `mcp`, `router`, `search` and
+`token_calls` are off by default."""
 MODULE = """
 name = "{name}"
 {extra}
@@ -191,11 +192,11 @@ def test_an_installed_package_loads_through_its_registration(world: World) -> No
     """The exit gate: a package with tau-search's registration shape (tests/fixtures)."""
     result = site_tau(world, "ext", "list", "--json")
     assert result.code == 0, result.err
-    row = site_rows(result)["search"]
+    row = site_rows(result)["websearch"]
     assert (row["state"], row["kind"]) == ("on", "package")
     assert row["tools"] == ["web_fetch"]
-    assert row["commands"] == ["search:find"]
-    assert row["extensions"] == ["search"]
+    assert row["commands"] == ["websearch:find"]
+    assert row["extensions"] == ["websearch"]
     assert str(row["origin"]).startswith(f"package {PACKAGE}")
 
 
@@ -210,11 +211,14 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "base_tools",
         "bash_guard",
         "compaction",
+        "fetch",
+        "mcp",
         "permissions",
         "plan_mode",
         "prune",
         "retry",
         "router",
+        "search",
         "session",
         "skills",
         "step_limit",
@@ -222,7 +226,7 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "tokens",
         "undo",
         "usage",
-        "search",
+        "websearch",
         "ralph",
     ]
 
@@ -271,9 +275,9 @@ def test_the_nearer_source_shadows_and_the_shadowed_one_is_never_imported(
 def test_a_file_named_with_e_shadows_the_package_of_that_key_and_loads_once(
     world: World, tmp_path: Path
 ) -> None:
-    mine = write(tmp_path / "search.py", MODULE.format(name="search", extra="MINE = True"))
+    mine = write(tmp_path / "websearch.py", MODULE.format(name="websearch", extra="MINE = True"))
     result = site_tau(world, "ext", "list", "--json", "-e", str(mine))
-    listed = [r for r in map(json.loads, result.out.splitlines()) if r["key"] == "search"]
+    listed = [r for r in map(json.loads, result.out.splitlines()) if r["key"] == "websearch"]
     assert [(r["kind"], r["state"]) for r in listed] == [
         ("package", "shadowed"),
         ("explicit", "on"),
@@ -370,7 +374,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:30] == [
+    assert lines[:36] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -385,6 +389,10 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}off (default); to turn it on: tau ext enable bash_guard",
         "compaction    on         built-in",
         f"{pad}commands: /compact; tools: none",
+        "fetch         on         built-in",
+        f"{pad}commands: none; tools: fetch",
+        "mcp           off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable mcp",
         "permissions   on         built-in",
         f"{pad}commands: none; tools: none",
         "plan_mode     on         built-in",
@@ -395,6 +403,8 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}commands: none; tools: none",
         "router        off        built-in",
         f"{pad}off (default); to turn it on: tau ext enable router",
+        "search        off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable search",
         "session       on         built-in",
         f"{pad}commands: /clear, /branch, /tree, /export; tools: none",
         "skills        on         built-in",
@@ -480,27 +490,29 @@ def test_no_extensions_turns_off_packages_and_drop_ins_but_not_built_ins(
     trust(world, root)
     assert names(load_extensions(start(world, root), discover=False)) == BUILT_INS
     found = site_rows(site_tau(world, "ext", "list", "--json", "--no-extensions", cwd=root))
-    for key in ("search", "ralph", "scratch_pad"):
+    for key in ("websearch", "ralph", "scratch_pad"):
         assert (found[key]["state"], found[key]["detail"]) == ("off", "--no-extensions")
     assert found["step_limit"]["state"] == "on"
     assert found["base_tools"]["state"] == "on"
 
 
 def test_load_false_turns_an_installed_package_off(world: World) -> None:
-    world.user_config({"load": {"search": False}})
+    world.user_config({"load": {"websearch": False}})
     found = site_rows(site_tau(world, "ext", "list", "--json"))
-    assert found["search"]["state"] == "off"
-    assert found["search"]["detail"] == f"load.search = false in {world.tau / 'config.json'}"
+    assert found["websearch"]["state"] == "off"
+    assert found["websearch"]["detail"] == f"load.websearch = false in {world.tau / 'config.json'}"
 
 
 def test_e_with_a_key_loads_that_source_even_when_load_or_no_extensions_turn_it_off(
     world: World,
 ) -> None:
     user_file(world, "ralph")
-    world.user_config({"load": {"search": False}})
-    args = ("ext", "list", "--json", "--no-extensions", "-e", "search")
+    world.user_config({"load": {"websearch": False}})
+    args = ("ext", "list", "--json", "--no-extensions", "-e", "websearch")
     found = site_rows(site_tau(world, *args))
-    assert found["search"]["state"] == "on", "tau --no-extensions -e search: the package alone"
+    assert found["websearch"]["state"] == "on", (
+        "tau --no-extensions -e websearch: the package alone"
+    )
     assert found["ralph"]["state"] == "off"
 
 
@@ -943,7 +955,7 @@ def test_a_package_that_fails_to_import_names_itself_its_version_and_the_registr
 
 def test_two_packages_registering_one_key_are_an_error_naming_both(world: World) -> None:
     result = site_tau(world, "ext", "list", "--json", sites=[SEARCH_SITE, OTHER_SITE])
-    dup = [r for r in map(json.loads, result.out.splitlines()) if r["key"] == "search"]
+    dup = [r for r in map(json.loads, result.out.splitlines()) if r["key"] == "websearch"]
     assert result.code == 1
     assert [r["state"] for r in dup] == ["failed", "failed"]
     assert {r["origin"] for r in dup} == {

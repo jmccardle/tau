@@ -6,7 +6,8 @@ runs. With no rules configured it asks nothing. A rule is `TOOL`, which matches 
 tool, or `TOOL:GLOB` for the path tools: the glob (`fnmatch`'s, case-sensitive; `*` crosses `/`
 and newlines) matches the path argument of `read`, `write`, `edit`, `grep` or `find` (for `grep`,
 every one of the `files` too, and the working directory when it names neither). Any other text is a
-tool's whole name (a name may hold a colon).
+tool's whole name (a name may hold a colon); `mcp__SERVER` also matches every tool of that MCP
+server (`mcp__SERVER__TOOL`).
 
 - **Paths** are matched as the model wrote them and as the path they name: the argument joined to
   the session's working directory and made real (`..`, `//`, `.` and symlinks resolved). A call may
@@ -25,6 +26,12 @@ tool's whole name (a name may hold a colon).
   denied pattern is refused. Any other runs with `exclude: [PATTERN]` added to its arguments
   for each deny rule about it, and the tool leaves out the matching files (also through a
   symlink) and says how many. A `deny` for `read:GLOB` guards `grep` too.
+- **Fetches** (`fetch`) are matched by the URL's host: `fetch:GLOB` matches the `url`'s host
+  (`fnmatch`'s glob, ignoring case; `*` crosses dots, so `*.python.org` is every host under it and
+  not `python.org` itself; the port, the path and the scheme are not part of it). The host is read
+  as the tool reads it, so a rule is about the host that is fetched. `fetch` answers a redirect to
+  another host instead of following it, so each host the model reads from is a call the rules see.
+  `always` saves `fetch:HOST`. The `search` tool has the bare name only.
 - **Commands** are matched by the tool's name only: a pattern over a command's text is easy to
   step around (a shell says one thing many ways), so it would promise a guard it is not. `deny`
   and `ask` take `bash` alone. `allow` also takes `bash:COMMAND`, one exact command (what `always`
@@ -57,18 +64,24 @@ from typing import Annotated, ClassVar, Literal, cast
 from tau._agents import Agents
 from tau._base_tools import BaseTools
 from tau._events import NoticeLevel
+from tau._fetch import Fetch, host_of
 from tau._handles import NodeHandle
 from tau._hook_order import GUARD
 from tau._protocols import CallDraft
+from tau._search import Search
 from tau._tools import assemble_tools
 
 BASH = "bash"
 PATH_TOOLS = ("read", "write", "edit", "grep", "find")
 SEARCH_TOOLS = ("grep", "find")
 """The path tools that read every file under their root."""
-PATTERN_TOOLS = (BASH, *PATH_TOOLS)
+HOST_TOOLS = ("fetch",)
+"""The tools whose rule's glob is over the host of the URL they read."""
+PATTERN_TOOLS = (BASH, *PATH_TOOLS, *HOST_TOOLS)
 """The tools a rule may give an argument for (`bash`: one exact command, in `allow` only)."""
 REFUSED = "the user refused this call"
+MCP_PREFIX = "mcp__"
+"""The names of MCP servers' tools (`mcp__SERVER__TOOL`); a rule `mcp__SERVER` names them all."""
 FOLDS = sys.platform == "darwin"
 """Whether `deny` and `ask` ignore case in a path: a macOS volume folds case unless it was made
 case-sensitive, so `/Users/me/.SSH/key` is `/Users/me/.ssh/key` there, and a rule that missed it
@@ -82,10 +95,12 @@ _GLOB_CHARS = re.compile(r"([*?\[])")
 @dataclass(frozen=True)
 class Call:
     """The part of a tool call the rules look at: its `tool`, and what a glob matches. For `bash`
-    that is the `command` (`subject`). For a path tool it is the paths the call names: `written`
-    as the model gave them and `resolved` as the real absolute paths they land on (same length;
-    `written` has the working directory, `.`, for a `grep` or `find` that names none). A call that
-    gives no such argument, or not as strings, has none, and no pattern rule matches it."""
+    that is the `command` (`subject`). For `fetch` it is the `url` (`subject`) and its
+    `host` (`None` when it is no http or https URL). For a path tool it is the paths the call
+    names: `written` as the model gave them and `resolved` as the real absolute paths they land on
+    (same length; `written` has the working directory, `.`, for a `grep` or `find` that names
+    none). A call that gives no such argument, or not as strings, has none, and no pattern rule
+    matches it."""
 
     tool: str
     subject: str | None
@@ -94,6 +109,7 @@ class Call:
     args_raw: str
     cwd: str = "/"
     """The session's working directory, made real: where a relative rule starts."""
+    host: str | None = None
 
     @classmethod
     def of(cls, draft: CallDraft, cwd: Path) -> "Call":
@@ -105,8 +121,15 @@ class Call:
             subject = command if isinstance(command, str) else None
         elif draft.tool in PATH_TOOLS:
             written = _paths(draft.tool, args)
+        host: str | None = None
+        if draft.tool in HOST_TOOLS:
+            url = args.get("url")
+            subject = url if isinstance(url, str) else None
+            host = host_of(subject) if subject is not None else None
         resolved = tuple(os.path.realpath(os.path.join(cwd, w)) for w in written)
-        return cls(draft.tool, subject, written, resolved, draft.args_raw, os.path.realpath(cwd))
+        return cls(
+            draft.tool, subject, written, resolved, draft.args_raw, os.path.realpath(cwd), host
+        )
 
     def shown(self) -> str:
         """The question's text: the command, a line per resolved path, or the raw arguments."""
@@ -172,6 +195,11 @@ class Rule:
             raise ValueError(f"rule {text!r} has an empty pattern after the colon")
         if tool == BASH:
             _check_command(text, glob, mode)
+        elif tool in HOST_TOOLS:
+            try:
+                _compiled(glob, True)
+            except re.error as e:
+                raise ValueError(f"rule {text!r} has an invalid pattern: {e}") from e
         else:
             try:
                 _compiled(glob)
@@ -192,22 +220,35 @@ class Rule:
         name. A `bash` or path-tool call whose arguments name nothing (they are malformed) gets
         none: the bare name would allow every call of the tool."""
         subjects = [call.subject] if call.tool == BASH else list(call.resolved)
+        if call.tool in HOST_TOOLS:
+            subjects = [call.host]
         if not subjects or subjects == [None]:
             return [] if call.tool in PATTERN_TOOLS else [cls(call.tool)]
-        if call.tool != BASH and sys.platform == "win32":
+        if call.tool not in (BASH, *HOST_TOOLS) and sys.platform == "win32":
             return []  # no path patterns there (`parse`)
         return [cls(call.tool, _GLOB_CHARS.sub(r"[\1]", str(s))) for s in dict.fromkeys(subjects)]
 
     def __str__(self) -> str:
         return self.tool if self.glob is None else f"{self.tool}:{self.glob}"
 
+    def names(self, tool: str) -> bool:
+        """Whether the rule is about `tool`: its name, or for `mcp__SERVER`, any tool of that
+        MCP server (`mcp__SERVER__TOOL`)."""
+        return tool == self.tool or (
+            self.tool.startswith(MCP_PREFIX)
+            and "__" not in self.tool.removeprefix(MCP_PREFIX)
+            and tool.startswith(f"{self.tool}__")
+        )
+
     def matches(self, call: Call, mode: Mode) -> bool:
-        if call.tool != self.tool and not self.guards(call, mode):
+        if not self.names(call.tool) and not self.guards(call, mode):
             return False
         if self.glob is None:
             return True
         if call.tool == BASH:
             return call.subject is not None and call.subject == literal(self.glob)
+        if call.tool in HOST_TOOLS:
+            return call.host is not None and _fits(call.host, self.glob, True)
         absolute = _absolute(self.glob, call.cwd)
         if mode == "allow":
             return bool(call.resolved) and all(_fits(r, absolute) for r in call.resolved)
@@ -428,6 +469,9 @@ def answers(glob: str, text: str) -> bool:
     call, _, _ = text.rpartition("\n(ask rule: ")
     call = call or text
     tool = call[: call.find(": ")] if ": " in call else call
+    if tool in HOST_TOOLS and glob.startswith(f"{tool}:") and not glob.startswith(f"{tool}: "):
+        host = host_of(call.removeprefix(f"{tool}: "))
+        return host is not None and _fits(host, glob[len(tool) + 1 :], True)
     if glob.startswith(f"{tool}:") and not glob.startswith(f"{tool}: "):
         glob = f"{tool}: {glob[len(tool) + 1 :]}"
     if tool == BASH:
@@ -462,8 +506,9 @@ def _builtin_tools() -> set[str]:
     """The names of the tools the built-in extensions provide, loaded or not, and on every
     platform: `bash` is not on Windows, but a rule for it is no misspelling (one config file may
     serve several machines)."""
-    listed, _ = assemble_tools((), [BaseTools(), Agents()])
-    return {BASH, *(cast("str", getattr(t, "name")) for t in listed)}  # noqa: B009
+    listed, _ = assemble_tools((), [BaseTools(), Agents(), Fetch()])
+    # `search`, the tool of an extension that is off by default, has its extension's name
+    return {BASH, Search.name, *(cast("str", getattr(t, "name")) for t in listed)}  # noqa: B009
 
 
 def _rules(texts: Iterable[str], mode: Mode) -> list[Rule]:
@@ -488,7 +533,8 @@ class Options:
         """The rule lists that name a tool no extension provides, each with those rules (a
         misspelled name would match nothing, and a `deny` that matches nothing is no guard). A
         tool of a built-in extension that is not loaded (`agent`, with `agents` off) is known: a
-        rule for it names nothing missing."""
+        rule for it names nothing missing; so is any `mcp__` name, since an MCP server's tools
+        are listed only once it runs."""
         known = {*tools, *_builtin_tools()}
         found: dict[Mode, list[str]] = {}
         for name in MODES:
@@ -496,7 +542,7 @@ class Options:
             bad = [
                 t
                 for t, rule in zip(texts, _rules(texts, name), strict=True)
-                if rule.tool not in known
+                if rule.tool not in known and not rule.tool.startswith(MCP_PREFIX)
             ]
             if bad:
                 found[name] = bad

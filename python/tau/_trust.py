@@ -17,8 +17,6 @@ refuses symlinks and anything not a regular file.
 import contextlib
 import difflib
 import errno
-import hashlib
-import json
 import os
 import shlex
 import stat
@@ -26,11 +24,13 @@ import sys
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, TextIO, cast
+from typing import NamedTuple, TextIO
 
 from tau._config import ConfigError
 from tau._config_layers import LayerText, ModelCatalog, check_config, read_models
 from tau._dotenv import DotenvError, parse_dotenv
+from tau._mcp_config import PROJECT_FILES as MCP_FILES
+from tau._mcp_config import describe as describe_mcp
 from tau._project_read import (
     FOREIGN_BASES,
     TrustError,
@@ -44,14 +44,18 @@ from tau._project_read import (
 )
 from tau._prompt_files import problems_in
 from tau._providers import builtin_providers
+from tau._trust_record import Approval as _Approval
+from tau._trust_record import approved as _approved
+from tau._trust_record import digest as _digest
+from tau._trust_record import file_hashes as _file_hashes
+from tau._trust_record import files_digest as _extensions_digest
+from tau._trust_record import record, redacted
 
 TAU_DIR = ".tau"
 _ENV = ".env"
 _GITIGNORE = "*\n"
 _PRIVATE = 0o700
-_PRIVATE_FILE = 0o600
 _PUBLIC_FILE = 0o644
-_SECRET = "(secret)"
 EXTENSIONS_DIR = "extensions"
 SYSTEM_MD = "SYSTEM.md"
 
@@ -77,7 +81,8 @@ class Trusted:
     reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
     relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
     `.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
-    reads. Use `layer()`,
+    reads. `mcp_files` are the approved `.mcp.json` and `.tau/mcp.json` (path relative to the
+    project, to bytes; only those that exist), which the mcp extension reads. Use `layer()`,
     `read_models()` and `project_environment` rather than re-reading the files."""
 
     root: Path
@@ -86,6 +91,7 @@ class Trusted:
     extension_files: Mapping[str, bytes] | None
     system_md: bytes | None
     prompt_files: Mapping[str, bytes]
+    mcp_files: Mapping[str, bytes]
 
     def layer(self) -> LayerText | None:
         """The project config layer for `read_models`, or `None` if there is no file."""
@@ -99,18 +105,6 @@ class Trusted:
         """`read_models(user, <the approved project config>, cli)`: the project layer is
         the text that was approved, not whatever the file says now."""
         return read_models(user, self.layer(), cli)
-
-
-@dataclass(frozen=True)
-class _Approval:
-    sha256: str
-    env_sha256: str
-    extensions_sha256: str
-    system_sha256: str
-    prompts_sha256: str
-    redacted: str
-    extensions: Mapping[str, str]  # path under .tau/extensions/ -> sha256, for showing diffs
-    prompts: Mapping[str, str]  # path under .tau/ -> sha256 of each prompt and skill file
 
 
 @dataclass(frozen=True)
@@ -130,6 +124,8 @@ class _Seen:
     system_sha: str
     prompts: dict[str, bytes]
     prompts_sha: str
+    mcp: dict[str, bytes]
+    mcp_sha: str
     tau_mode: int
 
 
@@ -284,12 +280,6 @@ def _tau_dir(root: Path) -> Generator[tuple[int, os.stat_result]]:
         os.close(fd)
 
 
-def _digest(raw: bytes | None) -> str:
-    """sha256 of the bytes behind a marker byte, so a missing file differs from an empty one."""
-    marker = b"\x00" if raw is None else b"\x01" + raw
-    return hashlib.sha256(marker).hexdigest()
-
-
 def _decode(raw: bytes | None, path: Path) -> str | None:
     if raw is None:
         return None
@@ -332,16 +322,6 @@ def _read_extensions(root: Path) -> dict[str, bytes] | None:
     return files
 
 
-def _file_hashes(files: Mapping[str, bytes]) -> dict[str, str]:
-    return {path: hashlib.sha256(raw).hexdigest() for path, raw in sorted(files.items())}
-
-
-def _extensions_digest(files: Mapping[str, bytes] | None) -> str:
-    """The digest of the files under `.tau/extensions/` (path and sha256 of each); a missing
-    directory has the marker a missing file has, so adding the first file changes it."""
-    return _digest(None if files is None else json.dumps(_file_hashes(files)).encode())
-
-
 class _Read(NamedTuple):
     """The project's files as bytes, in one pass: config, `.env`, extension files, SYSTEM.md, and
     the prompt and skill files."""
@@ -351,14 +331,16 @@ class _Read(NamedTuple):
     extensions: dict[str, bytes] | None
     system: bytes | None
     prompts: dict[str, bytes]
+    mcp: dict[str, bytes]
 
-    def digests(self) -> tuple[str, str, str, str, str]:
+    def digests(self) -> tuple[str, str, str, str, str, str]:
         return (
             _digest(self.config),
             _digest(self.env),
             _extensions_digest(self.extensions),
             _digest(self.system),
             _extensions_digest(self.prompts),
+            _extensions_digest(self.mcp),
         )
 
 
@@ -369,13 +351,14 @@ def _read_all(root: Path) -> _Read:
         _read_extensions(root),
         read_regular(root / TAU_DIR / SYSTEM_MD),
         read_prompt_files(root / TAU_DIR),
+        {p: raw for p in MCP_FILES if (raw := read_regular(root / p)) is not None},
     )
 
 
 def _see(root: Path) -> _Seen:
     with _tau_dir(root) as (_, info):
         read = _read_all(root)
-    sha, env_sha, extensions_sha, system_sha, prompts_sha = read.digests()
+    sha, env_sha, extensions_sha, system_sha, prompts_sha, mcp_sha = read.digests()
     return _Seen(
         root,
         _decode(read.config, project_config_path(root)),
@@ -388,6 +371,8 @@ def _see(root: Path) -> _Seen:
         system_sha,
         read.prompts,
         prompts_sha,
+        read.mcp,
+        mcp_sha,
         stat.S_IMODE(info.st_mode),
     )
 
@@ -395,114 +380,20 @@ def _see(root: Path) -> _Seen:
 # -- trusted.json
 
 
-def _trusted_path(home: Path) -> Path:
-    return home / "trusted.json"
-
-
-def _approved(home: Path) -> dict[str, _Approval]:
-    path = _trusted_path(home)
-    try:
-        data: object = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except OSError as e:
-        raise refusal(path, f"cannot be read ({e.strerror}); fix or delete it") from e
-    except ValueError as e:
-        raise ConfigError(f"{path} is not tau's trusted.json ({e!r}); fix or delete it") from e
-    try:
-        projects = cast("dict[str, dict[str, object]]", cast("dict[str, object]", data)["projects"])
-        # A record from before `.env`, `.tau/extensions/` or `.tau/SYSTEM.md` was pinned lacks
-        # its hash: not approved. One from before the prompts and skills were pinned approved
-        # a project with none: it matches while the project still has none.
-        pinned = ("env_sha256", "extensions_sha256", "system_sha256")
-        current = {root: r for root, r in projects.items() if all(k in r for k in pinned)}
-        keys = ("sha256", "config", *pinned)
-        if not all(isinstance(r[k], str) for r in current.values() for k in keys):
-            raise TypeError("a project's record is not text")
-        return {
-            root: _Approval(
-                str(r["sha256"]),
-                str(r["env_sha256"]),
-                str(r["extensions_sha256"]),
-                str(r["system_sha256"]),
-                str(r.get("prompts_sha256", _extensions_digest({}))),
-                str(r["config"]),
-                dict(cast("dict[str, str]", r["extensions"])),
-                dict(cast("dict[str, str]", r.get("prompts", {}))),
-            )
-            for root, r in current.items()
-        }
-    except (KeyError, TypeError, AttributeError) as e:
-        raise ConfigError(f"{path} is not tau's trusted.json ({e!r}); fix or delete it") from e
-
-
-def _blank(value: object) -> object:
-    if isinstance(value, dict):
-        d = cast("dict[str, object]", value)
-        return {k: _SECRET if k == "api_key" else _blank(v) for k, v in d.items()}
-    if isinstance(value, list):
-        return [_blank(v) for v in cast("list[object]", value)]
-    return value
-
-
-def _redacted(text: str | None) -> str:
-    """The config as canonical JSON (sorted keys, 2-space indent) with every `api_key` value
-    replaced; `""` for no config. The text must be valid JSON (approval ensures it)."""
-    if text is None:
-        return ""
-    return json.dumps(_blank(json.loads(text)), sort_keys=True, indent=2)
-
-
 def _record(home: Path, seen: _Seen) -> None:
-    projects = _approved(home)
-    projects[str(seen.root.resolve())] = _Approval(
+    approval = _Approval(
         seen.config_sha,
         seen.env_sha,
         seen.extensions_sha,
         seen.system_sha,
         seen.prompts_sha,
-        _redacted(seen.config),
+        seen.mcp_sha,
+        redacted(seen.config),
         _file_hashes(seen.extensions or {}),
         _file_hashes(seen.prompts),
+        _file_hashes(seen.mcp),
     )
-    body = json.dumps(
-        {
-            "projects": {
-                r: {
-                    "sha256": a.sha256,
-                    "env_sha256": a.env_sha256,
-                    "extensions_sha256": a.extensions_sha256,
-                    "system_sha256": a.system_sha256,
-                    "prompts_sha256": a.prompts_sha256,
-                    "config": a.redacted,
-                    "extensions": a.extensions,
-                    "prompts": a.prompts,
-                }
-                for r, a in projects.items()
-            }
-        },
-        indent=2,
-    )
-    write_atomically(_trusted_path(home), body)
-
-
-def write_atomically(final: Path, body: str) -> None:
-    """Write `body` to `final` (private to the user, its directory created private if absent)
-    as a scratch file in the same directory, flushed to disk, then renamed over `final`: a
-    reader sees the old file or the new, never half. `TrustError` if the disk refuses."""
-    scratch = final.with_name(f"{final.name}.{os.getpid()}.tmp")
-    with unless_io_fails(final, "written"):
-        final.parent.mkdir(mode=_PRIVATE, parents=True, exist_ok=True)
-        fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as out:
-                out.write(body)
-                out.flush()
-                os.fsync(out.fileno())
-            scratch.replace(final)
-        except BaseException:
-            scratch.unlink(missing_ok=True)
-            raise
+    record(home, seen.root, approval)
 
 
 def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
@@ -513,6 +404,7 @@ def _pinned(approval: _Approval | None, seen: _Seen) -> bool:
         and approval.extensions_sha256 == seen.extensions_sha
         and approval.system_sha256 == seen.system_sha
         and approval.prompts_sha256 == seen.prompts_sha
+        and approval.mcp_sha256 == seen.mcp_sha
     )
 
 
@@ -564,7 +456,7 @@ def _env_names(seen: _Seen) -> list[str]:
 def _shown_config(seen: _Seen) -> list[str]:
     if seen.config is None:
         return ["  (no .tau/config.json)"]
-    return [f"  {line}" for line in safe_block(_redacted(seen.config)).split("\n")]
+    return [f"  {line}" for line in safe_block(redacted(seen.config)).split("\n")]
 
 
 def _gitignore_check(tau: Path) -> str:
@@ -591,7 +483,7 @@ def _changes(approval: _Approval, seen: _Seen) -> list[str]:
     if approval.sha256 != seen.config_sha:
         diff = difflib.unified_diff(
             approval.redacted.splitlines(),
-            _redacted(seen.config).splitlines(),
+            redacted(seen.config).splitlines(),
             "approved .tau/config.json",
             "current .tau/config.json",
             lineterm="",
@@ -621,7 +513,18 @@ def _code_changes(approval: _Approval, seen: _Seen) -> list[str]:
         lines.append("  .tau/extensions/ appeared or went away")
     if approval.system_sha256 != seen.system_sha:
         lines.append("  .tau/SYSTEM.md changed since you approved it")
-    return lines + _prompt_changes(approval, seen)
+    return lines + _mcp_changes(approval, seen) + _prompt_changes(approval, seen)
+
+
+def _mcp_changes(approval: _Approval, seen: _Seen) -> list[str]:
+    """Which of `.mcp.json` and `.tau/mcp.json` were added, removed or changed since approval."""
+    now = _file_hashes(seen.mcp)
+    lines = [
+        safe_text(f"  {p} {'changed' if p in approval.mcp else 'added'}")
+        for p in now
+        if approval.mcp.get(p) != now[p]
+    ]
+    return lines + [safe_text(f"  {p} removed") for p in approval.mcp if p not in now]
 
 
 def _shown(path: str) -> str:
@@ -666,6 +569,9 @@ def _code_listing(seen: _Seen, approval: _Approval | None) -> list[str]:
         lines += [safe_text(f"  {p}  {len(raw)} bytes") for p, raw in seen.extensions.items()]
     if seen.system is not None:
         lines += ["", f"Its SYSTEM.md: {len(seen.system)} bytes"]
+    for path, raw in seen.mcp.items():
+        lines += ["", f"Its {path}: MCP servers (commands run with your authority if mcp is on):"]
+        lines += [f"  {safe_text(line)}" for line in describe_mcp(raw, path)]
     if seen.prompts:
         before: Mapping[str, str] = {} if approval is None else approval.prompts
         hashes = _file_hashes(seen.prompts)
@@ -724,6 +630,7 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
             seen.extensions_sha,
             seen.system_sha,
             seen.prompts_sha,
+            seen.mcp_sha,
         ):
             raise TrustError(
                 f"{shown(root)}: a file under .tau/ changed while you were reading; run again", root
@@ -732,7 +639,13 @@ def _approve(seen: _Seen, home: Path) -> Trusted:
         _write_gitignore(fd)
         read_regular(root / TAU_DIR / ".gitignore")  # refuses a symlink that was already there
     _record(home, seen)
-    return Trusted(root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts)
+    return _trusted(seen)
+
+
+def _trusted(seen: _Seen) -> Trusted:
+    return Trusted(
+        seen.root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts, seen.mcp
+    )
 
 
 def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None) -> Trusted:
@@ -746,7 +659,7 @@ def ensure_trusted(root: Path, home: Path, *, ask: Callable[[str], bool] | None)
     seen = _see(root)
     approval = _approved(home).get(str(root.resolve()))
     if _pinned(approval, seen):
-        return Trusted(root, seen.config, seen.env, seen.extensions, seen.system, seen.prompts)
+        return _trusted(seen)
     assessment = _assess(seen, home, approval)
     hint = "" if assessment.errors else f"\nTrust it with: tau trust {shlex.quote(shown(root))}"
     refusal = UntrustedProject(root, assessment.report + hint, _layer(seen))
