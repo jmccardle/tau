@@ -64,6 +64,7 @@ class CommandHooks
     name = NAME
     @classmethod
     def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
+    options = Options
     order: ClassVar[Mapping[str, int]] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
     async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
@@ -293,6 +294,7 @@ class ToolHook(Protocol)
     async def __call__(self, node: NodeHandle, call: 'CallDraft', /) -> str | None
 class TreeHandle
     def abort(self, cursor: int) -> None
+    async def aborted(self) -> None
     def add_item(self, to: int, data: str) -> int
     def append(
         self,

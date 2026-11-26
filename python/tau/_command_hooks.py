@@ -29,8 +29,9 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import Annotated, ClassVar, Literal, cast
 
 from tau._command_hooks_file import (
     EVENTS,
@@ -70,6 +71,20 @@ _CallKey = tuple[int, int, str]
 """A call, as (cursor, batch node, call id): call ids repeat from one reply to the next."""
 _GATES = (PRE_TOOL, PROMPT)
 """The events whose failure can refuse something (a call, an input): `onFailure` says if it does."""
+
+
+@dataclass(frozen=True)
+class Options:
+    """`CommandHooks`' options (`/config hooks`). The commands themselves are never options:
+    they are in the hooks files (D34)."""
+
+    abort_grace: Annotated[
+        float, "seconds a running command gets after its step is aborted, before it is killed"
+    ] = 2.0
+
+    def __post_init__(self) -> None:
+        if self.abort_grace < 0:
+            raise ValueError(f"abort_grace must not be negative, not {self.abort_grace}")
 
 
 class CommandHooksUnavailable(OSError):
@@ -158,6 +173,7 @@ class CommandHooks:
     what it found."""
 
     name = NAME
+    options = Options
     order: ClassVar[Mapping[str, int]] = {
         "pre_input": GUARD,
         # Before `permissions`: a command that rewrites a call's arguments must do so before the
@@ -222,15 +238,31 @@ class CommandHooks:
         }
 
     async def _run(
-        self, tell: Tell, rule: Rule, payload: Mapping[str, object], *, gate: bool
+        self,
+        handle: Cursor | NodeHandle | None,
+        rule: Rule,
+        payload: Mapping[str, object],
+        *,
+        gate: bool,
     ) -> Verdict:
         """The verdict of one command. A command that fails is told (`tell`) as an error naming
         it. At a `gate` (a call or an input, which a block refuses) and with `onFailure` `block`,
         the default, the failure also refuses it; elsewhere, or with `continue`, what was
-        happening goes on."""
+        happening goes on. A command still running `abort_grace` seconds after `handle`'s cursor
+        is aborted is ended, as at its `timeout`; no `handle` (a session's start or end, which
+        is no step) is no abort, and its failures are told on standard error."""
+        tell = _stderr if handle is None else _to(handle)
         try:
             environ = self._environ(rule.event)
-            ran = await run_command(rule.handler, payload, self._cwd, environ, self._running)
+            ran = await run_command(
+                rule.handler,
+                payload,
+                self._cwd,
+                environ,
+                self._running,
+                None if handle is None else handle.aborted,
+                0.0 if handle is None else handle.options().abort_grace,
+            )
             verdict = interpret(rule.handler, rule.event, ran)
         except HookFailed as e:
             tell(str(e), "error")
@@ -275,7 +307,7 @@ class CommandHooks:
         context: list[str] = []
         for rule in self._matching(PROMPT):
             payload = self._event(PROMPT, cursor=cursor.id, prompt=draft.body.text)
-            verdict = await self._run(_to(cursor), rule, payload, gate=True)
+            verdict = await self._run(cursor, rule, payload, gate=True)
             if verdict.block is not None:
                 return verdict.block
             if verdict.context:
@@ -299,7 +331,7 @@ class CommandHooks:
             )
             if arguments is None:
                 payload["tool_input_raw"] = call.args_raw
-            verdict = await self._run(_to(node), rule, payload, gate=True)
+            verdict = await self._run(node, rule, payload, gate=True)
             if verdict.block is not None:
                 self._refused.add(_key(node, call))
                 return verdict.block
@@ -343,7 +375,7 @@ class CommandHooks:
                 tool_use_id=call.id,
                 **({"tool_response": original} if ok else {"error": original}),
             )
-            verdict = await self._run(_to(node), rule, payload, gate=False)
+            verdict = await self._run(node, rule, payload, gate=False)
             if verdict.output is not None:
                 text = verdict.output
             feedback += [t for t in (verdict.block, verdict.context) if t]
@@ -381,7 +413,7 @@ class CommandHooks:
                 stop_hook_active=self._stops.get(cursor.id, 0) > 0,
                 last_assistant_message=_reply_text(node),
             )
-            verdict = await self._run(_to(cursor), rule, payload, gate=False)
+            verdict = await self._run(cursor, rule, payload, gate=False)
             if verdict.block is not None:
                 reasons.append(verdict.block)
                 break
@@ -428,7 +460,7 @@ class CommandHooks:
         """A failure is on standard error, and τ goes on: a start or an end has nothing to
         refuse, whatever `onFailure` says."""
         for rule in self._matching(event):
-            await self._run(_stderr, rule, self._event(event, **fields), gate=False)
+            await self._run(None, rule, self._event(event, **fields), gate=False)
 
 
 def _to(handle: TreeHandle) -> Tell:

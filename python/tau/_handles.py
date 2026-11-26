@@ -62,6 +62,9 @@ Reverser = Callable[[str], Callable[..., Awaitable[object]] | None]
 """The `reverse` of the loaded extension of this name (D33), or `None`: it is not loaded, or
 defines none."""
 
+Aborted = Callable[[int], Awaitable[None]]
+"""The driver's wait for a cursor to be aborted or sent elsewhere: returns when it is."""
+
 Close = Callable[[int], Awaitable[None]]
 """The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
 
@@ -198,6 +201,7 @@ class TreeHandle:
         self._changed = wiring.changed
         self._rest = wiring.rest
         self._abort = wiring.abort
+        self._aborted = wiring.aborted
         self._close = wiring.close
         self._notify = wiring.notify
         self._own = own  # the cursor this handle works for, if it has one
@@ -460,6 +464,17 @@ class TreeHandle:
         self._check()
         self._refuse_own(cursor, "abort", "aborting itself would cancel this very call")
         self._abort(cursor)
+
+    async def aborted(self) -> None:
+        """Wait until this handle's own cursor is aborted or sent elsewhere, and return. An abort
+        never cancels a hook, so a hook that waits on something else (a command it runs) races
+        this against it to learn of the abort. Nothing else changes: the hook is not cancelled
+        and the cursor is left as it is. It never returns if the cursor is not aborted. Async
+        only. `ValueError` for a handle that has no cursor."""
+        self._check()
+        if self._own is None:
+            raise ValueError("aborted: this handle has no cursor")
+        await self._aborted(self._own)
 
     async def close_cursor(self, cursor: int) -> None:
         """Close `cursor`: abort its step as `abort` does, wait for it to rest, drop its pending
@@ -770,6 +785,7 @@ class Handles:
     images: Images
     starting: Callable[[], bool]
     reverser: Reverser
+    aborted: Aborted
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""

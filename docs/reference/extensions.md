@@ -333,6 +333,7 @@ The name of the tool being called. Read-only.
 ```python
 class CommandHooks
     name = NAME
+    options = Options
     order: ClassVar[Mapping[str, int]] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
 ```
 
@@ -1888,6 +1889,18 @@ Abort `cursor`'s step as a client's `abort` does: cancel its sample or calls, st
 its command, decline its open questions, and turn its auto-step off. Safe from a sync
 tool's worker thread: it returns once the event loop has done it. `ValueError` for this
 handle's own cursor: aborting it would cancel this very call.
+
+### TreeHandle.aborted
+
+```python
+async def aborted(self) -> None
+```
+
+Wait until this handle's own cursor is aborted or sent elsewhere, and return. An abort
+never cancels a hook, so a hook that waits on something else (a command it runs) races
+this against it to learn of the abort. Nothing else changes: the hook is not cancelled
+and the cursor is left as it is. It never returns if the cursor is not aborted. Async
+only. `ValueError` for a handle that has no cursor.
 
 ### TreeHandle.close_cursor
 

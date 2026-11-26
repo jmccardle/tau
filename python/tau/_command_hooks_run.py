@@ -17,7 +17,7 @@ import json
 import os
 import signal
 import sys
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -157,21 +157,49 @@ class _Command(asyncio.SubprocessProtocol):
         return self.written[fd].decode("utf-8", "replace")
 
 
-async def run_command(
+async def run_command(  # noqa: PLR0913, PLR0917 - a command, where and how it runs, and its abort
     handler: Handler,
     event: Mapping[str, object],
     cwd: Path,
     env: Mapping[str, str],
     running: set[int],
+    aborted: Callable[[], Awaitable[None]] | None = None,
+    grace: float = 0.0,
 ) -> Ran:
     """Run `handler`'s command in `cwd` with `event` as JSON on its standard input; its process
     group is in `running` until it exits. `HookFailed` if it does not start, passes its
-    `timeout`, or writes over `MAX_OUTPUT`. Past its timeout, or when the hook running it is
-    cancelled, the command's whole process group is ended (`terminate`). Once the command has
+    `timeout`, is still running `grace` seconds after `aborted` returned (it returns when the
+    step the hook belongs to is aborted: an abort never cancels a hook, so this is how the
+    command learns), or writes over `MAX_OUTPUT`. Past its timeout, past that grace, or when the
+    hook running it is cancelled, the command's whole process group is ended (`terminate`). Once
+    the command has
     exited, a child it left running in the background is left alone, as in Claude Code: τ takes
     what was written and goes on, without waiting for that child."""
     if sys.platform == "win32":
         raise HookFailed(handler, "cannot run: hooks are not available on Windows")
+    watch = asyncio.ensure_future(_abort_grace(aborted, grace)) if aborted is not None else None
+    try:
+        return await _run_command(handler, event, cwd, env, running, watch, grace)
+    finally:
+        if watch is not None:
+            watch.cancel()
+
+
+async def _abort_grace(aborted: Callable[[], Awaitable[None]], grace: float) -> None:
+    """Return `grace` seconds after `aborted` does."""
+    await aborted()
+    await asyncio.sleep(grace)
+
+
+async def _run_command(  # noqa: PLR0913, PLR0917 - `run_command`'s own arguments, and its watch
+    handler: Handler,
+    event: Mapping[str, object],
+    cwd: Path,
+    env: Mapping[str, str],
+    running: set[int],
+    watch: "asyncio.Future[None] | None",
+    grace: float,
+) -> Ran:
     argv = handler.args or ("/bin/sh", "-c", cast("str", handler.command))
     loop = asyncio.get_running_loop()
     try:
@@ -192,7 +220,17 @@ async def run_command(
     stdin.close()  # a command that never reads its input is allowed to
     try:
         async with asyncio.timeout(handler.timeout):
-            await asyncio.shield(command.exited)  # a timeout must not cancel what it waits for
+            # `wait` does not cancel what it waits for, nor does the timeout
+            await asyncio.wait(
+                [command.exited, *([watch] if watch is not None else [])],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not command.exited.done():
+                if watch is not None and not watch.cancelled() and watch.exception():
+                    raise cast("BaseException", watch.exception())
+                raise HookFailed(
+                    handler, f"was still running {grace:g} s after the step was aborted: killed"
+                )
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(_DRAIN):
                 await asyncio.shield(command.drained)

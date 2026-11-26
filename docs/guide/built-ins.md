@@ -1356,9 +1356,16 @@ background (`notify-send done &`) is left alone, as Claude Code leaves it, and h
 send its output elsewhere (`>/dev/null 2>&1`), since τ no longer reads it. When the session stops,
 a command still running gets SIGTERM, with what it started, and SIGKILL 2 s later. That includes a
 SIGTERM or SIGHUP of `tau -p`, the terminal UI or `tau serve`, which run the normal shutdown, and a
-second Ctrl+C in `tau -p`, which closes with a 2 s bound. An abort (Esc, a client's abort, or the
-first Ctrl+C in `tau -p`) does not yet end a running command: the step ends when the command does,
-or at its `timeout`.
+second Ctrl+C in `tau -p`, which closes with a 2 s bound.
+
+When you abort a step (Esc, a client's abort, or the first Ctrl+C in `tau -p`), a command that is
+still running gets a grace period, and is then ended like one that timed out: its whole process
+group gets SIGTERM, and SIGKILL 2 s later. The grace is the `hooks` option `abort_grace`, in
+seconds, 2 by default (`0` ends it at once; it cannot be negative): `/config hooks`, or
+`extensions.hooks.abort_grace` in a config file. A command that ends within it is not touched, and
+its answer is dropped, since the step it was for is aborted. One that is killed is told as an
+`error` notice, `hook './guard.sh' was still running 2 s after the step was aborted: killed`.
+The commands of `SessionStart` and `SessionEnd` belong to no step, so an abort does not reach them.
 
 ### The project's file, and order
 

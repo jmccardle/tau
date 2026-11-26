@@ -1375,7 +1375,7 @@ file is skipped) at once, so the start, `tau trust` and a reload list everything
 (`prompt_candidates`), so they are pinned and are problems.
 
 ### hooks (extension), command hook, hooks file
-`tau.CommandHooks` (`_command_hooks.py`; `_command_hooks_file.py` and `_command_hooks_run.py`), key `hooks`, no options, off by default · D34 · new
+`tau.CommandHooks` (`_command_hooks.py`; `_command_hooks_file.py` and `_command_hooks_run.py`), key `hooks`, option `abort_grace`, off by default · D34 · new
 
 The built-in extension that runs shell commands at τ's hook points, by the convention Claude Code,
 Codex and Gemini CLI share. A **command hook** is one such command: it is given an event as JSON on

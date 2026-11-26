@@ -243,6 +243,7 @@ class Driver:
             lambda cursor, images: self._calls.checked_images(cursor, images),  # noqa: PLW0108
             lambda: self._life.starting(),  # noqa: PLW0108 - made later
             lambda name: reverser_of(self._extensions, name),
+            self._until_left,
         )
         self._life = Lifecycle(
             self._handles.lifecycle,
@@ -502,6 +503,13 @@ class Driver:
                     if self._leavers.has_left(waiter):
                         return Ending.Aborted()
         return self._hub.ending(cursor)
+
+    async def _until_left(self, cursor: int) -> None:
+        """What a handle's `aborted` does: wait until `cursor` is aborted or sent elsewhere."""
+        with self._leavers.waiting(cursor):
+            while not self._leavers.has_left(cursor):
+                _running(self._failure, self._stopped)
+                await self._rested.wait()
 
     async def _close_cursor(self, cursor: int) -> None:
         """What a handle's `close_cursor` does: the close, its effect parked while it waits."""

@@ -1,6 +1,6 @@
 # D34: Command hooks (the `hooks` built-in)
 
-**Status:** accepted 2026-11-25, built for 0.18.0 (unreleased). Amends D19 §4 (a fifth pinned file,
+**Status:** accepted 2026-11-25, built for 0.18.0 (unreleased); §12 added by ruling D-2. Amends D19 §4 (a fifth pinned file,
 `.tau/hooks.json`) and D24 §1 (a built-in that is off by default, `hooks`). Companion: the guide,
 `docs/guide/built-ins.md` ("Run your own commands at hook points").
 
@@ -20,7 +20,8 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
 ## Decision
 
 1. **A built-in, off by default**: key `hooks`, class `tau.CommandHooks`, `load: {hooks: true}` or
-   `tau ext enable hooks`. It has no options. Its commands are in `hooks.json` files, not config.
+   `tau ext enable hooks`. Its one option is `abort_grace` (§12). Its commands are in `hooks.json`
+   files, never in config.
 2. **The file is the `hooks` key of a Claude Code `settings.json`**: `{"hooks": {EVENT: [{"matcher",
    "hooks": [{"type": "command", "command", "args", "timeout", "onFailure"}]}]}}`. `$TAU_HOME/hooks.json`
    then the trusted project's `.tau/hooks.json`; a repeat runs once. Read when τ starts; a file with
@@ -83,10 +84,22 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
     types `http`, `mcp_tool`, `prompt`, `agent`, and the keys `if`, `async`, `asyncRewake`,
     `shell`, `statusMessage`, `once`.
 
+12. **Abort** (ruling D-2). When a step is aborted (Esc, a client's abort), a command still
+    running at one of its hook points gets
+    `abort_grace` seconds (option of `hooks`, default 2, not negative). After that its process
+    group is ended as at a timeout (SIGTERM, SIGKILL 2 s later) and the failure is told (`was still
+    running 2 s after the step was aborted: killed`). A command that ends inside the grace is left
+    alone. Abort still never cancels a hook (model.md §8, Q34): the hook learns of the abort
+    through `TreeHandle.aborted()`, which returns once its own cursor is aborted or sent elsewhere,
+    and cancels only the command it runs. The step is aborted either way, so a block or answer
+    that comes late changes nothing. `SessionStart` and `SessionEnd` are no step, and are not
+    reached; the shutdown path (§7) ends their commands.
+
 ## Rejected
 
-- **Options under `extensions.hooks`.** A client can write an option (`/config`); a hook is a
-  command the administrator chose (akb #643).
+- **Commands as options under `extensions.hooks`.** A client can write an option (`/config`); a
+  hook is a command the administrator chose (akb #643). Only `abort_grace` (§12) is an option: it
+  names no command, and the most a client can do with it is shorten or lengthen a wait.
 - **Parallel commands.** Faster, but two `updatedInput`s race, and a block's reason is whichever
   finished first.
 - **Letting a call through when a hook fails.** A guard that cannot run would not guard; the escape
@@ -100,9 +113,3 @@ can set), D19 §4 (a project file that runs code is pinned by `tau trust`), Fail
 - A `SessionStart` hook's output as context would need a `System` node written at the first step
   (`skills` does this for its list).
 - `PreCompact`, `SubagentStop` and `Notification` could map once those have hook points.
-- **An abort does not end a running command.** Abort never cancels a hook (model.md §8, Q34), and
-  a hook has no way to learn its cursor was aborted, so the step waits for the command or its
-  `timeout`. Ending it needs the driver: a handle that tells a hook of the abort, or abort
-  cancelling a hook that opts in. (The second Ctrl+C in `tau -p` and SIGTERM or SIGHUP of `tau -p`,
-  the TUI and `serve` no longer leave a running command's group behind: they run the normal
-  shutdown, bounded at 2 s for the Ctrl+C, D22 §5.)

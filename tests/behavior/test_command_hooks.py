@@ -527,29 +527,58 @@ async def test_stopping_the_session_ends_a_running_command_and_what_it_started(
 
 
 @scenario
-@pytest.mark.xfail(
-    strict=True,
-    reason="an abort never cancels a hook (model.md section 8, Q34), and a hook has no way to "
-    "learn of one: ending its command needs the driver (held for John's ruling)",
-)
-async def test_an_abort_ends_a_running_command_and_what_it_started(
+async def test_an_abort_ends_a_running_command_and_what_it_started_after_the_grace(
     tmp_path: Path, world: World
 ) -> None:
+    """The command has `abort_grace` (2 s) after the abort, then its group is killed: well before
+    its own 30 s `timeout`."""
     pid = world.home / "child.pid"
     slow = script(world, "slow.sh", f"sleep 30 &\necho $! > {shlex.quote(str(pid))}\nwait")
-    hooks_file(world, PreToolUse=[group(slow, timeout=4)])
+    hooks_file(world, PreToolUse=[group(slow, timeout=30)])
     h, tool = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
     await h.send("go")
     child = int(await written(pid))
     await h.abort()
     try:
-        async with asyncio.timeout(1.5):
+        async with asyncio.timeout(1):
+            await h.settle()
+        pytest.fail("the command was ended before its grace passed")
+    except TimeoutError:
+        pass
+    assert not ended(child), "the command has its grace"
+    try:
+        async with asyncio.timeout(4):
             await h.settle()
         assert ended(child)
         assert tool.calls == []
+        assert "was still running 2 s after the step was aborted" in errors(h)[0]
     finally:
         await h.settle()
         await h.close()
+
+
+@scenario
+async def test_a_command_that_ends_within_the_grace_after_an_abort_is_not_killed(
+    tmp_path: Path, world: World
+) -> None:
+    done = world.home / "done"
+    quick = script(
+        world,
+        "quick.sh",
+        f"echo started > {shlex.quote(str(world.home / 'started'))}\nsleep 1\n"
+        f"echo ok > {shlex.quote(str(done))}",
+    )
+    hooks_file(world, PreToolUse=[group(quick, timeout=30)])
+    h, tool = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
+    await h.send("go")
+    await written(world.home / "started")
+    await h.abort()
+    async with asyncio.timeout(4):
+        await h.settle()
+    assert done.exists(), "a command that finishes inside the grace is left to finish"
+    assert errors(h) == []
+    assert tool.calls == []
+    await h.close()
 
 
 # -- PostToolUse and PostToolUseFailure
