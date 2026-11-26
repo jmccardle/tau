@@ -782,7 +782,7 @@ the run prints the plan, says `question 0 from plan_mode ... has no rule` on sta
 exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
 
 `tau -p` answers the question only by a rule, as for [permissions](#ask-before-a-tool-runs): with
-none, the run stops at it (exit 3). `tau -p --answer plan_mode=reject "/plan add retry"` prints
+none, it prints the plan and stops at the question (exit 3). `tau -p --answer plan_mode=reject "/plan add retry"` prints
 the plan and changes nothing; `--answer plan_mode=approve` carries it out in the same run.
 
 Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
