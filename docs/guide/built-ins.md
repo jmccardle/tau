@@ -912,6 +912,19 @@ A server with a `command` runs on your machine and speaks over its stdin and std
 out of the file; `${NAME:-default}` gives a default. A server whose name is not set and has no
 default is skipped, with a warning that says which (see below).
 
+**A server that runs on your machine does not get your whole environment**, so a key τ can see
+reaches only the servers you give it. It gets `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER`
+(on Windows `APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`,
+`PROCESSOR_ARCHITECTURE`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`), the set
+the official MCP SDK's clients pass, and what its `env` names. Pass a key by naming it:
+
+```json
+{ "mcpServers": { "github": { "command": "github-mcp", "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } } } }
+```
+
+A server that needs any other variable (a proxy's `HTTPS_PROXY`, `NODE_OPTIONS`, a virtualenv's
+`VIRTUAL_ENV`, `LANG`) must name it in its `env` the same way.
+
 A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
 Code reads), so a project set up for Claude Code works as it is. Both are pinned by
 [trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
@@ -957,7 +970,11 @@ While τ runs, `/mcp` lists the servers, whether each is running and their tools
 lists new tools has them offered from the model's next request. A server that exits is reported
 (an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
 server. A tool's text and images reach the model; other kinds of content are named and left out.
-Prompts and resources that a server offers are not used.
+A tool τ cannot offer (it lists no input schema that is a JSON object, or its `mcp__SERVER__TOOL`
+name is over 64 characters) is left out with a warning naming it; the server's other tools are
+offered. A line a server prints on its output that is not a message (a banner, a stray log line)
+is skipped; if the server then exits, the report shows it. Prompts and resources that a server
+offers are not used.
 
 ## Reading the web and searching it
 
@@ -1108,6 +1125,13 @@ command is given the event as JSON on its standard input, and answers with its e
 object on its standard output. An exit code of 2 blocks, and what the command wrote to standard
 error is the reason.
 
+The file format and that convention are borrowed from Claude Code, but τ is not Claude Code, and a
+script written for it may need changes. The event carries τ's own tool names (`bash`, `write`, not
+`Bash`, `Write`) and τ's arguments (the file tools take `path`, not `file_path`), so a script's
+`jq` paths may differ. Commands run under the POSIX `/bin/sh`, which is dash on Debian and Ubuntu:
+read the event with `printf '%s' "$INPUT" | jq ...`, or pipe standard input straight to `jq`, not
+with `echo "$INPUT"`, which turns each `\n` in the JSON into a real line break there and breaks it.
+
 A hooks file runs commands with your authority, so the extension is off until you turn it on:
 
 ```bash
@@ -1157,33 +1181,65 @@ branch: main
 `/hooks` lists the commands a session has. The files are read when τ starts, so edit one and start
 τ again; a file τ cannot use stops the start, naming each problem.
 
-A command that exits 2 refuses the message, and `tau -p` stops with its reason (a relative command runs in the session's directory):
+A command that exits 2 refuses the message, and `tau -p` stops with its reason (a relative
+command runs in the session's directory). This one reads the event, with `jq`, to look at the
+prompt:
 
 ```bash
-cat > friday.sh <<'SCRIPT'
+cat > secrets.sh <<'SCRIPT'
 #!/bin/sh
-cat > /dev/null
-echo "no prompts on Fridays" >&2
-exit 2
+# The event is JSON on standard input: jq reads it from there.
+if jq -e '.prompt | test("password"; "i")' > /dev/null; then
+  echo "no passwords in prompts" >&2
+  exit 2
+fi
 SCRIPT
-chmod +x friday.sh
-echo '{"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "./friday.sh"}]}]}}' \
+chmod +x secrets.sh
+echo '{"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "./secrets.sh"}]}]}}' \
   > "$TAU_HOME/hooks.json"
-tau -p "hello" 2>&1 || echo "exit $?"
+tau -p "my password is hunter2" 2>&1 || echo "exit $?"
 ```
 
 ```text expect
-tau: no prompts on Fridays
-tau: stopped before finishing: halted: no prompts on Fridays
+tau: no passwords in prompts
+tau: stopped before finishing: halted: no passwords in prompts
 exit 3
 ```
+
+A `Stop` command can keep the turn going until something is true. This one runs `make test` when
+the model finishes, and while the tests fail, sends their last lines back as the reason; the mock
+model cannot fix anything, so here τ ends the turn after 8 in a row and says so:
+
+```bash
+printf 'test:\n\t@test -e fixed || { echo "FAIL test_add: 2 + 2 is not 5"; exit 1; }\n' > Makefile
+cat > tests-pass.sh <<'SCRIPT'
+#!/bin/sh
+cat > /dev/null
+out=$(make test 2>&1) && exit 0
+printf '%s\n' "$out" | tail -n 20 >&2
+exit 2
+SCRIPT
+chmod +x tests-pass.sh
+echo '{"hooks": {"Stop": [{"hooks": [{"command": "./tests-pass.sh"}]}]}}' > "$TAU_HOME/hooks.json"
+tau -p "done?" 2>&1
+```
+
+```text expect
+tau: a Stop hook kept the turn going 8 times in a row; the turn ends. Its last reason: FAIL test_add: 2 + 2 is not 5
+make: *** [Makefile:2: test] Error 1
+mock: Stop hook feedback: FAIL test_add: 2 + 2 is not 5
+make: *** [Makefile:2: test] Error 1
+```
+
+The script exits 2 itself: `make` exits 2 when a target fails, which would block as well, but
+also when the Makefile is broken, and its reason would be `make`'s complaint, not the tests'.
 
 ### Events
 
 | event | when | a block (exit 2, or `decision`) | the command is also given |
 |---|---|---|---|
 | `PreToolUse` | before a tool runs (`pre_tool`) | refuses the call; the reason is the call's error, which the model reads | `tool_name`, `tool_input`, `tool_use_id` |
-| `PostToolUse` | after a tool succeeded (`pre_result`) | cannot undo it: the reason is added to the result, after its text, as `hook feedback: ...` | `tool_name`, `tool_input`, `tool_response` (the result's text), `tool_use_id` |
+| `PostToolUse` | after a tool succeeded (`pre_result`) | cannot undo it: the reason is added to the result, after its text, as `hook feedback: ...` | `tool_name`, `tool_input`, `tool_response` (the result's text: a string, where Claude Code sends an object), `tool_use_id` |
 | `PostToolUseFailure` | after a tool failed, or the call was refused | the same, added to the error | `tool_name`, `tool_input`, `error`, `tool_use_id` |
 | `UserPromptSubmit` | a person's message, before it is written (`pre_input`) | halts the input: the reason is a notice, and the message stays pending | `prompt` |
 | `Stop` | a person's turn ended: the model's reply asks for no tool (`post_step`) | the turn goes on: the reason is sent to the model as input | `stop_hook_active`, `last_assistant_message` |
@@ -1191,8 +1247,9 @@ exit 3
 | `SessionEnd` | τ shuts down | blocks nothing | `reason` (always `other`) |
 
 Every event is also given `hook_event_name`, `cwd` and, where there is one, `cursor` (the cursor's
-id). `tool_input` is the call's arguments as the tool takes them: τ's `bash` takes `command`, as
-Claude Code's does, but its file tools take `path`, not `file_path`. A call whose arguments are not
+id). `tool_name` is τ's own name for the tool, in lower case. `tool_input` is the call's arguments
+as the tool takes them: τ's `bash` takes `command`, as Claude Code's does, but its file tools take
+`path`, not `file_path`. A call whose arguments are not
 a JSON object has `tool_input: null` and the text in `tool_input_raw`. The command runs in the
 session's directory, with `TAU_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` set to the trusted project's
 root (or that directory), and `TAU_HOOK_EVENT` to the event.
@@ -1213,19 +1270,36 @@ so; it also says so, and ends the turn, when auto-step is off.
         "hooks": [{ "type": "command", "command": "~/hooks/no-push.sh", "timeout": 10 }]
       }
     ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "make test", "onFailure": "continue" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "./tests-pass.sh" }] }]
   }
 }
+```
+
+where `no-push.sh` reads the command the model wants to run:
+
+```sh
+#!/bin/sh
+INPUT=$(cat)
+command=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
+case $command in
+  *"git push"*) echo "no pushing from here" >&2; exit 2 ;;
+esac
 ```
 
 - **`matcher`** (the three tool events only): empty, `*` or none is every tool. Letters, digits,
   `_`, `-`, spaces, `,` and `|` only is a list of exact tool names (`bash|write`). Anything else
   is a regular expression searched in the name (Python's `re`, not JavaScript's: `^(read|grep)$`).
   Claude Code's names for τ's base tools match too: `Bash`, `Read`, `Write`, `Edit`, `Grep` and
-  `Glob` (τ's `find`). The `tool_name` a command is given is always τ's own, in lower case.
+  `Glob` (τ's `find`). A regular expression is tried on both names, so that a Claude Code
+  script's `^(Edit|Write)$` works; anchor it, since `b` also matches `find`, through `Glob`. The
+  `tool_name` a command is given is always τ's own, in lower case. A name that no tool of the
+  session has (Claude Code's `MultiEdit`, say), and a permission rule such as `Bash(git *)`, which
+  is not a tool's name, can never match: τ warns of each when the first message is sent. Names
+  that start `mcp__` are not warned of, since an MCP server may list its tools later.
 - **`command`** runs through `/bin/sh -c`. With **`args`** (a list of strings) it is the program,
   run with those arguments and no shell.
-- **`timeout`**, in seconds, default 60 (20 for `SessionStart`, 4 for `SessionEnd`).
+- **`timeout`**, in seconds, default 60 (20 for `SessionStart`, 4 for `SessionEnd`). Past it the
+  command's process group, the command and what it started, gets SIGTERM, and SIGKILL 2 s later.
 - **`onFailure`**: `block` (the default) or `continue`, below.
 
 The commands of one event run one after another, in file order, your file first and then the
@@ -1250,7 +1324,7 @@ A JSON object may hold these; its `hookSpecificOutput` must say `"hookEventName"
 | `hookSpecificOutput.permissionDecision`: `deny` | `PreToolUse` | blocks, with `permissionDecisionReason` |
 | `hookSpecificOutput.permissionDecision`: `ask` | `PreToolUse` | asks the person `yes` or `no` before the call runs, with the reason in the question; `tau -p` needs `--answer hooks=yes` |
 | `hookSpecificOutput.permissionDecision`: `allow` | `PreToolUse` | no objection, and nothing more: it does not skip the `permissions` rules |
-| `hookSpecificOutput.updatedInput` | `PreToolUse` | the arguments the tool runs with, whole; the `permissions` rules see these |
+| `hookSpecificOutput.updatedInput` | `PreToolUse` | the arguments the tool runs with, whole; the `permissions` rules see these. The conversation keeps the model's own arguments, so the result starts with `[hooks rewrote the arguments: {...}]`, telling the model, and you, what ran |
 | `decision`: `block`, with `reason` | `PreToolUse` (also `approve`), `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` | a block, as exit 2 |
 | `hookSpecificOutput.additionalContext` | `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit` | text added after the result, the error or the message (at most 10000 characters) |
 | `hookSpecificOutput.updatedToolOutput` | `PostToolUse` | the text of the result the model reads instead |
@@ -1276,6 +1350,13 @@ there is nothing to refuse, and it only reports; a `SessionStart` or `SessionEnd
 written to standard error, since no client is connected yet, or any longer. Claude Code lets a call
 through when a command exits 1; τ does not, because a command that is broken has not approved.
 
+Once a command has exited, τ takes what it wrote and goes on. A child it left running in the
+background (`notify-send done &`) is left alone, as Claude Code leaves it, and holds nothing up;
+send its output elsewhere (`>/dev/null 2>&1`), since τ no longer reads it. When the session stops,
+a command still running gets SIGTERM, with what it started, and SIGKILL 2 s later. An abort (Esc,
+or Ctrl+C in `tau -p`) does not yet end a running command: the step ends when the command does,
+or at its `timeout`.
+
 ### The project's file, and order
 
 `.tau/hooks.json` in a project is pinned by `tau trust` like `.tau/extensions/`, because it runs
@@ -1284,7 +1365,10 @@ the bytes you approved. A file that is not a hooks file cannot be approved.
 
 At `pre_input` and `pre_tool` the `hooks` commands run before the other built-ins' hooks
 (`pre_input` at -100, `pre_tool` at -150), so a command can rewrite a call's arguments before
-`permissions` judges them. The ones that only see what happened (`PostToolUse`, `Stop`) run last.
+plan mode and `permissions` judge them. The cost: a command that answers `ask` questions you even
+when plan mode or a `permissions` rule then refuses the call, and with a `permissions` `ask` rule
+as well you are asked twice. The ones that only see what happened (`PostToolUse`, `Stop`) run
+last.
 `tau ext list --hooks` shows the order.
 
 ### What is not supported
@@ -1294,7 +1378,8 @@ At `pre_input` and `pre_tool` the `hooks` commands run before the other built-in
 rest. A hooks file that names one is refused when τ starts, naming it. So is a handler that is not
 `type: "command"` (`http`, `mcp_tool`, `prompt`, `agent`), a handler key `if`, `async`,
 `asyncRewake`, `shell`, `statusMessage` or `once`, and a matcher on an event that has no tool. The
-commands are not given `session_id`, `transcript_path`, `permission_mode` or `effort`, and a
+commands are not given `session_id`, `transcript_path`, `permission_mode`, `effort`, `agent_id`,
+`agent_type` or `prompt_id`; `source` is always `startup` and `reason` always `other`; and a
 `SessionStart` command cannot add context to the conversation.
 
 **Windows.** `hooks` is not available there: it runs commands through a POSIX shell, which τ does

@@ -23,6 +23,7 @@ from tau._core import Node
 from tau._events import Event
 from tau._hub import Feed
 from tau._images import ImageInput
+from tau._model_list import ModelInfo
 from tau._values import Form
 from tau.commandline import Completion, Parsed, completions, parse
 
@@ -56,7 +57,7 @@ class _TreeReads(Protocol):
 
 
 class _CommandCalls(Protocol):
-    """The command line's calls, a part of `Client`: commands, options, completion."""
+    """The command line's calls, a part of `Client`: commands, options, completion, models."""
 
     async def commands(self) -> tuple[Form, ...]:
         """Each command's form: its name, description and argument schema (named types with
@@ -105,6 +106,19 @@ class _CommandCalls(Protocol):
         the `"format"` of a schema) that start with `prefix`, as `cursor` sees them, each a
         `Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).
         Paths are the driver's machine's, relative to its working directory."""
+        ...
+
+    async def models(self) -> tuple[ModelInfo, ...]:
+        """Every model of the driver's catalog, in config order, as a client may know it (D32
+        section 8): its qualified name (what `CursorView.model` holds), provider, context window,
+        `max_tokens`, image limits, price (the `usage` extension's; none without it), and whether
+        it is the `default_model`; never a URL,
+        a key, the name of a key's variable or provider options. The catalog is the effective one,
+        every layer folded (user, project, `--set`), the one samples resolve in. It changes only
+        when the driver's catalog is replaced (a `configure` with `save` reads the files again)
+        or a reload changes `usage`; `Commands` is sent then if this answer changed, so call it
+        again on each `Commands`.
+        `ConfigError` naming the model for a price that does not read."""
         ...
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
@@ -305,6 +319,9 @@ class _LocalCommandCalls(_Connected):
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         return await self._up().commands.complete(cursor, named, prefix)
+
+    async def models(self) -> tuple[ModelInfo, ...]:
+        return self._up().commands.models()
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
         commands = self._up().commands

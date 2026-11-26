@@ -30,6 +30,7 @@ from tau._core import Node
 from tau._events import Event
 from tau._hub import Feed
 from tau._images import ImageInput
+from tau._model_list import ModelInfo
 from tau._protocol import (
     PROTOCOL,
     ProtocolError,
@@ -350,6 +351,9 @@ class RemoteClient(_RemoteTreeReads, Client):
             "list[Completion]",
             await self.call("complete", cursor=cursor, named=named, prefix=prefix),
         )
+
+    async def models(self) -> tuple[ModelInfo, ...]:
+        return cast("tuple[ModelInfo, ...]", await self.call("models"))
 
     async def parse_line(self, cursor: int, line: str) -> Parsed:
         return cast("Parsed", await self.call("parse_line", cursor=cursor, line=line))

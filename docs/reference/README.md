@@ -7,7 +7,7 @@ One page per group of the public surface (`docs/api/README.md` says who each is 
 - [Writing an extension](extensions.md): 53 names
 - [Tools](tools.md): 12 names
 - [The session's records](records.md): 14 names
-- [Writing a frontend](clients.md): 16 names
+- [Writing a frontend](clients.md): 18 names
 - [Events](events.md): 20 names
 - [Starting and finding sessions](sessions.md): 19 names
 - [The wire](wire.md): 7 names

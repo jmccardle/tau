@@ -51,9 +51,9 @@ class McpConfigError(ValueError):
 @dataclass(frozen=True)
 class McpServer:
     """One server to start: its `name` (the `mcp__NAME__` of its tools), the file it is from
-    (`origin`), its `transport`, and for stdio the `command`, `args` and `env` (added to τ's
-    environment), for HTTP the `url` and `headers`. `${VAR}`s are replaced. `env` and `headers`
-    are left out of its repr: they may hold a token."""
+    (`origin`), its `transport`, and for stdio the `command`, `args` and `env` (its environment,
+    over the few variables it inherits from τ's), for HTTP the `url` and `headers`. `${VAR}`s
+    are replaced. `env` and `headers` are left out of its repr: they may hold a token."""
 
     name: str
     origin: str

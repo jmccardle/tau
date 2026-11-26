@@ -2,8 +2,11 @@
 Gemini CLI share. Every test runs real small `sh` scripts that read the event on standard input
 and answer with an exit code or JSON, through a session and the files a person writes."""
 
+import asyncio
 import json
+import os
 import shlex
+import signal
 import stat
 import sys
 from pathlib import Path
@@ -66,6 +69,26 @@ def result(h: Harness) -> Outcome:
 
 def errors(h: Harness) -> list[str]:
     return [n.text for n in h.notice_events() if n.level == "error"]
+
+
+def warnings(h: Harness) -> list[str]:
+    return [n.text for n in h.notice_events() if n.level == "warning"]
+
+
+async def written(path: Path) -> str:
+    """What a command wrote to `path`, once it has (a command runs while the test waits)."""
+    async with asyncio.timeout(5):
+        while not path.exists() or not path.read_text().strip():
+            await asyncio.sleep(0.02)
+    return path.read_text().strip()
+
+
+def ended(pid: int) -> bool:
+    """Whether process `pid` has exited (gone, or a zombie nobody has reaped yet)."""
+    try:
+        return "Z" in Path(f"/proc/{pid}/stat").read_text().split(")")[1][:3]
+    except FileNotFoundError:
+        return True
 
 
 # -- PreToolUse
@@ -178,6 +201,29 @@ async def test_updated_input_rewrites_the_arguments_the_tool_runs_with(
     await h.send("go")
     await h.settle()
     assert tool.calls == [{"command": "echo safe"}]
+    assert result(h) == Outcome.Ok(
+        '[hooks rewrote the arguments: {"command": "echo safe"}]\noutput'
+    )
+    await h.close()
+
+
+@scenario
+async def test_a_rewritten_call_that_fails_says_what_ran_too(tmp_path: Path, world: World) -> None:
+    rewrite = script(
+        world,
+        "rewrite.sh",
+        """printf '%s' '{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+        "updatedInput": {"command": "make"}}}'""",
+    )
+    hooks_file(world, PreToolUse=[group(rewrite)])
+    boom = FakeTool("bash", Exception("no makefile"))
+    h, _ = await session(tmp_path, world, [call("a", "bash", command="mk"), say("ok")], boom)
+    await h.send("go")
+    await h.settle()
+    outcome = result(h)
+    assert isinstance(outcome, Outcome.Err)
+    assert outcome.error.startswith('[hooks rewrote the arguments: {"command": "make"}]\n')
+    assert "no makefile" in outcome.error
     await h.close()
 
 
@@ -229,7 +275,7 @@ async def test_ask_puts_a_question_and_yes_runs_the_call(tmp_path: Path, world: 
     await h.settle()
     (question,) = (await h.view()).questions
     assert question.extension == "hooks"
-    assert "git push" in question.text
+    assert question.text.splitlines()[0] == "bash: git push", "worded as permissions words it"
     assert "pushes upstream" in question.text
     assert question.schema == {"type": "string", "enum": ["yes", "no"]}
     assert tool.calls == []
@@ -283,6 +329,28 @@ async def test_a_matcher_names_the_tools_a_rule_applies_to(
     await h.send("go")
     await h.settle()
     assert marker.exists() is runs
+    await h.close()
+
+
+@scenario
+async def test_a_matcher_that_can_never_match_is_warned_of_once(
+    tmp_path: Path, world: World
+) -> None:
+    hooks_file(
+        world,
+        PreToolUse=[group("true", "MultiEdit|Bash"), group("true", "Bash(git *)")],
+        PostToolUse=[group("true", "mcp__server__tool")],  # an MCP server may list it later
+    )
+    h, _ = await session(tmp_path, world, [say("one"), say("two")])
+    await h.send("go")
+    await h.settle()
+    await h.send("again")
+    await h.settle()
+    assert [w.split(" in ")[0] for w in warnings(h)] == [
+        "PreToolUse matcher 'Bash|MultiEdit'",
+        "PreToolUse matcher 'Bash(git *)'",
+    ]
+    assert "can never match MultiEdit" in warnings(h)[0]
     await h.close()
 
 
@@ -419,6 +487,71 @@ async def test_a_decision_field_tau_does_not_support_fails_and_names_it(
     await h.close()
 
 
+@scenario
+async def test_a_child_left_in_the_background_does_not_hold_the_call(
+    tmp_path: Path, world: World
+) -> None:
+    """Once the command exits, τ goes on: the child keeps running, as `&` asked, and holds
+    nothing up, though it has the command's standard output and error."""
+    pid = world.home / "child.pid"
+    notify = script(
+        world, "notify.sh", f"(sleep 20; echo late) &\necho $! > {shlex.quote(str(pid))}"
+    )
+    hooks_file(world, PreToolUse=[group(notify, timeout=5)])
+    h, tool = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
+    await h.send("go")
+    async with asyncio.timeout(2):
+        await h.settle()
+    assert tool.calls == [{"command": "x"}]
+    assert errors(h) == []
+    child = int(await written(pid))
+    assert not ended(child), "a hook's background child is left alone"
+    os.killpg(os.getpgid(child), signal.SIGKILL)
+    await h.close()
+
+
+@scenario
+async def test_stopping_the_session_ends_a_running_command_and_what_it_started(
+    tmp_path: Path, world: World
+) -> None:
+    pid = world.home / "child.pid"
+    slow = script(world, "slow.sh", f"sleep 30 &\necho $! > {shlex.quote(str(pid))}\nwait")
+    hooks_file(world, PreToolUse=[group(slow)])
+    h, tool = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
+    await h.send("go")
+    child = int(await written(pid))
+    async with asyncio.timeout(5):
+        await h.driver.stop()
+    assert ended(child)
+    assert tool.calls == []
+
+
+@scenario
+@pytest.mark.xfail(
+    strict=True,
+    reason="an abort never cancels a hook (model.md section 8, Q34), and a hook has no way to "
+    "learn of one: ending its command needs the driver (held for John's ruling)",
+)
+async def test_an_abort_ends_a_running_command_and_what_it_started(
+    tmp_path: Path, world: World
+) -> None:
+    pid = world.home / "child.pid"
+    slow = script(world, "slow.sh", f"sleep 30 &\necho $! > {shlex.quote(str(pid))}\nwait")
+    hooks_file(world, PreToolUse=[group(slow, timeout=4)])
+    h, tool = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
+    await h.send("go")
+    child = int(await written(pid))
+    await h.abort()
+    try:
+        async with asyncio.timeout(1.5):
+            await h.settle()
+        assert ended(child)
+        assert tool.calls == []
+    finally:
+        await h.settle()
+        await h.close()
+
+
 # -- PostToolUse and PostToolUseFailure
 
 
@@ -439,6 +572,39 @@ async def test_post_tool_use_gets_the_result_and_its_feedback_reaches_the_model(
     assert event["tool_response"] == "output"
     assert event["tool_input"] == {"command": "make"}
     assert result(h) == Outcome.Ok("output\n\nhook feedback: lint: 2 warnings")
+    await h.close()
+
+
+@scenario
+async def test_feedback_after_a_result_that_ends_in_a_newline_has_one_blank_line_before_it(
+    tmp_path: Path, world: World
+) -> None:
+    lint = script(world, "lint.sh", "echo 'lint: 2 warnings' >&2; exit 2")
+    hooks_file(world, PostToolUse=[group(lint)])
+    tool = FakeTool("bash", "output\n")
+    h, _ = await session(tmp_path, world, [call("a", "bash", command="make"), say("ok")], tool)
+    await h.send("go")
+    await h.settle()
+    assert result(h) == Outcome.Ok("output\n\nhook feedback: lint: 2 warnings")
+    await h.close()
+
+
+@scenario
+async def test_a_call_id_repeated_in_a_later_reply_is_its_own_call(
+    tmp_path: Path, world: World
+) -> None:
+    """Call ids repeat from one reply to the next: a refusal of the first call `a` says nothing
+    of the second, whose result the `PostToolUse` command sees."""
+    seen = world.home / "post.json"
+    refuse_rm = script(world, "refuse.sh", 'grep -q rm && { echo "no rm" >&2; exit 2; }; exit 0')
+    spy = script(world, "spy.sh", f"cat > {shlex.quote(str(seen))}")
+    hooks_file(world, PreToolUse=[group(refuse_rm)], PostToolUse=[group(spy)])
+    replies = [call("a", "bash", command="rm x"), call("a", "bash", command="ls"), say("ok")]
+    h, tool = await session(tmp_path, world, replies)
+    await h.send("go")
+    await h.settle()
+    assert tool.calls == [{"command": "ls"}]
+    assert json.loads(seen.read_text())["tool_input"] == {"command": "ls"}
     await h.close()
 
 

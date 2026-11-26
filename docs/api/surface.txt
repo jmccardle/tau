@@ -60,12 +60,13 @@ class CallDraft
     property id: str
     property tool: str
 class CommandHooks
+    def hooks(self) -> str
     name = NAME
     @classmethod
     def of(cls, loaded: LoadedConfig) -> 'CommandHooks'
-    order: Mapping[str, int] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
-    async def post_reply(self, cursor: Cursor, subject: Subject) -> None
-    async def post_step(self, cursor: Cursor, subject: Subject) -> None
+    order: ClassVar[Mapping[str, int]] = {'pre_input': GUARD, 'pre_tool': GUARD - 50, 'pre_result': OBSERVE, 'post_reply': OBSERVE, 'post_step': OBSERVE}
+    async def post_reply(self, cursor: Cursor, subject: Subject) -> str | None
+    async def post_step(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None
     async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None
@@ -616,6 +617,7 @@ class Client(AsyncIterator[Event], Protocol)
     id: str
     async def image(self, sha256: str) -> str
     async def input(self, cursor: int, text: str, images: Sequence[ImageInput] = ()) -> int
+    async def models(self) -> tuple[ModelInfo, ...]
     async def node(self, id: int) -> Node
     async def nodes(self, start: int, limit: int) -> list[Node]
     async def open(self, at: int) -> int
@@ -652,6 +654,22 @@ class LocalClient(Client)
     def take(self) -> list[Event]
 MAX_INPUT_BYTES: Final = 20 * MIB
 MAX_INPUT_IMAGES: Final = 20
+@dataclass(frozen=True)
+class ModelInfo
+    context_window: int | None
+    default: bool
+    images: ImageLimits | None
+    max_tokens: int | None
+    name: str
+    price: ModelPrice | None
+    provider: str
+@dataclass(frozen=True)
+class ModelPrice
+    cache_read: str
+    cache_write: str
+    cache_write_1h: str
+    input: str
+    output: str
 @dataclass(frozen=True)
 class Parsed
     args: dict[str, object]

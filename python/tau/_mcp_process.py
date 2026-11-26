@@ -11,6 +11,8 @@ it exit, and on Windows terminated alone.
 
 When τ is killed in a way it cannot clean up after, a server sees its stdin close, which the MCP
 specification makes its signal to exit.
+
+A server does not inherit τ's environment: only `INHERITED_ENVIRONMENT`, and what its `env` names.
 """
 
 import asyncio
@@ -20,10 +22,46 @@ import select
 import signal
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 _POSIX = sys.platform != "win32"
 _POLL = 0.02  # seconds between looks at whether it has exited
+
+INHERITED_ENVIRONMENT = (
+    (
+        "APPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "USERNAME",
+        "USERPROFILE",
+    )
+    if sys.platform == "win32"
+    else ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+)
+"""The variables of τ's environment a stdio server inherits; anything else it gets only by naming
+it in its `env`, so a key τ can read reaches only the servers given it. The MCP Python SDK's
+`DEFAULT_INHERITED_ENV_VARS` (mcp 2.3.0, `mcp/client/stdio.py`): a server written against the
+SDK's clients needs nothing more."""
+
+
+def environment(env: Mapping[str, str]) -> dict[str, str]:
+    """A stdio server's whole environment: the `INHERITED_ENVIRONMENT` variables τ has, then
+    `env` over them. A value that starts with `()` is a shell function, not a setting, and is not
+    inherited (as the SDK's `get_default_environment` skips it)."""
+    inherited = {
+        name: value
+        for name in INHERITED_ENVIRONMENT
+        if (value := os.environ.get(name)) is not None and not value.startswith("()")
+    }
+    return {**inherited, **env}
 
 
 class Child:

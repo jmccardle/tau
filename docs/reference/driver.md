@@ -72,7 +72,8 @@ def use_catalog(self, catalog: ModelCatalog) -> None
 ```
 
 Resolve model names in `catalog`, and order hooks by it, from the next job
-dispatched on. `ConfigError` (nothing changes) for a bad `extensions.NAME.order`.
+dispatched on (clients get `Commands` if `models()` changed, D32 section 8). `ConfigError`
+(nothing changes) for a bad `extensions.NAME.order`.
 
 ### Driver.reload
 

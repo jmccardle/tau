@@ -39,6 +39,7 @@ from tau._events import Notice
 from tau._functions import INJECT_CURSOR, INJECT_NODE, Described, describe, invoke
 from tau._handles import Handles, TreeHandle
 from tau._hub import Hub
+from tau._model_list import ModelInfo
 from tau._options import ExtensionOptions
 from tau._protocols import Clock
 from tau._values import (
@@ -171,7 +172,8 @@ class _Pending:
 
 class CommandTable:
     """The driver's commands, and running them for clients (the module docstring). `generation`
-    goes up each time the commands are replaced (`use`), so the hub compares the forms only then."""
+    goes up each time the commands are replaced (`use`), so the hub compares the forms only then.
+    `models` answers `Client.models()` (D32 section 8) and `complete`'s `model`."""
 
     def __init__(  # noqa: PLR0913 - what running a command needs of the driver
         self,
@@ -179,6 +181,7 @@ class CommandTable:
         *,
         session: Session,
         catalog: Callable[[], ModelCatalog],
+        models: Callable[[], tuple[ModelInfo, ...]],
         options: ExtensionOptions,
         handles: Handles,
         hub: Hub,
@@ -194,6 +197,7 @@ class CommandTable:
         self._rescan = rescan
         self._session = session
         self._catalog = catalog
+        self.models = models
         self._options = options
         self._hub = hub
         self._clock = clock
@@ -249,7 +253,7 @@ class CommandTable:
 
     async def complete(self, cursor: int, named: str, prefix: str) -> list[Completion]:
         """The values of the named type `named` that start with `prefix`."""
-        return await complete(self._session, self._catalog(), cursor, named, prefix)
+        return await complete(self._session, self.models, cursor, named, prefix)
 
     # Running
 

@@ -4,7 +4,7 @@
 
 A frontend holds a `Client`, in this process or over the wire, and reads the line a person typed.
 
-Names: `Client`, `CommandFailed`, `Completion`, `ImageInput`, `LocalClient`, `MAX_INPUT_BYTES`, `MAX_INPUT_IMAGES`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.Completion`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
+Names: `Client`, `CommandFailed`, `Completion`, `ImageInput`, `LocalClient`, `MAX_INPUT_BYTES`, `MAX_INPUT_IMAGES`, `ModelInfo`, `ModelPrice`, `Parsed`, `RemoteClient`, `UnknownCommand`, `commandline.Completion`, `commandline.STDIN`, `commandline.completions`, `commandline.parse`, `commandline.value`, `commandline.values`
 
 ## Client
 
@@ -274,6 +274,23 @@ the `"format"` of a schema) that start with `prefix`, as `cursor` sees them, eac
 `Completion`: the `value`, and the `label` and `detail` a list shows (D32 section 1).
 Paths are the driver's machine's, relative to its working directory.
 
+### Client.models
+
+```python
+async def models(self) -> tuple[ModelInfo, ...]
+```
+
+Every model of the driver's catalog, in config order, as a client may know it (D32
+section 8): its qualified name (what `CursorView.model` holds), provider, context window,
+`max_tokens`, image limits, price (the `usage` extension's; none without it), and whether
+it is the `default_model`; never a URL,
+a key, the name of a key's variable or provider options. The catalog is the effective one,
+every layer folded (user, project, `--set`), the one samples resolve in. It changes only
+when the driver's catalog is replaced (a `configure` with `save` reads the files again)
+or a reload changes `usage`; `Commands` is sent then if this answer changed, so call it
+again on each `Commands`.
+`ConfigError` naming the model for a price that does not read.
+
 ### Client.parse_line
 
 ```python
@@ -416,6 +433,44 @@ MAX_INPUT_IMAGES: Final = 20
 ```
 
 The most images one input may carry (D31; fixed for 0.18).
+
+## ModelInfo
+
+```python
+@dataclass(frozen=True)
+class ModelInfo
+    name: str
+    provider: str
+    context_window: int | None
+    max_tokens: int | None
+    images: ImageLimits | None
+    price: ModelPrice | None
+    default: bool
+```
+
+What a client may know of one model in the driver's catalog (D32 section 8): its qualified
+`name` (what a `Config` node and `CursorView.model` hold), its `provider`, `context_window`
+and `max_tokens` (the most output tokens a reply asks for; `None`: the provider's default),
+`images` (what one image may be, when the model takes images and its provider sends them;
+`None`: an image for it is refused), `price` (`None`: the model has none), and whether it is
+the catalog's `default_model` (`default`). Nothing else of the config is in it.
+
+## ModelPrice
+
+```python
+@dataclass(frozen=True)
+class ModelPrice
+    input: str
+    output: str
+    cache_read: str
+    cache_write: str
+    cache_write_1h: str
+```
+
+A model's price in USD per million tokens, each an exact decimal number as text (`"3"`,
+`"0.3"`, `"3.75"`; never a float, never an exponent): `input` (prompt tokens neither read from
+nor written to the cache), `output`, `cache_read`, `cache_write`, and `cache_write_1h` (a
+cache write kept for an hour; `cache_write` when the config gives none).
 
 ## Parsed
 

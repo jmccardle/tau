@@ -528,12 +528,26 @@ the one error: the program that named it made the mistake. Why:
   `TAU_SETTINGS` does. (It is read from the environment τ reads keys from, so a trusted project's
   `.env` could set it too; that grants nothing `.tau/mcp.json` does not.)
 
-**Transports.** stdio (newline-delimited JSON-RPC over the server's stdin and stdout; its stderr
-is read and its last lines kept for the error, never shown: it would draw over the TUI) and
+**Transports.** stdio (newline-delimited JSON-RPC over the server's stdin and stdout; its stderr,
+and a stdout line that is not JSON (a banner, a stray log line, which is skipped and fails
+nothing), are read and their last lines kept for the error, never shown: they would draw over
+the TUI) and
 streamable HTTP (a POST per message, answered in JSON or an event stream; the session id it gives
 goes with every later request, and a `DELETE` ends it). The legacy SSE transport (`type: "sse"`)
 is refused with what to use instead. No `GET` stream is opened, so an HTTP server's unprompted
 messages reach us only in the answer to a request of ours. No OAuth: `headers` carry a token.
+
+**A stdio server's environment (review, 2026-11-26; John's ruling: the MCP Python SDK's
+behaviour).** A server inherits only `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` (Windows:
+`APPDATA`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, `PATH`, `PATHEXT`, `PROCESSOR_ARCHITECTURE`,
+`SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERNAME`, `USERPROFILE`) from τ's environment, skipping a
+value that is a shell function (it starts with `()`), and then what its `env` names
+(`_mcp_process.INHERITED_ENVIRONMENT`, from the SDK's `DEFAULT_INHERITED_ENV_VARS` and
+`get_default_environment`, mcp 2.3.0). The first build passed τ's whole environment, so every key
+τ could read reached every server; now a key is passed by name (`"env": {"GITHUB_TOKEN":
+"${GITHUB_TOKEN}"}`), and a server that needs another variable (a proxy, `NODE_OPTIONS`, a
+virtualenv) names it the same way. The same set as the SDK's means a server written against its
+clients needs nothing more under τ.
 
 **The client is τ's own**, not the official `mcp` SDK: what τ uses (the handshake, `tools/list`
 with paging, `tools/call` with cancellation, `ping`, `list_changed`) is about 400 lines over
@@ -543,7 +557,9 @@ failure cases (a dying server, a malformed line, a grandchild left in the proces
 
 **Tools.** Each is `mcp__SERVER__TOOL` (the tool's name reduced to `[A-Za-z0-9_-]`; at most 64
 characters, the providers' limit; a server's name may not hold `__`), with the server's
-description and input schema. They go through `permissions` like any tool; `mcp__SERVER` in a
+description and input schema. A tool that cannot be offered (no input schema that is a JSON
+object, a name over 64 characters, a second tool of one name) is left out and reported (stderr and
+an `error` notice), at the start and on each new list; the server's other tools are offered. They go through `permissions` like any tool; `mcp__SERVER` in a
 rule names every tool of that server, and a rule naming an `mcp__` tool is never a "no extension
 provides it" warning (the tools are listed only once the server runs). A result's `text` blocks
 are its text, `image` blocks its images (D30), a text `resource` its text; anything else is a line

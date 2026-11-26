@@ -206,3 +206,26 @@ def test_an_id_without_a_minimum_is_found() -> None:
     assert id_problems(defs) == ["Live.cursor"]
     result = {"children": {"x-result": {"type": "array", "items": {"type": "integer"}}}}
     assert id_problems(result) == ["children result"]
+
+
+def test_models_answers_an_allowlist_of_model_facts() -> None:
+    """`models` (D32 section 8): an array of `ModelInfo`, whose properties are exactly the seven
+    non-secret facts, a price of decimal strings, and image limits."""
+    defs = schema()["$defs"]
+    assert defs["models"]["x-result"] == {"type": "array", "items": {"$ref": "#/$defs/ModelInfo"}}
+    assert defs["models"]["properties"] == {}
+    info = defs["ModelInfo"]["properties"]
+    assert list(info) == [
+        "name",
+        "provider",
+        "context_window",
+        "max_tokens",
+        "images",
+        "price",
+        "default",
+    ]
+    assert {"$ref": "#/$defs/ModelPrice"} in info["price"]["anyOf"]
+    assert {"$ref": "#/$defs/ImageLimits"} in info["images"]["anyOf"]
+    price = defs["ModelPrice"]["properties"]
+    assert list(price) == ["input", "output", "cache_read", "cache_write", "cache_write_1h"]
+    assert all(p == {"type": "string"} for p in price.values()), "exact decimal text"
