@@ -10,6 +10,7 @@ from tau._core import Body, Node, Outcome, Part
 from tau._counts import Count, show
 from tau._events import CursorView
 from tau._images import labels, shown
+from tau._markers import UNDO_KIND, UndoMarker
 from tau.tui._transcript import author_name, config_line
 from tau.tui._treeplan import TreeRow
 
@@ -57,9 +58,18 @@ def describe(node: Node) -> tuple[str, str]:
         case Body.Config(config=config):
             return "config", config_line(config.data)
         case Body.Custom(kind=kind):
-            return "custom", kind
+            marker = _marker(node.body) if kind == UNDO_KIND else None
+            return "custom", kind if marker is None else f"{kind}: {marker.label}"
         case _:
             raise TypeError(f"node {node.id} holds a body the tree does not know")
+
+
+def _marker(body: Body) -> UndoMarker | None:
+    """The undo marker `body` holds; `None` for a malformed one, which shows as its kind."""
+    try:
+        return UndoMarker.of(body)
+    except ValueError:
+        return None
 
 
 def full_text(node: Node) -> str:

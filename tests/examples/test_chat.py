@@ -56,9 +56,11 @@ BUILT_INS = [
     "compaction",
     "permissions",
     "prune",
+    "session",
     "skills",
     "step_limit",
     "tokens",
+    "undo",
     "usage",
 ]  # the built-in extensions
 

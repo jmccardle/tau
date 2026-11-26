@@ -43,9 +43,11 @@ BUILT_INS = [
     "compaction",
     "permissions",
     "prune",
+    "session",
     "skills",
     "step_limit",
     "tokens",
+    "undo",
     "usage",
 ]  # the extensions, in hook order
 KEYS = sorted([*BUILT_INS, "agents", "retry", "token_calls"])
@@ -208,10 +210,12 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "permissions",
         "prune",
         "retry",
+        "session",
         "skills",
         "step_limit",
         "token_calls",
         "tokens",
+        "undo",
         "usage",
         "search",
         "ralph",
@@ -346,7 +350,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:22] == [
+    assert lines[:24] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -365,6 +369,8 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}commands: /prune; tools: none",
         "retry         on         built-in (provider wrapper)",
         f"{pad}commands: none; tools: none",
+        "session       on         built-in",
+        f"{pad}commands: /clear, /branch, /tree, /export; tools: none",
         "skills        on         built-in",
         f"{pad}commands: none; tools: none",
         "step_limit    on         built-in",

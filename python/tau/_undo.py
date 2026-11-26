@@ -34,7 +34,10 @@ def _target(walk: list[Node], priority: str) -> tuple[Node, UndoMarker | None] |
     """The node `/undo <priority>` goes back over, nearest the tip first: a marker of that
     priority, or (for `move`) a `User` node. `None` if the walk has neither."""
     for node in reversed(walk):
-        marker = UndoMarker.of(node.body)
+        try:
+            marker = UndoMarker.of(node.body)
+        except ValueError as e:
+            raise CommandFailed(f"node {node.id} is a malformed undo marker: {e}") from None
         if marker is not None and marker.priority == priority:
             return node, marker
         if priority == MOVE and isinstance(node.body, Body.User) and node.parent is not None:

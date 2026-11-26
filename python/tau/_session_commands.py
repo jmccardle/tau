@@ -75,7 +75,10 @@ def describe_node(node: Node) -> str:
         case Body.Config(config=config):
             what = f"config: {' '.join(config.data.split())}"
         case Body.Custom(kind=kind):
-            marker = UndoMarker.of(node.body) if kind == "undo" else None
+            try:
+                marker = UndoMarker.of(node.body)
+            except ValueError:  # a malformed marker is drawn by its kind
+                marker = None
             what = kind if marker is None else f"{kind}: {marker.label}"
         case _:
             what = "?"
