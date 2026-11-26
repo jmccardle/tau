@@ -97,11 +97,20 @@ one `Client`, one cursor, no person to ask.
 ### 3. Text output
 
 - **stdout is the answer**: the text parts of the **last** `Assistant` node the run added to the
-  cursor's walk, if that node makes no calls, printed when the cursor rests (status 0 or 3),
+  cursor's walk, if that node makes no calls, printed when the cursor rests (status 0; for a stop see below),
   ending with one newline. Earlier replies ("Let me
   read the file") are progress, not the answer; `--verbose` shows them on stderr. (0.15 printed
   every reply, concatenated.) A run that
   ends without a final reply prints nothing on stdout.
+- **A run that does not finish still shows what the model wrote** (amended 2026-11-25): at exit 3
+  (a question no rule matches, a halt, an abort, the message still pending, auto-step off or a step
+  limit) and at exit 1 after the model spoke, stdout holds the text parts of **every** `Assistant`
+  node of the run's own turn, in order, a blank line between nodes; tool calls and results are
+  left out. Every one, not only the last: a stop is not an answer, so the "last reply is the
+  answer" rule has nothing to select, and the last node alone is often a short remark after the
+  plan (or one that carries a call, which has no text of its own to show). The stderr note
+  follows. A clean finish prints as before. (`/plan task` with no `--answer` rule stops at
+  `Approve this plan?`, exit 3: the plan is on stdout.)
 - It prints from the node (`Appended`), not from `Live`. `Live` is a preview a full buffer may
   drop (D16 §5); a pipe must get exactly what the log holds. Streaming text is `--json`'s and the
   TUI's, also when stdout is a terminal.
@@ -124,7 +133,10 @@ One JSON object per line on stdout, nothing else there, in the wire's own encodi
    `Notice`, and the watched cursor's `Live`. Nothing is filtered or summarised: a consumer that
    wants only the reply reads the last `Appended` `Assistant` node; one that wants streaming reads
    `Live`.
-3. **On failure, a last line** `{"error": {"type", "message"}}`, as `tau serve --json` prints.
+3. **On failure, a last line** `{"error": {"type", "message"}}`, as `tau serve --json` prints;
+   when the model had written text in the turn, the object also has `"partial"`: that text, as
+   above. **When the run stops before finishing (exit 3), a last line**
+   `{"stopped": {"message"}}`, with `"partial"` likewise (amended 2026-11-25).
    A successful run just ends; its last `CursorView` of the cursor carries the `ending`, and the
    exit status says the rest (§6).
 
@@ -192,6 +204,8 @@ was about to answer it. Now no rule matching is never a decline:
 | 2 | usage: bad flags, nothing to send, a command line missing arguments, `-r` |
 | 3 | stopped before finishing: the cursor rested with auto-step off (`StepLimit`, a hook turned it off, a step did not move) or ending `Halted`, or the message is still pending (a `pre_input` hook refused it) |
 | 130 | interrupted |
+
+At exits 3, and 1 after the model spoke, stdout carries the model's text of the turn (§3).
 
 Exit 3 is new. 0.15 stopped silently at `--max-turns` and exited 0, so a script could not tell a
 cut-off answer from a whole one. Status 3 always comes with a stderr line saying why: a halt's
