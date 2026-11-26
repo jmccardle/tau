@@ -3,8 +3,9 @@
 Five things happen in a session without any extension of yours: a failed request is tried again,
 `@file` in a message attaches the file, files you write become commands (prompt templates and
 skills), what the session has used and spent is shown, and a long conversation can be shortened
-(`/compact`, `/prune`). Two more wait for you to ask: rules that ask before a tool runs
-(permissions), and sub-agents, which are off until you turn them on. Each can be switched off, and
+(`/compact`, `/prune`). Three more wait for you to ask: rules that ask before a tool runs
+(permissions), and sub-agents and tools from MCP servers, which are off until you turn them on.
+Each can be switched off, and
 each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
@@ -676,3 +677,73 @@ tools they are offered (default: all but `agent`). A name in `tools` that no loa
 provides is refused by `/config` and `tau config set`, and is a warning (a name that matches
 nothing) when a file already holds it. A list typed on a command line is
 split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.
+
+## Tools from MCP servers
+
+An MCP server (Model Context Protocol) is a program, or a web service, that offers tools: GitHub,
+a database, a browser. `mcp` gives the model the tools of the servers you list. It is off until you
+turn it on, and with no server listed it does nothing:
+
+```bash skip
+tau ext enable mcp
+```
+
+List the servers in `$TAU_HOME/mcp.json` (`~/.tau/mcp.json`), in the shape other MCP clients use,
+so a server's README snippet goes in as it is:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+    }
+  }
+}
+```
+
+A server with a `command` runs on your machine and speaks over its stdin and stdout; one with a
+`url` is reached over streamable HTTP (the older SSE transport, `"type": "sse"`, is not supported).
+`${NAME}` is replaced from your environment, or from a trusted project's `.env`, so the token stays
+out of the file; `${NAME:-default}` gives a default. A name that is not set and has no default
+stops the start and says which.
+
+A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
+Code reads), so a project set up for Claude Code works as it is. Both are pinned by
+[trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
+`headers`, never their values), and a change to either file asks again. For one server name the
+nearest file wins: `.tau/mcp.json`, then `.mcp.json`, then yours. `"disabled": true` turns a
+server off, and `{"mcpServers": {"github": {"disabled": true}}}` in `.tau/mcp.json` turns off a
+`.mcp.json` server you do not want, without editing that file.
+
+The model sees each tool as `mcp__SERVER__TOOL` (`mcp__github__create_issue`). They are asked
+about like any other tool, and a rule that names the server names every tool it has:
+
+```json
+{ "extensions": { "permissions": { "ask": ["mcp__github"], "allow": ["mcp__github__get_issue"] } } }
+```
+
+When τ starts it starts every server at once and waits until each has listed its tools, so the
+first message already has them. **A server that does not start stops τ**, naming every server
+that failed and why (with the last line it wrote to its error output):
+
+```text
+extension 'mcp' did not start: McpStartError: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set
+```
+
+Fix it, add `"disabled": true` to it, or `tau ext disable mcp`. τ waits 30 seconds for the
+servers; the first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
+more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the
+command once by hand first.
+
+While τ runs, `/mcp` lists the servers, whether each is running and their tools. A server that
+lists new tools has them offered from the model's next request. A server that exits is reported
+(an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
+server. A tool's text and images reach the model; other kinds of content are named and left out.
+Prompts and resources that a server offers are not used.

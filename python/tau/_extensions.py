@@ -28,25 +28,18 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
-from tau._agents import Agents
-from tau._attachments import Attachments
-from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
+from tau._builtin_table import BUILTINS as _BUILTINS
+from tau._builtin_table import FILE_ERRORS, OFF_BY_DEFAULT
 from tau._commands import assemble_commands
-from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
-from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
-from tau._prune import Prune
-from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
-from tau._step_limit import StepLimit
-from tau._tokens import TokenCalls, Tokens
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -57,7 +50,6 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
-from tau._usage import Usage
 from tau._user_config import UserConfig
 
 SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
@@ -78,29 +70,6 @@ RETRY = "retry"
 it is switched on and off, and listed, like one."""
 
 
-def _skills(loaded: LoadedConfig) -> Skills:
-    """`Skills` for the files `loaded` reads; a file it cannot use stops the start."""
-    try:
-        return Skills.of(loaded)
-    except SkillFileError as e:
-        raise ExtensionLoadError(str(e)) from None
-
-
-_BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
-    Agents.name: lambda loaded: Agents(),
-    Attachments.name: lambda loaded: Attachments(Path.cwd()),
-    BaseTools.name: lambda loaded: BaseTools(),
-    Compaction.name: lambda loaded: Compaction(),
-    Permissions.name: lambda loaded: Permissions(Path.cwd()),
-    Prune.name: lambda loaded: Prune(),
-    Skills.name: _skills,
-    StepLimit.name: lambda loaded: StepLimit(),
-    Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
-    TokenCalls.name: lambda loaded: TokenCalls(),
-    Usage.name: lambda loaded: Usage(),
-}
-OFF_BY_DEFAULT = frozenset({Agents.name, TokenCalls.name})
-"""The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
@@ -278,6 +247,15 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
     return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
+def _built(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> object:
+    """A built-in made; a file it cannot use (a skill's, an MCP file) is an
+    `ExtensionLoadError` saying why."""
+    try:
+        return make(loaded)
+    except FILE_ERRORS as e:
+        raise ExtensionLoadError(str(e)) from None
+
+
 def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
     made = [
         _Candidate(
@@ -286,7 +264,7 @@ def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
             "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            lambda m=make: [m(loaded)],
+            lambda m=make: [_built(m, loaded)],
         )
         for key, make in _BUILTINS.items()
     ]

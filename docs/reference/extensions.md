@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -804,6 +804,102 @@ LabelName = NewType('LabelName', str)
 ```
 
 A label that exists.
+
+## Mcp
+
+```python
+class Mcp
+    name = NAME
+```
+
+The `mcp` built-in: the configured MCP servers' tools, while it is started.
+
+### Mcp.__init__
+
+```python
+def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+```
+
+### Mcp.of
+
+```python
+@classmethod
+def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
+```
+
+The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
+project's `.mcp.json` and `.tau/mcp.json` as approved. `McpConfigError` naming every
+server that cannot be used.
+
+### Mcp.tools
+
+```python
+property tools: tuple[Tool, ...]
+```
+
+Every running server's tools, in server name order.
+
+### Mcp.start
+
+```python
+async def start(self, tree: TreeHandle) -> None
+```
+
+Start every server at once and list its tools; `McpStartError` naming each that
+failed, with the others stopped.
+
+### Mcp.stop
+
+```python
+async def stop(self) -> None
+```
+
+Stop every server.
+
+### Mcp.mcp
+
+```python
+def mcp(self) -> str
+```
+
+List the MCP servers, whether each runs, and their tools.
+
+## McpConfigError
+
+```python
+class McpConfigError(ValueError)
+```
+
+An MCP file or server that cannot be used: the message names the file and the
+server (several lines when several are wrong).
+
+## McpServer
+
+```python
+@dataclass(frozen=True)
+class McpServer
+    name: str
+    origin: str
+    transport: Literal['stdio', 'http']
+    command: str = ''
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    url: str = ''
+    headers: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+```
+
+One server to start: its `name` (the `mcp__NAME__` of its tools), the file it is from
+(`origin`), its `transport`, and for stdio the `command`, `args` and `env` (added to τ's
+environment), for HTTP the `url` and `headers`. `${VAR}`s are replaced. `env` and `headers`
+are left out of its repr: they may hold a token.
+
+### McpServer.shown
+
+```python
+def shown(self) -> str
+```
+
+What it runs or reaches, for a person: the command and its arguments, or the URL.
 
 ## Model
 

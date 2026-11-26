@@ -32,7 +32,7 @@ from tau._project_read import TrustError
 from tau._protocol import Welcome
 from tau._remote import RemoteClient
 from tau._sessions import is_leased
-from tau._trust import write_atomically
+from tau._trust_record import write_atomically
 
 SERVE: Final = "serve"
 SOCKET_LIMIT: Final = 107 if sys.platform == "linux" else 103

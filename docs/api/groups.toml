@@ -18,6 +18,7 @@ names = [
     "Extension", "CursorHook", "ToolHook", "CallDraft", "Subject", "Cursor", "NodeHandle",
     "TreeHandle", "Form", "DefinitionError", "Model", "CursorId", "LabelName", "NodeId",
     "StepLimit", "Attachments", "Skills", "Compaction", "Permissions", "Agents", "Prune", "CURSOR_POINTS", "TOOL_POINTS",
+    "Mcp", "McpServer", "McpConfigError",
     "Count", "Basis", "ImageRule", "image_rule", "RequestCount", "Reading", "reading", "counted", "Counter", "CountJob", "CounterAnswer", "Span", "SpanProof",
     "Observation", "Tokens", "TokenCalls", "Tokenizers", "Calibration", "CalibrationStore", "CalibrationError",
     "CalibrationNewer", "calibration_features", "START_TIMEOUT", "STOP_TIMEOUT",
