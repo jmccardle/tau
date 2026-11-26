@@ -15,9 +15,15 @@ or `wc` is never asked about. On a match it asks the clients `reject | allow | a
   so the result starts with `[bash_guard ran: ...]`, which tells the model (and a reader) what
   really ran.
 
-A question nobody answers within `wait` seconds (it waits with no client connected too), or that
-is declined or aborted, is decided by `unattended`. `ask` cannot say which of those it was, so the
-refusal says only that nobody answered.
+A question nobody answers within `wait` seconds (a served session waits with no client connected
+too), or that is declined or aborted, is decided by `unattended`. `ask` cannot say which of those
+it was, so the refusal says only that nobody answered. `tau -p` never waits: it answers by rule,
+so give it `--answer bash_guard=...` or `--decline bash_guard` (decided by `unattended`); with
+neither, the run stops at the question.
+
+Its `pre_tool` asks and may rewrite the call, so it keeps the default order (an edit, D28): with a
+`permissions` `ask` rule for `bash` the person is asked twice, by `permissions` first, then here;
+in plan mode, `plan_mode` refuses the call before either asks.
 
 The options are what a person may tune for themselves: what is asked about, what is allowed for
 good, what happens unattended and how long to wait. They are checked when set (a bad regex is a
@@ -63,6 +69,8 @@ class Options:
     wait: Annotated[float, "seconds to wait for an answer"] = 600.0
 
     def __post_init__(self) -> None:
+        if self.wait <= 0:
+            raise ValueError(f"wait must be more than 0 seconds, not {self.wait}")
         for pattern in (*self.patterns, *self.allow):
             try:
                 re.compile(pattern)
@@ -77,6 +85,19 @@ class Options:
             (p for p in self.patterns if p not in self.allow and re.search(p, command)),
             None,
         )
+
+
+def _arguments(args_raw: str) -> tuple[dict[str, object], str] | None:
+    """A `bash` call's arguments and their `command`, or `None` unless they are an object with a
+    string `command`: the tool owns argument checking, and its `invalid arguments` says why."""
+    try:
+        args: object = json.loads(args_raw)
+    except ValueError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    command = cast("dict[str, object]", args).get("command")
+    return (cast("dict[str, object]", args), command) if isinstance(command, str) else None
 
 
 class BashGuard:
@@ -98,13 +119,10 @@ class BashGuard:
 
     async def pre_tool(self, node: NodeHandle, call: CallDraft) -> str | None:
         """Ask about a `bash` call that matches a pattern, and act on the answer."""
-        if call.tool != "bash":
+        read = _arguments(call.args_raw) if call.tool == "bash" else None
+        if read is None:
             return None
-        try:
-            args = json.loads(call.args_raw)
-            command = args["command"]
-        except (ValueError, KeyError, TypeError):
-            return None  # the tool owns argument checking
+        args, command = read
         options = node.options()
         pattern = options.hit(command)
         if pattern is None:
@@ -142,12 +160,14 @@ class BashGuard:
     async def pre_result(self, node: NodeHandle, call: CallDraft) -> str | None:
         """The tree keeps the model's own `args_raw`; tell the model what ran instead."""
         ran = self._ran.pop((node.id, call.id), None)
+        if ran is None:
+            return None
         note = f"[bash_guard ran: {ran}]\n"
         match call.outcome:
-            case Outcome.Ok(value=value) if ran:
+            case Outcome.Ok(value=value):
                 call.outcome = Outcome.Ok(note + value)
-            case Outcome.Err(error=error) if ran:
+            case Outcome.Err(error=error):
                 call.outcome = Outcome.Err(note + error)
             case _:
-                pass  # no rewrite, or no outcome to put a note on
+                pass  # interrupted: no result to put the note on
         return None
