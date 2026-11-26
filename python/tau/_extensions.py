@@ -29,7 +29,7 @@ from types import ModuleType
 from typing import Literal, cast
 
 from tau._builtin import SESSION_NAME, Tau
-from tau._builtins import BUILTINS, OFF_BY_DEFAULT
+from tau._builtins import BUILTINS, FILE_ERRORS, OFF_BY_DEFAULT
 from tau._commands import assemble_commands
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
@@ -37,7 +37,6 @@ from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
 from tau._project_code import ApprovedFiles, forget
-from tau._prompt_files import SkillFileError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
 from tau._startup import LoadedConfig
 from tau._tools import assemble_tools
@@ -248,10 +247,11 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
 
 
 def _made(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> list[object]:
-    """The built-in `make` builds from `loaded`; a skill file it cannot use stops the start."""
+    """The built-in `make` builds from `loaded`; a file it cannot use (a skill's, an MCP file)
+    stops the start."""
     try:
         return [make(loaded)]
-    except SkillFileError as e:
+    except FILE_ERRORS as e:
         raise ExtensionLoadError(str(e)) from None
 
 

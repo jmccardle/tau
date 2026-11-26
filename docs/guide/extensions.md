@@ -452,6 +452,14 @@ An administrator can give one extension more time in the config file (not a clie
 not options), `{"extensions": {"heartbeat": {"start_timeout": 120, "stop_timeout": 10}}}`
 ([Configuration](configuration.md)).
 
+## Making a change undoable
+
+A change your extension makes that a person may want to take back (a new line it moves the cursor
+onto, files it writes) leaves an undo marker, `cursor.write(UndoMarker(...).body())`, and `/undo`
+follows it. A change outside the tree also needs `async def reverse(self, cursor, marker)`, which
+`/undo` calls to put things back before it moves the cursor. The marker's shape and the rules are
+in [Conventions](conventions.md).
+
 ## Asking a question
 
 `await cursor.ask(text, expect=str)` stops your hook or command until someone answers, then

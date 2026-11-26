@@ -18,6 +18,7 @@ from tau import (
     Part,
     Prune,
     Stop,
+    UndoMarker,
 )
 
 BIG = "x" * 300
@@ -102,8 +103,12 @@ def shown(node: Node) -> str:
 
 
 def line(h: Harness) -> list[Node]:
+    """The pruned line after the root Config and the System prefix, without the undo marker it
+    ends in (when it was pruned)."""
     walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
-    return walk[2:]  # after the root Config and the System prefix
+    if UndoMarker.of(walk[-1].body) is not None:
+        walk = walk[:-1]
+    return walk[2:]
 
 
 @scenario

@@ -1,15 +1,13 @@
 # What τ does for you
 
-Six things happen in a session without any extension of yours: a failed request is tried again,
-`@file` in a message attaches the file, files you write become commands (prompt templates and
-skills), what the session has used and spent is shown, a long conversation can be shortened
-(`/compact`, `/prune`), and the model can hand a job to a sub-agent. Three more wait for you to
-ask: rules that ask before a tool runs (permissions), `/plan` (plan mode, which does nothing until
-you type it), and the two that are off until you turn them on, the bash guard and the router.
-Each can be switched off, and each is a few lines to use. The examples run with the mock
-model, which needs no server and no key.
-
-The examples run with the mock
+Eight things happen in a session without any extension of yours: a failed request is tried
+again, `@file` in a message attaches the file, files you write become commands (prompt templates
+and skills), what the session has used and spent is shown, a long conversation can be shortened
+(`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
+change, and `/clear`, `/branch`, `/tree` and `/export` work on the session. Three more wait for
+you to ask: rules that ask before a tool runs (permissions), `/plan` (plan mode, which does nothing
+until you type it), and the three that are off until you turn them on: the bash guard, the router and tools from
+MCP servers. Each can be switched off, and each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -513,7 +511,76 @@ stay `false`.
 
 In `Ctrl+G` a node τ computed shows `⧉` and a copy shows `≡ (copy of 12)`; the detail pane says
 where it came from and how long the conversation was before and after, and `p` jumps to the
-source. `tau ext disable compaction` or `tau ext disable prune` removes either.
+source. `tau ext disable compaction` or `tau ext disable prune` removes either. Both end the new
+line in an undo marker, so `/undo` (next section) takes you back to the conversation as it was.
+
+## Going back: `/undo`
+
+`/undo` takes back the last change on your branch. Right after `/compact`, `/prune` or `/clear` it
+returns you to the conversation as it was before; otherwise it goes back to just before your last
+message and gives the message back, so you can change it and send it again. Run it again to go
+back one more step. Nothing is deleted: what you went back over stays in the tree (`Ctrl+G`), and
+sending makes a new branch beside it.
+
+```text
+undid /compact: back to node 418
+```
+
+In the terminal UI, Ctrl+Z on an empty editor is `/undo`: the message goes back into the editor
+as you typed it, `@file` words and all, and an undone `/compact` or `/clear` is a toast. On a cursor
+that is working, `/undo` is refused (`Busy`), as every command that runs on the cursor is; Ctrl+Z
+there asks first and then aborts the step, going back before your last message.
+
+`/undo` only ever sees your own branch: a `/clear` on another cursor is not yours to undo. An
+extension that changes something outside the conversation (files, say) can mark its changes for a
+different `/undo`: `/undo file` takes back the last such change on the branch, if that extension is
+loaded to put the files back, and a plain `/undo` passes over them. How a change is marked is in
+[Conventions](conventions.md). `tau ext disable undo` removes the command; the markers then stay
+in the tree as notes no model reads, and Ctrl+Z edits your last message as before.
+
+## Starting again, branching, the tree as text, and export
+
+The `session` built-in has four commands:
+
+- **`/clear`** starts the conversation again in the same session: the model sees your system
+  prompt and context files and nothing else, as in a new session, and keeps the model and options
+  this branch was using. The old conversation stays in the tree, and `/undo` goes back to it. The
+  new conversation starts from the session's own system prompt, so the first request after
+  `/clear` is the same request a new session would send, and a provider's prompt cache stays
+  warm.
+- **`/branch [label]`** opens a second cursor where you are, to try something else from here
+  (Alt+Right views it in the terminal UI).
+- **`/tree`** draws the session's tree as text, for a client with no tree screen of its own:
+
+  ```text
+  0 config: {"model": "local:qwen"}
+  1 system: You are τ, a coding agent…
+  ├─ 2 user: fix the parser
+  │  3 assistant: Done. [2 calls]
+  └─ 9 undo: /clear
+     10 user: now the lexer  ◀ 0
+  ```
+
+  `/tree at=9` draws only what is below node 9.
+- **`/export [path]`** writes your conversation as Markdown, as `tau export` does: to a file
+  (`/export notes.md`, relative to the working directory; a file that exists is refused, not
+  overwritten) or as the command's answer;
+  `thinking=true` includes the model's thinking.
+
+There is no `/new`: starting a new session is your client's to do (Ctrl+N in the terminal UI).
+`tau ext disable session` removes all four:
+
+```bash
+tau ext list | grep -A1 -E '^(session|undo) '
+```
+
+```text expect
+session       on         built-in
+              commands: /clear, /branch, /tree, /export; tools: none
+--
+undo          on         built-in
+              commands: /undo; tools: none
+```
 
 ## Ask before a tool runs
 
@@ -782,3 +849,79 @@ router's name: a model switch on a branch concerns everyone watching it. Nothing
 the model it was on before the router first switched it, after the turn's last reply. `/route off`
 (or `/config router enabled=false`) stops the table and leaves the prefix. A `!name` that is not a
 configured model is not a prefix: it goes to the model as typed.
+
+## Tools from MCP servers
+
+An MCP server (Model Context Protocol) is a program, or a web service, that offers tools: GitHub,
+a database, a browser. `mcp` gives the model the tools of the servers you list. It is off until you
+turn it on, and with no server listed it does nothing:
+
+```bash skip
+tau ext enable mcp
+```
+
+List the servers in `$TAU_HOME/mcp.json` (`~/.tau/mcp.json`), in the shape other MCP clients use,
+so a server's README snippet goes in as it is:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+    }
+  }
+}
+```
+
+A server with a `command` runs on your machine and speaks over its stdin and stdout; one with a
+`url` is reached over streamable HTTP (the older SSE transport, `"type": "sse"`, is not supported).
+`${NAME}` is replaced from your environment, or from a trusted project's `.env`, so the token stays
+out of the file; `${NAME:-default}` gives a default. A name that is not set and has no default
+stops the start and says which.
+
+A project can list servers too, in `.tau/mcp.json` or in `.mcp.json` at its root (the file Claude
+Code reads), so a project set up for Claude Code works as it is. Both are pinned by
+[trust](configuration.md#projects-and-trust): `tau trust` shows each server and what it runs (the names of its `env` and
+`headers`, never their values), and a change to either file asks again. For one server name the
+nearest file wins: `.tau/mcp.json`, then `.mcp.json`, then yours. `"disabled": true` turns a
+server off, and `{"mcpServers": {"github": {"disabled": true}}}` in `.tau/mcp.json` turns off a
+`.mcp.json` server you do not want, without editing that file.
+
+A program that starts τ with servers of its own (an editor, through tau-acp) names its files in
+the environment variable `TAU_MCP_CONFIG` (several separated by `:`, `;` on Windows), and turns
+`mcp` on for that run: `TAU_MCP_CONFIG=/run/editor-mcp.json tau serve --set load.mcp=true`. Those
+files are nearest of all, so their servers win a name, and a file named there must exist. It is
+set by whoever starts τ, like `--set`: no client can set it.
+
+The model sees each tool as `mcp__SERVER__TOOL` (`mcp__github__create_issue`). They are asked
+about like any other tool, and a rule that names the server names every tool it has:
+
+```json
+{ "extensions": { "permissions": { "ask": ["mcp__github"], "allow": ["mcp__github__get_issue"] } } }
+```
+
+When τ starts it starts every server at once and waits until each has listed its tools, so the
+first message already has them. **A server that does not start stops τ**, naming every server
+that failed and why (with the last line it wrote to its error output):
+
+```text
+extension 'mcp' did not start: McpStartError: MCP server github exited (status 1): Error: GITHUB_PERSONAL_ACCESS_TOKEN not set
+```
+
+Fix it, add `"disabled": true` to it, or `tau ext disable mcp`. τ waits 30 seconds for the
+servers; the first `npx` or `uvx` run of a server downloads it and may take longer, so give `mcp`
+more time in your config (`{"extensions": {"mcp": {"start_timeout": 120}}}`), or run the
+command once by hand first.
+
+While τ runs, `/mcp` lists the servers, whether each is running and their tools. A server that
+lists new tools has them offered from the model's next request. A server that exits is reported
+(an error notice) and its tools answer an error until you restart τ. Esc cancels a call at the
+server. A tool's text and images reach the model; other kinds of content are named and left out.
+Prompts and resources that a server offers are not used.

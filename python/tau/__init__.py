@@ -136,6 +136,8 @@ from tau._http_edge import HttpEdge
 from tau._images import MAX_INPUT_BYTES, MAX_INPUT_IMAGES, ImageInput, ImageLimits
 from tau._lifecycle import START_TIMEOUT, STOP_TIMEOUT
 from tau._markdown import to_markdown
+from tau._markers import UndoMarker
+from tau._mcp import Mcp, McpConfigError, McpServer
 from tau._open import Opened, open_client
 from tau._permissions import Permissions
 from tau._project_read import TrustError
@@ -290,6 +292,9 @@ __all__ = [
     "LiveDelta",
     "LoadedConfig",
     "LocalClient",
+    "Mcp",
+    "McpConfigError",
+    "McpServer",
     "MissingImage",
     "Model",
     "ModelCatalog",
@@ -373,6 +378,7 @@ __all__ = [
     "TrustError",
     "Trusted",
     "Undecodable",
+    "UndoMarker",
     "UnknownCommand",
     "UnknownSession",
     "UntrustedProject",

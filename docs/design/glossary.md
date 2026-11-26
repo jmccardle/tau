@@ -28,7 +28,7 @@ follow its text, empty for most; it encodes as before (`{"User": "text"}`) when 
 `User`'s, then a `Results`' `Ok` outcomes' in call order; the store, a fork, the counts and the
 image check read images only through it.
 Known `Custom` kinds: `sample_error` (core, a sample that failed with no
-output).
+output); `undo` (an undo marker, D33).
 
 ### part
 *spike* `Part` · retires content block
@@ -1134,6 +1134,10 @@ report), and `tau config check`. Tests do the same.
   `extensions_sha256` (the digest of the (path, sha256) list of every regular file under
   `.tau/extensions/` except `__pycache__/` and names starting with `.`, with the marker for a missing directory), `extensions`
   (the per-file map, for diffs) and `system_sha256` (`.tau/SYSTEM.md`, with the marker).
+  D24 section 12 adds `mcp_sha256` and `mcp` (the project's `.mcp.json` and `.tau/mcp.json`, as
+  `prompts_sha256` and `prompts` hold the prompt files; a record without them approved a project
+  with neither). The record's reading and writing is `tau._trust_record` (`Approval`, `approved`,
+  `record`, `redacted`, `write_atomically`), moved out of `_trust.py`.
 - `ensure_trusted(root, home, *, ask)` returns a frozen **`Trusted`** (`root`,
   `config_text`, `env_text`, `extension_files` (the approved files under `.tau/extensions/`,
   relative path to bytes; `None`: no such directory), `system_md` (the approved bytes of
@@ -1409,7 +1413,8 @@ turn N-1, all in one derived `User` node. Turn N-1 keeps its replies and calls w
 reduced to `ok` or `error` and no reasoning; turn N keeps its calls and results, without
 reasoning; in both, a string argument over 200 characters becomes `[pruned: N chars]`. `Config`
 and `Custom` nodes are copied. A conversation with nothing to prune writes nothing. `auto` must
-be `false` (automatic pruning is not built).
+be `false` (automatic pruning is not built). The pruned line ends in an undo marker (D33: `/prune`, returning to where
+the cursor was).
 
 ### Compaction (extension), head, tail, cut, summarizer cursor
 `tau.Compaction` (`_compaction.py`), key `compaction`, options `auto`, `reserve`, `hard`, `soft`, `keep` (unset: 20000 or half the soft limit), `model`, command `/compact [focus]` · D24 section 2 · new (8E-3)
@@ -1430,11 +1435,77 @@ summary prompt (and the focus), waited for with `rest`, and closed. It is offere
 tools but refused any call, and compaction's own `pre_sample` skips it. The new line is the head's
 `Config` copies, the summary as a `User` node by `Extension("compaction")` with `derived_from` the
 summarizer's reply (whose reported `output` is the summary's count), a copy of the user message the turn in progress began with if the head held
-it, then a copy of every tail node. Every figure is a **count** (below): the bill's own where a
+it, then a copy of every tail node, then an undo marker (D33: `/compact`, or `automatic
+compaction (soft limit)` / `(hard limit)`, returning to where the cursor was). Every figure is a
+**count** (below): the bill's own where a
 report covers it, a **ceiling** where none does. A summarizer that fails, is halted, replies
 without text or is cut off fails the step; Esc leaves the cursor where it was and writes nothing;
 stopping or closing `compaction:N` fails the hard limit's step. The trigger never reacts to a
 provider's "prompt too long"; `/compact`, then a step, recovers.
+
+### convention (clients and extensions may rely on)
+`docs/guide/conventions.md` · D33, akb #641 §1 · new (0.18)
+
+A shape τ's built-ins keep stable over what the wire and the extension API already carry (a
+`Custom` node, a command's answer), promised to clients and extensions without a protocol change.
+A client that does not know one still works: it shows a `Custom` node by its kind, an answer as
+text. The first is the undo marker.
+
+### undo marker, UndoMarker, return_to, reverses, priority (a marker's)
+`tau.UndoMarker` (`label`, `return_to`, `reverses`, `priority`, `extra`; `body()`, `of(body)`),
+`tau._markers` (`UNDO_KIND`, `MOVE`, `FILE`) · D33 §1 (CV-01) · new (0.18)
+
+A `Custom` node of kind `undo` whose data is a JSON object: **`label`** (what was done, as a
+person names it), **`return_to`** (the node going back puts the cursor on), **`reverses`** (the
+kind of change, named by its owner: `compact`, `prune`, `clear`), **`priority`** (`move`, the
+default: a change to the tree that moving the cursor back reverses; any other name, by convention
+`file`, is the owner's to reverse), and the owner's own keys (`extra`). Written by the extension
+that made the change (its `by`). Never sent; decides nothing (core's `deciding` skips it), so a
+marker written mid-turn leaves the turn going on. `UndoMarker.of` is `None` for any other body
+and `ValueError` for malformed data. A copy on a new line marks the same change.
+
+### Undo (extension), /undo, edit-last (the harness's)
+`tau._undo.Undo` (not exported; `shipped("undo")` in tests), key `undo`, command `/undo
+[priority] [at] [json]` · D33 §2 (EX-20) · new (0.18)
+
+The built-in, default-on and removable, that walks back from the cursor's node to the nearest
+undo marker of the priority asked (`move` unless given), or, for `move`, the last `User` node
+(**edit-last**, D23's Ctrl+Z as a command): it goes to the marker's `return_to` (after the
+owner's `reverse` for any priority but `move`; refused if the owner cannot) or the `User` node's
+parent, as a go-to does (auto-step off). A cursor command, so `Busy` unless at rest; `at` refuses
+unless the cursor is on that node. Answers text, or with `json` `{from, to, marker, label,
+user}` where `user` is `{node, text}` (the `typed` line, else the text) for edit-last.
+
+### reverse (an extension's undo hook), Cursor.reverse, REVERSE
+`Extension.reverse`, `Cursor.reverse(marker) -> bool`, `tau._protocols.REVERSE`, `reverser_of`,
+`Handles.reverser` · D33 §3 · new (0.18)
+
+`async def reverse(self, cursor, marker)`: an extension's reversal of what an undo marker it wrote
+marks (a file checkpoint). A driver-level attribute like `commands`, not a hook point: only
+`Cursor.reverse(node)` calls it, with a cursor handle bound to the owner and the `UndoMarker`,
+and returns whether one did (`False`: the owner is not loaded or has none); `ValueError` for a
+node that is not a marker an extension wrote. Not a coroutine function: `DefinitionError` at
+build.
+
+### Stays (a command's halt mid-turn)
+`tau._markers.Stays` (`leave`, `halt`, `forget`) · D33 §2 · new (0.18)
+
+What `undo` and `session` share: a cursor command whose step would go on from where it left the
+cursor (`next` is not `Wait`: a batch, a `User`, a `Results`) records it with `leave`, and the
+extension's own `pre_step` returns the stop `"<command> left the cursor at node N, mid-turn: step
+to carry on from there"`, so going back never starts the model. `post_step` forgets what an
+aborted step left.
+
+### SessionCommands (extension), session, /clear, /branch, /tree, /export
+`tau._session_commands.SessionCommands` (not exported), key `session` · D33 §4 (EX-21) · new (0.18)
+
+The built-in, default-on and removable. **`/clear`**: under the last `System` node of the walk's
+prefix, a `Config` with the branch's folded settings (`folded`: model and options, each `Config`
+a delta) if they differ from the root's, then an undo marker (`/clear`); the cursor moves onto it
+and rests. One root, and the first request after it is byte for byte a new session's.
+**`/branch [label]`**: `open` a cursor at this one's node. **`/tree [at]`**: the tree as text
+(`tree_lines`, `describe_node`). **`/export [path] [thinking]`**: `to_markdown` of the walk. No
+`/new`: a client's move.
 
 ### Count, Basis, ceiling
 `tau.Count` (`tokens`, `basis`, `bound`; `upper` is their sum), `tau.Basis` (`reported`,
@@ -1763,6 +1834,34 @@ ending other than `Done`, or a reply that asks for tools, is a `ToolError` namin
 cursor is offered the `tools` option's tools, or all but `agent`. Aborting the calling cursor
 cancels the call, whose `finally` closes (and so aborts) the agent.
 
+### Mcp (extension), MCP server, MCP tool name, McpServer, McpConfigError, mcp files
+`tau.Mcp` (`_mcp.py`), key `mcp`, command `/mcp`; `tau.McpServer`, `tau.McpConfigError` (`_mcp_config.py`); `_mcp_client.py`, `_mcp_process.py` (private) · D24 section 12 · new (0.18)
+
+The built-in extension, **off by default**, that offers the model the tools of the user's **MCP
+servers** (Model Context Protocol), and with none configured does nothing. The **mcp files** are
+`$TAU_HOME/mcp.json`, the trusted project's `.mcp.json` (Claude Code's) and `.tau/mcp.json`
+(both pinned by trust, `Trusted.mcp_files`), in the `mcpServers` shape other clients write; for
+one name the nearest wins whole (`.tau/mcp.json`, `.mcp.json`, the user's), and `"disabled": true`
+turns a server off; **`TAU_MCP_CONFIG`** (`tau._mcp.CONFIG_VARIABLE`) names more files, nearest of
+all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are replaced from the environment τ reads keys
+from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
+(`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
+are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
+used. `start` starts every server at once and returns when each has listed its tools; one that
+fails stops the start (`ExtensionLoadError` naming each failed server, the others stopped). Each
+tool is offered as its **MCP tool name**, `mcp__SERVER__TOOL` (the tool's name reduced to
+`[A-Za-z0-9_-]`, at most 64 characters; a server's name holds no `__`). A server's
+`list_changed` lists it again and `reassemble`s; one that exits is an `error` notice and its tools
+answer `Err`. `_mcp_client` is the JSON-RPC client (from tau-acp), `_mcp_process` a stdio server's
+process and its group, signalled through a pidfd where there is one.
+
+### mcp__SERVER (a permission rule)
+`tau._permissions.MCP_PREFIX`, `Rule.names` · D24 sections 7 and 12 · new (0.18)
+
+A rule whose tool is `mcp__SERVER` (no further `__`) matches every tool of that MCP server as well
+as a tool of that exact name. A rule naming any `mcp__` tool is never reported as naming a tool
+no extension provides: a server's tools are listed only once it runs.
+
 ### agent label (`agent:P:N`), sub-agent parentage
 the label of a sub-agent's cursor · CV-04 (D32 section 5, docs/guide/conventions.md) · new (0.18)
 
@@ -1840,7 +1939,9 @@ driver did not sample (loaded with a batch pending, or gone back to) is not chec
 
 A built-in that `load` must turn on: its row in `tau ext list` is `off` with `off (default); to turn
 it on: tau ext enable KEY`. `load: {KEY: true}`, `tau ext enable KEY` and `-e KEY` turn it on;
-`--no-extensions` does not. They are `bash_guard`, `router` and `token_calls`.
+`--no-extensions` does not. They are `bash_guard`, `mcp`, `router` and `token_calls`. **`FILE_ERRORS`** in `tau._builtins` is what a built-in raises for a user's or project's file it
+cannot use (`SkillFileError`, `McpConfigError`): the start stops with the message alone, as an
+`ExtensionLoadError`.
 
 ### rest (a handle's) and an abort of the waiter
 `TreeHandle.rest` · D24 M7 · amended (8E-3)
@@ -1862,7 +1963,7 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
 **load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents`, `attachments`,
-`bash_guard` (off by default), `base_tools`, `compaction`, `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+`bash_guard` (off by default), `base_tools`, `compaction`, `mcp` (off by default), `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
@@ -2220,7 +2321,9 @@ replaces 0.15's session sidebar and stream strip.
 
 Ctrl+Z on an empty editor (with text typed it is the editor's undo; it is the editor's key, so it does nothing behind a dialog): `go_to` the node before the last `User` node of the viewed cursor's walk, and put that
 message's text in the editor (0.15's rollback, as a branch: the old turn stays in the tree). On a
-busy cursor it asks first, because a go-to aborts the step. **Reclaim** is its small sibling: Up on
+busy cursor it asks first, because a go-to aborts the step. With `undo:undo` among the commands and
+the cursor at rest it runs the harness's `/undo` instead (D33 §5: `json=true`, `at` the viewed
+node), which also goes back over `/compact`, `/prune` and `/clear`. **Reclaim** is its small sibling: Up on
 an empty editor, with a line of this client's still pending, `remove_item`s it and puts it in the
 editor.
 

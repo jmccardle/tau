@@ -103,6 +103,7 @@ class Cursor(TreeHandle)
     def node(self, id: int | None = None) -> Node
     def options(self) -> Any
     def options_of(self, extension: str) -> Any
+    async def reverse(self, marker: int) -> bool
     def save_options(self, **changes: object) -> None
     def saved_options(self) -> Mapping[str, object]
     def set_auto(self, on: bool) -> None
@@ -140,6 +141,27 @@ class ImageRule
     provider: str
     def tokens(self, width: int, height: int) -> int
 LabelName = NewType('LabelName', str)
+class Mcp
+    def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+    def mcp(self) -> str
+    name = NAME
+    @classmethod
+    def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
+    async def start(self, tree: TreeHandle) -> None
+    async def stop(self) -> None
+    property tools: tuple[Tool, ...]
+class McpConfigError(ValueError)
+@dataclass(frozen=True)
+class McpServer
+    args: tuple[str, ...] = ()
+    command: str = ''
+    env: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    headers: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    name: str
+    origin: str
+    def shown(self) -> str
+    transport: Literal['stdio', 'http']
+    url: str = ''
 Model = NewType('Model', str)
 class NodeHandle(TreeHandle)
     async def ask(self, text: str, expect: object = str, *, to: str | None = None) -> Any
@@ -293,6 +315,16 @@ class TreeHandle
         level: NoticeLevel = 'info',
     ) -> None
     property tree: Tree
+@dataclass(frozen=True)
+class UndoMarker
+    def body(self) -> Body
+    extra: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+    label: str
+    @classmethod
+    def of(cls, body: Body) -> 'UndoMarker | None'
+    priority: str = 'move'
+    return_to: int
+    reverses: str
 def calibration_features(body: Body) -> list[float]
 def counted(node: Node) -> bool
 def image_rule(model: ModelConfig) -> ImageRule
@@ -1301,6 +1333,7 @@ class Trusted
     env_text: str | None
     extension_files: Mapping[str, bytes] | None
     def layer(self) -> LayerText | None
+    mcp_files: Mapping[str, bytes]
     prompt_files: Mapping[str, bytes]
     def read_models(
         self,

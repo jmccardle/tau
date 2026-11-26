@@ -4,7 +4,7 @@
 
 An extension is a module that adds hooks, tools, commands and options to a session. These are the contract it implements and the handles its hooks are given.
 
-Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `calibration_features`, `counted`, `image_rule`, `reading`
+Names: `Agents`, `Attachments`, `Basis`, `CURSOR_POINTS`, `Calibration`, `CalibrationError`, `CalibrationNewer`, `CalibrationStore`, `CallDraft`, `Compaction`, `Count`, `CountJob`, `Counter`, `CounterAnswer`, `Cursor`, `CursorHook`, `CursorId`, `DefinitionError`, `Extension`, `Form`, `ImageRule`, `LabelName`, `Mcp`, `McpConfigError`, `McpServer`, `Model`, `NodeHandle`, `NodeId`, `Observation`, `Permissions`, `Prune`, `Reading`, `RequestCount`, `START_TIMEOUT`, `STOP_TIMEOUT`, `Skills`, `Span`, `SpanProof`, `StepLimit`, `Subject`, `TOOL_POINTS`, `TokenCalls`, `Tokenizers`, `Tokens`, `ToolHook`, `TreeHandle`, `UndoMarker`, `calibration_features`, `counted`, `image_rule`, `reading`
 
 ## Agents
 
@@ -639,6 +639,19 @@ Append `body` under `at` and move onto it, as one record; the
 `delivers` items are removed. Returns the new node's id. `copied_from` and
 `derived_from` as for `TreeHandle.append`.
 
+### Cursor.reverse
+
+```python
+async def reverse(self, marker: int) -> bool
+```
+
+Have the extension that wrote the undo marker `marker` (D33) reverse what it marks:
+its `async def reverse(self, cursor, marker)` is called with this cursor's handle, bound
+to that extension, and the `UndoMarker`. Returns whether one did: `False` when that
+extension is not loaded or has no `reverse`. The cursor does not move; what `reverse`
+raises is the caller's. `ValueError` if the node is not an undo marker or no extension
+wrote it, `NoSuchNode` if there is no such node.
+
 ### Cursor.set_auto
 
 ```python
@@ -719,7 +732,10 @@ stop(self) -> None`, run at shutdown (and when a reload removes it), after the t
 `spawn`ed are cancelled. A `start` or `stop` that is not a coroutine function is refused when
 the driver is built (`DefinitionError`). A `start` that raises or outlives its timeout
 (`START_TIMEOUT`, or `extensions.NAME.start_timeout`) stops the driver's start with
-`ExtensionLoadError`; a `stop` that does is reported and the next one runs.
+`ExtensionLoadError`; a `stop` that does is reported and the next one runs. And the undo
+hook (D33): `async def reverse(self, cursor: Cursor, marker: UndoMarker) -> None`, which
+reverses what an undo marker the extension wrote marks (a file checkpoint), called only
+through `Cursor.reverse`; one that is not a coroutine function is refused the same way.
 
 ### Extension.name
 
@@ -804,6 +820,102 @@ LabelName = NewType('LabelName', str)
 ```
 
 A label that exists.
+
+## Mcp
+
+```python
+class Mcp
+    name = NAME
+```
+
+The `mcp` built-in: the configured MCP servers' tools, while it is started.
+
+### Mcp.__init__
+
+```python
+def __init__(self, servers: Sequence[McpServer], cwd: Path) -> None
+```
+
+### Mcp.of
+
+```python
+@classmethod
+def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
+```
+
+The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
+project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
+names (which must exist). `McpConfigError` naming every server that cannot be used.
+
+### Mcp.tools
+
+```python
+property tools: tuple[Tool, ...]
+```
+
+Every running server's tools, in server name order.
+
+### Mcp.start
+
+```python
+async def start(self, tree: TreeHandle) -> None
+```
+
+Start every server at once and list its tools; `McpStartError` naming each that
+failed, with the others stopped.
+
+### Mcp.stop
+
+```python
+async def stop(self) -> None
+```
+
+Stop every server.
+
+### Mcp.mcp
+
+```python
+def mcp(self) -> str
+```
+
+List the MCP servers, whether each runs, and their tools.
+
+## McpConfigError
+
+```python
+class McpConfigError(ValueError)
+```
+
+An MCP file or server that cannot be used: the message names the file and the
+server (several lines when several are wrong).
+
+## McpServer
+
+```python
+@dataclass(frozen=True)
+class McpServer
+    name: str
+    origin: str
+    transport: Literal['stdio', 'http']
+    command: str = ''
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+    url: str = ''
+    headers: Mapping[str, str] = field(default_factory=dict[str, str], repr=False)
+```
+
+One server to start: its `name` (the `mcp__NAME__` of its tools), the file it is from
+(`origin`), its `transport`, and for stdio the `command`, `args` and `env` (added to τ's
+environment), for HTTP the `url` and `headers`. `${VAR}`s are replaced. `env` and `headers`
+are left out of its repr: they may hold a token.
+
+### McpServer.shown
+
+```python
+def shown(self) -> str
+```
+
+What it runs or reaches, for a person: the command and its arguments, or the URL.
 
 ## Model
 
@@ -1703,6 +1815,42 @@ def remove_label(self, label: str) -> None
 ```
 
 Remove `label`; raises `NoSuchLabel`.
+
+## UndoMarker
+
+```python
+@dataclass(frozen=True)
+class UndoMarker
+    label: str
+    return_to: int
+    reverses: str
+    priority: str = 'move'
+    extra: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+```
+
+One undo marker (the module docstring): `label`, `return_to`, `reverses`, `priority`
+(`MOVE` unless given) and `extra`, the owner's own keys. `ValueError` for an empty `label` or
+`reverses`, a `return_to` that is not a node id, a `priority` other than lower-case letters,
+digits, `_` and `-`, or an `extra` key that is one of the four.
+
+### UndoMarker.body
+
+```python
+def body(self) -> Body
+```
+
+The marker as the `Custom` node body to write (`cursor.write(marker.body())`).
+
+### UndoMarker.of
+
+```python
+@classmethod
+def of(cls, body: Body) -> 'UndoMarker | None'
+```
+
+The marker `body` holds; `None` if it is not a `Custom` of kind `undo`. `ValueError`
+naming the problem for one whose data is not a marker's (not a JSON object, a key
+missing, a value of the wrong kind).
 
 ## calibration_features
 

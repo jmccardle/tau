@@ -45,14 +45,16 @@ BUILT_INS = [
     "permissions",
     "plan_mode",
     "prune",
+    "session",
     "skills",
     "step_limit",
     "tokens",
+    "undo",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "bash_guard", "retry", "router", "token_calls"])
-"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `router` and `token_calls`
-are off by default."""
+KEYS = sorted([*BUILT_INS, "bash_guard", "mcp", "retry", "router", "token_calls"])
+"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `mcp`, `router` and
+`token_calls` are off by default."""
 MODULE = """
 name = "{name}"
 {extra}
@@ -208,15 +210,18 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "base_tools",
         "bash_guard",
         "compaction",
+        "mcp",
         "permissions",
         "plan_mode",
         "prune",
         "retry",
         "router",
+        "session",
         "skills",
         "step_limit",
         "token_calls",
         "tokens",
+        "undo",
         "usage",
         "search",
         "ralph",
@@ -366,7 +371,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:28] == [
+    assert lines[:32] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -381,6 +386,8 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}off (default); to turn it on: tau ext enable bash_guard",
         "compaction    on         built-in",
         f"{pad}commands: /compact; tools: none",
+        "mcp           off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable mcp",
         "permissions   on         built-in",
         f"{pad}commands: none; tools: none",
         "plan_mode     on         built-in",
@@ -391,6 +398,8 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}commands: none; tools: none",
         "router        off        built-in",
         f"{pad}off (default); to turn it on: tau ext enable router",
+        "session       on         built-in",
+        f"{pad}commands: /clear, /branch, /tree, /export; tools: none",
         "skills        on         built-in",
         f"{pad}commands: none; tools: none",
         "step_limit    on         built-in",

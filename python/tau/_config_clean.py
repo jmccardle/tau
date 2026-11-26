@@ -19,7 +19,7 @@ from tau._extensions import RETRY, Inspection
 from tau._options import make_options, option_fields
 from tau._startup import off_keys
 from tau._tools import tool_names
-from tau._trust import write_atomically
+from tau._trust_record import write_atomically
 from tau._values import Context
 
 Layer = dict[str, object]

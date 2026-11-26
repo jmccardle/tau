@@ -6,7 +6,8 @@ runs. With no rules configured it asks nothing. A rule is `TOOL`, which matches 
 tool, or `TOOL:GLOB` for the path tools: the glob (`fnmatch`'s, case-sensitive; `*` crosses `/`
 and newlines) matches the path argument of `read`, `write`, `edit`, `grep` or `find` (for `grep`,
 every one of the `files` too, and the working directory when it names neither). Any other text is a
-tool's whole name (a name may hold a colon).
+tool's whole name (a name may hold a colon); `mcp__SERVER` also matches every tool of that MCP
+server (`mcp__SERVER__TOOL`).
 
 - **Paths** are matched as the model wrote them and as the path they name: the argument joined to
   the session's working directory and made real (`..`, `//`, `.` and symlinks resolved). A call may
@@ -69,6 +70,8 @@ SEARCH_TOOLS = ("grep", "find")
 PATTERN_TOOLS = (BASH, *PATH_TOOLS)
 """The tools a rule may give an argument for (`bash`: one exact command, in `allow` only)."""
 REFUSED = "the user refused this call"
+MCP_PREFIX = "mcp__"
+"""The names of MCP servers' tools (`mcp__SERVER__TOOL`); a rule `mcp__SERVER` names them all."""
 FOLDS = sys.platform == "darwin"
 """Whether `deny` and `ask` ignore case in a path: a macOS volume folds case unless it was made
 case-sensitive, so `/Users/me/.SSH/key` is `/Users/me/.ssh/key` there, and a rule that missed it
@@ -201,8 +204,17 @@ class Rule:
     def __str__(self) -> str:
         return self.tool if self.glob is None else f"{self.tool}:{self.glob}"
 
+    def names(self, tool: str) -> bool:
+        """Whether the rule is about `tool`: its name, or for `mcp__SERVER`, any tool of that
+        MCP server (`mcp__SERVER__TOOL`)."""
+        return tool == self.tool or (
+            self.tool.startswith(MCP_PREFIX)
+            and "__" not in self.tool.removeprefix(MCP_PREFIX)
+            and tool.startswith(f"{self.tool}__")
+        )
+
     def matches(self, call: Call, mode: Mode) -> bool:
-        if call.tool != self.tool and not self.guards(call, mode):
+        if not self.names(call.tool) and not self.guards(call, mode):
             return False
         if self.glob is None:
             return True
@@ -488,7 +500,8 @@ class Options:
         """The rule lists that name a tool no extension provides, each with those rules (a
         misspelled name would match nothing, and a `deny` that matches nothing is no guard). A
         tool of a built-in extension that is not loaded (`agent`, with `agents` off) is known: a
-        rule for it names nothing missing."""
+        rule for it names nothing missing; so is any `mcp__` name, since an MCP server's tools
+        are listed only once it runs."""
         known = {*tools, *_builtin_tools()}
         found: dict[Mode, list[str]] = {}
         for name in MODES:
@@ -496,7 +509,7 @@ class Options:
             bad = [
                 t
                 for t, rule in zip(texts, _rules(texts, name), strict=True)
-                if rule.tool not in known
+                if rule.tool not in known and not rule.tool.startswith(MCP_PREFIX)
             ]
             if bad:
                 found[name] = bad

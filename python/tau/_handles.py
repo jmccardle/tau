@@ -26,6 +26,7 @@ from tau._core import (
 )
 from tau._counts import Counting, RequestCount, Span
 from tau._events import Notice, NoticeLevel, notice_level
+from tau._markers import UndoMarker
 from tau._values import DefinitionError, Kind, Model, kind_of
 
 Poke = Callable[[], None]
@@ -56,6 +57,10 @@ waiting cursor was aborted meanwhile."""
 Abort = Callable[[int], None]
 """The driver's abort of a cursor's step. Safe to call from any thread: it returns once the
 loop has done it."""
+
+Reverser = Callable[[str], Callable[..., Awaitable[object]] | None]
+"""The `reverse` of the loaded extension of this name (D33), or `None`: it is not loaded, or
+defines none."""
 
 Close = Callable[[int], Awaitable[None]]
 """The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
@@ -688,6 +693,29 @@ class Cursor(TreeHandle):
         self._changed()
         return node
 
+    async def reverse(self, marker: int) -> bool:
+        """Have the extension that wrote the undo marker `marker` (D33) reverse what it marks:
+        its `async def reverse(self, cursor, marker)` is called with this cursor's handle, bound
+        to that extension, and the `UndoMarker`. Returns whether one did: `False` when that
+        extension is not loaded or has no `reverse`. The cursor does not move; what `reverse`
+        raises is the caller's. `ValueError` if the node is not an undo marker or no extension
+        wrote it, `NoSuchNode` if there is no such node."""
+        self._check()
+        node = self.tree.node(marker)
+        found = UndoMarker.of(node.body)
+        if found is None or not isinstance(node.by, Author.Extension):
+            raise ValueError(f"node {marker} is not an undo marker an extension wrote")
+        owner = node.by.name
+        reverse = self._wiring.reverser(owner)
+        if reverse is None:
+            return False
+        handle = self._wiring.cursor(self.id, owner)
+        try:
+            await reverse(handle, found)
+        finally:
+            handle.retire()
+        return True
+
     def set_auto(self, on: bool) -> None:
         """Turn this cursor's auto-step on or off. Wakes nothing: the step is running.
         Turning it on inside a step that is aborted leaves the cursor at rest."""
@@ -719,7 +747,8 @@ class Handles:
     cursor), the `Notice` call, the clock, `poke` and `changed`, the options, `show`, the tools'
     names, the counts, and what the tree handle adds for an extension's own work (D32 section 4):
     `spawn`, `reassemble` (by extension), the image rule of `send`, and `starting`, whether the
-    running code is an extension's `start`. One place that builds them."""
+    running code is an extension's `start`; and `reverser`, an extension's `reverse` by name (D33).
+    One place that builds them."""
 
     session: Session
     ask: Callable[..., Awaitable[object]]
@@ -738,6 +767,7 @@ class Handles:
     reassemble: Callable[[], None]
     images: Images
     starting: Callable[[], bool]
+    reverser: Reverser
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""
