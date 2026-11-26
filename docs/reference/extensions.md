@@ -1337,6 +1337,9 @@ The count is this object's own memory, per cursor, kept at hook points:
   is no `post_input` hook; `pre_input` fires once per input item offered.
 - `pre_step` adds one, when the cursor's auto-step is on. A step run with
   auto-step off (a frontend's `step`, a load) is attended and is not counted.
+  Nor is a command's step (`CursorState.command`, D16 §2), even when the
+  command turned auto-step on: a person ran it, so the count starts over,
+  and the steps that follow it get the whole `limit`.
 - `post_step` turns auto-step off when the count has reached `limit`, and
   starts the count over, so whoever resumes the cursor (`set_auto`) gets
   another `limit` steps. It also starts over whenever it sees auto-step off:

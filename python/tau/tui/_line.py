@@ -4,13 +4,16 @@ what Enter does with a line.
 Enter on a `/` line is `Client.parse_line`: `UnknownCommand` warns and sends the line as text;
 `LookupError` (a bare name two extensions share) is shown and nothing is sent; a line with
 `missing` arguments opens the form; otherwise `Parsed.run`, the result a toast, `CommandFailed`
-and `Busy` error toasts. Completion is the session's: `complete_line` for a command line,
+and `Busy` error toasts. A typed `/undo` is run as Ctrl+Z runs it (`run_undo`), so the message it
+gives back goes into the editor. Completion is the session's: `complete_line` for a command line,
 `complete(cursor, "path", ...)` for an `@` word of a message (`complete_line` completes command
 lines only), `commandline.values` for the field of a form or a question.
 """
 
+import json
 import os
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, cast
@@ -57,6 +60,24 @@ class Owner(Protocol):
 
 
 _PATH_MARK = "@"
+
+UNDO = "undo:undo"
+"""The qualified name of the `undo` extension's `/undo` (D33), which Ctrl+Z calls when it is
+loaded."""
+
+
+async def run_undo(app: Owner, cursor: int, args: Mapping[str, object]) -> None:
+    """`/undo` on `cursor` with `args`, answered as JSON: the message it gives back goes into the
+    editor, and a change it undid is a toast. What Ctrl+Z and a typed `/undo` both do;
+    `CommandFailed` is the caller's to show."""
+    result = await app.client.run(cursor, UNDO, {**args, "format": "json"})
+    assert result is not None
+    answer = json.loads(result)
+    if answer["user"] is not None:
+        app.restore_draft(answer["user"]["text"])
+    else:
+        app.toast(f"undid {answer['label']}", title="undo")
+
 
 CLOSED_TYPES = ("model", "cursor")
 """The named types (`Schema["format"]`) whose values are a short, closed list, so a missing
@@ -271,7 +292,11 @@ class CommandLine:
         return True
 
     async def _run(self, parsed: Parsed) -> None:
-        """Run a command whose arguments are complete; its result is a toast."""
+        """Run a command whose arguments are complete; its result is a toast. A typed `/undo` runs
+        as Ctrl+Z runs it (`run_undo`)."""
+        if parsed.command.qualified == UNDO and "format" not in parsed.args:
+            await run_undo(self.app, self.app.cursor, parsed.args)
+            return
         result = await parsed.run(self.app.client, self.app.cursor)
         if result is not None:
             self.app.toast(result, title=f"/{parsed.command.name}")

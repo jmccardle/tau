@@ -507,6 +507,7 @@ class CursorState
     property at: int
     property auto: bool
     property busy: bool
+    property command: bool
     property items: list[Item]
     property labels: list[str]
     property moves: list[Move]

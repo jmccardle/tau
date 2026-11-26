@@ -151,8 +151,9 @@ async def test_every_client_is_told_and_sees_the_nodes(tmp_path: Path) -> None:
     listener = asyncio.ensure_future(listen(watcher, heard))
     await say_to(h, "prove it")
     await asyncio.sleep(0)
-    assert h.notices() == ["router: think (/(?i)\\b(prove|derive)\\b/)"]
-    assert [e.text for e in heard if isinstance(e, Notice)] == h.notices(), "the watcher too"
+    assert h.notices() == ["now on think (/(?i)\\b(prove|derive)\\b/)"]
+    told = [(e.extension, e.text) for e in heard if isinstance(e, Notice)]
+    assert told == [("router", h.notices()[0])], "the watcher too, and the notice names the router"
     nodes = [n.body for e in heard if isinstance(e, Appended) for n in e.nodes]
     assert [type(b) for b in nodes[:4]] == [Body.Config, Body.Custom, Body.User, Body.Assistant]
     listener.cancel()
@@ -345,7 +346,7 @@ async def test_a_chat_line_client_shows_the_notice_and_takes_the_command(tmp_pat
     await window.line("!think prove it")
     await h.settle()
     assert "[routing off]" in "".join(screen)
-    assert "[router: think (prefix)]" in "".join(screen)
+    assert "[now on think (prefix)]" in "".join(screen)
     assert used(provider) == ["main", "think"]
     listener.cancel()
     await client.close()

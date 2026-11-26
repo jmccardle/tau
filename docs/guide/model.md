@@ -116,7 +116,9 @@ result and keeps going. If work remains but the step did not move the cursor and
 reached it while it ran, trying again would do the same thing, so auto-step turns off: **a cursor
 never spins in place**. Something new (a message, an extension's item) wakes one more step. A runaway loop where
 the cursor does move (a model calling tools forever) is stopped by the `step_limit` extension,
-which is on by default.
+which is on by default. It counts the steps that run with auto-step on; a command's step is not
+one of them (you ran the command), so a command that turns auto-step on gives the model the whole
+limit.
 
 ## Hooks
 

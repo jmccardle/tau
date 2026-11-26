@@ -5,51 +5,42 @@ It is on by default and inert until `/plan [task]` puts the branch in plan mode 
 and `go_to`, and `/config plan_mode mode=act` leaves it by hand). In plan mode:
 
 - the model is briefed once (a `User` node the extension writes) and is offered only the read-only
-  tools, `READ_ONLY_TOOLS`, and `bash` for the commands in `READ_ONLY_COMMANDS` (`pre_sample`
-  sets `subject.tools` to those of them the driver has);
-- a call to anything else is refused (`pre_tool`): an offer is not a wall, and `bash` is checked
-  against the command list, with anything that chains, redirects or substitutes refused. This is
-  a guard, not a sandbox (`git diff --output=f` writes);
+  tools, `settings.READ_ONLY_TOOLS`, and `bash` for the commands in `settings.READ_ONLY_COMMANDS`
+  (`pre_sample` sets `subject.tools` to those of them the driver has);
+- a call to a tool it was not offered is refused by the driver (`tool not offered: write`); a
+  `bash` call is checked against the command list (`pre_tool`), and one that chains, redirects or
+  substitutes, or whose arguments are not an object with a string `command`, is refused with plan
+  mode's own sentence, as is a listed command with an argument in `settings.REFUSED_ARGUMENTS`
+  (`git diff --output=f` would write `f`). This is a guard, not a sandbox: a plain `git diff`
+  still runs the external diff or textconv program a repository's own config names. It runs
+  before `permissions`, so nobody is asked about a call plan mode refuses;
 - the line `plan mode` is shown on the cursor (`cursor.show`), so every client has the badge;
 - when a reply ends the plan (`Stop.End`), the person is asked to approve, revise or reject it.
   Approve leaves plan mode, tells the model to carry the plan out and turns auto-step on; revise
   asks what should change, sends it and stays in plan mode; reject leaves plan mode. A question
   nobody answers (nobody connected, an abort) stops with a reason and leaves plan mode on.
 
-What counts as read-only is the mode's meaning, so it is fixed here, not an option: a client's
-`/config` must not be able to widen it (an administrator who wants other lists shadows this
-built-in with a drop-in named `plan_mode`, D19). The mode is the only option.
+What counts as read-only is the mode's meaning, so it is not an option: a client's `/config` must
+not be able to widen it. It is in `settings.py`, constants an administrator edits: copy this
+package to `$TAU_HOME/extensions/plan_mode` (it shadows the built-in, D19) and edit the copy's
+`settings.py`. The mode is the only option.
 """
 
 import json
 import re
+import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal, cast
 
+# A built-in loads while `tau` is still importing, so it cannot import from `tau` itself.
 from tau._core import Body, Stop
 from tau._handles import Cursor, NodeHandle, Subject
+from tau._hook_order import GUARD
 from tau._protocols import CallDraft
 
-BRIEF = (
-    "PLAN MODE. Research with the read-only tools, then reply with a step-by-step plan and "
-    "make no changes: write, edit and shell commands are refused until the person approves."
-)
-APPROVED = "The plan is approved. Carry it out."
-READ_ONLY_TOOLS = ("read", "grep", "find")
-"""The tools plan mode offers and lets run, as far as the driver has them."""
-READ_ONLY_COMMANDS = (
-    "ls",
-    "pwd",
-    "cat",
-    "head",
-    "tail",
-    "wc",
-    "git status",
-    "git diff",
-    "git log",
-)
-"""The `bash` commands plan mode lets run: a command that is one of these, or starts with one
-followed by a space, and has no shell syntax."""
+from . import settings
+
 SHELL_SYNTAX = re.compile(r"[;&|<>`$()\n]")  # anything that chains, redirects or substitutes
 BADGE = "plan mode"
 
@@ -61,17 +52,43 @@ class Options:
     mode: Annotated[Literal["act", "plan"], "plan: read-only tools, ask before acting"] = "act"
 
 
+def _command(args_raw: str) -> str | None:
+    """The `command` of a `bash` call's arguments, or `None` if they are not an object with a
+    string `command`: such a call is refused, never guessed at."""
+    try:
+        args: object = json.loads(args_raw)
+    except ValueError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    command = cast("dict[str, object]", args).get("command")
+    return command if isinstance(command, str) else None
+
+
+def _refused_word(word: str) -> bool:
+    return any(word == a or word.startswith(a + "=") for a in settings.REFUSED_ARGUMENTS)
+
+
 def _allowed(command: str) -> bool:
-    """Whether `command` is one of `READ_ONLY_COMMANDS`, with no shell syntax."""
+    """Whether `command` is one of `settings.READ_ONLY_COMMANDS`, with no shell syntax and no
+    word in `settings.REFUSED_ARGUMENTS` (read as the shell reads them: `'--output'=f` is one)."""
     command = command.strip()
-    listed = (command == a or command.startswith(a + " ") for a in READ_ONLY_COMMANDS)
-    return not SHELL_SYNTAX.search(command) and any(listed)
+    listed = (command == a or command.startswith(a + " ") for a in settings.READ_ONLY_COMMANDS)
+    if SHELL_SYNTAX.search(command) or not any(listed):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:  # an unclosed quote: not a command we can read
+        return False
+    return not any(map(_refused_word, words))
 
 
 class PlanMode:
     """The built-in extension `plan_mode` (the module docstring)."""
 
     name = "plan_mode"
+    order: ClassVar[Mapping[str, int]] = {"pre_tool": GUARD - 1}
+    """Before `permissions` (`GUARD`): refuse a call before anyone is asked whether it may run."""
     options = Options
 
     def __init__(self) -> None:
@@ -111,9 +128,10 @@ class PlanMode:
         if cursor.options().mode != "plan":
             return None
         have = cursor.tools()
-        wanted = [*READ_ONLY_TOOLS, "bash"]
+        wanted = [*settings.READ_ONLY_TOOLS, "bash"]
         subject.tools = [name for name in wanted if name in have]  # the ones this driver has
-        marks = [Body.User(BRIEF), Body.User(APPROVED)]  # what we wrote; text we `send` is ours too
+        # what we wrote; text we `send` is ours too
+        marks = [Body.User(settings.BRIEF), Body.User(settings.APPROVED)]
         last = [n.body for n in cursor.walk() if n.by == cursor.by and n.body in marks]
         if not last or last[-1] != marks[0]:
             cursor.write(marks[0])
@@ -129,7 +147,8 @@ class PlanMode:
         verdict = await cursor.ask("Approve this plan?", Literal["approve", "revise", "reject"])
         if verdict == "approve":
             cursor.set_options(mode="act")
-            cursor.write(Body.User(APPROVED))  # `by` is this extension: the person only chose
+            # `by` is this extension: the person only chose
+            cursor.write(Body.User(settings.APPROVED))
             cursor.set_auto(True)  # the next step starts at once and carries it out
         elif verdict == "revise":
             feedback = await cursor.ask("What should change?", str)
@@ -147,8 +166,13 @@ class PlanMode:
         """Refuse what the model may not do in plan mode. The model is only offered the
         read-only tools and the driver refuses a call to any other (`tool not offered`); this
         hook refuses what is offered but not allowed: a `bash` command outside the list."""
-        if node.options().mode != "plan" or call.tool in READ_ONLY_TOOLS:
+        if node.options().mode != "plan" or call.tool in settings.READ_ONLY_TOOLS:
             return None
-        if call.tool == "bash" and _allowed(str(json.loads(call.args_raw).get("command", ""))):
-            return None  # not a sandbox: `git diff --output=f` writes. A guard, not a wall.
+        command = _command(call.args_raw) if call.tool == "bash" else None
+        if command is not None and _allowed(command):
+            return None
         return f"plan mode: {call.tool} is refused. Put the change in your plan instead."
+
+
+extensions = [PlanMode()]
+"""What a copy of this package provides as a drop-in (D19); the built-in is built by `tau`."""
