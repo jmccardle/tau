@@ -3,6 +3,7 @@ and `.tau/mcp.json` (pinned by trust), the `mcpServers` shape, `${VAR}`, `disabl
 the trust report and `tau ext list` say."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -186,3 +187,46 @@ def test_a_permission_rule_for_an_mcp_tool_is_no_misspelling(world: World) -> No
     assert "mcp__gh" not in checked.both, checked.both
     refused = tau(world, "config", "set", "permissions.ask=bsh")
     assert "names the tool 'bsh', which no loaded extension provides" in refused.both
+
+
+@PROJECTS
+def test_tau_mcp_config_names_files_nearest_of_all(world: World) -> None:
+    """A program that starts τ (tau-acp, with an editor's servers) adds its own without
+    touching the user's or the project's files."""
+    root = world.project()
+    write(
+        root / ".tau" / "mcp.json", {"a": {"command": "project-a"}, "b": {"command": "project-b"}}
+    )
+    trust(world, root)
+    extra, more = world.home / "editor.json", world.home / "more.json"
+    write(extra, {"a": {"command": "editor-a"}, "c": {"command": "editor-c"}})
+    write(more, {"b": {"disabled": True}})
+    world.environ["TAU_MCP_CONFIG"] = f"{extra}{os.pathsep}{more}"
+    assert [(s.name, s.command, s.origin) for s in servers(world, root)] == [
+        ("a", "editor-a", str(extra)),
+        ("c", "editor-c", str(extra)),
+    ]
+    world.environ["TAU_MCP_CONFIG"] = str(world.home / "gone.json")
+    with pytest.raises(
+        McpConfigError, match=r"gone\.json: no such file \(TAU_MCP_CONFIG names it\)"
+    ):
+        servers(world, root)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the test server's signals")
+def test_tau_p_runs_with_the_servers_a_program_names(world: World, tmp_path: Path) -> None:
+    """How tau-acp hands τ an editor's servers: `TAU_MCP_CONFIG` and `--set load.mcp=true`."""
+    mock = {"provider": "mock", "models": {"echo": {"model": "echo"}}}
+    world.user_config({"default_model": "mock:echo", "models": {"mock": mock}})
+    server = Path(__file__).parents[1] / "mcp_server.py"
+    log = tmp_path / "log"
+    editor = tmp_path / "editor.json"
+    write(
+        editor,
+        {"ed": {"command": sys.executable, "args": [str(server)], "env": {"MCP_LOG": str(log)}}},
+    )
+    world.environ["TAU_MCP_CONFIG"] = str(editor)
+    result = tau(world, "-p", "--set", "load.mcp=true", "/mcp")
+    assert result.code == 0, result.err
+    assert result.out.startswith(f"ed (stdio: {sys.executable} {server}): running\n  mcp__ed__echo")
+    assert '{"stdin": "closed"}' in log.read_text()  # stopped when the run ended

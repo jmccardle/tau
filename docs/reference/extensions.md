@@ -828,8 +828,8 @@ def of(cls, loaded: LoadedConfig, cwd: Path) -> 'Mcp'
 ```
 
 The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
-project's `.mcp.json` and `.tau/mcp.json` as approved. `McpConfigError` naming every
-server that cannot be used.
+project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
+names (which must exist). `McpConfigError` naming every server that cannot be used.
 
 ### Mcp.tools
 

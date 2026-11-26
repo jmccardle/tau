@@ -486,6 +486,14 @@ server and the variable. Why:
   names of its `env` or `headers`, never their values; a change to either file makes the project
   untrusted until `tau trust`. The user's file is the user's, as `config.json` is.
 - Claude Code's user-level servers (in `~/.claude.json`, its own state file) are not read.
+- **`TAU_MCP_CONFIG`** names more files (separated by `os.pathsep`), nearest of all, each of which
+  must exist: how a program that starts τ hands it servers of its own without editing the user's
+  or the project's files (tau-acp, with an editor's `mcpServers`, together with
+  `--set load.mcp=true`). It is administrator configuration, like `--set` and `TAU_SETTINGS`
+  (akb #643): set by whoever starts the process, never by a client. An environment variable, not
+  a flag: it reaches `tau`, `tau -p` and `tau serve` alike with no plumbing per command, as
+  `TAU_SETTINGS` does. (It is read from the environment τ reads keys from, so a trusted project's
+  `.env` could set it too; that grants nothing `.tau/mcp.json` does not.)
 
 **Transports.** stdio (newline-delimited JSON-RPC over the server's stdin and stdout; its stderr
 is read and its last lines kept for the error, never shown: it would draw over the TUI) and

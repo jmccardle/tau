@@ -31,6 +31,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -47,6 +48,9 @@ from tau._startup import LoadedConfig
 NAME = "mcp"
 PREFIX = "mcp__"
 NAME_LIMIT = 64
+CONFIG_VARIABLE = "TAU_MCP_CONFIG"
+"""The environment variable naming more MCP files (separated by `os.pathsep`), nearest of all: for
+a program that starts τ with servers of its own (an editor's, through tau-acp)."""
 
 __all__ = ["Mcp", "McpConfigError", "McpServer", "McpStartError", "tau_name"]
 
@@ -131,6 +135,17 @@ def _block(block: Mapping[str, Any], lines: list[str], images: list[Image]) -> N
         lines.append(f"[{kind} content left out: τ tool results are text and images]")
 
 
+def _read(path: Path, *, missing_ok: bool) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise McpConfigError(f"{path}: no such file ({CONFIG_VARIABLE} names it)") from None
+    except OSError as e:
+        raise McpConfigError(f"{path}: cannot be read ({e.strerror})") from None
+
+
 _Started = tuple[McpClient, list[McpTool]]
 """A server started, and the tools it listed."""
 
@@ -152,19 +167,16 @@ class Mcp:
     @classmethod
     def of(cls, loaded: LoadedConfig, cwd: Path) -> "Mcp":
         """The extension for the files `loaded` can read: `$TAU_HOME/mcp.json`, and the trusted
-        project's `.mcp.json` and `.tau/mcp.json` as approved. `McpConfigError` naming every
-        server that cannot be used."""
+        project's `.mcp.json` and `.tau/mcp.json` as approved, then each file `TAU_MCP_CONFIG`
+        names (which must exist). `McpConfigError` naming every server that cannot be used."""
         user = loaded.home / USER_FILE
-        try:
-            raw = user.read_bytes()
-        except FileNotFoundError:
-            raw = None
-        except OSError as e:
-            raise McpConfigError(f"{user}: cannot be read ({e.strerror})") from None
-        files: list[tuple[str, bytes | None]] = [(str(user), raw)]
+        files: list[tuple[str, bytes | None]] = [(str(user), _read(user, missing_ok=True))]
         project = loaded.project
         if project is not None:
             files += [(str(project.root / p), project.mcp_files.get(p)) for p in PROJECT_FILES]
+        named = loaded.environ.get(CONFIG_VARIABLE, "")
+        for path in (cwd / p for p in named.split(os.pathsep) if p):
+            files.append((str(path), _read(path, missing_ok=False)))
         return cls(servers(files, loaded.environ), cwd)
 
     @property

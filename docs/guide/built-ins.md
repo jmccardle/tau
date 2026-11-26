@@ -805,6 +805,12 @@ nearest file wins: `.tau/mcp.json`, then `.mcp.json`, then yours. `"disabled": t
 server off, and `{"mcpServers": {"github": {"disabled": true}}}` in `.tau/mcp.json` turns off a
 `.mcp.json` server you do not want, without editing that file.
 
+A program that starts τ with servers of its own (an editor, through tau-acp) names its files in
+the environment variable `TAU_MCP_CONFIG` (several separated by `:`, `;` on Windows), and turns
+`mcp` on for that run: `TAU_MCP_CONFIG=/run/editor-mcp.json tau serve --set load.mcp=true`. Those
+files are nearest of all, so their servers win a name, and a file named there must exist. It is
+set by whoever starts τ, like `--set`: no client can set it.
+
 The model sees each tool as `mcp__SERVER__TOOL` (`mcp__github__create_issue`). They are asked
 about like any other tool, and a rule that names the server names every tool it has:
 

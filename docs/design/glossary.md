@@ -1775,7 +1775,8 @@ servers** (Model Context Protocol), and with none configured does nothing. The *
 `$TAU_HOME/mcp.json`, the trusted project's `.mcp.json` (Claude Code's) and `.tau/mcp.json`
 (both pinned by trust, `Trusted.mcp_files`), in the `mcpServers` shape other clients write; for
 one name the nearest wins whole (`.tau/mcp.json`, `.mcp.json`, the user's), and `"disabled": true`
-turns a server off. `${VAR}` and `${VAR:-default}` are replaced from the environment τ reads keys
+turns a server off; **`TAU_MCP_CONFIG`** (`tau._mcp.CONFIG_VARIABLE`) names more files, nearest of
+all (how tau-acp passes an editor's servers). `${VAR}` and `${VAR:-default}` are replaced from the environment τ reads keys
 from. An **`McpServer`** is one server to start: `name`, `origin` (its file), `transport`
 (`stdio`: `command`, `args`, `env`; `http`, streamable HTTP: `url`, `headers`); `env` and `headers`
 are never shown. **`McpConfigError`** (a `ValueError`) names every file or server that cannot be
