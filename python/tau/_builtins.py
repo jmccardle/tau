@@ -14,12 +14,13 @@ from tau._attachments import Attachments
 from tau._base_tools import BaseTools
 from tau._bash_guard import BashGuard
 from tau._compaction import Compaction
+from tau._mcp import Mcp, McpConfigError
 from tau._permissions import Permissions
 from tau._plan_mode import PlanMode
 from tau._prune import Prune
 from tau._router import Router
 from tau._session_commands import SessionCommands
-from tau._skills import Skills
+from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
 from tau._tokens import TokenCalls, Tokens
@@ -32,6 +33,7 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     BaseTools.name: lambda loaded: BaseTools(),
     BashGuard.name: lambda loaded: BashGuard(),
     Compaction.name: lambda loaded: Compaction(),
+    Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # `McpConfigError`: the start stops
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     PlanMode.name: lambda loaded: PlanMode(),
     Prune.name: lambda loaded: Prune(),
@@ -44,5 +46,8 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Undo.name: lambda loaded: Undo(),
     Usage.name: lambda loaded: Usage(),
 }
-OFF_BY_DEFAULT = frozenset({BashGuard.name, Router.name, TokenCalls.name})
+OFF_BY_DEFAULT = frozenset({BashGuard.name, Mcp.name, Router.name, TokenCalls.name})
 """The built-ins that `load` must turn on (`load: {router: true}`, `tau ext enable router`)."""
+FILE_ERRORS = (SkillFileError, McpConfigError)
+"""What a built-in raises for a user's or a project's file it cannot use: the message names the
+file, and the start stops with it alone (it is not τ's fault, so no traceback)."""
