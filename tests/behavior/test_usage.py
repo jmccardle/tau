@@ -880,3 +880,91 @@ async def test_max_usd_is_checked_when_set(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         await h.configure("usage", {"max_usd": "lots"})
     await h.close()
+
+
+@scenario
+async def test_usage_json_has_a_row_per_model_with_exact_cost_and_a_total(tmp_path: Path) -> None:
+    """CV-02: `/usage json` answers the figures `/usage` tabulates, cost as exact decimal text."""
+    cheap = {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}
+    cat = catalog(a={"usage": {"price": cheap}}, b={})
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([reply(1_000_000, 500_000, cached=250_000), reply(100, 20)]),
+        extensions=[shipped("usage"), Switch("b")],
+        catalog=cat,
+        config=model_config("a"),
+    )
+    await say(h, 2)
+    text = await h.run("usage", {"format": "json"})
+    assert text is not None
+    found = json.loads(text)
+    assert [r["model"] for r in found["models"]] == ["a", "b"]
+    a, b = found["models"]
+    assert (a["samples"], a["input"], a["output"], a["cached"], a["cached_input"]) == (
+        1,
+        1_000_000,
+        500_000,
+        250_000,
+        1_000_000,
+    )
+    assert a["cost"] == "1.500000"  # 750k fresh + 250k cached + 500k out, at $1 per million
+    assert (b["priced"], b["cost"]) == (False, None), "no price is not free"
+    assert (found["total"]["samples"], found["total"]["input"]) == (2, 1_000_100)
+    assert found["total"]["cost"] == "1.500000"
+    assert found["cost_complete"] is False, "b has replied and has no price"
+    assert "model" not in found["total"]
+    await h.close()
+
+
+@scenario
+async def test_usage_json_counts_replies_that_reported_nothing(tmp_path: Path) -> None:
+    h = await session(tmp_path, [reply(), reply(10, 2)], catalog(a={"usage": {"price": PRICE}}))
+    await say(h, 2)
+    text = await h.run("usage", {"format": "json"})
+    assert text is not None
+    found = json.loads(text)
+    (row,) = found["models"]
+    assert (row["samples"], row["silent"], row["estimates"]) == (1, 1, 1)
+    assert row["estimated_cost"] is not None, "an estimate is reported apart from the cost"
+    assert found["cost_complete"] is True
+    await h.close()
+
+
+@scenario
+async def test_usage_json_with_no_replies_is_an_empty_document(tmp_path: Path) -> None:
+    h = await session(tmp_path, [], catalog(a={}))
+    text = await h.run("usage", {"format": "json"})
+    assert text is not None
+    found = json.loads(text)
+    assert found["models"] == []
+    assert (found["total"]["samples"], found["total"]["cost"]) == (0, None)
+    await h.close()
+
+
+@scenario
+async def test_usage_defaults_to_the_table_and_refuses_an_unknown_format(tmp_path: Path) -> None:
+    h = await session(tmp_path, [reply(10, 2)], catalog(a={}))
+    await say(h)
+    table = await h.run("usage", {"format": "text"})
+    assert table is not None
+    assert table.startswith("model")
+    with pytest.raises(ValueError, match="format"):
+        await h.run("usage", {"format": "yaml"})
+    await h.close()
+
+
+@scenario
+async def test_the_usage_json_agrees_with_the_meta_usage_the_tree_holds(tmp_path: Path) -> None:
+    """Clients may sum `Assistant.meta.usage` per node (conventions, CV-02): the same figures."""
+    h = await session(tmp_path, [reply(120, 30, cached=100), reply(200, 40)], catalog(a={}))
+    await say(h, 2)
+    metas = [
+        json.loads(b.meta)["usage"] for b in h.bodies() if isinstance(b, Body.Assistant) and b.meta
+    ]
+    text = await h.run("usage", {"format": "json"})
+    assert text is not None
+    total = json.loads(text)["total"]
+    assert total["input"] == sum(m["input"] for m in metas)
+    assert total["output"] == sum(m["output"] for m in metas)
+    assert total["cached"] == sum(m.get("cached", 0) for m in metas)
+    await h.close()

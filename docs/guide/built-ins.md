@@ -1,12 +1,13 @@
 # What τ does for you
 
-Seven things happen in a session without any extension of yours: a failed request is tried again,
-`@file` in a message attaches the file, files you write become commands (prompt templates and
-skills), what the session has used and spent is shown, a long conversation can be shortened
-(`/compact`, `/prune`), `/undo` takes back the last change, and `/clear`, `/branch`, `/tree` and
-`/export` work on the session. Two more wait for you to ask: rules that ask before a tool runs
-(permissions), and sub-agents, which are off until you turn them on. Each can be switched off, and
-each is a few lines to use. The examples run with the mock
+Eight things happen in a session without any extension of yours: a failed request is tried
+again, `@file` in a message attaches the file, files you write become commands (prompt templates
+and skills), what the session has used and spent is shown, a long conversation can be shortened
+(`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
+change, and `/clear`, `/branch`, `/tree` and `/export` work on the session. Three more wait for
+you to ask: rules that ask before a tool runs (permissions), `/plan` (plan mode, which does nothing
+until you type it), and the two that are off until you turn them on, the bash guard and the router.
+Each can be switched off, and each is a few lines to use. The examples run with the mock
 model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -321,6 +322,11 @@ total                  15  246.9k     91%     4.1k   12.2k  $1.27
 no price, so no cost: local:qwen
 counts: reported only, with byte ceilings for what is not sent yet
 ```
+
+`/usage json` answers the same figures as one JSON object, for a program: `models` (a row per
+model), `total` and `cost_complete`. Costs are exact decimal strings in dollars, and `null` for a
+model with no price. [Conventions](conventions.md) says what each field means, and how a client
+that wants no round trip can sum `Assistant.meta.usage` itself.
 
 Cost is worked out when you look, from the prices in the config the session was started with:
 correct a price and start the session again (`tau -c`, `tau -r`), and the whole session is
@@ -701,41 +707,43 @@ start, and `tau config check` names it.
 
 ## Sub-agents
 
-A sub-agent is a second model run the main one starts for a job of its own. It is off until you turn
-it on, because the tool it adds would be in every request:
+A sub-agent is a second model run the main one starts for a job of its own. It is on by default,
+so the model has one more tool, `agent`, in every request; if you do not want to pay for its
+description in every prompt, turn it off:
 
 ```bash
 tau ext list | grep -A1 '^agents'
-tau ext enable agents
-tau ext list | grep -A1 '^agents'
 tau ext disable agents
+tau ext list | grep -A1 '^agents'
+tau ext enable agents
 ```
 
 ```text expect
-agents        off        built-in
-              off (default); to turn it on: tau ext enable agents
-set load.agents = true in <*>
 agents        on         built-in
               commands: none; tools: agent
 set load.agents = false in <*>
+agents        off        built-in
+              load.agents = false in <*>
+set load.agents = true in <*>
 ```
 
-With it on, the model has a tool, `agent(task)`. Each call opens a new cursor, labelled `agent:1`,
-`agent:2`, and so on, that starts from the system prompt and your context files and nothing
+The model has a tool, `agent(task)`. Each call opens a new cursor, labelled `agent:0:1`,
+`agent:0:2`, and so on (`agent:P:N`: `P` is the cursor that made the call, `N` counts its agents),
+that starts from the system prompt and your context files and nothing
 else, so the model must put everything the job needs in `task`. The result the model reads is
-`agent:1 answered:` and the agent's last reply. The agent is closed when it has answered; it stays in
+`agent:0:1 answered:` and the agent's last reply. The agent is closed when it has answered; it stays in
 the tree (`Ctrl+G`) as a dimmed closed cursor with its label. Several `agent` calls in one reply
-run at once. To give an agent a second job, the model calls `agent(task, to="agent:1")`, which
+run at once. To give an agent a second job, the model calls `agent(task, to="agent:0:1")`, which
 reopens it with its earlier work still in its context. An agent that a crash or a stopped server
-left open, at rest, is continued the same way; one that is still working is `agent:1 is still
-working`, and `to=""` is an error, not a new agent. A final reply with no text is `agent:1 gave an
+left open, at rest, is continued the same way; one that is still working is `agent:0:1 is still
+working`, and `to=""` is an error, not a new agent. A final reply with no text is `agent:0:1 gave an
 empty reply`.
 
 An agent has every tool except `agent`, or exactly the `tools` you list (a call to any other tool
 fails with `tool not offered`), so they do not nest, and the step limit bounds each one.
 Its replies are counted by `/usage`, and Esc on the main cursor aborts the agents it started.
 Permission rules apply to an agent's calls as to any other. If an agent fails, the call fails with
-`agent:1 failed:` and the reason. The settings:
+`agent:0:1 failed:` and the reason. The settings:
 
 ```json
 { "extensions": { "agents": { "model": "local:small", "tools": ["read", "grep", "find"] } } }
@@ -746,3 +754,76 @@ tools they are offered (default: all but `agent`). A name in `tools` that no loa
 provides is refused by `/config` and `tau config set`, and is a warning (a name that matches
 nothing) when a file already holds it. A list typed on a command line is
 split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.
+
+## Plan before it acts
+
+`/plan` puts the branch in plan mode, and nothing in a session changes until you type it. In plan
+mode the model is told to research and propose a plan, and is offered only tools that read:
+`read`, `grep`, `find`, and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
+`head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
+redirects or substitutes nothing. A call to anything else is refused, and the model is told to
+put the change in its plan. Every client shows the line `plan mode` for the cursor while it is on.
+
+```text
+> /plan add retry to the fetch tool
+plan mode on: read-only tools; you will be asked to approve the plan
+```
+
+When the model's reply ends the plan, τ asks `Approve this plan?`: `approve` leaves plan mode,
+tells the model to carry the plan out and lets it run on by itself, `revise` asks what should
+change and sends it, and `reject` leaves plan mode. An empty answer, or nobody connected, stops
+and leaves plan mode on. `/plan` takes the rest of the line as the task, with no quotes.
+
+Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
+back to a node from before `/plan` leaves it, and a second cursor is unaffected. It is a guard,
+not a sandbox: `git diff --output=f` writes a file. The lists of tools and commands are not
+options, because a `/config` from any client could widen them; to change them, write a drop-in
+named `plan_mode` (it shadows the built-in) or turn the built-in off with
+`tau ext disable plan_mode`.
+
+## Ask before a command prints a lot
+
+The bash guard is off until you turn it on (`tau ext enable bash_guard`). It asks before a `bash`
+call that tends to print a lot: `find /`, `cat` of a log or an archive, `npm install`,
+`cargo build`, a `git log` with no count, a recursive `grep` without `-l`, `journalctl` without
+`-n`, `docker logs` without `--tail`. A command already piped to `head`, `tail` or `wc` is never
+asked about. The question has four answers:
+
+- `reject` refuses the call and tells the model to narrow it;
+- `allow` runs it once;
+- `always` runs it and adds the pattern to `allow` in your config file, for every session;
+- `truncate` asks for a `grep` pattern (decline for none) and runs the command with its output
+  piped through `grep` and `tail -n 200`. The model is told what really ran (the result starts
+  with `[bash_guard ran: ...]`).
+
+The options are what you may tune: `patterns` (the built-in ones are the default, so
+`/config bash_guard` shows them; a pattern with a comma is typed as a JSON array,
+`patterns='["a{1,2}"]'`), `allow`, `unattended` (`reject`, `allow` or `truncate`, what happens
+when nobody answers) and `wait` (seconds to wait for an answer, 600 by default). A question
+nobody answers within `wait` seconds is decided by `unattended`, so a run with nobody attached
+(`tau -p`) does not stop for ever; an abort never runs the command.
+
+## Choose the model by the prompt
+
+The router is off until you turn it on (`tau ext enable router`). It does two things. `!name text`
+sends that one message on the model `name` (any configured model; `!name` is stripped from what the
+model reads), and a table in the options maps the text of a message to a model: the first regex
+that matches decides.
+
+```json
+{
+  "extensions": {
+    "router": {
+      "when": ["```", "(?i)\\b(prove|derive)\\b", "^.{0,24}$"],
+      "use": ["local:coder", "anthropic:opus", "local:small"]
+    }
+  }
+}
+```
+
+A switch writes a `Config` node and a `Custom` node of kind `route` saying why (`prefix`, or the
+regex), both before your message, and says `router: local:coder (/```/)` to the client that typed
+it. Nothing is written when the branch is on that model already. `once` puts the branch back on
+the model it was on before the router first switched it, after the turn's last reply. `/route off`
+(or `/config router enabled=false`) stops the table and leaves the prefix. A `!name` that is not a
+configured model is not a prefix: it goes to the model as typed.

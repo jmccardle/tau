@@ -38,10 +38,12 @@ BASE_TOOLS = [
 ]
 """The base tools the platform has: Windows leaves `bash` out (README: not ported there)."""
 BUILT_INS = [
+    "agents",
     "attachments",
     "base_tools",
     "compaction",
     "permissions",
+    "plan_mode",
     "prune",
     "session",
     "skills",
@@ -50,9 +52,9 @@ BUILT_INS = [
     "undo",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "agents", "retry", "token_calls"])
-"""The keys `load` takes: `retry` is a provider wrapper, `agents` and `token_calls` are off by
-default."""
+KEYS = sorted([*BUILT_INS, "bash_guard", "retry", "router", "token_calls"])
+"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `router` and `token_calls`
+are off by default."""
 MODULE = """
 name = "{name}"
 {extra}
@@ -206,10 +208,13 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "agents",
         "attachments",
         "base_tools",
+        "bash_guard",
         "compaction",
         "permissions",
+        "plan_mode",
         "prune",
         "retry",
+        "router",
         "session",
         "skills",
         "step_limit",
@@ -249,14 +254,18 @@ def test_the_load_order_is_built_ins_packages_user_project_then_explicit(
 def test_the_nearer_source_shadows_and_the_shadowed_one_is_never_imported(
     world: World,
 ) -> None:
-    user_file(world, "plan_mode", "raise SystemExit('the user plan_mode must not be imported')\n")
+    user_file(
+        world, "scratch_pad", "raise SystemExit('the user scratch_pad must not be imported')\n"
+    )
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra="WHICH = 'project'"))
+    project_file(
+        root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra="WHICH = 'project'")
+    )
     trust(world, root)
-    assert names(load_extensions(start(world, root))).count("plan_mode") == 1
-    by_origin = [r for r in list_extensions(root, world.environ) if r.key == "plan_mode"]
+    assert names(load_extensions(start(world, root))).count("scratch_pad") == 1
+    by_origin = [r for r in list_extensions(root, world.environ) if r.key == "scratch_pad"]
     assert [(r.kind, r.state) for r in by_origin] == [("user", "shadowed"), ("project", "on")]
-    assert by_origin[0].detail == f"by project {root / '.tau' / 'extensions' / 'plan_mode.py'}"
+    assert by_origin[0].detail == f"by project {root / '.tau' / 'extensions' / 'scratch_pad.py'}"
 
 
 def test_a_file_named_with_e_shadows_the_package_of_that_key_and_loads_once(
@@ -339,6 +348,17 @@ def test_an_extension_named_session_name_is_a_name_clash(world: World) -> None:
         load_extensions(start(world))
 
 
+def test_a_drop_in_named_for_a_built_in_shadows_it_so_its_lists_can_be_changed(
+    world: World,
+) -> None:
+    """The route the guide gives for what a client may not configure (plan mode's read-only
+    lists): a drop-in with the built-in's key wins and the built-in is never built."""
+    user_file(world, "plan_mode", WITH_COMMAND.format(name="plan_mode", command="plan"))
+    rows = [r for r in list_extensions(world.project(), world.environ) if r.key == "plan_mode"]
+    assert [(r.kind, r.state) for r in rows] == [("built-in", "shadowed"), ("user", "on")]
+    assert names(load_extensions(start(world))).count("plan_mode") == 1
+
+
 def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: World) -> None:
     user_file(world, "ralph", WITH_COMMAND.format(name="ralph", command="go"))
     user_file(world, "off_one")
@@ -350,25 +370,31 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:24] == [
+    assert lines[:30] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
         f"{pad}commands: /name; tools: none",
-        "agents        off        built-in",
-        f"{pad}off (default); to turn it on: tau ext enable agents",
+        "agents        on         built-in",
+        f"{pad}commands: none; tools: agent",
         "attachments   on         built-in",
         f"{pad}commands: none; tools: none",
         "base_tools    on         built-in",
         f"{pad}commands: none; tools: {', '.join(BASE_TOOLS)}",
+        "bash_guard    off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable bash_guard",
         "compaction    on         built-in",
         f"{pad}commands: /compact; tools: none",
         "permissions   on         built-in",
         f"{pad}commands: none; tools: none",
+        "plan_mode     on         built-in",
+        f"{pad}commands: /plan; tools: none",
         "prune         on         built-in",
         f"{pad}commands: /prune; tools: none",
         "retry         on         built-in (provider wrapper)",
         f"{pad}commands: none; tools: none",
+        "router        off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable router",
         "session       on         built-in",
         f"{pad}commands: /clear, /branch, /tree, /export; tools: none",
         "skills        on         built-in",
@@ -450,11 +476,11 @@ def test_no_extensions_turns_off_packages_and_drop_ins_but_not_built_ins(
 ) -> None:
     user_file(world, "ralph")
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
     assert names(load_extensions(start(world, root), discover=False)) == BUILT_INS
     found = site_rows(site_tau(world, "ext", "list", "--json", "--no-extensions", cwd=root))
-    for key in ("search", "ralph", "plan_mode"):
+    for key in ("search", "ralph", "scratch_pad"):
         assert (found[key]["state"], found[key]["detail"]) == ("off", "--no-extensions")
     assert found["step_limit"]["state"] == "on"
     assert found["base_tools"]["state"] == "on"
@@ -565,58 +591,58 @@ def test_a_project_drop_in_is_untrusted_until_approved_and_the_report_lists_the_
     world: World,
 ) -> None:
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     project_file(root, "tree/__init__.py", "name = 'tree'\n")
-    assert rows(world, cwd=root)["plan_mode"]["state"] == "untrusted"
+    assert rows(world, cwd=root)["scratch_pad"]["state"] == "untrusted"
     assert rows(world, cwd=root)["tree"]["state"] == "untrusted"
     report = tau(world, "trust", cwd=root).out
     assert "Its extensions (code that runs with your authority):" in report
-    assert "  plan_mode.py  " in report
+    assert "  scratch_pad.py  " in report
     assert "  tree/__init__.py  " in report
     assert " bytes" in report
     assert "name = 'tree'" not in report, "the report prints no code"
-    assert rows(world, cwd=root)["plan_mode"]["state"] == "on"
+    assert rows(world, cwd=root)["scratch_pad"]["state"] == "on"
 
 
 def test_a_changed_added_or_removed_file_untrusts_the_project_again(world: World) -> None:
     root = world.project()
-    first = project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    first = project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
-    first.write_text(MODULE.format(name="plan_mode", extra="CHANGED = 1"), encoding="utf-8")
+    first.write_text(MODULE.format(name="scratch_pad", extra="CHANGED = 1"), encoding="utf-8")
     again = tau(world, "trust", cwd=root)
-    assert ".tau/extensions/plan_mode.py changed" in again.out
+    assert ".tau/extensions/scratch_pad.py changed" in again.out
     project_file(root, "late.py", MODULE.format(name="late", extra=""))
     assert rows(world, cwd=root)["late"]["state"] == "untrusted"
     assert ".tau/extensions/late.py added" in tau(world, "trust", cwd=root).out
     first.unlink()
-    assert ".tau/extensions/plan_mode.py removed" in tau(world, "trust", cwd=root).out
+    assert ".tau/extensions/scratch_pad.py removed" in tau(world, "trust", cwd=root).out
 
 
 def test_a_pycache_in_the_extensions_directory_does_not_change_trust(world: World) -> None:
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
     write(root / ".tau" / "extensions" / "__pycache__" / "x.pyc", "junk")
-    assert rows(world, cwd=root)["plan_mode"]["state"] == "on"
+    assert rows(world, cwd=root)["scratch_pad"]["state"] == "on"
 
 
 def test_a_dot_file_in_the_extensions_directory_does_not_change_trust(world: World) -> None:
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
-    write(root / ".tau" / "extensions" / ".plan_mode.py.swp", "editor junk")
-    assert rows(world, cwd=root)["plan_mode"]["state"] == "on"
+    write(root / ".tau" / "extensions" / ".scratch_pad.py.swp", "editor junk")
+    assert rows(world, cwd=root)["scratch_pad"]["state"] == "on"
     assert "swp" not in tau(world, "trust", cwd=root).out
 
 
 def test_what_runs_is_what_was_approved_not_what_the_file_says_now(world: World) -> None:
     root = world.project()
-    path = project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    path = project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
     approved = start(world, root)
     path.write_text("raise SystemExit('swapped after approval')\n", encoding="utf-8")
     write(root / ".tau" / "extensions" / "added.py", "raise SystemExit('added after approval')\n")
-    assert "plan_mode" in names(load_extensions(approved))
+    assert "scratch_pad" in names(load_extensions(approved))
     assert "added" not in names(load_extensions(approved))
 
 
@@ -720,12 +746,12 @@ def test_system_md_is_never_read_through_a_symlink(world: World, tmp_path: Path)
 
 def test_trusted_json_records_the_extension_and_system_hashes(world: World) -> None:
     root = world.project()
-    project_file(root, "plan_mode.py", MODULE.format(name="plan_mode", extra=""))
+    project_file(root, "scratch_pad.py", MODULE.format(name="scratch_pad", extra=""))
     trust(world, root)
     record = json.loads((world.tau / "trusted.json").read_text(encoding="utf-8"))["projects"][
         str(root.resolve())
     ]
-    assert list(record["extensions"]) == ["plan_mode.py"]
+    assert list(record["extensions"]) == ["scratch_pad.py"]
     assert len(record["extensions_sha256"]) == len(record["system_sha256"]) == 64
 
 

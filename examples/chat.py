@@ -35,7 +35,7 @@ directory, `-e KEY` one of the discovered sources even when `load` turns it off,
 `--no-extensions` loads no package or drop-in (the built-ins follow `load`). Naming a
 path is the consent: it is imported and run with your authority, with no trust check. A file
 provides extensions by one rule: a module with a `name` is the extension itself (as
-examples/speculative/plan_mode.py is); otherwise it defines `extensions = [Ralph(), ...]`, a list of
+examples/speculative/ralph.py is); otherwise it defines `extensions = [Ralph(), ...]`, a list of
 extension instances, added in order. A source that fails to load stops the chat before it starts
 and says how to get past it. Try `-e examples/speculative/ralph.py`, then `/ralph PROMPT.md`.
 """

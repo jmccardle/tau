@@ -28,26 +28,18 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal, cast
 
-from tau._agents import Agents
-from tau._attachments import Attachments
-from tau._base_tools import BaseTools
 from tau._builtin import SESSION_NAME, Tau
+from tau._builtins import BUILTINS, OFF_BY_DEFAULT
 from tau._commands import assemble_commands
-from tau._compaction import Compaction
 from tau._config import ConfigError
 from tau._config_layers import ModelCatalog, read_models
 from tau._hook_order import declared_order
 from tau._model_sections import model_options_type
 from tau._options import option_fields
-from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
+from tau._prompt_files import SkillFileError
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
-from tau._prune import Prune
-from tau._session_commands import SessionCommands
-from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
-from tau._step_limit import StepLimit
-from tau._tokens import TokenCalls, Tokens
 from tau._tools import assemble_tools
 from tau._trust import (
     Trusted,
@@ -58,8 +50,6 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
-from tau._undo import Undo
-from tau._usage import Usage
 from tau._user_config import UserConfig
 
 SourceState = Literal["always", "on", "off", "shadowed", "failed", "untrusted"]
@@ -80,35 +70,10 @@ RETRY = "retry"
 it is switched on and off, and listed, like one."""
 
 
-def _skills(loaded: LoadedConfig) -> Skills:
-    """`Skills` for the files `loaded` reads; a file it cannot use stops the start."""
-    try:
-        return Skills.of(loaded)
-    except SkillFileError as e:
-        raise ExtensionLoadError(str(e)) from None
-
-
-_BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
-    Agents.name: lambda loaded: Agents(),
-    Attachments.name: lambda loaded: Attachments(Path.cwd()),
-    BaseTools.name: lambda loaded: BaseTools(),
-    Compaction.name: lambda loaded: Compaction(),
-    Permissions.name: lambda loaded: Permissions(Path.cwd()),
-    Prune.name: lambda loaded: Prune(),
-    SessionCommands.name: lambda loaded: SessionCommands(Path.cwd()),
-    Skills.name: _skills,
-    StepLimit.name: lambda loaded: StepLimit(),
-    Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
-    TokenCalls.name: lambda loaded: TokenCalls(),
-    Undo.name: lambda loaded: Undo(),
-    Usage.name: lambda loaded: Usage(),
-}
-OFF_BY_DEFAULT = frozenset({Agents.name, TokenCalls.name})
-"""The built-ins that `load` must turn on (`load: {agents: true}`, `tau ext enable agents`)."""
 _DISCOVERED = ("package", "user", "project")  # the rows `--no-extensions` turns off
 _ROW: Mapping[str, int] = {"built-in": 1, "package": 2, "user": 3, "project": 4, "explicit": 5}
 _BEYOND = "(or: tau --no-extensions)"
-BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*_BUILTINS, RETRY]))
+BUILTIN_NAMES: tuple[str, ...] = tuple(sorted([*BUILTINS, RETRY]))
 """The built-ins `load` turns on and off, by name: the extensions and the `retry` wrapper."""
 _PRIVATE_INIT = "__init__.py"
 
@@ -282,21 +247,35 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
     return f"to start without it: tau ext disable {key}" + (f"   {_BEYOND}" if discovered else "")
 
 
+def _made(make: Callable[[LoadedConfig], object], loaded: LoadedConfig) -> list[object]:
+    """The built-in `make` builds from `loaded`; a skill file it cannot use stops the start."""
+    try:
+        return [make(loaded)]
+    except SkillFileError as e:
+        raise ExtensionLoadError(str(e)) from None
+
+
 def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
-    """A candidate per built-in, and one for the `retry` wrapper (which imports nothing)."""
-    importers: dict[str, Callable[[], list[object]]] = {RETRY: list}
-    importers.update({k: lambda m=make: [m(loaded)] for k, make in _BUILTINS.items()})
-    return [
+    made = [
         _Candidate(
             key,
             "built-in",
-            "built-in (provider wrapper)" if key == RETRY else "built-in",
+            "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            importer,
+            lambda m=make: _made(m, loaded),
         )
-        for key, importer in sorted(importers.items())
+        for key, make in BUILTINS.items()
     ]
+    wrapper = _Candidate(
+        RETRY,
+        "built-in",
+        "built-in (provider wrapper)",
+        f"built-in {RETRY}",
+        _off_switch(RETRY, discovered=False),
+        list,
+    )
+    return sorted([*made, wrapper], key=lambda c: c.key)
 
 
 def _packages() -> list[_Candidate]:
