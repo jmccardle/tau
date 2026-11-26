@@ -959,7 +959,8 @@ so no client can turn it on:
 { "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
 ```
 
-(`timeout` is the whole call, in seconds, 1 to 600.) The check looks the name up before the
+(`timeout` is the whole call, in seconds, 1 to 600; `tau config set fetch.timeout=30` writes it to
+your config file. `--set` cannot set it for one run, and no client's `/config` can set either.) The check looks the name up before the
 request, and the request looks it up again, so a name that answers differently the second time
 gets through: this guards against the model and the pages it reads, and is not a sandbox. `tau ext
 disable fetch` takes the tool away.
