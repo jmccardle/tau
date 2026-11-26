@@ -68,6 +68,7 @@ from tau._sessions import (
     rename_session,
     session_info,
 )
+from tau._skills import Skills
 from tau._startup import (
     LoadedConfig,
     Prompts,
@@ -412,13 +413,15 @@ def start_warnings(
 ) -> tuple[str, ...]:
     """What the config names that this start does not have, one line each: a `load` key no
     source has, options of an extension that is not loaded or has none, a tool no loaded
-    extension provides. Each is ignored; none stops the start."""
+    extension provides, a prompt or skill file `skills` could not use. Each is ignored (the file
+    skipped); none stops the start."""
     found = load_key_warnings(loaded.catalog, sources)
+    skipped = [w for e in extensions if isinstance(e, Skills) for w in e.warnings]
     off = off_keys(sources)
     found += [
         p for p in option_problems(loaded.catalog, extensions, off) if p.severity == "warning"
     ]
-    return tuple(str(p) for p in found)
+    return tuple([*skipped, *(str(p) for p in found)])
 
 
 def refuse_bad_options(loaded: LoadedConfig, extensions: Sequence[Extension]) -> None:

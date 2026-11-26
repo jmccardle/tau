@@ -1132,13 +1132,30 @@ def test_a_template_in_tau_home_is_a_command_of_the_started_session(configured: 
         stop(started)
 
 
-def test_a_file_that_cannot_be_used_stops_the_start_and_creates_nothing(
+def test_a_file_that_cannot_be_used_is_a_warning_and_the_start_goes_on(
     configured: World,
 ) -> None:
     prompts = configured.tau / "prompts"
     prompts.mkdir(parents=True)
     (prompts / "my notes.md").write_text("x", encoding="utf-8")
-    with pytest.raises(ExtensionLoadError, match="the name 'my notes' is not ASCII letters"):
+    started = start(configured)
+    try:
+        (warning,) = [w for w in started.warnings if "my notes" in w]
+        assert "the name 'my notes' is not ASCII letters" in warning
+        assert len(sessions_of(configured)) == 1
+    finally:
+        stop(started)
+
+
+def test_a_template_and_a_skill_with_one_name_stop_the_start_and_create_nothing(
+    configured: World,
+) -> None:
+    (configured.tau / "prompts").mkdir(parents=True)
+    (configured.tau / "prompts" / "review.md").write_text("x", encoding="utf-8")
+    skill = configured.tau / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\ndescription: d\n---\nb", encoding="utf-8")
+    with pytest.raises(ExtensionLoadError, match="/review is both a template"):
         start(configured)
     assert sessions_of(configured) == []
 

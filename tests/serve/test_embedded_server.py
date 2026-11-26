@@ -227,6 +227,23 @@ def started_in(home: World, name: str):
     return start_session(args, environ=home.environ, cwd=work)
 
 
+def test_a_skill_file_that_cannot_be_used_is_a_start_warning_not_a_failure(home: World) -> None:
+    skill = home.tau / "skills" / "pdf" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("no frontmatter at all", encoding="utf-8")
+
+    async def scenario() -> None:
+        started = await started_in(home, "work")
+        try:
+            (warning,) = started.warnings
+            assert f"{skill}: no description" in warning
+            assert warning.endswith("(skipped)")
+        finally:
+            await started.stop()
+
+    asyncio.run(scenario())
+
+
 def test_a_socket_of_its_own_and_a_second_close(home: World) -> None:
     async def scenario() -> None:
         started = await started_in(home, "work")

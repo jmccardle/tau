@@ -4,7 +4,10 @@ become one, how the arguments of a template are read, and every problem a set of
 `read_row` reads the files under one `.tau/`-like base and returns the prompts and ALL the
 problems at once (a `Problem` is a message and, when the file's name is a command's name, that
 name), so the start, `tau trust` and a reload say everything wrong in one go. A file that is in
-the wrong place (`prompt_candidates`) is a problem, not an ignored file.
+the wrong place (`prompt_candidates`) is a problem, not an ignored file. A problem with one file
+(it cannot be read or parsed, its name is not a command's, it has no description, it is in the
+wrong place) is a **warning**: the file is skipped and the rest load. A name two files claim is
+`fatal`: which one is meant is not for us to say.
 """
 
 import os
@@ -15,6 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from tau._attachments import quoted
+from tau._commands import CONFIG
 from tau._project_read import (
     FOREIGN_BASES,
     PROMPTS_DIR,
@@ -22,6 +26,7 @@ from tau._project_read import (
     SKILLS_DIR,
     foreign_candidates,
     prompt_candidates,
+    safe_block,
     safe_text,
 )
 from tau._protocols import EXTENSION_NAME
@@ -65,10 +70,12 @@ class SkillFileError(ValueError):
 @dataclass(frozen=True)
 class Problem:
     """What is wrong with one file: the `message` (it names the file) and the command `name` the
-    file would have had (`None`: it has no usable name, so no command)."""
+    file would have had (`None`: it has no usable name, so no command). It is a warning, the file
+    skipped, unless `fatal`: two files claim one name, and neither is used."""
 
     message: str
     name: str | None
+    fatal: bool = False
 
 
 @dataclass(frozen=True)
@@ -345,6 +352,8 @@ def _read_file(kind: Literal["template", "skill"], name: str, raw: bytes, path: 
         raise SkillFileError(
             f"{path}: the name {name!r} is not ASCII letters, digits, `_` and `-`: rename it"
         )
+    if name == CONFIG:
+        raise SkillFileError(f"{path}: the name {name!r} is the built-in /config's: rename it")
     try:
         text = raw.decode("utf-8-sig")  # a byte order mark is not text
     except UnicodeDecodeError as e:
@@ -371,7 +380,7 @@ def command_name(parts: tuple[str, ...]) -> str | None:
         name = parts[2]
     else:
         name = parts[1] if parts[0] == SKILLS_DIR and len(parts) == 3 else Path(parts[-1]).stem  # noqa: PLR2004
-    return name if EXTENSION_NAME.fullmatch(name) else None
+    return name if EXTENSION_NAME.fullmatch(name) and name != CONFIG else None
 
 
 def _misplaced(parts: tuple[str, ...], path: Path) -> Problem:
@@ -448,6 +457,7 @@ def read_row(
                     f"/{prompt.name} is both a {before.kind} ({before.path}) and a {prompt.kind} "
                     f"({prompt.path}): rename one",
                     prompt.name,
+                    fatal=True,
                 )
             )
     for name, skill in others.items():
@@ -476,14 +486,24 @@ def _candidates(base: Path, siblings: Path | None) -> list[tuple[Path, str]]:
     return found
 
 
-def user_files(home: Path, siblings: Path | None = None) -> dict[Path, bytes]:
+def user_files(home: Path, siblings: Path | None = None) -> tuple[dict[Path, bytes], list[Problem]]:
     """The user's template and skill files in `home` (`TAU_HOME`) and the skills in `siblings`
-    (their home directory), and the files that look like one in the wrong place."""
+    (their home directory), and the files that look like one in the wrong place; and a problem
+    for each that cannot be read (a symlink is read through)."""
     found: dict[Path, bytes] = {}
+    problems: list[Problem] = []
     for base, relative in _candidates(home, siblings):
-        if (base / relative).is_file():
-            found[base / relative] = (base / relative).read_bytes()
-    return found
+        path = base / relative
+        if not path.is_file():
+            continue
+        try:
+            found[path] = path.read_bytes()
+        except OSError as e:
+            parts = _parts(path, home, siblings)
+            problems.append(
+                Problem(f"{path}: cannot be read: {e.strerror or e}", command_name(parts))
+            )
+    return found, problems
 
 
 def signature(base: Path, siblings: Path | None = None) -> tuple[tuple[str, int, int], ...]:
@@ -501,7 +521,42 @@ def signature(base: Path, siblings: Path | None = None) -> tuple[tuple[str, int,
     return tuple(found)
 
 
-def problems_in(files: Mapping[str, bytes], tau: Path) -> list[str]:
-    """Every problem with a project's prompt files (`Trusted.prompt_files`, relative to `tau`,
-    the `.tau/` directory), as lines safe to print."""
-    return [safe_text(p.message) for p in read_row(project_paths(files, tau), tau, tau.parent)[1]]
+def problems_in(files: Mapping[str, bytes], tau: Path, *, fatal: bool) -> list[str]:
+    """The problems with a project's prompt files (`Trusted.prompt_files`, relative to `tau`,
+    the `.tau/` directory) that are `fatal` or, with `fatal` false, are not (the warnings), as
+    lines safe to print."""
+    found = read_row(project_paths(files, tau), tau, tau.parent)[1]
+    return [safe_text(p.message) for p in found if p.fatal == fatal]
+
+
+_SHOWN_CHARS = 2000
+"""How much of one prompt or skill file the trust report shows."""
+
+
+def _prompt_text(raw: bytes) -> list[str]:
+    """The text of a prompt or skill file as report lines, cut at `_SHOWN_CHARS` characters, which
+    the last line says."""
+    text = raw.decode("utf-8", errors="replace")
+    lines = [f"    {line}" for line in safe_block(text[:_SHOWN_CHARS].rstrip()).split("\n")]
+    if len(text) > _SHOWN_CHARS:
+        lines.append(f"    ... cut: {len(text) - _SHOWN_CHARS} more characters not shown")
+    return lines
+
+
+def prompt_report(
+    files: Mapping[str, bytes],
+    targets: Mapping[str, Path],
+    before: Mapping[str, str],
+    hashes: Mapping[str, str],
+) -> list[str]:
+    """The trust report's section on a project's prompt and skill files (`Trusted.prompt_files`):
+    each by name and size, the resolved path of one reached through a symlink (`targets`), and
+    the text of each whose hash in `hashes` is not its hash `before` approval."""
+    lines = ["", "Its prompt templates and skills (text the model will read):"]
+    for path, raw in files.items():
+        lines.append(safe_text(f"  {path}  {len(raw)} bytes"))
+        if path in targets:
+            lines.append(safe_text(f"    a symlink: these are the bytes of {targets[path]}"))
+        if before.get(path) != hashes[path]:
+            lines += _prompt_text(raw)
+    return lines
