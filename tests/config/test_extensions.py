@@ -53,8 +53,8 @@ BUILT_INS = [
     "undo",
     "usage",
 ]  # the extensions, in hook order
-KEYS = sorted([*BUILT_INS, "bash_guard", "retry", "router", "search", "token_calls"])
-"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `router`, `search` and
+KEYS = sorted([*BUILT_INS, "bash_guard", "mcp", "retry", "router", "search", "token_calls"])
+"""The keys `load` takes: `retry` is a provider wrapper, `bash_guard`, `mcp`, `router`, `search` and
 `token_calls` are off by default."""
 MODULE = """
 name = "{name}"
@@ -212,6 +212,7 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "bash_guard",
         "compaction",
         "fetch",
+        "mcp",
         "permissions",
         "plan_mode",
         "prune",
@@ -373,7 +374,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:34] == [
+    assert lines[:36] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -390,6 +391,8 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}commands: /compact; tools: none",
         "fetch         on         built-in",
         f"{pad}commands: none; tools: fetch",
+        "mcp           off        built-in",
+        f"{pad}off (default); to turn it on: tau ext enable mcp",
         "permissions   on         built-in",
         f"{pad}commands: none; tools: none",
         "plan_mode     on         built-in",
