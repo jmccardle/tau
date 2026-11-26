@@ -910,8 +910,8 @@ extension named like a model key cannot declare one. usage's is `ModelOptions(pr
 ### leaf built-in
 checked by `scripts/check_rules.py` (`LEAVES`) · D28 section 6 · new
 
-A built-in nothing in `python/tau` imports but the table of built-ins (`_extensions.py`'s
-`_BUILTINS`), so deleting its module and that one row leaves a working τ. `usage` is one; what it
+A built-in nothing in `python/tau` imports but the table of built-ins (`_builtin_table.py`'s
+`BUILTINS`, moved out of `_extensions.py` in 0.18), so deleting its module and that one row leaves a working τ. `usage` is one; what it
 shares with the core (the counting rules) is public in `tau._counts`.
 
 ### resolved_model, model(at=)
