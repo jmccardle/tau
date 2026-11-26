@@ -44,13 +44,13 @@ from tau._project_read import (
 )
 from tau._prompt_files import problems_in
 from tau._providers import builtin_providers
-from tau._trust_report import hooks_listing, hooks_problems
 from tau._trust_record import Approval as _Approval
 from tau._trust_record import approved as _approved
 from tau._trust_record import digest as _digest
 from tau._trust_record import file_hashes as _file_hashes
 from tau._trust_record import files_digest as _extensions_digest
 from tau._trust_record import record, redacted
+from tau._trust_report import hooks_listing, hooks_problems
 
 TAU_DIR = ".tau"
 _ENV = ".env"
