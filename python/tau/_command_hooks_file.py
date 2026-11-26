@@ -9,12 +9,14 @@ key of its `settings.json`, so a block of hooks written for it can be pasted in.
 This module only reads: text in, `Rule`s out, or a `HookFileError` naming the file and every
 problem. Nothing here is ignored silently. An event τ has no hook point for, a handler type, a
 handler key or a matcher on an event that has no tool to match are each a problem naming what
-τ does instead; the hooks file is never partly used.
+τ does instead; the hooks file is never partly used. A matcher that names no tool τ has is
+legal here (the tools are known only once the extensions are assembled): `Matcher.unmatched`
+says what in it a session's tools leave unmatched.
 """
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -90,6 +92,8 @@ _ALTERNATIVES = re.compile(r"[A-Za-z0-9_ ,|-]*")
 _ALIASES = {"Bash": "bash", "Read": "read", "Write": "write", "Edit": "edit", "Grep": "grep"}
 _ALIASES["Glob"] = "find"
 """Claude Code's names for the tools τ's base tools correspond to, which a matcher also takes."""
+_RULE = re.compile(r"\w+\(.*\)", re.DOTALL)
+"""Claude Code's permission-rule syntax, `Bash(git *)`: not a tool's name, nor a useful regex."""
 
 OnFailure = Literal["block", "continue"]
 
@@ -119,13 +123,23 @@ class Matcher:
         return Matcher(regex=re.compile(text))
 
     def matches(self, tool: str) -> bool:
-        """Whether `tool` is named, by its own name or by Claude Code's name for it."""
+        """Whether `tool` is named, by its own name or by Claude Code's name for it. A regular
+        expression is tried on both, so a Claude Code script's `^(Edit|Write)$` works here."""
         wanted = {tool, *(cc for cc, tau in _ALIASES.items() if tau == tool)}
         if self.names is not None:
             return not self.names.isdisjoint(wanted)
         if self.regex is not None:
             return any(self.regex.search(n) for n in wanted)
         return True
+
+    def unmatched(self, tools: Collection[str]) -> list[str]:
+        """What in this matcher can never match one of `tools`: a name that is neither a tool's
+        nor its Claude Code name, or a permission rule (`Bash(git *)`). An `mcp__` name is never
+        reported: an MCP server may list its tools after τ has started."""
+        if self.regex is not None:
+            return [self.regex.pattern] if _RULE.fullmatch(self.regex.pattern) else []
+        known = {*tools, *(cc for cc, tau in _ALIASES.items() if tau in tools)}
+        return sorted(n for n in self.names or () if n not in known and not n.startswith("mcp__"))
 
 
 @dataclass(frozen=True)
@@ -166,19 +180,13 @@ def _timeout(value: object, event: str) -> float | str:
 
 
 def _keys(item: dict[str, object]) -> list[str]:
-    """What is wrong with the keys of a handler, and with its `type`."""
+    """What is wrong with the keys of a handler."""
     problems: list[str] = []
     for key in item:
         if key in _UNSUPPORTED_KEYS:
             problems.append(f"{key!r} is not supported: {_UNSUPPORTED_KEYS[key]}")
         elif key not in _HANDLER_KEYS:
             problems.append(f"unknown key {key!r}; a handler has {', '.join(_HANDLER_KEYS)}")
-    kind = item.get("type", "command")
-    if kind != "command":
-        problems.append(
-            f"type {kind!r} is not supported: τ runs `command` handlers only (no http, "
-            "mcp_tool, prompt or agent hooks)"
-        )
     return problems
 
 
@@ -187,6 +195,12 @@ def _handler(raw: object, event: str) -> Handler | list[str]:
     if not isinstance(raw, dict):
         return [f"a handler must be an object, not {raw!r}"]
     item = cast("dict[str, object]", raw)
+    kind = item.get("type", "command")
+    if kind != "command":  # its other keys are another type's: this one problem says it all
+        return [
+            f"type {kind!r} is not supported: τ runs `command` handlers only (no http, "
+            "mcp_tool, prompt or agent hooks)"
+        ]
     problems = _keys(item)
     command, args = item.get("command"), item.get("args")
     if not isinstance(command, str) or not command.strip():
@@ -275,6 +289,10 @@ def parse_hooks(text: str, source: str) -> list[Rule]:
         raise HookFileError(f'{source}: the file is an object, {{"hooks": {{...}}}}')
     top = cast("dict[str, object]", data)
     problems = [f"unknown key {k!r}; the only key is `hooks`" for k in top if k != "hooks"]
+    if problems:
+        problems.append(
+            'from a Claude Code settings file, copy only its "hooks" object into hooks.json'
+        )
     events = top.get("hooks", {})
     rules: list[Rule] = []
     if not isinstance(events, dict):

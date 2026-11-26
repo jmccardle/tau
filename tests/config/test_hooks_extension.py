@@ -89,6 +89,11 @@ BAD = [
     pytest.param("[]", "the file is an object", id="not an object"),
     pytest.param(json.dumps({"hooks": {}, "other": 1}), "unknown key 'other'", id="top key"),
     pytest.param(
+        json.dumps({"permissions": {}, "hooks": {}}),
+        'copy only its "hooks" object into hooks.json',
+        id="a whole Claude Code settings file",
+    ),
+    pytest.param(
         hooks(Notification=[grouped()]),
         "Notification is a Claude Code event τ has no hook point for",
         id="a Claude Code event without a hook point",
@@ -151,6 +156,15 @@ def test_a_hooks_file_is_never_partly_used_each_problem_is_named(
 
 
 @POSIX
+def test_a_handler_of_another_type_is_one_problem_not_one_per_key(world: World) -> None:
+    user_hooks(world, hooks(PreToolUse=[{"hooks": [{"type": "http", "url": "http://x"}]}]))
+    with pytest.raises(ConfigError) as caught:
+        CommandHooks.of(loaded(world))
+    (problem,) = str(caught.value).splitlines()[1:]
+    assert "type 'http' is not supported" in problem
+
+
+@POSIX
 def test_every_problem_in_a_file_is_listed_not_the_first(world: World) -> None:
     user_hooks(
         world,
@@ -185,7 +199,7 @@ def test_the_shape_of_claude_codes_settings_json_is_accepted_as_it_is(world: Wor
     ext = CommandHooks.of(loaded(world))
     assert str(ext.commands[0]()).splitlines() == [
         f"PreToolUse Bash: ./check.sh  (5 s, on failure block; {world.tau / 'hooks.json'})",
-        f"Stop: ./done.sh  (60 s, on failure block; {world.tau / 'hooks.json'})",
+        f"Stop: ./done.sh  (60 s; {world.tau / 'hooks.json'})",
     ]
 
 
