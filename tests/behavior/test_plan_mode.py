@@ -8,16 +8,18 @@ and the line "plan mode" every client is sent in `CursorView.shown` while it hol
 
 import asyncio
 import importlib.util
+import shutil
 import sys
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from fakes import FakeProvider, FakeTool, Reply
+from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
 from shipped import shipped
 
+import tau
 from tau import (
     Agents,
     Author,
@@ -28,7 +30,11 @@ from tau import (
     Event,
     Outcome,
     Part,
+    Permissions,
     Stop,
+    load_config,
+    load_extensions,
+    model_config,
 )
 
 PLAN = "1. read x\n2. edit y"
@@ -435,4 +441,89 @@ async def test_plan_mode_does_not_let_the_model_hand_the_work_to_a_sub_agent(
     ((_, outcome, _),) = results.outcomes
     assert outcome == Outcome.Err("tool not offered: agent")
     assert h.session.cursors() == [h.cursor], "no sub-agent was opened"
+    await h.close()
+
+
+REFUSED = "plan mode: bash is refused. Put the change in your plan instead."
+
+
+@scenario
+async def test_plan_mode_refuses_before_permissions_asks(tmp_path: Path) -> None:
+    """Plan mode's `pre_tool` runs before permissions' (both are guards; plan mode's is first),
+    so a person is never asked whether a call may run that plan mode would refuse anyway."""
+    tools = base_tools()
+    call = Part.Call("a", "bash", '{"command": "echo hi > y.txt"}')
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply([call], Stop.Tools), say(PLAN)]),
+        tools=tools,
+        extensions=[Permissions(tmp_path), shipped("plan_mode")],  # permissions loads first
+        config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
+    )
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    results = h.bodies()[-2]
+    assert isinstance(results, Body.Results)
+    assert results.outcomes == [("a", Outcome.Err(REFUSED), Author.Extension("plan_mode"))]
+    assert asked(await h.view()) == ["Approve this plan?"], "the only question is plan mode's"
+    assert tools[3].calls == []
+    await h.close()
+
+
+@scenario
+async def test_a_bash_call_whose_arguments_are_not_an_object_with_a_command_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Plan mode fails closed: what it cannot read as a command is refused in its own words."""
+    tools = base_tools()
+    calls = [
+        Part.Call("a", "bash", "[1]"),
+        Part.Call("b", "bash", '"ls"'),
+        Part.Call("c", "bash", "{bad"),
+        Part.Call("d", "bash", '{"command": 5}'),
+    ]
+    h = await started(tmp_path, [Reply(calls, Stop.Tools), say(PLAN)], tools)
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    results = h.bodies()[-2]
+    assert isinstance(results, Body.Results)
+    assert [(i, o) for i, o, _ in results.outcomes] == [(i, Outcome.Err(REFUSED)) for i in "abcd"]
+    assert tools[3].calls == []
+    await h.close()
+
+
+def copy_plan_mode(extensions: Path) -> Path:
+    """Copy the built-in's package into `extensions` as `plan_mode/`, as the guide says to."""
+    built_in = Path(tau.__file__).parent / "_plan_mode"
+    copy = extensions / "plan_mode"
+    shutil.copytree(built_in, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    return copy
+
+
+@scenario
+async def test_a_copy_of_the_package_with_its_settings_edited_shadows_the_built_in(
+    tmp_path: Path,
+) -> None:
+    """The settings file: an administrator copies the package and edits only `settings.py`;
+    the copy shadows the built-in, and a session offers the edited list."""
+    home = tmp_path / "tau-home"
+    settings = copy_plan_mode(home / "extensions") / "settings.py"
+    text = settings.read_text(encoding="utf-8")
+    listed = 'READ_ONLY_TOOLS = ("read", "grep", "find")'
+    edited = text.replace(listed, 'READ_ONLY_TOOLS = ("read",)')
+    assert edited != text
+    settings.write_text(edited, encoding="utf-8")
+    loaded = load_config(home, {"HOME": str(home), "TAU_HOME": str(home)}, ask=None)
+    (copy,) = [e for e in load_extensions(loaded) if e.name == "plan_mode"]
+
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([say(PLAN)]), tools=base_tools(), extensions=[copy]
+    )
+    await h.run("plan")
+    await h.send("look around")
+    await h.settle()
+    assert h.provider.requests[0].tool_names == ["read", "bash"], "grep is no longer offered"
+    assert asked(await h.view()) == ["Approve this plan?"]
     await h.close()

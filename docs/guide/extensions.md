@@ -283,6 +283,28 @@ the cursor's branch, so an option can be set in these ways:
 
 `tau config check` checks the values against the type for every extension it can load.
 
+## Options or settings
+
+An option is for what a client may configure: every client can read and set it (`/config` is on
+the wire), on any branch. What a client must not change is not an option. Either fix it in the
+code, or, when an administrator should be able to change it, put it in a **settings file**: a
+module of plain assignments in the extension's package, which the extension reads where it uses
+them and an administrator changes by editing the file.
+
+The built-in `plan_mode` is the example. Its one option is `mode`, because entering and leaving
+plan mode is the client's choice. What counts as read-only is not, or a `/config` could widen it,
+so the lists are in `tau/_plan_mode/settings.py`:
+
+```python skip
+READ_ONLY_TOOLS = ("read", "grep", "find")
+"""The tools plan mode offers and lets run, as far as the driver has them. ..."""
+```
+
+and `__init__.py` reads them where it needs them (`from . import settings`, then
+`settings.READ_ONLY_TOOLS`). To use other lists, copy the package into your extensions directory
+as `plan_mode/` (a drop-in shadows the built-in of the same key: see [How τ finds an
+extension](#how-τ-finds-an-extension)) and edit only the copy's `settings.py`.
+
 ## Hooks
 
 A hook is an `async` method named for its point. Any subset is fine. A cursor hook is called as
