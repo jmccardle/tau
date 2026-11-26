@@ -43,6 +43,7 @@ from tau._permissions import Permissions
 from tau._project_code import ApprovedFiles, forget
 from tau._protocols import EXTENSION_NAME, Extension, check_extensions, check_tools, counter_needed
 from tau._prune import Prune
+from tau._session_commands import SessionCommands
 from tau._skills import SkillFileError, Skills
 from tau._startup import LoadedConfig
 from tau._step_limit import StepLimit
@@ -57,6 +58,7 @@ from tau._trust import (
     tau_home,
     user_config_path,
 )
+from tau._undo import Undo
 from tau._usage import Usage
 from tau._user_config import UserConfig
 
@@ -93,10 +95,12 @@ _BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     Compaction.name: lambda loaded: Compaction(),
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
     Prune.name: lambda loaded: Prune(),
+    SessionCommands.name: lambda loaded: SessionCommands(Path.cwd()),
     Skills.name: _skills,
     StepLimit.name: lambda loaded: StepLimit(),
     Tokens.name: lambda loaded: Tokens.configured(loaded.home, loaded.catalog.extensions),
     TokenCalls.name: lambda loaded: TokenCalls(),
+    Undo.name: lambda loaded: Undo(),
     Usage.name: lambda loaded: Usage(),
 }
 OFF_BY_DEFAULT = frozenset({Agents.name, TokenCalls.name})
@@ -279,26 +283,20 @@ def _off_switch(key: str, *, discovered: bool = True) -> str:
 
 
 def _builtins(loaded: LoadedConfig) -> list[_Candidate]:
-    made = [
+    """A candidate per built-in, and one for the `retry` wrapper (which imports nothing)."""
+    importers: dict[str, Callable[[], list[object]]] = {RETRY: list}
+    importers.update({k: lambda m=make: [m(loaded)] for k, make in _BUILTINS.items()})
+    return [
         _Candidate(
             key,
             "built-in",
-            "built-in",
+            "built-in (provider wrapper)" if key == RETRY else "built-in",
             f"built-in {key}",
             _off_switch(key, discovered=False),
-            lambda m=make: [m(loaded)],
+            importer,
         )
-        for key, make in _BUILTINS.items()
+        for key, importer in sorted(importers.items())
     ]
-    wrapper = _Candidate(
-        RETRY,
-        "built-in",
-        "built-in (provider wrapper)",
-        f"built-in {RETRY}",
-        _off_switch(RETRY, discovered=False),
-        list,
-    )
-    return sorted([*made, wrapper], key=lambda c: c.key)
 
 
 def _packages() -> list[_Candidate]:
