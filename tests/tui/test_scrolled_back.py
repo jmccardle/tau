@@ -30,9 +30,15 @@ async def turns(tmp_path: Path, count: int, *extra: Reply, **kwargs: object) -> 
 
 
 async def slide_back(pilot: Pilot[None], app: TauApp) -> None:
-    for _ in range(4):
+    """Ctrl+Up from the tail until the window has slid back one turn: a press pages up, and at
+    the top it slides. Each press waits for what it did, since a press during a slide is
+    dropped (D23 section 7): four at once slid one to four turns, by the machine's speed, so the
+    rows counted below the window were not known. The window has slid exactly once here."""
+    chat = app.query_one("#chat-display")
+    while "later nodes" not in app.screen_text():
+        y = chat.scroll_y
         await pilot.press("ctrl+up")
-    await until(pilot, lambda: "later nodes" in app.screen_text())
+        await until(pilot, lambda y=y: chat.scroll_y < y or "later nodes" in app.screen_text())
 
 
 def later(text: str) -> int:
@@ -57,6 +63,7 @@ async def test_tool_progress_for_a_call_outside_the_window_is_ignored(tmp_path: 
         await until(pilot, lambda: gate.held == 1)
         await shows(pilot, app, "[Assistant] checking")
         await slide_back(pilot, app)
+        before = later(app.screen_text())
         assert tool.progress is not None
         tool.progress("half way")
         for _ in range(10):
@@ -64,7 +71,7 @@ async def test_tool_progress_for_a_call_outside_the_window_is_ignored(tmp_path: 
         assert app.is_running
         gate.release()
         await h.settle()
-        await until(pilot, lambda: later(app.screen_text()) > 4)
+        await until(pilot, lambda: later(app.screen_text()) > before)  # the call's end, counted
         assert app.is_running
         while "later nodes" in app.screen_text():  # slid forward, it is all there, caught up
             await pilot.press("ctrl+down")
