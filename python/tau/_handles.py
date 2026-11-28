@@ -39,8 +39,7 @@ Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
 Notify = Callable[[str | None, Notice], None]
-"""Sends a `Notice` to a client, or to every client when `None`; dropped if that client is not
-connected."""
+"""Sends a `Notice` to a client, or to every client for `None`; dropped if it is not connected."""
 
 Spawn = Callable[[str, Coroutine[Any, Any, object]], "asyncio.Task[None]"]
 """The driver's `spawn` for an extension: a task it watches and cancels at the extension's stop."""
@@ -59,18 +58,15 @@ Abort = Callable[[int], None]
 loop has done it."""
 
 Reverser = Callable[[str], Callable[..., Awaitable[object]] | None]
-"""The `reverse` of the loaded extension of this name (D33), or `None`: it is not loaded, or
-defines none."""
+"""The `reverse` of the loaded extension of this name (D33), or `None` (not loaded, or none)."""
 
-Aborted = Callable[[int], Awaitable[None]]
-"""The driver's wait for a cursor to be aborted or sent elsewhere: returns when it is."""
-
-Close = Callable[[int], Awaitable[None]]
-"""The driver's close of a cursor: abort, wait for rest, close. Returns once it is closed."""
+CursorWait = Callable[[int], Awaitable[None]]
+"""A driver call on a cursor that returns once it is done: its close (abort, wait for rest,
+close), or the wait until it is aborted or sent elsewhere (a handle's `aborted`)."""
 
 Show = Callable[[int, str, str | None], None]
-Tools = Callable[[], tuple[str, ...]]
 """The driver's show of text on a cursor: `(cursor, extension, text or None)`."""
+Tools = Callable[[], tuple[str, ...]]
 
 Asker = Callable[[str, str, Kind, str | None, Callable[[], int]], Awaitable[object]]
 """The driver's question call for one cursor: `(text, expect, to, new_cursor) -> the checked and
@@ -776,7 +772,7 @@ class Handles:
     options: OptionsReader
     rest: Rest
     abort: Abort
-    close: Close
+    close: CursorWait
     show: Show
     tools: Tools
     counts: Counting
@@ -785,7 +781,7 @@ class Handles:
     images: Images
     starting: Callable[[], bool]
     reverser: Reverser
-    aborted: Aborted
+    aborted: CursorWait
 
     def cursor(self, id: int, extension: str) -> Cursor:
         """The handle of cursor `id` for `extension`."""

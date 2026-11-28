@@ -2827,6 +2827,8 @@ call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
 the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
 driver's question call for one cursor (see **question**): `(text, expect, to, new_cursor)`. `Changed = Callable[[], None]` is the
 driver's publish for a handle: a handle write calls it, and `Hub.sync` sends whatever changed.
+`CursorWait = Callable[[int], Awaitable[None]]` is a driver call on a cursor that returns once it
+is done: a handle's `close_cursor` and its `aborted` (`Leavers.until_left`).
 
 ### question
 `tau._questions.Questions`, `OpenQuestion` (driver memory; not core) · retires
