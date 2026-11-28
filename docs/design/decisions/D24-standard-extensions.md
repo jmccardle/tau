@@ -612,7 +612,10 @@ with its last stderr line, and its tools answer `Err` saying so until τ restart
 tried. `/mcp` lists the servers, their state and their tools. `stop` stops them all at once: stdin
 closed, then SIGTERM and SIGKILL to the server's process group (each after 1.5 s), and what was in
 its group then gets SIGTERM once it has exited, through pidfds where Linux has them (tau-acp's
-rule: never signal a pid that may have been reused). If τ is killed outright a server sees its
+rule: never signal a pid that may have been reused). Where there are none (macOS), what is left in
+the group once the server has exited gets SIGTERM by the group's id: the kernel gives no new
+process a pid that is the id of a group with members, so while one is left the id names only that
+group, and once none is, `killpg` finds nothing to signal. If τ is killed outright a server sees its
 stdin close, which the specification makes its signal to exit.
 
 **Not in 0.18.** Prompts (`prompts/list` as commands) and resources: tools are what models use,
