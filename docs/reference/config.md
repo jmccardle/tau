@@ -392,13 +392,11 @@ was approved (`None`: no such file). `extension_files` is every file under
 such directory), which the extension loader imports from and never re-reads; `system_md` the
 bytes of `.tau/SYSTEM.md` as approved (`None`: no such file), which the prompt's assembly
 reads. `prompt_files` are the approved `prompts/NAME.md` and `skills/NAME/SKILL.md` (path
-relative to `.tau/`, with `/`, to bytes) and the project's `.agents/skills/NAME/SKILL.md` and
-`.claude/skills/NAME/SKILL.md` (path relative to the project), which the skills extension
-reads. `mcp_files` are the approved `.mcp.json` and `.tau/mcp.json` (path relative to the
-project, to bytes; only those that exist), which the mcp extension reads.
-`hooks_file` is the bytes of `.tau/hooks.json` as approved (`None`: no such file), which the
-`hooks` extension runs. Use `layer()`,
-`read_models()` and `project_environment` rather than re-reading the files.
+relative to `.tau/`, with `/`, to bytes), which the skills extension reads. `mcp_files` are
+the approved `.mcp.json` and `.tau/mcp.json` (path relative to the project, to bytes; only
+those that exist), which the mcp extension reads. `hooks_file` is the bytes of
+`.tau/hooks.json` as approved (`None`: no such file), which the `hooks` extension runs. Use
+`layer()`, `read_models()` and `project_environment` rather than re-reading the files.
 
 ### Trusted.layer
 

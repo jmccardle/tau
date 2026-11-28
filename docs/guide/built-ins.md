@@ -219,8 +219,10 @@ as `tau -p "review main.rs"` would.
 | `$TAU_HOME/prompts/NAME.md` | a template |
 | `$TAU_HOME/skills/NAME/SKILL.md` | a skill |
 | `.tau/prompts/NAME.md`, `.tau/skills/NAME/SKILL.md` in a trusted project | the same, for the project; for one name the project's wins |
-| `~/.agents/skills/NAME/SKILL.md`, `~/.claude/skills/NAME/SKILL.md` | a skill, so a skill written for Claude Code or another agent loads as it is |
-| `.agents/skills/NAME/SKILL.md`, `.claude/skills/NAME/SKILL.md` in a trusted project | the same, for the project, pinned by trust like `.tau/skills`. For one name `.tau/skills` wins over `.agents/skills`, which wins over `.claude/skills` |
+
+τ reads no other directory: not another agent's, such as `~/.claude/skills` or a project's
+`.agents/skills`. A skill written for one of them loads once you copy it, or link it, into one of
+these.
 
 For one name, **a project's file hides the user's**: if `.tau/prompts/review.md` and
 `$TAU_HOME/prompts/review.md` both exist in a trusted project, `/review` is the project's, and
@@ -237,8 +239,8 @@ warnings are printed on standard error at the start (and by `tau config check`),
 lists them without refusing the project. Only a template and a skill with one name in one directory
 stop the start, since which one you meant is not for τ to guess.
 
-A skill, a template, or a directory between (`.claude/skills`, say) may be a **symlink**, so
-`.claude/skills -> .agents/skills` or a skill directory that links to a shared collection works,
+A skill, a template, or a directory between (`.tau/skills`, say) may be a **symlink**, so
+`.tau/skills -> ../shared/skills` or a skill directory that links to a shared collection works,
 inside the project or out of it. What τ reads through the link is what `tau trust` pins, so a
 changed target asks for `tau trust` again, and the report names the path each linked file resolves
 to. A link that leads nowhere, to something that is not a regular file, or to a file over 1 MiB
@@ -250,7 +252,8 @@ A file may begin with frontmatter, YAML `key: value` lines between two `---` lin
 if given, must be the file's name). Values are read as YAML reads them: plain text that goes on
 over indented lines, `'single'` and `"double"` quoted text, and `|` (lines kept) and `>` (lines
 folded) block scalars, as in `description: >-` followed by indented lines. Other keys, the lists
-and mappings under them, and comments are ignored, so a Claude Code skill loads as it is. One of
+and mappings under them, and comments are ignored, so a Claude Code skill you copy in loads as
+it is. One of
 the four keys whose value is empty, a list or a mapping is refused.
 
 A project's files are text the model will be told to follow, so they are pinned like the rest of

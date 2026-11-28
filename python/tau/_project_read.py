@@ -150,9 +150,6 @@ def read_regular(path: Path, *, follow: bool = False) -> bytes | None:
 PROMPTS_DIR = "prompts"
 SKILLS_DIR = "skills"
 SKILL_FILE = "SKILL.md"
-FOREIGN_BASES = (".agents", ".claude")
-"""The directories, beside `.tau/` in a project and in the home directory, whose
-`skills/NAME/SKILL.md` are read as skills too (D24 section 6), in order of precedence."""
 
 
 def _children(directory: Path) -> list[Path]:
@@ -208,44 +205,20 @@ def prompt_candidates(
     return sorted(found)
 
 
-def foreign_candidates(
-    names: Callable[[str], list[str]], is_dir: Callable[[str], bool]
-) -> list[str]:
-    """The `.agents/skills/NAME/SKILL.md` and `.claude/skills/NAME/SKILL.md` under a base: only a
-    file with exactly that path (other files in those directories belong to other tools, so none
-    is a misplaced skill). `names(relative)` and `is_dir(relative)` are as for
-    `prompt_candidates`."""
-    return [
-        f"{base}/{SKILLS_DIR}/{name}/{SKILL_FILE}"
-        for base in FOREIGN_BASES
-        for name in names(f"{base}/{SKILLS_DIR}")
-        if is_dir(f"{base}/{SKILLS_DIR}/{name}")
-        and SKILL_FILE in names(f"{base}/{SKILLS_DIR}/{name}")
-    ]
-
-
 def read_prompt_files(tau: Path) -> dict[str, bytes]:
     """The prompt templates and skills of a project's `.tau` directory, as bytes, and the files
     that look like one in the wrong place (`prompt_candidates`): path relative to `tau`, with
-    `/`. Other files are not read. A symlink among them, or any file `read_regular` refuses, is a
-    `TrustError`. Nothing is returned for a directory that is absent. The project's
-    `.agents/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` (`foreign_candidates`), beside
-    `.tau/`, are read too, and their paths start with `.agents` or `.claude`."""
-    root = tau.parent
+    `/`. Other files are not read. A file `read_regular` refuses (a symlink is read through) is a
+    `TrustError`. Nothing is returned for a directory that is absent."""
 
-    def lister(base: Path) -> tuple[Callable[[str], list[str]], Callable[[str], bool]]:
-        def names(relative: str) -> list[str]:
-            return [p.name for p in _children(base / relative)]
+    def names(relative: str) -> list[str]:
+        return [p.name for p in _children(tau / relative)]
 
-        return names, lambda relative: (base / relative).is_dir()
-
-    found = [(tau, r) for r in prompt_candidates(*lister(tau))]
-    found += [(root, r) for r in foreign_candidates(*lister(root))]
     files: dict[str, bytes] = {}
-    for base, relative in found:
-        raw = read_regular(base / relative, follow=True)
+    for relative in prompt_candidates(names, lambda relative: (tau / relative).is_dir()):
+        raw = read_regular(tau / relative, follow=True)
         if raw is None:
-            path = base / relative
+            path = tau / relative
             raise refusal(
                 path,
                 "is a symlink to nothing"
@@ -262,8 +235,7 @@ def prompt_links(tau: Path, files: Mapping[str, bytes]) -> dict[str, Path]:
     read from, for a report to show. A key reached by no symlink is not in it."""
     links: dict[str, Path] = {}
     for relative in files:
-        base = tau.parent if relative.split("/", maxsplit=1)[0] in FOREIGN_BASES else tau
-        target = (base / relative).resolve()
-        if target != base.resolve() / relative:
+        target = (tau / relative).resolve()
+        if target != tau.resolve() / relative:
             links[relative] = target
     return links
