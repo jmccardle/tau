@@ -841,6 +841,7 @@ def test_a_cut_off_client_keeps_its_tree_open(home: World, binary: Path) -> None
     idle(screen)
     screen.type("before\r")
     screen.wait_for("assistant: mock: before", on_screen=True)
+    idle(screen)  # the reply is drawn before its step ends, and /flood needs the cursor at rest
     screen.type(CTRL_G)
     screen.wait_for("following", on_screen=True)
     screen.type(DOWN)
