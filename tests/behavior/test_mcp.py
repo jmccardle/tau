@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,23 @@ async def test_a_server_that_fails_to_start_is_reported_and_the_rest_start(
     assert listing[0].startswith("broken (stdio: ")
     assert listing[0].endswith(
         ": failed: MCP server broken exited (status 2): cannot open the database"
+    )
+    await h.close()
+
+
+@scenario
+async def test_a_server_that_has_exited_before_it_is_read_is_reported_at_once(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """A server gone before τ starts reading it (a shell that exits at once, here, on a busy
+    machine an interpreter): its exit is what τ says, not the start timeout's. Under an eager
+    task factory (the terminal UI's) a reader then runs to its end as it starts."""
+    quick = McpServer("quick", "test", "stdio", command="/bin/sh", args=("-c", "exit 3"))
+    began = time.monotonic()
+    h = await run(tmp_path, [quick])
+    assert time.monotonic() - began < 10, "the start waited for its timeout"
+    assert "tau: mcp: MCP server quick exited (status 3); τ starts without it" in (
+        capfd.readouterr().err
     )
     await h.close()
 

@@ -282,10 +282,11 @@ class _Stdio:
         self._process = process
         self._child = Child(process)
         self.tail: collections.deque[str] = collections.deque(maxlen=_TAIL)
-        self._readers = [
-            asyncio.ensure_future(self._read()),
-            asyncio.ensure_future(self._read_stderr()),
-        ]
+        # stderr's reader first, and each kept as it starts: under an eager task factory (the
+        # terminal UI's) a reader runs at once, to its end if the server has already exited, and
+        # `_read` then waits for stderr's, which must exist by then.
+        self._stderr_reader = asyncio.ensure_future(self._read_stderr())
+        self._stdout_reader = asyncio.ensure_future(self._read())
 
     @classmethod
     async def open(cls, client: McpClient, cwd: Path) -> "_Stdio":
@@ -332,7 +333,7 @@ class _Stdio:
         except (ConnectionError, _END, asyncio.LimitOverrunError):
             pass
         code = await self._process.wait()
-        await asyncio.gather(self._readers[1], return_exceptions=True)
+        await asyncio.gather(self._stderr_reader, return_exceptions=True)
         last = f": {self.tail[-1]}" if self.tail else ""
         self._client.ended(f"MCP server {self._client.name} exited (status {code}){last}")
 
@@ -357,7 +358,7 @@ class _Stdio:
 
     async def close(self, grace: float) -> None:
         await stop(self._child, grace)
-        await asyncio.gather(*self._readers, return_exceptions=True)
+        await asyncio.gather(self._stdout_reader, self._stderr_reader, return_exceptions=True)
 
 
 class _Http:
