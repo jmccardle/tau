@@ -45,6 +45,35 @@ def alive(pid: int) -> bool:
         return False
 
 
+def group_of(pid: int) -> int | None:
+    """The process group of `pid`; `None` if it is gone or a zombie. POSIX only."""
+    if sys.platform == "win32":
+        raise AssertionError("Windows has no process groups")
+    if sys.platform == "darwin":
+        fields = "".join(_ps("-o", "stat=,pgid=", "-p", str(pid))).split()
+        return None if len(fields) < 2 or fields[0].startswith("Z") else int(fields[1])
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
+            state, _ppid, group = stat.read().rsplit(") ", 1)[1].split()[:3]
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    return None if state == "Z" else int(group)
+
+
+def members(group: int) -> list[int]:
+    """The live processes (not zombies) of process group `group`. POSIX only."""
+    if sys.platform == "win32":
+        raise AssertionError("Windows has no process groups")
+    if sys.platform == "darwin":
+        found: list[int] = []
+        for line in _ps("-axo", "pid=,pgid=,stat="):
+            pid, pgid, state = line.split()[:3]
+            if int(pgid) == group and not state.startswith("Z"):
+                found.append(int(pid))
+        return found
+    return [int(n) for n in os.listdir("/proc") if n.isdigit() and group_of(int(n)) == group]
+
+
 def commands() -> dict[int, list[str]]:
     """The arguments of every live process but this one, by pid. On macOS `ps` joins them with
     spaces, so there an argument holding a space reads as two."""

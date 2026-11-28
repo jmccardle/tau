@@ -13,6 +13,7 @@ import pytest
 from fakes import FakeProvider, Reply, fake_catalog
 from harness import Harness, scenario
 from mcp_http import HttpMcp
+from proctable import alive
 
 from tau import (
     Body,
@@ -44,10 +45,7 @@ def stdio(log: Path, name: str = "test", **env: str) -> McpServer:
 
 def running(pid: int) -> bool:
     """Whether `pid` runs (a zombie does not)."""
-    try:
-        return not Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].startswith("Z")
-    except (FileNotFoundError, ProcessLookupError):  # gone, or going as it is read
-        return False
+    return alive(pid)
 
 
 def logged(log: Path) -> list[dict[str, Any]]:

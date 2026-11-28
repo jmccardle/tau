@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
+from proctable import alive
 from world import World, loaded
 
 from tau import Author, Body, CommandHooks, Outcome, Part, Stop
@@ -85,10 +86,7 @@ async def written(path: Path) -> str:
 
 def ended(pid: int) -> bool:
     """Whether process `pid` has exited (gone, or a zombie nobody has reaped yet)."""
-    try:
-        return "Z" in Path(f"/proc/{pid}/stat").read_text().split(")")[1][:3]
-    except FileNotFoundError:
-        return True
+    return not alive(pid)
 
 
 # -- PreToolUse
@@ -399,9 +397,7 @@ async def test_a_timeout_kills_what_the_command_started(tmp_path: Path, world: W
     h, _ = await session(tmp_path, world, [call("a", "bash", command="x"), say("ok")])
     await h.send("go")
     await h.settle()
-    child = int(pid.read_text())
-    proc = Path(f"/proc/{child}")
-    assert not proc.exists() or "Z" in (proc / "stat").read_text().split(")")[1][:3]
+    assert ended(int(pid.read_text()))
     await h.close()
 
 

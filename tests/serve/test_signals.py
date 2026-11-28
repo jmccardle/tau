@@ -24,6 +24,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from proctable import group_of, members
 from ptykit import Screen
 from world import World
 
@@ -33,21 +34,6 @@ CONFIG = {
     "models": {"m": {"model": "m", "provider": "mock", "options": {"delay_ms": 0}}},
     "load": {"mcp": True, "hooks": True},
 }
-
-
-def _group_of(pid: int) -> int | None:
-    """The process group of `pid`; `None` if it is gone or a zombie."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-    except (FileNotFoundError, ProcessLookupError):
-        return None
-    state, _ppid, group = stat.rsplit(") ", 1)[1].split()[:3]
-    return None if state == "Z" else int(group)
-
-
-def _members(group: int) -> list[int]:
-    """The live processes of process group `group`."""
-    return [int(n) for n in os.listdir("/proc") if n.isdigit() and _group_of(int(n)) == group]
 
 
 class Rig:
@@ -90,7 +76,7 @@ class Rig:
                 break
             assert time.monotonic() < deadline, "the MCP server's child or the hook never ran"
             time.sleep(0.05)
-        group = _group_of(child)
+        group = group_of(child)
         assert group is not None
         self.groups = [group]
         if hook:
@@ -100,7 +86,7 @@ class Rig:
     def survivors(self, seconds: float = 10) -> list[int]:
         """What is left in the groups after `seconds` at most (an orphan is reaped by init)."""
         deadline = time.monotonic() + seconds
-        while (left := [p for g in self.groups for p in _members(g)]) and (
+        while (left := [p for g in self.groups for p in members(g)]) and (
             time.monotonic() < deadline
         ):
             time.sleep(0.05)
