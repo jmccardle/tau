@@ -39,6 +39,23 @@ class Refuse:
 
 extensions = [Refuse()]
 """
+ASK = """
+from typing import Literal
+
+from tau import Body, Stop
+
+
+class Approve:
+    name = "approve"
+
+    async def post_reply(self, cursor, subject):
+        reply = subject.node.body if subject.node else None
+        if isinstance(reply, Body.Assistant) and reply.stop == Stop.End:
+            await cursor.ask("Approve this plan?", Literal["approve", "reject"])
+
+extensions = [Approve()]
+"""
+"""A question when a reply ends, as a plan-approval step would ask it."""
 BOOM = """
 class Boom:
     name = "boom"
@@ -112,10 +129,10 @@ def last(result: Result) -> dict[str, object]:
 
 def test_a_plan_nobody_approves_is_still_printed(model: World) -> None:
     Script.replies = [(PLAN, [])]
-    result = p(model, "/plan add retry")
+    result = p(model, "-e", ext(model, ASK), "add retry")
     assert result.code == 3, result.err
     assert result.out == PLAN + "\n"
-    assert 'tau: question 0 from plan_mode on cursor 0 has no rule: "Approve this plan?"' in (
+    assert 'tau: question 0 from approve on cursor 0 has no rule: "Approve this plan?"' in (
         result.err
     )
     assert "tau: stopped before finishing: question 0 has no --answer or --decline rule" in (
@@ -125,7 +142,7 @@ def test_a_plan_nobody_approves_is_still_printed(model: World) -> None:
 
 def test_every_message_of_the_turn_is_printed_not_its_calls(model: World) -> None:
     Script.replies = [(LOOK, [CALL]), (PLAN, [])]
-    result = p(model, "/plan add retry")
+    result = p(model, "-e", ext(model, ASK), "add retry")
     assert result.code == 3, result.err
     assert result.out == f"{LOOK}\n\n{PLAN}\n"
 
@@ -156,7 +173,7 @@ def test_a_failure_after_the_model_spoke_prints_what_it_said(model: World) -> No
 
 def test_json_a_stop_ends_with_a_stopped_line_that_holds_the_text(model: World) -> None:
     Script.replies = [(LOOK, [CALL]), (PLAN, [])]
-    result = p(model, "--json", "/plan add retry")
+    result = p(model, "--json", "-e", ext(model, ASK), "add retry")
     assert result.code == 3, result.err
     assert last(result) == {
         "stopped": {

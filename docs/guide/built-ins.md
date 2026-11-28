@@ -5,10 +5,10 @@ again, `@file` in a message attaches the file, files you write become commands (
 and skills), what the session has used and spent is shown, a long conversation can be shortened
 (`/compact`, `/prune`), the model can hand a job to a sub-agent, `/undo` takes back the last
 change, `/clear`, `/branch`, `/tree` and `/export` work on the session, and the model can read a
-web page (`fetch`). Seven more wait for you to ask: two that are on but do nothing until you use
-them, rules that ask before a tool runs (permissions) and `/plan` (plan mode), and five that are
-off until you turn them on: the bash guard, the router, tools from MCP servers, web search and shell
-commands at hook points (hooks). Each can be switched off, and each is a few lines to use. The
+web page (`fetch`). Six more wait for you to ask: rules that ask before a tool runs (permissions),
+which are on but do nothing until you write one, and five that are off until you turn them on: the
+bash guard, the router, tools from MCP servers, web search and shell commands at hook points
+(hooks). Each can be switched off, and each is a few lines to use. The
 examples run with the mock model, which needs no server and no key.
 
 ```json file=$TAU_HOME/config.json
@@ -781,51 +781,6 @@ provides is refused by `/config` and `tau config set`, and is a warning (a name 
 nothing) when a file already holds it. A list typed on a command line is
 split at commas and each item trimmed, so `tools=read, grep` is `["read", "grep"]`.
 
-## Plan before it acts
-
-`/plan` puts the branch in plan mode, and nothing in a session changes until you type it. In plan
-mode the model is told to research and propose a plan, and is offered only tools that read:
-`read`, `grep`, `find`, `fetch` (a web page; it still goes through permissions), and `bash` for a short list of read-only commands (`ls`, `pwd`, `cat`,
-`head`, `tail`, `wc`, `git status`, `git diff`, `git log`), and only when the command chains,
-redirects or substitutes nothing. A call to a tool it was not offered fails with `tool not
-offered: write`; any other `bash` command is refused with `plan mode: bash is refused. Put the
-change in your plan instead.` Plan mode refuses before [permissions](#ask-before-a-tool-runs) is
-asked, so you are never asked about a call it would refuse. Every client shows the line
-`plan mode` for the cursor while it is on.
-
-```text
-> /plan add retry to the fetch tool
-plan mode on: read-only tools; you will be asked to approve the plan
-```
-
-When the model's reply ends the plan, τ asks `Approve this plan?`: `approve` leaves plan mode,
-tells the model to carry the plan out and lets it run on by itself, `revise` asks what should
-change and sends it, and `reject` leaves plan mode. An empty answer, or nobody connected, stops
-and leaves plan mode on. Under `tau -p` nobody is there to answer: without an `--answer` rule
-the run prints the plan, says `question 0 from plan_mode ... has no rule` on standard error and
-exits 3 (`--answer plan_mode=approve` approves it). `/plan` takes the rest of the line as the task, with no quotes.
-
-`tau -p` answers the question only by a rule, as for [permissions](#ask-before-a-tool-runs): with
-none, it prints the plan and stops at the question (exit 3). `tau -p --answer plan_mode=reject "/plan add retry"` prints
-the plan and changes nothing; `--answer plan_mode=approve` carries it out in the same run.
-
-Plan mode is a setting of the branch (`/config plan_mode mode=act` leaves it by hand), so going
-back to a node from before `/plan` leaves it, and a second cursor is unaffected. A listed command
-with an argument that makes it write or run something (`git diff --output=f`, `git log
---ext-diff`) is refused too. It is a guard, not a sandbox: a plain `git diff` still runs the
-external diff or textconv program the repository's own config names. The lists of tools and commands are not
-options, because a `/config` from any client could widen them. They are in the extension's
-[settings file](extensions.md#options-settings-or-administrator-keys), `settings.py`: to change them, copy the
-built-in's package to your extensions directory, where it shadows the built-in, and edit the
-copy's `settings.py` (the brief and the approval the model reads are there too):
-
-```bash skip
-cp -r "$(python -c 'import tau._plan_mode as p, os; print(os.path.dirname(p.__file__))')" \
-  "${TAU_HOME:-$HOME/.tau}/extensions/plan_mode"
-```
-
-Or turn plan mode off with `tau ext disable plan_mode`.
-
 ## Ask before a command prints a lot
 
 The bash guard is off until you turn it on (`tau ext enable bash_guard`). It asks before a `bash`
@@ -852,8 +807,7 @@ another answer) or `--decline bash_guard` (decided by `unattended`); with neithe
 question, exit 3.
 
 The guard asks after [permissions](#ask-before-a-tool-runs) has allowed the call, so with an
-`ask` rule for `bash` you are asked twice: by permissions first, then by the guard. In plan mode,
-plan mode refuses a command before either asks.
+`ask` rule for `bash` you are asked twice: by permissions first, then by the guard.
 
 ## Choose the model by the prompt
 
@@ -1378,8 +1332,8 @@ the bytes you approved. A file that is not a hooks file cannot be approved.
 
 At `pre_input` and `pre_tool` the `hooks` commands run before the other built-ins' hooks
 (`pre_input` at -100, `pre_tool` at -150), so a command can rewrite a call's arguments before
-plan mode and `permissions` judge them. The cost: a command that answers `ask` questions you even
-when plan mode or a `permissions` rule then refuses the call, and with a `permissions` `ask` rule
+`permissions` judges them. The cost: a command that answers `ask` questions you even when a
+`permissions` rule then refuses the call, and with a `permissions` `ask` rule
 as well you are asked twice. The ones that only see what happened (`PostToolUse`, `Stop`) run
 last.
 `tau ext list --hooks` shows the order.

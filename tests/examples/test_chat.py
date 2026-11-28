@@ -57,7 +57,6 @@ BUILT_INS = [
     "compaction",
     "fetch",
     "permissions",
-    "plan_mode",
     "prune",
     "session",
     "skills",

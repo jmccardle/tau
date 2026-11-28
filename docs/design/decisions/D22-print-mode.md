@@ -112,7 +112,8 @@ one `Client`, one cursor, no person to ask.
   answer" rule has nothing to select, and the last node alone is often a short remark after the
   plan (or one that carries a call, which has no text of its own to show). The stderr note
   follows. A clean finish prints as before. (`/plan task` with no `--answer` rule stops at
-  `Approve this plan?`, exit 3: the plan is on stdout.)
+  `Approve this plan?`, exit 3: the plan is on stdout. Plan mode was held back from 0.18.0 and is
+  `examples/speculative/plan_mode.py`, which `-e` loads.)
 - It prints from the node (`Appended`), not from `Live`. `Live` is a preview a full buffer may
   drop (D16 §5); a pipe must get exactly what the log holds. Streaming text is `--json`'s and the
   TUI's, also when stdout is a terminal.

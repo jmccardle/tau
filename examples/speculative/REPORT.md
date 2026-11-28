@@ -1,12 +1,14 @@
 # Speculative extensions: what the contracts made easy, and where they fought
 
-> **Promoted in 0.18.** `plan_mode`, `router` and `bash_guard` are built-ins now
-> (`python/tau/_plan_mode.py`, `_router.py`, `_bash_guard.py`; see
-> [docs/guide/built-ins.md](../../docs/guide/built-ins.md)), with their tests in `tests/behavior/`.
-> Their modules and friction logs were removed from this directory (`git log -- examples/speculative/plan_mode.py`
-> has them); the rows and sections below are the record of what they asked of τ, and most
-> of those wishes were built since (`subject.tools`, `cursor.show`, `CursorView.model`, list
-> option defaults, JSON arrays in `/config`, an aborted step declines a question).
+> **Promoted in 0.18.** `router` and `bash_guard` are built-ins now (`python/tau/_router.py`,
+> `_bash_guard.py`; see [docs/guide/built-ins.md](../../docs/guide/built-ins.md)), with their
+> tests in `tests/behavior/`. Their modules and friction logs were removed from this directory
+> (`git log -- examples/speculative/router.py` has them). `plan_mode` was promoted too on master
+> and then held back from 0.18.0 (leaving plan mode by hand needs more design): its improved
+> module and its friction log are here again, with its tests in `tests/examples/speculative/`.
+> The rows and sections below are the record of what they asked of τ, and most of those wishes
+> were built since (`subject.tools`, `cursor.show`, `CursorView.model`, list option defaults,
+> JSON arrays in `/config`, an aborted step declines a question).
 
 Seven exploratory extensions, written against the public API at `ab490dd`, to
 stretch the extension and frontend contracts. Each has a module here, a friction

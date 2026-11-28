@@ -81,11 +81,12 @@ def test_naming_it_with_dash_e_loads_it_and_no_extensions_does_not(world: World,
     assert row(world, key, "--no-extensions")["state"] == "off", "--no-extensions turns on nothing"
 
 
-def test_plan_mode_is_on_by_default_and_has_the_plan_command(world: World) -> None:
-    found = row(world, "plan_mode")
-    assert found["state"] == "on"
-    assert found["commands"] == ["plan_mode:plan"]
-    assert found["tools"] == []
+def test_plan_mode_is_not_a_built_in(world: World) -> None:
+    """Held back from 0.18.0: it is examples/speculative/plan_mode.py, and `/plan` is not in a
+    default install."""
+    result = tau(world, "ext", "list", "--json")
+    assert result.code == 0, result.err
+    assert "plan_mode" not in [json.loads(line)["key"] for line in result.out.splitlines()]
 
 
 def test_a_bad_option_stops_the_start_and_the_check(world: World) -> None:

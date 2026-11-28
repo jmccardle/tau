@@ -99,8 +99,8 @@ and a line per message the run adds.
 A question an extension asks has no one to answer it under `-p`, so `tau -p` stops at it (exit 3)
 unless a rule answers it (`--answer permissions=yes`) or declines it (`--decline permissions`).
 A run that stops, or fails after the model spoke, still prints everything the model wrote in that
-turn on standard output (under `--json`, in the last line's `partial`), so `tau -p "/plan ..."`
-shows the plan it stopped at. [Frontends](frontends.md#questions) explain questions.
+turn on standard output (under `--json`, in the last line's `partial`), so a reply that ends in a
+question nobody answers is still shown. [Frontends](frontends.md#questions) explain questions.
 
 ## Chat
 
