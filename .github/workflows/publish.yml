@@ -378,8 +378,16 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Only what goes to PyPI: the wheels and the sdists. trusty's archives are
+      # artifacts of this run too, and PyPI refuses them (no PKG-INFO).
       - uses: actions/download-artifact@v6
         with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: sdist-*
           path: dist
           merge-multiple: true
       - name: the tag names the version being published
