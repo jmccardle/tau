@@ -1,5 +1,5 @@
-"""`plan_mode` (the built-in, on by default and inert until `/plan`), driven the way a frontend
-would drive it.
+"""examples/speculative/plan_mode.py (inert until `/plan`), driven the way a frontend would
+drive it.
 
 Each test is one flow: what the person does (`/plan`, answers), what the model is offered and
 told, what the tree records, and what the client is sent. The mode is the option `shown` reads,
@@ -19,10 +19,8 @@ from typing import Any, cast
 import pytest
 from fakes import FAKE_MODEL, FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
-from shipped import shipped
 from web import Page, built, serving
 
-import tau
 from tau import (
     Agents,
     Author,
@@ -40,6 +38,26 @@ from tau import (
     load_extensions,
     model_config,
 )
+
+
+def load(name: str) -> Any:
+    path = Path(__file__).resolve().parents[3] / "examples" / "speculative" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"speculative_{name}", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+plan_mode = load("plan_mode")
+EXAMPLE = Path(plan_mode.__file__)
+
+
+def fresh() -> Any:
+    """A new instance per session: the extension remembers which cursors it badged."""
+    return plan_mode.PlanMode()
+
 
 PLAN = "1. read x\n2. edit y"
 APPROVED_TEXT = "The plan is approved. Carry it out."
@@ -63,7 +81,7 @@ async def started(
         tmp_path,
         provider=FakeProvider(script),
         tools=base_tools() if tools is None else tools,
-        extensions=[shipped("plan_mode")],
+        extensions=[fresh()],
     )
 
 
@@ -318,7 +336,7 @@ async def _snapshot(client: Client) -> AsyncIterator[Event]:
 
 
 def load_chat() -> Any:
-    examples = Path(__file__).resolve().parents[2] / "examples"
+    examples = Path(__file__).resolve().parents[3] / "examples"
     sys.path.insert(0, str(examples))
     try:
         return load_from(examples / "chat.py", "speculative_chat")
@@ -434,7 +452,7 @@ async def test_plan_mode_does_not_let_the_model_hand_the_work_to_a_sub_agent(
         tmp_path,
         provider=FakeProvider(script),
         tools=base_tools(),
-        extensions=[shipped("plan_mode"), Agents()],
+        extensions=[fresh(), Agents()],
     )
     await h.run("plan")
     await h.send("go")
@@ -461,7 +479,7 @@ async def test_plan_mode_refuses_before_permissions_asks(tmp_path: Path) -> None
         tmp_path,
         provider=FakeProvider([Reply([call], Stop.Tools), say(PLAN)]),
         tools=tools,
-        extensions=[Permissions(tmp_path), shipped("plan_mode")],  # permissions loads first
+        extensions=[Permissions(tmp_path), fresh()],  # permissions loads first
         config=model_config(FAKE_MODEL, {"permissions": {"ask": ["bash"]}}),
     )
     await h.run("plan")
@@ -498,27 +516,17 @@ async def test_a_bash_call_whose_arguments_are_not_an_object_with_a_command_is_r
     await h.close()
 
 
-def copy_plan_mode(extensions: Path) -> Path:
-    """Copy the built-in's package into `extensions` as `plan_mode/`, as the guide says to."""
-    built_in = Path(tau.__file__).parent / "_plan_mode"
-    copy = extensions / "plan_mode"
-    shutil.copytree(built_in, copy, ignore=shutil.ignore_patterns("__pycache__"))
-    return copy
-
-
 @scenario
-async def test_a_copy_of_the_package_with_its_settings_edited_shadows_the_built_in(
-    tmp_path: Path,
-) -> None:
-    """The settings file: an administrator copies the package and edits only `settings.py`;
-    the copy shadows the built-in, and a session offers the edited list."""
+async def test_a_copy_with_its_constants_edited_is_a_drop_in(tmp_path: Path) -> None:
+    """What is read-only is constants, not options: whoever installs the file edits their copy
+    (here `$TAU_HOME/extensions/plan_mode.py`), and a session offers the edited list."""
     home = tmp_path / "tau-home"
-    settings = copy_plan_mode(home / "extensions") / "settings.py"
-    text = settings.read_text(encoding="utf-8")
+    (home / "extensions").mkdir(parents=True)
+    text = EXAMPLE.read_text(encoding="utf-8")
     listed = 'READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")'
     edited = text.replace(listed, 'READ_ONLY_TOOLS = ("read",)')
     assert edited != text
-    settings.write_text(edited, encoding="utf-8")
+    (home / "extensions" / "plan_mode.py").write_text(edited, encoding="utf-8")
     loaded = load_config(home, {"HOME": str(home), "TAU_HOME": str(home)}, ask=None)
     (copy,) = [e for e in load_extensions(loaded) if e.name == "plan_mode"]
 
@@ -548,7 +556,7 @@ def git_repo(path: Path) -> Path:
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 async def test_an_argument_that_makes_a_read_only_command_write_is_refused(tmp_path: Path) -> None:
-    """`settings.REFUSED_ARGUMENTS`: `git diff --output=f` would write `f`, and `--ext-diff`
+    """`REFUSED_ARGUMENTS`: `git diff --output=f` would write `f`, and `--ext-diff`
     would run a configured program. The same commands without them still run."""
     repo = git_repo(tmp_path / "repo")
     refused = [
@@ -592,7 +600,7 @@ async def test_fetch_is_offered_in_plan_mode_and_runs_there_and_search_is_not(
             provider=FakeProvider([Reply([call], Stop.Tools), say(PLAN)]),
             tools=[FakeTool("read", "ran"), FakeTool("search", "ran")],
             extensions=[
-                shipped("plan_mode"),
+                fresh(),
                 built(tmp_path, "fetch", {"allow_private": True}),
             ],
         )

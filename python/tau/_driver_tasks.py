@@ -33,8 +33,8 @@ class Leavers:
     """The waits on other cursors, by the cursor that waits: a hook's `rest` ends when its own
     cursor is aborted or sent elsewhere, since an abort never cancels a hook (M7)."""
 
-    def __init__(self, wake: Callable[[], None]) -> None:
-        self._wake = wake  # the waits are woken to see they ended
+    def __init__(self, rested: Waiters) -> None:
+        self._rested = rested  # the waits are woken to see they ended
         self._waiting: Counter[int] = Counter()
         self._gone: set[int] = set()
 
@@ -54,10 +54,18 @@ class Leavers:
         """`cursor` was aborted or sent elsewhere: a wait of it that is out ends."""
         if cursor in self._waiting:
             self._gone.add(cursor)
-            self._wake()
+            self._rested.wake()
 
     def has_left(self, cursor: int) -> bool:
         return cursor in self._gone
+
+    async def until_left(self, cursor: int, running: Callable[[], None]) -> None:
+        """What a handle's `aborted` does: wait until `cursor` is aborted or sent elsewhere.
+        `running` raises if the driver can no longer be waited on (it failed or stopped)."""
+        with self.waiting(cursor):
+            while not self.has_left(cursor):
+                running()
+                await self._rested.wait()
 
 
 EFFECT: contextvars.ContextVar[asyncio.Task[None] | None] = contextvars.ContextVar(

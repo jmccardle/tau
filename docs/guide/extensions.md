@@ -316,23 +316,21 @@ A value an extension reads lives in one of three places, by who may change it.
   the extension declares as `administrator_keys` and reads with `tau.constants` when it is built.
   `tau config check` checks them, and no client can read or set them.
 
-The built-in `plan_mode` shows the first two. Its one option is `mode`, because entering and
-leaving plan mode is the client's choice. What counts as read-only is not, or a `/config` could
-widen it, so the lists are in `tau/_plan_mode/settings.py`:
+The built-in `fetch` shows the last two. Its limits are the same on every machine and no client
+may raise them, so they are in `tau/_fetch/settings.py`:
 
 ```python skip
-READ_ONLY_TOOLS = ("read", "grep", "find", "fetch")
-"""The tools plan mode offers and lets run, as far as the driver has them. ..."""
+MAX_BODY = 5 * 1024 * 1024
+"""The bytes of a text or HTML body that are read; a larger one is cut there and says so."""
 ```
 
 and `__init__.py` reads them where it needs them (`from . import settings`, then
-`settings.READ_ONLY_TOOLS`). To use other lists, copy the package into your extensions directory
-as `plan_mode/` (a drop-in shadows the built-in of the same key: see [How τ finds an
+`settings.MAX_BODY`). To use other limits, copy the package into your extensions directory as
+`fetch/` (a drop-in shadows the built-in of the same key: see [How τ finds an
 extension](#how-τ-finds-an-extension)) and edit only the copy's `settings.py`.
 
-The built-in `fetch` shows the third. Its limits (5 MiB of body, 5 redirects) are in its settings
-file, but whether it may read from private addresses and how long a call may take differ per
-machine, so they are administrator keys:
+Whether it may read from private addresses and how long a call may take differ per machine, so
+they are administrator keys:
 
 ```json
 { "extensions": { "fetch": { "allow_private": true, "timeout": 30 } } }
@@ -725,7 +723,7 @@ with `.` or `_` are ignored.
 
 | source | where | key | on unless |
 |---|---|---|---|
-| built-in | inside τ (`agents`, `attachments`, `bash_guard`, `base_tools`, `compaction`, `permissions`, `plan_mode`, `prune`, `router`, `skills`, `step_limit`, `tokens` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
+| built-in | inside τ (`agents`, `attachments`, `bash_guard`, `base_tools`, `compaction`, `fetch`, `hooks`, `mcp`, `permissions`, `prune`, `router`, `search`, `session`, `skills`, `step_limit`, `token_calls`, `tokens`, `undo` and `usage`, and the key `retry` for the provider wrapper) | its name | `load` says off |
 | package | the `tau.extensions` plugin group of an installed package | the registration's name | `load` says off, or `--no-extensions` |
 | user | `$TAU_HOME/extensions/NAME.py` or `NAME/` | `NAME` | `load` says off, or `--no-extensions` |
 | project | `.tau/extensions/NAME.py` or `NAME/` in a trusted project | `NAME` | the project is untrusted, or `load` says off, or `--no-extensions` |
@@ -799,9 +797,9 @@ Every failing source is reported at once.
 
 ## Where to look next
 
-- [`examples/speculative/`](../../examples/speculative/): four larger extensions (a loop, a
-  game master, a tree search, an agent that inspects its harness), each with a note on what it
-  needed from τ. Plan mode, the router and the bash guard started there and are
+- [`examples/speculative/`](../../examples/speculative/): five larger extensions (a loop, a
+  game master, a tree search, an agent that inspects its harness, plan mode), each with a note on
+  what it needed from τ. The router and the bash guard started there and are
   [built-ins](built-ins.md) since 0.18.
 - [The reference for extensions](../reference/extensions.md): every handle method and its
   signature, from the docstrings.

@@ -22,8 +22,7 @@ so give it `--answer bash_guard=...` or `--decline bash_guard` (decided by `unat
 neither, the run stops at the question.
 
 Its `pre_tool` asks and may rewrite the call, so it keeps the default order (an edit, D28): with a
-`permissions` `ask` rule for `bash` the person is asked twice, by `permissions` first, then here;
-in plan mode, `plan_mode` refuses the call before either asks.
+`permissions` `ask` rule for `bash` the person is asked twice, by `permissions` first, then here.
 
 The options are what a person may tune for themselves: what is asked about, what is allowed for
 good, what happens unattended and how long to wait. They are checked when set (a bad regex is a

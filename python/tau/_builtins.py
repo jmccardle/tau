@@ -19,7 +19,6 @@ from tau._compaction import Compaction
 from tau._fetch import Fetch
 from tau._mcp import Mcp, McpConfigError
 from tau._permissions import Permissions
-from tau._plan_mode import PlanMode
 from tau._prune import Prune
 from tau._router import Router
 from tau._search import Search
@@ -41,7 +40,6 @@ BUILTINS: Mapping[str, Callable[[LoadedConfig], object]] = {
     CommandHooks.name: CommandHooks.of,  # a file it cannot use raises `HookFileError`
     Mcp.name: lambda loaded: Mcp.of(loaded, Path.cwd()),  # a TAU_MCP_CONFIG file must exist
     Permissions.name: lambda loaded: Permissions(Path.cwd()),
-    PlanMode.name: lambda loaded: PlanMode(),
     Prune.name: lambda loaded: Prune(),
     Router.name: lambda loaded: Router(),
     Search.name: lambda loaded: Search.configured(loaded.catalog.extensions, loaded.environ),

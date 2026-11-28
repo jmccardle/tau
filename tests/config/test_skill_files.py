@@ -253,26 +253,24 @@ def test_a_symlinked_skill_directory_is_read_and_its_target_is_in_the_report(
     assert [p.name for p in skills(world, root).prompts] == ["linked"]
 
 
-def test_claude_skills_may_link_to_agents_skills(world: World) -> None:
+def test_the_skills_directory_may_link_to_one_the_project_keeps_elsewhere(world: World) -> None:
     root = world.project()
-    put(root, ".agents/skills/pdf/SKILL.md", SKILL)
-    (root / ".claude").mkdir()
-    (root / ".claude" / "skills").symlink_to(root / ".agents" / "skills")
+    put(root, "team/skills/pdf/SKILL.md", SKILL)
+    (root / ".tau" / "skills").symlink_to(root / "team" / "skills")
     report = tau(world, "trust", cwd=root).out
-    assert ".claude/skills/pdf/SKILL.md" in report
-    assert (
-        f"a symlink: these are the bytes of {(root / '.agents/skills/pdf/SKILL.md').resolve()}"
-        in (report)
-    )
+    # the listing names a file relative to `.tau/`, as it is read through the link
+    assert f"  skills/pdf/SKILL.md  {len(SKILL.encode())} bytes" in report.splitlines()
+    target = (root / "team" / "skills" / "pdf" / "SKILL.md").resolve()
+    assert f"a symlink: these are the bytes of {target}" in report
     assert [p.name for p in skills(world, root).prompts] == ["pdf"]
 
 
-def test_a_symlinked_skill_file_and_a_symlinked_dot_claude_are_read_too(
+def test_a_symlinked_skill_file_and_a_symlinked_prompts_directory_are_read_too(
     world: World, tmp_path: Path
 ) -> None:
     root = world.project()
-    put(tmp_path, "shared/.claude/skills/one/SKILL.md", SKILL)
-    (root / ".claude").symlink_to(tmp_path / "shared" / ".claude")
+    put(tmp_path, "shared/prompts/one.md", "Review $1")
+    (root / ".tau" / "prompts").symlink_to(tmp_path / "shared" / "prompts")
     put(tmp_path, "file/SKILL.md", SKILL)
     (root / ".tau" / "skills" / "two").mkdir(parents=True)
     (root / ".tau" / "skills" / "two" / "SKILL.md").symlink_to(tmp_path / "file" / "SKILL.md")

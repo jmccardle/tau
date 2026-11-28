@@ -44,7 +44,6 @@ BUILT_INS = [
     "compaction",
     "fetch",
     "permissions",
-    "plan_mode",
     "prune",
     "session",
     "skills",
@@ -217,7 +216,6 @@ def test_an_installed_package_comes_after_built_ins_and_before_drop_ins(world: W
         "hooks",
         "mcp",
         "permissions",
-        "plan_mode",
         "prune",
         "retry",
         "router",
@@ -358,12 +356,12 @@ def test_an_extension_named_session_name_is_a_name_clash(world: World) -> None:
 def test_a_drop_in_named_for_a_built_in_shadows_it_so_its_lists_can_be_changed(
     world: World,
 ) -> None:
-    """The route the guide gives for what a client may not configure (plan mode's read-only
-    lists): a drop-in with the built-in's key wins and the built-in is never built."""
-    user_file(world, "plan_mode", WITH_COMMAND.format(name="plan_mode", command="plan"))
-    rows = [r for r in list_extensions(world.project(), world.environ) if r.key == "plan_mode"]
+    """The route the guide gives for what a client may not configure (fetch's settings file):
+    a drop-in with the built-in's key wins and the built-in is never built."""
+    user_file(world, "fetch", WITH_COMMAND.format(name="fetch", command="go"))
+    rows = [r for r in list_extensions(world.project(), world.environ) if r.key == "fetch"]
     assert [(r.kind, r.state) for r in rows] == [("built-in", "shadowed"), ("user", "on")]
-    assert names(load_extensions(start(world))).count("plan_mode") == 1
+    assert names(load_extensions(start(world))).count("fetch") == 1
 
 
 def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: World) -> None:
@@ -377,7 +375,7 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
     assert result.code == 0
     pad = " " * 14
     lines = result.out.splitlines()
-    assert lines[:38] == [
+    assert lines[:36] == [
         "tau           always     built-in",
         f"{pad}commands: /model; tools: none",
         "session_name  always     built-in (added by the startup)",
@@ -400,8 +398,6 @@ def test_ext_list_prints_a_row_per_source_then_its_reason_or_contents(world: Wor
         f"{pad}off (default); to turn it on: tau ext enable mcp",
         "permissions   on         built-in",
         f"{pad}commands: none; tools: none",
-        "plan_mode     on         built-in",
-        f"{pad}commands: /plan; tools: none",
         "prune         on         built-in",
         f"{pad}commands: /prune; tools: none",
         "retry         on         built-in (provider wrapper)",

@@ -1342,8 +1342,7 @@ arguments (`attached_to`) attach an image file as a file, as before.
 The built-in extension for prompt files. A **template** is `NAME.md` and a **skill** is
 `NAME/SKILL.md`, in `$TAU_HOME/prompts/` and `$TAU_HOME/skills/` and the same under the trusted
 project's `.tau/` (pinned by trust like `.tau/SYSTEM.md`, read from the approved bytes; the project
-wins a name); skills are also read from `.agents/skills/` and `.claude/skills/` in the home
-directory and the trusted project. Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
+wins a name). Each is a command `/NAME args` (`/skills:NAME` when another extension has `/NAME`)
 whose help is the file's `description` and which sends the expanded text to its cursor as input
 authored by `Extension("skills")`. A template replaces `$ARGUMENTS` (the argument text) and `$1`
 to `$N` (its words: whitespace splits, `"` groups, `'` is a character; a missing one is empty,
@@ -1995,27 +1994,28 @@ money: cost needs the price, so `/usage json` (or `/usage format=json`) answers
 string, or `null` for a model without a price. The row fields are in `docs/guide/conventions.md`.
 
 ### PlanMode (extension), plan mode, `/plan`
-built-in `plan_mode` (the package `_plan_mode/`, with its settings file `settings.py`; not exported: reached through `load_extensions` only), option `mode` (`act` | `plan`), command `/plan [task]` · 0.18 (from `examples/speculative/plan_mode.py`)
+the speculative example `examples/speculative/plan_mode.py` (`extensions = [PlanMode()]`), key `plan_mode`, option `mode` (`act` | `plan`), command `/plan [task]` · example; a built-in on master during 0.18 development, held back from 0.18.0 (leaving the mode by hand needs more design)
 
-The built-in extension, **on by default and inert until `/plan`**, for planning before acting.
+An example extension, **inert until `/plan`**, for planning before acting; it is not a built-in.
 **Plan mode** is the option `extensions.plan_mode.mode` on a branch (a `Config` node, so it follows
 the branch and survives a reload). In it, `pre_sample` briefs the model once (a `User` node by the
 extension) and sets `subject.tools` to the read-only tools the driver has (`read`, `grep`, `find`,
-`fetch` and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and `pre_tool`
-(order `GUARD - 1`, so before `permissions` asks) refuses any `bash` command outside a fixed list
-of read-only commands, that chains, redirects or substitutes, that has an argument in
+`fetch` and `bash`); the driver refuses a call to a tool not offered (*tool not offered*), and
+`pre_tool` (order -101, `GUARD - 1`, so before `permissions` asks) refuses any `bash` command
+outside a fixed list of read-only commands, that chains, redirects or substitutes, that has an argument in
 `REFUSED_ARGUMENTS` (`--output`, `--ext-diff`), or whose arguments are not an object with a string
 `command`; the cursor shows `plan mode`; and a reply that ends in `Stop.End` asks
 `approve | revise | reject` (approve leaves the mode, writes the approval and turns auto-step on).
-What is read-only is in its *settings file*, not an option (a client's `/config` must not widen
-it). A guard, not a sandbox.
+What is read-only is constants of the module (`READ_ONLY_TOOLS`, `READ_ONLY_COMMANDS`,
+`REFUSED_ARGUMENTS`), not an option (a client's `/config` must not widen it). A guard, not a
+sandbox.
 
 ### settings file (an extension's)
-a module of constants in an extension's package, such as `tau/_plan_mode/settings.py` · 0.18 · new
+a module of constants in an extension's package, such as `tau/_fetch/settings.py` · 0.18 · new
 
 The convention for what an administrator may change and a client may not: a module of plain
 assignments, each with a docstring saying what it is and what a change does, that the extension
-reads where it uses them (`settings.READ_ONLY_TOOLS`). A client configures *options*, which are on
+reads where it uses them (`settings.MAX_BODY`). A client configures *options*, which are on
 the wire (`/config`); an administrator changes a settings file by editing it, in a copy of the
 package that shadows the original as a drop-in (D19). It is no new mechanism: just a module.
 
@@ -2079,9 +2079,7 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
 **load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents`, `attachments`,
-`bash_guard` (off by default), `base_tools`, `compaction`, `mcp` (off by default), `permissions`, `plan_mode`, `prune`, `router` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
-
-`bash_guard` (off by default), `base_tools`, `compaction`, `fetch`, `permissions`, `plan_mode`, `prune`, `router` (off by default), `search` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+`bash_guard` (off by default), `base_tools`, `compaction`, `fetch`, `hooks` (off by default), `mcp` (off by default), `permissions`, `prune`, `router` (off by default), `search` (off by default), `session`, `skills`, `step_limit`, `token_calls` (off by default), `tokens`, `undo` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
@@ -2829,6 +2827,8 @@ call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
 the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
 driver's question call for one cursor (see **question**): `(text, expect, to, new_cursor)`. `Changed = Callable[[], None]` is the
 driver's publish for a handle: a handle write calls it, and `Hub.sync` sends whatever changed.
+`CursorWait = Callable[[int], Awaitable[None]]` is a driver call on a cursor that returns once it
+is done: a handle's `close_cursor` and its `aborted` (`Leavers.until_left`).
 
 ### question
 `tau._questions.Questions`, `OpenQuestion` (driver memory; not core) · retires
