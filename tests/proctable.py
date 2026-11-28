@@ -31,18 +31,33 @@ def _ps(*args: str) -> list[str]:
     return done.stdout.splitlines()
 
 
+def _running_on_macos(state: str) -> bool:
+    """Whether a macOS `ps` state is a process that runs: not a zombie (`Z`), and not one that
+    is exiting (`E`, `P_WEXIT`). An exiting process has had its signal: `killpg` already skips
+    it (its group may answer ESRCH, as an empty one does, so `tau` stops waiting), but on a busy
+    machine `ps` can list it, in its old state with `E`, for a while before it is a zombie."""
+    return state != "" and not state.startswith("Z") and "E" not in state
+
+
 def alive(pid: int) -> bool:
     """Whether process `pid` runs. A zombie, awaiting its parent's wait, does not."""
     if sys.platform == "win32":
         return _alive_windows(pid)
     if sys.platform == "darwin":
-        state = "".join(_ps("-o", "stat=", "-p", str(pid))).strip()
-        return state != "" and not state.startswith("Z")
+        return _running_on_macos("".join(_ps("-o", "stat=", "-p", str(pid))).strip())
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
             return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
     except FileNotFoundError:
         return False
+
+
+def shown(pid: int) -> str:
+    """How the process table shows `pid`, for a failing assertion to say: `ps`'s pid, parent,
+    group, state and age on POSIX ("" once it is gone); whether it is alive on Windows."""
+    if sys.platform == "win32":
+        return f"{pid} alive" if _alive_windows(pid) else ""
+    return " ".join(_ps("-o", "pid=,ppid=,pgid=,stat=,etime=", "-p", str(pid))).strip()
 
 
 def group_of(pid: int) -> int | None:
@@ -51,7 +66,7 @@ def group_of(pid: int) -> int | None:
         raise AssertionError("Windows has no process groups")
     if sys.platform == "darwin":
         fields = "".join(_ps("-o", "stat=,pgid=", "-p", str(pid))).split()
-        return None if len(fields) < 2 or fields[0].startswith("Z") else int(fields[1])
+        return int(fields[1]) if len(fields) == 2 and _running_on_macos(fields[0]) else None
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
             state, _ppid, group = stat.read().rsplit(") ", 1)[1].split()[:3]
@@ -68,7 +83,7 @@ def members(group: int) -> list[int]:
         found: list[int] = []
         for line in _ps("-axo", "pid=,pgid=,stat="):
             pid, pgid, state = line.split()[:3]
-            if int(pgid) == group and not state.startswith("Z"):
+            if int(pgid) == group and _running_on_macos(state):
                 found.append(int(pid))
         return found
     return [int(n) for n in os.listdir("/proc") if n.isdigit() and group_of(int(n)) == group]
@@ -83,7 +98,7 @@ def commands() -> dict[int, list[str]]:
     elif sys.platform == "darwin":
         for line in _ps("-axo", "pid=,stat=,args="):
             pid, state, *args = line.split()
-            if not state.startswith("Z"):
+            if _running_on_macos(state):
                 found[int(pid)] = args
     else:
         for name in os.listdir("/proc"):

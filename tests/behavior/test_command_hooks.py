@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fakes import FakeProvider, FakeTool, Reply
 from harness import Harness, say, scenario
-from proctable import alive
+from proctable import alive, shown
 from world import World, loaded
 
 from tau import Author, Body, CommandHooks, Outcome, Part, Stop
@@ -518,7 +518,7 @@ async def test_stopping_the_session_ends_a_running_command_and_what_it_started(
     child = int(await written(pid))
     async with asyncio.timeout(5):
         await h.driver.stop()
-    assert ended(child)
+    assert ended(child), f"what it started is still there: {shown(child)}"
     assert tool.calls == []
 
 
