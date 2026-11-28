@@ -17,7 +17,7 @@ dependencies = [
     "httpx>=0.28",
     "websockets>=15",
     "textual>=8.2",
-    "ffwf-tau-web>=0.17,<0.18",  # the web client `tau serve` serves (D29 section 9)
+    "ffwf-tau-web>=0.18,<0.19",  # the web client `tau serve` serves (D29 section 9)
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -37,7 +37,7 @@ classifiers = [
 [project.optional-dependencies]
 # Local tokenizers for the `tokens` extension (D26 §7): a second wheel built from this repository,
 # always at this wheel's version (scripts/check_tokens_wheel.py holds the pin to it).
-tokens = ["ffwf-tau-tokens==0.17.3"]
+tokens = ["ffwf-tau-tokens==0.18.0"]
 
 # The public repository only: pyproject.toml and README.md ship in the sdist and on PyPI.
 [project.urls]

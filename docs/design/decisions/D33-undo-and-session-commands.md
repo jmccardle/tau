@@ -1,6 +1,6 @@
 # D33: Undo markers, `/undo`, and the session commands
 
-**Status:** accepted for 0.18.0 (unreleased), built. **Amends** D23 §2 (Ctrl+Z calls the harness's
+**Status:** accepted for 0.18.0 (released 2026-11-28), built. **Amends** D23 §2 (Ctrl+Z calls the harness's
 `/undo` when the `undo` extension is loaded; `/undo`, `/clear`, `/branch`, `/tree` and `/export`
 become slash commands, where `from-0.15.md` §2.9 said such moves are keys), D24 §2 and §9
 (compaction and prune end their new line in an undo marker), and the `Extension` contract (one

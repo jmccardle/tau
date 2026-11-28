@@ -4,7 +4,7 @@
 [package]
 name = "tau-ratatui"
 description = "A terminal chat client of `tau serve`, written in Rust against the wire schema."
-version = "0.17.3"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.89"
 publish = false

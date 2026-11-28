@@ -1,6 +1,6 @@
 # D31: Images in user messages (first slice)
 
-**Status:** accepted, built, for 0.18.0 (unreleased). **Amends** D30 (images leave the tool
+**Status:** accepted, built, for 0.18.0 (released 2026-11-28). **Amends** D30 (images leave the tool
 results: a `User` node and an `Input` item carry them; the mock provider takes them), D12 (the
 store's `VERSION` 3, written only once needed), D21 (`PROTOCOL` 3: new shapes of `User` and
 `Input`, `images` on `input` and `send`, the call `image`), D24 §5 (`@path` attaches an image

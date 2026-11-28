@@ -424,11 +424,10 @@ REPL frontend (`--mode repl`), and image input until after 0.16.0 (D15 Deferred)
   reply, and the TUI no longer crashes with `KeyError` on parallel tool calls.
 - **0.17.3 (released 2026-11-25): a fix release.** Skill and template frontmatter is read as YAML (folded, literal and
   quoted values), so a Claude Code skill with `description: >-` no longer stops τ from starting.
-- **0.18.0 (unreleased): images in user messages (D31), `PROTOCOL` 3.** `send`/`input` take
+- **0.18.0 (released 2026-11-28): images in user messages (D31), `PROTOCOL` 3.** `send`/`input` take
   `images`, `image(sha256)` reads one, `@path` attaches an image file; the store says version 3
-  only once a user image is written. On `master` as `feat/user-images`; tau-code's composer and
-  `ffwf-tau-web` 0.18 (released first) follow, then the version bump and the pin
-  `ffwf-tau-web>=0.18,<0.19`.
+  only once a user image is written. Merged as `feat/user-images`, with tau-code's composer in
+  `ffwf-tau-web` 0.18 (released first); `ffwf-tau` pins `ffwf-tau-web>=0.18,<0.19`.
 - **The HTTP edge (D29), tau-code's Phase T.** `tau serve` also listens over HTTP (SSE
   and POST, a bearer token in the serve record), both transports by default; `RemoteClient`
   dials it; the behavior suite runs a third wired mode, `http`. Merged as `ea0a3dcd`. Windows' HTTP-only serve is T2 (D29 Open 1).

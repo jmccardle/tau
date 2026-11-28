@@ -153,7 +153,7 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
 - **Where the files come from**, first found: `tau serve --web-root DIR` (`HttpEdge.web_root`); else
   the `dist/` of the installed package **`tau_web`**, which is tau-code's built client, published as
   the wheel `ffwf-tau-web` (data only, `py3-none-any`, no dependency on `ffwf-tau`). **`ffwf-tau`
-  depends on it** (`ffwf-tau-web>=0.17,<0.18`), so a plain `tau serve` serves the client at `/`
+  depends on it** (`ffwf-tau-web>=0.17,<0.18` in 0.17.x, `>=0.18,<0.19` in 0.18.x), so a plain `tau serve` serves the client at `/`
   with nothing more installed. τ's own wheel still carries no JavaScript: the files arrive in the
   other wheel. A web root (or a `tau_web`) without `index.html` fails at start (`ConfigError`
   naming it).
@@ -169,7 +169,7 @@ origin, so the client reads `#token=` from its own address, keeps it in the tab
   `--web-root`). This is the gap, reported, not a stand-in and not a startup error, by decision:
   the wire is what the server is for, and the page names the fault to whoever opens it.
 - **Versions.** `ffwf-tau-web` goes in lockstep with τ's minor: 0.17.x pairs with 0.17.x. The wire's
-  `PROTOCOL` changes only on a τ minor bump (a rule, so the pin `>=0.17,<0.18` is also a promise
+  `PROTOCOL` changes only on a τ minor bump (a rule, so the pin (`>=0.17,<0.18` for 0.17.x) is also a promise
   that the client speaks the server's protocol; `scripts/check_tokens_wheel.py` checks the pin
   against the workspace version). The release order is always `ffwf-tau-web` first, then `ffwf-tau`,
   because the pin must resolve on PyPI when `ffwf-tau` publishes. The `ffwf-tau-web` wheel is built

@@ -6,7 +6,7 @@ share. A sans-IO Rust core holds the tree and the step algorithm; Python drives 
 providers (any OpenAI-compatible server, Anthropic, Gemini), tools, hooks, extensions and the
 terminal UI live.
 
-**Status: 0.17 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
+**Status: 0.18 is a pre-release.** It is a ground-up rewrite of τ 0.15 (tag `v0.15.0`). Below
 1.0, interfaces may change between minor versions.
 
 ## Install
@@ -15,7 +15,7 @@ terminal UI live.
 is `ffwf-tau` and installs the `tau` command:
 
 ```bash
-pip install 'ffwf-tau>=0.17'
+pip install 'ffwf-tau>=0.18'
 ```
 
 Windows (x86_64) wheels are built too, but there τ is incomplete: the `bash` tool, projects
@@ -24,6 +24,7 @@ available and say so when used. `tau serve` runs there on its HTTP edge alone (n
 
 `pip install 'ffwf-tau[tokens]'` adds local tokenizers (a second wheel, `ffwf-tau-tokens`).
 `pip install 'ffwf-tau'` also installs the web client that `tau serve` serves at its URL (`--no-web` turns it off).
+New in 0.18: images in user messages, completion items and attributed notices (protocol 3), extension start and stop, command hooks, MCP tools, `/undo`, and built-in `fetch` and `search` ([0.18.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.18.0.md)).
 New in 0.17: the HTTP edge of `tau serve`, and images in tool results ([0.17.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.0.md)); 0.17.1 ships the web client ([0.17.1 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.1.md)); 0.17.2 fixes a TUI crash ([0.17.2 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.2.md)); 0.17.3 loads skills with YAML frontmatter ([0.17.3 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.17.3.md)).
 Coming from 0.15? Read the [0.16.0 release notes](https://github.com/jmccardle/tau/blob/master/docs/release-notes/0.16.0.md) first: 0.16 is a
 rewrite and does not read 0.15 sessions or load 0.15 extensions.

@@ -1,7 +1,7 @@
 # D32: Completion items, attributed notices, the `Commands` event, extension start/stop, and `models()`
 
 **Status:** accepted 2026-11-25 with John's rulings on the four open questions (Rulings, below),
-for 0.18.0 (unreleased). **Amends**
+for 0.18.0 (released 2026-11-28). **Amends**
 D16 §5 (`complete` answers items, not strings; a `Notice` says who and how loud; a new state
 event), D19 (a start that raises is a load error), D21 §3 and §8 (the events, and what `PROTOCOL`
 3 holds), D23 (the TUI stops polling `commands`), D31 §4 (`PROTOCOL` 3 holds more than images),
@@ -12,7 +12,7 @@ this ADR's open questions (Rulings).
 
 ## Context
 
-Protocol 3 is unreleased. D29 §9 makes `PROTOCOL` change only on a τ minor bump, so whatever
+Protocol 3 was unreleased when this was decided (it shipped in 0.18.0). D29 §9 makes `PROTOCOL` change only on a τ minor bump, so whatever
 0.18.x needs on the wire has to be in 3 before 0.18.0 is tagged; after that, the next wire change
 is 0.19's protocol 4. The 0.18 discussion sorted the candidate wire changes by one lens (#641):
 change the wire only for what a client cannot derive from the tree and the events it already has.
@@ -408,7 +408,7 @@ Rejected for protocol 3:
 
 ### 6. Protocol 3, and who must follow
 
-All of §1 to §3 lands in **`PROTOCOL` 3**, which is unreleased, beside D31's images. Within 3
+All of §1 to §3 lands in **`PROTOCOL` 3**, which was unreleased then, beside D31's images. Within 3
 they are additive for a lenient reader, but a client generated from the schema meets a new event
 kind and new result shapes, so every generated client is regenerated before 0.18.0 (there is no
 released 3 to stay compatible with). `PROTOCOL`'s docstring gains: "`complete` and
@@ -420,7 +420,7 @@ schema, and the next change is protocol 4 in 0.19. So nothing else that 0.18.x n
 `/reload`, MCP's tools, `scheduled`, `tau ext install` all reach clients through `Commands` and
 the existing calls, which is why PC-03 is in 3 (Q-c, **fixed**).
 
-**ffwf-tau-web 0.18** is released first (P18-01; D29 §9's order), from tau-code built against
+**ffwf-tau-web 0.18** was released first (P18-01; D29 §9's order), from tau-code built against
 this schema: it renders completion items, attributes and colours notices, and replaces its
 palette on `Commands`. Its decoder treats an unknown event kind as fatal, so it must be built from
 the schema after this lands, never before. `ffwf-tau` 0.18.0 pins `ffwf-tau-web>=0.18,<0.19`.
