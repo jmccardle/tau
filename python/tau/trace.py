@@ -126,7 +126,7 @@ def stop() -> Path:
     events, path, tracks = _events, _path, dict(_tracks)
     _events = _path = None
     _core.stop_trace()
-    merged = json.loads(path.read_text())
+    merged = json.loads(path.read_text(encoding="utf-8"))
     merged.extend(
         {
             "ph": "M",

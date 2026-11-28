@@ -572,7 +572,7 @@ def load_user_themes(
 def _theme_object(path: Path) -> dict[str, Any]:
     """The JSON object in a theme file; its top-level keys are checked."""
     try:
-        raw: Any = json.loads(path.read_text())
+        raw: Any = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ThemeError(f"theme {path} could not be read: {exc}") from exc
     except json.JSONDecodeError as exc:
