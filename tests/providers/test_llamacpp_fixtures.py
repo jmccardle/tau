@@ -29,7 +29,7 @@ def chat_requests(case_dir: Path) -> list[int]:
 
 def reported_input(case_dir: Path, k: int) -> int:
     """`usage.prompt_tokens` of exchange `k`'s response, streamed or not."""
-    body = (case_dir / f"{k:02}.response.body").read_text()
+    body = (case_dir / f"{k:02}.response.body").read_text(encoding="utf-8")
     if body.lstrip().startswith("{"):
         return json.loads(body)["usage"]["prompt_tokens"]
     usages = [

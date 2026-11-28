@@ -11,9 +11,7 @@ command the repository's owner runs to record it."""
 
 import base64
 import json
-import struct
 import tempfile
-import zlib
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -93,7 +91,7 @@ def all_cases(root: Path = ROOT) -> list[Path]:
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def strip_query(url: str) -> str:
@@ -176,31 +174,12 @@ class TableTool:
         return Outcome.Err(f"no such {self._key}: {args_raw}")
 
 
-def flat_png(width: int, height: int, rgb: Sequence[int]) -> bytes:
-    """The recorder's `png()`: a PNG of one colour, the same bytes every time, so a replay's
-    request is the recorded one."""
-
-    def block(kind: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
-
-    row = b"\x00" + bytes(rgb) * width
-    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + block(b"IHDR", header)
-        + block(b"IDAT", zlib.compress(row * height, 9))
-        + block(b"IEND", b"")
-    )
-
-
 def turn_images(case: Mapping[str, Any]) -> list[list[ImageInput]]:
-    """The images each turn of `case` sends (`turn_images`; none for a case without it)."""
+    """The images each turn of `case` sends (`turn_images`; none for a case without it): the
+    recorded PNG bytes (`png`), not a PNG made again from the swatch, since zlib builds compress
+    differently (Python 3.14 on Windows ships zlib-ng) and the requests hold the bytes sent."""
     wanted: list[list[Mapping[str, Any]]] = case.get("turn_images") or [[] for _ in case["turns"]]
-    return [
-        [ImageInput.of(flat_png(d["width"], d["height"], d["rgb"])) for d in turn]
-        for turn in wanted
-    ]
+    return [[ImageInput.of(base64.b64decode(d["png"])) for d in turn] for turn in wanted]
 
 
 def reply_of(stop: Stop, finish_reason: str | None, meta: str | None) -> dict[str, object]:

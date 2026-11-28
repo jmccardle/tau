@@ -115,7 +115,7 @@ def sse_texts(*texts: str) -> Server:
 
 
 def recorded(name: str) -> str:
-    return (FIXTURES / f"{name}.sse").read_text()
+    return (FIXTURES / f"{name}.sse").read_text(encoding="utf-8")
 
 
 def recorded_error() -> Server:

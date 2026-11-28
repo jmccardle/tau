@@ -60,8 +60,9 @@ scenario), 1 a run failed or a fixture is not publishable, 2 usage.
     {"format": 1, "family": ..., "provider": ..., "kind": "turns" | "raw",
      "scenario": "<name>", "model": {...}, "system": "...", "turns": ["...", ...],
      "gaps": [0, 0, 0, 360], "tools": [{"name", "description", "parameters", "answers",
-     "key", "images"?}], "extensions"?: {...}, "turn_images"?: [[{"width", "height", "rgb"}]],
-     "raw"?: {"stream", "adapter", "error"}, "tau": "<tau.__version__>", "recorded": "YYYY-MM-DD"}
+     "key", "images"?}], "extensions"?: {...},
+     "turn_images"?: [[{"width", "height", "rgb", "png"}]], "raw"?: {"stream", "adapter",
+     "error"}, "tau": "<tau.__version__>", "recorded": "YYYY-MM-DD"}
 
 - `model` is the settings object the model catalog was given (`provider`, `model`,
   `base_url`, `max_tokens`, `options`, `api_key_env`; the unset ones absent). `api_key_env` is
@@ -85,9 +86,10 @@ scenario), 1 a run failed or a fixture is not publishable, 2 usage.
   The rule is the same at record and at replay, so a replay reproduces the walk.
 - `turn_images` (optional; a case without it sends no user images) is one list per turn, in
   `turns`' order, of the images the user attaches to that turn (D31): each is a flat-colour
-  PNG of `width` by `height` pixels and colour `rgb`, which `png()` writes the same way every
-  time, so a replay regenerates the exact bytes. They are sent with `Client.send(images=)`, so
-  the text goes first and the images after it, as tau sends them.
+  PNG of `width` by `height` pixels and colour `rgb`, made by `png()`, and `png` is its bytes,
+  base64: a replay sends those bytes, not a PNG made again, since zlib builds compress the
+  same pixels differently (Python 3.14 on Windows ships zlib-ng). They are sent with
+  `Client.send(images=)`, so the text goes first and the images after it, as tau sends them.
 
 Requests keep only the headers in `REQUEST_HEADERS` and responses those in `RESPONSE_HEADERS`;
 every other header is dropped. URLs lose the query parameters in `SECRET_PARAMS`. `body` is the
@@ -234,7 +236,7 @@ def png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
 @dataclass(frozen=True)
 class Swatch:
     """A user image described deterministically: a flat-colour PNG (`case.json`'s
-    `turn_images`), so a replay regenerates the exact bytes."""
+    `turn_images`, which also keeps its bytes, for a replay to send)."""
 
     width: int
     height: int
@@ -244,7 +246,12 @@ class Swatch:
         return png(self.width, self.height, self.rgb)
 
     def described(self) -> dict[str, object]:
-        return {"width": self.width, "height": self.height, "rgb": list(self.rgb)}
+        return {
+            "width": self.width,
+            "height": self.height,
+            "rgb": list(self.rgb),
+            "png": base64.b64encode(self.data()).decode(),
+        }
 
 
 RED_SWATCH = Swatch(64, 64, (220, 30, 30))
@@ -1015,14 +1022,12 @@ def _extension_options(case: Mapping[str, object]) -> dict[str, object]:
 
 
 def _turn_images(case: Mapping[str, object]) -> list[list[tau.ImageInput]]:
-    """The images each turn of `case` sends, from `turn_images` (none for a case without it)."""
+    """The images each turn of `case` sends, from `turn_images`' `png` bytes (none for a case
+    without it)."""
     turns: list[str] = case["turns"]  # type: ignore[assignment]
     wanted: list[list[Mapping[str, object]]] = case.get("turn_images") or [[] for _ in turns]  # type: ignore[assignment]
     return [
-        [
-            tau.ImageInput.of(Swatch(d["width"], d["height"], tuple(d["rgb"])).data())  # type: ignore[arg-type]
-            for d in described
-        ]
+        [tau.ImageInput.of(base64.b64decode(str(d["png"]))) for d in described]
         for described in wanted
     ]
 

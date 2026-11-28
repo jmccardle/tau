@@ -159,7 +159,7 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
 
     def read_file(path: Annotated[str, "path of the file to read"]) -> str:
         """Read a text file and return its contents."""
-        return Path(path).read_text()
+        return Path(path).read_text(encoding="utf-8")
 
     live = catalog(ALIAS, model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
     session = Session.create(

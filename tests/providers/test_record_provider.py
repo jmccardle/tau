@@ -156,7 +156,7 @@ def record(server: Scripted, out: Path, *more: object) -> subprocess.CompletedPr
 
 
 def read(path: Path) -> Any:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def everything_under(directory: Path) -> list[Path]:

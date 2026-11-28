@@ -23,7 +23,7 @@ the closest)."""
 def wire_only(case_dir: Path) -> bool:
     """A raw case the provider cannot read (a response that is not streamed): a fixture of
     the wire alone."""
-    case = json.loads((case_dir / "case.json").read_text())
+    case = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
     return case["kind"] == "raw" and not case.get("raw", {}).get("adapter", True)
 
 

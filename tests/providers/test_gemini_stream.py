@@ -41,7 +41,7 @@ def recorded_signature(name: str) -> str:
     """The `thoughtSignature` of the last chunk in a recorded stream that has one."""
     found = [
         part["thoughtSignature"]
-        for line in (FIXTURES / name).read_text().splitlines()
+        for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines()
         if line.startswith("data:")
         for candidate in json.loads(line[5:]).get("candidates", [])
         for part in candidate["content"].get("parts", [])
