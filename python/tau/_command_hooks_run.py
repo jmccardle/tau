@@ -91,11 +91,18 @@ _STREAMS = {1: "standard output", 2: "standard error"}
 
 
 def _signal(group: int, number: signal.Signals | int) -> bool:
-    """Send `number` to a process group; whether any process of it was there to get it."""
+    """Send `number` to a process group; whether any process of it was there to get it.
+    `PermissionError` says one was: macOS answers EPERM for a group that holds a zombie (the
+    command, exited and not yet reaped, while what it started is still ending), having
+    signalled the rest; elsewhere it means a member this user may not signal. Taken for "gone",
+    it ended `terminate`'s wait early on macOS, before the SIGKILL owed to a member that
+    outlived its SIGTERM."""
     try:
         os.killpg(group, number)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
