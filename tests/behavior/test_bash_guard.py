@@ -174,6 +174,7 @@ async def test_reject_is_a_result_that_says_how_to_narrow_it(tmp_path: Path) -> 
 
 
 @scenario
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows: the bash tool is not ported")
 async def test_a_real_bash_runs_the_truncated_command(tmp_path: Path) -> None:
     h, _ = await start(
         tmp_path,

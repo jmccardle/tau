@@ -4,6 +4,7 @@
 branch's settings differ from the prefix's, then an undo marker), so the session keeps one root
 and the next request starts with the bytes the first one did."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -236,7 +237,8 @@ async def test_export_names_a_path_it_cannot_write(tmp_path: Path) -> None:
     work.mkdir()
     h = await session(tmp_path, "the answer", extensions=[shipped("session", work)])
     await talk(h, "the question")
-    with pytest.raises(CommandFailed, match=r"cannot write missing/x\.md: No such file or direc"):
+    named = re.escape(f"cannot write {Path('missing', 'x.md')}: No such file or direc")
+    with pytest.raises(CommandFailed, match=named):
         await h.run("export", {"path": "missing/x.md"})
     await h.settle()
     view = await h.view()
