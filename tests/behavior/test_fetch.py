@@ -9,6 +9,8 @@ import gzip
 import json
 import re
 import socket
+import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -353,6 +355,12 @@ async def test_a_redirect_that_names_nowhere_readable_is_an_error(tmp_path: Path
 
 
 @scenario
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="only Linux leaves a connection to a full loopback backlog unanswered: macOS completes "
+    "it and Windows refuses it. The message is platform-free Python; the next test covers what "
+    "a server that takes the connection and never answers gets, everywhere",
+)
 async def test_a_host_that_never_answers_the_connection_is_named(tmp_path: Path) -> None:
     with socket.socket() as busy:
         busy.bind(("127.0.0.1", 0))
@@ -361,6 +369,33 @@ async def test_a_host_that_never_answers_the_connection_is_named(tmp_path: Path)
         with socket.create_connection(address):  # takes the one place there is
             (out,) = await run(tmp_path, f"http://127.0.0.1:{address[1]}", {"url": "/"})
     assert error(out) == "connecting to 127.0.0.1 took over 10 s"
+
+
+@scenario
+async def test_a_server_that_takes_the_connection_and_never_answers_is_given_up_on(
+    tmp_path: Path,
+) -> None:
+    """A connection made and a request sent, then nothing: the whole call's `timeout`."""
+    held: list[socket.socket] = []
+    with socket.socket() as mute:
+        mute.bind(("127.0.0.1", 0))
+        mute.listen(8)
+        port = mute.getsockname()[1]
+        taker = threading.Thread(target=lambda: held.append(mute.accept()[0]), daemon=True)
+        taker.start()
+        try:
+            (out,) = await run(
+                tmp_path,
+                f"http://127.0.0.1:{port}",
+                {"url": "/"},
+                constants={"allow_private": True, "timeout": 1},
+            )
+        finally:
+            taker.join(5)
+            for connection in held:
+                connection.close()
+    assert held, "the connection was taken"
+    assert error(out) == f"fetching http://127.0.0.1:{port}/ took over 1 s"
 
 
 @scenario
