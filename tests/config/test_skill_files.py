@@ -258,7 +258,8 @@ def test_the_skills_directory_may_link_to_one_the_project_keeps_elsewhere(world:
     put(root, "team/skills/pdf/SKILL.md", SKILL)
     (root / ".tau" / "skills").symlink_to(root / "team" / "skills")
     report = tau(world, "trust", cwd=root).out
-    assert "skills/pdf/SKILL.md  " in report
+    # the listing names a file relative to `.tau/`, as it is read through the link
+    assert f"  skills/pdf/SKILL.md  {len(SKILL.encode())} bytes" in report.splitlines()
     target = (root / "team" / "skills" / "pdf" / "SKILL.md").resolve()
     assert f"a symlink: these are the bytes of {target}" in report
     assert [p.name for p in skills(world, root).prompts] == ["pdf"]

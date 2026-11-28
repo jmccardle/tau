@@ -616,7 +616,10 @@ def test_other_agents_skill_directories_are_not_read(world: World) -> None:
     for base in (world.home, root):
         elsewhere(base, ".claude", "from-claude", "---\ndescription: c\n---\nb")
         elsewhere(base, ".agents", "from-agents", "---\ndescription: a\n---\nb")
-    trust(world, root)
+    report = tau(world, "trust", cwd=root)
+    assert report.code == 0, report.err
+    assert ".claude" not in report.out, "trust pins none of them"
+    assert ".agents" not in report.out
     found = Skills.of(loaded(world, root))
     assert found.prompts == ()
     assert found.warnings == ()

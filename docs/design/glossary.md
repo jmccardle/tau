@@ -2079,7 +2079,7 @@ module `tau._extensions` (private; the names below are exported from `tau`) · D
 A **source** is one place extension code comes from; its **key** is the name `load` and `-e` use
 for it, and it obeys the extension-name rule (letters, digits, `_`, `-`). There are five kinds, in
 **load order** (which is no longer hook order: each point sorts by *hook order*, D28): a **built-in** (a class in `tau`, built at each load from the `LoadedConfig`: `agents`, `attachments`,
-`bash_guard` (off by default), `base_tools`, `compaction`, `fetch`, `mcp` (off by default), `permissions`, `prune`, `router` (off by default), `search` (off by default), `skills`, `step_limit` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
+`bash_guard` (off by default), `base_tools`, `compaction`, `fetch`, `hooks` (off by default), `mcp` (off by default), `permissions`, `prune`, `router` (off by default), `search` (off by default), `session`, `skills`, `step_limit`, `token_calls` (off by default), `tokens`, `undo` and `usage`, key its name); an installed package's registration in the `tau.extensions` group (key the registration's
 name; it must name a module, not `module:attr`); a user **drop-in** (`$TAU_HOME/extensions/NAME.py`
 or `NAME/`); a project drop-in (`.tau/extensions/NAME.py` or `NAME/`, imported from the bytes trust
 approved); and `-e`. Within a row, sorted by key; names starting with `.` or `_` and anything that
